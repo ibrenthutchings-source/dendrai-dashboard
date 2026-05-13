@@ -1,4 +1,3 @@
-
 ## Stack
 - Vite + React 18 + TypeScript
 - Recharts for visualization
@@ -987,5 +986,3 @@ echo "  ✓ Scaffold complete. Starting dev server on port 5173..."
 echo "  ✓ Codespaces will prompt 'Open in Browser' — click it."
 echo "════════════════════════════════════════════════════════════"
 echo ""
-
-npm run dev
