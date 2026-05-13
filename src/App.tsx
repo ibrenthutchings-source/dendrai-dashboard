@@ -12,6 +12,171 @@ const B = {
   text:"#1A1F1D", textLt:"#2E3733", muted:"#5A6B65", dim:"#C8DDD2",
   red:"#C8412E", redBg:"#FBE7E3",
   amber:"#C77A1F", amberBg:"#FAF0DA",
+  greenBg:"#D5F2E5",
+}
+const RC = [B.red, B.amber, B.mint]
+const RBG = [B.redBg, B.amberBg, B.greenBg]
+const RL = ["RED","AMB","GRN"]
+
+const SECTOR = [
+  {co:"NVDA",d:188.2,color:B.mint+"DD"},{co:"MU",d:62.4,color:B.mint+"99"},
+  {co:"AVGO",d:44.1,color:B.mint+"66"},{co:"TSM",d:34.0,color:B.mint+"55"},
+  {co:"ARM",d:30.2,color:B.mint+"44"},{co:"MRVL",d:27.5,color:B.amber+"66"},
+  {co:"AMD",d:21.3,color:B.amber+"88"},{co:"QCOM",d:9.1,color:B.amber+"AA"},
+  {co:"INTC",d:-7.8,color:B.red+"99"},
+]
+
+const NVDA = {
+  name:"NVIDIA Corporation", ticker:"NVDA", accent:B.mint,
+  mScore:-1.42, mScoreAdj:-2.10, mScoreFlag:"GROWTH-INFLATED",
+  zScore:27.0, hsExp:"~42%", chinaExp:"~12%", capexRatio:"4%",
+  aqi:1.08, tata:0.062, rdRatio:"9%", gmTtm:"74.5%",
+  headline:"Blackwell Ramp | Rubin Tape-Out | Hyperscaler Concentration | BIS H20 Watch",
+  mScorePeers:[
+    {co:"INTC",s:-2.85,f:2},{co:"QCOM",s:-2.71,f:2},{co:"ARM",s:-2.62,f:2},
+    {co:"AMD",s:-2.45,f:2},{co:"MRVL",s:-2.30,f:2},{co:"AVGO",s:-2.18,f:2},
+    {co:"MU",s:-1.95,f:1},{co:"NVDA★",s:-1.42,f:1},
+  ],
+  zScorePeers:[
+    {co:"INTC",s:2.10,z:1},{co:"MU",s:3.60,z:2},{co:"TSM",s:4.80,z:2},
+    {co:"QCOM",s:5.40,z:2},{co:"AMD",s:6.20,z:2},{co:"AVGO",s:8.50,z:2},
+    {co:"ARM",s:12.00,z:2},{co:"NVDA★",s:27.00,z:2},
+  ],
+  mComp:[
+    {v:"SGI",c:1.588,note:"Hyper-growth inflator — known model failure mode"},
+    {v:"DSRI",c:1.049,note:"AR growth lagging revenue acceleration"},
+    {v:"GMI",c:0.512,note:"GM stable >74%"},
+    {v:"AQI",c:0.436,note:"CoWoS prepay, HBM commits"},
+    {v:"DEPI",c:0.117,note:"Depreciation stable"},
+    {v:"TATA",c:0.290,note:"⚠ Elevated accruals — watch item"},
+    {v:"SGAI",c:-0.162,note:"✓ Operating leverage"},
+    {v:"LVGI",c:-0.298,note:"✓ De-leveraging"},
+  ],
+  fwd:[
+    {q:"Q1'27A",actual:48.0,gmA:73.5,fcfA:23.0},
+    {q:"Q2'27",bear:46,base:54,bull:62,gmBear:70,gmBase:73,gmBull:76,fcfBear:22,fcfBase:28,fcfBull:34},
+    {q:"Q3'27",bear:48,base:58,bull:68,gmBear:70,gmBase:73,gmBull:76,fcfBear:24,fcfBase:30,fcfBull:37},
+    {q:"Q4'27",bear:50,base:62,bull:72,gmBear:69,gmBase:73,gmBull:76,fcfBear:26,fcfBase:33,fcfBull:40},
+    {q:"Q1'28",bear:50,base:65,bull:78,gmBear:69,gmBase:73,gmBull:75,fcfBear:25,fcfBase:35,fcfBull:43},
+    {q:"Q2'28",bear:52,base:70,bull:84,gmBear:68,gmBase:73,gmBull:75,fcfBear:27,fcfBase:37,fcfBull:46},
+    {q:"Q3'28",bear:54,base:75,bull:90,gmBear:68,gmBase:73,gmBull:75,fcfBear:28,fcfBase:40,fcfBull:50},
+    {q:"Q4'28",bear:56,base:80,bull:96,gmBear:67,gmBase:72,gmBull:74,fcfBear:30,fcfBase:43,fcfBull:54},
+  ],
+  annual:[
+    {yr:"FY24",rev:60.9,gm:72.7,fcf:27.0,capex:1.1},
+    {yr:"FY25",rev:130.5,gm:75.0,fcf:60.7,capex:3.2},
+    {yr:"FY26",rev:195.0,gm:74.5,fcf:95.0,capex:5.5},
+    {yr:"FY27E",rev:238.0,gm:73.0,fcf:125.0,capex:8.5},
+    {yr:"FY28E",rev:295.0,gm:73.5,fcf:158.0,capex:11.0},
+    {yr:"FY29E",rev:330.0,gm:72.5,fcf:175.0,capex:13.0},
+  ],
+  revAnnualScen:[
+    {yr:"FY27",bear:168,base:215,bull:258},
+    {yr:"FY28",bear:172,base:268,bull:345},
+    {yr:"FY29",bear:155,base:295,bull:410},
+  ],
+  epsScen:[
+    {yr:"FY27",bear:4.10,base:5.65,bull:7.20},
+    {yr:"FY28",bear:4.00,base:7.20,bull:9.85},
+    {yr:"FY29",bear:3.40,base:7.90,bull:12.10},
+  ],
+  scenDrivers:[
+    {driver:"Hyperscaler Capex YoY",bear:"−15%",base:"+18%",bull:"+35%"},
+    {driver:"China Re-entry",bear:"Blocked",base:"Partial (B30/H20-succ.)",bull:"Full + Sovereign"},
+    {driver:"Gross Margin %",bear:"68%",base:"73%",bull:"75%"},
+    {driver:"ASIC Share of AI TAM",bear:"35%",base:"18%",bull:"10%"},
+  ],
+  sensitivity:[
+    {lever:"Hyperscaler capex ±10%",impact:14.6,epsImpact:0.55,gmImpact:0.15},
+    {lever:"CoWoS-L capacity ±10%",impact:11.2,epsImpact:0.42,gmImpact:0.20},
+    {lever:"Blackwell ASP ±5%",impact:8.4,epsImpact:0.38,gmImpact:0.90},
+    {lever:"HBM3e/HBM4 yield ±5%",impact:5.8,epsImpact:0.31,gmImpact:0.55},
+    {lever:"China-cleared SKU ±$1B/qtr",impact:4.0,epsImpact:0.14,gmImpact:-0.30},
+    {lever:"NVLink/Networking ±200bp",impact:3.1,epsImpact:0.18,gmImpact:0.25},
+  ],
+  irPivots:[
+    {n:1,title:"From GPU Vendor to AI Factory OEM",txt:"Recode revenue as platform-recurring (NVL72, Spectrum-X, BlueField, AI Enterprise). Defends multiple against hyperscaler-ASIC bear thesis."},
+    {n:2,title:"Sovereign AI as the Second S-Curve",txt:"EU / GCC / India / Japan / ASEAN demand decoupled from top-4 hyperscaler concentration — structurally non-correlated growth pillar."},
+    {n:3,title:"Capital Returns at Scale",txt:"Formalize ≥80% FCF buyback framework + initiate progressive dividend to signal discipline and blunt 'peak earnings' narrative."},
+  ],
+  qs:["Q2'27","Q3'27","Q4'27","Q1'28","Q2'28","Q3'28","Q4'28"],
+  ragFin:[
+    {r:"Hyperscaler Concentration",v:[0,0,0,0,1,1,1],vel:"up",vl:"DIVERSIFYING"},
+    {r:"Gross Margin Defense",v:[2,2,1,1,1,1,1],vel:"dn",vl:"COMPRESSING"},
+    {r:"FCF Generation",v:[2,2,2,2,2,2,2],vel:"up",vl:"ACCELERATING"},
+    {r:"Inventory & Purchase Commits",v:[1,1,1,2,2,2,2],vel:"up",vl:"NORMALIZING"},
+    {r:"Capital Return Discipline",v:[1,1,2,2,2,2,2],vel:"up",vl:"FORMALIZING"},
+    {r:"Customer Financing",v:[1,1,1,1,1,1,1],vel:"st",vl:"WATCH"},
+  ],
+  ragOps:[
+    {r:"CoWoS-L Capacity",v:[1,1,2,2,2,2,2],vel:"up",vl:"RAMPING"},
+    {r:"HBM3e / HBM4 Supply",v:[1,1,1,2,2,2,2],vel:"up",vl:"EXPANDING"},
+    {r:"Rubin / Rubin Ultra Ramp",v:[2,2,1,1,2,2,2],vel:"up",vl:"ON-TRACK"},
+    {r:"Hyperscaler ASIC Sub.",v:[1,1,0,0,0,0,0],vel:"dn",vl:"ACCELERATING"},
+    {r:"TSMC Fab Concentration",v:[1,1,1,0,0,0,0],vel:"dn",vl:"WORSENING"},
+    {r:"NVLink / Spectrum-X",v:[2,2,2,2,2,2,2],vel:"up",vl:"PLATFORM"},
+  ],
+  ragComp:[
+    {r:"BIS Export Controls",v:[0,0,0,1,1,1,1],vel:"up",vl:"PERSISTENT"},
+    {r:"EU AI Act / Antitrust",v:[1,1,0,0,0,0,0],vel:"dn",vl:"ESCALATING"},
+    {r:"SEC Forward Guidance",v:[1,1,1,2,2,2,2],vel:"up",vl:"IMPROVING"},
+    {r:"Taiwan Strait",v:[1,1,1,1,0,0,0],vel:"dn",vl:"STRUCTURAL"},
+    {r:"Related-Party Disc.",v:[1,1,1,2,2,2,2],vel:"up",vl:"CLARIFYING"},
+    {r:"ASC 606 Bundles",v:[1,1,2,2,2,2,2],vel:"up",vl:"RESOLVING"},
+  ],
+  china:[
+    {co:"US Hyperscalers (Top 4)",pct:42,f:0},
+    {co:"US Enterprise / Sovereign",pct:18,f:1},
+    {co:"Sovereign AI (EU/GCC/JP/IN)",pct:14,f:2},
+    {co:"China (H20-class only)",pct:12,f:0},
+    {co:"Asia ex-CN",pct:9,f:2},
+    {co:"ROW",pct:5,f:2},
+  ],
+  localThreat:[
+    {name:"Huawei Ascend 910C",seg:"Training",now:62,y27:78,risk:1200},
+    {name:"Cambricon Siyuan 590",seg:"Inference",now:55,y27:72,risk:480},
+    {name:"Biren BR104P",seg:"Training",now:48,y27:68,risk:420},
+    {name:"Moore Threads S4000",seg:"Mixed",now:42,y27:65,risk:280},
+    {name:"Iluvatar Tianlong",seg:"Inference",now:50,y27:70,risk:320},
+  ],
+  capexPeer:[
+    {co:"NVDA★",r:9},{co:"MU",r:11},{co:"AVGO",r:17},{co:"QCOM",r:22},
+    {co:"AMD",r:24},{co:"INTC",r:25},{co:"MRVL",r:28},{co:"ARM",r:36},
+  ],
+  macro:[
+    {n:"Hyperscaler AI Capex YoY",corr:0.94,lead:1,sig:2,val:"+38% Q1'26"},
+    {n:"TSMC CoWoS-L Capacity",corr:0.91,lead:2,sig:2,val:"+45% YoY"},
+    {n:"AI Token Consumption",corr:0.88,lead:1,sig:2,val:"+8.5× YoY"},
+    {n:"HBM3e / HBM4 Supply",corr:0.86,lead:2,sig:1,val:"SK Hynix tight"},
+    {n:"GPU Cloud Spot Pricing",corr:0.74,lead:1,sig:2,val:"H100 $2.10/hr"},
+    {n:"US DC Power Permits",corr:0.71,lead:3,sig:1,val:"+22% YoY"},
+    {n:"BIS Export Controls",corr:-0.66,lead:1,sig:0,val:"Tightening"},
+    {n:"EU AI Act Enforcement",corr:-0.52,lead:2,sig:1,val:"Aug'26"},
+  ],
+  audit:[
+    {ref:"N01",title:"Hyperscaler Concentration Disc.",impact:9.5,detect:3.5,urg:0,domain:"Disclosure"},
+    {ref:"N02",title:"ASC 606 AI Enterprise Bundles",impact:9.2,detect:3.8,urg:0,domain:"Revenue"},
+    {ref:"N03",title:"Related-Party (CoreWeave)",impact:9.0,detect:3.0,urg:0,domain:"Revenue"},
+    {ref:"N04",title:"BIS H20 Compliance",impact:8.8,detect:4.0,urg:0,domain:"Compliance"},
+    {ref:"N05",title:"CoWoS Purchase Commits",impact:8.5,detect:4.5,urg:0,domain:"Commits"},
+    {ref:"N06",title:"Inv. Reserve Hopper→Rubin",impact:8.3,detect:5.0,urg:0,domain:"Inventory"},
+    {ref:"N07",title:"SEC AI Guidance Caveat",impact:8.0,detect:4.2,urg:1,domain:"Disclosure"},
+    {ref:"N08",title:"Mellanox Goodwill Test",impact:7.4,detec
+cd /workspaces/dendrai-dashboard && cat > src/App.tsx << '__APP_EOF__'
+import { useState } from 'react'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ReferenceLine, ResponsiveContainer, LineChart, Line,
+  Cell, Legend, ComposedChart
+} from 'recharts'
+
+const B = {
+  mint:"#2BCC99", mintAccent:"#3DFFC0", ivory:"#E8F5F0",
+  bg:"#E8F5F0", bg2:"#DCEFE7", card:"#FFFFFF",
+  border:"#BFD9CF", borderLt:"#A6C9BB",
+  text:"#1A1F1D", textLt:"#2E3733", muted:"#5A6B65", dim:"#C8DDD2",
+  red:"#C8412E", redBg:"#FBE7E3",
+  amber:"#C77A1F", amberBg:"#FAF0DA",
   greenBg:"#D5F2E5", sic:"#6B5FE0",
 }
 const RC  = [B.red, B.amber, B.mint]
