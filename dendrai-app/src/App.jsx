@@ -157,7 +157,7 @@ const AuditPriorityHeatmap = ({ priorities }) => {
 
 // Gemini API Configuration
 const callGeminiAPI = async (prompt, systemInstruction, schema = null) => {
-  const apiKey = ""; // Left empty for Canvas runtime injection
+  const apiKey = <div className="env"></div>; // Left empty for Canvas runtime injection
   const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const payload = {
