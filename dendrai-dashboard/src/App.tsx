@@ -2,17 +2,10 @@ import React, { useState } from 'react';
 import { 
   Activity, 
   ShieldAlert, 
-  Briefcase, 
   Cpu, 
-  Search, 
-  AlertTriangle, 
-  TrendingDown, 
-  TrendingUp, 
-  Minus,
+  AlertTriangle,
   Crosshair,
-  Lock,
-  Database,
-  BarChart2
+  Database
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -52,13 +45,20 @@ const RBG = [B.redBg, B.amberBg, B.greenBg];
 const RL  = ["RED","AMB","GRN"];
 
 // ═══════════════════════ UI COMPONENTS ══════════════════════════════
-const Card = ({children, className="", style={}}) => (
+const Card = ({children, className="", style={}}: {children: React.ReactNode; className?: string; style?: React.CSSProperties}) => (
   <div className={className} style={{background:B.card, border:`1px solid ${B.border}`, borderRadius:8, padding:18, boxShadow:"0 1px 2px rgba(26,31,29,0.04)", ...style}}>
     {children}
   </div>
 );
 
-const Lbl = ({children, sub, color, icon: Icon}) => (
+type LblProps = {
+  children: React.ReactNode;
+  sub?: React.ReactNode;
+  color?: string;
+  icon?: React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
+};
+
+const Lbl = ({children, sub, color, icon: Icon}: LblProps) => (
   <div style={{marginBottom:14}}>
     <div style={{color:color||B.text, fontSize:11, letterSpacing:"0.16em", textTransform:"uppercase", marginBottom:3, fontWeight:700, display:"flex", alignItems:"center"}}>
       {Icon && <Icon size={14} className="mr-2" style={{color: color || B.mintAccent}}/>}
@@ -68,7 +68,14 @@ const Lbl = ({children, sub, color, icon: Icon}) => (
   </div>
 );
 
-const ChartTip = ({active, payload, label, fmt}) => {
+type ChartTipProps = {
+  active?: boolean;
+  payload?: Array<{ name?: string; value?: string | number | null; color?: string }>;
+  label?: string;
+  fmt?: (value: string | number | null) => string;
+};
+
+const ChartTip = ({active, payload, label, fmt}: ChartTipProps) => {
   if (!active || !payload?.length) return null;
   return (
     <div style={{background:B.card, border:`1px solid ${B.borderLt}`, borderRadius:6, padding:"8px 12px", fontSize:11, boxShadow:"0 4px 12px rgba(26,31,29,0.10)"}}>
@@ -82,19 +89,28 @@ const ChartTip = ({active, payload, label, fmt}) => {
   );
 };
 
-const RagCell = ({val}) => (
+const RagCell = ({val}: { val: number }) => (
   <div style={{background:RBG[val], borderRadius:3, width:42, height:22, display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, color:RC[val], fontWeight:800, letterSpacing:"0.06em", border:`1px solid ${RC[val]}55`}}>
     {RL[val]}
   </div>
 );
 
-const AuditPriorityHeatmap = ({ priorities }) => {
-  const [hov, setHov] = useState(null);
+interface AuditPriority {
+  ref: string;
+  title: string;
+  impact: number;
+  detect: number;
+  urg: number;
+  domain: string;
+}
+
+const AuditPriorityHeatmap = ({ priorities }: { priorities: AuditPriority[] }) => {
+  const [hov, setHov] = useState<number | null>(null);
   if (!priorities || priorities.length === 0) return null;
 
   const W=720, H=300;
-  const toX = d => 60 + ((Math.max(1, Math.min(10, d))-1)/9)*(W-100);
-  const toY = d => H - 20 - ((Math.max(1, Math.min(10, d))-1)/9)*(H-60);
+  const toX = (d: number) => 60 + ((Math.max(1, Math.min(10, d))-1)/9)*(W-100);
+  const toY = (d: number) => H - 20 - ((Math.max(1, Math.min(10, d))-1)/9)*(H-60);
 
   return (
     <Card>
@@ -114,7 +130,7 @@ const AuditPriorityHeatmap = ({ priorities }) => {
             <line x1={60+(W-100)/2} y1={16} x2={60+(W-100)/2} y2={H-10} stroke={B.borderLt} strokeWidth={1} strokeDasharray="4 4"/>
             <line x1={55} y1={20+(H-40)/2} x2={W-30} y2={20+(H-40)/2} stroke={B.borderLt} strokeWidth={1} strokeDasharray="4 4"/>
             
-            {priorities.map((a,i) => {
+            {priorities.map((a: AuditPriority, i: number) => {
               const x=toX(a.detect), y=toY(a.impact), c=RC[a.urg] || B.mint, isH=hov===i;
               return (
                 <g key={i} style={{cursor:"pointer"}} onMouseEnter={()=>setHov(i)} onMouseLeave={()=>setHov(null)}>
@@ -143,9 +159,9 @@ const AuditPriorityHeatmap = ({ priorities }) => {
             <div style={{background:B.bg2, border:`1px solid ${B.border}`, borderRadius:6, padding:"12px 14px", fontSize:10, color:B.muted}}>
               Hover over a bubble to see vulnerability details.
               <div style={{marginTop:12, display:"flex", flexDirection:"column", gap:6}}>
-                <div style={{color:B.red, fontWeight: 600}}>● IMMEDIATE: {priorities.filter(a=>a.urg===0).length} items</div>
-                <div style={{color:B.amber, fontWeight: 600}}>● ELEVATED: {priorities.filter(a=>a.urg===1).length} items</div>
-                <div style={{color:B.mint, fontWeight: 600}}>● ROUTINE: {priorities.filter(a=>a.urg===2).length} items</div>
+                <div style={{color:B.red, fontWeight: 600}}>● IMMEDIATE: {priorities.filter((a: AuditPriority)=>a.urg===0).length} items</div>
+                <div style={{color:B.amber, fontWeight: 600}}>● ELEVATED: {priorities.filter((a: AuditPriority)=>a.urg===1).length} items</div>
+                <div style={{color:B.mint, fontWeight: 600}}>● ROUTINE: {priorities.filter((a: AuditPriority)=>a.urg===2).length} items</div>
               </div>
             </div>
           )}
@@ -156,11 +172,11 @@ const AuditPriorityHeatmap = ({ priorities }) => {
 };
 
 // Gemini API Configuration
-const callGeminiAPI = async (prompt, systemInstruction, schema = null) => {
+const callGeminiAPI = async (prompt: string, systemInstruction: string, schema: any = null) => {
   const apiKey = ""; // Left empty for Canvas runtime injection
   const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
 
-  const payload = {
+  const payload: any = {
     contents: [{ parts: [{ text: prompt }] }],
     systemInstruction: { parts: [{ text: systemInstruction }] }
   };
@@ -213,7 +229,7 @@ export default function DendraiRiskApp() {
     'Finance & Insurance',
     'Services - General'
   ]);
-  const [reportData, setReportData] = useState(null);
+  const [reportData, setReportData] = useState<any>(null);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('exec');
 
@@ -229,8 +245,8 @@ You are the Dendrai Risk & Intelligence Synthesizer. Your role is to act as a Se
 Identify the single most critical "Green" (safe) assumption made in your analysis. Generate a realistic scenario outlining exactly what would have to fail, break, or shift in the macro-environment over the next 90 days for that "Green" rating to violently flip to "Red".
   `;
 
-  const getSchema = (targetStakeholder) => {
-    const baseSchema = {
+  const getSchema = (targetStakeholder: string): any => {
+    const baseSchema: any = {
       type: "OBJECT",
       properties: {
         executiveSummary: { type: "STRING" },
@@ -493,19 +509,19 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
   };
 
   // ═══════════════════════ RENDER VIEWS ══════════════════════════════
-  const renderExecDashboard = (data) => {
-    let qoqChartData = [];
-    let qoqCompanies = [];
+  const renderExecDashboard = (data: any) => {
+    let qoqChartData: any[] = [];
+    let qoqCompanies: string[] = [];
     let qoqForwardStart = null;
     
     if (data.qoqData) {
-      qoqChartData = data.qoqData.map(q => {
-        const obj = { quarter: q.quarter, isHistorical: q.isHistorical };
-        q.metrics.forEach(m => obj[m.company] = m.qoqPercent);
+      qoqChartData = data.qoqData.map((q: any) => {
+        const obj: any = { quarter: q.quarter, isHistorical: q.isHistorical };
+        q.metrics.forEach((m: any) => obj[m.company] = m.qoqPercent);
         return obj;
       });
-      qoqCompanies = Array.from(new Set(data.qoqData.flatMap(q => q.metrics.map(m => m.company))));
-      qoqForwardStart = qoqChartData.find(d => d.isHistorical === false)?.quarter;
+      qoqCompanies = Array.from(new Set(data.qoqData.flatMap((q: any) => q.metrics.map((m: any) => m.company))));
+      qoqForwardStart = qoqChartData.find((d: any) => d.isHistorical === false)?.quarter;
     }
     const lineColors = [B.mint, B.amber, B.sic, B.red, B.borderLt];
 
@@ -526,10 +542,10 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <CartesianGrid strokeDasharray="3 3" stroke={B.dim} horizontal={false}/>
                 <XAxis type="number" tick={{fill:B.muted, fontSize:10}} stroke={B.border}/>
                 <YAxis type="category" dataKey="company" tick={{fill:B.text, fontSize:11, fontWeight:600}} stroke="none" width={80}/>
-                <Tooltip content={<ChartTip fmt={(v)=>v.toFixed(2)}/>}/>
+                <Tooltip content={<ChartTip fmt={(v: string | number | null)=>typeof v === 'number' ? v.toFixed(2) : String(v)}/>}/>
                 <ReferenceLine x={0} stroke={B.borderLt}/>
                 <Bar dataKey="riskDelta" name="Risk Delta" radius={[0,3,3,0]}>
-                  {data.peerComparison.map((entry, index) => (
+                  {data.peerComparison.map((entry: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={entry.riskDelta > 0 ? B.red : B.mint} />
                   ))}
                 </Bar>
@@ -548,7 +564,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <YAxis tick={{fill:B.muted,fontSize:10}} stroke="none" tickFormatter={(v)=>`${v}%`}/>
                 <Tooltip content={<ChartTip fmt={(v)=>`${v}%`}/>}/>
                 <Legend wrapperStyle={{fontSize:10, color:B.muted}}/>
-                {qoqCompanies.map((comp, idx) => (
+                {qoqCompanies.map((comp: string, idx: number) => (
                   <Line 
                     key={comp} 
                     type="monotone" 
@@ -570,7 +586,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
     );
   };
 
-  const renderAuditDashboard = (data) => {
+  const renderAuditDashboard = (data: any) => {
     if (!data.financialScores) return null;
     const params = data.financialScores.mScoreParams || {};
     const paramVisuals = [
@@ -629,7 +645,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <th style={{textAlign:"left", fontSize:10, color:B.muted, paddingRight:12, paddingBottom:4, fontWeight:600}}>RISK DESCRIPTION</th>
                 <th style={{textAlign:"center", fontSize:10, color:B.muted, paddingBottom:4, fontWeight:600, width:60}}>STATUS</th>
               </tr></thead>
-              <tbody>{data.ragMatrix?.map((row, i) => {
+              <tbody>{data.ragMatrix?.map((row: any, i: number) => {
                 const sIdx = row.status.toLowerCase()==='red'?0 : row.status.toLowerCase()==='amber'?1 : 2;
                 return (
                 <tr key={i}>
@@ -647,7 +663,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         <Card>
           <Lbl sub="Identified control and tracking gaps" color={B.red}>AUDIT VULNERABILITIES</Lbl>
           <div style={{display:"flex", flexDirection:"column", gap:8}}>
-            {data.auditVulnerabilities?.map((vuln, i) => (
+            {data.auditVulnerabilities?.map((vuln: string, i: number) => (
               <div key={i} style={{display:"flex", alignItems:"flex-start", padding:"10px 12px", background:B.redBg, borderRadius:5, border:`1px solid ${B.red}33`}}>
                 <AlertTriangle size={14} color={B.red} style={{marginTop:2, marginRight:8, flexShrink:0}} />
                 <span style={{fontSize:11, color:B.text}}>{vuln}</span>
@@ -659,7 +675,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
     );
   };
 
-  const renderCFODashboard = (data) => {
+  const renderCFODashboard = (data: any) => {
     if (!data.scenarios) return null;
     return (
       <div className="space-y-6 animate-fadeIn">
@@ -702,7 +718,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         <Card style={{background:B.text, border:`1px solid ${B.text}`}}>
           <Lbl color={B.mint}>STRATEGIC IR NARRATIVE PIVOTS</Lbl>
           <ul className="list-decimal pl-5 space-y-3" style={{fontSize:12, color:B.card}}>
-            {data.irPivots?.map((pivot, i) => (
+            {data.irPivots?.map((pivot: string, i: number) => (
               <li key={i} className="pl-2 leading-relaxed">{pivot}</li>
             ))}
           </ul>
@@ -711,7 +727,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
     );
   };
 
-  const renderCIODashboard = (data) => {
+  const renderCIODashboard = (data: any) => {
     if (!data.cyberRisks) return null;
     return (
       <div className="space-y-6 animate-fadeIn">
@@ -733,7 +749,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
 
           <div className="lg:col-span-2 space-y-4">
             <Lbl sub="Identified IP and Systems Threats">SYSTEMIC CYBER THREATS</Lbl>
-            {data.cyberRisks.map((risk, i) => (
+            {data.cyberRisks.map((risk: any, i: number) => (
               <Card key={i} style={{padding:"14px", borderLeft:`3px solid ${B.text}`}}>
                 <div style={{fontSize:12, fontWeight:800, color:B.text, textTransform:"uppercase", marginBottom:4}}>{risk.riskType}</div>
                 <div style={{fontSize:11, color:B.muted, marginBottom:10}}>{risk.assessment}</div>
@@ -742,7 +758,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                     <ShieldAlert size={12} className="mr-1" color={B.mint} /> Guardrails
                   </div>
                   <ul className="list-disc pl-4 space-y-1" style={{fontSize:11, color:B.text}}>
-                    {risk.guardrails?.map((guard, j) => <li key={j}>{guard}</li>)}
+                    {risk.guardrails?.map((guard: string, j: number) => <li key={j}>{guard}</li>)}
                   </ul>
                 </div>
               </Card>
@@ -753,7 +769,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
     );
   };
 
-  const renderBoardDashboard = (data) => {
+  const renderBoardDashboard = (data: any) => {
     if (!data.segmentData) return null;
     return (
       <div className="space-y-6 animate-fadeIn">
@@ -783,7 +799,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <YAxis type="category" dataKey="region" tick={{fill:B.text, fontSize:11, fontWeight:600}} stroke="none" width={80}/>
                 <Tooltip content={<ChartTip fmt={(v)=>`${v}%`}/>}/>
                 <Bar dataKey="revenueShare" name="Revenue Share %" radius={[0,3,3,0]}>
-                  {data.geoData?.map((entry, index) => (
+                  {data.geoData?.map((entry: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={entry.riskExposure?.toLowerCase() === 'high' ? B.red : entry.riskExposure?.toLowerCase() === 'medium' ? B.amber : B.mint} />
                   ))}
                 </Bar>
@@ -800,7 +816,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         <Card>
           <Lbl sub="Board-level tracking of strategic pivots and transformations">STRATEGIC INITIATIVES</Lbl>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {data.strategicInitiatives?.map((init, i) => {
+            {data.strategicInitiatives?.map((init: any, i: number) => {
               const isRisk = init.status.toLowerCase().includes('risk') || init.status.toLowerCase().includes('delayed');
               const c = isRisk ? B.red : (init.status.toLowerCase().includes('track') ? B.mint : B.amber);
               return (
@@ -817,10 +833,10 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
     );
   };
 
-  const renderQuarterlyAndGreySwan = (data) => {
+  const renderQuarterlyAndGreySwan = (data: any) => {
     if (!data.revenueTrend || !data.greySwan) return null;
 
-    const processedData = data.revenueTrend.map((d, i, arr) => {
+    const processedData = data.revenueTrend.map((d: any, i: number, arr: any) => {
       const isLastHist = d.isHistorical && arr[i+1] && !arr[i+1].isHistorical;
       return {
         ...d,
@@ -830,7 +846,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         p90: isLastHist ? d.revenue : d.p90
       };
     });
-    const forwardStart = processedData.find(d => !d.isHistorical)?.quarter;
+    const forwardStart = processedData.find((d: any) => !d.isHistorical)?.quarter;
 
     return (
       <div className="space-y-6 animate-fadeIn">
@@ -852,7 +868,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
             </ComposedChart>
           </ResponsiveContainer>
           <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginTop:16}}>
-            {data.revenueTrend.filter(q => !q.isHistorical).slice(0, 4).map((q, i) => (
+            {data.revenueTrend.filter((q: any) => !q.isHistorical).slice(0, 4).map((q: any, i: number) => (
                <div key={i} style={{background:B.bg2, border:`1px solid ${B.borderLt}`, borderRadius:6, padding:"8px 12px"}}>
                  <div style={{fontSize:9, color:B.muted, textTransform:"uppercase", marginBottom:4, fontWeight:700}}>{q.quarter} DRIVER</div>
                  <div style={{fontSize:10, color:B.text, fontWeight:600}}>{q.keyDriver || '—'}</div>
@@ -898,7 +914,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         <div className="flex items-center space-x-3">
           <div className="relative w-10 h-10 flex items-center justify-center bg-gray-100 rounded-md border overflow-hidden" style={{borderColor: B.border}}>
             <Cpu className="absolute z-0 opacity-20" size={24} color={B.text} />
-            <img src="Gemini_Generated_Image_.png" alt="Logo" className="w-full h-full object-cover relative z-10" onError={(e) => e.target.style.display = 'none'} />
+            <img src="Gemini_Generated_Image_.png" alt="Logo" className="w-full h-full object-cover relative z-10" onError={(e) => (e.target as HTMLImageElement).style.display = 'none'} />
           </div>
           <div>
             <div style={{color:B.mint,fontSize:9,letterSpacing:"0.26em",textTransform:"uppercase",marginBottom:2, fontWeight:800}}>▸ DENDRAI QUANT_ENGINE</div>
@@ -957,7 +973,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                   </button>
                 </div>
                 <textarea 
-                  value={peers} onChange={(e) => setPeers(e.target.value)} rows="2" placeholder="Comma separated list..."
+                  value={peers} onChange={(e) => setPeers(e.target.value)} rows={2} placeholder="Comma separated list..."
                   style={{width:"100%", background:B.bg, border:`1px solid ${B.borderLt}`, borderRadius:4, padding:"8px 12px", fontSize:12, outline:"none", color:B.text}}
                 />
               </div>
