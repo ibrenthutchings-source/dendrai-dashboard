@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { 
   Activity, 
   ShieldAlert, 
   Cpu, 
-  AlertTriangle,
+  AlertTriangle, 
   Crosshair,
   Database
 } from 'lucide-react';
@@ -45,20 +45,13 @@ const RBG = [B.redBg, B.amberBg, B.greenBg];
 const RL  = ["RED","AMB","GRN"];
 
 // ═══════════════════════ UI COMPONENTS ══════════════════════════════
-const Card = ({children, className="", style={}}: {children: React.ReactNode; className?: string; style?: React.CSSProperties}) => (
+const Card = ({children, className="", style={}}: any) => (
   <div className={className} style={{background:B.card, border:`1px solid ${B.border}`, borderRadius:8, padding:18, boxShadow:"0 1px 2px rgba(26,31,29,0.04)", ...style}}>
     {children}
   </div>
 );
 
-type LblProps = {
-  children: React.ReactNode;
-  sub?: React.ReactNode;
-  color?: string;
-  icon?: React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
-};
-
-const Lbl = ({children, sub, color, icon: Icon}: LblProps) => (
+const Lbl = ({children, sub, color, icon: Icon}: any) => (
   <div style={{marginBottom:14}}>
     <div style={{color:color||B.text, fontSize:11, letterSpacing:"0.16em", textTransform:"uppercase", marginBottom:3, fontWeight:700, display:"flex", alignItems:"center"}}>
       {Icon && <Icon size={14} className="mr-2" style={{color: color || B.mintAccent}}/>}
@@ -68,19 +61,12 @@ const Lbl = ({children, sub, color, icon: Icon}: LblProps) => (
   </div>
 );
 
-type ChartTipProps = {
-  active?: boolean;
-  payload?: Array<{ name?: string; value?: string | number | null; color?: string }>;
-  label?: string;
-  fmt?: (value: string | number | null) => string;
-};
-
-const ChartTip = ({active, payload, label, fmt}: ChartTipProps) => {
+const ChartTip = ({active, payload, label, fmt}: any) => {
   if (!active || !payload?.length) return null;
   return (
     <div style={{background:B.card, border:`1px solid ${B.borderLt}`, borderRadius:6, padding:"8px 12px", fontSize:11, boxShadow:"0 4px 12px rgba(26,31,29,0.10)"}}>
       <div style={{color:B.text, marginBottom:5, fontWeight:700}}>{label}</div>
-      {payload.map((p, i) => (
+      {payload.map((p: any, i: number) => (
         <div key={i} style={{color:p.color||B.text, marginBottom:2}}>
           {p.name}: {fmt && p.value != null ? fmt(p.value) : p.value ?? "—"}
         </div>
@@ -89,22 +75,13 @@ const ChartTip = ({active, payload, label, fmt}: ChartTipProps) => {
   );
 };
 
-const RagCell = ({val}: { val: number }) => (
+const RagCell = ({val}: {val: number}) => (
   <div style={{background:RBG[val], borderRadius:3, width:42, height:22, display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, color:RC[val], fontWeight:800, letterSpacing:"0.06em", border:`1px solid ${RC[val]}55`}}>
     {RL[val]}
   </div>
 );
 
-interface AuditPriority {
-  ref: string;
-  title: string;
-  impact: number;
-  detect: number;
-  urg: number;
-  domain: string;
-}
-
-const AuditPriorityHeatmap = ({ priorities }: { priorities: AuditPriority[] }) => {
+const AuditPriorityHeatmap = ({ priorities }: any) => {
   const [hov, setHov] = useState<number | null>(null);
   if (!priorities || priorities.length === 0) return null;
 
@@ -130,7 +107,7 @@ const AuditPriorityHeatmap = ({ priorities }: { priorities: AuditPriority[] }) =
             <line x1={60+(W-100)/2} y1={16} x2={60+(W-100)/2} y2={H-10} stroke={B.borderLt} strokeWidth={1} strokeDasharray="4 4"/>
             <line x1={55} y1={20+(H-40)/2} x2={W-30} y2={20+(H-40)/2} stroke={B.borderLt} strokeWidth={1} strokeDasharray="4 4"/>
             
-            {priorities.map((a: AuditPriority, i: number) => {
+            {priorities.map((a: any, i: number) => {
               const x=toX(a.detect), y=toY(a.impact), c=RC[a.urg] || B.mint, isH=hov===i;
               return (
                 <g key={i} style={{cursor:"pointer"}} onMouseEnter={()=>setHov(i)} onMouseLeave={()=>setHov(null)}>
@@ -159,9 +136,9 @@ const AuditPriorityHeatmap = ({ priorities }: { priorities: AuditPriority[] }) =
             <div style={{background:B.bg2, border:`1px solid ${B.border}`, borderRadius:6, padding:"12px 14px", fontSize:10, color:B.muted}}>
               Hover over a bubble to see vulnerability details.
               <div style={{marginTop:12, display:"flex", flexDirection:"column", gap:6}}>
-                <div style={{color:B.red, fontWeight: 600}}>● IMMEDIATE: {priorities.filter((a: AuditPriority)=>a.urg===0).length} items</div>
-                <div style={{color:B.amber, fontWeight: 600}}>● ELEVATED: {priorities.filter((a: AuditPriority)=>a.urg===1).length} items</div>
-                <div style={{color:B.mint, fontWeight: 600}}>● ROUTINE: {priorities.filter((a: AuditPriority)=>a.urg===2).length} items</div>
+                <div style={{color:B.red, fontWeight: 600}}>● IMMEDIATE: {priorities.filter((a: any)=>a.urg===0).length} items</div>
+                <div style={{color:B.amber, fontWeight: 600}}>● ELEVATED: {priorities.filter((a: any)=>a.urg===1).length} items</div>
+                <div style={{color:B.mint, fontWeight: 600}}>● ROUTINE: {priorities.filter((a: any)=>a.urg===2).length} items</div>
               </div>
             </div>
           )}
@@ -174,7 +151,7 @@ const AuditPriorityHeatmap = ({ priorities }: { priorities: AuditPriority[] }) =
 // Gemini API Configuration
 const callGeminiAPI = async (prompt: string, systemInstruction: string, schema: any = null) => {
   const apiKey = ""; // Left empty for Canvas runtime injection
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const payload: any = {
     contents: [{ parts: [{ text: prompt }] }],
@@ -245,7 +222,7 @@ You are the Dendrai Risk & Intelligence Synthesizer. Your role is to act as a Se
 Identify the single most critical "Green" (safe) assumption made in your analysis. Generate a realistic scenario outlining exactly what would have to fail, break, or shift in the macro-environment over the next 90 days for that "Green" rating to violently flip to "Red".
   `;
 
-  const getSchema = (targetStakeholder: string): any => {
+  const getSchema = (targetStakeholder: string) => {
     const baseSchema: any = {
       type: "OBJECT",
       properties: {
@@ -512,7 +489,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
   const renderExecDashboard = (data: any) => {
     let qoqChartData: any[] = [];
     let qoqCompanies: string[] = [];
-    let qoqForwardStart = null;
+    let qoqForwardStart: string | null = null;
     
     if (data.qoqData) {
       qoqChartData = data.qoqData.map((q: any) => {
@@ -521,7 +498,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         return obj;
       });
       qoqCompanies = Array.from(new Set(data.qoqData.flatMap((q: any) => q.metrics.map((m: any) => m.company))));
-      qoqForwardStart = qoqChartData.find((d: any) => d.isHistorical === false)?.quarter;
+      qoqForwardStart = qoqChartData.find((d: any) => d.isHistorical === false)?.quarter || null;
     }
     const lineColors = [B.mint, B.amber, B.sic, B.red, B.borderLt];
 
@@ -542,7 +519,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <CartesianGrid strokeDasharray="3 3" stroke={B.dim} horizontal={false}/>
                 <XAxis type="number" tick={{fill:B.muted, fontSize:10}} stroke={B.border}/>
                 <YAxis type="category" dataKey="company" tick={{fill:B.text, fontSize:11, fontWeight:600}} stroke="none" width={80}/>
-                <Tooltip content={<ChartTip fmt={(v: string | number | null)=>typeof v === 'number' ? v.toFixed(2) : String(v)}/>}/>
+                <Tooltip content={<ChartTip fmt={(v: number)=>v.toFixed(2)}/>}/>
                 <ReferenceLine x={0} stroke={B.borderLt}/>
                 <Bar dataKey="riskDelta" name="Risk Delta" radius={[0,3,3,0]}>
                   {data.peerComparison.map((entry: any, index: number) => (
@@ -562,9 +539,9 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={B.dim}/>
                 <XAxis dataKey="quarter" tick={{fill:B.muted,fontSize:10}} stroke={B.border}/>
                 <YAxis tick={{fill:B.muted,fontSize:10}} stroke="none" tickFormatter={(v)=>`${v}%`}/>
-                <Tooltip content={<ChartTip fmt={(v)=>`${v}%`}/>}/>
+                <Tooltip content={<ChartTip fmt={(v: number)=>`${v}%`}/>}/>
                 <Legend wrapperStyle={{fontSize:10, color:B.muted}}/>
-                {qoqCompanies.map((comp: string, idx: number) => (
+                {qoqCompanies.map((comp, idx) => (
                   <Line 
                     key={comp} 
                     type="monotone" 
@@ -797,7 +774,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <CartesianGrid strokeDasharray="3 3" stroke={B.dim} horizontal={false}/>
                 <XAxis type="number" tick={{fill:B.muted, fontSize:10}} stroke={B.border} tickFormatter={(v)=>`${v}%`}/>
                 <YAxis type="category" dataKey="region" tick={{fill:B.text, fontSize:11, fontWeight:600}} stroke="none" width={80}/>
-                <Tooltip content={<ChartTip fmt={(v)=>`${v}%`}/>}/>
+                <Tooltip content={<ChartTip fmt={(v: number)=>`${v}%`}/>}/>
                 <Bar dataKey="revenueShare" name="Revenue Share %" radius={[0,3,3,0]}>
                   {data.geoData?.map((entry: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={entry.riskExposure?.toLowerCase() === 'high' ? B.red : entry.riskExposure?.toLowerCase() === 'medium' ? B.amber : B.mint} />
@@ -836,7 +813,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
   const renderQuarterlyAndGreySwan = (data: any) => {
     if (!data.revenueTrend || !data.greySwan) return null;
 
-    const processedData = data.revenueTrend.map((d: any, i: number, arr: any) => {
+    const processedData = data.revenueTrend.map((d: any, i: number, arr: any[]) => {
       const isLastHist = d.isHistorical && arr[i+1] && !arr[i+1].isHistorical;
       return {
         ...d,
@@ -914,7 +891,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         <div className="flex items-center space-x-3">
           <div className="relative w-10 h-10 flex items-center justify-center bg-gray-100 rounded-md border overflow-hidden" style={{borderColor: B.border}}>
             <Cpu className="absolute z-0 opacity-20" size={24} color={B.text} />
-            <img src="Gemini_Generated_Image_.png" alt="Logo" className="w-full h-full object-cover relative z-10" onError={(e) => (e.target as HTMLImageElement).style.display = 'none'} />
+            <img src="Gemini_Generated_Image_.png" alt="Logo" className="w-full h-full object-cover relative z-10" onError={(e: any) => e.target.style.display = 'none'} />
           </div>
           <div>
             <div style={{color:B.mint,fontSize:9,letterSpacing:"0.26em",textTransform:"uppercase",marginBottom:2, fontWeight:800}}>▸ DENDRAI QUANT_ENGINE</div>
