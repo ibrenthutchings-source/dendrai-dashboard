@@ -174,9 +174,19 @@ const callGeminiAPI = async (prompt: string, systemInstruction: string, schema: 
   if (!response.ok) throw new Error(`API Error: ${response.status}`);
 
   const result = await response.json();
-  const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
-  
-  if (schema) return JSON.parse(textResponse);
+  const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+  const parseJsonResponse = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      const match = text.match(/\[.*\]/s);
+      if (match) return JSON.parse(match[0]);
+      throw err;
+    }
+  };
+
+  if (schema) return parseJsonResponse(textResponse.trim());
   return textResponse;
 };
 
@@ -437,11 +447,15 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
     try {
       const prompt = `Identify the top 3 to 5 Standard Industrial Classification (SIC) codes and industry names most relevant to the entity "${entity}". Return ONLY a JSON array of strings in the format "Industry Name (SIC Code)".`;
       const result = await callGeminiAPI(prompt, SYSTEM_PROMPT, { type: "ARRAY", items: { type: "STRING" } });
-      if (result?.length) {
-        setIndustryOptions([...result, 'Other / Custom']);
-        setIndustry(result[0]);
-      } else setError("Could not detect industries. Please select manually.");
+      const industries = Array.isArray(result) ? result.filter((item) => typeof item === 'string' && item.trim()) : [];
+      if (industries.length) {
+        setIndustryOptions([...industries, 'Other / Custom']);
+        setIndustry(industries[0]);
+      } else {
+        setError("Could not detect industries. Please select manually.");
+      }
     } catch (err) {
+      console.error('Auto-detect industry error:', err);
       setError("Failed to auto-detect industry.");
     } finally { setDetectingIndustry(false); }
   };
