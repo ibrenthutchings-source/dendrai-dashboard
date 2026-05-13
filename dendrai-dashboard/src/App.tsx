@@ -88,6 +88,73 @@ const RagCell = ({val}) => (
   </div>
 );
 
+const AuditPriorityHeatmap = ({ priorities }) => {
+  const [hov, setHov] = useState(null);
+  if (!priorities || priorities.length === 0) return null;
+
+  const W=720, H=300;
+  const toX = d => 60 + ((Math.max(1, Math.min(10, d))-1)/9)*(W-100);
+  const toY = d => H - 20 - ((Math.max(1, Math.min(10, d))-1)/9)*(H-60);
+
+  return (
+    <Card>
+      <Lbl sub="X: Detectability (1=hard, 10=easy) | Y: Impact (higher=more material) | Hover for detail">
+        AUDIT PRIORITY MATRIX — IMPACT × DETECTABILITY
+      </Lbl>
+      <div style={{display:"flex",gap:16, flexWrap: "wrap"}}>
+        <div style={{flex:1, minWidth: "300px"}}>
+          <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{overflow:"visible"}}>
+            <rect x={60} y={20} width={(W-100)/2} height={(H-40)/2} fill={B.red} opacity={0.04} rx={3}/>
+            <rect x={60+(W-100)/2} y={20} width={(W-100)/2} height={(H-40)/2} fill={B.amber} opacity={0.04} rx={3}/>
+            <text x={60 + (W-100)/4} y={40} textAnchor="middle" fill={B.red} fontSize={8} opacity={0.7} fontWeight="bold">HIGH IMPACT / HARD TO DETECT</text>
+            <text x={60 + 3*(W-100)/4} y={40} textAnchor="middle" fill={B.amber} fontSize={8} opacity={0.7} fontWeight="bold">HIGH IMPACT / EASY TO DETECT</text>
+            <text x={60 + (W-100)/4} y={H-8} textAnchor="middle" fill={B.muted} fontSize={8} opacity={0.7}>LOW IMPACT / HARD TO DETECT</text>
+            <text x={60 + 3*(W-100)/4} y={H-8} textAnchor="middle" fill={B.muted} fontSize={8} opacity={0.7}>LOW IMPACT / EASY TO DETECT</text>
+            
+            <line x1={60+(W-100)/2} y1={16} x2={60+(W-100)/2} y2={H-10} stroke={B.borderLt} strokeWidth={1} strokeDasharray="4 4"/>
+            <line x1={55} y1={20+(H-40)/2} x2={W-30} y2={20+(H-40)/2} stroke={B.borderLt} strokeWidth={1} strokeDasharray="4 4"/>
+            
+            {priorities.map((a,i) => {
+              const x=toX(a.detect), y=toY(a.impact), c=RC[a.urg] || B.mint, isH=hov===i;
+              return (
+                <g key={i} style={{cursor:"pointer"}} onMouseEnter={()=>setHov(i)} onMouseLeave={()=>setHov(null)}>
+                  <circle cx={x} cy={y} r={isH?17:13} fill={c+"33"} stroke={c} strokeWidth={isH?2:1}/>
+                  <text x={x} y={y+4} textAnchor="middle" fill={c} fontSize={8} fontWeight={700}>{a.ref}</text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+        <div style={{width:220, flexShrink:0}}>
+          {hov !== null && priorities[hov] ? (
+            <div style={{background:B.bg2, border:`1px solid ${RC[priorities[hov].urg] || B.mint}`, borderRadius:6, padding:"12px 14px", fontSize:11}}>
+              <div style={{color:RC[priorities[hov].urg] || B.mint, fontWeight:800, marginBottom:6}}>ID: {priorities[hov].ref}</div>
+              <div style={{color:B.text, marginBottom:6, lineHeight:1.4, fontWeight: 600}}>{priorities[hov].title}</div>
+              <div style={{color:B.muted, marginBottom:3}}>Domain: <span style={{color: B.text}}>{priorities[hov].domain}</span></div>
+              <div style={{color:B.muted, marginBottom:3}}>Impact: <span style={{color: B.text}}>{priorities[hov].impact}/10</span></div>
+              <div style={{color:B.muted}}>Detectability: <span style={{color: B.text}}>{priorities[hov].detect}/10</span></div>
+              <div style={{marginTop:8}}>
+                <span style={{background:(RC[priorities[hov].urg]||B.mint)+"22", border:`1px solid ${(RC[priorities[hov].urg]||B.mint)}55`, color:RC[priorities[hov].urg]||B.mint, borderRadius:3, fontSize:9, padding:"2px 7px", letterSpacing:"0.07em", fontWeight: 700}}>
+                  {["IMMEDIATE","ELEVATED","ROUTINE"][priorities[hov].urg] || "ROUTINE"}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div style={{background:B.bg2, border:`1px solid ${B.border}`, borderRadius:6, padding:"12px 14px", fontSize:10, color:B.muted}}>
+              Hover over a bubble to see vulnerability details.
+              <div style={{marginTop:12, display:"flex", flexDirection:"column", gap:6}}>
+                <div style={{color:B.red, fontWeight: 600}}>● IMMEDIATE: {priorities.filter(a=>a.urg===0).length} items</div>
+                <div style={{color:B.amber, fontWeight: 600}}>● ELEVATED: {priorities.filter(a=>a.urg===1).length} items</div>
+                <div style={{color:B.mint, fontWeight: 600}}>● ROUTINE: {priorities.filter(a=>a.urg===2).length} items</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+};
+
 // Gemini API Configuration
 const callGeminiAPI = async (prompt, systemInstruction, schema = null) => {
   const apiKey = ""; // Left empty for Canvas runtime injection
@@ -127,6 +194,10 @@ export default function DendraiRiskApp() {
   const [peers, setPeers] = useState('');
   const [stakeholder, setStakeholder] = useState('Audit / ERM');
   const [horizon, setHorizon] = useState('4-Quarter Forward');
+  const [startQuarter, setStartQuarter] = useState('Q1');
+  const [startYear, setStartYear] = useState('2024');
+  const [endQuarter, setEndQuarter] = useState('Q4');
+  const [endYear, setEndYear] = useState('2027');
   
   // App State
   const [loading, setLoading] = useState(false);
@@ -176,11 +247,12 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         },
         qoqData: {
           type: "ARRAY",
-          description: "8 quarters of historical Quarter-over-Quarter (QoQ) percentage growth for the target entity AND its peers.",
+          description: "8 quarters of historical AND 4 quarters of forecast Quarter-over-Quarter (QoQ) percentage growth for the target entity AND its peers.",
           items: {
             type: "OBJECT",
             properties: {
-              quarter: { type: "STRING", description: "e.g., Q1 23, Q2 23" },
+              quarter: { type: "STRING", description: "e.g., Q1 23, Q2 23... Q4 24" },
+              isHistorical: { type: "BOOLEAN", description: "True if historical, false if forecast" },
               metrics: {
                 type: "ARRAY",
                 items: {
@@ -257,6 +329,20 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
           }
         }
       };
+      baseSchema.properties.auditPriorities = {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            ref: { type: "STRING", description: "Short ID like A01" },
+            title: { type: "STRING" },
+            impact: { type: "NUMBER", description: "1-10 scale" },
+            detect: { type: "NUMBER", description: "1-10 scale (1=hard, 10=easy)" },
+            urg: { type: "NUMBER", description: "0=Immediate, 1=Elevated, 2=Routine" },
+            domain: { type: "STRING" }
+          }
+        }
+      };
       baseSchema.properties.auditVulnerabilities = {
         type: "ARRAY",
         items: { type: "STRING" }
@@ -310,6 +396,43 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
           }
         }
       };
+    } else if (targetStakeholder === 'Board / Audit Committee') {
+      baseSchema.properties.segmentData = {
+        type: "ARRAY",
+        description: "Revenue and margin breakdown by business segment",
+        items: {
+          type: "OBJECT",
+          properties: {
+            segmentName: { type: "STRING" },
+            revenue: { type: "NUMBER", description: "Revenue in millions" },
+            growth: { type: "NUMBER", description: "YoY growth percentage" },
+            margin: { type: "NUMBER", description: "Operating margin percentage" }
+          }
+        }
+      };
+      baseSchema.properties.geoData = {
+        type: "ARRAY",
+        description: "Geographic revenue concentration and risk",
+        items: {
+          type: "OBJECT",
+          properties: {
+            region: { type: "STRING" },
+            revenueShare: { type: "NUMBER", description: "Percentage of total revenue" },
+            riskExposure: { type: "STRING", description: "High, Medium, or Low" }
+          }
+        }
+      };
+      baseSchema.properties.strategicInitiatives = {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            initiative: { type: "STRING" },
+            status: { type: "STRING", description: "On Track, At Risk, or Delayed" },
+            impact: { type: "STRING", description: "Strategic impact or consequence" }
+          }
+        }
+      };
     }
     return baseSchema;
   };
@@ -357,6 +480,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
       - Peer Group: ${peers || 'Standard industry peers'}
       - Target Stakeholder: ${stakeholder}
       - Analysis Horizon: ${horizon}
+      - Timeframe: ${startQuarter} ${startYear} to ${endQuarter} ${endYear}
       Adhere STRICTLY to the stakeholder routing logic and output requirements defined in your system prompt.
     `;
 
@@ -372,13 +496,16 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
   const renderExecDashboard = (data) => {
     let qoqChartData = [];
     let qoqCompanies = [];
+    let qoqForwardStart = null;
+    
     if (data.qoqData) {
       qoqChartData = data.qoqData.map(q => {
-        const obj = { quarter: q.quarter };
+        const obj = { quarter: q.quarter, isHistorical: q.isHistorical };
         q.metrics.forEach(m => obj[m.company] = m.qoqPercent);
         return obj;
       });
       qoqCompanies = Array.from(new Set(data.qoqData.flatMap(q => q.metrics.map(m => m.company))));
+      qoqForwardStart = qoqChartData.find(d => d.isHistorical === false)?.quarter;
     }
     const lineColors = [B.mint, B.amber, B.sic, B.red, B.borderLt];
 
@@ -413,7 +540,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
 
         {qoqCompanies.length > 0 && (
           <Card>
-            <Lbl sub="Quarter-over-Quarter % Growth vs Peers">QoQ % GROWTH (TARGET VS PEERS)</Lbl>
+            <Lbl sub="Quarter-over-Quarter % Growth vs Peers (Historical & Forecast)">QoQ % GROWTH (TARGET VS PEERS)</Lbl>
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={qoqChartData} margin={{left:0, right:20, top:4}}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={B.dim}/>
@@ -434,6 +561,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                     activeDot={{r: 5}} 
                   />
                 ))}
+                {qoqForwardStart && <ReferenceLine x={qoqForwardStart} stroke={B.amber} strokeDasharray="3 3" label={{ position: 'top', value: 'Forecast', fill: B.amber, fontSize: 10 }} />}
               </LineChart>
             </ResponsiveContainer>
           </Card>
@@ -514,6 +642,8 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
           </div>
         </Card>
         
+        <AuditPriorityHeatmap priorities={data.auditPriorities} />
+
         <Card>
           <Lbl sub="Identified control and tracking gaps" color={B.red}>AUDIT VULNERABILITIES</Lbl>
           <div style={{display:"flex", flexDirection:"column", gap:8}}>
@@ -619,6 +749,70 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
             ))}
           </div>
         </div>
+      </div>
+    );
+  };
+
+  const renderBoardDashboard = (data) => {
+    if (!data.segmentData) return null;
+    return (
+      <div className="space-y-6 animate-fadeIn">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Card>
+            <Lbl sub="Revenue (Bar) and Operating Margin (Line) by Business Segment">SEGMENT PERFORMANCE</Lbl>
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={data.segmentData} margin={{left:-10, right:10, top:4}}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={B.dim}/>
+                <XAxis dataKey="segmentName" tick={{fill:B.text,fontSize:10,fontWeight:600}} stroke={B.border}/>
+                <YAxis yAxisId="left" orientation="left" tick={{fill:B.muted,fontSize:10}} stroke="none"/>
+                <YAxis yAxisId="right" orientation="right" tick={{fill:B.muted,fontSize:10}} stroke="none" tickFormatter={(v)=>`${v}%`}/>
+                <Tooltip content={<ChartTip />}/>
+                <Legend wrapperStyle={{fontSize:10, color:B.muted}}/>
+                <Bar yAxisId="left" dataKey="revenue" name="Revenue (M)" fill={B.text} radius={[3,3,0,0]} />
+                <Line yAxisId="right" type="monotone" dataKey="margin" name="Margin (%)" stroke={B.mint} strokeWidth={2.5} dot={{r: 4, fill:B.bg}} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </Card>
+
+          <Card>
+            <Lbl sub="Revenue concentration and geopolitical risk exposure">GEOGRAPHIC EXPOSURE</Lbl>
+            <ResponsiveContainer width="100%" height={235}>
+              <BarChart data={data.geoData} layout="vertical" margin={{left:0, right:30, top:4}}>
+                <CartesianGrid strokeDasharray="3 3" stroke={B.dim} horizontal={false}/>
+                <XAxis type="number" tick={{fill:B.muted, fontSize:10}} stroke={B.border} tickFormatter={(v)=>`${v}%`}/>
+                <YAxis type="category" dataKey="region" tick={{fill:B.text, fontSize:11, fontWeight:600}} stroke="none" width={80}/>
+                <Tooltip content={<ChartTip fmt={(v)=>`${v}%`}/>}/>
+                <Bar dataKey="revenueShare" name="Revenue Share %" radius={[0,3,3,0]}>
+                  {data.geoData?.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.riskExposure?.toLowerCase() === 'high' ? B.red : entry.riskExposure?.toLowerCase() === 'medium' ? B.amber : B.mint} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="flex justify-end gap-3 mt-2 text-[10px] text-gray-600">
+               <span className="flex items-center"><div className="w-2 h-2 rounded-full mr-1" style={{background:B.red}}></div> High Risk</span>
+               <span className="flex items-center"><div className="w-2 h-2 rounded-full mr-1" style={{background:B.amber}}></div> Med Risk</span>
+               <span className="flex items-center"><div className="w-2 h-2 rounded-full mr-1" style={{background:B.mint}}></div> Low Risk</span>
+            </div>
+          </Card>
+        </div>
+
+        <Card>
+          <Lbl sub="Board-level tracking of strategic pivots and transformations">STRATEGIC INITIATIVES</Lbl>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {data.strategicInitiatives?.map((init, i) => {
+              const isRisk = init.status.toLowerCase().includes('risk') || init.status.toLowerCase().includes('delayed');
+              const c = isRisk ? B.red : (init.status.toLowerCase().includes('track') ? B.mint : B.amber);
+              return (
+                <div key={i} style={{padding:"14px", background: B.bg2, borderTop:`3px solid ${c}`, borderRadius:"0 0 6px 6px"}}>
+                  <div style={{fontSize:10, color:c, textTransform:"uppercase", fontWeight:800, marginBottom:4}}>{init.status}</div>
+                  <div style={{fontSize:12, fontWeight:700, color:B.text, marginBottom:6}}>{init.initiative}</div>
+                  <div style={{fontSize:11, color:B.muted, lineHeight:1.4}}>{init.impact}</div>
+                </div>
+              )
+            })}
+          </div>
+        </Card>
       </div>
     );
   };
@@ -777,6 +971,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                   <option value="Audit / ERM">Audit / ERM</option>
                   <option value="CFO / Finance">CFO / Finance</option>
                   <option value="CIO / IT / CISO">CIO / IT / CISO</option>
+                  <option value="Board / Audit Committee">Board / Audit Committee</option>
                 </select>
               </div>
 
@@ -784,12 +979,49 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 <label style={{display:"block", fontSize:10, fontWeight:700, color:B.text, textTransform:"uppercase", marginBottom:4}}>3. Analysis Horizon</label>
                 <select 
                   value={horizon} onChange={(e) => setHorizon(e.target.value)}
-                  style={{width:"100%", background:B.bg, border:`1px solid ${B.borderLt}`, borderRadius:4, padding:"8px 12px", fontSize:12, outline:"none", color:B.text}}
+                  style={{width:"100%", background:B.bg, border:`1px solid ${B.borderLt}`, borderRadius:4, padding:"8px 12px", fontSize:12, outline:"none", color:B.text, marginBottom: 12}}
                 >
                   <option value="1-Quarter Forward">1-Quarter Forward (Tactical)</option>
                   <option value="4-Quarter Forward">4-Quarter Forward (Operational)</option>
                   <option value="3-Year Strategic">3-Year Strategic (Long-term)</option>
                 </select>
+
+                <div className="grid grid-cols-2 gap-3 mt-2">
+                  <div>
+                    <label style={{display:"block", fontSize:10, fontWeight:700, color:B.text, textTransform:"uppercase", marginBottom:4}}>Start</label>
+                    <div className="flex gap-2">
+                      <select 
+                        value={startQuarter} onChange={(e) => setStartQuarter(e.target.value)}
+                        style={{width:"50%", background:B.bg, border:`1px solid ${B.borderLt}`, borderRadius:4, padding:"8px 12px", fontSize:12, outline:"none", color:B.text}}
+                      >
+                        {['Q1','Q2','Q3','Q4'].map(q => <option key={q} value={q}>{q}</option>)}
+                      </select>
+                      <select 
+                        value={startYear} onChange={(e) => setStartYear(e.target.value)}
+                        style={{width:"50%", background:B.bg, border:`1px solid ${B.borderLt}`, borderRadius:4, padding:"8px 12px", fontSize:12, outline:"none", color:B.text}}
+                      >
+                        {[2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030].map(y => <option key={y} value={y}>{y}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{display:"block", fontSize:10, fontWeight:700, color:B.text, textTransform:"uppercase", marginBottom:4}}>End</label>
+                    <div className="flex gap-2">
+                      <select 
+                        value={endQuarter} onChange={(e) => setEndQuarter(e.target.value)}
+                        style={{width:"50%", background:B.bg, border:`1px solid ${B.borderLt}`, borderRadius:4, padding:"8px 12px", fontSize:12, outline:"none", color:B.text}}
+                      >
+                        {['Q1','Q2','Q3','Q4'].map(q => <option key={q} value={q}>{q}</option>)}
+                      </select>
+                      <select 
+                        value={endYear} onChange={(e) => setEndYear(e.target.value)}
+                        style={{width:"50%", background:B.bg, border:`1px solid ${B.borderLt}`, borderRadius:4, padding:"8px 12px", fontSize:12, outline:"none", color:B.text}}
+                      >
+                        {[2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030].map(y => <option key={y} value={y}>{y}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {error && (
@@ -850,6 +1082,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                   {stakeholder === 'Audit / ERM' && renderAuditDashboard(reportData)}
                   {stakeholder === 'CFO / Finance' && renderCFODashboard(reportData)}
                   {stakeholder === 'CIO / IT / CISO' && renderCIODashboard(reportData)}
+                  {stakeholder === 'Board / Audit Committee' && renderBoardDashboard(reportData)}
                 </>
               )}
 
