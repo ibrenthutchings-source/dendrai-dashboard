@@ -449,6 +449,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
         setIndustry(result[0]);
       } else setError("Could not detect industries. Please select manually.");
     } catch (err) {
+      console.error('Auto-detect industry error:', err);
       setError("Failed to auto-detect industry.");
     } finally { setDetectingIndustry(false); }
   };
@@ -462,6 +463,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
       const result = await callGeminiAPI(prompt, SYSTEM_PROMPT);
       setPeers(result.replace(/"/g, '').trim());
     } catch (err) {
+      console.error('Auto-populate peers error:', err);
       setError("Failed to auto-populate peers. Please enter manually.");
     } finally { setPopulatingPeers(false); }
   };
@@ -488,6 +490,7 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
       const data = await callGeminiAPI(userPrompt, SYSTEM_PROMPT, getSchema(stakeholder));
       setReportData(data);
     } catch (err) {
+      console.error('Generate report error:', err);
       setError("Synthesis failed. Ensure API quota is available or try adjusting parameters.");
     } finally { setLoading(false); }
   };
