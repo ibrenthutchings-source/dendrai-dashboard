@@ -88,6 +88,13 @@ const RagCell = ({val}) => (
   </div>
 );
 
+const velocityIcon = (velocity) => {
+  const norm = (velocity || '').toLowerCase();
+  if (norm.includes('increase') || norm.includes('up') || norm.includes('acceler')) return <TrendingUp size={14} color={B.red} />;
+  if (norm.includes('decrease') || norm.includes('down') || norm.includes('slow')) return <TrendingDown size={14} color={B.mint} />;
+  return <Minus size={14} color={B.amber} />;
+};
+
 const AuditPriorityHeatmap = ({ priorities }) => {
   const [hov, setHov] = useState(null);
   if (!priorities || priorities.length === 0) return null;
@@ -272,6 +279,17 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                   }
                 }
               }
+            }
+          }
+        },
+        riskVelocity: {
+          type: "ARRAY",
+          description: "Quarterly risk momentum direction for the target entity.",
+          items: {
+            type: "OBJECT",
+            properties: {
+              quarter: { type: "STRING" },
+              velocity: { type: "STRING", description: "Increasing, Decreasing, or Stable" }
             }
           }
         },
@@ -656,7 +674,46 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
             </table>
           </div>
         </Card>
-        
+
+        {(() => {
+          const deriveVelocityFromQoq = () => {
+            if (!data.qoqData?.length) return [];
+            const entityKey = entity.toLowerCase?.();
+            const points = data.qoqData
+              .map((q) => ({
+                quarter: q.quarter,
+                value: q.metrics?.find((m) => m.company?.toLowerCase?.() === entityKey)?.qoqPercent
+              }))
+              .filter((v) => v.value != null);
+            return points.map((item, idx) => {
+              if (idx === 0) return { quarter: item.quarter, velocity: 'Stable' };
+              const delta = item.value - points[idx - 1].value;
+              if (Math.abs(delta) < 0.5) return { quarter: item.quarter, velocity: 'Stable' };
+              return { quarter: item.quarter, velocity: delta > 0 ? 'Increasing' : 'Decreasing' };
+            });
+          };
+
+          const velocityData = data.riskVelocity?.length ? data.riskVelocity : deriveVelocityFromQoq();
+          return velocityData.length > 0 ? (
+            <Card>
+              <Lbl sub="Quarterly momentum of risk status" color={B.text}>RISK VELOCITY BY QUARTER</Lbl>
+              <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:12, marginTop:8}}>
+                {velocityData.map((item, idx) => (
+                  <div key={idx} style={{background:B.bg2, border:`1px solid ${B.borderLt}`, borderRadius:8, padding:"12px 14px", display:"flex", alignItems:"center", gap:10}}>
+                    <div style={{width:30, height:30, borderRadius:8, background:B.card, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
+                      {velocityIcon(item.velocity)}
+                    </div>
+                    <div>
+                      <div style={{fontSize:10, color:B.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4}}>{item.quarter}</div>
+                      <div style={{fontSize:13, fontWeight:800, color:B.text}}>{item.velocity}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ) : null;
+        })()}
+
         <AuditPriorityHeatmap priorities={data.auditPriorities} />
 
         <Card>
