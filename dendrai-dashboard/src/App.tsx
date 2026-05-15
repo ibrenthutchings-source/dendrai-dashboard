@@ -152,7 +152,7 @@ const AuditPriorityHeatmap = ({ priorities }: any) => {
 const callGeminiAPI = async (prompt: string, systemInstruction: string, schema: any = null) => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error('Missing VITE_GEMINI_API_KEY');
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-2.5-flash-preview-09-2025:generateText?key=${apiKey}`;
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const payload: any = {
     contents: [{ parts: [{ text: prompt }] }],
