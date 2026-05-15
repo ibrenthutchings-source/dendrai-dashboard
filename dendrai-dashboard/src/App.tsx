@@ -150,8 +150,9 @@ const AuditPriorityHeatmap = ({ priorities }: any) => {
 
 // Gemini API Configuration
 const callGeminiAPI = async (prompt: string, systemInstruction: string, schema: any = null) => {
-  const apiKey = ""; // Left empty for Canvas runtime injection
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('Missing VITE_GEMINI_API_KEY');
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-2.5-flash-preview-09-2025:generateText?key=${apiKey}`;
 
   const payload: any = {
     contents: [{ parts: [{ text: prompt }] }],
