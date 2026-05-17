@@ -15,7 +15,7 @@ import {
 // ═══════════════════════ BRAND & THEME ══════════════════════════════
 const B = {
   mint:"#2BCC99", mintAccent:"#3DFFC0", ivory:"#E8F5F0",
-  bg:"#2BCC99", bg2:"#DCEFE7", card:"#FFFFFF",
+  bg:"#E8F5F0", bg2:"#DCEFE7", card:"#FFFFFF",
   border:"#BFD9CF", borderLt:"#A6C9BB",
   text:"#1A1F1D", textLt:"#2E3733", muted:"#5A6B65", dim:"#C8DDD2",
   red:"#C8412E", redBg:"#FBE7E3",
