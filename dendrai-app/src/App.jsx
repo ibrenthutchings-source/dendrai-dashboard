@@ -312,8 +312,11 @@ const fetchEnterpriseGrounding = async (entity) => {
 
 const callGeminiAPI = async (prompt, systemInstruction, schema = null) => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const proxyUrl = import.meta.env.VITE_GEMINI_PROXY_URL;
   if (!apiKey) throw new Error('Missing VITE_GEMINI_API_KEY');
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+  const directUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const apiUrl = proxyUrl ? `${proxyUrl}?${encodeURIComponent(directUrl)}` : directUrl;
 
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
@@ -327,16 +330,18 @@ const callGeminiAPI = async (prompt, systemInstruction, schema = null) => {
     payload.generationConfig.maxOutputTokens = 8192;
   }
 
+  const requestOptions = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  };
+
   const retries = 3;
   const delays = [1000, 2000, 4000];
 
   for (let i = 0; i <= retries; i++) {
     try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const response = await fetch(apiUrl, requestOptions);
       if (!response.ok) {
         if (response.status === 429 && i < retries) { await new Promise(res => setTimeout(res, delays[i])); continue; }
         throw new Error(`API Error: ${response.status} - ${response.statusText}`);
@@ -367,6 +372,9 @@ const callGeminiAPI = async (prompt, systemInstruction, schema = null) => {
       }
       return textResponse;
     } catch (error) {
+      if (!proxyUrl && (error.message.includes('Failed to fetch') || error.message.includes('CORS') || error.message.includes('NetworkError'))) {
+        console.warn('Gemini request blocked by browser CORS. Use a server-side proxy or set VITE_GEMINI_PROXY_URL to avoid direct browser calls.');
+      }
       if (i === retries || error.message.includes("API Key") || error.message.includes("parse AI response")) throw error;
       await new Promise(res => setTimeout(res, delays[i]));
     }
