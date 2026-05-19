@@ -164,8 +164,9 @@ const AuditPriorityHeatmap = ({ priorities }) => {
 
 // Gemini API Configuration
 const callGeminiAPI = async (prompt, systemInstruction, schema = null) => {
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('Missing Gemini API key. Set VITE_GEMINI_API_KEY in .env.');
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
     systemInstruction: { parts: [{ text: systemInstruction }] }
@@ -184,7 +185,10 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
     body: JSON.stringify(payload)
   });
 
-  if (!response.ok) throw new Error(`API Error: ${response.status}`);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`API Error: ${response.status} ${text}`);
+  }
 
   const result = await response.json();
   const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text || '';

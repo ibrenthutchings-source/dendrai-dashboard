@@ -151,7 +151,7 @@ const AuditPriorityHeatmap = ({ priorities }: any) => {
 // Gemini API Configuration
 const callGeminiAPI = async (prompt: string, systemInstruction: string, schema: any = null) => {
   const apiKey = ""; // Left empty for Canvas runtime injection
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const payload: any = {
     contents: [{ parts: [{ text: prompt }] }],
@@ -171,7 +171,10 @@ const callGeminiAPI = async (prompt: string, systemInstruction: string, schema: 
     body: JSON.stringify(payload)
   });
 
-  if (!response.ok) throw new Error(`API Error: ${response.status}`);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`API Error: ${response.status} ${text}`);
+  }
 
   const result = await response.json();
   const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
