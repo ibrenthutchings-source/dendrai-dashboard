@@ -1,0 +1,112 @@
+{
+  "fetched_at": "2026-05-05",
+  "source": "Federal Reserve Bank of St. Louis (FRED)",
+  "period": "Q1 2021 – Q1 2026 (last 21 quarters)",
+  "frequency": "Quarterly",
+  "series": {
+    "TOTALSA": {
+      "description": "Total Vehicle Sales (Millions of Units, Seasonally Adjusted Annual Rate)",
+      "observations": [
+        {"date": "2021-01-01", "value": 17.105},
+        {"date": "2021-04-01", "value": 17.383},
+        {"date": "2021-07-01", "value": 13.931},
+        {"date": "2021-10-01", "value": 13.216},
+        {"date": "2022-01-01", "value": 14.435},
+        {"date": "2022-04-01", "value": 13.909},
+        {"date": "2022-07-01", "value": 14.058},
+        {"date": "2022-10-01", "value": 14.519},
+        {"date": "2023-01-01", "value": 15.583},
+        {"date": "2023-04-01", "value": 16.316},
+        {"date": "2023-07-01", "value": 16.200},
+        {"date": "2023-10-01", "value": 15.947},
+        {"date": "2024-01-01", "value": 16.008},
+        {"date": "2024-04-01", "value": 16.203},
+        {"date": "2024-07-01", "value": 16.219},
+        {"date": "2024-10-01", "value": 16.901},
+        {"date": "2025-01-01", "value": 16.906},
+        {"date": "2025-04-01", "value": 16.636},
+        {"date": "2025-07-01", "value": 16.961},
+        {"date": "2025-10-01", "value": 16.084},
+        {"date": "2026-01-01", "value": 15.997}
+      ]
+    },
+    "PCU33443344": {
+      "description": "Producer Price Index by Industry: Semiconductor and Other Electronic Component Manufacturing",
+      "observations": [
+        {"date": "2021-01-01", "value": 54.167},
+        {"date": "2021-04-01", "value": 54.467},
+        {"date": "2021-07-01", "value": 54.730},
+        {"date": "2021-10-01", "value": 55.206},
+        {"date": "2022-01-01", "value": 56.476},
+        {"date": "2022-04-01", "value": 56.676},
+        {"date": "2022-07-01", "value": 56.753},
+        {"date": "2022-10-01", "value": 57.504},
+        {"date": "2023-01-01", "value": 57.250},
+        {"date": "2023-04-01", "value": 56.818},
+        {"date": "2023-07-01", "value": 57.135},
+        {"date": "2023-10-01", "value": 57.500},
+        {"date": "2024-01-01", "value": 58.004},
+        {"date": "2024-04-01", "value": 58.164},
+        {"date": "2024-07-01", "value": 57.490},
+        {"date": "2024-10-01", "value": 58.578},
+        {"date": "2025-01-01", "value": 58.245},
+        {"date": "2025-04-01", "value": 58.075},
+        {"date": "2025-07-01", "value": 58.982},
+        {"date": "2025-10-01", "value": 60.809},
+        {"date": "2026-01-01", "value": 66.136}
+      ]
+    },
+    "MCUMFN": {
+      "description": "Capacity Utilization: Manufacturing (SIC) (Percent of Capacity)",
+      "observations": [
+        {"date": "2021-01-01", "value": 75.8681},
+        {"date": "2021-04-01", "value": 77.2331},
+        {"date": "2021-07-01", "value": 77.6708},
+        {"date": "2021-10-01", "value": 78.2532},
+        {"date": "2022-01-01", "value": 77.9939},
+        {"date": "2022-04-01", "value": 77.9305},
+        {"date": "2022-07-01", "value": 77.5358},
+        {"date": "2022-10-01", "value": 76.7950},
+        {"date": "2023-01-01", "value": 76.7969},
+        {"date": "2023-04-01", "value": 76.8351},
+        {"date": "2023-07-01", "value": 76.6115},
+        {"date": "2023-10-01", "value": 76.3273},
+        {"date": "2024-01-01", "value": 75.8019},
+        {"date": "2024-04-01", "value": 75.8677},
+        {"date": "2024-07-01", "value": 75.2595},
+        {"date": "2024-10-01", "value": 74.6733},
+        {"date": "2025-01-01", "value": 75.1934},
+        {"date": "2025-04-01", "value": 75.4994},
+        {"date": "2025-07-01", "value": 75.7880},
+        {"date": "2025-10-01", "value": 74.8829},
+        {"date": "2026-01-01", "value": 75.2733}
+      ]
+    },
+    "DAUPSA": {
+      "description": "Domestic Auto Unit Sales (Thousands of Units, Seasonally Adjusted Annual Rate)",
+      "observations": [
+        {"date": "2021-01-01", "value": 148.895},
+        {"date": "2021-04-01", "value": 128.310},
+        {"date": "2021-07-01", "value": 114.177},
+        {"date": "2021-10-01", "value": 134.370},
+        {"date": "2022-01-01", "value": 130.463},
+        {"date": "2022-04-01", "value": 140.645},
+        {"date": "2022-07-01", "value": 149.226},
+        {"date": "2022-10-01", "value": 143.815},
+        {"date": "2023-01-01", "value": 144.943},
+        {"date": "2023-04-01", "value": 146.498},
+        {"date": "2023-07-01", "value": 147.815},
+        {"date": "2023-10-01", "value": 143.300},
+        {"date": "2024-01-01", "value": 129.595},
+        {"date": "2024-04-01", "value": 116.829},
+        {"date": "2024-07-01", "value": 115.133},
+        {"date": "2024-10-01", "value": 112.839},
+        {"date": "2025-01-01", "value": 107.313},
+        {"date": "2025-04-01", "value": 112.315},
+        {"date": "2025-07-01", "value": 107.067},
+        {"date": "2025-10-01", "value": 98.996},
+        {"date": "2026-01-01", "value": 106.367}
+      ]
+    }
+  }
+}
