@@ -32,11 +32,22 @@ function App() {
   const [velocity, setVelocity] = useState(3);
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
 
+  // ---- Data connection config (localStorage-persisted) ----
+  const [dataConfig, setDataConfig] = useState(() => {
+    try {
+      const raw = localStorage.getItem('dendrai_data_config');
+      return raw ? JSON.parse(raw) : { fredApiKey: '', tickers: [], fredSeriesIds: [] };
+    } catch { return { fredApiKey: '', tickers: [], fredSeriesIds: [] }; }
+  });
+  const [configModalOpen, setConfigModalOpen] = useState(false);
+
   // ---- Live mode + EDGAR/FRED data ----
   const [liveMode, setLiveMode] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [livefacts, setLivefacts] = useState(null);
   const [fredLive, setFredLive] = useState(null);
+  const [rawEdgarFacts, setRawEdgarFacts] = useState(null);    // { ticker: facts }
+  const [fredApiResults, setFredApiResults] = useState(null);  // { seriesId: { observations } }
 
   // ---- Pipeline run state ----
   const [running, setRunning] = useState(false);
@@ -103,26 +114,58 @@ function App() {
   };
 
   // ---- Live data fetch helpers ----
-  async function tryLiveFetch() {
-    setLiveStatus("Fetching EDGAR companyfacts…");
+  async function tryLiveFetch(overrideConfig) {
+    const cfg_data = overrideConfig || dataConfig;
+    const allTickers = [cfg.ticker, ...(cfg_data.tickers || [])].filter(Boolean);
+    const seriesIds  = cfg_data.fredSeriesIds?.length
+      ? cfg_data.fredSeriesIds
+      : ['IPG3344S', 'CAPUTLG3311A2S', 'INDPRO', 'FEDFUNDS', 'T10Y2Y', 'TOTALSA'];
+
+    // Fetch EDGAR for target + peers
+    setLiveStatus(`Fetching EDGAR for ${allTickers.join(', ')}…`);
     try {
-      const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
-      const extracted = LIVE.extractFinancials(facts);
-      setLivefacts(extracted);
-      setLiveStatus(`EDGAR OK · ${extracted.entity} · CIK ${extracted.cik}`);
-      log(`EDGAR live fetch OK · ${cfg.ticker}`);
+      const factsMap = await LIVE.fetchEdgarMultiple(allTickers, msg => setLiveStatus(msg));
+      setRawEdgarFacts(factsMap);
+      const targetFacts = factsMap[cfg.ticker];
+      if (targetFacts && !targetFacts.error) {
+        const extracted = LIVE.extractFinancials(targetFacts);
+        setLivefacts(extracted);
+        setLiveStatus(`EDGAR OK · ${extracted.entity} · ${allTickers.length} tickers`);
+        log(`EDGAR live fetch OK · ${allTickers.join(', ')}`);
+      } else {
+        setLiveStatus(`EDGAR fetch failed for ${cfg.ticker} · falling back to mock`);
+        log(`EDGAR live fetch failed: ${targetFacts?.error || 'unknown'}`);
+      }
     } catch (e) {
       setLivefacts(null);
-      setLiveStatus(`EDGAR fetch failed: ${e.message} · falling back to mock`);
+      setRawEdgarFacts(null);
+      setLiveStatus(`EDGAR fetch failed: ${e.message}`);
       log(`EDGAR live fetch failed: ${e.message}`);
     }
-    try {
-      const fred = await LIVE.loadFred();
-      setFredLive(fred.series);
-      log(`FRED snapshot loaded · ${Object.keys(fred.series).length} series`);
-    } catch (e) {
-      setFredLive(null);
-      log(`FRED snapshot failed: ${e.message}`);
+
+    // Fetch FRED (live API if key set, else bundled snapshot)
+    if (cfg_data.fredApiKey) {
+      try {
+        setLiveStatus(prev => prev + ' · fetching FRED…');
+        const fredRes = await LIVE.fetchFredMultiple(cfg_data.fredApiKey, seriesIds, '2015-01-01',
+          msg => setLiveStatus(msg));
+        setFredApiResults(fredRes);
+        setFredLive(null);
+        log(`FRED API loaded · ${Object.keys(fredRes).length} series`);
+      } catch (e) {
+        setFredApiResults(null);
+        log(`FRED API failed: ${e.message}`);
+      }
+    } else {
+      try {
+        const fred = await LIVE.loadFred();
+        setFredLive(fred.series);
+        setFredApiResults(null);
+        log(`FRED snapshot loaded · ${Object.keys(fred.series).length} series`);
+      } catch (e) {
+        setFredLive(null);
+        log(`FRED snapshot failed: ${e.message}`);
+      }
     }
   }
 
@@ -220,6 +263,8 @@ function App() {
     setOpenStages(new Set(["s1"]));
     setLivefacts(null);
     setFredLive(null);
+    setRawEdgarFacts(null);
+    setFredApiResults(null);
     setLiveStatus("");
   }
 
@@ -343,9 +388,9 @@ function App() {
           onOpenReport={() => setReportOpen(true)}
           onOpenPersona={() => {setActiveRailTab("pers");}}
           onOpenConfig={() => {
-            // Surface the tweaks panel — same affordance as the toolbar toggle.
             window.postMessage({type: '__activate_edit_mode'}, '*');
           }}
+          onOpenDataConfig={() => setConfigModalOpen(true)}
           liveMode={liveMode} setLiveMode={setLiveMode}
           liveStatus={liveStatus} />
         
@@ -406,8 +451,12 @@ function App() {
             <ForecastsPanel
               data={hasRun ? MOCK.forecasts : null}
               liveMode={liveMode}
-              fredSeries={fredLive} />
-            
+              fredSeries={fredLive}
+              rawEdgarFacts={rawEdgarFacts}
+              fredApiResults={fredApiResults}
+              cfg={cfg}
+              onOpenDataConfig={() => setConfigModalOpen(true)} />
+
           </div>
 
           <div className={"panel" + (activeMainTab === "scen" ? " active" : "")}>
@@ -433,6 +482,13 @@ function App() {
 
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
+      <DataConfigModal
+        open={configModalOpen}
+        onClose={() => setConfigModalOpen(false)}
+        dataConfig={dataConfig}
+        setDataConfig={setDataConfig}
+        cfg={cfg}
+        onFetchNow={(config) => { if (liveMode) tryLiveFetch(config); }} />
 
       <DendraiTweaks tweaks={tweaks} setTweak={setTweak}
         hitl={hitl} setHitl={setHitl}

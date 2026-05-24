@@ -714,6 +714,20 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 }
 .scen-pill.red { background: var(--red-soft); color: var(--red-ink); border-color: color-mix(in oklch, var(--red) 30%, transparent); }
 
+/* Generic Pill component */
+.pill {
+  display: inline-flex; align-items: center;
+  font-family: "Geist Mono", monospace;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+.pill-ok   { background: var(--green-soft); color: var(--green-ink); border-color: color-mix(in oklch, var(--green) 30%, transparent); }
+.pill-warn { background: var(--amber-soft); color: var(--amber-ink); border-color: color-mix(in oklch, var(--amber) 30%, transparent); }
+
 .scen-list { font-size: 11.5px; color: var(--ink-2); }
 .scen-list li { padding: 3px 0; padding-left: 14px; position: relative; line-height: 1.45; list-style: none; }
 .scen-list li::before { content: ""; position: absolute; left: 2px; top: 9px; width: 5px; height: 5px; border-radius: 50%; background: var(--ink-4); }
@@ -931,3 +945,87 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 /* utility margin */
 .mt-8 { margin-top: 8px; } .mt-12 { margin-top: 12px; } .mt-16 { margin-top: 16px; }
 .mb-8 { margin-bottom: 8px; } .mb-12 { margin-bottom: 12px; } .mb-16 { margin-bottom: 16px; }
+
+/* ── Data Config Modal ──────────────────────────────────────── */
+.dc-modal { width: 680px; max-width: 95vw; max-height: 88vh; display: flex; flex-direction: column; }
+.dc-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 20px; }
+.dc-section { display: flex; flex-direction: column; gap: 7px; }
+.dc-section-title { font-size: 12px; font-weight: 600; color: var(--ink); letter-spacing: .01em; }
+.dc-section-sub   { font-size: 11px; color: var(--ink-3); line-height: 1.5; }
+.dc-key-row  { display: flex; gap: 8px; }
+.dc-key-input { flex: 1; }
+.dc-key-ok   { font-size: 11px; color: var(--green-ink); padding: 4px 8px; background: var(--green-soft);
+  border-radius: 6px; }
+.dc-key-err  { font-size: 11px; color: var(--red-ink);   padding: 4px 8px; background: var(--red-soft);
+  border-radius: 6px; }
+.dc-hint     { font-size: 10.5px; color: var(--ink-3); line-height: 1.5; font-style: italic; }
+
+.dc-ticker-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.dc-ticker { display: inline-flex; align-items: center; padding: 4px 11px;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2);
+  font-size: 12px; font-family: "Geist Mono", monospace; font-weight: 500;
+  color: var(--ink-2); cursor: pointer; user-select: none; transition: all .12s; }
+.dc-ticker:hover { border-color: var(--acc); color: var(--ink); }
+.dc-ticker.on    { background: var(--acc-soft); border-color: var(--acc); color: var(--ink); }
+
+.dc-cat { display: flex; flex-direction: column; gap: 6px; }
+.dc-cat-label { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-3); margin-top: 4px; }
+.dc-series-grid  { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 5px; }
+.dc-series { display: flex; flex-direction: column; gap: 1px;
+  padding: 6px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--surface-2); cursor: pointer; user-select: none; transition: all .12s; }
+.dc-series:hover { border-color: var(--acc); }
+.dc-series.on    { background: var(--acc-soft); border-color: var(--acc); }
+.dc-series-name  { font-size: 11.5px; color: var(--ink-2); font-weight: 500; }
+.dc-series.on .dc-series-name { color: var(--ink); }
+.dc-series-id    { font-size: 9.5px; color: var(--ink-3); }
+
+/* ── KPI tabs + run models ──────────────────────────────────── */
+.kpi-tabs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+  margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.kpi-tab  { padding: 4px 12px; border-radius: 6px; font-size: 11.5px;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--ink-2);
+  cursor: pointer; transition: all .12s; }
+.kpi-tab:hover  { border-color: var(--acc); color: var(--ink); }
+.kpi-tab.active { background: var(--acc-soft); border-color: var(--acc); color: var(--ink); font-weight: 500; }
+.live-fc-hint { font-size: 12px; color: var(--ink-3); padding: 16px 0; line-height: 1.6; }
+.live-fc-empty { margin: 8px 0 16px; }
+
+/* ── Model comparison chart legend ─────────────────────────── */
+.mc-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+.mc-legend-item { display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--ink-2); }
+.mc-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Backtest metrics table ─────────────────────────────────── */
+.bt-scroll { overflow-x: auto; }
+.bt-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.bt-table th { padding: 5px 10px; text-align: right; font-size: 10px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3);
+  border-bottom: 1px solid var(--line); white-space: nowrap; }
+.bt-table th:first-child { text-align: left; }
+.bt-table td { padding: 7px 10px; text-align: right; color: var(--ink-2);
+  font-family: "Geist Mono", monospace; font-size: 11px; border-bottom: 1px solid var(--line); }
+.bt-table td:first-child { text-align: left; font-family: "Geist", sans-serif;
+  font-size: 12px; color: var(--ink); white-space: nowrap; }
+.bt-table tr:last-child td { border-bottom: none; }
+.bt-table tr:hover td { background: var(--surface-2); }
+.bt-winner { background: var(--green-soft) !important; color: var(--green-ink) !important;
+  font-weight: 600; }
+.bt-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 7px; flex-shrink: 0; vertical-align: -1px; }
+
+/* ── Leading indicator heatmap ──────────────────────────────── */
+.li-wrap { overflow-x: auto; }
+.li-grid { display: grid; gap: 2px; width: 100%; }
+.li-hdr-cell { font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--ink-3); padding: 4px 6px; }
+.li-label { font-size: 11px; color: var(--ink-2); padding: 5px 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; }
+.li-cell { font-family: "Geist Mono", monospace; font-size: 10.5px;
+  padding: 5px 0; text-align: center; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s; }
+.li-legend { font-size: 10px; color: var(--ink-3); margin-top: 8px; }
