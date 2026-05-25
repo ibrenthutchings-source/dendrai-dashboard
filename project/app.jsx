@@ -60,6 +60,9 @@ function App() {
   // Keep persona pick in sync with tweaks
   useEffect(() => {setSelectedPersona(tweaks.persona);}, [tweaks.persona]);
 
+  // ---- RSS ingestion signals ----
+  const [rssSignals, setRssSignals] = useState([]);
+
   // ---- CEM state ----
   const [events, setEvents] = useState([]);
   const [cemFilter, setCemFilter] = useState("all");
@@ -324,7 +327,7 @@ function App() {
     }
 
     // STAGE 1 — Signal Intake
-    const sigsList = MOCK.signals.filter((s) =>
+    const mockSigs = MOCK.signals.filter((s) =>
     s.src === "EDGAR 10-K" && signalSet.has("edgar") ||
     s.src === "Peer 10-K" && signalSet.has("peers") ||
     s.src === "Industry RSS" && signalSet.has("industry") ||
@@ -332,6 +335,9 @@ function App() {
     s.src === "FRED Macro" && signalSet.has("fred") ||
     s.src === "Incident" && signalSet.has("incidents")
     );
+    // Merge graded RSS signals (from the RSS panel) with mock signals
+    const rssSigsFiltered = signalSet.has("industry") ? rssSignals : [];
+    const sigsList = [...mockSigs, ...rssSigsFiltered];
     await runStage("s1", { signals: sigsList, sourceCount: signalSet.size }, 1200);
 
     // STAGE 2 — Risk assessment
@@ -486,7 +492,8 @@ function App() {
   // ---- Sub-tab counts ----
   const mainTabs = [
   { id: "pipe", l: "Pipeline" },
-  { id: "cem", l: "Control Monitor", count: events.length, pulse: unreadCEM > 0 },
+  { id: "rss",  l: "RSS Signals" },
+  { id: "cem",  l: "Control Monitor", count: events.length, pulse: unreadCEM > 0 },
   { id: "flow", l: "Risk Flow" },
   { id: "fcst", l: "Forecasts" },
   { id: "scen", l: "Scenarios" }];
@@ -569,6 +576,15 @@ function App() {
               onApproveAllObjectives={approveAllRemainingObjectives}
               onSignoffObjective={signoffObjective} />
             
+          </div>
+
+          <div className={"panel" + (activeMainTab === "rss" ? " active" : "")}>
+            <RSSPanel
+              onSignalsReady={(sigs) => {
+                setRssSignals(sigs);
+                log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
+              }}
+            />
           </div>
 
           <div className={"panel" + (activeMainTab === "cem" ? " active" : "")}>
