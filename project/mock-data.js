@@ -236,10 +236,10 @@ window.MOCK = (function () {
       { id: "DTWEXBGS",         name: "USD Broad Index",        r: -0.68, lead: 2, dir: "NEUTRAL",         reading: 121.4 },
     ],
     sentiment: {
-      score: -18,
-      trend: "DETERIORATING",
-      hedge_ratio_trend: "+18% over 4Q",
-      latest_quarter: "Q4-24",
+      score: 6,
+      trend: "IMPROVING",
+      hedge_ratio_trend: "-19pp over 4Q",
+      latest_quarter: "Q1-26",
       quarterly: [
         { q: "Q3-23", score: 12,  hedge: 0.08 },
         { q: "Q4-23", score: 6,   hedge: 0.10 },
@@ -247,6 +247,11 @@ window.MOCK = (function () {
         { q: "Q2-24", score: -8,  hedge: 0.18 },
         { q: "Q3-24", score: -14, hedge: 0.22 },
         { q: "Q4-24", score: -18, hedge: 0.26 },
+        { q: "Q1-25", score: -20, hedge: 0.28 },
+        { q: "Q2-25", score: -16, hedge: 0.24 },
+        { q: "Q3-25", score: -8,  hedge: 0.18 },
+        { q: "Q4-25", score: -2,  hedge: 0.12 },
+        { q: "Q1-26", score: 6,   hedge: 0.09 },
       ],
     },
     mscore: {

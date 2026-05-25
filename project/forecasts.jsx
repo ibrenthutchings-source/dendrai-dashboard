@@ -232,16 +232,16 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
         <div className="head">
           <div>
             <div className="ttl">Earnings call sentiment trend</div>
-            <div className="sub">NLP sentiment + hedge ratio over last 6 quarters</div>
+            <div className="sub">NLP sentiment + hedge ratio · Q3-23 → Q1-26</div>
           </div>
           <div style={{textAlign: "right"}}>
-            <div className="big-num">{data.sentiment.score}</div>
-            <div className="delta dn">DETERIORATING · hedge ratio {data.sentiment.hedge_ratio_trend}</div>
+            <div className="big-num">{data.sentiment.score > 0 ? "+" : ""}{data.sentiment.score}</div>
+            <div className={`delta ${data.sentiment.trend === "IMPROVING" ? "up" : "dn"}`}>{data.sentiment.trend} · hedge ratio {data.sentiment.hedge_ratio_trend}</div>
           </div>
         </div>
-        <div style={{display:"flex", alignItems:"flex-end", gap: 4, height: 60, padding: "8px 0", marginTop: 6}}>
+        <div style={{display:"flex", alignItems:"flex-end", gap: 3, height: 60, padding: "8px 0", marginTop: 6}}>
           {(data.sentiment.quarterly || []).map((d, i) => {
-            const h = Math.abs(d.score) / 20 * 50 + 4;
+            const h = Math.abs(d.score) / 25 * 50 + 4;
             const negative = d.score < 0;
             return (
               <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4}}>
@@ -255,11 +255,11 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
           <div className="sent-comm-row">
             <div className="sent-comm-cell">
               <div className="sent-comm-lbl">What changed</div>
-              <div className="sent-comm-v">Net sentiment dropped <b style={{fontWeight:500,color:"var(--red-ink)"}}>30 points</b> over 6 quarters (Q3-23: +12 → Q4-24: −18). Inflection at Q1-24 coincides with the BIS October rule extension and first signs of channel destock.</div>
+              <div className="sent-comm-v">Net sentiment fell <b style={{fontWeight:500,color:"var(--red-ink)"}}>32 points</b> over 6 quarters (Q3-23: +12 → Q1-25: −20), bottomed in Q1-25, then recovered <b style={{fontWeight:500,color:"var(--green)"}}>26 points</b> to +6 in Q1-26. Inflection at Q2-25 coincides with inventory destock resolution and BIS rule clarity.</div>
             </div>
             <div className="sent-comm-cell">
               <div className="sent-comm-lbl">Hedge ratio signal</div>
-              <div className="sent-comm-v">Hedge-word ratio is up <b style={{fontWeight:500}}>{data.sentiment.hedge_ratio_trend}</b> over 4Q. Management is leaning on <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"visibility limited"</span>, <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"subject to macro"</span>, <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"timing uncertainty"</span> — historically a 2Q leading indicator of guide-down.</div>
+              <div className="sent-comm-v">Hedge-word ratio peaked at 28% in Q1-25 and has declined <b style={{fontWeight:500}}>{data.sentiment.hedge_ratio_trend}</b>. Language has shifted from <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"visibility limited"</span> toward <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"recovery on track"</span> — a 1–2Q leading indicator of revenue beats.</div>
             </div>
           </div>
           <div className="sent-comm-row">
