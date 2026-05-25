@@ -5,7 +5,7 @@
    + selected-risk detail card with controls + MAPs
    ============================================================ */
 
-function FlowPanel({ risks, maps, flowMeta, selectedId, setSelectedId, liveMode }) {
+function FlowPanel({ risks, maps, flowMeta, selectedId, setSelectedId, liveMode, rssSignals, fredData }) {
   const [hoverId, setHoverId] = React.useState(null);
   const activeId = hoverId || selectedId;
 
@@ -38,6 +38,8 @@ function FlowPanel({ risks, maps, flowMeta, selectedId, setSelectedId, liveMode 
           onSelect={setSelectedId}
           hoverId={hoverId}
           onHover={setHoverId}
+          rssSignals={rssSignals}
+          fredData={fredData}
         />
         <div className="flow-legend">
           <div className="flow-legend-grp">

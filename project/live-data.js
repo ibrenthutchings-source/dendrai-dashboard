@@ -24,14 +24,46 @@ window.LIVE = (function () {
   };
 
   async function fetchEdgarFacts(ticker) {
-    const cik = TICKER_CIK[ticker.toUpperCase()];
-    if (!cik) throw new Error("Ticker not in CIK map: " + ticker);
+    let cik = TICKER_CIK[ticker.toUpperCase()];
+
+    // Dynamic CIK lookup for unknown tickers
+    if (!cik) {
+      try {
+        const tcRes = await fetch("https://data.sec.gov/files/company_tickers.json", {
+          signal: AbortSignal.timeout(8000),
+        });
+        if (tcRes.ok) {
+          const tc = await tcRes.json();
+          const entry = Object.values(tc).find(e => e.ticker?.toUpperCase() === ticker.toUpperCase());
+          if (entry) cik = String(entry.cik_str).padStart(10, "0");
+        }
+      } catch {}
+      if (!cik) throw new Error(`Ticker not found in CIK map or SEC lookup: ${ticker}`);
+    }
+
     const url = `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
-    const res = await fetch(url, {
-      headers: { "Accept": "application/json" },
-    });
-    if (!res.ok) throw new Error(`EDGAR ${res.status}: ${res.statusText}`);
-    return res.json();
+
+    async function attempt() {
+      const res = await fetch(url, {
+        headers: { "Accept": "application/json" },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (res.status === 403) throw new Error("SEC EDGAR returned 403 — rate limited. Wait 30s and retry.");
+      if (res.status === 429) throw new Error("SEC EDGAR rate limit (429). Wait 60s and retry.");
+      if (!res.ok) throw new Error(`EDGAR ${res.status}: ${res.statusText}`);
+      return res.json();
+    }
+
+    try {
+      return await attempt();
+    } catch (e) {
+      if (e.name === "TimeoutError" || e.name === "AbortError") {
+        // One retry after 2s
+        await new Promise(r => setTimeout(r, 2000));
+        return await attempt();
+      }
+      throw e;
+    }
   }
 
   // Extract a usable set of headline financials from companyfacts JSON
