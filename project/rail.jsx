@@ -261,17 +261,16 @@ function NotifTab({ log }) {
 
 // ---------- RISK FLOW (sankey) ----------
 function FlowTab({ risks }) {
-  if (!risks?.length) return <Empty>Flow populates after Stage 2. Tracks each risk's projected RAG bucket across 0 / 30 / 60 / 90 days using its velocity and control effectiveness.</Empty>;
+  if (!risks?.length) return <Empty>Flow populates after Stage 2. Tracks each risk's projected RAG bucket across Now / +1Q / +2Q / +3Q using velocity and control effectiveness.</Empty>;
 
-  // Stage counts (for narrative under the chart)
-  const counts = [0, 30, 60, 90].map(d => {
+  // Stage counts (for narrative under the chart) — quarterly projection
+  const counts = [0, 1, 2, 3].map(q => {
     const c = { R: 0, A: 0, G: 0 };
     risks.forEach(r => {
       let s = r.score;
-      const q = d / 3;
-      const ceMul = ({ NONE: 1.20, WEAK: 1.10, ADEQUATE: 0.98, STRONG: 0.90 })[r.ce] || 1;
-      for (let i = 0; i < q; i++) s = s + (r.velocity || 0) * 0.15 * Math.pow(0.85, i);
-      s = s * (1 + (ceMul - 1) * q * 0.25);
+      const ceMul = ({ NONE: 1.20, WEAK: 1.10, ADEQUATE: 0.98, STRONG: 0.80 })[r.ce] || 1;
+      for (let i = 0; i < q; i++) s = s + (r.velocity || 0) * Math.pow(0.85, i) * ceMul * 0.4;
+      s = Math.min(Math.max(s, 0), 10);
       const rag = s >= 7.5 ? "R" : s >= 5.0 ? "A" : "G";
       c[rag]++;
     });
@@ -282,9 +281,9 @@ function FlowTab({ risks }) {
 
   return (
     <>
-      <SectionLabel right={<span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{risks.length} risks</span>}>Risk Flow · 90 day projection</SectionLabel>
+      <SectionLabel right={<span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{risks.length} risks</span>}>Risk Flow · 3-quarter projection</SectionLabel>
       <div style={{fontSize: 11, color: "var(--ink-3)", marginBottom: 6, lineHeight: 1.5}}>
-        How each risk's RAG bucket moves across the next 90 days. Saturated ribbons = worsening transitions.
+        How each risk's RAG bucket moves across the next 3 quarters. Saturated ribbons = worsening transitions.
       </div>
       <div style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "4px 6px 2px"}}>
         <RiskFlowSankey risks={risks}/>
@@ -295,7 +294,7 @@ function FlowTab({ risks }) {
         <span className="lg"><span className="rag-dot G"/> Low</span>
       </div>
       <div className="mt-12" style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: 12}}>
-        <div className="sec-lbl" style={{marginBottom: 6}}>Net shift · T0 → +90d</div>
+        <div className="sec-lbl" style={{marginBottom: 6}}>Net shift · T0 → +3Q</div>
         <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap: 6}}>
           <div className="scen-m">
             <div className="l">High-risk Δ</div>
@@ -308,9 +307,9 @@ function FlowTab({ risks }) {
         </div>
         <div style={{fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5, marginTop: 8}}>
           {dR > 0
-            ? <>Velocity unchecked: <b style={{fontWeight: 500, color: "var(--red-ink)"}}>{dR}</b> additional risk{dR === 1 ? "" : "s"} cross into the red band within 90 days. Closing in-flight MAPs flattens the curve.</>
+            ? <>Velocity unchecked: <b style={{fontWeight: 500, color: "var(--red-ink)"}}>{dR}</b> additional risk{dR === 1 ? "" : "s"} cross into the red band within 3 quarters. Closing in-flight MAPs flattens the curve.</>
             : dR < 0
-              ? <>Controls bite: <b style={{fontWeight: 500, color: "var(--green-ink)"}}>{Math.abs(dR)}</b> red-band risk{Math.abs(dR) === 1 ? "" : "s"} de-escalate within 90 days assuming MAP cadence holds.</>
+              ? <>Controls bite: <b style={{fontWeight: 500, color: "var(--green-ink)"}}>{Math.abs(dR)}</b> red-band risk{Math.abs(dR) === 1 ? "" : "s"} de-escalate within 3 quarters assuming MAP cadence holds.</>
               : <>RAG distribution is stable across the horizon — velocity and control effectiveness offset.</>
           }
         </div>

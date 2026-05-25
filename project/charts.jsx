@@ -250,33 +250,31 @@ function RiskFlowSankey({ risks }) {
   const plotH = H - padTop - padBottom;
 
   const stages = [
-    { key: 0, lab: "Now",   sub: "T0"   },
-    { key: 1, lab: "+30d",  sub: "30"   },
-    { key: 2, lab: "+60d",  sub: "60"   },
-    { key: 3, lab: "+90d",  sub: "90"   },
+    { key: 0, lab: "Now",  sub: "T0" },
+    { key: 1, lab: "+1Q",  sub: "Q1" },
+    { key: 2, lab: "+2Q",  sub: "Q2" },
+    { key: 3, lab: "+3Q",  sub: "Q3" },
   ];
   const ragOrder = ["R", "A", "G"];
   const ragColor = { R: "var(--red)",   A: "var(--amber)",   G: "var(--green)" };
   const ragSoft  = { R: "var(--red-soft)", A: "var(--amber-soft)", G: "var(--green-soft)" };
   const ragInk   = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
 
-  // Project a single risk's score N months forward using its velocity,
-  // dampened per quarter, modulated by control effectiveness.
-  function projectAt(r, monthsAhead) {
-    if (monthsAhead === 0) return { score: r.score, rag: ragFromScore(r.score) };
-    const q = monthsAhead / 3;
-    const ceMul = ({ NONE: 1.20, WEAK: 1.10, ADEQUATE: 0.98, STRONG: 0.90 })[r.ce] || 1;
+  // Project a single risk's score Q quarters forward using velocity
+  // dampened 15% per quarter, modulated by control effectiveness.
+  function projectAt(r, quartersAhead) {
+    if (quartersAhead === 0) return { score: r.score, rag: ragFromScore(r.score) };
+    const ceMul = ({ NONE: 1.20, WEAK: 1.10, ADEQUATE: 0.98, STRONG: 0.80 })[r.ce] || 1;
     let s = r.score;
-    for (let i = 0; i < q; i++) {
-      s = s + (r.velocity || 0) * 0.15 * Math.pow(0.85, i);
+    for (let i = 0; i < quartersAhead; i++) {
+      s = s + (r.velocity || 0) * Math.pow(0.85, i) * ceMul * 0.4;
     }
-    s = s * (1 + (ceMul - 1) * q * 0.25);
     s = Math.max(0.6, Math.min(10, s));
     return { score: s, rag: ragFromScore(s) };
   }
 
   const total = risks.length;
-  const riskPaths = risks.map(r => ({ r, path: stages.map(s => projectAt(r, s.key * 30)) }));
+  const riskPaths = risks.map(r => ({ r, path: stages.map(s => projectAt(r, s.key)) }));
 
   // Counts per stage per RAG
   const stageCounts = stages.map((_, sI) => {

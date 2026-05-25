@@ -91,7 +91,7 @@ function App() {
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;
-    setStageState((prev) => ({ ...prev, [`s${n + 1}`]: "waiting" }));
+    setStageState((prev) => ({ ...prev, [`s${n + 2}`]: "waiting" }));
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
   });
   const approveGate = (n) => {

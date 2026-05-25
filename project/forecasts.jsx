@@ -270,13 +270,15 @@ function LiveForecastSection({ rawEdgarFacts, fredApiResults, cfg }) {
   const [error, setError]       = useState(null);
 
   const targetFacts = rawEdgarFacts?.[cfg?.ticker];
+  const edgarError = targetFacts?.error || null;
 
   async function runModels() {
     setRunning(true);
     setError(null);
     try {
+      if (edgarError) throw new Error(`EDGAR fetch failed for ${cfg?.ticker}: ${edgarError}`);
       const kpis = LIVE.extractQuarterlyKPIs(targetFacts);
-      if (!kpis) throw new Error('Could not extract quarterly KPIs from EDGAR data.');
+      if (!kpis) throw new Error(`No quarterly XBRL data found for ${cfg?.ticker}. Try a different ticker or check EDGAR availability.`);
 
       const kpiSeries = kpis[selectedKPI];
       if (!kpiSeries || kpiSeries.length < 10)
@@ -310,12 +312,15 @@ function LiveForecastSection({ rawEdgarFacts, fredApiResults, cfg }) {
     }
   }, [selectedKPI]);
 
-  if (!targetFacts) {
+  if (!targetFacts || edgarError) {
     return (
       <div className="live-fc-empty">
         <div className="empty">
           <div className="icon">⟳</div>
-          No EDGAR data loaded. Switch to Live mode and run the loop — or click <b>Save &amp; Fetch Now</b> in the Data Connection dialog.
+          {edgarError
+            ? <>EDGAR fetch failed for <b>{cfg?.ticker}</b>: {edgarError}. Check your connection or try a different ticker.</>
+            : <>No EDGAR data loaded. Run the loop in Live mode — or click <b>Configure</b> → <b>Save &amp; Fetch Now</b>.</>
+          }
         </div>
       </div>
     );
