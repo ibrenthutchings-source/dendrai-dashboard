@@ -594,6 +594,7 @@ function App() {
             <ForecastsPanel
               data={hasRun ? MOCK.forecasts : null}
               liveMode={liveMode}
+              livefacts={livefacts}
               fredSeries={fredLive} />
             
           </div>

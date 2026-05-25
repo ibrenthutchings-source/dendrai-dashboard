@@ -1,26 +1,134 @@
 /* ============================================================
    Forecasts panel — revenue / margin + M-Score + FRED correlates
+   Models run via FORECASTING + BACKTESTING engines (forecasting.js / backtesting.js).
+   Falls back gracefully if engines are not loaded.
    ============================================================ */
 
-function ForecastsPanel({ data, liveMode, fredSeries }) {
+const MODEL_COLORS = {
+  arima:    "var(--acc)",
+  prophet:  "var(--violet)",
+  rf:       "var(--amber)",
+  ensemble: "var(--ink)",
+};
+const MODEL_NAMES = {
+  arima:    "ARIMA(2,1,1)",
+  prophet:  "Prophet-like",
+  rf:       "Random Forest",
+  ensemble: "Ensemble",
+};
+
+function ForecastsPanel({ data, liveMode, livefacts, fredSeries }) {
+  const [modelOutput, setModelOutput] = useState(null);
+  const [modelRunning, setModelRunning] = useState(false);
+  const [modelError, setModelError] = useState(null);
+
+  useEffect(() => {
+    if (!data) { setModelOutput(null); return; }
+    const hasEngines = typeof FORECASTING !== "undefined" && typeof BACKTESTING !== "undefined";
+    if (!hasEngines) return;
+
+    setModelRunning(true);
+    setModelError(null);
+
+    const handle = setTimeout(() => {
+      try {
+        // Build revenue series — prefer EDGAR XBRL annual data when available
+        let revSeries = null, revSource = "mock";
+        if (livefacts?.revenue?.series) {
+          const annual = livefacts.revenue.series
+            .filter(x => x.form === "10-K" && x.fp === "FY")
+            .sort((a, b) => (a.end < b.end ? -1 : 1));
+          if (annual.length >= 6) {
+            revSeries = annual.map(x => x.val / 1e6);
+            revSource = "edgar";
+          }
+        }
+        if (!revSeries) revSeries = data.revenue.history.map(x => x.v);
+
+        const mgSeries = data.margin.history.map(x => x.v);
+
+        // Walk-forward backtests calibrate ensemble weights
+        const revBT = BACKTESTING.backtestAll(revSeries);
+        const mgBT  = BACKTESTING.backtestAll(mgSeries);
+
+        const revMapes = [revBT.results.arima?.mape, revBT.results.prophet?.mape, revBT.results.rf?.mape];
+        const mgMapes  = [mgBT.results.arima?.mape,  mgBT.results.prophet?.mape,  mgBT.results.rf?.mape];
+
+        // Final forecasts with calibrated weights
+        const revFcAll = BACKTESTING.forecastAll(revSeries, null, 4, revMapes);
+        const mgFcAll  = BACKTESTING.forecastAll(mgSeries,  null, 4, mgMapes);
+
+        const revEns = revFcAll.ensemble;
+        const mgEns  = mgFcAll.ensemble;
+
+        setModelOutput({
+          revenue: {
+            history: data.revenue.history,
+            forecast: data.revenue.forecast.map((f, i) => ({
+              q:    f.q,
+              base: revEns?.base[i] ?? f.base,
+              lo:   revEns?.lo[i]   ?? f.lo,
+              hi:   revEns?.hi[i]   ?? f.hi,
+            })),
+            all: revFcAll,
+            backtest: revBT,
+            source: revSource,
+          },
+          margin: {
+            history: data.margin.history,
+            forecast: data.margin.forecast.map((f, i) => ({
+              q:    f.q,
+              base: mgEns?.base[i]  ?? f.base,
+              lo:   mgEns?.lo[i]    ?? f.lo,
+              hi:   mgEns?.hi[i]    ?? f.hi,
+            })),
+            all: mgFcAll,
+            backtest: mgBT,
+            source: "mock",
+          },
+        });
+      } catch (e) {
+        console.error("Forecasting engine error:", e);
+        setModelError(e.message);
+      }
+      setModelRunning(false);
+    }, 0);
+
+    return () => clearTimeout(handle);
+  }, [data, livefacts]);
+
   if (!data) return <Empty>Run the loop to populate forecasts, or click Run Loop in the sidebar.</Empty>;
 
-  const lastHistRev = data.revenue.history[data.revenue.history.length - 1].v;
-  const lastFcRev = data.revenue.forecast[data.revenue.forecast.length - 1].base;
+  const rev  = modelOutput?.revenue  ?? data.revenue;
+  const mg   = modelOutput?.margin   ?? data.margin;
+
+  const lastHistRev = rev.history[rev.history.length - 1].v;
+  const lastFcRev   = rev.forecast[rev.forecast.length - 1].base;
   const revDeltaPct = ((lastFcRev - lastHistRev) / lastHistRev) * 100;
 
-  const lastHistMg = data.margin.history[data.margin.history.length - 1].v;
-  const lastFcMg = data.margin.forecast[data.margin.forecast.length - 1].base;
-  const mgDelta = (lastFcMg - lastHistMg) * 100; // bps
+  const lastHistMg = mg.history[mg.history.length - 1].v;
+  const lastFcMg   = mg.forecast[mg.forecast.length - 1].base;
+  const mgDelta    = (lastFcMg - lastHistMg) * 100;
+
+  const hasEngines = typeof FORECASTING !== "undefined" && typeof BACKTESTING !== "undefined";
 
   return (
     <div data-screen-label="Forecasts">
       <div className="panel-head">
         <div>
           <div className="kicker">Financial intelligence + forecasting</div>
-          <div className="panel-title mt-8">EDGAR XBRL + FRED macro · ARIMA ensemble</div>
-          <div className="panel-sub">Auto-runs after the loop completes. Confidence band is the ensemble's 80% interval. {liveMode ? "Live FRED snapshot bundled with the prototype." : "Mock data — switch to Live in the sidebar to pull EDGAR XBRL for this ticker."}</div>
+          <div className="panel-title mt-8">EDGAR XBRL + FRED macro · ARIMA / Prophet / Random Forest ensemble</div>
+          <div className="panel-sub">
+            {modelRunning ? "Running models…" :
+             modelError   ? `Model error: ${modelError} — showing mock baseline` :
+             modelOutput  ? `Ensemble forecast · walk-forward calibrated · data: ${modelOutput.revenue.source.toUpperCase()}` :
+             hasEngines   ? "Models queued…" :
+             "Forecasting engines not loaded — showing mock baseline"}
+            {" "}
+            {liveMode ? "Live FRED snapshot bundled." : "Switch to Live in sidebar to pull EDGAR XBRL."}
+          </div>
         </div>
+        {modelRunning && <span className="spin" style={{marginLeft: 8}}/>}
       </div>
 
       <div className="fcst-row">
@@ -28,16 +136,21 @@ function ForecastsPanel({ data, liveMode, fredSeries }) {
           <div className="head">
             <div>
               <div className="ttl">Revenue · TTM</div>
-              <div className="sub">Quarterly $M · 8 history + 4 forecast</div>
+              <div className="sub">
+                {modelOutput ? `${modelOutput.revenue.source === "edgar" ? "EDGAR XBRL" : "Mock"} series · ensemble` : "Quarterly $M · 8 history + 4 forecast"}
+              </div>
             </div>
-            <div style={{textAlign: "right"}}>
+            <div style={{textAlign:"right"}}>
               <div className="big-num">${lastFcRev.toFixed(0)}M</div>
               <div className={`delta ${revDeltaPct >= 0 ? "up" : "dn"}`}>
                 {revDeltaPct >= 0 ? "▲" : "▼"} {Math.abs(revDeltaPct).toFixed(1)}% vs latest
               </div>
             </div>
           </div>
-          <ForecastChart history={data.revenue.history.slice(-8)} forecast={data.revenue.forecast} unit="$M" color="var(--acc)"/>
+          <ForecastChart history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)"/>
+          {modelOutput?.revenue?.all && (
+            <ComponentForecastTable fcAll={modelOutput.revenue.all} labels={data.revenue.forecast.map(f => f.q)} unit="$M" />
+          )}
         </div>
 
         <div className="fcst-card">
@@ -46,16 +159,23 @@ function ForecastsPanel({ data, liveMode, fredSeries }) {
               <div className="ttl">Gross margin</div>
               <div className="sub">Quarterly % · 8 history + 4 forecast</div>
             </div>
-            <div style={{textAlign: "right"}}>
+            <div style={{textAlign:"right"}}>
               <div className="big-num">{lastFcMg.toFixed(1)}%</div>
               <div className={`delta ${mgDelta >= 0 ? "up" : "dn"}`}>
                 {mgDelta >= 0 ? "▲" : "▼"} {Math.abs(mgDelta).toFixed(0)} bps vs latest
               </div>
             </div>
           </div>
-          <ForecastChart history={data.margin.history.slice(-8)} forecast={data.margin.forecast} unit="%" color="var(--violet)"/>
+          <ForecastChart history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
+          {modelOutput?.margin?.all && (
+            <ComponentForecastTable fcAll={modelOutput.margin.all} labels={data.margin.forecast.map(f => f.q)} unit="%" />
+          )}
         </div>
       </div>
+
+      {modelOutput && (
+        <ModelDiagnosticsCard revenue={modelOutput.revenue} margin={modelOutput.margin} />
+      )}
 
       <div className="fcst-row">
         <div className="fcst-card">
@@ -83,7 +203,7 @@ function ForecastsPanel({ data, liveMode, fredSeries }) {
           <div className="head">
             <div>
               <div className="ttl">FRED macro correlates</div>
-              <div className="sub">{liveMode ? "Live FRED snapshot · bundled JSON · Q1 2021 → Q1 2026" : "Pre-computed correlation against quarterly revenue"}</div>
+              <div className="sub">{liveMode ? "Live FRED snapshot · Q1 2021 → Q1 2026" : "Pre-computed correlation against quarterly revenue"}</div>
             </div>
           </div>
           {liveMode && fredSeries ? (
@@ -124,9 +244,9 @@ function ForecastsPanel({ data, liveMode, fredSeries }) {
             const h = Math.abs(v) / 20 * 50 + 4;
             const negative = v < 0;
             return (
-              <div key={i} style={{flex: 1, display:"flex", flexDirection:"column", alignItems:"center", gap: 4}}>
-                <div style={{width: "70%", height: h, background: negative ? "var(--red)" : "var(--green)", opacity: 0.85, borderRadius: 3}}/>
-                <div className="mono" style={{fontSize: 9, color: "var(--ink-3)"}}>Q{i+1}-24</div>
+              <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4}}>
+                <div style={{width:"70%", height:h, background: negative ? "var(--red)" : "var(--green)", opacity:0.85, borderRadius:3}}/>
+                <div className="mono" style={{fontSize:9, color:"var(--ink-3)"}}>Q{i+1}-24</div>
               </div>
             );
           })}
@@ -135,11 +255,11 @@ function ForecastsPanel({ data, liveMode, fredSeries }) {
           <div className="sent-comm-row">
             <div className="sent-comm-cell">
               <div className="sent-comm-lbl">What changed</div>
-              <div className="sent-comm-v">Net sentiment dropped <b style={{fontWeight: 500, color: "var(--red-ink)"}}>30 points</b> over 6 quarters (Q1: +12 → Q6: −18). Inflection at Q3 coincides with the BIS October rule extension and first signs of channel destock.</div>
+              <div className="sent-comm-v">Net sentiment dropped <b style={{fontWeight:500,color:"var(--red-ink)"}}>30 points</b> over 6 quarters (Q1: +12 → Q6: −18). Inflection at Q3 coincides with the BIS October rule extension and first signs of channel destock.</div>
             </div>
             <div className="sent-comm-cell">
               <div className="sent-comm-lbl">Hedge ratio signal</div>
-              <div className="sent-comm-v">Hedge-word ratio is up <b style={{fontWeight: 500}}>{data.sentiment.hedge_ratio_trend}</b> over 4Q. Management is leaning on <span className="mono" style={{fontSize: 11, color: "var(--ink-2)"}}>"visibility limited"</span>, <span className="mono" style={{fontSize: 11, color: "var(--ink-2)"}}>"subject to macro"</span>, <span className="mono" style={{fontSize: 11, color: "var(--ink-2)"}}>"timing uncertainty"</span> — historically a 2-quarter leading indicator of guide-down.</div>
+              <div className="sent-comm-v">Hedge-word ratio is up <b style={{fontWeight:500}}>{data.sentiment.hedge_ratio_trend}</b> over 4Q. Management is leaning on <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"visibility limited"</span>, <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"subject to macro"</span>, <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"timing uncertainty"</span> — historically a 2Q leading indicator of guide-down.</div>
             </div>
           </div>
           <div className="sent-comm-row">
@@ -149,11 +269,110 @@ function ForecastsPanel({ data, liveMode, fredSeries }) {
             </div>
             <div className="sent-comm-cell">
               <div className="sent-comm-lbl">Audit implication</div>
-              <div className="sent-comm-v">Pull <b style={{fontWeight: 500}}>R-01 Revenue Recognition</b> and <b style={{fontWeight: 500}}>R-02 Export Controls</b> forward in Q1 sample plan. Add forensic walk-through on Q4 cut-off entries. Pre-align with external audit on management-letter language.</div>
+              <div className="sent-comm-v">Pull <b style={{fontWeight:500}}>R-01 Revenue Recognition</b> and <b style={{fontWeight:500}}>R-02 Export Controls</b> forward in Q1 sample plan. Add forensic walk-through on Q4 cut-off entries. Pre-align with external audit on management-letter language.</div>
             </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---- Per-model forecast numbers table ----
+function ComponentForecastTable({ fcAll, labels, unit }) {
+  const models = ["arima","prophet","rf","ensemble"];
+  const fmt = (v, u) => v == null ? "—" : u === "$M" ? `$${v.toFixed(0)}M` : `${v.toFixed(1)}%`;
+  return (
+    <div style={{marginTop: 10, overflowX: "auto"}}>
+      <table style={{width:"100%", borderCollapse:"collapse", fontSize:10.5}}>
+        <thead>
+          <tr style={{borderBottom:"1px solid var(--line)"}}>
+            <th style={{textAlign:"left", padding:"3px 8px 3px 0", color:"var(--ink-3)", fontWeight:400, fontFamily:"Geist Mono, monospace"}}>Model</th>
+            {labels.map(q => <th key={q} style={{textAlign:"right", padding:"3px 6px", color:"var(--ink-3)", fontWeight:400, fontFamily:"Geist Mono, monospace"}}>{q}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {models.map(key => {
+            const fc = fcAll[key];
+            if (!fc) return null;
+            const isEns = key === "ensemble";
+            return (
+              <tr key={key} style={{borderBottom: isEns ? "none" : "1px solid var(--line)", fontWeight: isEns ? 500 : 400}}>
+                <td style={{padding:"4px 8px 4px 0", display:"flex", alignItems:"center", gap:5}}>
+                  <span style={{width:7,height:7,borderRadius:"50%",background:MODEL_COLORS[key],flexShrink:0,display:"inline-block"}}/>
+                  <span style={{color:"var(--ink-2)", fontFamily:"Geist Mono, monospace"}}>{MODEL_NAMES[key]}</span>
+                </td>
+                {fc.base.map((v, i) => (
+                  <td key={i} style={{textAlign:"right", padding:"4px 6px", fontFamily:"Geist Mono, monospace", color: isEns ? MODEL_COLORS[key] : "var(--ink-2)"}}>
+                    {fmt(v, unit)}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---- Model diagnostics card ----
+function ModelDiagnosticsCard({ revenue, margin }) {
+  const [tab, setTab] = useState("revenue");
+  const data = tab === "revenue" ? revenue : margin;
+  const bt = data.backtest?.results;
+  const weights = revenue.backtest?.ensembleWeights;
+
+  const fmtMape = v => v == null ? "—" : v.toFixed(2) + "%";
+  const fmtRmse = v => v == null ? "—" : v.toFixed(2);
+  const fmtR2   = v => v == null ? "—" : v.toFixed(3);
+  const mapeColor = v => v == null ? "var(--ink-3)" : v < 5 ? "var(--green-ink)" : v < 15 ? "var(--amber-ink)" : "var(--red-ink)";
+
+  return (
+    <div className="fcst-card" style={{marginTop:14}}>
+      <div className="head">
+        <div>
+          <div className="ttl">Model diagnostics · backtesting</div>
+          <div className="sub">Walk-forward validation · leave-last-4 hold-out · MAPE / RMSE / R²</div>
+        </div>
+        <div style={{display:"flex", gap:5}}>
+          <button className={`btn btn-sm${tab === "revenue" ? " btn-primary" : ""}`} onClick={() => setTab("revenue")}>Revenue</button>
+          <button className={`btn btn-sm${tab === "margin"  ? " btn-primary" : ""}`} onClick={() => setTab("margin")}>Margin</button>
+        </div>
+      </div>
+
+      <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, marginTop:12}}>
+        {["arima","prophet","rf","ensemble"].map(key => {
+          const r = bt?.[key];
+          return (
+            <div key={key} style={{border:"1px solid var(--line)", borderRadius:8, padding:"10px 12px", background: key === "ensemble" ? "var(--surface-2)" : undefined}}>
+              <div style={{display:"flex", alignItems:"center", gap:5, marginBottom:8}}>
+                <span style={{width:8,height:8,borderRadius:"50%",background:MODEL_COLORS[key],flexShrink:0}}/>
+                <span style={{fontWeight:500, fontSize:11.5, color:"var(--ink)"}}>{MODEL_NAMES[key]}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"auto 1fr", gap:"3px 10px", fontSize:11}}>
+                <span className="mono" style={{color:"var(--ink-3)"}}>MAPE</span>
+                <span className="mono" style={{color: mapeColor(r?.mape)}}>{fmtMape(r?.mape)}</span>
+                <span className="mono" style={{color:"var(--ink-3)"}}>RMSE</span>
+                <span className="mono" style={{color:"var(--ink-2)"}}>{fmtRmse(r?.rmse)}</span>
+                <span className="mono" style={{color:"var(--ink-3)"}}>R²</span>
+                <span className="mono" style={{color:"var(--ink-2)"}}>{fmtR2(r?.r2)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {weights && (
+        <div style={{marginTop:10, fontSize:11, color:"var(--ink-3)", lineHeight:1.5}}>
+          Ensemble weights (calibrated by MAPE):
+          {" "}<span className="mono" style={{color:"var(--acc)"}}>ARIMA {(weights[0]*100).toFixed(0)}%</span>
+          {" · "}<span className="mono" style={{color:"var(--violet)"}}>Prophet {(weights[1]*100).toFixed(0)}%</span>
+          {" · "}<span className="mono" style={{color:"var(--amber)"}}>RF {(weights[2]*100).toFixed(0)}%</span>
+          {". "}Revenue source: <span className="mono">{revenue.source.toUpperCase()}</span>.
+          Lower MAPE = higher weight. Green &lt; 5% · Amber 5–15% · Red &gt; 15%.
+        </div>
+      )}
     </div>
   );
 }
@@ -170,7 +389,7 @@ function LiveFREDList({ series }) {
         return (
           <div className="fred-row" key={id}>
             <span className="fred-id">{id}</span>
-            <span className="fred-name" style={{fontSize: 11}}>{s.description.split(":")[0]}</span>
+            <span className="fred-name" style={{fontSize:11}}>{s.description.split(":")[0]}</span>
             <span className="fred-r">{latest?.value?.toFixed?.(2) ?? "—"}</span>
             <span className={`fred-dir ${dir}`}>{delta == null ? "—" : `${delta > 0 ? "+" : ""}${delta.toFixed(2)}%`}</span>
           </div>
