@@ -17,13 +17,13 @@ function ReportModal({ open, onClose, payload }) {
         </div>
         <div className="modal-body">
           <div className="rep-h1">{entity}</div>
-          <div className="rep-h1-sub">{cfg.industry} · {cfg.focus} · {new Date(ts).toLocaleDateString()}</div>
+          <div className="rep-h1-sub">{cfg.industry} · {(Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus]).join(" · ")} · {new Date(ts).toLocaleDateString()}</div>
 
           <div className="rep-section">
             <h3>Executive Summary</h3>
             <Row k="Entity"           v={entity}/>
             <Row k="Industry"         v={cfg.industry}/>
-            <Row k="Audit Focus"      v={cfg.focus}/>
+            <Row k="Audit Focus"      v={(Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus]).join(", ")}/>
             <Row k="Signal Sources"   v={cfg.sigs.join(", ")}/>
             <Row k="Signals Ingested" v={`${signals.count} total · ${signals.highVel} high velocity`}/>
             <Row k="Risks Identified" v={`${risks.length}`}/>

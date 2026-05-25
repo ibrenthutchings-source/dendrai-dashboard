@@ -14,7 +14,8 @@ const STAGES = [
 ];
 
 // Insert HITL gates after stages 2 and 3
-function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts }) {
+function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts,
+                    riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onSignoffRisk }) {
   return (
     <div className="pipeline">
       {STAGES.map((s, i) => {
@@ -42,12 +43,25 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
             )}
             {showGate && (
               <>
-                <HITLGate
-                  num={gateNum}
-                  state={gateState[`g${gateNum}`]}
-                  onApprove={() => onApprove(gateNum)}
-                  onOverride={() => onOverride(gateNum)}
-                />
+                {gateNum === 1 && gateState.g1 === "pending" ? (
+                  <RiskApprovalReview
+                    risks={output.s2?.risks || []}
+                    approvals={riskApprovals}
+                    onApproveRisk={onApproveRisk}
+                    onOpenAdjust={onOpenAdjustRisk}
+                    onApproveAll={onApproveAllRisks}
+                    onSignoff={onSignoffRisk}
+                    onSubmit={() => onApprove(1)}
+                    onOverrideGate={() => onOverride(1)}
+                  />
+                ) : (
+                  <HITLGate
+                    num={gateNum}
+                    state={gateState[`g${gateNum}`]}
+                    onApprove={() => onApprove(gateNum)}
+                    onOverride={() => onOverride(gateNum)}
+                  />
+                )}
                 {i < STAGES.length - 1 && (
                   <Connector active={gateState[`g${gateNum}`] === "approved"}/>
                 )}

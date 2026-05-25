@@ -2,12 +2,23 @@
    Sidebar (LEFT) — entity, signals, velocity, HITL toggles, Run
    ============================================================ */
 
+const FOCUS_OPTS = [
+  "Revenue Recognition",
+  "Supply Chain and Procurement",
+  "IT General Controls",
+  "Financial Reporting",
+  "Trade Compliance / Export",
+  "ESG / Climate Risk",
+  "M&A Integration",
+  "Cybersecurity",
+];
+
 function Sidebar({
   cfg, setCfg, signalSet, setSignalSet,
   velocity,
   hitl,
   running, hasRun, onRun, onReset, onOpenReport, onOpenPersona, onOpenConfig,
-  liveMode, setLiveMode, liveStatus, onOpenDataConfig,
+  liveMode, setLiveMode, liveStatus,
 }) {
   const SIGNAL_OPTS = [
     { id: "edgar",     name: "10-K / EDGAR",     sub: "SEC filings" },
@@ -53,17 +64,47 @@ function Sidebar({
           </select>
         </div>
         <div className="field" style={{marginBottom: 0}}>
-          <label className="field-label">Audit Universe Focus</label>
-          <select className="input" value={cfg.focus} onChange={e => setCfg({...cfg, focus: e.target.value})}>
-            <option>Revenue Recognition</option>
-            <option>Supply Chain and Procurement</option>
-            <option>IT General Controls</option>
-            <option>Financial Reporting</option>
-            <option>Trade Compliance / Export</option>
-            <option>ESG / Climate Risk</option>
-            <option>M&amp;A Integration</option>
-            <option>Cybersecurity</option>
-          </select>
+          <label className="field-label">
+            <span>Audit Universe Focus</span>
+            <span className="field-label-meta">
+              {(() => {
+                const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
+                return (
+                  <>
+                    <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{focusList.length}/{FOCUS_OPTS.length}</span>
+                    <button type="button" className="cfg-link" style={{padding: 0}}
+                      onClick={() => {
+                        const all = focusList.length === FOCUS_OPTS.length;
+                        setCfg({...cfg, focus: all ? [FOCUS_OPTS[0]] : [...FOCUS_OPTS]});
+                      }}>
+                      {focusList.length === FOCUS_OPTS.length ? "Clear" : "All"}
+                    </button>
+                  </>
+                );
+              })()}
+            </span>
+          </label>
+          <div className="focus-grid">
+            {FOCUS_OPTS.map(f => {
+              const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
+              const on = focusList.includes(f);
+              return (
+                <button key={f} type="button" className={"focus-chip" + (on ? " on" : "")}
+                  onClick={() => {
+                    const next = on
+                      ? focusList.filter(x => x !== f)
+                      : [...focusList, f];
+                    // Always keep at least one selected
+                    setCfg({...cfg, focus: next.length ? next : [f]});
+                  }}>
+                  <span className="focus-chip-check" aria-hidden="true">
+                    {on ? <Icon name="check" size={9}/> : null}
+                  </span>
+                  <span className="focus-chip-lbl">{f}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -77,7 +118,7 @@ function Sidebar({
         }>Data Mode</SectionLabel>
         <div style={{display:"flex", gap: 6}}>
           <button className={`btn btn-sm ${!liveMode ? "btn-primary" : ""}`} style={{flex:1}} onClick={() => setLiveMode(false)}>Mock</button>
-          <button className={`btn btn-sm ${liveMode ? "btn-primary" : ""}`} style={{flex:1}} onClick={() => { setLiveMode(true); if (!liveMode) onOpenDataConfig?.(); }}>
+          <button className={`btn btn-sm ${liveMode ? "btn-primary" : ""}`} style={{flex:1}} onClick={() => setLiveMode(true)}>
             <Icon name="wifi" size={11}/> Live
           </button>
         </div>
@@ -85,11 +126,6 @@ function Sidebar({
           <div style={{marginTop: 8, fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
             {liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled"}
           </div>
-        )}
-        {liveMode && (
-          <button className="cfg-link" onClick={onOpenDataConfig} type="button" style={{marginTop: 4}}>
-            Configure data sources <Icon name="chev-r" size={10}/>
-          </button>
         )}
       </div>
 

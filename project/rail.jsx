@@ -15,11 +15,11 @@ const RAIL_TABS = [
 
 function Rail({
   activeTab, setActiveTab,
-  output, risks, maps, loop, notifLog, forecasts, scenarios,
+  output, risks, maps, loop, notifLog, forecasts, scenarios, flowMeta,
   activeQuarter, setActiveQuarter,
   selectedRiskId, setSelectedRiskId,
   selectedPersona, setSelectedPersona,
-  personas,
+  personas, onOpenMainFlow,
 }) {
   return (
     <aside className="rsb" data-screen-label="Live register rail">
@@ -40,7 +40,7 @@ function Rail({
         {activeTab === "map"   && <MapsTab      maps={maps}/>}
         {activeTab === "loop"  && <LoopTab      loop={loop}/>}
         {activeTab === "notif" && <NotifTab     log={notifLog}/>}
-        {activeTab === "flow"  && <FlowTab       risks={risks} maps={maps}/>}
+        {activeTab === "flow"  && <FlowMiniTab    risks={risks} maps={maps} flowMeta={flowMeta} selectedId={selectedRiskId} onSelect={setSelectedRiskId} onOpenMain={onOpenMainFlow}/>}
         {activeTab === "pers"  && <PersonaTab   personas={personas} selected={selectedPersona} setSelected={setSelectedPersona}/>}
       </div>
     </aside>
@@ -259,57 +259,65 @@ function NotifTab({ log }) {
   );
 }
 
-// ---------- RISK FLOW (sankey) ----------
-function FlowTab({ risks, maps = [] }) {
-  if (!risks?.length) return <Empty>Flow populates after Stage 2. Shows how risks connect through severity, control maturity, and mitigation activities.</Empty>;
+// ---------- RISK FLOW MINI ----------
+function FlowMiniTab({ risks, maps, flowMeta, selectedId, onSelect, onOpenMain }) {
+  if (!risks?.length || !flowMeta) return <Empty>Flow populates after Stage 2. The full chart lives in the Risk Flow main tab.</Empty>;
 
-  // Derive mitigation status breakdown for the narrative
-  const mapByRisk = {};
-  (maps || []).forEach(m => {
-    if (!m.linked_risk) return;
-    const cur = mapByRisk[m.linked_risk];
-    if (!cur || (m.completion_pct || 0) > (cur.completion_pct || 0)) mapByRisk[m.linked_risk] = m;
-  });
-  const mitCounts = { Open: 0, "In Progress": 0, Closed: 0, "No MAP": 0 };
-  risks.forEach(r => {
-    const m = mapByRisk[r.id];
-    if (!m)                                mitCounts["No MAP"]++;
-    else if ((m.completion_pct || 0) >= 100) mitCounts.Closed++;
-    else if ((m.completion_pct || 0) > 0)   mitCounts["In Progress"]++;
-    else                                     mitCounts.Open++;
-  });
+  const top = [...risks].sort((a,b) => b.score - a.score).slice(0, 6);
+  const ragSoft = { R: "var(--red-soft)", A: "var(--amber-soft)", G: "var(--green-soft)" };
+  const ragInk  = { R: "var(--red-ink)",  A: "var(--amber-ink)",  G: "var(--green-ink)" };
+  const ragCol  = { R: "var(--red)",      A: "var(--amber)",      G: "var(--green)" };
+
+  function audCounts(rid) {
+    const meta = flowMeta[rid];
+    const linked = (maps || []).filter(m => m.linked_risk === rid);
+    const planned = Math.max(0, (meta?.audits?.length || 0) - linked.length);
+    const open = linked.filter(m => (m.completion_pct || 0) < 100).length;
+    const closed = linked.filter(m => (m.completion_pct || 0) >= 100).length;
+    return { open, planned, closed };
+  }
 
   return (
     <>
-      <SectionLabel right={<span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{risks.length} risks · {maps.length} MAPs</span>}>
-        Risk-to-Mitigation Flow
-      </SectionLabel>
-      <div style={{fontSize: 11, color: "var(--ink-3)", marginBottom: 8, lineHeight: 1.5}}>
-        Traces each risk through Severity → Control Maturity → Mitigation. Hover any node to highlight connected paths and see the risks within.
+      <SectionLabel right={
+        <button className="cfg-link" onClick={onOpenMain} type="button">
+          Full view <Icon name="chev-r" size={10}/>
+        </button>
+      }>Risk Flow</SectionLabel>
+      <div style={{fontSize: 11, color: "var(--ink-3)", marginBottom: 10, lineHeight: 1.5}}>
+        Top risks and where they fan out. Click for full sankey + cadence in the main panel.
       </div>
-      <div style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "6px 8px 4px"}}>
-        <RiskFlowSankey risks={risks} maps={maps}/>
-      </div>
-      <div className="mt-12" style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: 12}}>
-        <div className="sec-lbl" style={{marginBottom: 8}}>Mitigation coverage</div>
-        <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6}}>
-          {[
-            { k: "Open",        color: "var(--red-ink)" },
-            { k: "In Progress", color: "var(--amber-ink)" },
-            { k: "Closed",      color: "var(--green-ink)" },
-            { k: "No MAP",      color: "var(--ink-3)" },
-          ].map(({ k, color }) => (
-            <div key={k} className="scen-m">
-              <div className="l">{k}</div>
-              <div className="v" style={{ color }}>{mitCounts[k]}</div>
+      <div className="flow-mini-list">
+        {top.map(r => {
+          const meta = flowMeta[r.id];
+          if (!meta) return null;
+          const counts = audCounts(r.id);
+          const isSel = selectedId === r.id;
+          return (
+            <div key={r.id} className={"flow-mini-card" + (isSel ? " active" : "")}
+              onClick={() => onSelect(isSel ? null : r.id)}>
+              <div className="flow-mini-head">
+                <span className="rag-dot" style={{background: ragCol[r.rag]}}/>
+                <div className="flow-mini-name">{r.name}</div>
+                <span className="mono" style={{fontSize: 10, color: ragInk[r.rag]}}>{r.score.toFixed(1)}</span>
+              </div>
+              <div className="flow-mini-impact">
+                {meta.impacts.slice(0, 3).map(im => <span key={im} className="scen-pill">{im}</span>)}
+                {meta.impacts.length > 3 && <span className="scen-pill" style={{opacity: 0.7}}>+{meta.impacts.length - 3}</span>}
+              </div>
+              <div className="flow-mini-foot">
+                <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>
+                  {meta.controls.length} control{meta.controls.length === 1 ? "" : "s"} · {meta.cadence?.length || 0} checkpoint{(meta.cadence?.length || 0) === 1 ? "" : "s"}
+                </span>
+                <span className="flow-mini-aud">
+                  {counts.open  > 0 && <span className="chip-pill" style={{background: "var(--amber-soft)", color: "var(--amber-ink)"}}>{counts.open} in flight</span>}
+                  {counts.planned > 0 && <span className="chip-pill" style={{background: "var(--acc-soft)", color: "var(--acc-ink)"}}>{counts.planned} on plan</span>}
+                  {counts.closed > 0 && <span className="chip-pill" style={{background: "var(--green-soft)", color: "var(--green-ink)"}}>{counts.closed} closed</span>}
+                </span>
+              </div>
             </div>
-          ))}
-        </div>
-        {mitCounts["No MAP"] > 0 && (
-          <div style={{fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5, marginTop: 8}}>
-            <b style={{fontWeight: 500, color: "var(--amber-ink)"}}>{mitCounts["No MAP"]}</b> risk{mitCounts["No MAP"] !== 1 ? "s have" : " has"} no linked Mitigation Action Plan — consider raising MAPs to close the gap.
-          </div>
-        )}
+          );
+        })}
       </div>
     </>
   );
