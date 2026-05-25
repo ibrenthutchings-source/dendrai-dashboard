@@ -26,28 +26,17 @@ function App() {
   const [cfg, setCfg] = useState({
     ticker: MOCK.entity.ticker,
     industry: MOCK.entity.industry,
-    focus: MOCK.entity.focus
+    focus: Array.isArray(MOCK.entity.focus) ? MOCK.entity.focus : [MOCK.entity.focus]
   });
   const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal"]));
   const [velocity, setVelocity] = useState(3);
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
-
-  // ---- Data connection config (localStorage-persisted) ----
-  const [dataConfig, setDataConfig] = useState(() => {
-    try {
-      const raw = localStorage.getItem('dendrai_data_config');
-      return raw ? JSON.parse(raw) : { fredApiKey: '', tickers: [], fredSeriesIds: [] };
-    } catch { return { fredApiKey: '', tickers: [], fredSeriesIds: [] }; }
-  });
-  const [configModalOpen, setConfigModalOpen] = useState(false);
 
   // ---- Live mode + EDGAR/FRED data ----
   const [liveMode, setLiveMode] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [livefacts, setLivefacts] = useState(null);
   const [fredLive, setFredLive] = useState(null);
-  const [rawEdgarFacts, setRawEdgarFacts] = useState(null);    // { ticker: facts }
-  const [fredApiResults, setFredApiResults] = useState(null);  // { seriesId: { observations } }
 
   // ---- Pipeline run state ----
   const [running, setRunning] = useState(false);
@@ -83,6 +72,17 @@ function App() {
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideGateNum, setOverrideGateNum] = useState(null);
 
+  // ---- Per-risk approval state (Gate 1) ----
+  // { [riskId]: { status: 'pending'|'approved'|'adjusted'|'signed',
+  //               adjustments?: { rag, score, velocity, ce },
+  //               rationale?: string, adjustedBy?: string, adjustedAt?: number,
+  //               signoffs?: { cae?: {who,signedAt}, cfo?: {...}, ac?: {...} } } }
+  const [riskApprovals, setRiskApprovals] = useState({});
+  const [adjustOpen, setAdjustOpen] = useState(false);
+  const [adjustingRiskId, setAdjustingRiskId] = useState(null);
+
+  const auditorName = (selectedPersona && selectedPersona !== "Internal Audit") ? selectedPersona : "Internal Audit";
+
   // ---- Logging helper ----
   const log = useCallback((msg) => {
     setLoopLog((prev) => [...prev, { ts: new Date().toISOString(), msg }]);
@@ -91,11 +91,90 @@ function App() {
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;
-    setStageState((prev) => ({ ...prev, [`s${n + 2}`]: "waiting" }));
+    setStageState((prev) => ({ ...prev, [`s${n + 1}`]: "waiting" }));
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
+    // Initialize per-risk approval state when Gate 1 opens
+    if (n === 1) {
+      const risksNow = (output.s2?.risks) || MOCK.risks;
+      const init = {};
+      risksNow.forEach(r => { init[r.id] = { status: "pending" }; });
+      setRiskApprovals(init);
+    }
   });
+
+  // ---- Per-risk HITL handlers ----
+  const approveRisk = useCallback((riskId) => {
+    setRiskApprovals(prev => ({ ...prev, [riskId]: { ...(prev[riskId]||{}), status: "approved" } }));
+    log(`Risk ${riskId}: APPROVED as scored by ${auditorName}`);
+  }, [auditorName, log]);
+
+  const openAdjustRisk = useCallback((riskId) => {
+    setAdjustingRiskId(riskId);
+    setAdjustOpen(true);
+  }, []);
+
+  const submitAdjustment = useCallback((payload) => {
+    const id = adjustingRiskId;
+    if (!id) return;
+    setRiskApprovals(prev => ({
+      ...prev,
+      [id]: {
+        status: "adjusted",
+        adjustments: { rag: payload.rag, score: payload.score, velocity: payload.velocity, ce: payload.ce },
+        rationale: payload.rationale,
+        adjustedBy: auditorName,
+        adjustedAt: Date.now(),
+        signoffs: {}
+      }
+    }));
+    log(`Risk ${id}: ADJUSTED by ${auditorName} — routed to CAE / CFO / Audit Committee`);
+    setAdjustOpen(false);
+    setAdjustingRiskId(null);
+  }, [adjustingRiskId, auditorName, log]);
+
+  const signoffRisk = useCallback((riskId, role) => {
+    const SIG_MAP = { cae: "Sarah Lin (CAE)", cfo: "Marcus Reed (CFO)", ac: "J. Vance (Audit Committee)" };
+    setRiskApprovals(prev => {
+      const cur = prev[riskId];
+      if (!cur) return prev;
+      const newSigs = { ...(cur.signoffs||{}), [role]: { who: SIG_MAP[role], signedAt: Date.now() } };
+      const allSigned = !!newSigs.cae && !!newSigs.cfo && !!newSigs.ac;
+      return { ...prev, [riskId]: { ...cur, signoffs: newSigs, status: allSigned ? "signed" : "adjusted" } };
+    });
+    log(`Risk ${riskId}: ${role.toUpperCase()} sign-off captured (${SIG_MAP[role]})`);
+  }, [log]);
+
+  const approveAllRemainingRisks = useCallback(() => {
+    setRiskApprovals(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(id => {
+        if (next[id].status === "pending") {
+          next[id] = { ...next[id], status: "approved" };
+        }
+      });
+      return next;
+    });
+    log(`Bulk-approve: all remaining pending risks accepted by ${auditorName}`);
+  }, [auditorName, log]);
   const approveGate = (n) => {
-    log(`HITL Gate ${n}: APPROVED`);
+    // For Gate 1, commit per-risk adjustments back into output.s2.risks
+    if (n === 1) {
+      setOutput(prev => {
+        const orig = prev.s2?.risks || [];
+        const merged = orig.map(r => {
+          const a = riskApprovals[r.id];
+          if (a && (a.status === "adjusted" || a.status === "signed") && a.adjustments) {
+            return { ...r, ...a.adjustments };
+          }
+          return r;
+        });
+        return { ...prev, s2: { ...(prev.s2||{}), risks: merged } };
+      });
+      const adjusted = Object.values(riskApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
+      log(`HITL Gate ${n}: CONFIRMED — ${Object.values(riskApprovals).filter(a=>a.status==="approved").length} accepted, ${adjusted} adjusted with sign-off`);
+    } else {
+      log(`HITL Gate ${n}: APPROVED`);
+    }
     setGateState((prev) => ({ ...prev, [`g${n}`]: "approved" }));
     const res = gateResRef.current[n];
     if (res) {res({ ok: true });delete gateResRef.current[n];}
@@ -114,58 +193,26 @@ function App() {
   };
 
   // ---- Live data fetch helpers ----
-  async function tryLiveFetch(overrideConfig) {
-    const cfg_data = overrideConfig || dataConfig;
-    const allTickers = [cfg.ticker, ...(cfg_data.tickers || [])].filter(Boolean);
-    const seriesIds  = cfg_data.fredSeriesIds?.length
-      ? cfg_data.fredSeriesIds
-      : ['IPG3344S', 'CAPUTLG3311A2S', 'INDPRO', 'FEDFUNDS', 'T10Y2Y', 'TOTALSA'];
-
-    // Fetch EDGAR for target + peers
-    setLiveStatus(`Fetching EDGAR for ${allTickers.join(', ')}…`);
+  async function tryLiveFetch() {
+    setLiveStatus("Fetching EDGAR companyfacts…");
     try {
-      const factsMap = await LIVE.fetchEdgarMultiple(allTickers, msg => setLiveStatus(msg));
-      setRawEdgarFacts(factsMap);
-      const targetFacts = factsMap[cfg.ticker];
-      if (targetFacts && !targetFacts.error) {
-        const extracted = LIVE.extractFinancials(targetFacts);
-        setLivefacts(extracted);
-        setLiveStatus(`EDGAR OK · ${extracted.entity} · ${allTickers.length} tickers`);
-        log(`EDGAR live fetch OK · ${allTickers.join(', ')}`);
-      } else {
-        setLiveStatus(`EDGAR fetch failed for ${cfg.ticker} · falling back to mock`);
-        log(`EDGAR live fetch failed: ${targetFacts?.error || 'unknown'}`);
-      }
+      const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
+      const extracted = LIVE.extractFinancials(facts);
+      setLivefacts(extracted);
+      setLiveStatus(`EDGAR OK · ${extracted.entity} · CIK ${extracted.cik}`);
+      log(`EDGAR live fetch OK · ${cfg.ticker}`);
     } catch (e) {
       setLivefacts(null);
-      setRawEdgarFacts(null);
-      setLiveStatus(`EDGAR fetch failed: ${e.message}`);
+      setLiveStatus(`EDGAR fetch failed: ${e.message} · falling back to mock`);
       log(`EDGAR live fetch failed: ${e.message}`);
     }
-
-    // Fetch FRED (live API if key set, else bundled snapshot)
-    if (cfg_data.fredApiKey) {
-      try {
-        setLiveStatus(prev => prev + ' · fetching FRED…');
-        const fredRes = await LIVE.fetchFredMultiple(cfg_data.fredApiKey, seriesIds, '2015-01-01',
-          msg => setLiveStatus(msg));
-        setFredApiResults(fredRes);
-        setFredLive(null);
-        log(`FRED API loaded · ${Object.keys(fredRes).length} series`);
-      } catch (e) {
-        setFredApiResults(null);
-        log(`FRED API failed: ${e.message}`);
-      }
-    } else {
-      try {
-        const fred = await LIVE.loadFred();
-        setFredLive(fred.series);
-        setFredApiResults(null);
-        log(`FRED snapshot loaded · ${Object.keys(fred.series).length} series`);
-      } catch (e) {
-        setFredLive(null);
-        log(`FRED snapshot failed: ${e.message}`);
-      }
+    try {
+      const fred = await LIVE.loadFred();
+      setFredLive(fred.series);
+      log(`FRED snapshot loaded · ${Object.keys(fred.series).length} series`);
+    } catch (e) {
+      setFredLive(null);
+      log(`FRED snapshot failed: ${e.message}`);
     }
   }
 
@@ -195,6 +242,7 @@ function App() {
     setNotifLog([]);
     setOpenStages(new Set(["s1"]));
     setSelectedRiskId(null);
+    setRiskApprovals({});
     log("Loop started");
 
     if (liveMode) {
@@ -263,9 +311,10 @@ function App() {
     setOpenStages(new Set(["s1"]));
     setLivefacts(null);
     setFredLive(null);
-    setRawEdgarFacts(null);
-    setFredApiResults(null);
     setLiveStatus("");
+    setRiskApprovals({});
+    setAdjustOpen(false);
+    setAdjustingRiskId(null);
   }
 
   // ---- CEM event firing ----
@@ -332,7 +381,7 @@ function App() {
       ts: new Date().toISOString(),
       cfg: {
         industry: cfg.industry,
-        focus: cfg.focus,
+        focus: Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean),
         sigs: [...signalSet]
       },
       signals: { count: sigsList.length, highVel: sigsList.filter((s) => s.velocity >= 3).length },
@@ -364,6 +413,7 @@ function App() {
   const mainTabs = [
   { id: "pipe", l: "Pipeline" },
   { id: "cem", l: "Control Monitor", count: events.length, pulse: unreadCEM > 0 },
+  { id: "flow", l: "Risk Flow" },
   { id: "fcst", l: "Forecasts" },
   { id: "scen", l: "Scenarios" }];
 
@@ -388,9 +438,9 @@ function App() {
           onOpenReport={() => setReportOpen(true)}
           onOpenPersona={() => {setActiveRailTab("pers");}}
           onOpenConfig={() => {
+            // Surface the tweaks panel — same affordance as the toolbar toggle.
             window.postMessage({type: '__activate_edit_mode'}, '*');
           }}
-          onOpenDataConfig={() => setConfigModalOpen(true)}
           liveMode={liveMode} setLiveMode={setLiveMode}
           liveStatus={liveStatus} />
         
@@ -433,7 +483,12 @@ function App() {
               onApprove={approveGate}
               onOverride={requestOverride}
               signals={output.s1?.signals || []}
-              livefacts={livefacts} />
+              livefacts={livefacts}
+              riskApprovals={riskApprovals}
+              onApproveRisk={approveRisk}
+              onOpenAdjustRisk={openAdjustRisk}
+              onApproveAllRisks={approveAllRemainingRisks}
+              onSignoffRisk={signoffRisk} />
             
           </div>
 
@@ -447,16 +502,21 @@ function App() {
             
           </div>
 
+          <div className={"panel" + (activeMainTab === "flow" ? " active" : "")}>
+            <FlowPanel
+              risks={output.s2?.risks || (hasRun ? MOCK.risks : null)}
+              maps={output.s4?.maps || (hasRun ? MOCK.maps : null)}
+              flowMeta={hasRun ? MOCK.riskFlow : null}
+              selectedId={selectedRiskId} setSelectedId={setSelectedRiskId}
+              liveMode={liveMode} />
+          </div>
+
           <div className={"panel" + (activeMainTab === "fcst" ? " active" : "")}>
             <ForecastsPanel
               data={hasRun ? MOCK.forecasts : null}
               liveMode={liveMode}
-              fredSeries={fredLive}
-              rawEdgarFacts={rawEdgarFacts}
-              fredApiResults={fredApiResults}
-              cfg={cfg}
-              onOpenDataConfig={() => setConfigModalOpen(true)} />
-
+              fredSeries={fredLive} />
+            
           </div>
 
           <div className={"panel" + (activeMainTab === "scen" ? " active" : "")}>
@@ -472,23 +532,23 @@ function App() {
           loop={output.s6?.loop || null}
           notifLog={notifLog}
           forecasts={hasRun ? MOCK.forecasts : null}
+          flowMeta={hasRun ? MOCK.riskFlow : null}
           activeQuarter={activeQuarter} setActiveQuarter={setActiveQuarter}
           selectedRiskId={selectedRiskId} setSelectedRiskId={setSelectedRiskId}
           selectedPersona={selectedPersona} setSelectedPersona={setSelectedPersona}
           personas={hasRun ? MOCK.personas : null}
-          scenarios={hasRun ? MOCK.scenarios : null} />
+          scenarios={hasRun ? MOCK.scenarios : null}
+          onOpenMainFlow={() => setActiveMainTab("flow")} />
         
       </div>
 
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
-      <DataConfigModal
-        open={configModalOpen}
-        onClose={() => setConfigModalOpen(false)}
-        dataConfig={dataConfig}
-        setDataConfig={setDataConfig}
-        cfg={cfg}
-        onFetchNow={(config) => { if (liveMode) tryLiveFetch(config); }} />
+      <AdjustRiskModal
+        open={adjustOpen}
+        risk={(output.s2?.risks || []).find(r => r.id === adjustingRiskId)}
+        onClose={() => { setAdjustOpen(false); setAdjustingRiskId(null); }}
+        onSubmit={submitAdjustment} />
 
       <DendraiTweaks tweaks={tweaks} setTweak={setTweak}
         hitl={hitl} setHitl={setHitl}
@@ -510,7 +570,16 @@ function Header({ cfg, liveMode, livefacts, running, hasRun }) {
         <span className="hdr-ctx-tkr">{cfg.ticker}</span>
         <span className="muted">·</span>
         <span style={{ fontSize: 11.5 }}>{livefacts?.entity || MOCK.entity.name}</span>
-        <span className="hdr-ctx-pill">{cfg.focus}</span>
+        {(() => {
+          const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
+          if (!focusList.length) return null;
+          if (focusList.length === 1) return <span className="hdr-ctx-pill">{focusList[0]}</span>;
+          return (
+            <span className="hdr-ctx-pill" title={focusList.join(" · ")}>
+              {focusList[0]} <span className="muted">· +{focusList.length - 1}</span>
+            </span>
+          );
+        })()}
       </div>
       <div className="hdr-spacer" />
       <div className="hdr-meta">

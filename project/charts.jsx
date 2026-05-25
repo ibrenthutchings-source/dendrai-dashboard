@@ -238,263 +238,315 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
   );
 }
 
-// ---------- RISK FLOW SANKEY (4-column interactive) ----------
-// Risk Domain → Severity → Control Maturity → Mitigation Status
+// ---------- RISK FLOW SANKEY (audit closed loop) ----------
+// 3-column sankey: each KEY RISK fans out to the business areas
+// it impacts and to the audit/control work addressing it. Hovering
+// or clicking a risk highlights its full path. A velocity strip
+// below the chart shows when oversight cadence ramps up over 90d.
+function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, hoverId }) {
+  if (!risks?.length || !flowMeta) return null;
 
-const _SK_DOMAIN_COLORS = {
-  "Financial Reporting": "#6366f1",
-  "Trade Compliance":    "#a855f7",
-  "Operational":         "#f97316",
-  "Cybersecurity":       "#ef4444",
-  "ESG":                 "#22c55e",
-  "Legal":               "#eab308",
-  "Macro":               "#3b82f6",
-  "Supply":              "#14b8a6",
-};
-const _SK_DOMAIN_ABBR = {
-  "Financial Reporting": "Fin.Rpt",
-  "Trade Compliance":    "Trade",
-  "Operational":         "Ops",
-  "Cybersecurity":       "Cyber",
-  "ESG":                 "ESG",
-  "Legal":               "Legal",
-  "Macro":               "Macro",
-  "Supply":              "Supply",
-};
-const _SK_SEV_COLORS = { High: "#ef4444", Medium: "#f59e0b", Low: "#22c55e" };
-const _SK_CE_COLORS  = { NONE: "#ef4444", WEAK: "#f59e0b", ADEQUATE: "#3b82f6", STRONG: "#22c55e" };
-const _SK_MIT_COLORS = { Open: "#ef4444", "In Progress": "#f59e0b", Closed: "#22c55e", "No MAP": "#94a3b8" };
+  // Top risks by score
+  const topRisks = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
 
-const _SK_COLS = [
-  {
-    key: "domain", label: "Risk Domain",
-    order: Object.keys(_SK_DOMAIN_COLORS), colors: _SK_DOMAIN_COLORS,
-    abbr: k => _SK_DOMAIN_ABBR[k] || k,
-  },
-  {
-    key: "severity", label: "Severity",
-    order: ["High", "Medium", "Low"], colors: _SK_SEV_COLORS,
-    abbr: k => k,
-  },
-  {
-    key: "ce", label: "Control",
-    order: ["NONE", "WEAK", "ADEQUATE", "STRONG"], colors: _SK_CE_COLORS,
-    abbr: k => ({ NONE: "None", WEAK: "Weak", ADEQUATE: "Adq.", STRONG: "Str." })[k] || k,
-  },
-  {
-    key: "mitigation", label: "Mitigation",
-    order: ["Open", "In Progress", "Closed", "No MAP"], colors: _SK_MIT_COLORS,
-    abbr: k => ({ Open: "Open", "In Progress": "In Prg.", Closed: "Closed", "No MAP": "No MAP" })[k] || k,
-  },
-];
+  // Collect distinct impact areas across selected risks
+  const impactSet = new Set();
+  topRisks.forEach(r => (flowMeta[r.id]?.impacts || []).forEach(im => impactSet.add(im)));
+  const impacts = [...impactSet];
 
-function RiskFlowSankey({ risks, maps = [] }) {
-  const [hovered, setHovered] = React.useState(null);
-  if (!risks?.length) return null;
+  // Audit nodes: derive from linked MAPs + listed audits
+  // We group into: "In-flight MAP", "Audit on plan", "Closed MAP"
+  const auditGroups = [
+    { id: "open",   label: "MAP · in flight",       color: "var(--amber)",  ink: "var(--amber-ink)" },
+    { id: "plan",   label: "Audit on plan",         color: "var(--acc)",    ink: "var(--acc-ink)" },
+    { id: "closed", label: "Closed / completed",    color: "var(--green)",  ink: "var(--green-ink)" },
+  ];
 
-  // Best MAP per risk (highest completion_pct wins)
-  const mapByRisk = {};
-  (maps || []).forEach(m => {
-    if (!m.linked_risk) return;
-    const cur = mapByRisk[m.linked_risk];
-    if (!cur || (m.completion_pct || 0) > (cur.completion_pct || 0)) mapByRisk[m.linked_risk] = m;
-  });
-
-  const riskData = risks.map(r => {
-    const m = mapByRisk[r.id];
-    let mit;
-    if (!m)                                mit = "No MAP";
-    else if ((m.completion_pct || 0) >= 100) mit = "Closed";
-    else if ((m.completion_pct || 0) > 0)   mit = "In Progress";
-    else                                     mit = "Open";
-    return {
-      r,
-      domain:     r.category || "Unknown",
-      severity:   r.rag === "R" ? "High" : r.rag === "A" ? "Medium" : "Low",
-      ce:         r.ce || "NONE",
-      mitigation: mit,
-      weight:     r.score || 1,
-    };
-  });
-
-  const W = 680, H = 420;
-  const padT = 36, padB = 12, padL = 14, padR = 14;
-  const plotH = H - padT - padB;
-  const plotW = W - padL - padR;
-  const nodeW = 12, nodeGap = 6;
-
-  const colX = [0, 1, 2, 3].map(i => padL + i * (plotW / 3));
-  const total = riskData.reduce((s, d) => s + d.weight, 0);
-
-  // Node weights per column
-  const nodeWeights = _SK_COLS.map(col => {
-    const w = {};
-    riskData.forEach(d => { const k = d[col.key]; w[k] = (w[k] || 0) + d.weight; });
-    return w;
-  });
-
-  // Present keys per column
-  const presentKeys = _SK_COLS.map((col, ci) => col.order.filter(k => nodeWeights[ci][k] > 0));
-
-  // Single usableH across all columns for consistent link-to-node scaling
-  const maxNodes = Math.max(...presentKeys.map(pk => pk.length));
-  const usableH = plotH - (maxNodes - 1) * nodeGap;
-
-  // Layout nodes
-  const layoutNodes = _SK_COLS.map((col, ci) => {
-    let y = padT;
-    return presentKeys[ci].map(key => {
-      const w = nodeWeights[ci][key];
-      const h = (w / total) * usableH;
-      const node = { key, w, h, y, color: col.colors[key] || "#94a3b8" };
-      y += h + nodeGap;
-      return node;
-    });
-  });
-
-  const nodeMap = layoutNodes.map(nodes => Object.fromEntries(nodes.map(n => [n.key, n])));
-
-  // Offset trackers for stacking links within nodes
-  const fromOff = layoutNodes.map(nodes => Object.fromEntries(nodes.map(n => [n.key, 0])));
-  const toOff   = layoutNodes.map(nodes => Object.fromEntries(nodes.map(n => [n.key, 0])));
-
-  const renderedLinks = [];
-  for (let c = 0; c < 3; c++) {
-    const fromKey = _SK_COLS[c].key;
-    const toKey   = _SK_COLS[c + 1].key;
-    const lm = {};
-    riskData.forEach(d => {
-      const fk = d[fromKey], tk = d[toKey];
-      const lk = `${fk}||${tk}`;
-      if (!lm[lk]) lm[lk] = { from: fk, to: tk, weight: 0, risks: [] };
-      lm[lk].weight += d.weight;
-      lm[lk].risks.push(d.r);
-    });
-    Object.values(lm)
-      .sort((a, b) => {
-        const fo = _SK_COLS[c].order, to2 = _SK_COLS[c + 1].order;
-        const fd = fo.indexOf(a.from) - fo.indexOf(b.from);
-        return fd !== 0 ? fd : to2.indexOf(a.to) - to2.indexOf(b.to);
-      })
-      .forEach(link => {
-        const fn = nodeMap[c][link.from];
-        const tn = nodeMap[c + 1][link.to];
-        if (!fn || !tn) return;
-        const h  = (link.weight / total) * usableH;
-        const x1 = colX[c]     + nodeW / 2;
-        const x2 = colX[c + 1] - nodeW / 2;
-        const y1 = fn.y + fromOff[c][link.from];
-        const y2 = tn.y + toOff[c + 1][link.to];
-        const cx = (x1 + x2) / 2;
-        fromOff[c][link.from]     += h;
-        toOff[c + 1][link.to]     += h;
-        const d =
-          `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}` +
-          ` L${x2},${y2 + h} C${cx},${y2 + h} ${cx},${y1 + h} ${x1},${y1 + h} Z`;
-        renderedLinks.push({
-          d, col: c, from: link.from, to: link.to,
-          weight: link.weight, risks: link.risks,
-          color: fn.color,
-          id: `lnk-${c}-${link.from}-${link.to}`,
-        });
-      });
+  // For each risk, classify its audit count into the 3 buckets
+  // based on the linked MAP completion %.
+  function audCountsFor(rid) {
+    const meta = flowMeta[rid];
+    if (!meta) return { open: 0, plan: 0, closed: 0 };
+    // Number of audit/MAP items
+    const linkedMaps = (maps || []).filter(m => m.linked_risk === rid);
+    const planned = Math.max(0, (meta.audits?.length || 0) - linkedMaps.length);
+    const open = linkedMaps.filter(m => (m.completion_pct || 0) < 100).length;
+    const closed = linkedMaps.filter(m => (m.completion_pct || 0) >= 100).length;
+    return { open, plan: planned, closed };
   }
 
-  const isActive = lnk => {
-    if (!hovered) return true;
-    if (hovered.col === lnk.col     && hovered.key === lnk.from) return true;
-    if (hovered.col === lnk.col + 1 && hovered.key === lnk.to)   return true;
-    return false;
-  };
+  // ---- Layout ----
+  const W = 720, H = 380;
+  const padT = 36, padB = 28;
+  const colW = 8;                      // node bar width
+  const labelGapL = 14;                // left col label gap
+  const labelGapR = 14;
+  // Column X positions for the node BARS
+  const xRisk = 168;                   // bar for risk column (labels to left)
+  const xImpact = W / 2 + 18;          // middle column
+  const xAudit = W - 156;              // right column (labels to right)
+  const plotH = H - padT - padB;
 
-  const hoveredRisks = hovered
-    ? riskData.filter(d => d[_SK_COLS[hovered.col].key] === hovered.key)
-    : [];
+  // Compute risk node sizes by score weight (relative)
+  const ragColor = { R: "var(--red)", A: "var(--amber)", G: "var(--green)" };
+  const ragInk   = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
+
+  const riskWeights = topRisks.map(r => Math.max(2, r.score));
+  const totalRW = riskWeights.reduce((a, b) => a + b, 0);
+
+  // Risk node heights
+  const gapR = 8;
+  const usableR = plotH - gapR * (topRisks.length - 1);
+  const riskNodes = {};
+  {
+    let y = padT;
+    topRisks.forEach((r, i) => {
+      const h = (riskWeights[i] / totalRW) * usableR;
+      riskNodes[r.id] = { y, h, r };
+      y += h + gapR;
+    });
+  }
+
+  // Impact nodes — height = sum of risk-weights flowing into it
+  const impactWeights = {};
+  impacts.forEach(im => { impactWeights[im] = 0; });
+  topRisks.forEach((r, i) => {
+    (flowMeta[r.id]?.impacts || []).forEach(im => {
+      if (impactWeights[im] === undefined) return;
+      // Each risk contributes equally to each of its impacts
+      const n = (flowMeta[r.id].impacts || []).length || 1;
+      impactWeights[im] += riskWeights[i] / n;
+    });
+  });
+  const totalImW = Object.values(impactWeights).reduce((a, b) => a + b, 0);
+  const gapI = 6;
+  const usableI = plotH - gapI * (impacts.length - 1);
+  const impactNodes = {};
+  {
+    // Sort impacts by descending weight for cleaner ribbons
+    const sorted = [...impacts].sort((a, b) => impactWeights[b] - impactWeights[a]);
+    let y = padT;
+    sorted.forEach(im => {
+      const h = (impactWeights[im] / totalImW) * usableI;
+      impactNodes[im] = { y, h, im };
+      y += h + gapI;
+    });
+  }
+
+  // Audit nodes — width = sum of risk-weights contributing items in each bucket
+  const audGroupWeights = { open: 0, plan: 0, closed: 0 };
+  topRisks.forEach((r, i) => {
+    const c = audCountsFor(r.id);
+    const total = c.open + c.plan + c.closed;
+    if (total === 0) return;
+    audGroupWeights.open   += (riskWeights[i] * c.open)   / total;
+    audGroupWeights.plan   += (riskWeights[i] * c.plan)   / total;
+    audGroupWeights.closed += (riskWeights[i] * c.closed) / total;
+  });
+  const totalAW = Object.values(audGroupWeights).reduce((a, b) => a + b, 0) || 1;
+  const gapA = 10;
+  const usableA = plotH - gapA * (auditGroups.length - 1);
+  const auditNodes = {};
+  {
+    let y = padT;
+    auditGroups.forEach(g => {
+      const h = (audGroupWeights[g.id] / totalAW) * usableA;
+      auditNodes[g.id] = { y, h, ...g };
+      y += h + gapA;
+    });
+  }
+
+  // Build ribbons risk → impact
+  const ribbonsRI = [];
+  // Track per-source/per-dest offsets so stacking works
+  const offR = {}; // risk side outflow
+  const offI = {}; // impact side inflow
+  topRisks.forEach((r, i) => offR[r.id] = 0);
+  impacts.forEach(im => offI[im] = 0);
+  topRisks.forEach((r, i) => {
+    const meta = flowMeta[r.id];
+    if (!meta) return;
+    const list = meta.impacts || [];
+    const n = list.length || 1;
+    list.forEach(im => {
+      if (!impactNodes[im]) return;
+      const w = riskWeights[i] / n;
+      const hSrc = (w / totalRW) * usableR;
+      const hDst = (w / totalImW) * usableI;
+      const ry = riskNodes[r.id].y + offR[r.id];
+      const iy = impactNodes[im].y + offI[im];
+      offR[r.id] += hSrc;
+      offI[im]   += hDst;
+      const x1 = xRisk + colW;
+      const x2 = xImpact;
+      const cx = (x1 + x2) / 2;
+      const path =
+        `M${x1},${ry} C${cx},${ry} ${cx},${iy} ${x2},${iy}` +
+        ` L${x2},${iy + hDst} C${cx},${iy + hDst} ${cx},${ry + hSrc} ${x1},${ry + hSrc} Z`;
+      ribbonsRI.push({ riskId: r.id, path, rag: r.rag });
+    });
+  });
+
+  // Build ribbons impact → audit (route each impact's weight across audit
+  // buckets weighted by the same per-risk audit-bucket split)
+  const ribbonsIA = [];
+  // Per impact, we know its inflow composition by risk. Re-derive that.
+  const impactRiskShare = {}; // {impact: {riskId: weight}}
+  impacts.forEach(im => impactRiskShare[im] = {});
+  topRisks.forEach((r, i) => {
+    const list = flowMeta[r.id]?.impacts || [];
+    const n = list.length || 1;
+    list.forEach(im => {
+      if (impactRiskShare[im] === undefined) return;
+      impactRiskShare[im][r.id] = (impactRiskShare[im][r.id] || 0) + riskWeights[i] / n;
+    });
+  });
+  const offI_out = {}; impacts.forEach(im => offI_out[im] = 0);
+  const offA_in = { open: 0, plan: 0, closed: 0 };
+  // Iterate impacts in same sort order as nodes for stacking parity
+  const sortedImpacts = [...impacts].sort((a, b) => impactNodes[a].y - impactNodes[b].y);
+  sortedImpacts.forEach(im => {
+    const riskShare = impactRiskShare[im];
+    Object.entries(riskShare).forEach(([rid, w]) => {
+      const ric = audCountsFor(rid);
+      const tot = ric.open + ric.plan + ric.closed;
+      if (tot === 0) return;
+      ["open", "plan", "closed"].forEach(g => {
+        const portion = (ric[g] / tot) * w;
+        if (!portion) return;
+        const hDst = (portion / totalAW) * usableA;
+        // src side stacking uses impact column
+        const hSrc = (portion / totalImW) * usableI;
+        const iy = impactNodes[im].y + offI_out[im];
+        const ay = auditNodes[g].y + offA_in[g];
+        offI_out[im] += hSrc;
+        offA_in[g]   += hDst;
+        const x1 = xImpact + colW;
+        const x2 = xAudit;
+        const cx = (x1 + x2) / 2;
+        const path =
+          `M${x1},${iy} C${cx},${iy} ${cx},${ay} ${x2},${ay}` +
+          ` L${x2},${ay + hDst} C${cx},${ay + hDst} ${cx},${iy + hSrc} ${x1},${iy + hSrc} Z`;
+        ribbonsIA.push({ riskId: rid, path, rag: risks.find(rr => rr.id === rid)?.rag || "A", group: g });
+      });
+    });
+  });
+
+  const activeId = hoverId || selectedId;
 
   return (
-    <div>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }}>
-        {/* Column headers */}
-        {_SK_COLS.map((col, ci) => (
-          <text key={ci} x={colX[ci]} y={22}
-                textAnchor={ci === 0 ? "start" : ci === 3 ? "end" : "middle"}
-                fontSize="10" fontFamily="Geist Mono, monospace"
-                fontWeight="600" fill="var(--ink-2)">{col.label}</text>
-        ))}
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }} xmlns="http://www.w3.org/2000/svg"
+      onMouseLeave={() => onHover && onHover(null)}>
+      <defs>
+        <linearGradient id="rfs-band" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stopColor="var(--surface-2)" stopOpacity="0.4"/>
+          <stop offset="100%" stopColor="var(--surface-2)" stopOpacity="0"/>
+        </linearGradient>
+      </defs>
 
-        {/* Links */}
-        {renderedLinks.map(lnk => (
-          <path
-            key={lnk.id} d={lnk.d} fill={lnk.color}
-            opacity={isActive(lnk) ? 0.42 : 0.07}
-            style={{ transition: "opacity 0.12s" }}
-          />
-        ))}
+      {/* Column headers */}
+      <text x={xRisk + colW / 2} y={18} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
+            letterSpacing="0.06em" fill="var(--ink-3)">RISK</text>
+      <text x={xImpact + colW / 2} y={18} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
+            letterSpacing="0.06em" fill="var(--ink-3)">IMPACT AREA</text>
+      <text x={xAudit + colW / 2} y={18} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
+            letterSpacing="0.06em" fill="var(--ink-3)">AUDIT &amp; MAP</text>
 
-        {/* Nodes */}
-        {layoutNodes.map((nodes, ci) => nodes.map(node => {
-          const isHov = hovered?.col === ci && hovered?.key === node.key;
-          const isDim = !!hovered && !isHov;
-          const goRight = ci < 3;
-          const lx = goRight ? colX[ci] + nodeW / 2 + 4 : colX[ci] - nodeW / 2 - 4;
-          return (
-            <g key={`nd-${ci}-${node.key}`}
-               onMouseEnter={() => setHovered({ col: ci, key: node.key })}
-               onMouseLeave={() => setHovered(null)}
-               style={{ cursor: "pointer" }}>
-              <rect
-                x={colX[ci] - nodeW / 2} y={node.y}
-                width={nodeW} height={Math.max(node.h, 2)}
-                fill={node.color} rx={3}
-                opacity={isDim ? 0.25 : 1}
-                style={{ transition: "opacity 0.12s" }}
-              />
-              {node.h >= 12 && (
-                <text
-                  x={lx} y={node.y + node.h / 2 + 3.5}
-                  textAnchor={goRight ? "start" : "end"}
-                  fontSize="9" fontFamily="Geist Mono, monospace"
-                  fill={isDim ? "var(--ink-3)" : "var(--ink-2)"}
-                  pointerEvents="none"
-                  style={{ transition: "fill 0.12s" }}
-                >
-                  {_SK_COLS[ci].abbr(node.key)}
-                </text>
-              )}
-            </g>
-          );
-        }))}
-      </svg>
+      {/* Ribbons risk → impact */}
+      {ribbonsRI.map((rb, i) => {
+        const isActive = activeId ? rb.riskId === activeId : false;
+        const dimmed = activeId && !isActive;
+        return (
+          <path key={`ri-${i}`} d={rb.path} fill={ragColor[rb.rag]}
+                opacity={dimmed ? 0.06 : isActive ? 0.55 : 0.22}/>
+        );
+      })}
+      {/* Ribbons impact → audit */}
+      {ribbonsIA.map((rb, i) => {
+        const isActive = activeId ? rb.riskId === activeId : false;
+        const dimmed = activeId && !isActive;
+        return (
+          <path key={`ia-${i}`} d={rb.path} fill={auditGroups.find(g => g.id === rb.group).color}
+                opacity={dimmed ? 0.05 : isActive ? 0.5 : 0.18}/>
+        );
+      })}
 
-      {/* Hover tooltip */}
-      {hovered && hoveredRisks.length > 0 && (
-        <div style={{
-          marginTop: 8, background: "var(--surface-2)",
-          border: "1px solid var(--line)", borderRadius: 8,
-          padding: "10px 12px", fontSize: 11,
-        }}>
-          <div style={{ fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>
-            {_SK_COLS[hovered.col].label}: {hovered.key}
-            <span className="mono" style={{ fontWeight: 400, color: "var(--ink-3)", marginLeft: 8 }}>
-              {hoveredRisks.length} risk{hoveredRisks.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-          {hoveredRisks.map(d => (
-            <div key={d.r.id} style={{
-              display: "flex", alignItems: "center", gap: 8,
-              padding: "3px 0", borderTop: "1px solid var(--line)",
-            }}>
-              <span className={`rag-dot ${d.r.rag}`}/>
-              <span style={{ color: "var(--ink-2)", flex: 1 }}>{d.r.name}</span>
-              <span className="mono" style={{ color: "var(--ink-3)", fontSize: 10 }}>
-                {(d.r.score || 0).toFixed(1)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+      {/* Risk nodes + labels */}
+      {topRisks.map(r => {
+        const n = riskNodes[r.id];
+        const isActive = activeId === r.id;
+        const dimmed = activeId && !isActive;
+        return (
+          <g key={`rn-${r.id}`} style={{ cursor: "pointer" }}
+             onMouseEnter={() => onHover && onHover(r.id)}
+             onClick={() => onSelect && onSelect(r.id === selectedId ? null : r.id)}>
+            <rect x={xRisk - 162} y={n.y - 2} width={162 + colW + 4} height={n.h + 4} fill="transparent"/>
+            <rect x={xRisk} y={n.y} width={colW} height={Math.max(n.h, 2)} rx={2}
+                  fill={ragColor[r.rag]} opacity={dimmed ? 0.4 : 1}/>
+            <text x={xRisk - labelGapL} y={n.y + n.h / 2 - 2} textAnchor="end"
+                  fontSize="11" fontWeight={isActive ? 600 : 500}
+                  fill={dimmed ? "var(--ink-4)" : "var(--ink)"}>
+              {truncate(r.name, 22)}
+            </text>
+            <text x={xRisk - labelGapL} y={n.y + n.h / 2 + 10} textAnchor="end"
+                  fontSize="9.5" fontFamily="Geist Mono, monospace"
+                  fill={dimmed ? "var(--ink-4)" : ragInk[r.rag]}>
+              {r.id} · {r.score.toFixed(1)} · v{r.velocity >= 0 ? "+" : ""}{r.velocity}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Impact nodes + labels */}
+      {impacts.map(im => {
+        const n = impactNodes[im];
+        if (!n) return null;
+        // Find which highlighted risks pass through
+        const involved = activeId
+          ? (flowMeta[activeId]?.impacts || []).includes(im)
+          : false;
+        const dimmed = activeId && !involved;
+        return (
+          <g key={`in-${im}`}>
+            <rect x={xImpact} y={n.y} width={colW} height={Math.max(n.h, 2)} rx={2}
+                  fill="var(--ink-2)" opacity={dimmed ? 0.25 : 0.8}/>
+            <text x={xImpact + colW + 6} y={n.y + n.h / 2 + 4}
+                  fontSize="10.5" fontWeight={involved ? 500 : 400}
+                  fill={dimmed ? "var(--ink-4)" : "var(--ink-2)"}>
+              {truncate(im, 18)}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Audit nodes + labels */}
+      {auditGroups.map(g => {
+        const n = auditNodes[g.id];
+        if (!n) return null;
+        return (
+          <g key={`an-${g.id}`}>
+            <rect x={xAudit} y={n.y} width={colW} height={Math.max(n.h, 2)} rx={2}
+                  fill={g.color}/>
+            <text x={xAudit + colW + 6} y={n.y + n.h / 2 - 2}
+                  fontSize="11" fontWeight="500" fill={g.ink}>
+              {g.label}
+            </text>
+            <text x={xAudit + colW + 6} y={n.y + n.h / 2 + 11}
+                  fontSize="9.5" fontFamily="Geist Mono, monospace" fill="var(--ink-3)">
+              {/* compute count */}
+              {(() => {
+                let c = 0;
+                topRisks.forEach(r => { c += audCountsFor(r.id)[g.id]; });
+                return `${c} item${c === 1 ? "" : "s"}`;
+              })()}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
   );
 }
+
+function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
 Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey });

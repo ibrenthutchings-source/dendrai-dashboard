@@ -314,7 +314,120 @@ window.MOCK = (function () {
   ];
 
   // --------------------------------------------------------
-  // GREY SWAN — a foreseeable cascade where a currently-green
+  // RISK FLOW — per-risk fan-out: impact areas + controls
+  // + linked audit/MAP work, plus the velocity-driven cadence
+  // of audit oversight across the next 90 days. Keys match
+  // the risk register IDs.
+  // --------------------------------------------------------
+  const riskFlow = {
+    "R-01": {
+      impacts: ["Revenue Recognition", "Financial Reporting", "Investor Reporting"],
+      controls: [
+        { name: "Distributor attestation gate",      ce: "ADEQUATE" },
+        { name: "Channel WoH monitor",               ce: "WEAK" },
+        { name: "Q1/Q4 revenue cut-off review",      ce: "ADEQUATE" },
+      ],
+      audits: ["MAP-01", "Q1 sample expansion", "SOX 404 walkthrough"],
+      cadence: ["T+14d", "T+30d", "T+60d", "T+75d"],
+      summary: "Distributor attestation regression after Q4 platform release; sell-through visibility lagging sell-in.",
+    },
+    "R-02": {
+      impacts: ["Trade Compliance", "Revenue Recognition", "Reputational"],
+      controls: [
+        { name: "ECCN classification review",        ce: "WEAK" },
+        { name: "Restricted-party screening",        ce: "ADEQUATE" },
+        { name: "End-user attestation",              ce: "ADEQUATE" },
+      ],
+      audits: ["MAP-02", "BIS deep-dive audit", "FY24 SKU back-classification"],
+      cadence: ["T+7d", "T+21d", "T+45d", "T+70d", "T+85d"],
+      summary: "October BIS rule extension expanded ECCN universe; 4 self-classified SKUs already shipped.",
+    },
+    "R-03": {
+      impacts: ["Financial Reporting", "Supply Chain", "Operational"],
+      controls: [
+        { name: "NRV reserve methodology",           ce: "ADEQUATE" },
+        { name: "Cycle counting (Mesa fab)",         ce: "ADEQUATE" },
+        { name: "Demand forecasting model",          ce: "WEAK" },
+      ],
+      audits: ["MAP-03", "Inventory NRV stress test", "10-K reserve disclosure"],
+      cadence: ["T+30d", "T+60d", "T+90d"],
+      summary: "FY24 NRV reserve consolidated; SiC ($380M) exposure not isolated in ERP hierarchy.",
+    },
+    "R-04": {
+      impacts: ["Cybersecurity", "Financial Reporting", "Revenue Recognition", "Trade Compliance", "ESG"],
+      controls: [
+        { name: "Privileged access certification",   ce: "ADEQUATE" },
+        { name: "Org-chart delta auto-detect",       ce: "WEAK" },
+        { name: "Just-in-time credential issuance",  ce: "STRONG" },
+      ],
+      audits: ["MAP-04", "ITGC reperformance", "Access governance audit", "Penetration test"],
+      cadence: ["T+14d", "T+28d", "T+42d", "T+60d", "T+80d"],
+      summary: "Privileged access cert at 89%; org-chart deltas mid-cycle orphan re-certifications. High blast radius across financial + operational systems.",
+    },
+    "R-05": {
+      impacts: ["Financial Reporting", "Investor Reporting"],
+      controls: [
+        { name: "M-Score forensic monitor",          ce: "ADEQUATE" },
+        { name: "Forensic walkthrough (quarterly)",  ce: "ADEQUATE" },
+      ],
+      audits: ["Forensic review", "M-Score model refresh"],
+      cadence: ["T+30d", "T+75d"],
+      summary: "M-Score elevated (−1.62) driven by TATA component; DSO +8d QoQ, channel WoH +2.4 weeks.",
+    },
+    "R-06": {
+      impacts: ["Operational", "Financial Reporting"],
+      controls: [
+        { name: "Capex variance review",             ce: "STRONG" },
+        { name: "Capacity-plan reconciliation",      ce: "STRONG" },
+      ],
+      audits: ["Capex utilisation review"],
+      cadence: ["T+90d"],
+      summary: "Two periods of under-spend vs plan; risk is opportunity-cost rather than control failure.",
+    },
+    "R-07": {
+      impacts: ["ESG", "Operational", "Reputational"],
+      controls: [
+        { name: "Site water-stress monitoring",      ce: "ADEQUATE" },
+        { name: "Drought-contingency plan (AZ)",     ce: "ADEQUATE" },
+      ],
+      audits: ["ESG water disclosure walkthrough"],
+      cadence: ["T+60d"],
+      summary: "Arizona fab water-stress index trending up; offset partially by reclaim investments coming online Q3.",
+    },
+    "R-08": {
+      impacts: ["Legal", "Financial Reporting"],
+      controls: [
+        { name: "Active-litigation tracker",         ce: "STRONG" },
+        { name: "Quarterly counsel review",          ce: "STRONG" },
+      ],
+      audits: ["Legal-letter procedure"],
+      cadence: ["T+90d"],
+      summary: "Active patent cases stable; no new claims this quarter. Reserve adequate.",
+    },
+    "R-09": {
+      impacts: ["Macro", "Revenue Recognition", "Financial Reporting"],
+      controls: [
+        { name: "FRED correlate dashboard",          ce: "STRONG" },
+        { name: "Peer earnings monitor",             ce: "STRONG" },
+      ],
+      audits: ["Macro early-warning review"],
+      cadence: ["T+45d"],
+      summary: "PMI / Phila Fed correlation strong; current reading not at alert threshold but converging.",
+    },
+    "R-10": {
+      impacts: ["Supply Chain", "ESG", "Reputational"],
+      controls: [
+        { name: "RMAP smelter coverage check",       ce: "STRONG" },
+        { name: "Supplier attestation refresh",      ce: "STRONG" },
+      ],
+      audits: ["Conflict-minerals procedure"],
+      cadence: ["T+90d"],
+      summary: "RMAP coverage at 96%; remaining suppliers in cure period. No reportable issue currently.",
+    },
+  };
+
+  // --------------------------------------------------------
+  // Grey Swan — a foreseeable cascade where a currently-green
   // risk escalates to high risk over 90 days. Timeline at
   // 0 / 30 / 60 / 90 days with impact + likelihood at each step.
   // --------------------------------------------------------
@@ -410,5 +523,5 @@ window.MOCK = (function () {
     },
   };
 
-  return { entity, signals, risks, objectives, maps, closure, loop, eventTemplates, forecasts, scenarios, greySwan, personas };
+  return { entity, signals, risks, objectives, maps, closure, loop, eventTemplates, forecasts, scenarios, greySwan, riskFlow, personas };
 })();
