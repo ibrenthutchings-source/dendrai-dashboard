@@ -243,7 +243,7 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
 // it impacts and to the audit/control work addressing it. Hovering
 // or clicking a risk highlights its full path. A velocity strip
 // below the chart shows when oversight cadence ramps up over 90d.
-function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, hoverId }) {
+function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, hoverId, rssSignals, fredData }) {
   if (!risks?.length || !flowMeta) return null;
 
   // Top risks by score
@@ -275,16 +275,35 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
     return { open, plan: planned, closed };
   }
 
+  // Residual risk computation
+  function computeResidual(risk) {
+    const velContrib = (risk.velocity || 0) * 0.35;
+    const ceAdj = ({ STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 })[risk.ce] || 0;
+
+    // RSS contribution: sum velocity of signals linked to this risk
+    const rssVel = (rssSignals || [])
+      .filter(s => (s.affectedRisks || []).includes(risk.id) ||
+        (s.domains || []).some(d => (flowMeta[risk.id]?.impacts || []).some(im => im.toLowerCase().includes(d.toLowerCase()))))
+      .reduce((sum, s) => sum + (s.velocity || 0) * 0.08, 0);
+
+    // Macro: average FRED velocity signal (contractionary = +0.2, neutral = 0, expansionary = -0.1)
+    const macroAdj = (fredData || []).filter(f => f.dir === "CONTRACTIONARY").length * 0.08;
+
+    const projected = risk.score + velContrib + ceAdj + rssVel + macroAdj;
+    return Math.max(1, Math.min(10, parseFloat(projected.toFixed(1))));
+  }
+
   // ---- Layout ----
-  const W = 720, H = 380;
+  const W = 940, H = 380;
   const padT = 36, padB = 28;
   const colW = 8;                      // node bar width
   const labelGapL = 14;                // left col label gap
   const labelGapR = 14;
   // Column X positions for the node BARS
-  const xRisk = 168;                   // bar for risk column (labels to left)
-  const xImpact = W / 2 + 18;          // middle column
-  const xAudit = W - 156;              // right column (labels to right)
+  const xRisk    = 168;
+  const xImpact  = 360;
+  const xAudit   = 560;
+  const xResidual = 760;
   const plotH = H - padT - padB;
 
   // Compute risk node sizes by score weight (relative)
@@ -432,6 +451,46 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
     });
   });
 
+  // Residual risk nodes — one per top risk, aligned to risk node Y
+  const residualNodes = {};
+  topRisks.forEach((r, i) => {
+    const proj = computeResidual(r);
+    const projRag = proj >= 7.5 ? "R" : proj >= 5.0 ? "A" : "G";
+    const h = (riskWeights[i] / totalRW) * usableR;
+    const y = riskNodes[r.id].y;
+    residualNodes[r.id] = { y, h, proj, projRag, delta: proj - r.score };
+  });
+
+  // Build ribbons audit → residual (per risk, proportional to its audit weight)
+  const ribbonsAR = [];
+  const offA_out = { open: 0, plan: 0, closed: 0 };
+  const offRes_in = {};
+  topRisks.forEach(r => { offRes_in[r.id] = 0; });
+
+  topRisks.forEach((r, i) => {
+    const rac = audCountsFor(r.id);
+    const tot = rac.open + rac.plan + rac.closed;
+    if (tot === 0) return;
+    const rn = residualNodes[r.id];
+    ["open", "plan", "closed"].forEach(g => {
+      const portion = (rac[g] / tot) * riskWeights[i];
+      if (!portion) return;
+      const hSrc = (portion / totalAW) * usableA;
+      const hDst = (portion / totalRW) * usableR;
+      const ay = auditNodes[g].y + offA_out[g];
+      const ry2 = rn.y + offRes_in[r.id];
+      offA_out[g]     += hSrc;
+      offRes_in[r.id] += hDst;
+      const x1 = xAudit + colW;
+      const x2 = xResidual;
+      const cx = (x1 + x2) / 2;
+      const path =
+        `M${x1},${ay} C${cx},${ay} ${cx},${ry2} ${x2},${ry2}` +
+        ` L${x2},${ry2 + hDst} C${cx},${ry2 + hDst} ${cx},${ay + hSrc} ${x1},${ay + hSrc} Z`;
+      ribbonsAR.push({ riskId: r.id, path, projRag: rn.projRag, group: g });
+    });
+  });
+
   const activeId = hoverId || selectedId;
 
   return (
@@ -451,6 +510,8 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
             letterSpacing="0.06em" fill="var(--ink-3)">IMPACT AREA</text>
       <text x={xAudit + colW / 2} y={18} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
             letterSpacing="0.06em" fill="var(--ink-3)">AUDIT &amp; MAP</text>
+      <text x={xResidual + colW / 2} y={18} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
+            letterSpacing="0.06em" fill="var(--ink-3)">RESIDUAL RISK</text>
 
       {/* Ribbons risk → impact */}
       {ribbonsRI.map((rb, i) => {
@@ -468,6 +529,15 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
         return (
           <path key={`ia-${i}`} d={rb.path} fill={auditGroups.find(g => g.id === rb.group).color}
                 opacity={dimmed ? 0.05 : isActive ? 0.5 : 0.18}/>
+        );
+      })}
+      {/* Ribbons audit → residual */}
+      {ribbonsAR.map((rb, i) => {
+        const isActive = activeId ? rb.riskId === activeId : false;
+        const dimmed = activeId && !isActive;
+        return (
+          <path key={`ar-${i}`} d={rb.path} fill={ragColor[rb.projRag]}
+                opacity={dimmed ? 0.05 : isActive ? 0.45 : 0.16}/>
         );
       })}
 
@@ -539,6 +609,32 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
                 topRisks.forEach(r => { c += audCountsFor(r.id)[g.id]; });
                 return `${c} item${c === 1 ? "" : "s"}`;
               })()}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Residual risk nodes + labels */}
+      {topRisks.map(r => {
+        const rn = residualNodes[r.id];
+        if (!rn) return null;
+        const isActive = activeId === r.id;
+        const dimmed = activeId && !isActive;
+        const deltaSign = rn.delta >= 0 ? "+" : "";
+        const labelColor = ragColor[rn.projRag];
+        const labelInk = ragInk[rn.projRag];
+        return (
+          <g key={`res-${r.id}`}>
+            <rect x={xResidual} y={rn.y} width={colW} height={Math.max(rn.h, 2)} rx={2}
+                  fill={labelColor} opacity={dimmed ? 0.3 : 1}/>
+            <text x={xResidual + colW + 6} y={rn.y + rn.h / 2 - 2}
+                  fontSize="11" fontWeight="500" fill={dimmed ? "var(--ink-4)" : labelInk}>
+              {rn.proj.toFixed(1)}
+            </text>
+            <text x={xResidual + colW + 6} y={rn.y + rn.h / 2 + 11}
+                  fontSize="9.5" fontFamily="Geist Mono, monospace"
+                  fill={dimmed ? "var(--ink-4)" : "var(--ink-3)"}>
+              {deltaSign}{rn.delta.toFixed(1)} projected
             </text>
           </g>
         );

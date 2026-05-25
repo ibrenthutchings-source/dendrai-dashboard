@@ -20,6 +20,7 @@ function Rail({
   selectedRiskId, setSelectedRiskId,
   selectedPersona, setSelectedPersona,
   personas, onOpenMainFlow,
+  periodBegin, periodEnd,
 }) {
   return (
     <aside className="rsb" data-screen-label="Live register rail">
@@ -27,6 +28,11 @@ function Rail({
         <div className="rsb-title">
           <div className="t">Live Register</div>
           <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{risks?.length || 0} risks · {maps?.length || 0} MAPs</span>
+          {(periodBegin || periodEnd) && (
+            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)", marginTop: 2}}>
+              {periodBegin || "—"} → {periodEnd || "—"}
+            </span>
+          )}
         </div>
         <div className="rtab-bar">
           {RAIL_TABS.map(t => (

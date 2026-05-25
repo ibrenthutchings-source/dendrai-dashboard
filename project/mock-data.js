@@ -15,6 +15,8 @@ window.MOCK = (function () {
     industry: "Analog Semiconductors",
     focus: "Revenue Recognition",
     period: "Q1 2022 — Q4 2024",
+    periodBegin: "Q1 2025",
+    periodEnd: "Q4 2025",
     auditor: "PwC",
     auditor_opinion: "Unqualified",
     fy_close: "2024-12-31",
@@ -238,6 +240,14 @@ window.MOCK = (function () {
       trend: "DETERIORATING",
       hedge_ratio_trend: "+18% over 4Q",
       latest_quarter: "Q4-24",
+      quarterly: [
+        { q: "Q3-23", score: 12,  hedge: 0.08 },
+        { q: "Q4-23", score: 6,   hedge: 0.10 },
+        { q: "Q1-24", score: -2,  hedge: 0.12 },
+        { q: "Q2-24", score: -8,  hedge: 0.18 },
+        { q: "Q3-24", score: -14, hedge: 0.22 },
+        { q: "Q4-24", score: -18, hedge: 0.26 },
+      ],
     },
     mscore: {
       m: -1.62,

@@ -26,7 +26,9 @@ function App() {
   const [cfg, setCfg] = useState({
     ticker: MOCK.entity.ticker,
     industry: MOCK.entity.industry,
-    focus: Array.isArray(MOCK.entity.focus) ? MOCK.entity.focus : [MOCK.entity.focus]
+    focus: Array.isArray(MOCK.entity.focus) ? MOCK.entity.focus : [MOCK.entity.focus],
+    periodBegin: "Q1 2025",
+    periodEnd: "Q4 2025",
   });
   const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal"]));
   const [velocity, setVelocity] = useState(3);
@@ -603,7 +605,9 @@ function App() {
               maps={output.s4?.maps || (hasRun ? MOCK.maps : null)}
               flowMeta={hasRun ? MOCK.riskFlow : null}
               selectedId={selectedRiskId} setSelectedId={setSelectedRiskId}
-              liveMode={liveMode} />
+              liveMode={liveMode}
+              rssSignals={rssSignals}
+              fredData={MOCK.forecasts?.fred} />
           </div>
 
           <div className={"panel" + (activeMainTab === "fcst" ? " active" : "")}>
@@ -611,8 +615,9 @@ function App() {
               data={hasRun ? MOCK.forecasts : null}
               liveMode={liveMode}
               livefacts={livefacts}
-              fredSeries={fredLive} />
-            
+              fredSeries={fredLive}
+              rssSignals={rssSignals} />
+
           </div>
 
           <div className={"panel" + (activeMainTab === "scen" ? " active" : "")}>
@@ -634,7 +639,9 @@ function App() {
           selectedPersona={selectedPersona} setSelectedPersona={setSelectedPersona}
           personas={hasRun ? MOCK.personas : null}
           scenarios={hasRun ? MOCK.scenarios : null}
-          onOpenMainFlow={() => setActiveMainTab("flow")} />
+          onOpenMainFlow={() => setActiveMainTab("flow")}
+          periodBegin={cfg.periodBegin}
+          periodEnd={cfg.periodEnd} />
         
       </div>
 

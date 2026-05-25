@@ -17,7 +17,7 @@ const MODEL_NAMES = {
   ensemble: "Ensemble",
 };
 
-function ForecastsPanel({ data, liveMode, livefacts, fredSeries }) {
+function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
   const [modelOutput, setModelOutput] = useState(null);
   const [modelRunning, setModelRunning] = useState(false);
   const [modelError, setModelError] = useState(null);
@@ -240,13 +240,13 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries }) {
           </div>
         </div>
         <div style={{display:"flex", alignItems:"flex-end", gap: 4, height: 60, padding: "8px 0", marginTop: 6}}>
-          {[12, 6, -2, -8, -14, -18].map((v, i) => {
-            const h = Math.abs(v) / 20 * 50 + 4;
-            const negative = v < 0;
+          {(data.sentiment.quarterly || []).map((d, i) => {
+            const h = Math.abs(d.score) / 20 * 50 + 4;
+            const negative = d.score < 0;
             return (
               <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4}}>
                 <div style={{width:"70%", height:h, background: negative ? "var(--red)" : "var(--green)", opacity:0.85, borderRadius:3}}/>
-                <div className="mono" style={{fontSize:9, color:"var(--ink-3)"}}>Q{i+1}-24</div>
+                <div className="mono" style={{fontSize:9, color:"var(--ink-3)"}}>{d.q}</div>
               </div>
             );
           })}
@@ -255,7 +255,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries }) {
           <div className="sent-comm-row">
             <div className="sent-comm-cell">
               <div className="sent-comm-lbl">What changed</div>
-              <div className="sent-comm-v">Net sentiment dropped <b style={{fontWeight:500,color:"var(--red-ink)"}}>30 points</b> over 6 quarters (Q1: +12 → Q6: −18). Inflection at Q3 coincides with the BIS October rule extension and first signs of channel destock.</div>
+              <div className="sent-comm-v">Net sentiment dropped <b style={{fontWeight:500,color:"var(--red-ink)"}}>30 points</b> over 6 quarters (Q3-23: +12 → Q4-24: −18). Inflection at Q1-24 coincides with the BIS October rule extension and first signs of channel destock.</div>
             </div>
             <div className="sent-comm-cell">
               <div className="sent-comm-lbl">Hedge ratio signal</div>
@@ -273,6 +273,63 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries }) {
             </div>
           </div>
         </div>
+      </div>
+      {rssSignals?.length > 0 && (
+        <RssSentimentCard signals={rssSignals} />
+      )}
+    </div>
+  );
+}
+
+function RssSentimentCard({ signals }) {
+  // Group by domain, compute average velocity as proxy for sentiment
+  const byDomain = {};
+  signals.forEach(s => {
+    (s.domains || []).forEach(d => {
+      if (!byDomain[d]) byDomain[d] = { total: 0, count: 0, high: 0 };
+      byDomain[d].total += s.velocity || 0;
+      byDomain[d].count += 1;
+      if ((s.velocity || 0) >= 3) byDomain[d].high += 1;
+    });
+  });
+
+  const entries = Object.entries(byDomain).sort((a, b) => b[1].total - a[1].total);
+  const overallVel = signals.reduce((s, a) => s + (a.velocity || 0), 0) / (signals.length || 1);
+
+  return (
+    <div className="fcst-card" style={{marginTop:14}}>
+      <div className="head">
+        <div>
+          <div className="ttl">RSS signal sentiment</div>
+          <div className="sub">Aggregate velocity across {signals.length} graded articles · by risk domain</div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div className="big-num" style={{color: overallVel >= 3 ? "var(--red-ink)" : overallVel >= 2 ? "var(--amber-ink)" : "var(--green-ink)"}}>
+            +{overallVel.toFixed(1)}
+          </div>
+          <div className="delta dn">AVG VELOCITY</div>
+        </div>
+      </div>
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:8, marginTop:12}}>
+        {entries.map(([domain, data]) => {
+          const avg = data.total / data.count;
+          const color = avg >= 3 ? "var(--red-ink)" : avg >= 2 ? "var(--amber-ink)" : "var(--green-ink)";
+          const barW = Math.min(100, (avg / 5) * 100);
+          return (
+            <div key={domain} style={{border:"1px solid var(--line)", borderRadius:8, padding:"9px 11px"}}>
+              <div style={{fontWeight:500, fontSize:11.5, marginBottom:5}}>{domain}</div>
+              <div style={{height:4, background:"var(--surface-2)", borderRadius:2, marginBottom:5}}>
+                <div style={{height:"100%", width:`${barW}%`, background:color, borderRadius:2}}/>
+              </div>
+              <div className="mono" style={{fontSize:10.5, color:"var(--ink-3)"}}>
+                avg v=+{avg.toFixed(1)} · {data.count} articles · {data.high} high-vel
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{marginTop:10, fontSize:11, color:"var(--ink-3)", lineHeight:1.5}}>
+        RSS velocity feeds into residual risk scoring. High-velocity domains elevate projected end-of-period scores. Run ingestion in the RSS Signals tab to refresh.
       </div>
     </div>
   );

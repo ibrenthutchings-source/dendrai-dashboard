@@ -13,6 +13,34 @@ const FOCUS_OPTS = [
   "Cybersecurity",
 ];
 
+const TICKER_META = {
+  ON:   { name: "onsemi",                   industry: "Analog Semiconductors" },
+  TXN:  { name: "Texas Instruments",        industry: "Analog Semiconductors" },
+  STM:  { name: "STMicroelectronics",       industry: "Analog Semiconductors" },
+  MCHP: { name: "Microchip Technology",     industry: "Analog Semiconductors" },
+  NXPI: { name: "NXP Semiconductors",       industry: "Analog Semiconductors" },
+  AVGO: { name: "Broadcom",                 industry: "Digital Semiconductors" },
+  NVDA: { name: "NVIDIA",                   industry: "Digital Semiconductors" },
+  INTC: { name: "Intel",                    industry: "Digital Semiconductors" },
+  AMD:  { name: "Advanced Micro Devices",   industry: "Digital Semiconductors" },
+  QCOM: { name: "Qualcomm",                 industry: "Digital Semiconductors" },
+  AMAT: { name: "Applied Materials",        industry: "Semiconductor Equipment" },
+  KLAC: { name: "KLA Corporation",          industry: "Semiconductor Equipment" },
+  LRCX: { name: "Lam Research",             industry: "Semiconductor Equipment" },
+  ASML: { name: "ASML Holding",             industry: "Semiconductor Equipment" },
+  MU:   { name: "Micron Technology",        industry: "Memory Semiconductors" },
+  WDC:  { name: "Western Digital",          industry: "Memory Semiconductors" },
+};
+
+function genFiscalQuarters() {
+  const qtrs = [];
+  for (let yr = 2022; yr <= 2027; yr++) {
+    for (let q = 1; q <= 4; q++) qtrs.push(`Q${q} ${yr}`);
+  }
+  return qtrs;
+}
+const FISCAL_QUARTERS = genFiscalQuarters();
+
 function Sidebar({
   cfg, setCfg, signalSet, setSignalSet,
   velocity,
@@ -41,27 +69,57 @@ function Sidebar({
         <div className="sec-lbl">Entity</div>
         <div className="field">
           <label className="field-label">Company / Ticker</label>
-          <select className="input" value={cfg.ticker} onChange={e => setCfg({...cfg, ticker: e.target.value})}>
-            <option value="ON">onsemi (ON)</option>
-            <option value="TXN">Texas Instruments (TXN)</option>
-            <option value="STM">STMicroelectronics (STM)</option>
-            <option value="MCHP">Microchip Technology (MCHP)</option>
-            <option value="NXPI">NXP Semiconductors (NXPI)</option>
-            <option value="AVGO">Broadcom (AVGO)</option>
-            <option value="NVDA">NVIDIA (NVDA)</option>
-            <option value="INTC">Intel (INTC)</option>
-            <option value="AMD">AMD</option>
-            <option value="QCOM">Qualcomm (QCOM)</option>
-          </select>
+          <input
+            className="input"
+            type="text"
+            placeholder="e.g. ON, TXN, NVDA"
+            value={cfg.ticker}
+            onChange={e => {
+              const t = e.target.value.toUpperCase().trim();
+              const meta = TICKER_META[t];
+              setCfg({
+                ...cfg,
+                ticker: e.target.value,
+                ...(meta ? { industry: meta.industry } : {}),
+              });
+            }}
+            onBlur={e => {
+              const t = e.target.value.toUpperCase().trim();
+              if (t && t !== cfg.ticker) setCfg({...cfg, ticker: t});
+            }}
+          />
+          {(() => {
+            const meta = TICKER_META[cfg.ticker?.toUpperCase?.()];
+            return meta ? (
+              <div className="mono" style={{fontSize:10,color:"var(--ink-3)",marginTop:3}}>{meta.name}</div>
+            ) : null;
+          })()}
         </div>
         <div className="field">
           <label className="field-label">Industry</label>
           <select className="input" value={cfg.industry} onChange={e => setCfg({...cfg, industry: e.target.value})}>
             <option>Analog Semiconductors</option>
             <option>Digital Semiconductors</option>
+            <option>Semiconductor Equipment</option>
+            <option>Memory Semiconductors</option>
             <option>Industrial / Manufacturing</option>
             <option>Energy / Utilities</option>
           </select>
+        </div>
+        <div className="field" style={{marginBottom:0}}>
+          <label className="field-label">Audit Period</label>
+          <div style={{display:"flex", gap:6, alignItems:"center"}}>
+            <select className="input" style={{flex:1}} value={cfg.periodBegin || "Q1 2025"}
+              onChange={e => setCfg({...cfg, periodBegin: e.target.value})}>
+              {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+            </select>
+            <span className="mono" style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>→</span>
+            <select className="input" style={{flex:1}} value={cfg.periodEnd || "Q4 2025"}
+              onChange={e => setCfg({...cfg, periodEnd: e.target.value})}>
+              {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+            </select>
+          </div>
+          <div className="mono" style={{fontSize:10,color:"var(--ink-3)",marginTop:3}}>Beginning → Ending fiscal quarter</div>
         </div>
         <div className="field" style={{marginBottom: 0}}>
           <label className="field-label">
