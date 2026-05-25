@@ -238,174 +238,263 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
   );
 }
 
-// ---------- RISK FLOW SANKEY ----------
-// Projects each risk forward 0/30/60/90 days and draws a sankey
-// of RAG-bucket transitions across the timeline. "Mapping risks through".
-function RiskFlowSankey({ risks }) {
+// ---------- RISK FLOW SANKEY (4-column interactive) ----------
+// Risk Domain → Severity → Control Maturity → Mitigation Status
+
+const _SK_DOMAIN_COLORS = {
+  "Financial Reporting": "#6366f1",
+  "Trade Compliance":    "#a855f7",
+  "Operational":         "#f97316",
+  "Cybersecurity":       "#ef4444",
+  "ESG":                 "#22c55e",
+  "Legal":               "#eab308",
+  "Macro":               "#3b82f6",
+  "Supply":              "#14b8a6",
+};
+const _SK_DOMAIN_ABBR = {
+  "Financial Reporting": "Fin.Rpt",
+  "Trade Compliance":    "Trade",
+  "Operational":         "Ops",
+  "Cybersecurity":       "Cyber",
+  "ESG":                 "ESG",
+  "Legal":               "Legal",
+  "Macro":               "Macro",
+  "Supply":              "Supply",
+};
+const _SK_SEV_COLORS = { High: "#ef4444", Medium: "#f59e0b", Low: "#22c55e" };
+const _SK_CE_COLORS  = { NONE: "#ef4444", WEAK: "#f59e0b", ADEQUATE: "#3b82f6", STRONG: "#22c55e" };
+const _SK_MIT_COLORS = { Open: "#ef4444", "In Progress": "#f59e0b", Closed: "#22c55e", "No MAP": "#94a3b8" };
+
+const _SK_COLS = [
+  {
+    key: "domain", label: "Risk Domain",
+    order: Object.keys(_SK_DOMAIN_COLORS), colors: _SK_DOMAIN_COLORS,
+    abbr: k => _SK_DOMAIN_ABBR[k] || k,
+  },
+  {
+    key: "severity", label: "Severity",
+    order: ["High", "Medium", "Low"], colors: _SK_SEV_COLORS,
+    abbr: k => k,
+  },
+  {
+    key: "ce", label: "Control",
+    order: ["NONE", "WEAK", "ADEQUATE", "STRONG"], colors: _SK_CE_COLORS,
+    abbr: k => ({ NONE: "None", WEAK: "Weak", ADEQUATE: "Adq.", STRONG: "Str." })[k] || k,
+  },
+  {
+    key: "mitigation", label: "Mitigation",
+    order: ["Open", "In Progress", "Closed", "No MAP"], colors: _SK_MIT_COLORS,
+    abbr: k => ({ Open: "Open", "In Progress": "In Prg.", Closed: "Closed", "No MAP": "No MAP" })[k] || k,
+  },
+];
+
+function RiskFlowSankey({ risks, maps = [] }) {
+  const [hovered, setHovered] = React.useState(null);
   if (!risks?.length) return null;
 
-  const W = 360, H = 360;
-  const padTop = 38, padBottom = 28, padL = 28, padR = 28;
-  const plotW = W - padL - padR;
-  const plotH = H - padTop - padBottom;
-
-  const stages = [
-    { key: 0, lab: "Now",  sub: "T0" },
-    { key: 1, lab: "+1Q",  sub: "Q1" },
-    { key: 2, lab: "+2Q",  sub: "Q2" },
-    { key: 3, lab: "+3Q",  sub: "Q3" },
-  ];
-  const ragOrder = ["R", "A", "G"];
-  const ragColor = { R: "var(--red)",   A: "var(--amber)",   G: "var(--green)" };
-  const ragSoft  = { R: "var(--red-soft)", A: "var(--amber-soft)", G: "var(--green-soft)" };
-  const ragInk   = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
-
-  // Project a single risk's score Q quarters forward using velocity
-  // dampened 15% per quarter, modulated by control effectiveness.
-  function projectAt(r, quartersAhead) {
-    if (quartersAhead === 0) return { score: r.score, rag: ragFromScore(r.score) };
-    const ceMul = ({ NONE: 1.20, WEAK: 1.10, ADEQUATE: 0.98, STRONG: 0.80 })[r.ce] || 1;
-    let s = r.score;
-    for (let i = 0; i < quartersAhead; i++) {
-      s = s + (r.velocity || 0) * Math.pow(0.85, i) * ceMul * 0.4;
-    }
-    s = Math.max(0.6, Math.min(10, s));
-    return { score: s, rag: ragFromScore(s) };
-  }
-
-  const total = risks.length;
-  const riskPaths = risks.map(r => ({ r, path: stages.map(s => projectAt(r, s.key)) }));
-
-  // Counts per stage per RAG
-  const stageCounts = stages.map((_, sI) => {
-    const c = { R: 0, A: 0, G: 0 };
-    riskPaths.forEach(({ path }) => c[path[sI].rag]++);
-    return c;
+  // Best MAP per risk (highest completion_pct wins)
+  const mapByRisk = {};
+  (maps || []).forEach(m => {
+    if (!m.linked_risk) return;
+    const cur = mapByRisk[m.linked_risk];
+    if (!cur || (m.completion_pct || 0) > (cur.completion_pct || 0)) mapByRisk[m.linked_risk] = m;
   });
+
+  const riskData = risks.map(r => {
+    const m = mapByRisk[r.id];
+    let mit;
+    if (!m)                                mit = "No MAP";
+    else if ((m.completion_pct || 0) >= 100) mit = "Closed";
+    else if ((m.completion_pct || 0) > 0)   mit = "In Progress";
+    else                                     mit = "Open";
+    return {
+      r,
+      domain:     r.category || "Unknown",
+      severity:   r.rag === "R" ? "High" : r.rag === "A" ? "Medium" : "Low",
+      ce:         r.ce || "NONE",
+      mitigation: mit,
+      weight:     r.score || 1,
+    };
+  });
+
+  const W = 680, H = 420;
+  const padT = 36, padB = 12, padL = 14, padR = 14;
+  const plotH = H - padT - padB;
+  const plotW = W - padL - padR;
+  const nodeW = 12, nodeGap = 6;
+
+  const colX = [0, 1, 2, 3].map(i => padL + i * (plotW / 3));
+  const total = riskData.reduce((s, d) => s + d.weight, 0);
+
+  // Node weights per column
+  const nodeWeights = _SK_COLS.map(col => {
+    const w = {};
+    riskData.forEach(d => { const k = d[col.key]; w[k] = (w[k] || 0) + d.weight; });
+    return w;
+  });
+
+  // Present keys per column
+  const presentKeys = _SK_COLS.map((col, ci) => col.order.filter(k => nodeWeights[ci][k] > 0));
+
+  // Single usableH across all columns for consistent link-to-node scaling
+  const maxNodes = Math.max(...presentKeys.map(pk => pk.length));
+  const usableH = plotH - (maxNodes - 1) * nodeGap;
 
   // Layout nodes
-  const stageX = stages.map((_, i) => padL + (plotW) * (i / (stages.length - 1)));
-  const nodeWidth = 9;
-  const ragGap = 6;
-  const usableH = plotH - ragGap * 2;
-
-  const nodes = stages.map((_, sI) => {
-    let y = padTop;
-    const out = {};
-    ragOrder.forEach(rag => {
-      const c = stageCounts[sI][rag];
-      const h = (c / total) * usableH;
-      out[rag] = { y, h, count: c };
-      if (c > 0) y += h + ragGap;
+  const layoutNodes = _SK_COLS.map((col, ci) => {
+    let y = padT;
+    return presentKeys[ci].map(key => {
+      const w = nodeWeights[ci][key];
+      const h = (w / total) * usableH;
+      const node = { key, w, h, y, color: col.colors[key] || "#94a3b8" };
+      y += h + nodeGap;
+      return node;
     });
-    return out;
   });
 
-  // Build transition ribbons
-  const fromOff = stages.map(() => ({ R: 0, A: 0, G: 0 }));
-  const toOff   = stages.map(() => ({ R: 0, A: 0, G: 0 }));
-  const ribbons = [];
-  for (let s = 0; s < stages.length - 1; s++) {
-    const trans = {};
-    riskPaths.forEach(({ path }) => {
-      const k = `${path[s].rag}>${path[s+1].rag}`;
-      trans[k] = (trans[k] || 0) + 1;
+  const nodeMap = layoutNodes.map(nodes => Object.fromEntries(nodes.map(n => [n.key, n])));
+
+  // Offset trackers for stacking links within nodes
+  const fromOff = layoutNodes.map(nodes => Object.fromEntries(nodes.map(n => [n.key, 0])));
+  const toOff   = layoutNodes.map(nodes => Object.fromEntries(nodes.map(n => [n.key, 0])));
+
+  const renderedLinks = [];
+  for (let c = 0; c < 3; c++) {
+    const fromKey = _SK_COLS[c].key;
+    const toKey   = _SK_COLS[c + 1].key;
+    const lm = {};
+    riskData.forEach(d => {
+      const fk = d[fromKey], tk = d[toKey];
+      const lk = `${fk}||${tk}`;
+      if (!lm[lk]) lm[lk] = { from: fk, to: tk, weight: 0, risks: [] };
+      lm[lk].weight += d.weight;
+      lm[lk].risks.push(d.r);
     });
-    // Iterate in fixed order so stacking is deterministic.
-    ragOrder.forEach(fromRag => {
-      ragOrder.forEach(toRag => {
-        const k = `${fromRag}>${toRag}`;
-        const c = trans[k] || 0;
-        if (!c) return;
-        const h = (c / total) * usableH;
-        const fY1 = nodes[s][fromRag].y + fromOff[s][fromRag];
-        const tY1 = nodes[s+1][toRag].y + toOff[s+1][toRag];
-        fromOff[s][fromRag] += h;
-        toOff[s+1][toRag]   += h;
-        const x1 = stageX[s]   + nodeWidth / 2;
-        const x2 = stageX[s+1] - nodeWidth / 2;
+    Object.values(lm)
+      .sort((a, b) => {
+        const fo = _SK_COLS[c].order, to2 = _SK_COLS[c + 1].order;
+        const fd = fo.indexOf(a.from) - fo.indexOf(b.from);
+        return fd !== 0 ? fd : to2.indexOf(a.to) - to2.indexOf(b.to);
+      })
+      .forEach(link => {
+        const fn = nodeMap[c][link.from];
+        const tn = nodeMap[c + 1][link.to];
+        if (!fn || !tn) return;
+        const h  = (link.weight / total) * usableH;
+        const x1 = colX[c]     + nodeW / 2;
+        const x2 = colX[c + 1] - nodeW / 2;
+        const y1 = fn.y + fromOff[c][link.from];
+        const y2 = tn.y + toOff[c + 1][link.to];
         const cx = (x1 + x2) / 2;
-        const path =
-          `M${x1},${fY1} C${cx},${fY1} ${cx},${tY1} ${x2},${tY1}` +
-          ` L${x2},${tY1 + h} C${cx},${tY1 + h} ${cx},${fY1 + h} ${x1},${fY1 + h} Z`;
-        // Highlight upward transitions (worsening) with destination color full,
-        // downward / stable transitions stay soft.
-        const worsening = ragWorse(fromRag, toRag);
-        ribbons.push({
-          path, count: c, fromRag, toRag,
-          color: worsening ? ragColor[toRag] : ragColor[toRag],
-          opacity: worsening ? 0.55 : 0.22,
+        fromOff[c][link.from]     += h;
+        toOff[c + 1][link.to]     += h;
+        const d =
+          `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}` +
+          ` L${x2},${y2 + h} C${cx},${y2 + h} ${cx},${y1 + h} ${x1},${y1 + h} Z`;
+        renderedLinks.push({
+          d, col: c, from: link.from, to: link.to,
+          weight: link.weight, risks: link.risks,
+          color: fn.color,
+          id: `lnk-${c}-${link.from}-${link.to}`,
         });
       });
-    });
   }
 
+  const isActive = lnk => {
+    if (!hovered) return true;
+    if (hovered.col === lnk.col     && hovered.key === lnk.from) return true;
+    if (hovered.col === lnk.col + 1 && hovered.key === lnk.to)   return true;
+    return false;
+  };
+
+  const hoveredRisks = hovered
+    ? riskData.filter(d => d[_SK_COLS[hovered.col].key] === hovered.key)
+    : [];
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }} xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="sk-bg" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="var(--surface-2)" stopOpacity="0.6"/>
-          <stop offset="100%" stopColor="var(--surface-2)" stopOpacity="0"/>
-        </linearGradient>
-      </defs>
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }}>
+        {/* Column headers */}
+        {_SK_COLS.map((col, ci) => (
+          <text key={ci} x={colX[ci]} y={22}
+                textAnchor={ci === 0 ? "start" : ci === 3 ? "end" : "middle"}
+                fontSize="10" fontFamily="Geist Mono, monospace"
+                fontWeight="600" fill="var(--ink-2)">{col.label}</text>
+        ))}
 
-      {/* Stage labels */}
-      {stages.map((s, i) => (
-        <g key={s.key}>
-          <text x={stageX[i]} y={20} textAnchor="middle" fontSize="11" fontFamily="Geist Mono, monospace"
-                fontWeight="500" fill="var(--ink)">{s.lab}</text>
-        </g>
-      ))}
+        {/* Links */}
+        {renderedLinks.map(lnk => (
+          <path
+            key={lnk.id} d={lnk.d} fill={lnk.color}
+            opacity={isActive(lnk) ? 0.42 : 0.07}
+            style={{ transition: "opacity 0.12s" }}
+          />
+        ))}
 
-      {/* Ribbons */}
-      {ribbons.map((rb, i) => (
-        <path key={i} d={rb.path} fill={rb.color} opacity={rb.opacity}>
-          <title>{rb.fromRag} → {rb.toRag}: {rb.count} risk{rb.count === 1 ? "" : "s"}</title>
-        </path>
-      ))}
-
-      {/* Nodes (RAG bars) */}
-      {stages.map((s, sI) => (
-        ragOrder.map(rag => {
-          const n = nodes[sI][rag];
-          if (n.count === 0) return null;
-          const cx = stageX[sI];
+        {/* Nodes */}
+        {layoutNodes.map((nodes, ci) => nodes.map(node => {
+          const isHov = hovered?.col === ci && hovered?.key === node.key;
+          const isDim = !!hovered && !isHov;
+          const goRight = ci < 3;
+          const lx = goRight ? colX[ci] + nodeW / 2 + 4 : colX[ci] - nodeW / 2 - 4;
           return (
-            <g key={`n-${sI}-${rag}`}>
-              <rect x={cx - nodeWidth / 2} y={n.y} width={nodeWidth} height={Math.max(n.h, 1)}
-                    fill={ragColor[rag]} rx={2}/>
-              {n.h > 11 && (
-                <text x={cx} y={n.y + n.h / 2 + 3} textAnchor="middle"
-                      fontSize="9.5" fontFamily="Geist Mono, monospace" fontWeight="500"
-                      fill="white" pointerEvents="none">{n.count}</text>
+            <g key={`nd-${ci}-${node.key}`}
+               onMouseEnter={() => setHovered({ col: ci, key: node.key })}
+               onMouseLeave={() => setHovered(null)}
+               style={{ cursor: "pointer" }}>
+              <rect
+                x={colX[ci] - nodeW / 2} y={node.y}
+                width={nodeW} height={Math.max(node.h, 2)}
+                fill={node.color} rx={3}
+                opacity={isDim ? 0.25 : 1}
+                style={{ transition: "opacity 0.12s" }}
+              />
+              {node.h >= 12 && (
+                <text
+                  x={lx} y={node.y + node.h / 2 + 3.5}
+                  textAnchor={goRight ? "start" : "end"}
+                  fontSize="9" fontFamily="Geist Mono, monospace"
+                  fill={isDim ? "var(--ink-3)" : "var(--ink-2)"}
+                  pointerEvents="none"
+                  style={{ transition: "fill 0.12s" }}
+                >
+                  {_SK_COLS[ci].abbr(node.key)}
+                </text>
               )}
             </g>
           );
-        })
-      ))}
+        }))}
+      </svg>
 
-      {/* Stage counters under each column */}
-      {stages.map((s, sI) => {
-        const c = stageCounts[sI];
-        const red = c.R, amb = c.A, grn = c.G;
-        return (
-          <g key={`c-${sI}`} transform={`translate(${stageX[sI]}, ${H - 12})`}>
-            <text textAnchor="middle" fontSize="9" fontFamily="Geist Mono, monospace" fill="var(--ink-3)">
-              <tspan fill="var(--red-ink)">{red}R</tspan>
-              <tspan dx="6" fill="var(--amber-ink)">{amb}A</tspan>
-              <tspan dx="6" fill="var(--green-ink)">{grn}G</tspan>
-            </text>
-          </g>
-        );
-      })}
-    </svg>
+      {/* Hover tooltip */}
+      {hovered && hoveredRisks.length > 0 && (
+        <div style={{
+          marginTop: 8, background: "var(--surface-2)",
+          border: "1px solid var(--line)", borderRadius: 8,
+          padding: "10px 12px", fontSize: 11,
+        }}>
+          <div style={{ fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>
+            {_SK_COLS[hovered.col].label}: {hovered.key}
+            <span className="mono" style={{ fontWeight: 400, color: "var(--ink-3)", marginLeft: 8 }}>
+              {hoveredRisks.length} risk{hoveredRisks.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          {hoveredRisks.map(d => (
+            <div key={d.r.id} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "3px 0", borderTop: "1px solid var(--line)",
+            }}>
+              <span className={`rag-dot ${d.r.rag}`}/>
+              <span style={{ color: "var(--ink-2)", flex: 1 }}>{d.r.name}</span>
+              <span className="mono" style={{ color: "var(--ink-3)", fontSize: 10 }}>
+                {(d.r.score || 0).toFixed(1)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
-}
-
-// Heuristic for whether RAG transition is "worsening"
-function ragWorse(from, to) {
-  const rank = { G: 0, A: 1, R: 2 };
-  return rank[to] > rank[from];
 }
 
 Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey });

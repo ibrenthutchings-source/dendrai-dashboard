@@ -40,7 +40,7 @@ function Rail({
         {activeTab === "map"   && <MapsTab      maps={maps}/>}
         {activeTab === "loop"  && <LoopTab      loop={loop}/>}
         {activeTab === "notif" && <NotifTab     log={notifLog}/>}
-        {activeTab === "flow"  && <FlowTab       risks={risks}/>}
+        {activeTab === "flow"  && <FlowTab       risks={risks} maps={maps}/>}
         {activeTab === "pers"  && <PersonaTab   personas={personas} selected={selectedPersona} setSelected={setSelectedPersona}/>}
       </div>
     </aside>
@@ -260,59 +260,56 @@ function NotifTab({ log }) {
 }
 
 // ---------- RISK FLOW (sankey) ----------
-function FlowTab({ risks }) {
-  if (!risks?.length) return <Empty>Flow populates after Stage 2. Tracks each risk's projected RAG bucket across Now / +1Q / +2Q / +3Q using velocity and control effectiveness.</Empty>;
+function FlowTab({ risks, maps = [] }) {
+  if (!risks?.length) return <Empty>Flow populates after Stage 2. Shows how risks connect through severity, control maturity, and mitigation activities.</Empty>;
 
-  // Stage counts (for narrative under the chart) — quarterly projection
-  const counts = [0, 1, 2, 3].map(q => {
-    const c = { R: 0, A: 0, G: 0 };
-    risks.forEach(r => {
-      let s = r.score;
-      const ceMul = ({ NONE: 1.20, WEAK: 1.10, ADEQUATE: 0.98, STRONG: 0.80 })[r.ce] || 1;
-      for (let i = 0; i < q; i++) s = s + (r.velocity || 0) * Math.pow(0.85, i) * ceMul * 0.4;
-      s = Math.min(Math.max(s, 0), 10);
-      const rag = s >= 7.5 ? "R" : s >= 5.0 ? "A" : "G";
-      c[rag]++;
-    });
-    return c;
+  // Derive mitigation status breakdown for the narrative
+  const mapByRisk = {};
+  (maps || []).forEach(m => {
+    if (!m.linked_risk) return;
+    const cur = mapByRisk[m.linked_risk];
+    if (!cur || (m.completion_pct || 0) > (cur.completion_pct || 0)) mapByRisk[m.linked_risk] = m;
   });
-  const dR = counts[3].R - counts[0].R;
-  const dG = counts[3].G - counts[0].G;
+  const mitCounts = { Open: 0, "In Progress": 0, Closed: 0, "No MAP": 0 };
+  risks.forEach(r => {
+    const m = mapByRisk[r.id];
+    if (!m)                                mitCounts["No MAP"]++;
+    else if ((m.completion_pct || 0) >= 100) mitCounts.Closed++;
+    else if ((m.completion_pct || 0) > 0)   mitCounts["In Progress"]++;
+    else                                     mitCounts.Open++;
+  });
 
   return (
     <>
-      <SectionLabel right={<span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{risks.length} risks</span>}>Risk Flow · 3-quarter projection</SectionLabel>
-      <div style={{fontSize: 11, color: "var(--ink-3)", marginBottom: 6, lineHeight: 1.5}}>
-        How each risk's RAG bucket moves across the next 3 quarters. Saturated ribbons = worsening transitions.
+      <SectionLabel right={<span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{risks.length} risks · {maps.length} MAPs</span>}>
+        Risk-to-Mitigation Flow
+      </SectionLabel>
+      <div style={{fontSize: 11, color: "var(--ink-3)", marginBottom: 8, lineHeight: 1.5}}>
+        Traces each risk through Severity → Control Maturity → Mitigation. Hover any node to highlight connected paths and see the risks within.
       </div>
-      <div style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "4px 6px 2px"}}>
-        <RiskFlowSankey risks={risks}/>
-      </div>
-      <div className="heat-legend" style={{marginTop: 10}}>
-        <span className="lg"><span className="rag-dot R"/> High</span>
-        <span className="lg"><span className="rag-dot A"/> Medium</span>
-        <span className="lg"><span className="rag-dot G"/> Low</span>
+      <div style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "6px 8px 4px"}}>
+        <RiskFlowSankey risks={risks} maps={maps}/>
       </div>
       <div className="mt-12" style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: 12}}>
-        <div className="sec-lbl" style={{marginBottom: 6}}>Net shift · T0 → +3Q</div>
-        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap: 6}}>
-          <div className="scen-m">
-            <div className="l">High-risk Δ</div>
-            <div className="v" style={{color: dR > 0 ? "var(--red-ink)" : dR < 0 ? "var(--green-ink)" : "var(--ink-3)"}}>{dR > 0 ? "+" : ""}{dR}</div>
-          </div>
-          <div className="scen-m">
-            <div className="l">Low-risk Δ</div>
-            <div className="v" style={{color: dG > 0 ? "var(--green-ink)" : dG < 0 ? "var(--red-ink)" : "var(--ink-3)"}}>{dG > 0 ? "+" : ""}{dG}</div>
-          </div>
+        <div className="sec-lbl" style={{marginBottom: 8}}>Mitigation coverage</div>
+        <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6}}>
+          {[
+            { k: "Open",        color: "var(--red-ink)" },
+            { k: "In Progress", color: "var(--amber-ink)" },
+            { k: "Closed",      color: "var(--green-ink)" },
+            { k: "No MAP",      color: "var(--ink-3)" },
+          ].map(({ k, color }) => (
+            <div key={k} className="scen-m">
+              <div className="l">{k}</div>
+              <div className="v" style={{ color }}>{mitCounts[k]}</div>
+            </div>
+          ))}
         </div>
-        <div style={{fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5, marginTop: 8}}>
-          {dR > 0
-            ? <>Velocity unchecked: <b style={{fontWeight: 500, color: "var(--red-ink)"}}>{dR}</b> additional risk{dR === 1 ? "" : "s"} cross into the red band within 3 quarters. Closing in-flight MAPs flattens the curve.</>
-            : dR < 0
-              ? <>Controls bite: <b style={{fontWeight: 500, color: "var(--green-ink)"}}>{Math.abs(dR)}</b> red-band risk{Math.abs(dR) === 1 ? "" : "s"} de-escalate within 3 quarters assuming MAP cadence holds.</>
-              : <>RAG distribution is stable across the horizon — velocity and control effectiveness offset.</>
-          }
-        </div>
+        {mitCounts["No MAP"] > 0 && (
+          <div style={{fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5, marginTop: 8}}>
+            <b style={{fontWeight: 500, color: "var(--amber-ink)"}}>{mitCounts["No MAP"]}</b> risk{mitCounts["No MAP"] !== 1 ? "s have" : " has"} no linked Mitigation Action Plan — consider raising MAPs to close the gap.
+          </div>
+        )}
       </div>
     </>
   );
