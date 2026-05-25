@@ -15,7 +15,8 @@ const STAGES = [
 
 // Insert HITL gates after stages 2 and 3
 function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts,
-                    riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onSignoffRisk }) {
+                    riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onSignoffRisk,
+                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective }) {
   return (
     <div className="pipeline">
       {STAGES.map((s, i) => {
@@ -53,6 +54,17 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     onSignoff={onSignoffRisk}
                     onSubmit={() => onApprove(1)}
                     onOverrideGate={() => onOverride(1)}
+                  />
+                ) : gateNum === 2 && gateState.g2 === "pending" ? (
+                  <ScopeApprovalReview
+                    objectives={output.s3?.objectives || []}
+                    approvals={scopeApprovals}
+                    onApproveObjective={onApproveObjective}
+                    onOpenAdjust={onOpenAdjustObjective}
+                    onApproveAll={onApproveAllObjectives}
+                    onSignoff={onSignoffObjective}
+                    onSubmit={() => onApprove(2)}
+                    onOverrideGate={() => onOverride(2)}
                   />
                 ) : (
                   <HITLGate
