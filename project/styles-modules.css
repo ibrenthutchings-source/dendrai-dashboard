@@ -1530,3 +1530,139 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   }
   .sar .sar-td-risk, .sar .sar-td-num { display: none; }
 }
+
+/* ============================================================
+   RSS Ingestion Panel
+   ============================================================ */
+.rss-feed-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+@media (max-width: 900px) {
+  .rss-feed-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.rss-feed-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  transition: border-color .15s, background .15s;
+}
+.rss-feed-card.rss-feed-done { border-color: var(--line-strong); }
+.rss-feed-card.rss-feed-done:hover { background: var(--hover); }
+.rss-feed-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.rss-feed-name { font-size: 12px; font-weight: 500; color: var(--ink); flex: 1; min-width: 0; }
+.rss-feed-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  gap: 6px;
+}
+.rss-badge {
+  font-size: 9.5px; letter-spacing: .05em;
+  padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--line); flex-shrink: 0;
+  display: inline-flex; align-items: center;
+}
+.rss-badge-idle    { color: var(--ink-3); }
+.rss-badge-pending { color: var(--acc-ink); border-color: color-mix(in oklch, var(--acc) 35%, var(--line)); }
+.rss-badge-ok      { color: var(--green-ink); background: var(--green-soft); border-color: color-mix(in oklch, var(--green) 30%, var(--line)); }
+.rss-badge-sim     { color: var(--ink-3); background: var(--surface-2); }
+
+.rss-stat-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+@media (max-width: 900px) {
+  .rss-stat-row { grid-template-columns: repeat(3, 1fr); }
+}
+.rss-stat {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+.rss-stat .l { font-size: 10.5px; color: var(--ink-3); margin-bottom: 4px; }
+.rss-stat .v { font-size: 16px; color: var(--ink); }
+
+.rss-article-list {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.rss-article-list-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.rss-art-thead {
+  display: grid;
+  grid-template-columns: 38px 1fr 110px 52px 50px 50px 100px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.rss-art-th {
+  font-size: 10px; font-family: "Geist Mono", monospace;
+  color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em;
+}
+.rss-art-th-title { flex: 1; }
+
+.rss-art-row {
+  display: grid;
+  grid-template-columns: 38px 1fr 110px 52px 50px 50px 100px;
+  align-items: center;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background .1s;
+  gap: 0;
+}
+.rss-art-row:last-child { border-bottom: none; }
+.rss-art-row:hover { background: var(--hover); }
+.rss-art-row.open { background: color-mix(in oklch, var(--acc) 4%, var(--surface)); }
+
+.rss-art-rag { display: flex; align-items: center; }
+.rss-art-title { min-width: 0; padding-right: 10px; }
+.rss-art-title-text { font-size: 12px; color: var(--ink); line-height: 1.35; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.rss-art-meta { font-size: 10px; color: var(--ink-3); margin-top: 2px; }
+.rss-art-feed { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); padding-right: 8px; }
+.rss-art-score { display: flex; align-items: center; font-size: 11px; }
+.rss-art-risks { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+
+.rss-art-detail {
+  grid-column: 1 / -1;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+}
+
+.rss-method-note {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  margin-top: 4px;
+}
+
+@media (max-width: 900px) {
+  .rss-art-thead, .rss-art-row {
+    grid-template-columns: 38px 1fr 52px 50px 100px;
+  }
+  .rss-art-feed, .rss-art-row .rss-art-score:nth-child(6) { display: none; }
+}
