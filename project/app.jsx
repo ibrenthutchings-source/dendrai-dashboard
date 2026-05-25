@@ -73,13 +73,16 @@ function App() {
   const [overrideGateNum, setOverrideGateNum] = useState(null);
 
   // ---- Per-risk approval state (Gate 1) ----
-  // { [riskId]: { status: 'pending'|'approved'|'adjusted'|'signed',
-  //               adjustments?: { rag, score, velocity, ce },
-  //               rationale?: string, adjustedBy?: string, adjustedAt?: number,
-  //               signoffs?: { cae?: {who,signedAt}, cfo?: {...}, ac?: {...} } } }
+  // { [riskId]: { status: 'pending'|'approved'|'adjusted'|'signed', adjustments?, rationale?, signoffs? } }
   const [riskApprovals, setRiskApprovals] = useState({});
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [adjustingRiskId, setAdjustingRiskId] = useState(null);
+
+  // ---- Per-objective scope approval state (Gate 2) ----
+  // { [objId]: { status: 'pending'|'approved'|'adjusted'|'signed', adjustments?, rationale?, signoffs? } }
+  const [scopeApprovals, setScopeApprovals] = useState({});
+  const [adjustObjOpen, setAdjustObjOpen] = useState(false);
+  const [adjustingObjId, setAdjustingObjId] = useState(null);
 
   const auditorName = (selectedPersona && selectedPersona !== "Internal Audit") ? selectedPersona : "Internal Audit";
 
@@ -93,12 +96,17 @@ function App() {
     gateResRef.current[n] = res;
     setStageState((prev) => ({ ...prev, [`s${n + 1}`]: "waiting" }));
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
-    // Initialize per-risk approval state when Gate 1 opens
     if (n === 1) {
       const risksNow = (output.s2?.risks) || MOCK.risks;
       const init = {};
       risksNow.forEach(r => { init[r.id] = { status: "pending" }; });
       setRiskApprovals(init);
+    }
+    if (n === 2) {
+      const objsNow = (output.s3?.objectives) || MOCK.objectives;
+      const init = {};
+      objsNow.forEach(o => { init[o.id] = { status: "pending" }; });
+      setScopeApprovals(init);
     }
   });
 
@@ -148,14 +156,66 @@ function App() {
     setRiskApprovals(prev => {
       const next = { ...prev };
       Object.keys(next).forEach(id => {
-        if (next[id].status === "pending") {
-          next[id] = { ...next[id], status: "approved" };
-        }
+        if (next[id].status === "pending") next[id] = { ...next[id], status: "approved" };
       });
       return next;
     });
     log(`Bulk-approve: all remaining pending risks accepted by ${auditorName}`);
   }, [auditorName, log]);
+
+  // ---- Per-objective HITL handlers (Gate 2) ----
+  const approveObjective = useCallback((objId) => {
+    setScopeApprovals(prev => ({ ...prev, [objId]: { ...(prev[objId]||{}), status: "approved" } }));
+    log(`Objective ${objId}: APPROVED as scoped by ${auditorName}`);
+  }, [auditorName, log]);
+
+  const openAdjustObjective = useCallback((objId) => {
+    setAdjustingObjId(objId);
+    setAdjustObjOpen(true);
+  }, []);
+
+  const submitObjAdjustment = useCallback((payload) => {
+    const id = adjustingObjId;
+    if (!id) return;
+    setScopeApprovals(prev => ({
+      ...prev,
+      [id]: {
+        status: "adjusted",
+        adjustments: { priority: payload.priority, sprint: payload.sprint, hours: payload.hours },
+        rationale: payload.rationale,
+        adjustedBy: auditorName,
+        adjustedAt: Date.now(),
+        signoffs: {}
+      }
+    }));
+    log(`Objective ${id}: ADJUSTED by ${auditorName} — routed to CAE / CFO / Audit Committee`);
+    setAdjustObjOpen(false);
+    setAdjustingObjId(null);
+  }, [adjustingObjId, auditorName, log]);
+
+  const signoffObjective = useCallback((objId, role) => {
+    const SIG_MAP = { cae: "Sarah Lin (CAE)", cfo: "Marcus Reed (CFO)", ac: "J. Vance (Audit Committee)" };
+    setScopeApprovals(prev => {
+      const cur = prev[objId];
+      if (!cur) return prev;
+      const newSigs = { ...(cur.signoffs||{}), [role]: { who: SIG_MAP[role], signedAt: Date.now() } };
+      const allSigned = !!newSigs.cae && !!newSigs.cfo && !!newSigs.ac;
+      return { ...prev, [objId]: { ...cur, signoffs: newSigs, status: allSigned ? "signed" : "adjusted" } };
+    });
+    log(`Objective ${objId}: ${role.toUpperCase()} sign-off captured (${SIG_MAP[role]})`);
+  }, [log]);
+
+  const approveAllRemainingObjectives = useCallback(() => {
+    setScopeApprovals(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(id => {
+        if (!next[id] || next[id].status === "pending") next[id] = { status: "approved" };
+      });
+      return next;
+    });
+    log(`Bulk-approve: all remaining objectives accepted by ${auditorName}`);
+  }, [auditorName, log]);
+
   const approveGate = (n) => {
     // For Gate 1, commit per-risk adjustments back into output.s2.risks
     if (n === 1) {
@@ -172,6 +232,20 @@ function App() {
       });
       const adjusted = Object.values(riskApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
       log(`HITL Gate ${n}: CONFIRMED — ${Object.values(riskApprovals).filter(a=>a.status==="approved").length} accepted, ${adjusted} adjusted with sign-off`);
+    } else if (n === 2) {
+      setOutput(prev => {
+        const orig = prev.s3?.objectives || [];
+        const merged = orig.map(o => {
+          const a = scopeApprovals[o.id];
+          if (a && (a.status === "adjusted" || a.status === "signed") && a.adjustments) {
+            return { ...o, ...a.adjustments };
+          }
+          return o;
+        });
+        return { ...prev, s3: { ...(prev.s3||{}), objectives: merged } };
+      });
+      const adjObjs = Object.values(scopeApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
+      log(`HITL Gate 2: CONFIRMED — ${Object.values(scopeApprovals).filter(a=>a.status==="approved").length} objectives accepted, ${adjObjs} adjusted with sign-off`);
     } else {
       log(`HITL Gate ${n}: APPROVED`);
     }
@@ -488,7 +562,12 @@ function App() {
               onApproveRisk={approveRisk}
               onOpenAdjustRisk={openAdjustRisk}
               onApproveAllRisks={approveAllRemainingRisks}
-              onSignoffRisk={signoffRisk} />
+              onSignoffRisk={signoffRisk}
+              scopeApprovals={scopeApprovals}
+              onApproveObjective={approveObjective}
+              onOpenAdjustObjective={openAdjustObjective}
+              onApproveAllObjectives={approveAllRemainingObjectives}
+              onSignoffObjective={signoffObjective} />
             
           </div>
 
@@ -549,6 +628,11 @@ function App() {
         risk={(output.s2?.risks || []).find(r => r.id === adjustingRiskId)}
         onClose={() => { setAdjustOpen(false); setAdjustingRiskId(null); }}
         onSubmit={submitAdjustment} />
+      <AdjustObjectiveModal
+        open={adjustObjOpen}
+        obj={(output.s3?.objectives || MOCK.objectives || []).find(o => o.id === adjustingObjId)}
+        onClose={() => { setAdjustObjOpen(false); setAdjustingObjId(null); }}
+        onSubmit={submitObjAdjustment} />
 
       <DendraiTweaks tweaks={tweaks} setTweak={setTweak}
         hitl={hitl} setHitl={setHitl}

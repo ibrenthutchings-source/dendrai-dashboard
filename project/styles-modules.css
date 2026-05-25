@@ -1500,3 +1500,33 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   .rar-row-detail { grid-template-columns: 1fr; }
   .rar-signoff-chain { border-left: none; border-top: 1px solid var(--line); padding-left: 0; padding-top: 10px; }
 }
+
+/* ============================================================
+   Scope Approval Review (Gate 2) — column overrides on .rar
+   ============================================================ */
+.sar .rar-thead,
+.sar .rar-row,
+.sar .sar-row {
+  grid-template-columns: 44px 1fr 60px 52px 48px 148px;
+}
+.sar-pill { background: color-mix(in oklch, var(--acc) 18%, var(--surface-2)); color: var(--acc-ink); }
+.sar-td-pri { flex-direction: column; align-items: flex-start; }
+.sar-pri-chip {
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px; font-weight: 600;
+  padding: 2px 7px; border-radius: 4px;
+  letter-spacing: .04em;
+}
+.sar-td-risk { justify-content: flex-start; }
+.sar-risk-chip {
+  font-size: 10px; padding: 2px 6px;
+  border: 1px solid var(--line); border-radius: 4px; color: var(--ink-2);
+}
+.sar-td-num { flex-direction: column; align-items: flex-start; gap: 1px; }
+
+@media (max-width: 1100px) {
+  .sar .rar-thead, .sar .rar-row, .sar .sar-row {
+    grid-template-columns: 44px 1fr 60px 148px;
+  }
+  .sar .sar-td-risk, .sar .sar-td-num { display: none; }
+}
