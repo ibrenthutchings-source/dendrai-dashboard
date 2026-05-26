@@ -30,7 +30,7 @@ function App() {
     periodBegin: "Q1 2025",
     periodEnd: "Q4 2025",
   });
-  const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal"]));
+  const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal", "fred", "incidents"]));
   const [velocity, setVelocity] = useState(3);
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
 
