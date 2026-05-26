@@ -1358,6 +1358,59 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   border: 1px solid color-mix(in oklch, var(--green) 35%, var(--line));
 }
 
+/* Tolerance badge on score cell */
+.rar-tol-badge {
+  display: inline-block; padding: 1px 5px;
+  border-radius: 4px; font-family: "Geist Mono", monospace;
+  font-size: 9px; letter-spacing: 0.05em; font-weight: 500;
+}
+.rar-tol-badge.breach { background: var(--red-soft); color: var(--red-ink); }
+.rar-tol-badge.ok     { background: var(--green-soft); color: var(--green-ink); }
+
+/* Control expand toggle */
+.rar-ctrl-toggle {
+  background: none; border: none; cursor: pointer; padding: 0 3px;
+  font-family: "Geist Mono", monospace; font-size: 9px;
+  color: var(--acc-ink); margin-left: 4px;
+}
+.rar-ctrl-toggle:hover { color: var(--ink); }
+
+/* Per-risk control tolerance expansion */
+.rar-ctrl-detail-row {
+  grid-column: 1 / -1;
+  margin-top: 6px; margin-bottom: 4px;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.rar-ctrl-detail-head {
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 8px;
+}
+.rar-ctrl-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 0; border-bottom: 1px dashed var(--line);
+}
+.rar-ctrl-item:last-child { border-bottom: none; }
+
+/* S2 live RSS status bar */
+.s2-rss-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; margin-bottom: 8px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 8px; font-size: 11px;
+}
+.s2-rss-label {
+  display: flex; align-items: center; gap: 6px;
+  font-family: "Geist Mono", monospace; font-size: 10px;
+  font-weight: 500; color: var(--ink-2); flex-shrink: 0;
+}
+.s2-rss-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.s2-rss-dot.live { background: var(--green); animation: live 2s infinite; }
+
 /* Sign-off detail row */
 .rar-row-detail {
   grid-column: 1 / -1;

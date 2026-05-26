@@ -66,6 +66,26 @@ function App() {
 
   // ---- RSS ingestion signals ----
   const [rssSignals, setRssSignals] = useState([]);
+  const [rssLastUpdated, setRssLastUpdated] = useState(null);
+  const [rssRefreshing, setRssRefreshing] = useState(false);
+
+  // Periodic RSS refresh while pipeline is running
+  useEffect(() => {
+    if (!running) return;
+    const doRefresh = async () => {
+      if (!signalSet.has("industry")) return;
+      setRssRefreshing(true);
+      try {
+        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: true });
+        const freshSigs = RSS_ENGINE.toSignals(ingestResult);
+        setRssSignals(freshSigs);
+        setRssLastUpdated(Date.now());
+      } catch(e) { /* silent */ }
+      setRssRefreshing(false);
+    };
+    const interval = setInterval(doRefresh, 30000);
+    return () => clearInterval(interval);
+  }, [running]);
 
   // ---- CEM state ----
   const [events, setEvents] = useState([]);
@@ -335,6 +355,7 @@ function App() {
         const freshSigs = RSS_ENGINE.toSignals(ingestResult);
         currentRssSignals = freshSigs;
         setRssSignals(freshSigs);
+        setRssLastUpdated(Date.now());
         log(`RSS: ${freshSigs.length} signals graded`);
       } catch(e) {
         log(`RSS ingest: ${e.message || "using prior signals"}`);
@@ -644,6 +665,10 @@ function App() {
                 onOverride={requestOverride}
                 signals={output.s1?.signals || []}
                 livefacts={livefacts}
+                liveRssSignals={rssSignals}
+                rssLastUpdated={rssLastUpdated}
+                rssRefreshing={rssRefreshing}
+                appetiteThreshold={cfg.appetiteThreshold || 7.0}
                 riskApprovals={riskApprovals}
                 onApproveRisk={approveRisk}
                 onOpenAdjustRisk={openAdjustRisk}

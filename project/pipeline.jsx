@@ -15,8 +15,10 @@ const STAGES = [
 
 // Insert HITL gates after stages 2 and 3
 function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts,
+                    liveRssSignals, rssLastUpdated, rssRefreshing, appetiteThreshold,
                     riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onSignoffRisk,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective }) {
+  const s2Extra = { liveRssSignals, rssLastUpdated, rssRefreshing, appetiteThreshold };
   return (
     <div className="pipeline">
       {STAGES.map((s, i) => {
@@ -38,6 +40,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               output={output[s.id]}
               signals={signals}
               livefacts={livefacts}
+              s2Extra={s.id === "s2" ? s2Extra : null}
             />
             {i < STAGES.length - 1 && (
               <Connector active={status === "done" || status === "running"}/>
@@ -48,6 +51,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                   <RiskApprovalReview
                     risks={output.s2?.risks || []}
                     approvals={riskApprovals}
+                    appetiteThreshold={appetiteThreshold}
                     onApproveRisk={onApproveRisk}
                     onOpenAdjust={onOpenAdjustRisk}
                     onApproveAll={onApproveAllRisks}
@@ -86,7 +90,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
   );
 }
 
-function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts }) {
+function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s2Extra }) {
   const statusCls = status === "running" ? "running" : status === "done" ? "done" : "";
   const pill =
     status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
@@ -107,7 +111,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts }) 
       </div>
       {isOpen && (
         <div className="stage-body">
-          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts}/>
+          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s2Extra={s2Extra}/>
         </div>
       )}
     </div>
@@ -158,9 +162,12 @@ function HITLGate({ num, state, onApprove, onOverride }) {
 }
 
 // ------ Stage body content ------
-function StageBody({ id, status, output, signals, livefacts }) {
+function StageBody({ id, status, output, signals, livefacts, s2Extra }) {
   if (status === "idle") {
     return <Empty>Awaiting run — toggle signal sources in the sidebar and press Run Loop.</Empty>;
+  }
+  if (status === "waiting") {
+    return <Empty>Awaiting gate approval — review and confirm the previous stage before this one runs.</Empty>;
   }
   if (status === "running") {
     return (
@@ -170,7 +177,7 @@ function StageBody({ id, status, output, signals, livefacts }) {
     );
   }
   if (id === "s1") return <S1Body output={output} signals={signals} livefacts={livefacts}/>;
-  if (id === "s2") return <S2Body output={output}/>;
+  if (id === "s2") return <S2Body output={output} {...(s2Extra || {})}/>;
   if (id === "s3") return <S3Body output={output}/>;
   if (id === "s4") return <S4Body output={output}/>;
   if (id === "s5") return <S5Body output={output}/>;
@@ -221,12 +228,20 @@ function S1Body({ output, signals, livefacts }) {
 
 const CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
 
-function S2Body({ output }) {
+function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefreshing = false, appetiteThreshold }) {
   const risks = output?.risks || [];
   const appetite = output?.riskAppetite;
-  const threshold = appetite?.threshold || 7.0;
+  const threshold = appetiteThreshold ?? appetite?.threshold ?? 7.0;
   const counts = risks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
   const topRisks = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
+
+  // Group live RSS signals by source
+  const rssByFeed = {};
+  (liveRssSignals || []).forEach(s => {
+    const key = s.feedName || s.feedId || "RSS";
+    rssByFeed[key] = (rssByFeed[key] || 0) + 1;
+  });
+  const secsAgo = rssLastUpdated ? Math.round((Date.now() - rssLastUpdated) / 1000) : null;
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
@@ -237,6 +252,26 @@ function S2Body({ output }) {
         <Stat l="Appetite breach" v={appetite?.breaching?.length || 0} mono
               color={(appetite?.breaching?.length || 0) > 0 ? "var(--red-ink)" : "var(--green-ink)"}/>
       </div>
+      {/* Live RSS ingestion status */}
+      <div className="s2-rss-bar">
+        <span className="s2-rss-label">
+          {rssRefreshing
+            ? <><span className="spin" style={{width:10,height:10,borderWidth:1.5}}/> Ingesting RSS…</>
+            : <><span className="s2-rss-dot live"/>RSS live</>}
+        </span>
+        {liveRssSignals.length > 0 && (
+          <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>
+            {liveRssSignals.length} signals
+            {Object.entries(rssByFeed).map(([k, n]) => (
+              <span key={k} style={{marginLeft:6, color:"var(--ink-3)"}}>{k}: {n}</span>
+            ))}
+          </span>
+        )}
+        <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:"auto"}}>
+          {secsAgo != null ? `updated ${secsAgo < 60 ? `${secsAgo}s` : `${Math.round(secsAgo/60)}m`} ago · refreshes every 30s` : "not yet ingested"}
+        </span>
+      </div>
+
       <div className="stage-detail">
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 8}}>
           <h5 style={{margin:0}}>Control tolerance · per-control assessment</h5>
