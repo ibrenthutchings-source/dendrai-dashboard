@@ -72,6 +72,16 @@ window.RSS_ENGINE = (function () {
       icon: "bolt",
       simulateOnly: true,
     },
+    {
+      id: "peers",
+      name: "Peer Company Disclosures",
+      url: "",
+      domains: ["Financial Reporting", "Trade Compliance", "Operational", "Macro"],
+      risks: ["R-01", "R-02", "R-03", "R-09"],
+      weight: 1.3,
+      icon: "users",
+      simulateOnly: true,
+    },
   ];
 
   // ── Severity vocabulary ───────────────────────────────────
@@ -176,6 +186,15 @@ window.RSS_ENGINE = (function () {
       { title: "SIA Members Report Extended Inventory Correction — SiC Product Family Most Exposed", severity_hint: 2.5, risks: ["R-03"] },
       { title: "SIA Annual Report: Conflict Minerals RMAP Coverage Improves to 97% Industry Average", severity_hint: 0.5, risks: ["R-10"] },
       { title: "SEMI Manufacturing Equipment Orders Fall 18% — Capacity Discipline Maintained", severity_hint: 1.5, risks: ["R-06"] },
+    ],
+    peers: [
+      { title: "TXN Q4 Earnings: Export Control Headwinds Cut Revenue Guidance 8% — BIS License Delays Cited", severity_hint: 2.5, risks: ["R-02", "R-01"] },
+      { title: "STMicroelectronics Discloses €420M NRV Reserve on SiC Inventory Overbuild", severity_hint: 2.5, risks: ["R-03"] },
+      { title: "Microchip Technology 10-K: Material Weakness in Revenue Cut-Off Controls — SOX 404(b) Finding", severity_hint: 3.0, risks: ["R-01", "R-05"] },
+      { title: "NXP Semiconductors Updates BIS Compliance Program — EAR License Required for 6 SKUs", severity_hint: 2.0, risks: ["R-02"] },
+      { title: "Analog Semi Peer Round-Up: Q1 Book-to-Bill Ratio Falls Below 1.0 for 4th Consecutive Quarter", severity_hint: 1.5, risks: ["R-09", "R-01"] },
+      { title: "Broadcom Q1 Earnings: Channel Inventory Normalising in Auto, Industrial Still Elevated", severity_hint: 1.5, risks: ["R-03", "R-09"] },
+      { title: "Texas Instruments Issues SEC Comment Letter Response on Revenue Recognition Disclosures", severity_hint: 2.0, risks: ["R-01"] },
     ],
   };
 

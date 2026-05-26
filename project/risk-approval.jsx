@@ -25,9 +25,12 @@ function deltaLabel(orig, next, key, fmt = (v) => v) {
   return `${fmt(orig[key])} → ${fmt(next[key])}`;
 }
 
+const RAR_CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
+
 function RiskApprovalReview({
   risks,
   approvals,
+  appetiteThreshold,
   onApproveRisk,
   onOpenAdjust,
   onApproveAll,
@@ -85,6 +88,7 @@ function RiskApprovalReview({
               key={r.id}
               risk={r}
               approval={approvals[r.id] || { status: "pending" }}
+              appetiteThreshold={appetiteThreshold}
               onApprove={() => onApproveRisk(r.id)}
               onAdjust={() => onOpenAdjust(r.id)}
               onSignoff={(role) => onSignoff(r.id, role)}
@@ -109,7 +113,8 @@ function RiskApprovalReview({
   );
 }
 
-function RiskRow({ risk, approval, onApprove, onAdjust, onSignoff }) {
+function RiskRow({ risk, approval, appetiteThreshold, onApprove, onAdjust, onSignoff }) {
+  const [showControls, setShowControls] = React.useState(false);
   const status = approval.status || "pending";
   const adj = approval.adjustments || null;
   const effRag = adj?.rag ?? risk.rag;
@@ -118,6 +123,8 @@ function RiskRow({ risk, approval, onApprove, onAdjust, onSignoff }) {
   const effCe = adj?.ce ?? risk.ce;
 
   const isAdjusted = status === "adjusted" || status === "signed";
+  const controls = MOCK.riskFlow?.[risk.id]?.controls || [];
+  const breachesAppetite = appetiteThreshold != null && effScore >= appetiteThreshold;
 
   return (
     <div className={`rar-row rar-row-${status}`}>
@@ -134,13 +141,25 @@ function RiskRow({ risk, approval, onApprove, onAdjust, onSignoff }) {
           <span>{risk.id}</span>
           <span>·</span>
           <span>{risk.category}</span>
+          {controls.length > 0 && (
+            <button className="rar-ctrl-toggle" onClick={() => setShowControls(!showControls)}>
+              {showControls ? "▲" : "▼"} {controls.length} controls
+            </button>
+          )}
         </div>
       </div>
 
       <div className="rar-td rar-td-score">
-        <span className="mono" style={{color: scoreColorInk(effScore), fontWeight: 500}}>{fmt2(effScore)}</span>
-        {isAdjusted && effScore !== risk.score && (
-          <span className="rar-was mono">was {fmt2(risk.score)}</span>
+        <div>
+          <span className="mono" style={{color: scoreColorInk(effScore), fontWeight: 500}}>{fmt2(effScore)}</span>
+          {isAdjusted && effScore !== risk.score && (
+            <span className="rar-was mono">was {fmt2(risk.score)}</span>
+          )}
+        </div>
+        {appetiteThreshold != null && (
+          <span className={"rar-tol-badge " + (breachesAppetite ? "breach" : "ok")}>
+            {breachesAppetite ? `BREACH ≥${appetiteThreshold}` : `OK <${appetiteThreshold}`}
+          </span>
         )}
       </div>
 
@@ -188,6 +207,28 @@ function RiskRow({ risk, approval, onApprove, onAdjust, onSignoff }) {
           </div>
         )}
       </div>
+
+      {showControls && controls.length > 0 && (
+        <div className="rar-ctrl-detail-row">
+          <div className="rar-ctrl-detail-head mono">
+            Control tolerance · threshold ≥ {appetiteThreshold ?? "—"}
+          </div>
+          {controls.map((ctrl, ci) => {
+            const adj = parseFloat((effScore + (RAR_CE_ADJ[ctrl.ce] || 0)).toFixed(1));
+            const withinTol = appetiteThreshold == null || adj < appetiteThreshold;
+            return (
+              <div key={ci} className="rar-ctrl-item">
+                <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>
+                <span style={{flex:1, fontSize:11, color:"var(--ink-2)"}}>{ctrl.name}</span>
+                <span className="mono" style={{fontSize:10, color:"var(--ink-3)", marginRight:8}}>{ctrl.ce}</span>
+                <span className="mono" style={{fontSize:10, fontWeight:500, color: withinTol ? "var(--green-ink)" : "var(--red-ink)"}}>
+                  {adj.toFixed(1)} {withinTol ? "OK" : "BREACH"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {isAdjusted && (
         <div className="rar-row-detail">
