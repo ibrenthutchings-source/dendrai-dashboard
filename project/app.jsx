@@ -396,6 +396,7 @@ function App() {
 
     // GATE 1 — Risk assessment
     if (hitl.risk) {
+      setStageState((prev) => ({ ...prev, s3: "waiting", s4: "waiting", s5: "waiting", s6: "waiting" }));
       const gres = await showGate(1);
       log(gres.ok ? "Gate 1 passed" : `Gate 1 overridden: ${gres.reason}`);
     }
@@ -406,6 +407,7 @@ function App() {
 
     // GATE 2 — Audit scope
     if (hitl.scope) {
+      setStageState((prev) => ({ ...prev, s4: "waiting", s5: "waiting", s6: "waiting" }));
       const gres = await showGate(2);
       log(gres.ok ? "Gate 2 passed" : `Gate 2 overridden: ${gres.reason}`);
     }

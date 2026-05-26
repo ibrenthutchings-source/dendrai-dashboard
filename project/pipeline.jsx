@@ -91,6 +91,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts }) 
   const pill =
     status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
     status === "done"    ? <span className="stage-pill done"><span className="dot"/>COMPLETE</span> :
+    status === "waiting" ? <span className="stage-pill wait"><span className="dot"/>AWAITING GATE</span> :
                            <span className="stage-pill"><span className="dot"/>IDLE</span>;
   const num = stage.id.replace("s", "");
   return (
@@ -218,9 +219,14 @@ function S1Body({ output, signals, livefacts }) {
   );
 }
 
+const CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
+
 function S2Body({ output }) {
   const risks = output?.risks || [];
+  const appetite = output?.riskAppetite;
+  const threshold = appetite?.threshold || 7.0;
   const counts = risks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
+  const topRisks = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
@@ -228,19 +234,51 @@ function S2Body({ output }) {
         <Stat l="Red" v={counts.R || 0} mono color="var(--red-ink)"/>
         <Stat l="Amber" v={counts.A || 0} mono color="var(--amber-ink)"/>
         <Stat l="Green" v={counts.G || 0} mono color="var(--green-ink)"/>
+        <Stat l="Appetite breach" v={appetite?.breaching?.length || 0} mono
+              color={(appetite?.breaching?.length || 0) > 0 ? "var(--red-ink)" : "var(--green-ink)"}/>
       </div>
       <div className="stage-detail">
-        <h5>Top 3 risks</h5>
-        <ul>
-          {risks.slice(0, 3).map(r => (
-            <li key={r.id}>
-              <span className="tag mono">{r.id}</span>
-              <span style={{flex: 1}}>{r.name}</span>
-              <RAGChip rag={r.rag}>{fmt2(r.score)}</RAGChip>
-              <VelocityPill v={r.velocity}/>
-            </li>
-          ))}
-        </ul>
+        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 8}}>
+          <h5 style={{margin:0}}>Control tolerance · per-control assessment</h5>
+          <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>appetite threshold ≥ {threshold}</span>
+        </div>
+        <div className="s2-ctrl-list">
+          {topRisks.map(r => {
+            const controls = (MOCK.riskFlow?.[r.id]?.controls) || [];
+            const breachesAppetite = r.score >= threshold;
+            return (
+              <div key={r.id} className={"s2-ctrl-risk" + (breachesAppetite ? " breach" : "")}>
+                <div className="s2-ctrl-risk-head">
+                  <RAGChip rag={r.rag}>{fmt2(r.score)}</RAGChip>
+                  <span style={{flex:1, fontWeight:500, fontSize:11.5}}>{r.name}</span>
+                  <VelocityPill v={r.velocity}/>
+                  {breachesAppetite && <span className="mono" style={{fontSize:9, color:"var(--red-ink)", letterSpacing:"0.05em"}}>APPETITE BREACH</span>}
+                </div>
+                {controls.length > 0 && (
+                  <div className="s2-ctrl-detail">
+                    {controls.map((ctrl, ci) => {
+                      const adj = parseFloat((r.score + (CE_ADJ[ctrl.ce] || 0)).toFixed(1));
+                      const withinTol = adj < threshold;
+                      return (
+                        <div key={ci} className="s2-ctrl-row">
+                          <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>
+                          <span style={{flex:1, fontSize:11, color:"var(--ink-2)"}}>{ctrl.name}</span>
+                          <span className="mono" style={{fontSize:10, color:"var(--ink-3)", marginRight:6}}>{ctrl.ce}</span>
+                          <span className="mono" style={{fontSize:10, fontWeight:500, color: withinTol ? "var(--green-ink)" : "var(--red-ink)", minWidth:28, textAlign:"right"}}>
+                            {adj.toFixed(1)}
+                          </span>
+                          <span className="mono" style={{fontSize:9, color: withinTol ? "var(--green-ink)" : "var(--red-ink)", marginLeft:4, minWidth:32}}>
+                            {withinTol ? "OK" : "BREACH"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
