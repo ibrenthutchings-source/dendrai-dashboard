@@ -246,8 +246,8 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
 function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, hoverId, rssSignals, fredData, appetiteThreshold = 7.0 }) {
   if (!risks?.length || !flowMeta) return null;
 
-  // Top risks by score
-  const topRisks = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
+  // All risks sorted by score descending
+  const topRisks = [...risks].sort((a, b) => b.score - a.score);
 
   // Collect distinct impact areas across selected risks
   const impactSet = new Set();
@@ -294,8 +294,9 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
   }
 
   // ---- Layout ----
-  const W = 940, H = 380;
+  const W = 940;
   const padT = 36, padB = 28;
+  const H = Math.max(380, topRisks.length * 38 + padT + padB);
   const colW = 8;                      // node bar width
   const labelGapL = 14;                // left col label gap
   const labelGapR = 14;
