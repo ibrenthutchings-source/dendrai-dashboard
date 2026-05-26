@@ -26,11 +26,15 @@ function deltaLabel(orig, next, key, fmt = (v) => v) {
 }
 
 const RAR_CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
+const RAR_APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
 
 function RiskApprovalReview({
   risks,
   approvals,
+  appetiteLevel = "AMBER",
   appetiteThreshold,
+  perRiskAppetite = {},
+  onSetPerRiskAppetite,
   onApproveRisk,
   onOpenAdjust,
   onApproveAll,
@@ -88,7 +92,9 @@ function RiskApprovalReview({
               key={r.id}
               risk={r}
               approval={approvals[r.id] || { status: "pending" }}
-              appetiteThreshold={appetiteThreshold}
+              appetiteLevel={appetiteLevel}
+              perRiskLevel={perRiskAppetite[r.id] || appetiteLevel}
+              onSetPerRiskLevel={(lvl) => onSetPerRiskAppetite && onSetPerRiskAppetite(prev => ({...prev, [r.id]: lvl}))}
               onApprove={() => onApproveRisk(r.id)}
               onAdjust={() => onOpenAdjust(r.id)}
               onSignoff={(role) => onSignoff(r.id, role)}
@@ -113,7 +119,8 @@ function RiskApprovalReview({
   );
 }
 
-function RiskRow({ risk, approval, appetiteThreshold, onApprove, onAdjust, onSignoff }) {
+function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBER", onSetPerRiskLevel, onApprove, onAdjust, onSignoff }) {
+  const r = risk;
   const [showControls, setShowControls] = React.useState(false);
   const status = approval.status || "pending";
   const adj = approval.adjustments || null;
@@ -124,7 +131,8 @@ function RiskRow({ risk, approval, appetiteThreshold, onApprove, onAdjust, onSig
 
   const isAdjusted = status === "adjusted" || status === "signed";
   const controls = MOCK.riskFlow?.[risk.id]?.controls || [];
-  const breachesAppetite = appetiteThreshold != null && effScore >= appetiteThreshold;
+  const threshold = RAR_APPETITE_THRESHOLDS[perRiskLevel] ?? 7.5;
+  const breachesAppetite = effScore >= threshold;
 
   return (
     <div className={`rar-row rar-row-${status}`}>
@@ -150,17 +158,35 @@ function RiskRow({ risk, approval, appetiteThreshold, onApprove, onAdjust, onSig
       </div>
 
       <div className="rar-td rar-td-score">
-        <div>
+        <div className="rar-score-row">
           <span className="mono" style={{color: scoreColorInk(effScore), fontWeight: 500}}>{fmt2(effScore)}</span>
           {isAdjusted && effScore !== risk.score && (
             <span className="rar-was mono">was {fmt2(risk.score)}</span>
           )}
         </div>
-        {appetiteThreshold != null && (
+        <div style={{display:"flex", alignItems:"center", gap:4, marginTop:3}}>
           <span className={"rar-tol-badge " + (breachesAppetite ? "breach" : "ok")}>
-            {breachesAppetite ? `BREACH ≥${appetiteThreshold}` : `OK <${appetiteThreshold}`}
+            {breachesAppetite ? "BREACH" : "OK"}
           </span>
-        )}
+          <div className="rar-appetite-btns">
+            {["G","A","R"].map(ch => {
+              const lvlMap = {"G":"GREEN","A":"AMBER","R":"RED"};
+              const lvl = lvlMap[ch];
+              const isActive = perRiskLevel === lvl;
+              const colors = {G:"var(--green-ink)",A:"var(--amber-ink)",R:"var(--red-ink)"};
+              const softs = {G:"var(--green-soft)",A:"var(--amber-soft)",R:"var(--red-soft)"};
+              return (
+                <button key={ch}
+                  className={"rar-apt-btn" + (isActive ? " active" : "")}
+                  style={isActive ? {background:softs[ch], color:colors[ch], borderColor:colors[ch]} : {}}
+                  onClick={() => onSetPerRiskLevel && onSetPerRiskLevel(lvl)}
+                  title={`Set ${r.id} appetite to ${lvl}`}>
+                  {ch}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <div className="rar-td rar-td-vel">
@@ -211,11 +237,11 @@ function RiskRow({ risk, approval, appetiteThreshold, onApprove, onAdjust, onSig
       {showControls && controls.length > 0 && (
         <div className="rar-ctrl-detail-row">
           <div className="rar-ctrl-detail-head mono">
-            Control tolerance · threshold ≥ {appetiteThreshold ?? "—"}
+            Control tolerance · threshold ≥ {threshold}
           </div>
           {controls.map((ctrl, ci) => {
             const adj = parseFloat((effScore + (RAR_CE_ADJ[ctrl.ce] || 0)).toFixed(1));
-            const withinTol = appetiteThreshold == null || adj < appetiteThreshold;
+            const withinTol = adj < threshold;
             return (
               <div key={ci} className="rar-ctrl-item">
                 <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>

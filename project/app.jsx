@@ -12,6 +12,8 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
   "persona": "Internal Audit"
 } /*EDITMODE-END*/;
 
+const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
+
 function App() {
   // ---- Tweaks ----
   const [tweaks, setTweak] = useTweaks(DEFAULT_TWEAKS);
@@ -29,7 +31,7 @@ function App() {
     focus: Array.isArray(MOCK.entity.focus) ? MOCK.entity.focus : [MOCK.entity.focus],
     periodBegin: "Q1 2025",
     periodEnd: "Q4 2025",
-    appetiteThreshold: 7.0,
+    appetiteLevel: "AMBER",
   });
   const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal", "fred", "incidents"]));
   const [velocity, setVelocity] = useState(3);
@@ -68,6 +70,7 @@ function App() {
   const [rssSignals, setRssSignals] = useState([]);
   const [rssLastUpdated, setRssLastUpdated] = useState(null);
   const [rssRefreshing, setRssRefreshing] = useState(false);
+  const [perRiskAppetite, setPerRiskAppetite] = useState({});
 
   // Periodic RSS refresh while pipeline is running
   useEffect(() => {
@@ -128,6 +131,11 @@ function App() {
       const init = {};
       risksNow.forEach(r => { init[r.id] = { status: "pending" }; });
       setRiskApprovals(init);
+      setPerRiskAppetite(prev => {
+        const next = {};
+        risksNow.forEach(r => { next[r.id] = prev[r.id] || cfg.appetiteLevel || "AMBER"; });
+        return { ...prev, ...next };
+      });
     }
     if (n === 2) {
       const objsNow = (output.s3?.objectives) || MOCK.objectives;
@@ -405,10 +413,11 @@ function App() {
 
     // STAGE 2 — Risk assessment with signal-adjusted scoring
     const adjustedRisks = adjustRiskScores(MOCK.risks, sigsList, currentRssSignals);
-    const threshold = cfg.appetiteThreshold || 7.0;
+    const threshold = APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5;
     const breachingIds = adjustedRisks.filter(r => r.score >= threshold).map(r => r.id);
     const riskAppetiteResult = {
       threshold,
+      level: cfg.appetiteLevel || "AMBER",
       breaching: breachingIds,
       status: breachingIds.length > 0 ? "BREACHED" : "WITHIN APPETITE",
     };
@@ -453,6 +462,31 @@ function App() {
     setTimeout(() => fireSyntheticEvent(2), 1000 / speed);
   }
 
+  async function rerunFromS3() {
+    if (running) return;
+    setRunning(true);
+    log("Re-run triggered from Stage 3");
+    setStageState(prev => ({ ...prev, s3: "idle", s4: "idle", s5: "idle", s6: "idle" }));
+    setOutput(prev => { const n = {...prev}; delete n.s3; delete n.s4; delete n.s5; delete n.s6; return n; });
+    setGateState(prev => ({ ...prev, g2: null }));
+    await t(300);
+    await runStage("s3", { objectives: MOCK.objectives }, 1500);
+    if (hitl.scope) {
+      setStageState(prev => ({ ...prev, s4: "waiting", s5: "waiting", s6: "waiting" }));
+      const gres = await showGate(2);
+      log(gres.ok ? "Gate 2 passed" : `Gate 2 overridden: ${gres.reason}`);
+    }
+    setStageState(prev => ({ ...prev, s4: "idle" }));
+    await runStage("s4", { maps: MOCK.maps }, 1400);
+    setActiveRailTab("map");
+    await runStage("s5", { closure: MOCK.closure }, 1200);
+    await runStage("s6", { loop: MOCK.loop }, 1200);
+    setActiveRailTab("loop");
+    log("Re-run from Stage 3 complete");
+    setRunning(false);
+    setHasRun(true);
+  }
+
   function resetAll() {
     setStageState({});
     setOutput({});
@@ -466,6 +500,7 @@ function App() {
     setFredLive(null);
     setLiveStatus("");
     setRiskApprovals({});
+    setPerRiskAppetite({});
     setAdjustOpen(false);
     setAdjustingRiskId(null);
   }
@@ -541,9 +576,9 @@ function App() {
       risks: risksCur,
       top3,
       riskAppetite: output.s2?.riskAppetite || (() => {
-        const t = cfg.appetiteThreshold || 7.0;
+        const level = cfg.appetiteLevel || "AMBER"; const t = APPETITE_THRESHOLDS[level] ?? 7.5;
         const b = risksCur.filter(r => r.score >= t).map(r => r.id);
-        return { threshold: t, breaching: b, status: b.length > 0 ? "BREACHED" : "WITHIN APPETITE" };
+        return { threshold: t, level, breaching: b, status: b.length > 0 ? "BREACHED" : "WITHIN APPETITE" };
       })(),
       objectives: output.s3?.objectives || [],
       maps: output.s4?.maps || [],
@@ -632,7 +667,7 @@ function App() {
                 <div className="mono" style={{ display: "flex", gap: 12, alignItems: "center", color: "var(--ink-3)", fontSize: 11 }}>
                   {output.s2?.riskAppetite?.status === "BREACHED" && (
                     <span style={{color:"var(--red-ink)", fontWeight:500}}>
-                      Appetite BREACHED · {output.s2.riskAppetite.breaching.length} risk{output.s2.riskAppetite.breaching.length !== 1 ? "s" : ""} ≥ {output.s2.riskAppetite.threshold}
+                      Appetite <RAGChip rag={output.s2.riskAppetite.level?.charAt(0)}>{output.s2.riskAppetite.level}</RAGChip> BREACHED · {output.s2.riskAppetite.breaching.length} risk{output.s2.riskAppetite.breaching.length !== 1 ? "s" : ""} exceed tolerance
                     </span>
                   )}
                   <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s2?.risks.length || 0}</b> risks</span>
@@ -668,10 +703,15 @@ function App() {
                 liveRssSignals={rssSignals}
                 rssLastUpdated={rssLastUpdated}
                 rssRefreshing={rssRefreshing}
-                appetiteThreshold={cfg.appetiteThreshold || 7.0}
+                appetiteLevel={cfg.appetiteLevel || "AMBER"}
+                appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
+                perRiskAppetite={perRiskAppetite}
+                setPerRiskAppetite={setPerRiskAppetite}
+                allSignals={output.s1?.signals || []}
+                onRerunFromS3={rerunFromS3}
+                onOpenAdjustRisk={openAdjustRisk}
                 riskApprovals={riskApprovals}
                 onApproveRisk={approveRisk}
-                onOpenAdjustRisk={openAdjustRisk}
                 onApproveAllRisks={approveAllRemainingRisks}
                 onSignoffRisk={signoffRisk}
                 scopeApprovals={scopeApprovals}
@@ -720,7 +760,7 @@ function App() {
               liveMode={liveMode}
               rssSignals={rssSignals}
               fredData={MOCK.forecasts?.fred}
-              appetiteThreshold={cfg.appetiteThreshold || 7.0} />
+              appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
           </div>
         </main>
 

@@ -1773,6 +1773,72 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   .rss-art-feed, .rss-art-row .rss-art-score:nth-child(6) { display: none; }
 }
 
+/* ============================================================
+   Risk Appetite Selector (sidebar + pipeline)
+   ============================================================ */
+.appetite-sel { display: flex; gap: 4px; width: 100%; }
+.appetite-btn {
+  flex: 1; padding: 5px 4px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--surface-2);
+  font-size: 10px; font-weight: 500; font-family: "Geist Mono", monospace;
+  letter-spacing: 0.04em; cursor: pointer; color: var(--ink-3);
+  transition: all .15s; text-align: center; line-height: 1.2;
+}
+.appetite-btn:hover { border-color: var(--ink-3); color: var(--ink); }
+.appetite-btn.active { font-weight: 600; }
+
+/* ============================================================
+   S2Body — signal evidence section
+   ============================================================ */
+.s2-sig-ev { margin: 5px 0 3px; padding-left: 2px; }
+.s2-sig-ev-toggle {
+  background: none; border: none; cursor: pointer; padding: 1px 0;
+  font-size: 10.5px; color: var(--acc-ink); display: flex; align-items: center; gap: 6px;
+}
+.s2-sig-ev-toggle:hover { color: var(--ink); }
+.s2-sig-ev-delta {
+  font-family: "Geist Mono", monospace; font-size: 9px; font-weight: 600;
+  color: var(--red-ink); padding: 1px 5px; border-radius: 4px;
+  background: var(--red-soft);
+}
+.s2-sig-ev-body {
+  margin-top: 5px; padding: 6px 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
+}
+.s2-sig-ev-item {
+  display: flex; align-items: center; gap: 7px; padding: 4px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.s2-sig-ev-item:last-child { border-bottom: none; }
+.s2-sig-ev-src {
+  font-family: "Geist Mono", monospace; font-size: 9px; font-weight: 500;
+  color: var(--ink-3); padding: 1px 6px; border-radius: 3px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  flex-shrink: 0; white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+}
+.s2-sig-ev-adj {
+  font-family: "Geist Mono", monospace; font-size: 10px; font-weight: 700;
+  color: var(--red-ink); flex-shrink: 0; min-width: 36px; text-align: right;
+}
+
+/* Per-risk appetite selector in Stage 2 */
+.s2-appetite-sel {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px;
+  font-size: 9.5px; font-family: "Geist Mono", monospace; font-weight: 600;
+  padding: 2px 5px; cursor: pointer; flex-shrink: 0;
+}
+
+/* Per-risk appetite buttons in Gate 1 review */
+.rar-apt-btn {
+  padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line);
+  background: var(--surface-2); font-size: 9px; font-weight: 600;
+  font-family: "Geist Mono", monospace; cursor: pointer; color: var(--ink-3);
+  transition: all .12s; line-height: 1.4;
+}
+.rar-apt-btn:hover { border-color: var(--ink-3); color: var(--ink); }
+.rar-apt-btn.active { font-weight: 700; }
+.rar-appetite-btns { display: flex; gap: 2px; }
+
 /* ---- Print / PDF -------------------------------------------------------- */
 @media print {
   /* Hide everything, then selectively reveal the open report modal */

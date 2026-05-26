@@ -220,23 +220,31 @@ function Sidebar({
               <span className={hitl.map ? "on" : "off"} title="MAP generation">M</span>
             </span>
           </div>
-          <div className="cfg-row">
-            <span className="cfg-lab">Risk appetite ≥</span>
-            <select className="cfg-val mono"
-              style={{border:"none",background:"transparent",padding:0,cursor:"pointer",fontSize:11,color:"var(--ink)"}}
-              value={cfg.appetiteThreshold || 7.0}
-              onChange={e => setCfg({...cfg, appetiteThreshold: parseFloat(e.target.value)})}>
-              <option value="5.5">5.5</option>
-              <option value="6.0">6.0</option>
-              <option value="6.5">6.5</option>
-              <option value="7.0">7.0</option>
-              <option value="7.5">7.5</option>
-              <option value="8.0">8.0</option>
-            </select>
+          <div className="cfg-row" style={{alignItems:"flex-start", flexDirection:"column", gap:4}}>
+            <span className="cfg-lab">Risk appetite</span>
+            <div className="appetite-sel">
+              {[
+                {lvl:"GREEN", label:"Conservative", sub:"≤ GREEN"},
+                {lvl:"AMBER", label:"Moderate",     sub:"≤ AMBER"},
+                {lvl:"RED",   label:"Permissive",   sub:"≤ RED"},
+              ].map(({lvl, label, sub}) => {
+                const active = (cfg.appetiteLevel || "AMBER") === lvl;
+                const colors = { GREEN:"var(--green-ink)", AMBER:"var(--amber-ink)", RED:"var(--red-ink)" };
+                const softs  = { GREEN:"var(--green-soft)", AMBER:"var(--amber-soft)", RED:"var(--red-soft)" };
+                return (
+                  <button key={lvl} className={"appetite-btn" + (active ? " active" : "")}
+                    style={active ? {background:softs[lvl], color:colors[lvl], borderColor:colors[lvl]} : {}}
+                    onClick={() => setCfg({...cfg, appetiteLevel: lvl})}>
+                    <div style={{fontWeight:600}}>{lvl}</div>
+                    <div style={{fontSize:9, opacity:0.8}}>{sub}</div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
         <div className="cfg-hint">
-          Velocity threshold, HITL gates, and risk appetite threshold configure the loop. Appetite threshold marks residual risks that breach tolerance on the Sankey. Edit velocity and gates in Tweaks.
+          Velocity threshold, HITL gates, and risk appetite level configure the loop. Appetite level marks residual risks that breach tolerance on the Sankey. Edit velocity and gates in Tweaks.
         </div>
       </div>
 
