@@ -13,12 +13,25 @@ const STAGES = [
   { id: "s6", name: "Loop Calibration + Re-feed",          desc: "Updated register · velocity recalibration · lessons" },
 ];
 
+const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
+
 // Insert HITL gates after stages 2 and 3
 function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts,
-                    liveRssSignals, rssLastUpdated, rssRefreshing, appetiteThreshold,
-                    riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onSignoffRisk,
+                    liveRssSignals, rssLastUpdated, rssRefreshing,
+                    appetiteLevel = "AMBER", appetiteThreshold,
+                    perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
+                    riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective }) {
-  const s2Extra = { liveRssSignals, rssLastUpdated, rssRefreshing, appetiteThreshold };
+  const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
+  const s2Extra = {
+    liveRssSignals, rssLastUpdated, rssRefreshing,
+    appetiteLevel, appetiteThreshold: threshold,
+    perRiskAppetite: perRiskAppetite || {},
+    setPerRiskAppetite,
+    allSignals: allSignals || [],
+    onOpenAdjustRisk,
+    onRerunFromS3,
+  };
   return (
     <div className="pipeline">
       {STAGES.map((s, i) => {
@@ -51,7 +64,10 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                   <RiskApprovalReview
                     risks={output.s2?.risks || []}
                     approvals={riskApprovals}
-                    appetiteThreshold={appetiteThreshold}
+                    appetiteLevel={appetiteLevel}
+                    appetiteThreshold={threshold}
+                    perRiskAppetite={perRiskAppetite || {}}
+                    onSetPerRiskAppetite={setPerRiskAppetite}
                     onApproveRisk={onApproveRisk}
                     onOpenAdjust={onOpenAdjustRisk}
                     onApproveAll={onApproveAllRisks}
@@ -228,20 +244,35 @@ function S1Body({ output, signals, livefacts }) {
 
 const CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
 
-function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefreshing = false, appetiteThreshold }) {
+function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefreshing = false,
+                  appetiteLevel = "AMBER", appetiteThreshold,
+                  perRiskAppetite = {}, setPerRiskAppetite,
+                  allSignals = [], onOpenAdjustRisk, onRerunFromS3 }) {
+  const [expandedSigs, setExpandedSigs] = React.useState(new Set());
   const risks = output?.risks || [];
   const appetite = output?.riskAppetite;
-  const threshold = appetiteThreshold ?? appetite?.threshold ?? 7.0;
+  const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
+  const overallThreshold = appetiteThreshold ?? APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const counts = risks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
-  const topRisks = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
 
-  // Group live RSS signals by source
+  // Group live RSS signals by source for the status bar
   const rssByFeed = {};
   (liveRssSignals || []).forEach(s => {
     const key = s.feedName || s.feedId || "RSS";
     rssByFeed[key] = (rssByFeed[key] || 0) + 1;
   });
   const secsAgo = rssLastUpdated ? Math.round((Date.now() - rssLastUpdated) / 1000) : null;
+
+  const fredContr = allSignals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary");
+  const highVelIndustry = liveRssSignals.filter(s => s.velocity >= 3).length;
+  const industryAdj = Math.min(0.2, highVelIndustry * 0.05);
+
+  const toggleSig = (id) => setExpandedSigs(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
@@ -252,17 +283,18 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         <Stat l="Appetite breach" v={appetite?.breaching?.length || 0} mono
               color={(appetite?.breaching?.length || 0) > 0 ? "var(--red-ink)" : "var(--green-ink)"}/>
       </div>
-      {/* Live RSS ingestion status */}
+
+      {/* Live RSS status bar */}
       <div className="s2-rss-bar">
         <span className="s2-rss-label">
           {rssRefreshing
-            ? <><span className="spin" style={{width:10,height:10,borderWidth:1.5}}/> Ingesting RSS…</>
+            ? <><span className="spin" style={{width:10,height:10,borderWidth:1.5}}/> Ingesting…</>
             : <><span className="s2-rss-dot live"/>RSS live</>}
         </span>
         {liveRssSignals.length > 0 && (
           <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>
             {liveRssSignals.length} signals
-            {Object.entries(rssByFeed).map(([k, n]) => (
+            {Object.entries(rssByFeed).map(([k,n]) => (
               <span key={k} style={{marginLeft:6, color:"var(--ink-3)"}}>{k}: {n}</span>
             ))}
           </span>
@@ -273,27 +305,110 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
       </div>
 
       <div className="stage-detail">
-        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 8}}>
-          <h5 style={{margin:0}}>Control tolerance · per-control assessment</h5>
-          <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>appetite threshold ≥ {threshold}</span>
+        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8}}>
+          <h5 style={{margin:0}}>Risk scoring · signal evidence · tolerance</h5>
+          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>
+              Overall: <span style={{color:`var(--${appetiteLevel.toLowerCase()}-ink)`, fontWeight:600}}>{appetiteLevel}</span> appetite
+            </span>
+            {onRerunFromS3 && (
+              <button className="btn btn-sm" style={{fontSize:10, padding:"3px 10px"}} onClick={onRerunFromS3}>
+                <Icon name="reset" size={10}/> Rerun Stages 3–6
+              </button>
+            )}
+          </div>
         </div>
+
         <div className="s2-ctrl-list">
-          {topRisks.map(r => {
+          {[...risks].sort((a,b) => b.score - a.score).map(r => {
+            const perLevel = perRiskAppetite[r.id] || appetiteLevel;
+            const perThreshold = APPETITE_THRESHOLDS[perLevel] ?? overallThreshold;
+            const breachesAppetite = r.score >= perThreshold;
+
+            // Signal evidence for this risk
+            const rssLinked = liveRssSignals.filter(s => (s.affectedRisks || []).includes(r.id));
+            const isMacro = (r.category || "").toLowerCase().includes("macro");
+            const fredAdj = isMacro ? fredContr.length * 0.08 : 0;
+            const rssAdj = rssLinked.reduce((sum,s) => sum + (s.velocity||0)*0.08, 0);
+            const totalAdj = rssAdj + fredAdj + (industryAdj > 0 && rssLinked.length === 0 ? industryAdj : 0);
+            const hasSigs = rssLinked.length > 0 || fredAdj > 0 || (highVelIndustry > 0 && industryAdj > 0);
+            const sigOpen = expandedSigs.has(r.id);
+
             const controls = (MOCK.riskFlow?.[r.id]?.controls) || [];
-            const breachesAppetite = r.score >= threshold;
+
             return (
               <div key={r.id} className={"s2-ctrl-risk" + (breachesAppetite ? " breach" : "")}>
                 <div className="s2-ctrl-risk-head">
                   <RAGChip rag={r.rag}>{fmt2(r.score)}</RAGChip>
                   <span style={{flex:1, fontWeight:500, fontSize:11.5}}>{r.name}</span>
                   <VelocityPill v={r.velocity}/>
-                  {breachesAppetite && <span className="mono" style={{fontSize:9, color:"var(--red-ink)", letterSpacing:"0.05em"}}>APPETITE BREACH</span>}
+
+                  {/* Per-risk appetite selector */}
+                  <select className="s2-appetite-sel"
+                    value={perLevel}
+                    onChange={e => setPerRiskAppetite && setPerRiskAppetite(prev => ({...prev, [r.id]: e.target.value}))}
+                    onClick={e => e.stopPropagation()}
+                    style={{color: perLevel === "GREEN" ? "var(--green-ink)" : perLevel === "AMBER" ? "var(--amber-ink)" : "var(--red-ink)"}}>
+                    <option value="GREEN">APT: G</option>
+                    <option value="AMBER">APT: A</option>
+                    <option value="RED">APT: R</option>
+                  </select>
+
+                  {breachesAppetite && (
+                    <span className="mono" style={{fontSize:9, color:"var(--red-ink)", letterSpacing:"0.04em"}}>BREACH</span>
+                  )}
+                  {onOpenAdjustRisk && (
+                    <button className="btn btn-sm" style={{padding:"2px 8px", fontSize:10}}
+                      onClick={e => { e.stopPropagation(); onOpenAdjustRisk(r.id); }}>
+                      Adjust
+                    </button>
+                  )}
                 </div>
+
+                {/* Signal evidence */}
+                {hasSigs && (
+                  <div className="s2-sig-ev">
+                    <button className="s2-sig-ev-toggle" onClick={() => toggleSig(r.id)}>
+                      {sigOpen ? "▲" : "▼"} {rssLinked.length + (fredAdj > 0 ? 1 : 0) + (industryAdj > 0 && rssLinked.length === 0 ? 1 : 0)} signal{(rssLinked.length + (fredAdj > 0 ? 1 : 0)) !== 1 ? "s" : ""} driving score
+                      {totalAdj > 0.01 && (
+                        <span className="s2-sig-ev-delta">+{totalAdj.toFixed(2)} adjustment</span>
+                      )}
+                    </button>
+                    {sigOpen && (
+                      <div className="s2-sig-ev-body">
+                        {rssLinked.map((s,i) => (
+                          <div key={i} className="s2-sig-ev-item">
+                            <span className="s2-sig-ev-src">{s.feedName || "RSS"}</span>
+                            <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{(s.title||"").slice(0,72)}{s.title?.length > 72 ? "…" : ""}</span>
+                            <VelocityPill v={s.velocity}/>
+                            <span className="s2-sig-ev-adj">+{(s.velocity*0.08).toFixed(2)}</span>
+                          </div>
+                        ))}
+                        {fredAdj > 0 && (
+                          <div className="s2-sig-ev-item">
+                            <span className="s2-sig-ev-src">FRED Macro</span>
+                            <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{fredContr.length} contractionary indicator{fredContr.length !== 1 ? "s" : ""}</span>
+                            <span className="s2-sig-ev-adj">+{fredAdj.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {industryAdj > 0 && rssLinked.length === 0 && (
+                          <div className="s2-sig-ev-item">
+                            <span className="s2-sig-ev-src">Industry</span>
+                            <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{highVelIndustry} high-velocity industry signal{highVelIndustry !== 1 ? "s" : ""}</span>
+                            <span className="s2-sig-ev-adj">+{industryAdj.toFixed(2)}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Per-control tolerance */}
                 {controls.length > 0 && (
                   <div className="s2-ctrl-detail">
-                    {controls.map((ctrl, ci) => {
-                      const adj = parseFloat((r.score + (CE_ADJ[ctrl.ce] || 0)).toFixed(1));
-                      const withinTol = adj < threshold;
+                    {controls.map((ctrl,ci) => {
+                      const adj = parseFloat((r.score + (CE_ADJ[ctrl.ce]||0)).toFixed(1));
+                      const withinTol = adj < perThreshold;
                       return (
                         <div key={ci} className="s2-ctrl-row">
                           <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>
@@ -302,7 +417,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
                           <span className="mono" style={{fontSize:10, fontWeight:500, color: withinTol ? "var(--green-ink)" : "var(--red-ink)", minWidth:28, textAlign:"right"}}>
                             {adj.toFixed(1)}
                           </span>
-                          <span className="mono" style={{fontSize:9, color: withinTol ? "var(--green-ink)" : "var(--red-ink)", marginLeft:4, minWidth:32}}>
+                          <span className="mono" style={{fontSize:9, color: withinTol ? "var(--green-ink)" : "var(--red-ink)", marginLeft:4}}>
                             {withinTol ? "OK" : "BREACH"}
                           </span>
                         </div>
