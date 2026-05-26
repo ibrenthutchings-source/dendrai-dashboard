@@ -343,6 +343,34 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   flex-shrink: 0;
 }
 
+/* S2 control-by-control tolerance list */
+.s2-ctrl-list { display: flex; flex-direction: column; gap: 6px; }
+.s2-ctrl-risk {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; background: var(--surface);
+}
+.s2-ctrl-risk.breach {
+  border-color: color-mix(in oklch, var(--red) 40%, transparent);
+  background: color-mix(in oklch, var(--red) 4%, var(--surface));
+}
+.s2-ctrl-risk-head {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 0;
+}
+.s2-ctrl-risk.breach .s2-ctrl-risk-head { margin-bottom: 6px; }
+.s2-ctrl-detail {
+  display: flex; flex-direction: column; gap: 2px;
+  padding-top: 6px; border-top: 1px solid var(--line);
+  margin-top: 2px;
+}
+.s2-ctrl-row {
+  display: flex; align-items: center; gap: 7px; padding: 2px 0;
+}
+.s2-ctrl-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.s2-ctrl-dot.ok  { background: var(--green); }
+.s2-ctrl-dot.out { background: var(--red); }
+
 /* connector between stages */
 .conn {
   height: 18px;
