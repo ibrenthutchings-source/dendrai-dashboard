@@ -117,7 +117,7 @@ function ReportModal({ open, onClose, payload }) {
 
           <div className="rep-section">
             <h3>Audit Trail</h3>
-            <div className="mono" style={{fontSize: 11, background: "var(--surface-2)", border:"1px solid var(--line)", borderRadius: 8, padding: 12, maxHeight: 220, overflowY: "auto"}}>
+            <div className="mono rep-audit-trail" style={{fontSize: 11, background: "var(--surface-2)", border:"1px solid var(--line)", borderRadius: 8, padding: 12, maxHeight: 220, overflowY: "auto"}}>
               {log.map((e, i) => (
                 <div key={i} style={{display:"grid", gridTemplateColumns: "82px 1fr", gap: 8, padding: "2px 0"}}>
                   <span style={{color: "var(--ink-3)"}}>{new Date(e.ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
