@@ -1660,6 +1660,31 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   margin-top: 4px;
 }
 
+/* Pipeline sub-tabs ------------------------------------------------------ */
+.pipe-sub-tabs {
+  display: flex; gap: 0;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  background: var(--surface);
+}
+.pipe-sub-tab {
+  padding: 7px 16px;
+  font-size: 12px; color: var(--ink-3);
+  background: none; border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer; font-family: "Geist", sans-serif;
+  margin-bottom: -1px; transition: color 0.12s;
+  white-space: nowrap;
+}
+.pipe-sub-tab:hover { color: var(--ink); }
+.pipe-sub-tab.active { color: var(--ink); border-bottom-color: var(--acc); font-weight: 500; }
+.pipe-sub-tab .count {
+  display: inline-block; margin-left: 5px;
+  background: var(--surface-3); color: var(--ink-3);
+  border-radius: 10px; font-size: 10px; padding: 0 5px;
+}
+
 @media (max-width: 900px) {
   .rss-art-thead, .rss-art-row {
     grid-template-columns: 38px 1fr 52px 50px 100px;

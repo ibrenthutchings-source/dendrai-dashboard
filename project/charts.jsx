@@ -243,7 +243,7 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
 // it impacts and to the audit/control work addressing it. Hovering
 // or clicking a risk highlights its full path. A velocity strip
 // below the chart shows when oversight cadence ramps up over 90d.
-function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, hoverId, rssSignals, fredData }) {
+function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, hoverId, rssSignals, fredData, appetiteThreshold = 7.0 }) {
   if (!risks?.length || !flowMeta) return null;
 
   // Top risks by score
@@ -451,15 +451,29 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
     });
   });
 
-  // Residual risk nodes — one per top risk, aligned to risk node Y
+  // Pre-compute all projections so we can sort residual column by projected score
+  const projectionsByRisk = {};
+  topRisks.forEach(r => { projectionsByRisk[r.id] = computeResidual(r); });
+
+  // Sort residual nodes by projected score descending (highest breach shown first)
+  const sortedByResidual = [...topRisks].sort((a, b) => projectionsByRisk[b.id] - projectionsByRisk[a.id]);
+
   const residualNodes = {};
-  topRisks.forEach((r, i) => {
-    const proj = computeResidual(r);
-    const projRag = proj >= 7.5 ? "R" : proj >= 5.0 ? "A" : "G";
-    const h = (riskWeights[i] / totalRW) * usableR;
-    const y = riskNodes[r.id].y;
-    residualNodes[r.id] = { y, h, proj, projRag, delta: proj - r.score };
-  });
+  {
+    let y = padT;
+    sortedByResidual.forEach(r => {
+      const origIdx = topRisks.indexOf(r);
+      const proj = projectionsByRisk[r.id];
+      const projRag = proj >= 7.5 ? "R" : proj >= 5.0 ? "A" : "G";
+      const h = (riskWeights[origIdx] / totalRW) * usableR;
+      residualNodes[r.id] = {
+        y, h, proj, projRag,
+        delta: proj - r.score,
+        breachesAppetite: proj >= appetiteThreshold,
+      };
+      y += h + gapR;
+    });
+  }
 
   // Build ribbons audit → residual (per risk, proportional to its audit weight)
   const ribbonsAR = [];
@@ -510,8 +524,10 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
             letterSpacing="0.06em" fill="var(--ink-3)">IMPACT AREA</text>
       <text x={xAudit + colW / 2} y={18} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
             letterSpacing="0.06em" fill="var(--ink-3)">AUDIT &amp; MAP</text>
-      <text x={xResidual + colW / 2} y={18} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
+      <text x={xResidual + colW / 2} y={14} textAnchor="middle" fontSize="10" fontFamily="Geist Mono, monospace"
             letterSpacing="0.06em" fill="var(--ink-3)">RESIDUAL RISK</text>
+      <text x={xResidual + colW / 2} y={26} textAnchor="middle" fontSize="8" fontFamily="Geist Mono, monospace"
+            fill="var(--red-ink)" opacity="0.75">appetite ≥ {appetiteThreshold}</text>
 
       {/* Ribbons risk → impact */}
       {ribbonsRI.map((rb, i) => {
@@ -614,7 +630,7 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
         );
       })}
 
-      {/* Residual risk nodes + labels */}
+      {/* Residual risk nodes + labels — sorted by projected score, breaches flagged */}
       {topRisks.map(r => {
         const rn = residualNodes[r.id];
         if (!rn) return null;
@@ -625,11 +641,16 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
         const labelInk = ragInk[rn.projRag];
         return (
           <g key={`res-${r.id}`}>
+            {rn.breachesAppetite && (
+              <rect x={xResidual - 3} y={rn.y - 3} width={colW + 6} height={Math.max(rn.h, 2) + 6} rx={3}
+                    fill="none" stroke="var(--red)" strokeWidth={1.5} strokeDasharray="3 2"
+                    opacity={dimmed ? 0.2 : 0.65}/>
+            )}
             <rect x={xResidual} y={rn.y} width={colW} height={Math.max(rn.h, 2)} rx={2}
                   fill={labelColor} opacity={dimmed ? 0.3 : 1}/>
             <text x={xResidual + colW + 6} y={rn.y + rn.h / 2 - 2}
                   fontSize="11" fontWeight="500" fill={dimmed ? "var(--ink-4)" : labelInk}>
-              {rn.proj.toFixed(1)}
+              {rn.proj.toFixed(1)}{rn.breachesAppetite && !dimmed ? " !" : ""}
             </text>
             <text x={xResidual + colW + 6} y={rn.y + rn.h / 2 + 11}
                   fontSize="9.5" fontFamily="Geist Mono, monospace"

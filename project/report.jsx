@@ -28,7 +28,19 @@ function ReportModal({ open, onClose, payload }) {
             <Row k="Signals Ingested" v={`${signals.count} total · ${signals.highVel} high velocity`}/>
             <Row k="Risks Identified" v={`${risks.length}`}/>
             <Row k="Top 3 Risks"      v={top3.join(", ")}/>
-            <Row k="Risk Appetite"    v={<RAGChip rag={riskAppetite === "BREACHED" ? "R" : "A"}>{riskAppetite}</RAGChip>}/>
+            <Row k="Risk Appetite" v={
+              <span style={{display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
+                <RAGChip rag={
+                  (riskAppetite?.status || riskAppetite) === "BREACHED" ? "R" : "G"
+                }>{riskAppetite?.status || riskAppetite}</RAGChip>
+                {riskAppetite?.threshold != null && (
+                  <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>
+                    threshold ≥ {riskAppetite.threshold} · {riskAppetite.breaching?.length || 0} risk{(riskAppetite.breaching?.length || 0) !== 1 ? "s" : ""} breach{(riskAppetite.breaching?.length || 0) !== 1 ? "" : ""}
+                    {riskAppetite.breaching?.length > 0 && ` (${riskAppetite.breaching.join(", ")})`}
+                  </span>
+                )}
+              </span>
+            }/>
             <Row k="Audit Objectives" v={`${objectives.length} · ${objectives.filter(o=>o.priority==="P1").length} P1`}/>
             <Row k="MAPs"             v={`${maps.length} generated · ${loop.maps_open || 0} open`}/>
             <Row k="Projected Reduction" v={`${closure.projected_total_risk_reduction_pct || 0}%`}/>
