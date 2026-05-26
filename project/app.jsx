@@ -29,6 +29,7 @@ function App() {
     focus: Array.isArray(MOCK.entity.focus) ? MOCK.entity.focus : [MOCK.entity.focus],
     periodBegin: "Q1 2025",
     periodEnd: "Q4 2025",
+    appetiteThreshold: 7.0,
   });
   const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal", "fred", "incidents"]));
   const [velocity, setVelocity] = useState(3);
@@ -53,7 +54,8 @@ function App() {
   const gateResRef = useRef({});
 
   // ---- Tabs ----
-  const [activeMainTab, setActiveMainTab] = useState("pipe"); // pipe | cem | fcst | scen
+  const [activeMainTab, setActiveMainTab] = useState("pipe"); // pipe | cem | flow
+  const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss | fcst | scen
   const [activeRailTab, setActiveRailTab] = useState("rr"); // rr | hm | map | loop | notif | fcst | pers
   const [activeQuarter, setActiveQuarter] = useState("Now");
   const [selectedRiskId, setSelectedRiskId] = useState(null);
@@ -271,28 +273,28 @@ function App() {
     if (res) {res({ ok: false, reason });delete gateResRef.current[n];}
   };
 
-  // ---- Live data fetch helpers ----
-  async function tryLiveFetch() {
-    setLiveStatus("Fetching EDGAR companyfacts…");
-    try {
-      const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
-      const extracted = LIVE.extractFinancials(facts);
-      setLivefacts(extracted);
-      setLiveStatus(`EDGAR OK · ${extracted.entity} · CIK ${extracted.cik}`);
-      log(`EDGAR live fetch OK · ${cfg.ticker}`);
-    } catch (e) {
-      setLivefacts(null);
-      setLiveStatus(`EDGAR fetch failed: ${e.message} · falling back to mock`);
-      log(`EDGAR live fetch failed: ${e.message}`);
-    }
-    try {
-      const fred = await LIVE.loadFred();
-      setFredLive(fred.series);
-      log(`FRED snapshot loaded · ${Object.keys(fred.series).length} series`);
-    } catch (e) {
-      setFredLive(null);
-      log(`FRED snapshot failed: ${e.message}`);
-    }
+  // ---- Signal-adjusted risk scoring (Stage 2) ----
+  function adjustRiskScores(baseRisks, allSigs, rssSigs) {
+    return baseRisks.map(r => {
+      // FRED contractionary signals lift macro-category risks
+      const fredContr = allSigs.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+      const macroAdj = r.category.toLowerCase().includes("macro") ? fredContr * 0.08 : 0;
+
+      // RSS signals directly linked to this risk
+      const rssLinked = rssSigs.filter(s => (s.affectedRisks || []).includes(r.id));
+      const rssAdj = rssLinked.reduce((sum, s) => sum + (s.velocity || 0) * 0.08, 0);
+
+      // High-velocity industry signals add minor pressure to all risks
+      const highVelIndustry = allSigs.filter(s => s.src === "Industry RSS" && s.velocity >= 3).length;
+      const industryAdj = Math.min(0.2, highVelIndustry * 0.05);
+
+      const adjScore = Math.min(10, parseFloat((r.score + macroAdj + rssAdj + industryAdj).toFixed(1)));
+      const adjVelocity = rssLinked.length > 0
+        ? Math.max(r.velocity, Math.max(...rssLinked.map(s => s.velocity || 0)))
+        : r.velocity;
+      const adjRag = adjScore >= 7.5 ? "R" : adjScore >= 5.0 ? "A" : "G";
+      return { ...r, score: adjScore, velocity: adjVelocity, rag: adjRag };
+    });
   }
 
   // ---- Run loop ----
@@ -324,26 +326,72 @@ function App() {
     setRiskApprovals({});
     log("Loop started");
 
+    // --- Auto-ingest RSS (always, simulate fallback) ---
+    let currentRssSignals = [...rssSignals];
+    if (signalSet.has("industry")) {
+      try {
+        log("Auto-ingesting RSS signals…");
+        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: true });
+        const freshSigs = RSS_ENGINE.toSignals(ingestResult);
+        currentRssSignals = freshSigs;
+        setRssSignals(freshSigs);
+        log(`RSS: ${freshSigs.length} signals graded`);
+      } catch(e) {
+        log(`RSS ingest: ${e.message || "using prior signals"}`);
+      }
+    }
+
+    // --- Always fetch FRED ---
+    if (signalSet.has("fred")) {
+      try {
+        log("Fetching FRED snapshot…");
+        const fred = await LIVE.loadFred();
+        setFredLive(fred.series);
+        log(`FRED: ${Object.keys(fred.series || {}).length} series loaded`);
+      } catch(e) {
+        log(`FRED snapshot: ${e.message || "using mock"}`);
+      }
+    }
+
+    // --- EDGAR only in live mode ---
     if (liveMode) {
-      await tryLiveFetch();
+      setLiveStatus("Fetching EDGAR companyfacts…");
+      try {
+        const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
+        const extracted = LIVE.extractFinancials(facts);
+        setLivefacts(extracted);
+        setLiveStatus(`EDGAR OK · ${extracted.entity} · CIK ${extracted.cik}`);
+        log(`EDGAR: ${cfg.ticker}`);
+      } catch(e) {
+        setLivefacts(null);
+        setLiveStatus(`EDGAR failed: ${e.message} · mock`);
+        log(`EDGAR failed: ${e.message}`);
+      }
     }
 
     // STAGE 1 — Signal Intake
     const mockSigs = MOCK.signals.filter((s) =>
-    s.src === "EDGAR 10-K" && signalSet.has("edgar") ||
-    s.src === "Peer 10-K" && signalSet.has("peers") ||
-    s.src === "Industry RSS" && signalSet.has("industry") ||
-    s.src === "Internal KRI" && signalSet.has("internal") ||
-    s.src === "FRED Macro" && signalSet.has("fred") ||
-    s.src === "Incident" && signalSet.has("incidents")
+      s.src === "EDGAR 10-K" && signalSet.has("edgar") ||
+      s.src === "Peer 10-K" && signalSet.has("peers") ||
+      s.src === "Industry RSS" && signalSet.has("industry") ||
+      s.src === "Internal KRI" && signalSet.has("internal") ||
+      s.src === "FRED Macro" && signalSet.has("fred") ||
+      s.src === "Incident" && signalSet.has("incidents")
     );
-    // Merge graded RSS signals (from the RSS panel) with mock signals
-    const rssSigsFiltered = signalSet.has("industry") ? rssSignals : [];
+    const rssSigsFiltered = signalSet.has("industry") ? currentRssSignals : [];
     const sigsList = [...mockSigs, ...rssSigsFiltered];
     await runStage("s1", { signals: sigsList, sourceCount: signalSet.size }, 1200);
 
-    // STAGE 2 — Risk assessment
-    await runStage("s2", { risks: MOCK.risks }, 1500);
+    // STAGE 2 — Risk assessment with signal-adjusted scoring
+    const adjustedRisks = adjustRiskScores(MOCK.risks, sigsList, currentRssSignals);
+    const threshold = cfg.appetiteThreshold || 7.0;
+    const breachingIds = adjustedRisks.filter(r => r.score >= threshold).map(r => r.id);
+    const riskAppetiteResult = {
+      threshold,
+      breaching: breachingIds,
+      status: breachingIds.length > 0 ? "BREACHED" : "WITHIN APPETITE",
+    };
+    await runStage("s2", { risks: adjustedRisks, riskAppetite: riskAppetiteResult }, 1500);
     setActiveRailTab("rr");
 
     // GATE 1 — Risk assessment
@@ -469,7 +517,11 @@ function App() {
       signals: { count: sigsList.length, highVel: sigsList.filter((s) => s.velocity >= 3).length },
       risks: risksCur,
       top3,
-      riskAppetite: risksCur.some((r) => r.velocity >= velocity && r.rag === "R") ? "BREACHED" : "WITHIN APPETITE",
+      riskAppetite: output.s2?.riskAppetite || (() => {
+        const t = cfg.appetiteThreshold || 7.0;
+        const b = risksCur.filter(r => r.score >= t).map(r => r.id);
+        return { threshold: t, breaching: b, status: b.length > 0 ? "BREACHED" : "WITHIN APPETITE" };
+      })(),
       objectives: output.s3?.objectives || [],
       maps: output.s4?.maps || [],
       closure: output.s5?.closure || {},
@@ -491,14 +543,18 @@ function App() {
     };
   }, [hasRun, output, loopLog, signalSet, cfg, velocity]);
 
-  // ---- Sub-tab counts ----
+  // ---- Tab definitions ----
   const mainTabs = [
-  { id: "pipe", l: "Pipeline" },
-  { id: "rss",  l: "RSS Signals" },
-  { id: "cem",  l: "Control Monitor", count: events.length, pulse: unreadCEM > 0 },
-  { id: "flow", l: "Risk Flow" },
-  { id: "fcst", l: "Forecasts" },
-  { id: "scen", l: "Scenarios" }];
+    { id: "pipe", l: "Pipeline" },
+    { id: "cem",  l: "Controls Monitor", count: events.length, pulse: unreadCEM > 0 },
+    { id: "flow", l: "Risk Flow" },
+  ];
+  const pipeTabs = [
+    { id: "stages", l: "Pipeline" },
+    { id: "rss",    l: "RSS Signals" },
+    { id: "fcst",   l: "Forecasts" },
+    { id: "scen",   l: "Scenarios" },
+  ];
 
 
   // ---- RENDER ----
@@ -541,54 +597,83 @@ function App() {
             )}
           </div>
 
+          {/* ---- Pipeline panel (with sub-tabs) ---- */}
           <div className={"panel" + (activeMainTab === "pipe" ? " active" : "")}>
             <div className="panel-head">
               <div>
                 <div className="kicker">Risk → Audit closed loop</div>
                 <div className="panel-title mt-8">Six-stage continuous governance chain</div>
-                <div className="panel-sub">Each stage feeds structured output to the next. HITL gates pause for human review. Toggle gates in the sidebar.</div>
+                <div className="panel-sub">Each stage feeds structured output to the next. HITL gates pause for human review.</div>
               </div>
               {hasRun &&
-              <div className="mono" style={{ display: "flex", gap: 12, alignItems: "center", color: "var(--ink-3)", fontSize: 11 }}>
+                <div className="mono" style={{ display: "flex", gap: 12, alignItems: "center", color: "var(--ink-3)", fontSize: 11 }}>
+                  {output.s2?.riskAppetite?.status === "BREACHED" && (
+                    <span style={{color:"var(--red-ink)", fontWeight:500}}>
+                      Appetite BREACHED · {output.s2.riskAppetite.breaching.length} risk{output.s2.riskAppetite.breaching.length !== 1 ? "s" : ""} ≥ {output.s2.riskAppetite.threshold}
+                    </span>
+                  )}
                   <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s2?.risks.length || 0}</b> risks</span>
                   <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s3?.objectives.length || 0}</b> objectives</span>
                   <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s4?.maps.length || 0}</b> MAPs</span>
                 </div>
               }
             </div>
-            <Pipeline
-              stageState={stageState}
-              output={output}
-              openStages={openStages}
-              setOpenStages={setOpenStages}
-              hitl={hitl}
-              gateState={gateState}
-              onApprove={approveGate}
-              onOverride={requestOverride}
-              signals={output.s1?.signals || []}
-              livefacts={livefacts}
-              riskApprovals={riskApprovals}
-              onApproveRisk={approveRisk}
-              onOpenAdjustRisk={openAdjustRisk}
-              onApproveAllRisks={approveAllRemainingRisks}
-              onSignoffRisk={signoffRisk}
-              scopeApprovals={scopeApprovals}
-              onApproveObjective={approveObjective}
-              onOpenAdjustObjective={openAdjustObjective}
-              onApproveAllObjectives={approveAllRemainingObjectives}
-              onSignoffObjective={signoffObjective} />
-            
+
+            {/* Sub-tabs */}
+            <div className="pipe-sub-tabs">
+              {pipeTabs.map(t => (
+                <button key={t.id}
+                  className={"pipe-sub-tab" + (activePipeTab === t.id ? " active" : "")}
+                  onClick={() => setActivePipeTab(t.id)}>
+                  {t.l}
+                </button>
+              ))}
+            </div>
+
+            {activePipeTab === "stages" && (
+              <Pipeline
+                stageState={stageState}
+                output={output}
+                openStages={openStages}
+                setOpenStages={setOpenStages}
+                hitl={hitl}
+                gateState={gateState}
+                onApprove={approveGate}
+                onOverride={requestOverride}
+                signals={output.s1?.signals || []}
+                livefacts={livefacts}
+                riskApprovals={riskApprovals}
+                onApproveRisk={approveRisk}
+                onOpenAdjustRisk={openAdjustRisk}
+                onApproveAllRisks={approveAllRemainingRisks}
+                onSignoffRisk={signoffRisk}
+                scopeApprovals={scopeApprovals}
+                onApproveObjective={approveObjective}
+                onOpenAdjustObjective={openAdjustObjective}
+                onApproveAllObjectives={approveAllRemainingObjectives}
+                onSignoffObjective={signoffObjective} />
+            )}
+            {activePipeTab === "rss" && (
+              <RSSPanel
+                onSignalsReady={(sigs) => {
+                  setRssSignals(sigs);
+                  log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
+                }} />
+            )}
+            {activePipeTab === "fcst" && (
+              <ForecastsPanel
+                data={hasRun ? MOCK.forecasts : null}
+                liveMode={liveMode}
+                livefacts={livefacts}
+                fredSeries={fredLive}
+                rssSignals={rssSignals} />
+            )}
+            {activePipeTab === "scen" && (
+              <ScenariosPanel scenarios={hasRun ? MOCK.scenarios : null} greySwan={hasRun ? MOCK.greySwan : null} />
+            )}
           </div>
 
-          <div className={"panel" + (activeMainTab === "rss" ? " active" : "")}>
-            <RSSPanel
-              onSignalsReady={(sigs) => {
-                setRssSignals(sigs);
-                log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
-              }}
-            />
-          </div>
-
+          {/* ---- Controls Monitor ---- */}
           <div className={"panel" + (activeMainTab === "cem" ? " active" : "")}>
             <CEMPanel
               events={events} setEvents={setEvents}
@@ -596,9 +681,9 @@ function App() {
               expanded={cemExpanded} setExpanded={setCemExpanded}
               onAckNotif={ackNotif}
               onInject={() => fireSyntheticEvent(1)} />
-            
           </div>
 
+          {/* ---- Risk Flow ---- */}
           <div className={"panel" + (activeMainTab === "flow" ? " active" : "")}>
             <FlowPanel
               risks={output.s2?.risks || (hasRun ? MOCK.risks : null)}
@@ -607,21 +692,8 @@ function App() {
               selectedId={selectedRiskId} setSelectedId={setSelectedRiskId}
               liveMode={liveMode}
               rssSignals={rssSignals}
-              fredData={MOCK.forecasts?.fred} />
-          </div>
-
-          <div className={"panel" + (activeMainTab === "fcst" ? " active" : "")}>
-            <ForecastsPanel
-              data={hasRun ? MOCK.forecasts : null}
-              liveMode={liveMode}
-              livefacts={livefacts}
-              fredSeries={fredLive}
-              rssSignals={rssSignals} />
-
-          </div>
-
-          <div className={"panel" + (activeMainTab === "scen" ? " active" : "")}>
-            <ScenariosPanel scenarios={hasRun ? MOCK.scenarios : null} greySwan={hasRun ? MOCK.greySwan : null} />
+              fredData={MOCK.forecasts?.fred}
+              appetiteThreshold={cfg.appetiteThreshold || 7.0} />
           </div>
         </main>
 
