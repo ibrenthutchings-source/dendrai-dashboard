@@ -161,40 +161,69 @@ window.RSS_ENGINE = (function () {
       { title: "Commerce Dept Proposes New ECCN Classification for Advanced Logic Chips", severity_hint: 2.0, risks: ["R-02"] },
       { title: "Export Administration Regulations (EAR) Annual Review Published", severity_hint: 1.0, risks: ["R-02"] },
       { title: "BIS Issues Advisory on Proliferation-Related Export Control Violations", severity_hint: 2.5, risks: ["R-02"] },
+      { title: "BIS Final Rule: Advanced Semiconductor Equipment Added to CCL — 3nm and Below", severity_hint: 3.0, risks: ["R-02"] },
+      { title: "Commerce Dept Tightens Foreign Direct Product Rule for China Fabs", severity_hint: 2.5, risks: ["R-02"] },
+      { title: "BIS Civil Penalty: $12M for Unlicensed ECCN 3E001 Technology Transfer", severity_hint: 2.5, risks: ["R-02"] },
+      { title: "Validated End-User Authorization Revoked for Three Chinese Research Institutes", severity_hint: 2.0, risks: ["R-02"] },
     ],
     cisa: [
       { title: "CISA Issues Advisory on ICS Vulnerabilities in Semiconductor Manufacturing Equipment", severity_hint: 2.5, risks: ["R-04"] },
       { title: "Alert: Privileged Access Management Gaps in OT Environments", severity_hint: 2.0, risks: ["R-04"] },
       { title: "Known Exploited Vulnerabilities Catalog Updated — 8 New Entries", severity_hint: 1.5, risks: ["R-04"] },
+      { title: "CISA #StopRansomware: Threat Actor Targets Semiconductor Fab SCADA Systems", severity_hint: 3.0, risks: ["R-04"] },
+      { title: "Critical CVE in Siemens SIMATIC Used in Wafer Fab Automation — Patch Immediately", severity_hint: 2.5, risks: ["R-04"] },
+      { title: "CISA BOD: Patch EMS/SCADA Systems Within 14 Days", severity_hint: 2.0, risks: ["R-04"] },
+      { title: "Supply Chain Attack Vector Identified in Third-Party EDA Software Update", severity_hint: 3.0, risks: ["R-04"] },
     ],
     sec: [
-      { title: "SEC Issues Comment Letters on Revenue Recognition Disclosures in Semiconductor Sector", severity_hint: 2.0, risks: ["R-01", "R-05"] },
+      { title: "SEC Comment Letters: Revenue Recognition in Semiconductor Sector Under Scrutiny", severity_hint: 2.0, risks: ["R-01", "R-05"] },
       { title: "SEC Climate Disclosure Rule: Implementation Guidance for Semiconductor Manufacturers", severity_hint: 1.5, risks: ["R-07"] },
-      { title: "SEC Enforcement Action: Revenue Recognition Manipulation — Analog Devices Peer", severity_hint: 3.0, risks: ["R-01"] },
+      { title: "SEC Enforcement: Revenue Recognition Manipulation — $34M Settlement with Analog Peer", severity_hint: 3.0, risks: ["R-01"] },
+      { title: "SEC Staff Bulletin: Channel Stuffing Disclosures Under ASC 606 — Distributor Sell-Through", severity_hint: 2.0, risks: ["R-01"] },
+      { title: "SEC Charges CFO for Improper Revenue Cut-Off in Bill-and-Hold Arrangements", severity_hint: 3.0, risks: ["R-01", "R-05"] },
+      { title: "SEC Comment Letter Trend: Inventory Reserve Adequacy — Analog/Mixed-Signal Sector", severity_hint: 1.5, risks: ["R-03", "R-05"] },
+      { title: "SEC Cyber Disclosure Rule: 8-K Incident Reporting Compliance Review — Semiconductors", severity_hint: 1.5, risks: ["R-04"] },
     ],
     fed: [
       { title: "Fed Beige Book: Manufacturing Sector Reports Continued Contraction", severity_hint: 1.5, risks: ["R-09"] },
       { title: "Philadelphia Fed Manufacturing Survey: Index Falls to −5.4", severity_hint: 2.0, risks: ["R-09"] },
       { title: "FOMC Minutes: Elevated Rate Uncertainty — Semiconductor CapEx Commentary", severity_hint: 1.2, risks: ["R-06", "R-09"] },
+      { title: "ISM Manufacturing PMI: 47.2 — 9th Consecutive Month Below 50", severity_hint: 2.0, risks: ["R-09"] },
+      { title: "Fed Senior Loan Officer Survey: Tightening Conditions for Capital Equipment Financing", severity_hint: 1.5, risks: ["R-06", "R-09"] },
+      { title: "Richmond Fed: Semiconductor Capital Goods Orders Down 23% YoY", severity_hint: 2.0, risks: ["R-06", "R-09"] },
+      { title: "FOMC Holds Rates — Statement Flags Persistent Industrial Goods Disinflation", severity_hint: 1.0, risks: ["R-09"] },
     ],
     epa: [
       { title: "EPA Issues Water Scarcity Designation for Central Arizona — Fab Cluster Impact", severity_hint: 2.0, risks: ["R-07"] },
       { title: "EPA Climate Enforcement: New Reporting Requirements for Semiconductor Fabs", severity_hint: 1.5, risks: ["R-07"] },
+      { title: "EPA Proposes Stricter Wastewater Effluent Standards for Electronics Manufacturers", severity_hint: 2.0, risks: ["R-07"] },
+      { title: "Arizona Drought Monitor: Exceptional Drought Covers 60% of Fab-Concentrated Counties", severity_hint: 2.5, risks: ["R-07"] },
+      { title: "EPA GHG Reporting: Semiconductor Industry Scope 1 Emissions Up 8% — F-Gas Drivers", severity_hint: 1.5, risks: ["R-07"] },
+      { title: "EPA Enforcement: $4.2M Penalty for PFC Emissions Violations at Semiconductor Plant", severity_hint: 2.5, risks: ["R-07"] },
     ],
     sia: [
       { title: "SIA: Global Semiconductor Sales Down 12% YoY — Auto Segment Weakest", severity_hint: 2.0, risks: ["R-03", "R-09"] },
       { title: "SIA Members Report Extended Inventory Correction — SiC Product Family Most Exposed", severity_hint: 2.5, risks: ["R-03"] },
-      { title: "SIA Annual Report: Conflict Minerals RMAP Coverage Improves to 97% Industry Average", severity_hint: 0.5, risks: ["R-10"] },
+      { title: "SIA Annual Report: Conflict Minerals RMAP Coverage Improves to 97%", severity_hint: 0.5, risks: ["R-10"] },
       { title: "SEMI Manufacturing Equipment Orders Fall 18% — Capacity Discipline Maintained", severity_hint: 1.5, risks: ["R-06"] },
+      { title: "SIA: Book-to-Bill Ratio Drops to 0.87 — Weakest Reading Since Q3 2019", severity_hint: 2.0, risks: ["R-03", "R-01"] },
+      { title: "SEMI World Fab Forecast: $38B Investment Deferred to 2026+", severity_hint: 1.5, risks: ["R-06"] },
+      { title: "SIA State of Industry: SiC Oversupply Expected to Persist Through Mid-2026", severity_hint: 2.5, risks: ["R-03", "R-06"] },
+      { title: "SIA Conflict Minerals Report: Tin Smelter Non-Conformance Rate Rises to 6%", severity_hint: 1.5, risks: ["R-10"] },
     ],
     peers: [
       { title: "TXN Q4 Earnings: Export Control Headwinds Cut Revenue Guidance 8% — BIS License Delays Cited", severity_hint: 2.5, risks: ["R-02", "R-01"] },
       { title: "STMicroelectronics Discloses €420M NRV Reserve on SiC Inventory Overbuild", severity_hint: 2.5, risks: ["R-03"] },
       { title: "Microchip Technology 10-K: Material Weakness in Revenue Cut-Off Controls — SOX 404(b) Finding", severity_hint: 3.0, risks: ["R-01", "R-05"] },
       { title: "NXP Semiconductors Updates BIS Compliance Program — EAR License Required for 6 SKUs", severity_hint: 2.0, risks: ["R-02"] },
-      { title: "Analog Semi Peer Round-Up: Q1 Book-to-Bill Ratio Falls Below 1.0 for 4th Consecutive Quarter", severity_hint: 1.5, risks: ["R-09", "R-01"] },
+      { title: "Analog Semi Peer Round-Up: Q1 Book-to-Bill Ratio Below 1.0 for 4th Consecutive Quarter", severity_hint: 1.5, risks: ["R-09", "R-01"] },
       { title: "Broadcom Q1 Earnings: Channel Inventory Normalising in Auto, Industrial Still Elevated", severity_hint: 1.5, risks: ["R-03", "R-09"] },
       { title: "Texas Instruments Issues SEC Comment Letter Response on Revenue Recognition Disclosures", severity_hint: 2.0, risks: ["R-01"] },
+      { title: "ADI Q2 Earnings Miss: Industrial Destocking Worse Than Expected — SiC Write-Down Flagged", severity_hint: 2.5, risks: ["R-03", "R-01"] },
+      { title: "Wolfspeed Reduces SiC Capacity Guidance 30% — Auto Customer Pushouts Cited", severity_hint: 3.0, risks: ["R-03", "R-06"] },
+      { title: "Skyworks: China Revenue Down 34% YoY — BIS Entity List Expansion Primary Driver", severity_hint: 2.5, risks: ["R-02", "R-09"] },
+      { title: "MCHP Discloses SEC Investigation into Distributor Revenue Timing — Stock Halted", severity_hint: 3.0, risks: ["R-01", "R-05"] },
+      { title: "NXP 8-K: Material Cybersecurity Incident — Fab OT Systems Isolated, Production Impacted", severity_hint: 3.0, risks: ["R-04"] },
     ],
   };
 
@@ -276,7 +305,7 @@ window.RSS_ENGINE = (function () {
   }
 
   // ── Simulate articles for a feed ─────────────────────────
-  function simulateFeed(feed, count = 3) {
+  function simulateFeed(feed, count = 4) {
     const templates = SIMULATED_ARTICLES[feed.id] || [];
     if (!templates.length) return [];
     // Pick random subset, add noise to pubDate

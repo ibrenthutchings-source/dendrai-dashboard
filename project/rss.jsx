@@ -14,7 +14,7 @@ function RSSPanel({ onSignalsReady }) {
   const [progress, setProgress]       = useState("");
   const [feedResults, setFeedResults] = useState([]);
   const [expanded, setExpanded]       = useState(new Set());
-  const [simMode, setSimMode]         = useState(false);
+  const [simMode, setSimMode]         = useState(true);
 
   const allArticles = feedResults.flatMap(r => r.articles);
   const highVel = allArticles.filter(a => a.velocity >= 3).length;
@@ -61,14 +61,14 @@ function RSSPanel({ onSignalsReady }) {
           <div className="panel-sub">
             {ingestState === "running" ? progress :
              ingestState === "done"    ? `${allArticles.length} articles graded · ${totalSignals} velocity signals` :
-             "Click Run Ingestion to fetch live feeds or simulate. Graded articles propagate to Stage 1 signals."}
+             "Click Run Ingestion to grade industry-representative signals. Articles propagate to Stage 1 risk scoring."}
           </div>
         </div>
         <div style={{display:"flex", gap:8, alignItems:"center"}}>
           <label style={{display:"flex", alignItems:"center", gap:6, fontSize:11.5, color:"var(--ink-2)", cursor:"pointer", userSelect:"none"}}>
             <input type="checkbox" checked={simMode} onChange={e => setSimMode(e.target.checked)}
               style={{width:13,height:13,cursor:"pointer"}}/>
-            Simulate only
+            {simMode ? "Simulated (industry-representative)" : "Live fetch (may fall back to simulation)"}
           </label>
           <button className="btn btn-sm btn-primary" onClick={runIngestion} disabled={ingestState === "running"}>
             {ingestState === "running" ? <><span className="spin" style={{marginRight:5}}/> Running…</> : <><Icon name="satellite" size={12}/> Run Ingestion</>}
