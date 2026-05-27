@@ -19,17 +19,28 @@ const TICKER_META = {
   STM:  { name: "STMicroelectronics",       industry: "Analog Semiconductors" },
   MCHP: { name: "Microchip Technology",     industry: "Analog Semiconductors" },
   NXPI: { name: "NXP Semiconductors",       industry: "Analog Semiconductors" },
+  ADI:  { name: "Analog Devices",           industry: "Analog Semiconductors" },
+  SWKS: { name: "Skyworks Solutions",       industry: "Analog Semiconductors" },
+  QRVO: { name: "Qorvo",                    industry: "Analog Semiconductors" },
+  MPWR: { name: "Monolithic Power Systems", industry: "Analog Semiconductors" },
+  WOLF: { name: "Wolfspeed",                industry: "Analog Semiconductors" },
   AVGO: { name: "Broadcom",                 industry: "Digital Semiconductors" },
   NVDA: { name: "NVIDIA",                   industry: "Digital Semiconductors" },
   INTC: { name: "Intel",                    industry: "Digital Semiconductors" },
   AMD:  { name: "Advanced Micro Devices",   industry: "Digital Semiconductors" },
   QCOM: { name: "Qualcomm",                 industry: "Digital Semiconductors" },
+  MRVL: { name: "Marvell Technology",       industry: "Digital Semiconductors" },
   AMAT: { name: "Applied Materials",        industry: "Semiconductor Equipment" },
   KLAC: { name: "KLA Corporation",          industry: "Semiconductor Equipment" },
   LRCX: { name: "Lam Research",             industry: "Semiconductor Equipment" },
   ASML: { name: "ASML Holding",             industry: "Semiconductor Equipment" },
+  AMKR: { name: "AMKOR Technology",         industry: "Semiconductor Equipment" },
+  ONTO: { name: "Onto Innovation",           industry: "Semiconductor Equipment" },
+  TER:  { name: "Teradyne",                 industry: "Semiconductor Equipment" },
+  ENTG: { name: "Entegris",                 industry: "Semiconductor Equipment" },
   MU:   { name: "Micron Technology",        industry: "Memory Semiconductors" },
   WDC:  { name: "Western Digital",          industry: "Memory Semiconductors" },
+  SKX:  { name: "SK Hynix",                 industry: "Memory Semiconductors" },
 };
 
 function genFiscalQuarters() {
@@ -80,12 +91,17 @@ function Sidebar({
               setCfg({
                 ...cfg,
                 ticker: e.target.value,
-                ...(meta ? { industry: meta.industry } : {}),
+                ...(meta ? { industry: meta.industry, company: meta.name } : {}),
               });
             }}
             onBlur={e => {
               const t = e.target.value.toUpperCase().trim();
-              if (t && t !== cfg.ticker) setCfg({...cfg, ticker: t});
+              const meta = TICKER_META[t];
+              if (t) setCfg(prev => ({
+                ...prev,
+                ticker: t,
+                ...(meta ? { industry: meta.industry, company: meta.name } : {}),
+              }));
             }}
           />
           {(() => {
