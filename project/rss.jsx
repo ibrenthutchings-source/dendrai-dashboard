@@ -56,32 +56,47 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
   }
 
   return (
-    <div data-screen-label="RSS Ingestion">
-      <div className="panel-head">
-        <div>
-          <div className="kicker">Signal intake · RSS grading</div>
-          <div className="panel-title mt-8">Industry news · regulatory advisories · macro feeds</div>
-          <div className="panel-sub">
-            {ingestState === "running" ? progress :
-             ingestState === "done"    ? `${allArticles.length} articles graded · ${totalSignals} velocity signals` :
-             "Click Run Ingestion to grade industry-representative signals. Articles propagate to Stage 1 risk scoring."}
-          </div>
+    <div data-screen-label="RSS Ingestion" className="bb-panel">
+      <BBTermHeader
+        section="RSS SIGNALS"
+        title="Industry News · Regulatory · Macro Feeds"
+        liveMode={!simMode}
+        status={
+          ingestState === "running" ? `⟳  ${progress}` :
+          ingestState === "done"    ? `${allArticles.length} ARTICLES GRADED  ·  ${totalSignals} VELOCITY SIGNALS  ·  ${feedResults.filter(r=>r.fetchStatus==="ok").length} LIVE FEEDS` :
+          "READY — CLICK RUN INGESTION TO GRADE INDUSTRY-REPRESENTATIVE SIGNALS"
+        }
+        actions={
+          <>
+            <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"var(--ink-3)",cursor:"pointer",userSelect:"none",fontFamily:"Geist Mono,monospace",letterSpacing:"0.06em"}}>
+              <input type="checkbox" checked={simMode} onChange={e=>setSimMode(e.target.checked)}
+                style={{width:12,height:12,cursor:"pointer",accentColor:"var(--acc)"}}/>
+              {simMode ? <span style={{color:"var(--amber-ink)"}}>SIMULATED</span> : <span style={{color:"var(--green-ink)"}}>LIVE FEED</span>}
+            </label>
+            <button className="btn btn-sm btn-primary" onClick={runIngestion} disabled={ingestState==="running"}>
+              {ingestState==="running" ? <><span className="spin" style={{marginRight:5}}/> RUNNING…</> : <><Icon name="satellite" size={12}/> RUN INGESTION</>}
+            </button>
+          </>
+        }
+      />
+
+      {/* Stat ticker — visible after ingestion */}
+      {ingestState === "done" && (
+        <div className="bb-stat-ticker">
+          <div className="bb-ticker-item"><div className="bb-ticker-label">ARTICLES</div><div className="bb-ticker-val">{allArticles.length}</div></div>
+          <div className="bb-ticker-item"><div className="bb-ticker-label">HIGH VEL</div><div className="bb-ticker-val red">{highVel}</div></div>
+          <div className="bb-ticker-item"><div className="bb-ticker-label">MED VEL</div><div className="bb-ticker-val amber">{medVel}</div></div>
+          <div className="bb-ticker-item"><div className="bb-ticker-label">SIGNALS</div><div className="bb-ticker-val orange">{totalSignals}</div></div>
+          <div className="bb-ticker-item"><div className="bb-ticker-label">LIVE FEEDS</div><div className="bb-ticker-val green">{feedResults.filter(r=>r.fetchStatus==="ok").length}</div></div>
+          <div className="bb-ticker-item"><div className="bb-ticker-label">SIMULATED</div><div className="bb-ticker-val">{feedResults.filter(r=>r.fetchStatus!=="ok").length}</div></div>
         </div>
-        <div style={{display:"flex", gap:8, alignItems:"center"}}>
-          <label style={{display:"flex", alignItems:"center", gap:6, fontSize:11.5, color:"var(--ink-2)", cursor:"pointer", userSelect:"none"}}>
-            <input type="checkbox" checked={simMode} onChange={e => setSimMode(e.target.checked)}
-              style={{width:13,height:13,cursor:"pointer"}}/>
-            {simMode
-              ? <span style={{color:"var(--amber-ink)"}}>Simulated data</span>
-              : <span style={{color:"var(--green-ink)"}}>Live feed via rss2json proxy</span>}
-          </label>
-          <button className="btn btn-sm btn-primary" onClick={runIngestion} disabled={ingestState === "running"}>
-            {ingestState === "running" ? <><span className="spin" style={{marginRight:5}}/> Running…</> : <><Icon name="satellite" size={12}/> Run Ingestion</>}
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* Feed status grid */}
+      <div className="bb-section-sep">
+        <span>FEED STATUS</span>
+        <span>{RSS_ENGINE.FEEDS.length} FEEDS REGISTERED</span>
+      </div>
       <div className="rss-feed-grid">
         {RSS_ENGINE.FEEDS.map(feed => {
           const result = feedResults.find(r => r.feed.id === feed.id);
@@ -113,18 +128,6 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
         })}
       </div>
 
-      {/* Summary stats when done */}
-      {ingestState === "done" && (
-        <div className="rss-stat-row">
-          <RssStat l="Total articles" v={allArticles.length}/>
-          <RssStat l="High velocity (≥3)" v={highVel} color="var(--red-ink)"/>
-          <RssStat l="Medium velocity (2)" v={medVel} color="var(--amber-ink)"/>
-          <RssStat l="Signals propagated" v={totalSignals} color="var(--acc-ink)"/>
-          <RssStat l="Feeds ingested" v={feedResults.filter(r => r.fetchStatus === "ok").length + " live"}/>
-          <RssStat l="Simulated/fallback" v={feedResults.filter(r => r.fetchStatus !== "ok").length}/>
-        </div>
-      )}
-
       {/* Article queue — expanded feed */}
       {feedResults.map(result => {
         if (!expanded.has(result.feed.id)) return null;
@@ -147,9 +150,10 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
       {/* Flat article queue when nothing expanded */}
       {ingestState === "done" && expanded.size === 0 && (
         <div>
-          <SectionLabel right={<span className="mono muted" style={{fontSize:10.5}}>Click a feed card to expand · showing top 15 by velocity</span>}>
-            Article queue
-          </SectionLabel>
+          <div className="bb-section-sep">
+            <span>ARTICLE QUEUE</span>
+            <span>TOP 15 BY VELOCITY · CLICK FEED CARD TO EXPAND</span>
+          </div>
           <div className="rss-article-list">
             <div className="rss-art-thead">
               <div className="rss-art-th">RAG</div>
@@ -170,6 +174,7 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
       )}
 
       {/* Grading methodology note */}
+      <div style={{flex:1}}/>
       <div className="rss-method-note">
         <div className="mono" style={{fontSize:10.5, fontWeight:500, marginBottom:5}}>GRADING METHODOLOGY</div>
         <div style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:"6px 14px", fontSize:11, color:"var(--ink-2)", lineHeight:1.5}}>

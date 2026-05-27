@@ -143,11 +143,53 @@ function SectionLabel({ children, right }) {
   );
 }
 
+// ---- Bloomberg Terminal Header ----
+function BBTermHeader({ section, title, status, liveMode, actions }) {
+  const [time, setTime] = useState(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div className="bb-header">
+      <div className="bb-header-topbar">
+        <div className="bb-brand">
+          <span>◆ DENDRAI</span>
+          <span className="bb-brand-sep"> | </span>
+          <span className="bb-brand-section">{section}</span>
+          {liveMode != null && (
+            <span className={`bb-live-pill${liveMode ? "" : " sim"}`}>
+              <span className="bb-live-dot"/>
+              {liveMode ? "LIVE" : "SIM"}
+            </span>
+          )}
+        </div>
+        <div className="bb-clock">
+          <span className="bb-clock-time">
+            {time.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}
+          </span>
+          <span className="bb-clock-date">
+            {time.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}).toUpperCase()}
+          </span>
+        </div>
+      </div>
+      <div className="bb-header-main">
+        <div style={{flex:1,minWidth:0}}>
+          <div className="bb-title">{section}</div>
+          <div className="bb-subtitle">{title}</div>
+          {status && <div className="bb-status-line">{status}</div>}
+        </div>
+        {actions && <div className="bb-header-actions">{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
 // Expose globally
 Object.assign(window, {
   Icon, Pill, RAGChip, VelocityPill, Sparkline,
   scoreColor, scoreColorInk, ragFromScore,
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,
-  Empty, SectionLabel,
+  Empty, SectionLabel, BBTermHeader,
 });

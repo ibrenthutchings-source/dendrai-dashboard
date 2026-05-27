@@ -34,21 +34,23 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
   const avgMin = ackTimes.length ? Math.round(ackTimes.reduce((a,b) => a+b, 0) / ackTimes.length) : null;
 
   return (
-    <div data-screen-label="Control Event Monitor">
-      <div className="panel-head">
-        <div>
-          <div className="kicker">Control Event Monitor</div>
-          <div className="panel-title mt-8">Real-time control breakdown detection</div>
-          <div className="panel-sub">Near-real-time control failure detection with tiered stakeholder notification cascade and AI-assisted root-cause analysis.</div>
-        </div>
-        <button className="btn" onClick={onInject}><Icon name="bolt" size={12}/> Inject event</button>
-      </div>
+    <div data-screen-label="Control Event Monitor" className="bb-panel">
+      <BBTermHeader
+        section="CONTROL EVENT MONITOR"
+        title="Real-time Control Breakdown Detection"
+        status={`${events.length} EVENTS  ·  TIERED STAKEHOLDER CASCADE  ·  AI ROOT-CAUSE ANALYSIS`}
+        actions={
+          <button className="btn btn-sm" onClick={onInject}><Icon name="bolt" size={12}/> INJECT EVENT</button>
+        }
+      />
 
-      <div className="cem-stats">
-        <CEMStat l="P1 Active"      v={counts.p1}  color="var(--red-ink)"/>
-        <CEMStat l="P2 Active"      v={counts.p2}  color="var(--amber-ink)"/>
-        <CEMStat l="Acknowledged"   v={counts.ack} color="var(--green-ink)"/>
-        <CEMStat l="Avg response (min)" v={avgMin == null ? "—" : avgMin}/>
+      {/* Stat ticker */}
+      <div className="bb-stat-ticker">
+        <div className="bb-ticker-item"><div className="bb-ticker-label">P1 CRITICAL</div><div className={`bb-ticker-val${counts.p1 > 0 ? " red" : ""}`}>{counts.p1}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">P2 HIGH</div><div className={`bb-ticker-val${counts.p2 > 0 ? " amber" : ""}`}>{counts.p2}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">ACKNOWLEDGED</div><div className={`bb-ticker-val${counts.ack > 0 ? " green" : ""}`}>{counts.ack}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">AVG RESP (MIN)</div><div className="bb-ticker-val">{avgMin == null ? "—" : avgMin}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">TOTAL EVENTS</div><div className="bb-ticker-val">{events.length}</div></div>
       </div>
 
       <div className="cem-toolbar">
@@ -60,6 +62,11 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
         ].map(f => (
           <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>{f.l}</button>
         ))}
+      </div>
+
+      <div className="bb-section-sep">
+        <span>EVENT LOG</span>
+        <span>{filtered.length} EVENTS SHOWN</span>
       </div>
 
       {filtered.length === 0 ? (
