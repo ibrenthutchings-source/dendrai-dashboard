@@ -816,7 +816,7 @@ function Header({ cfg, liveMode, livefacts, running, hasRun }) {
       <div className="hdr-ctx">
         <span className="hdr-ctx-tkr">{cfg.ticker}</span>
         <span className="muted">·</span>
-        <span style={{ fontSize: 11.5 }}>{livefacts?.entity || MOCK.entity.name}</span>
+        <span style={{ fontSize: 11.5 }}>{livefacts?.entity || cfg.company || MOCK.entity.name}</span>
         {(() => {
           const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
           if (!focusList.length) return null;
