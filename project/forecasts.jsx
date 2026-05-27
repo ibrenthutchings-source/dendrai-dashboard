@@ -112,25 +112,58 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
 
   const hasEngines = typeof FORECASTING !== "undefined" && typeof BACKTESTING !== "undefined";
 
+  const revFcLast = rev.forecast[rev.forecast.length - 1];
+  const mgFcLast  = mg.forecast[mg.forecast.length - 1];
+
   return (
-    <div data-screen-label="Forecasts">
-      <div className="panel-head">
-        <div>
-          <div className="kicker">Financial intelligence + forecasting</div>
-          <div className="panel-title mt-8">EDGAR XBRL + FRED macro · ARIMA / Prophet / Random Forest ensemble</div>
-          <div className="panel-sub">
-            {modelRunning ? "Running models…" :
-             modelError   ? `Model error: ${modelError} — showing mock baseline` :
-             modelOutput  ? `Ensemble forecast · walk-forward calibrated · data: ${modelOutput.revenue.source.toUpperCase()}` :
-             hasEngines   ? "Models queued…" :
-             "Forecasting engines not loaded — showing mock baseline"}
-            {" "}
-            {liveMode ? "Live FRED snapshot bundled." : "Switch to Live in sidebar to pull EDGAR XBRL."}
-          </div>
+    <div data-screen-label="Forecasts" className="bb-panel">
+      <BBTermHeader
+        section="FINANCIAL INTELLIGENCE"
+        title="EDGAR XBRL · FRED Macro · ARIMA / Prophet / RF Ensemble"
+        liveMode={liveMode}
+        status={
+          modelRunning ? "⟳  RUNNING FORECASTING MODELS…" :
+          modelError   ? `MODEL ERROR: ${modelError.toUpperCase()} — SHOWING MOCK BASELINE` :
+          modelOutput  ? `ENSEMBLE FORECAST · WALK-FORWARD CALIBRATED · DATA SOURCE: ${modelOutput.revenue.source.toUpperCase()}` :
+          hasEngines   ? "MODELS QUEUED…" :
+          "FORECASTING ENGINES NOT LOADED — SHOWING MOCK BASELINE"
+        }
+        actions={modelRunning ? <span className="spin"/> : null}
+      />
+
+      {/* Key metrics ticker */}
+      <div className="bb-stat-ticker">
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">REV FORECAST</div>
+          <div className={`bb-ticker-val${revDeltaPct >= 0 ? " green" : " red"}`}>${revFcLast.base.toFixed(0)}M</div>
         </div>
-        {modelRunning && <span className="spin" style={{marginLeft: 8}}/>}
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">REV Δ</div>
+          <div className={`bb-ticker-val${revDeltaPct >= 0 ? " green" : " red"}`}>{revDeltaPct >= 0 ? "▲" : "▼"}{Math.abs(revDeltaPct).toFixed(1)}%</div>
+        </div>
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">MARGIN FCST</div>
+          <div className="bb-ticker-val">{mgFcLast.base.toFixed(1)}%</div>
+        </div>
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">MARGIN Δ</div>
+          <div className={`bb-ticker-val${mgDelta >= 0 ? " green" : " red"}`}>{mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps</div>
+        </div>
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">M-SCORE</div>
+          <div className={`bb-ticker-val${data.mscore.m > -1.78 ? " red" : data.mscore.m > -2.22 ? " amber" : " green"}`}>{data.mscore.m.toFixed(2)}</div>
+        </div>
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">MACRO SIGNAL</div>
+          <div className="bb-ticker-val red" style={{fontSize:12,letterSpacing:"0.04em"}}>CONTRACTION</div>
+        </div>
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">SENTIMENT</div>
+          <div className={`bb-ticker-val${data.sentiment.score >= 0 ? " green" : " red"}`}>{data.sentiment.score > 0 ? "+" : ""}{data.sentiment.score}</div>
+        </div>
       </div>
 
+      <div className="bb-content">
       <div className="fcst-row">
         <div className="fcst-card">
           <div className="head">
@@ -277,6 +310,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
       {rssSignals?.length > 0 && (
         <RssSentimentCard signals={rssSignals} />
       )}
+      </div>
     </div>
   );
 }
