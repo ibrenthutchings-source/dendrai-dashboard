@@ -79,7 +79,7 @@ function App() {
       if (!signalSet.has("industry")) return;
       setRssRefreshing(true);
       try {
-        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: true });
+        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: !liveMode });
         const freshSigs = RSS_ENGINE.toSignals(ingestResult);
         setRssSignals(freshSigs);
         setRssLastUpdated(Date.now());
@@ -88,7 +88,7 @@ function App() {
     };
     const interval = setInterval(doRefresh, 30000);
     return () => clearInterval(interval);
-  }, [running]);
+  }, [running, liveMode]);
 
   // ---- CEM state ----
   const [events, setEvents] = useState([]);
@@ -354,12 +354,12 @@ function App() {
     setRiskApprovals({});
     log("Loop started");
 
-    // --- Auto-ingest RSS (always, simulate fallback) ---
+    // --- Auto-ingest RSS (live fetch when liveMode, else simulate) ---
     let currentRssSignals = [...rssSignals];
     if (signalSet.has("industry")) {
       try {
-        log("Auto-ingesting RSS signals…");
-        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: true });
+        log(liveMode ? "Fetching live RSS signals…" : "Generating simulated RSS signals…");
+        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: !liveMode });
         const freshSigs = RSS_ENGINE.toSignals(ingestResult);
         currentRssSignals = freshSigs;
         setRssSignals(freshSigs);
@@ -722,6 +722,7 @@ function App() {
             )}
             {activePipeTab === "rss" && (
               <RSSPanel
+                liveMode={liveMode}
                 onSignalsReady={(sigs) => {
                   setRssSignals(sigs);
                   log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
