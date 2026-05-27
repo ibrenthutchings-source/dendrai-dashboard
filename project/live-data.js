@@ -8,19 +8,39 @@ window.LIVE = (function () {
 
   // ---- Common tickers → CIK (zero-padded to 10 digits) ----
   // Add more as needed; ticker→CIK comes from SEC EDGAR's
-  // company_tickers.json. We hardcode the most-relevant analog/
-  // semi peers so the demo works offline-friendly for those.
+  // company_tickers.json. We hardcode a broad analog/semi peer set
+  // so live mode works even if the SEC dynamic lookup is rate-limited.
   const TICKER_CIK = {
+    // Analog / Mixed-Signal
     ON:    "0001097864",   // onsemi
     TXN:   "0000097476",   // Texas Instruments
     STM:   "0001114448",   // STMicroelectronics
     MCHP:  "0000827054",   // Microchip Technology
+    NXPI:  "0001413447",   // NXP Semiconductors
+    ADI:   "0000006951",   // Analog Devices
+    SWKS:  "0000004127",   // Skyworks Solutions
+    QRVO:  "0001604778",   // Qorvo
+    MPWR:  "0001280452",   // Monolithic Power Systems
+    WOLF:  "0000895419",   // Wolfspeed
+    // Digital
     AVGO:  "0001730168",   // Broadcom
     NVDA:  "0001045810",   // NVIDIA
     INTC:  "0000050863",   // Intel
     AMD:   "0000002488",   // AMD
     QCOM:  "0000804328",   // Qualcomm
-    NXPI:  "0001413447",   // NXP Semiconductors
+    MRVL:  "0001058057",   // Marvell Technology
+    // Semiconductor Equipment / Packaging
+    AMAT:  "0000003153",   // Applied Materials
+    KLAC:  "0000319201",   // KLA Corporation
+    LRCX:  "0000707549",   // Lam Research
+    ASML:  "0000937966",   // ASML Holding
+    AMKR:  "0001047127",   // AMKOR Technology
+    ONTO:  "0000074260",   // Onto Innovation
+    TER:   "0000097216",   // Teradyne
+    ENTG:  "0001101302",   // Entegris
+    // Memory
+    MU:    "0000723125",   // Micron Technology
+    WDC:   "0000106040",   // Western Digital
   };
 
   async function fetchEdgarFacts(ticker) {
