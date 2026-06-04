@@ -23,3 +23,11 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 - `README.md` — this file
 - `chats/` — conversation transcripts (read these!)
 - `project/` — the `Dendrai Risk Loop` project files (HTML prototypes, assets, components)
+
+## Dendrai app backend and Docker
+
+The repo includes the `dendrai-app` subproject with a dedicated Express backend and Docker support.
+
+- See `dendrai-app/README.md` for development, production, and Docker instructions.
+- `dendrai-app/Dockerfile` builds a production image.
+- `dendrai-app/docker-compose.yml` starts the app on port `4000`.
