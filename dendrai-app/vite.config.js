@@ -40,7 +40,7 @@ export default defineConfig(({ mode }) => {
 
       res.statusCode = upstream.status
       upstream.headers.forEach((value, name) => {
-        const lowerName = name.toLowerCase()
+       const lowerName = name.toLowerCase()
         if (lowerName === 'content-length' || lowerName === 'content-encoding' || lowerName === 'transfer-encoding' || lowerName === 'connection') return
         res.setHeader(name, value)
       })
