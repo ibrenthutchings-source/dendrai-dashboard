@@ -24,6 +24,8 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 - `chats/` — conversation transcripts (read these!)
 - `project/` — the `Dendrai Risk Loop` project files (HTML prototypes, assets, components)
 
+The `project/` folder now includes a Vite-powered React app with `project/index.html`, `project/src/main.jsx`, and `project/vite.config.js`.
+
 ## Dendrai app backend and Docker
 
 The repo includes the `dendrai-app` subproject with a dedicated Express backend and Docker support.
