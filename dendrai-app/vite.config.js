@@ -40,9 +40,11 @@ export default defineConfig(({ mode }) => {
 
       res.statusCode = upstream.status
       upstream.headers.forEach((value, name) => {
-        if (name.toLowerCase() === 'content-length') return
+        const lowerName = name.toLowerCase()
+        if (lowerName === 'content-length' || lowerName === 'content-encoding' || lowerName === 'transfer-encoding' || lowerName === 'connection') return
         res.setHeader(name, value)
       })
+      res.setHeader('Content-Type', 'application/json')
 
       const text = await upstream.text()
       res.end(text)
