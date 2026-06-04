@@ -848,6 +848,4 @@ function Header({ cfg, liveMode, livefacts, running, hasRun }) {
 
 }
 
-// ---- Mount ----
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<App />);
+export default App;
