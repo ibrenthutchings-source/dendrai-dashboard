@@ -1,8 +1,14 @@
+import path from 'path'
+import { fileURLToPath } from 'url'
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 
 dotenv.config()
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const distPath = path.join(__dirname, '..', 'dist')
 
 const app = express()
 const port = process.env.PORT || 4000
@@ -43,6 +49,13 @@ app.post('/api/gemini', async (req, res) => {
     res.status(500).json({ error: 'Gemini proxy error', details: error.message || String(error) })
   }
 })
+
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(distPath))
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'))
+  })
+}
 
 app.listen(port, () => {
   console.log(`Dendrai backend listening on http://localhost:${port}`)
