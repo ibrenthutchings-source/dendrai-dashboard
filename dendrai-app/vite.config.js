@@ -30,7 +30,8 @@ export default defineConfig(({ mode }) => {
       let body = ''
       for await (const chunk of req) body += chunk
 
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta2/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`
+      const geminiModel = env.VITE_GEMINI_MODEL || 'gemini-2.5-flash'
+      const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${geminiModel}:generateContent?key=${geminiApiKey}`
       const upstream = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
