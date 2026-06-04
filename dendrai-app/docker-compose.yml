@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  dendrai-app:
+    build: .
+    ports:
+      - '4000:4000'
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+    restart: unless-stopped
