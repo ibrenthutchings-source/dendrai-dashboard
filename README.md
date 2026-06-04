@@ -31,3 +31,4 @@ The repo includes the `dendrai-app` subproject with a dedicated Express backend 
 - See `dendrai-app/README.md` for development, production, and Docker instructions.
 - `dendrai-app/Dockerfile` builds a production image.
 - `dendrai-app/docker-compose.yml` starts the app on port `4000`.
+- `docker-compose.yml` at the repo root can launch `dendrai-app` from the repository root.
