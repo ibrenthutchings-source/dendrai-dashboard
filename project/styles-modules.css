@@ -1899,37 +1899,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   margin: -20px -24px;
   min-height: calc(100% + 40px);
 
-  /* Scoped CSS variable overrides — dark terminal palette */
-  --bg:          #090909;
-  --surface:     #0f0f10;
-  --surface-2:   #161617;
-  --surface-3:   #1d1d1e;
-  --line:        #242425;
-  --line-strong: #333334;
-  --line-2:      #1b1b1c;
-  --ink:         #e2e2e2;
-  --ink-2:       #9a9a9a;
-  --ink-3:       #585858;
-  --ink-4:       #383838;
-  --hover:       #131314;
-  --acc:         #e8640a;
-  --acc-ink:     #ff8c38;
-  --acc-soft:    rgba(232,100,10,0.14);
-  --green:       #00a63e;
-  --green-ink:   #15c952;
-  --green-soft:  rgba(0,166,62,0.14);
-  --amber:       #d48f00;
-  --amber-ink:   #f0aa20;
-  --amber-soft:  rgba(212,143,0,0.14);
-  --red:         #c62828;
-  --red-ink:     #ef5350;
-  --red-soft:    rgba(198,40,40,0.14);
-  --violet:      #7c3aed;
-  --blue:        #1565c0;
-  --blue-ink:    #42a5f5;
-  --blue-soft:   rgba(21,101,192,0.14);
-
-  background: var(--bg);
+  background: var(--surface);
   font-family: "Geist Mono", "SF Mono", "Courier New", monospace;
   display: flex;
   flex-direction: column;
@@ -1944,8 +1914,8 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .bb-header-topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 6px 18px;
-  background: #050506;
-  border-bottom: 1px solid #1a1a1b;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
 }
 .bb-brand {
   display: flex; align-items: center; gap: 8px;
@@ -1964,8 +1934,8 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .bb-live-pill.sim { color: #f0aa20; background: rgba(212,143,0,0.12); border-color: rgba(212,143,0,0.25); }
 .bb-live-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: live 1.6s ease-in-out infinite; }
 .bb-clock { font-family: "Geist Mono", monospace; font-size: 10px; display: flex; align-items: center; gap: 10px; }
-.bb-clock-time { color: #c0c0c0; font-weight: 600; letter-spacing: 0.06em; }
-.bb-clock-date { color: #404040; }
+.bb-clock-time { color: var(--ink-3); font-weight: 600; letter-spacing: 0.06em; }
+.bb-clock-date { color: var(--ink-3); }
 
 .bb-header-main {
   display: flex; align-items: flex-end; justify-content: space-between;
@@ -1991,7 +1961,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 
 /* ---- Bloomberg Stat Ticker Bar ---- */
 .bb-stat-ticker {
-  display: flex; background: #050506;
+  display: flex; background: var(--surface-2);
   border-bottom: 1px solid var(--line);
   overflow-x: auto; scrollbar-width: none; flex-shrink: 0;
 }
@@ -1999,13 +1969,14 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .bb-ticker-item {
   display: flex; flex-direction: column; align-items: flex-start;
   padding: 8px 16px 7px 14px;
-  border-right: 1px solid #1a1a1b; flex-shrink: 0; min-width: 90px;
+  border-right: 1px solid var(--line);
+  flex-shrink: 0; min-width: 90px;
 }
 .bb-ticker-item:first-child { padding-left: 18px; }
 .bb-ticker-label {
   font-family: "Geist Mono", monospace;
   font-size: 8.5px; font-weight: 600; letter-spacing: 0.14em;
-  color: #484848; text-transform: uppercase; margin-bottom: 2px;
+  color: var(--ink-3); text-transform: uppercase; margin-bottom: 2px;
 }
 .bb-ticker-val {
   font-family: "Geist Mono", monospace;
@@ -2021,7 +1992,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .bb-section-sep {
   font-family: "Geist Mono", monospace;
   font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
-  color: #484848; background: #050506;
+  color: var(--ink-3); background: var(--surface-2);
   padding: 4px 18px;
   border-bottom: 1px solid var(--line);
   border-top: 1px solid var(--line);
@@ -2041,10 +2012,10 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .bb-panel .btn-primary { background: var(--acc); border-color: var(--acc); color: #fff; }
 .bb-panel .btn-primary:hover { background: #c4520a; border-color: #c4520a; }
 .bb-panel .btn-ghost { background: transparent; }
-.bb-panel .spin { border-color: #2a2a2a; border-top-color: var(--acc-ink); }
+.bb-panel .spin { border-color: var(--line); border-top-color: var(--acc-ink); }
 .bb-panel .sec-lbl {
   font-family: "Geist Mono", monospace; font-size: 9px;
-  letter-spacing: 0.12em; text-transform: uppercase; color: #484848;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
 }
 .bb-panel .empty {
   background: var(--surface-2); border-color: var(--line);
@@ -2064,19 +2035,19 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .bb-panel .rss-stat-row { display: none; }
 
 .bb-panel .rss-article-list { border-radius: 0; border-left: none; border-right: none; margin-bottom: 0; }
-.bb-panel .rss-article-list-head { background: #050506; padding: 7px 18px; }
-.bb-panel .rss-art-thead { background: #050506; padding: 4px 18px; border-bottom-color: var(--line-2); }
-.bb-panel .rss-art-th { font-size: 8.5px; letter-spacing: 0.12em; color: #404040; }
+.bb-panel .rss-article-list-head { background: var(--surface-2); padding: 7px 18px; }
+.bb-panel .rss-art-thead { background: var(--surface-2); padding: 4px 18px; border-bottom-color: var(--line-2); }
+.bb-panel .rss-art-th { font-size: 8.5px; letter-spacing: 0.12em; color: var(--ink-3); }
 .bb-panel .rss-art-row { padding: 7px 18px; border-bottom-color: var(--line-2); }
 .bb-panel .rss-art-row:hover { background: var(--hover); }
 .bb-panel .rss-art-row.open { background: rgba(232,100,10,0.05); }
 .bb-panel .rss-art-title-text { font-family: "Geist Mono", monospace; font-size: 11px; letter-spacing: -0.01em; }
-.bb-panel .rss-art-meta { font-size: 9px; color: #404040; }
+.bb-panel .rss-art-meta { font-size: 9px; color: var(--ink-3); }
 .bb-panel .rss-art-detail { padding: 8px 0 4px; }
 
 .bb-panel .rss-method-note {
   border-radius: 0; border: none; border-top: 1px solid var(--line);
-  background: #050506; margin-top: 0; padding: 10px 18px;
+  background: var(--surface-2); margin-top: 0; padding: 10px 18px;
 }
 
 /* CEM panel overrides */
@@ -2084,15 +2055,15 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .bb-panel .cem-stat {
   border: none; border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  border-radius: 0; padding: 8px 16px; background: #050506;
+  border-radius: 0; padding: 8px 16px; background: var(--surface-2);
 }
 .bb-panel .cem-stat:last-child { border-right: none; }
 .bb-panel .cem-stat .v { font-size: 20px; font-weight: 700; }
-.bb-panel .cem-stat .l { font-size: 8.5px; letter-spacing: 0.12em; color: #484848; }
+.bb-panel .cem-stat .l { font-size: 8.5px; letter-spacing: 0.12em; color: var(--ink-3); }
 
 .bb-panel .cem-toolbar {
   padding: 6px 18px; margin-bottom: 0;
-  background: #050506; border-bottom: 1px solid var(--line); flex-wrap: nowrap; gap: 4px;
+  background: var(--surface-2); border-bottom: 1px solid var(--line); flex-wrap: nowrap; gap: 4px;
 }
 .bb-panel .cem-filter {
   border-radius: 2px; font-family: "Geist Mono", monospace;
