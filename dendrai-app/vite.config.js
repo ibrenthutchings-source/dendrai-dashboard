@@ -8,6 +8,16 @@ export default defineConfig(({ mode }) => {
   const geminiApiKey = env.VITE_GEMINI_API_KEY
 
   const handleGeminiProxy = async (req, res, next) => {
+    if (req.url === '/probe-gemini') {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'text/plain')
+      res.end('probe ok')
+      return
+    }
+
+    if (req.url?.startsWith('/api/gemini')) {
+      console.log('[gemini-proxy] request', req.method, req.url)
+    }
     if (req.method !== 'POST' || !req.url?.startsWith('/api/gemini')) return next()
 
     if (!geminiApiKey) {
