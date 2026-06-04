@@ -1,2 +1,4 @@
 node_modules/
 project/vendor/
+project/dist/
+dendrai-app/dist/
