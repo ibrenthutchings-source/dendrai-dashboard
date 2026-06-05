@@ -42,6 +42,7 @@ const TICKER_META = {
   WDC:  { name: "Western Digital",          industry: "Memory Semiconductors" },
   SKX:  { name: "SK Hynix",                 industry: "Memory Semiconductors" },
   KR:   { name: "Kroger",                   industry: "Retail" },
+  F:    { name: "Ford Motor Company",       industry: "Industrial / Manufacturing" },
 };
 
 function findTickerMeta(input) {
@@ -49,8 +50,26 @@ function findTickerMeta(input) {
   if (!normalized) return null;
   const direct = TICKER_META[normalized];
   if (direct) return { ticker: normalized, meta: direct };
-  const entry = Object.entries(TICKER_META).find(([, value]) => value.name.toUpperCase() === normalized);
-  return entry ? { ticker: entry[0], meta: entry[1] } : null;
+
+  const exact = Object.entries(TICKER_META).find(([, value]) => value.name.toUpperCase() === normalized);
+  if (exact) return { ticker: exact[0], meta: exact[1] };
+
+  const fuzzy = Object.entries(TICKER_META).find(([, value]) =>
+    value.name.toUpperCase().includes(normalized) || normalized.includes(value.name.toUpperCase())
+  );
+  if (fuzzy) return { ticker: fuzzy[0], meta: fuzzy[1] };
+
+  return null;
+}
+
+async function resolveIndustryFromSec(raw) {
+  if (!window.LIVE?.fetchEdgarProfile) return null;
+  try {
+    const profile = await window.LIVE.fetchEdgarProfile(raw);
+    return profile;
+  } catch (e) {
+    return null;
+  }
 }
 
 function genFiscalQuarters() {
@@ -93,7 +112,7 @@ function Sidebar({
           <input
             className="input"
             type="text"
-            placeholder="e.g. ON, TXN, NVDA, KR"
+            placeholder="e.g. ON, TXN, NVDA, KR, F, FORD"
             value={cfg.ticker}
             onChange={e => {
               const raw = e.target.value;
@@ -104,14 +123,33 @@ function Sidebar({
                 ...(lookup ? { industry: lookup.meta.industry, company: lookup.meta.name } : {}),
               });
             }}
-            onBlur={e => {
-              const raw = e.target.value;
+            onBlur={async e => {
+              const raw = e.target.value.trim();
               const lookup = findTickerMeta(raw);
-              if (raw.trim()) setCfg(prev => ({
-                ...prev,
-                ticker: lookup ? lookup.ticker : raw.toUpperCase().trim(),
-                ...(lookup ? { industry: lookup.meta.industry, company: lookup.meta.name } : {}),
-              }));
+              if (lookup) {
+                setCfg(prev => ({
+                  ...prev,
+                  ticker: lookup.ticker,
+                  company: lookup.meta.name,
+                  industry: lookup.meta.industry,
+                }));
+                return;
+              }
+
+              const secMeta = await resolveIndustryFromSec(raw);
+              if (secMeta) {
+                setCfg(prev => ({
+                  ...prev,
+                  ticker: secMeta.ticker,
+                  company: secMeta.name || prev.company,
+                  industry: secMeta.industry || prev.industry,
+                }));
+                return;
+              }
+
+              if (raw) {
+                setCfg(prev => ({ ...prev, ticker: raw.toUpperCase() }));
+              }
             }}
           />
           {(() => {
