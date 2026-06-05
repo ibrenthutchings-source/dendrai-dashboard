@@ -4,7 +4,7 @@
 
 function ReportModal({ open, onClose, payload }) {
   if (!open || !payload) return null;
-  const { entity, ts, cfg, signals, risks, top3, riskAppetite, objectives, maps, closure, loop, assumptions, obstacles, log } = payload;
+  const { entity, ts, cfg, signals, risks, top3, riskAppetite, objectives, maps, closure, loop, scenarios, greySwan, personas, assumptions, obstacles, log } = payload;
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
       <div className="modal-box" style={{width: 920}}>
@@ -107,6 +107,112 @@ function ReportModal({ open, onClose, payload }) {
               </div>
             ))}
           </div>
+
+          {scenarios?.length > 0 && (
+            <div className="rep-section">
+              <h3>Scenario Outlook</h3>
+              <div style={{display: "grid", gap: 12}}>
+                {scenarios.map((s, idx) => (
+                  <div key={s.id} className="rep-finding" style={{padding: 14, borderRadius: 10, border: "1px solid var(--line)"}}>
+                    <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 8}}>
+                      <div>
+                        <div style={{fontWeight: 700, fontSize: 13}}>{s.name}</div>
+                        <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.probability} probability · Revenue impact {s.revenue_impact_pct > 0 ? `+${s.revenue_impact_pct}%` : `${s.revenue_impact_pct}%`}</div>
+                      </div>
+                      <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.runway_qtrs} quarters runway</div>
+                    </div>
+                    <div style={{fontSize: 12, color: "var(--ink-2)", marginBottom: 8}}>{s.description}</div>
+                    <Row k="Audit focus" v={s.audit_focus?.join(", ") || "—"}/>
+                    <Row k="Key assumptions" v={Object.entries(s.assumptions || {}).map(([k,v]) => `${k}: ${v}`).join(" · ") || "—"}/>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {greySwan && (
+            <div className="rep-section">
+              <h3>Grey Swan Risk</h3>
+              <div style={{display: "grid", gap: 14}}>
+                <div style={{background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: 14}}>
+                  <div style={{display:"flex", justifyContent:"space-between", gap: 12, flexWrap:"wrap"}}>
+                    <div>
+                      <div style={{fontWeight:700, fontSize:14, marginBottom: 6}}>{greySwan.headline}</div>
+                      <div style={{fontSize: 12, color: "var(--ink-2)", lineHeight: 1.5}}>{greySwan.description}</div>
+                    </div>
+                    <div style={{display:"grid", gap:6, minWidth: 160}}>
+                      <span className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>Probability</span>
+                      <div style={{padding: "8px 10px", borderRadius: 8, background: "var(--surface-1)", border: "1px solid var(--line)", fontWeight: 700}}>{greySwan.probability}</div>
+                      <span className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>Scenario path</span>
+                      <div style={{padding: "8px 10px", borderRadius: 8, background: "var(--surface-1)", border: "1px solid var(--line)", fontWeight: 700}}>{greySwan.starting_rag} → {greySwan.ending_rag}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {greySwan.timeline?.length > 0 && (
+                  <div style={{overflowX: "auto"}}>
+                    <table className="rep-table" style={{minWidth: 760}}>
+                      <thead>
+                        <tr><th>Stage</th><th>Score / RAG</th><th>Impact</th><th>Signals</th><th>Action</th></tr>
+                      </thead>
+                      <tbody>
+                        {greySwan.timeline.map((t, i) => (
+                          <tr key={i}>
+                            <td><b>{t.label}</b><div className="mono" style={{fontSize:10,color:"var(--ink-3)"}}>{t.t}</div></td>
+                            <td className="mono" style={{color: scoreColorInk(t.score)}}>{t.score.toFixed(1)} · {t.rag}</td>
+                            <td>{t.impact}</td>
+                            <td style={{fontSize:11, color:"var(--ink-2)"}}>{Array.isArray(t.signals) ? t.signals.join(" · ") : t.signals}</td>
+                            <td style={{fontSize:11, color:"var(--ink-2)"}}>{t.action}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {(greySwan.early_warnings?.length > 0 || greySwan.mitigations?.length > 0) && (
+                  <div style={{display:"grid", gap:12}}>
+                    {greySwan.early_warnings?.length > 0 && (
+                      <div>
+                        <div style={{fontWeight:700, marginBottom:6}}>Early Warning Signals</div>
+                        <ul style={{margin:0, paddingLeft:18, color:"var(--ink-2)", fontSize:12, lineHeight:1.6}}>
+                          {greySwan.early_warnings.map((item, idx) => <li key={idx}>{item}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {greySwan.mitigations?.length > 0 && (
+                      <div>
+                        <div style={{fontWeight:700, marginBottom:6}}>Recommended Mitigations</div>
+                        <ul style={{margin:0, paddingLeft:18, color:"var(--ink-2)", fontSize:12, lineHeight:1.6}}>
+                          {greySwan.mitigations.map((item, idx) => <li key={idx}>{item}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {personas && Object.keys(personas).length > 0 && (
+            <div className="rep-section">
+              <h3>Stakeholder Highlights</h3>
+              <div style={{display: "grid", gap: 12}}>
+                {Object.entries(personas).map(([role, details]) => (
+                  <div key={role} className="rep-finding" style={{padding: 14, borderRadius: 10, border: "1px solid var(--line)"}}>
+                    <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 8, flexWrap:"wrap"}}>
+                      <div>
+                        <div style={{fontWeight:700, fontSize:13}}>{role}</div>
+                        <div className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{details.sections?.join(" · ")}</div>
+                      </div>
+                    </div>
+                    <div style={{fontSize: 12, color: "var(--ink-2)", marginBottom: 8}}>{details.summary}</div>
+                    <div style={{fontSize: 11, color: "var(--ink-3)", fontWeight: 700}}>{details.headline}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="rep-section">
             <h3>Analytical Assumptions</h3>

@@ -584,6 +584,9 @@ function App() {
       maps: output.s4?.maps || [],
       closure: output.s5?.closure || {},
       loop: output.s6?.loop || {},
+      scenarios: output.s7?.scenarios || MOCK.scenarios,
+      greySwan: output.s7?.greySwan || MOCK.greySwan,
+      personas: output.s7?.personas || MOCK.personas,
       log: loopLog,
       assumptions: [
       "Quarterly score projections use a velocity-dampened linear model (15% per quarter).",
