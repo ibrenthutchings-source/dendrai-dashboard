@@ -86,6 +86,83 @@ window.LIVE = (function () {
     }
   }
 
+  async function lookupTickerAndCik(value) {
+    const raw = (value || "").trim();
+    if (!raw) return null;
+
+    const key = raw.toUpperCase();
+    if (TICKER_CIK[key]) {
+      return { ticker: key, cik: TICKER_CIK[key] };
+    }
+
+    try {
+      const res = await fetch("https://data.sec.gov/files/company_tickers.json", {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return null;
+      const list = await res.json();
+      const exactTicker = Object.values(list).find((entry) => entry.ticker?.toUpperCase() === key);
+      if (exactTicker) {
+        return { ticker: exactTicker.ticker.toUpperCase(), cik: String(exactTicker.cik_str).padStart(10, "0") };
+      }
+
+      const exactName = Object.values(list).find((entry) => entry.title?.toUpperCase() === key);
+      if (exactName) {
+        return { ticker: exactName.ticker.toUpperCase(), cik: String(exactName.cik_str).padStart(10, "0") };
+      }
+
+      const fuzzy = Object.values(list).find((entry) => {
+        const title = entry.title?.toUpperCase() || "";
+        return title.includes(key) || key.includes((entry.ticker || "").toUpperCase());
+      });
+      if (fuzzy) {
+        return { ticker: fuzzy.ticker.toUpperCase(), cik: String(fuzzy.cik_str).padStart(10, "0") };
+      }
+    } catch (e) {
+      // ignore SEC lookup failures here; fallback will happen elsewhere
+    }
+
+    return null;
+  }
+
+  async function fetchEdgarProfile(value) {
+    const lookup = await lookupTickerAndCik(value);
+    if (!lookup) throw new Error(`Unable to resolve ticker or company for '${value}'`);
+
+    const profileUrl = `https://data.sec.gov/submissions/CIK${lookup.cik}.json`;
+    const res = await fetch(profileUrl, {
+      headers: { "Accept": "application/json" },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (res.status === 403) throw new Error("SEC EDGAR returned 403 — rate limited. Wait 30s and retry.");
+    if (!res.ok) throw new Error(`SEC profile ${res.status}: ${res.statusText}`);
+    const profile = await res.json();
+
+    return {
+      ticker: lookup.ticker,
+      cik: lookup.cik,
+      name: profile.name || profile.entityName || "",
+      sic: profile.sic || null,
+      sicDescription: profile.sicDescription || null,
+      industry: mapSicToIndustry(profile.sic, profile.sicDescription),
+    };
+  }
+
+  function mapSicToIndustry(sic, sicDescription) {
+    const code = parseInt(sic, 10);
+    if (!Number.isFinite(code)) {
+      if (sicDescription?.toLowerCase().includes("retail")) return "Retail";
+      if (sicDescription?.toLowerCase().includes("utility")) return "Energy / Utilities";
+      return null;
+    }
+    if (code >= 5200 && code < 6000) return "Retail";
+    if (code >= 1500 && code < 1800) return "Energy / Utilities";
+    if (code >= 2000 && code < 4000) return "Industrial / Manufacturing";
+    if (code >= 6000 && code < 7000) return "Industrial / Manufacturing";
+    if (sicDescription?.toLowerCase().includes("semiconductor")) return "Digital Semiconductors";
+    return sicDescription || null;
+  }
+
   // Extract a usable set of headline financials from companyfacts JSON
   function extractFinancials(facts) {
     const out = {
@@ -163,5 +240,5 @@ window.LIVE = (function () {
     return d === 0 ? null : num / d;
   }
 
-  return { TICKER_CIK, fetchEdgarFacts, extractFinancials, loadFred, corr };
+  return { TICKER_CIK, fetchEdgarFacts, fetchEdgarProfile, extractFinancials, loadFred, corr };
 })();
