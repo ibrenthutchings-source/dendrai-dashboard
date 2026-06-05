@@ -41,6 +41,8 @@ window.LIVE = (function () {
     // Memory
     MU:    "0000723125",   // Micron Technology
     WDC:   "0000106040",   // Western Digital
+    // Automotive
+    F:     "0000037996",   // Ford Motor Company
   };
 
   async function fetchEdgarFacts(ticker) {
