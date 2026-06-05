@@ -354,3 +354,4 @@ function AdjustObjectiveModal({ open, obj, onClose, onSubmit }) {
 }
 
 Object.assign(window, { ScopeApprovalReview, AdjustObjectiveModal });
+export { ScopeApprovalReview, AdjustObjectiveModal };
