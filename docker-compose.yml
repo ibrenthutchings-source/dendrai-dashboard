@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   dendrai-app:
     build:
@@ -9,4 +8,12 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+    restart: unless-stopped
+
+  project:
+    build:
+      context: ./project
+      dockerfile: Dockerfile
+    ports:
+      - '4173:80'
     restart: unless-stopped
