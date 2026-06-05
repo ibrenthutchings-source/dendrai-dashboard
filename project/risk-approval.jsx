@@ -436,3 +436,4 @@ function AdjustRiskModal({ open, risk, onClose, onSubmit }) {
 }
 
 Object.assign(window, { RiskApprovalReview, AdjustRiskModal, SIGNOFFS });
+export { RiskApprovalReview, AdjustRiskModal, SIGNOFFS };

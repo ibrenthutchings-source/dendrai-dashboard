@@ -4,6 +4,9 @@
    Driven by parent (App): receives stageState, gateState, output.
    ============================================================ */
 
+import { RiskApprovalReview } from "./risk-approval.jsx";
+import { ScopeApprovalReview } from "./audit-scope-review.jsx";
+
 const STAGES = [
   { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · internal KRIs" },
   { id: "s2", name: "Risk Assessment + Velocity",          desc: "Continuous scoring · velocity delta · RAG matrix" },
