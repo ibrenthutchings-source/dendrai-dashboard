@@ -41,12 +41,7 @@ const TICKER_META = {
   MU:   { name: "Micron Technology",        industry: "Memory Semiconductors" },
   WDC:  { name: "Western Digital",          industry: "Memory Semiconductors" },
   SKX:  { name: "SK Hynix",                 industry: "Memory Semiconductors" },
-  KR:   { name: "Kroger",                   industry: "Food Retail" },
 };
-
-const COMPANY_META = Object.fromEntries(
-  Object.entries(TICKER_META).map(([ticker, meta]) => [meta.name.toUpperCase(), { ...meta, ticker }])
-);
 
 function genFiscalQuarters() {
   const qtrs = [];
@@ -91,22 +86,20 @@ function Sidebar({
             placeholder="e.g. ON, TXN, NVDA"
             value={cfg.ticker}
             onChange={e => {
-              const raw = e.target.value;
-              const t = raw.toUpperCase().trim();
-              const meta = TICKER_META[t] || COMPANY_META[t];
+              const t = e.target.value.toUpperCase().trim();
+              const meta = TICKER_META[t];
               setCfg({
                 ...cfg,
-                ticker: raw,
+                ticker: e.target.value,
                 ...(meta ? { industry: meta.industry, company: meta.name } : {}),
               });
             }}
             onBlur={e => {
-              const raw = e.target.value;
-              const t = raw.toUpperCase().trim();
-              const meta = TICKER_META[t] || COMPANY_META[t];
+              const t = e.target.value.toUpperCase().trim();
+              const meta = TICKER_META[t];
               if (t) setCfg(prev => ({
                 ...prev,
-                ticker: meta?.ticker || t,
+                ticker: t,
                 ...(meta ? { industry: meta.industry, company: meta.name } : {}),
               }));
             }}
@@ -127,7 +120,6 @@ function Sidebar({
             <option>Memory Semiconductors</option>
             <option>Industrial / Manufacturing</option>
             <option>Energy / Utilities</option>
-            <option>Food Retail</option>
           </select>
         </div>
         <div className="field" style={{marginBottom:0}}>
