@@ -41,7 +41,17 @@ const TICKER_META = {
   MU:   { name: "Micron Technology",        industry: "Memory Semiconductors" },
   WDC:  { name: "Western Digital",          industry: "Memory Semiconductors" },
   SKX:  { name: "SK Hynix",                 industry: "Memory Semiconductors" },
+  KR:   { name: "Kroger",                   industry: "Retail" },
 };
+
+function findTickerMeta(input) {
+  const normalized = input?.toUpperCase?.().trim();
+  if (!normalized) return null;
+  const direct = TICKER_META[normalized];
+  if (direct) return { ticker: normalized, meta: direct };
+  const entry = Object.entries(TICKER_META).find(([, value]) => value.name.toUpperCase() === normalized);
+  return entry ? { ticker: entry[0], meta: entry[1] } : null;
+}
 
 function genFiscalQuarters() {
   const qtrs = [];
@@ -83,24 +93,24 @@ function Sidebar({
           <input
             className="input"
             type="text"
-            placeholder="e.g. ON, TXN, NVDA"
+            placeholder="e.g. ON, TXN, NVDA, KR"
             value={cfg.ticker}
             onChange={e => {
-              const t = e.target.value.toUpperCase().trim();
-              const meta = TICKER_META[t];
+              const raw = e.target.value;
+              const lookup = findTickerMeta(raw);
               setCfg({
                 ...cfg,
-                ticker: e.target.value,
-                ...(meta ? { industry: meta.industry, company: meta.name } : {}),
+                ticker: raw,
+                ...(lookup ? { industry: lookup.meta.industry, company: lookup.meta.name } : {}),
               });
             }}
             onBlur={e => {
-              const t = e.target.value.toUpperCase().trim();
-              const meta = TICKER_META[t];
-              if (t) setCfg(prev => ({
+              const raw = e.target.value;
+              const lookup = findTickerMeta(raw);
+              if (raw.trim()) setCfg(prev => ({
                 ...prev,
-                ticker: t,
-                ...(meta ? { industry: meta.industry, company: meta.name } : {}),
+                ticker: lookup ? lookup.ticker : raw.toUpperCase().trim(),
+                ...(lookup ? { industry: lookup.meta.industry, company: lookup.meta.name } : {}),
               }));
             }}
           />
@@ -120,6 +130,7 @@ function Sidebar({
             <option>Memory Semiconductors</option>
             <option>Industrial / Manufacturing</option>
             <option>Energy / Utilities</option>
+            <option>Retail</option>
           </select>
         </div>
         <div className="field" style={{marginBottom:0}}>
