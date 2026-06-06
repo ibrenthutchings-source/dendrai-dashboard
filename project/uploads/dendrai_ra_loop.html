@@ -1236,6 +1236,19 @@ function buildReportData(){
   var loop=out.s6||{};
   var signals=out.s1&&out.s1.signals||[];
 
+  var riskCounts={R:0,A:0,G:0};
+  var highVelocityCount=0;
+  var topRedRisk=null;
+  var topAmberRisk=null;
+  projections.forEach(function(r){
+    var rag=r.rag||ragFromScore(r.current);
+    riskCounts[rag]=(riskCounts[rag]||0)+1;
+    if((r.velocity||0)>=3) highVelocityCount++;
+    if(!topRedRisk && rag==='R') topRedRisk=r.name;
+    if(!topAmberRisk && rag==='A') topAmberRisk=r.name;
+  });
+  var forecastTrend = out.fcstRevTrend != null ? out.fcstRevTrend : null;
+
   // Compute obstacles: any risk with velocity > threshold, any parse failures
   var obstacles=[];
   risks.forEach(function(r){if((r.velocity||0)>=3)obstacles.push('High-velocity risk detected: '+r.name+' (velocity='+r.velocity+') - escalated audit scope');});
@@ -1260,6 +1273,11 @@ function buildReportData(){
     cfg: out.cfg||{},
     signals: {count:out.s1&&out.s1.signal_count||0, highVel:out.s1&&out.s1.high_velocity_count||0},
     risks: projections,
+    riskCounts: riskCounts,
+    highVelocityCount: highVelocityCount,
+    topRedRisk: topRedRisk,
+    topAmberRisk: topAmberRisk,
+    forecastTrend: forecastTrend,
     riskAppetite: out.s2&&out.s2.risk_appetite_status||'UNKNOWN',
     top3: out.s2&&out.s2.top_3_risks||[],
     objectives: objectives,
@@ -1279,6 +1297,17 @@ function openReport(){
   document.getElementById('report-ts').textContent='Generated: '+new Date(rd.ts).toLocaleString();
   var h='<h1 style="font-size:18px;font-weight:600;margin-bottom:4px;color:#1A1A2E;font-family:Calibri,Arial,sans-serif">Loop Report</h1>';
   h+='<div style="font-size:12px;color:#666;margin-bottom:20px">'+asc(rd.entity)+' / '+new Date(rd.ts).toLocaleDateString()+'</div>';
+  h+='<div class="rep-section"><h3>Executive Intelligence Brief</h3>';
+  h+='<div class="rep-row"><span class="rep-key">Risk profile</span><span class="rep-val">'+rd.risks.length+' risks · '+(rd.riskCounts.R||0)+' red · '+(rd.riskCounts.A||0)+' amber · '+(rd.riskCounts.G||0)+' green</span></div>';
+  h+='<div class="rep-row"><span class="rep-key">Velocity alerts</span><span class="rep-val">'+rd.highVelocityCount+' high-velocity risks</span></div>';
+  if(rd.forecastTrend!=null){
+    h+='<div class="rep-row"><span class="rep-key">Q4 revenue trend</span><span class="rep-val">'+(rd.forecastTrend>=0?'+':'')+rd.forecastTrend.toFixed(1)+'%</span></div>';
+  }
+  h+='<div class="rep-row"><span class="rep-key">Audit focus</span><span class="rep-val">'+asc(rd.cfg.focus||'')+'</span></div>';
+  if(rd.maps && rd.maps.length){
+    h+='<div class="rep-row"><span class="rep-key">Top MAP</span><span class="rep-val">'+asc(rd.maps[0].finding||'')+' / '+asc(rd.maps[0].owner||'')+'</span></div>';
+  }
+  h+='</div>';
   h+='<div class="rep-section"><h3>Executive Summary</h3>';
   h+='<div class="rep-row"><span class="rep-key">Entity</span><span class="rep-val">'+asc(rd.entity)+'</span></div>';
   h+='<div class="rep-row"><span class="rep-key">Industry</span><span class="rep-val">'+asc(rd.cfg.industry||'')+'</span></div>';
@@ -2447,11 +2476,22 @@ function buildBoardReportData(){
   // Aggregate risk metrics
   var ragCounts = {R:0,A:0,G:0};
   var velUp=0, velDn=0;
+  var categoryCounts = {};
+  var highVelocityRisks = [];
+  var cyberRisks = [];
+  var financialRisks = [];
+  var auditVulnerabilities = [];
   risks.forEach(function(r){
     var rag=r.rag||ragFromScore(r.score);
     ragCounts[rag]=(ragCounts[rag]||0)+1;
     if((r.velocity||0)>0) velUp++;
     if((r.velocity||0)<0) velDn++;
+    var cat=(r.category||'').toLowerCase();
+    categoryCounts[r.category||'Unspecified']=(categoryCounts[r.category||'Unspecified']||0)+1;
+    if((r.velocity||0)>=3) highVelocityRisks.push(r.name||'Unnamed risk');
+    if(cat.indexOf('cyber')>=0 || cat.indexOf('security')>=0) cyberRisks.push(r);
+    if(cat.indexOf('revenue')>=0 || cat.indexOf('financial')>=0 || cat.indexOf('margin')>=0) financialRisks.push(r);
+    if(rag==='R' || (r.velocity||0)>=3) auditVulnerabilities.push((r.name||'Unnamed risk')+' · '+(r.category||'Unknown'));
   });
 
   // Top 5 risks by score
@@ -2517,6 +2557,50 @@ function buildBoardReportData(){
 
   // Velocity modifier flag
   var velocityModifierApplied = (out.fcstRevTrend != null && out.fcstRevTrend < -10);
+  var revTrend = out.fcstRevTrend != null ? out.fcstRevTrend : null;
+
+  var irPivots = [];
+  var revenueKpi = kpiSnapshot.find(function(k){ return k.kpi === 'Revenue'; });
+  var opIncomeKpi = kpiSnapshot.find(function(k){ return k.kpi === 'OpIncome'; });
+  if(revTrend != null) {
+    irPivots.push('Revenue is forecast ' + (revTrend >= 0 ? '+' : '') + revTrend.toFixed(1) + '% by Q4, signaling ' + (revTrend >= 0 ? 'relative strength' : 'pressure on topline momentum') + '.');
+  }
+  if(revenueKpi && opIncomeKpi && revenueKpi.current != null && opIncomeKpi.current != null) {
+    var currentMargin = revenueKpi.current !== 0 ? opIncomeKpi.current / revenueKpi.current * 100 : null;
+    if(currentMargin != null) {
+      irPivots.push('Current operating margin is approximately ' + currentMargin.toFixed(1) + '%, which frames the finance team’s sensitivity to revenue and cost variances.');
+    }
+  }
+  if(fredStrong.length) {
+    irPivots.push('Macro signal strength is anchored by ' + fredStrong.map(function(f){ return f.name; }).slice(0,2).join(' and ') + ', which should inform investor messaging.');
+  }
+  if(irPivots.length === 0) {
+    irPivots.push('No material finance pivots surfaced from the current forecast and macro analysis.');
+  }
+
+  var yieldSensitivity = null;
+  if(revenueKpi && opIncomeKpi && revenueKpi.current != null && opIncomeKpi.current != null) {
+    yieldSensitivity = {
+      currentMargin: revenueKpi.current !== 0 ? opIncomeKpi.current / revenueKpi.current * 100 : null,
+      comment: 'Margin sensitivity is driven by current revenue and operating income levels and should be monitored as revenue forecasts shift.'
+    };
+  }
+
+  var strategicInitiatives = topMaps.slice(0,3).map(function(m){
+    var status = (m.completion_pct === 100) ? 'On Track' : ((m.completion_pct || 0) > 0 ? 'At Risk' : 'Delayed');
+    return {
+      initiative: m.finding || 'Management action plan',
+      status: status,
+      impact: m.success_criteria || m.root_cause || 'Targeted risk reduction'
+    };
+  });
+  if(!strategicInitiatives.length) {
+    strategicInitiatives.push({
+      initiative: 'Sustain audit coverage across the highest-ranked risk categories',
+      status: 'On Track',
+      impact: 'Protect enterprise value and compliance posture'
+    });
+  }
 
   return {
     entity: cfg.entity || 'Unknown',
@@ -2542,8 +2626,17 @@ function buildBoardReportData(){
     kpiSnapshot: kpiSnapshot,
     fredStrong: fredStrong,
     fredAll: (typeof fcstFred !== 'undefined' ? fcstFred : []),
+    categoryCounts: categoryCounts,
+    highVelocityRisks: highVelocityRisks,
+    cyberRisks: cyberRisks,
+    financialRisks: financialRisks,
+    auditVulnerabilities: auditVulnerabilities,
+    cfoPivots: irPivots,
+    yieldSensitivity: yieldSensitivity,
+    strategicInitiatives: strategicInitiatives,
     velocityModifierApplied: velocityModifierApplied,
-    revTrend: out.fcstRevTrend != null ? out.fcstRevTrend : null,
+    revTrend: revTrend,
+    scenarios: (typeof scenarios !== 'undefined' ? scenarios : null),
     fcstTicker: typeof fcstTicker !== 'undefined' ? fcstTicker : '',
   };
 }
@@ -2845,7 +2938,40 @@ function renderBoardReport(rd, narrative, loadingNarrative){
     narrativeHtml +
     '</section>' +
 
-    // Section 2: Risk Profile
+    // Section 2: Stakeholder Intelligence
+    '<section style="margin-bottom:20pt;page-break-inside:avoid">' +
+    '<h2 style="font-size:13pt;color:#2B4C8C;border-bottom:1px solid #2B4C8C;padding-bottom:4pt;margin-bottom:10pt;font-family:Calibri,Arial,sans-serif;font-weight:600">Stakeholder Intelligence</h2>' +
+    '<div style="display:flex;gap:12pt;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:220pt;background:#FFFFFF;border:1px solid #E0E0E0;border-radius:8pt;padding:12pt">' +
+        '<div style="font-size:10pt;font-weight:700;color:#2B4C8C;margin-bottom:8pt">Audit / ERM</div>' +
+        '<div style="font-size:10pt;color:#1A1A2E;line-height:1.5;margin-bottom:8pt">' +
+          (rd.auditVulnerabilities.length ? rd.auditVulnerabilities.slice(0,3).map(function(v){return '<div style="margin-bottom:4px">• '+asc(v)+'</div>';}).join('') : 'No elevated vulnerabilities detected in current cycle.') +
+        '</div>' +
+        '<div style="font-size:9pt;color:#666">High-velocity risks: '+rd.highVelocityRisks.length+'</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:220pt;background:#FFFFFF;border:1px solid #E0E0E0;border-radius:8pt;padding:12pt">' +
+        '<div style="font-size:10pt;font-weight:700;color:#2B4C8C;margin-bottom:8pt">CFO / Finance</div>' +
+        '<div style="font-size:10pt;color:#1A1A2E;line-height:1.5;margin-bottom:8pt">' +
+          rd.cfoPivots.map(function(p){return '<div style="margin-bottom:4px">• '+asc(p)+'</div>';}).join('') +
+        '</div>' +
+        (rd.yieldSensitivity ? '<div style="font-size:9pt;color:#666">Current margin: '+(rd.yieldSensitivity.currentMargin != null ? rd.yieldSensitivity.currentMargin.toFixed(1) + '%' : 'n/a')+'</div>' : '') +
+      '</div>' +
+      '<div style="flex:1;min-width:220pt;background:#FFFFFF;border:1px solid #E0E0E0;border-radius:8pt;padding:12pt">' +
+        '<div style="font-size:10pt;font-weight:700;color:#2B4C8C;margin-bottom:8pt">CIO / IT / CISO</div>' +
+        '<div style="font-size:10pt;color:#1A1A2E;line-height:1.5;margin-bottom:8pt">' +
+          (rd.cyberRisks.length ? rd.cyberRisks.slice(0,3).map(function(r){return '<div style="margin-bottom:4px">• '+asc(r.name||r.category||'Cyber risk')+' ('+asc(r.category||'')+')</div>';}).join('') : 'No explicit cybersecurity signals detected; maintain IT control focus and vendor assurance.') +
+        '</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:220pt;background:#FFFFFF;border:1px solid #E0E0E0;border-radius:8pt;padding:12pt">' +
+        '<div style="font-size:10pt;font-weight:700;color:#2B4C8C;margin-bottom:8pt">Board / Audit Committee</div>' +
+        rd.strategicInitiatives.map(function(si){
+          return '<div style="margin-bottom:10pt"><div style="font-size:10pt;font-weight:700;color:#1A1A2E">'+asc(si.initiative)+'</div><div style="font-size:9pt;color:#666">Status: '+asc(si.status)+' · Impact: '+asc(si.impact)+'</div></div>';
+        }).join('') +
+      '</div>' +
+    '</div>' +
+    '</section>' +
+
+    // Section 3: Risk Profile
     '<section style="margin-bottom:20pt">' +
     '<h2 style="font-size:13pt;color:#2B4C8C;border-bottom:1px solid #2B4C8C;padding-bottom:4pt;margin-bottom:10pt;font-family:Calibri,Arial,sans-serif;font-weight:600">Risk Profile</h2>' +
     '<div style="display:flex;gap:8pt;margin-bottom:12pt;flex-wrap:wrap">' +
