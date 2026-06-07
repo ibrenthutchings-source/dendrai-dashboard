@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { fetchJson, buildUrl } from "../utils/http.js";
+import { fetchJson } from "../utils/http.js";
 const EDGAR_BASE = "https://data.sec.gov";
 const EFTS_BASE = "https://efts.sec.gov";
 // ── Tool schemas ────────────────────────────────────────────────────────────
@@ -27,7 +27,6 @@ export const GetCompanyRisksInput = z.object({
 function padCik(cik) {
     return String(cik).replace(/^0+/, "").padStart(10, "0");
 }
-/** Resolve ticker → CIK using SEC company_tickers.json */
 export async function lookupCompany(input) {
     const tickers = await fetchJson("https://www.sec.gov/files/company_tickers.json");
     const entries = Object.values(tickers);
@@ -45,10 +44,8 @@ export async function lookupCompany(input) {
         .map(e => ({ cik: padCik(e.cik_str), name: e.title, ticker: e.ticker }));
     return matches;
 }
-/** Fetch recent 10-K or 10-Q filings and extract key financial facts */
 export async function getCompanyFinancials(input) {
     const cik = padCik(input.cik);
-    // 1. Get filing list
     const submissions = await fetchJson(`${EDGAR_BASE}/submissions/CIK${cik}.json`);
     const filings = submissions.filings.recent;
     const results = [];
@@ -68,7 +65,6 @@ export async function getCompanyFinancials(input) {
             index_url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}&type=${input.form_type}&dateb=&owner=include&count=10`,
         });
     }
-    // 2. Fetch XBRL company facts for financial metrics
     let financialFacts = null;
     try {
         const facts = await fetchJson(`${EDGAR_BASE}/api/xbrl/companyfacts/CIK${cik}.json`);
@@ -83,43 +79,11 @@ export async function getCompanyFinancials(input) {
         financial_facts: financialFacts,
     };
 }
-/** Get peer companies sharing the same SIC code */
 export async function getPeersByIndustry(input) {
-    const url = buildUrl(`${EFTS_BASE}/hits.json`, {
-        q: `"${input.sic_code}"`,
-        dateRange: "custom",
-        startdt: "2020-01-01",
-        forms: "10-K",
-    });
-    // Use full-text search to find companies that filed 10-Ks and match SIC
-    // Fall back to the company search endpoint filtered by SIC
-    const searchUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&SIC=${input.sic_code}&dateb=&owner=include&count=${input.limit}&search_text=&action=getcompany&output=atom`;
-    // Use the submissions search which supports SIC filtering
-    const apiUrl = buildUrl(`${EDGAR_BASE}/submissions/`, {});
-    // EDGAR doesn't have a direct SIC filter API, so we use the company search JSON
-    const searchApiUrl = `https://efts.sec.gov/LATEST/search-index?q=%22%22&dateRange=custom&startdt=2023-01-01&enddt=2024-12-31&forms=10-K`;
-    // Best available approach: query EDGAR full-text search by SIC code in company facts
-    const companiesUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&SIC=${input.sic_code}&dateb=&owner=include&count=${input.limit}&search_text=&output=atom`;
-    // Use the EDGAR company search API (JSON format)
-    const jsonSearchUrl = `https://efts.sec.gov/LATEST/search-index?q=%22%22&forms=10-K&dateRange=custom&startdt=2024-01-01`;
-    // The most reliable SIC-based lookup is via the submissions dataset
-    // We'll use the company_tickers_exchange.json and filter by SIC from submissions
     const peers = await fetchCompanyBySic(input.sic_code, input.limit);
     return peers;
 }
 async function fetchCompanyBySic(sic, limit) {
-    // Use EDGAR full-text search to find recent 10-K filers by SIC
-    const url = `https://efts.sec.gov/LATEST/search-index?q=%22%22&forms=10-K&dateRange=custom&startdt=2024-01-01&enddt=2025-12-31`;
-    // Preferred: use the SEC company search endpoint that accepts SIC
-    const searchUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&SIC=${sic}&dateb=&owner=include&count=${limit}&search_text=&output=atom`;
-    // Use the JSON API via EDGAR submissions index
-    // The cleanest approach without a dedicated SIC endpoint is to query
-    // https://efts.sec.gov/LATEST/search-index with category filter
-    const apiUrl = `https://efts.sec.gov/LATEST/search-index?q=%22%22&dateRange=custom&startdt=2024-01-01&forms=10-K&hits.hits._source.period_of_report=*`;
-    // Actually use the submissions/company-concept approach:
-    // SEC provides a company_tickers.json; to filter by SIC we must fetch each submission.
-    // A practical shortcut: use the EDGAR company search with SIC via the atom/RSS feed
-    // and parse it — or use the newer JSON browse endpoint.
     const browseUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&SIC=${sic}&dateb=&owner=include&count=${limit}&search_text=&output=atom`;
     let atomXml;
     try {
@@ -131,7 +95,6 @@ async function fetchCompanyBySic(sic, limit) {
     catch {
         return [];
     }
-    // Parse Atom XML entries to extract company info
     const matches = [...atomXml.matchAll(/<company-info>[\s\S]*?<conformed-name>(.*?)<\/conformed-name>[\s\S]*?<cik>(.*?)<\/cik>[\s\S]*?<assigned-sic>(.*?)<\/assigned-sic>[\s\S]*?<\/company-info>/g)];
     return matches.slice(0, limit).map(m => ({
         name: m[1].trim(),
@@ -139,7 +102,6 @@ async function fetchCompanyBySic(sic, limit) {
         sic: m[3].trim(),
     }));
 }
-/** Extract risk factors section from recent filings */
 export async function getCompanyRisks(input) {
     const cik = padCik(input.cik);
     const submissions = await fetchJson(`${EDGAR_BASE}/submissions/CIK${cik}.json`);
@@ -152,11 +114,8 @@ export async function getCompanyRisks(input) {
         const accession = filings.accessionNumber[i].replace(/-/g, "");
         const primaryDoc = filings.primaryDocument[i];
         const filingDate = filings.filingDate[i];
-        // Fetch the filing index to find the right document
         try {
-            const indexUrl = `${EDGAR_BASE}/Archives/edgar/data/${parseInt(cik)}/${accession}/`;
             const indexJson = await fetchJson(`${EDGAR_BASE}/Archives/edgar/data/${parseInt(cik)}/${accession}/${filings.accessionNumber[i]}-index.json`);
-            // Find the main 10-K/10-Q document (htm/html)
             const mainDoc = indexJson.directory.item.find(f => f.name === primaryDoc || f.name.endsWith(".htm") && f.type === filings.form[i]);
             if (!mainDoc)
                 continue;
@@ -186,7 +145,6 @@ export async function getCompanyRisks(input) {
 }
 // ── Text extraction helpers ─────────────────────────────────────────────────
 function extractRiskFactors(html) {
-    // Strip tags for plain text
     const text = html
         .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
@@ -197,17 +155,14 @@ function extractRiskFactors(html) {
         .replace(/&gt;/g, ">")
         .replace(/\s{2,}/g, " ")
         .trim();
-    // Find "Item 1A" risk factors section
     const riskStart = text.search(/item\s+1a[\s.:]+risk\s+factors/i);
     if (riskStart === -1)
         return null;
-    // Find end at Item 1B or Item 2
     const afterStart = text.slice(riskStart + 50);
     const riskEnd = afterStart.search(/item\s+1b[\s.:]+|item\s+2[\s.:]+/i);
     const section = riskEnd !== -1
         ? afterStart.slice(0, riskEnd)
         : afterStart.slice(0, 8000);
-    // Return first 6000 chars trimmed
     return section.trim().slice(0, 6000);
 }
 function extractKeyFacts(facts) {
@@ -216,7 +171,6 @@ function extractKeyFacts(facts) {
         const c = us[concept];
         if (!c)
             return null;
-        // Prefer annual (10-K) values
         const units = Object.values(c.units)[0] ?? [];
         const annual = units.filter(u => u.form === "10-K" && u.fp === "FY").sort((a, b) => b.end.localeCompare(a.end));
         const quarterly = units.filter(u => u.form === "10-Q").sort((a, b) => b.end.localeCompare(a.end));

@@ -68,7 +68,6 @@ export async function getFredObservations(input) {
         file_type: "json",
     });
     const data = await fetchJson(url);
-    // Filter out missing-value placeholders
     return data.observations
         .filter(o => o.value !== ".")
         .map(o => ({ date: o.date, value: parseFloat(o.value) }));
