@@ -851,4 +851,7 @@ function Header({ cfg, liveMode, livefacts, running, hasRun }) {
 
 }
 
+// Expose Header to window for JSX usage
+window.Header = Header;
+
 export default App;
