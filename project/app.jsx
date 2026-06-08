@@ -124,7 +124,6 @@ function App() {
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;
-    setStageState((prev) => ({ ...prev, [`s${n + 1}`]: "waiting" }));
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
     if (n === 1) {
       const risksNow = (output.s2?.risks) || MOCK.risks;
