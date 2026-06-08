@@ -667,4 +667,4 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
-Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey });
+Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
