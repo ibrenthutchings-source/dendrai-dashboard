@@ -289,16 +289,42 @@ window.RSS_ENGINE = (function () {
     };
   }
 
-  // ── Fetch via rss2json.com ────────────────────────────────
+  // ── Parse RSS 2.0 or Atom 1.0 XML ───────────────────────
+  function parseXmlFeed(xmlText) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlText, "application/xml");
+    if (doc.querySelector("parsererror")) return null;
+    const root = doc.documentElement;
+    // Atom feed (root element is <feed>)
+    if (root.localName === "feed") {
+      return Array.from(doc.querySelectorAll("entry")).slice(0, 8).map(e => ({
+        title:       e.querySelector("title")?.textContent?.trim() || "",
+        description: e.querySelector("summary")?.textContent?.trim() || e.querySelector("content")?.textContent?.trim() || "",
+        pubDate:     e.querySelector("published")?.textContent || e.querySelector("updated")?.textContent || "",
+        link:        e.querySelector("link[rel='alternate']")?.getAttribute("href") || e.querySelector("link")?.getAttribute("href") || "",
+      }));
+    }
+    // RSS 2.0
+    return Array.from(doc.querySelectorAll("item")).slice(0, 8).map(item => ({
+      title:       item.querySelector("title")?.textContent?.trim() || "",
+      description: item.querySelector("description")?.textContent?.trim() || "",
+      pubDate:     item.querySelector("pubDate")?.textContent || "",
+      link:        item.querySelector("link")?.textContent?.trim() || "",
+    }));
+  }
+
+  // ── Fetch feed XML via local dev-server proxy ─────────────
+  // Routes through /api/rss-proxy (vite.config.js) so the request is made
+  // server-side, bypassing browser CORS restrictions and rss2json 422s.
   async function fetchFeed(feed) {
     if (feed.simulateOnly || !feed.url) return null;
-    const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&count=8`;
     try {
-      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(`/api/rss-proxy?url=${encodeURIComponent(feed.url)}`, {
+        signal: AbortSignal.timeout(10000),
+      });
       if (!res.ok) return null;
-      const data = await res.json();
-      if (data.status !== "ok" || !Array.isArray(data.items)) return null;
-      return data.items.slice(0, 8);
+      const text = await res.text();
+      return parseXmlFeed(text);
     } catch {
       return null;
     }

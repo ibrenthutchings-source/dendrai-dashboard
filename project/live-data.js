@@ -51,7 +51,7 @@ window.LIVE = (function () {
     // Dynamic CIK lookup for unknown tickers
     if (!cik) {
       try {
-        const tcRes = await fetch("https://data.sec.gov/files/company_tickers.json", {
+        const tcRes = await fetch("/api/sec/files/company_tickers.json", {
           signal: AbortSignal.timeout(8000),
         });
         if (tcRes.ok) {
@@ -63,7 +63,7 @@ window.LIVE = (function () {
       if (!cik) throw new Error(`Ticker not found in CIK map or SEC lookup: ${ticker}`);
     }
 
-    const url = `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
+    const url = `/api/edgar/api/xbrl/companyfacts/CIK${cik}.json`;
 
     async function attempt() {
       const res = await fetch(url, {
@@ -98,7 +98,7 @@ window.LIVE = (function () {
     }
 
     try {
-      const res = await fetch("https://data.sec.gov/files/company_tickers.json", {
+      const res = await fetch("/api/sec/files/company_tickers.json", {
         signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) return null;
@@ -131,7 +131,7 @@ window.LIVE = (function () {
     const lookup = await lookupTickerAndCik(value);
     if (!lookup) throw new Error(`Unable to resolve ticker or company for '${value}'`);
 
-    const profileUrl = `https://data.sec.gov/submissions/CIK${lookup.cik}.json`;
+    const profileUrl = `/api/edgar/submissions/CIK${lookup.cik}.json`;
     const res = await fetch(profileUrl, {
       headers: { "Accept": "application/json" },
       signal: AbortSignal.timeout(20000),

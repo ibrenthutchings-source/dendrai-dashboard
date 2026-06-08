@@ -2,6 +2,37 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import AutoImport from 'unplugin-auto-import/vite'
 
+// Server-side RSS proxy — fetches feed XML from the origin server, bypassing
+// browser CORS restrictions and rss2json.com's per-feed 422 failures.
+const rssProxyPlugin = {
+  name: 'rss-proxy',
+  configureServer(server) {
+    server.middlewares.use(async (req, res, next) => {
+      if (!req.url.startsWith('/api/rss-proxy')) return next();
+      const parsed = new URL(req.url, 'http://localhost');
+      const feedUrl = parsed.searchParams.get('url');
+      if (!feedUrl) { res.statusCode = 400; res.end('Missing url param'); return; }
+      try {
+        const upstream = await fetch(feedUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; DendraiBot/1.0; +https://dendrai.ai)',
+            'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
+          },
+          signal: AbortSignal.timeout(10000),
+        });
+        const text = await upstream.text();
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/xml');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = upstream.status;
+        res.end(text);
+      } catch (e) {
+        res.statusCode = 502;
+        res.end(e.message);
+      }
+    });
+  },
+};
+
 export default defineConfig({
   plugins: [
     react({ jsxRuntime: 'classic' }),
@@ -28,5 +59,30 @@ export default defineConfig({
         enabled: false,
       },
     }),
+    rssProxyPlugin,
   ],
+  server: {
+    proxy: {
+      // Proxy SEC EDGAR API requests (data.sec.gov — companyfacts, submissions)
+      '/api/edgar': {
+        target: 'https://data.sec.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/edgar/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; DendraiBot/1.0; +https://dendrai.ai)',
+          'Accept': 'application/json',
+        },
+      },
+      // Proxy SEC www resources (www.sec.gov — company_tickers.json, etc.)
+      '/api/sec': {
+        target: 'https://www.sec.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/sec/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; DendraiBot/1.0; +https://dendrai.ai)',
+          'Accept': 'application/json',
+        },
+      },
+    },
+  },
 })
