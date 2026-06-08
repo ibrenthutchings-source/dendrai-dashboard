@@ -116,6 +116,7 @@ a { color: inherit; text-decoration: none; }
 .app-body {
   display: grid;
   grid-template-columns: 296px 1fr 408px;
+  grid-template-rows: 1fr;
   min-height: 0;
   overflow: hidden;
 }
