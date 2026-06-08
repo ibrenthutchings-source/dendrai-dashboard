@@ -563,6 +563,17 @@ function App() {
     const risksCur = output.s2?.risks || MOCK.risks;
     const top3 = [...risksCur].sort((a, b) => b.score - a.score).slice(0, 3).map((r) => r.name);
     const sigsList = output.s1?.signals || [];
+    const fredContrCount = sigsList.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+    const rssHighVelCount = sigsList.filter(s => s.src === "Industry RSS" && (s.velocity || 0) >= 3).length;
+    const rssLinkedCount = sigsList.filter(s => s.src === "Industry RSS" && (s.affectedRisks?.length || 0) > 0).length;
+    const riskAppetiteResult = output.s2?.riskAppetite || (() => {
+      const level = cfg.appetiteLevel || "AMBER"; const t = APPETITE_THRESHOLDS[level] ?? 7.5;
+      const b = risksCur.filter(r => r.score >= t).map(r => r.id);
+      return { threshold: t, level, breaching: b, status: b.length > 0 ? "BREACHED" : "WITHIN APPETITE" };
+    })();
+    const adjRiskCount = Object.values(riskApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
+    const adjObjCount  = Object.values(scopeApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
+
     return {
       entity: `${MOCK.entity.name} (${cfg.ticker})`,
       ts: new Date().toISOString(),
@@ -573,12 +584,9 @@ function App() {
       },
       signals: { count: sigsList.length, highVel: sigsList.filter((s) => s.velocity >= 3).length },
       risks: risksCur,
+      baseRisks: MOCK.risks,
       top3,
-      riskAppetite: output.s2?.riskAppetite || (() => {
-        const level = cfg.appetiteLevel || "AMBER"; const t = APPETITE_THRESHOLDS[level] ?? 7.5;
-        const b = risksCur.filter(r => r.score >= t).map(r => r.id);
-        return { threshold: t, level, breaching: b, status: b.length > 0 ? "BREACHED" : "WITHIN APPETITE" };
-      })(),
+      riskAppetite: riskAppetiteResult,
       objectives: output.s3?.objectives || [],
       maps: output.s4?.maps || [],
       closure: output.s5?.closure || {},
@@ -587,21 +595,48 @@ function App() {
       greySwan: output.s7?.greySwan || MOCK.greySwan,
       personas: output.s7?.personas || MOCK.personas,
       log: loopLog,
+      // Methodology data
+      fredSeries: MOCK.fred || [],
+      fredContrCount,
+      rssHighVelCount,
+      rssLinkedCount,
+      liveMode,
+      // HITL adjustments
+      riskApprovals,
+      scopeApprovals,
       assumptions: [
-      "Quarterly score projections use a velocity-dampened linear model (15% per quarter).",
-      "Control-effectiveness multipliers: NONE=1.20×, WEAK=1.10×, ADEQUATE=0.95×, STRONG=0.80×.",
-      "Likelihood proxy from control effectiveness: NONE=9, WEAK=7, ADEQUATE=5, STRONG=3.",
-      "Impact proxy uses the inherent_score field from risk assessment.",
-      "Heatmap bubble size = sqrt(impact × likelihood) × 4.6 px radius.",
-      "Risk appetite benchmark: score ≥ 7.5 = RED, 5.0–7.4 = AMBER, < 5.0 = GREEN.",
-      "All projections assume no material change in control environment beyond velocity trend.",
-      `Peer benchmark data sourced against ${cfg.industry}.`],
-
+        `Quarterly score projections use a velocity-dampened linear model: base + (velocity × CE_mult × 0.4 × 0.85^(q−1)), capped at 10.0.`,
+        `Control-effectiveness multipliers applied to velocity contribution: NONE=1.20×, WEAK=1.10×, ADEQUATE=0.95×, STRONG=0.80×.`,
+        `FRED macro adjustment: each contractionary FRED signal adds +0.08 to macro-category risk scores (${fredContrCount} contractionary signal${fredContrCount !== 1 ? "s" : ""} in this run).`,
+        `RSS signal adjustment: linked industry signals add (signal velocity × 0.08) to directly linked risks; risk velocity set to max of base velocity or linked signal velocity.`,
+        `High-velocity industry signal adjustment: +0.05 per signal with velocity ≥ 3, capped at +0.20, applied uniformly to all risks (${rssHighVelCount} qualifying signal${rssHighVelCount !== 1 ? "s" : ""} in this run).`,
+        `Macro ensemble forecasts use ARIMA + Prophet + Random Forest with FRED series as exogenous features; ensemble weights update iteratively by inverse MAPE from backtesting.`,
+        `Random Forest features: lags 1–4, rolling mean and std, time index, quarter dummies, and current FRED series values.`,
+        `Likelihood proxy from control effectiveness: NONE→9, WEAK→7, ADEQUATE→5, STRONG→3. Impact proxy from inherent_score field.`,
+        `Risk appetite threshold: score ≥ 7.5 = RED, 5.0–7.4 = AMBER, < 5.0 = GREEN (configured: ${cfg.appetiteLevel || "AMBER"}).`,
+        liveMode
+          ? `Live mode active — EDGAR companyfacts fetched directly from data.sec.gov; FRED loaded from bundled snapshot.`
+          : `Live mode inactive — all financial signals derived from mock dataset; EDGAR companyfacts not fetched.`,
+        `Peer benchmark data sourced against ${cfg.industry}.`,
+      ],
       obstacles: [
-      ...risksCur.filter((r) => (r.velocity || 0) >= 3).map((r) => `High-velocity risk detected: ${r.name} (velocity=${r.velocity}) → escalated audit scope`)]
-
+        ...risksCur.filter(r => (r.velocity || 0) >= 3).map(r =>
+          `High-velocity risk: ${r.name} (${r.id}, v+${r.velocity}, ${r.rag}) — downstream audit scope expanded.`),
+        ...(riskAppetiteResult?.status === "BREACHED"
+          ? [`Risk appetite BREACHED: ${riskAppetiteResult.breaching?.length || 0} risk(s) exceed the ${cfg.appetiteLevel} threshold (≥${riskAppetiteResult.threshold}). HITL Gate 1 triggered for mandatory review.`]
+          : []),
+        ...(!liveMode
+          ? ["Live data mode disabled — EDGAR companyfacts unavailable; all EDGAR-sourced signals derived from mock register."]
+          : []),
+        ...(adjRiskCount > 0
+          ? [`${adjRiskCount} risk${adjRiskCount !== 1 ? "s" : ""} adjusted through HITL Gate 1 — auditor-revised scores and RAG ratings applied to final register.`]
+          : []),
+        ...(adjObjCount > 0
+          ? [`${adjObjCount} audit objective${adjObjCount !== 1 ? "s" : ""} adjusted through HITL Gate 2 — revised priorities and sprint allocations reflected in plan.`]
+          : []),
+      ],
     };
-  }, [hasRun, output, loopLog, signalSet, cfg, velocity]);
+  }, [hasRun, output, loopLog, signalSet, cfg, velocity, liveMode, riskApprovals, scopeApprovals]);
 
   // ---- Tab definitions ----
   const mainTabs = [
