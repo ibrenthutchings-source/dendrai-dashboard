@@ -1762,6 +1762,12 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   flex-shrink: 0;
   background: var(--surface);
 }
+/* When bb-panel sits below sub-tabs, cancel the upward bleed so it doesn't cover them */
+.pipe-sub-tabs ~ .bb-panel {
+  margin-top: 0;
+  flex: 1;
+  min-height: 0;
+}
 .pipe-sub-tab {
   padding: 7px 16px;
   font-size: 12px; color: var(--ink-3);
@@ -1920,6 +1926,11 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 [data-density="compact"] .bb-panel {
   margin: -14px -18px;
   min-height: calc(100% + 28px);
+}
+[data-density="compact"] .pipe-sub-tabs ~ .bb-panel {
+  margin-top: 0;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ---- Bloomberg Terminal Header ---- */
