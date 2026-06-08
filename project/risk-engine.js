@@ -792,6 +792,24 @@ window.RISK_ENGINE = (function () {
     return sigs;
   }
 
+  // Convert an EDGAR end-date string ("2024-09-28") to "Q3-24"
+  function edgarDateToQLabel(end) {
+    if (!end) return null;
+    const [y, m] = end.slice(0, 7).split('-').map(Number);
+    return `Q${Math.ceil(m / 3)}-${String(y).slice(2)}`;
+  }
+
+  // Generate 8 chronological synthetic quarters ending at a given (year, quarter)
+  function syntheticQuarters(endYY, endQ) {
+    const qs = [];
+    let q = endQ, y = endYY;
+    for (let i = 7; i >= 0; i--) {
+      qs[i] = `Q${q}-${String(y).slice(-2)}`;
+      q--; if (q < 1) { q = 4; y--; }
+    }
+    return qs;
+  }
+
   // ── Build Forecasts from EDGAR quarterly series ─────────────
   function buildForecasts(ratios, ticker, industry, fin) {
     const histQuarters = [];
@@ -801,31 +819,33 @@ window.RISK_ENGINE = (function () {
         .sort((a, b) => a.end > b.end ? 1 : -1)
         .slice(-12);
       qtrs.forEach(q => {
-        const label = q.end ? q.end.slice(0,7).replace('-','Q').replace('-0','Q').replace(/-(\d)$/,'-0$1') : q.fp;
+        const label = edgarDateToQLabel(q.end) || q.fp;
         histQuarters.push({ q: label, v: +(q.val / 1e6).toFixed(0) });
       });
     }
-    // if < 4 quarters from EDGAR, use a plausible quarterly series derived from annual
+    // if < 4 quarters from EDGAR, synthesise 8 quarters from annual revenue
     if (histQuarters.length < 4 && ratios.rev) {
       const annualM = ratios.rev / 1e6;
-      const qBase = annualM / 4;
-      const qp    = ratios.revP ? ratios.revP / 1e6 / 4 : qBase;
-      for (let i = 7; i >= 0; i--) {
+      const qBase   = annualM / 4;
+      const qp      = ratios.revP ? ratios.revP / 1e6 / 4 : qBase;
+      // Chronological: Q1-24 … Q4-25 (8 quarters ending at Q4-25)
+      const labels = syntheticQuarters(2025, 4);
+      for (let i = 0; i < 8; i++) {
         const frac = i / 7;
-        const v = +(qp + (qBase - qp) * (1 - frac)).toFixed(0);
-        histQuarters.push({ q: `Q${(i % 4) + 1}-${i < 4 ? '25' : '24'}`, v });
+        histQuarters.push({ q: labels[i], v: +(qp + (qBase - qp) * frac).toFixed(0) });
       }
     }
-    const lastV  = histQuarters.length ? histQuarters[histQuarters.length - 1].v : 1000;
-    const trend  = ratios.revGrowth ?? 0;
+    const lastV   = histQuarters.length ? histQuarters[histQuarters.length - 1].v : 1000;
+    const trend   = ratios.revGrowth ?? 0;
     const qGrowth = Math.pow(1 + trend, 0.25) - 1;
-    const fcastQ = ['Q1-26','Q2-26','Q3-26','Q4-26'].map((q, i) => {
+    const fcastQ  = ['Q1-26','Q2-26','Q3-26','Q4-26'].map((q, i) => {
       const base = +(lastV * Math.pow(1 + qGrowth, i + 1)).toFixed(0);
       return { q, base, lo: +(base * 0.92).toFixed(0), hi: +(base * 1.08).toFixed(0) };
     });
+
     const histMargins = [];
     if (fin?.cogs?.series && fin?.revenue?.series) {
-      // Match COGS and revenue by end-date (not by array index — counts can differ)
+      // Match COGS and revenue by end-date (not by array index)
       const revMap = {};
       fin.revenue.series
         .filter(x => x.form === '10-Q' && x.fp !== 'FY')
@@ -838,38 +858,44 @@ window.RISK_ENGINE = (function () {
           const rv = revMap[c.end];
           const gm = rv > 0 ? (1 - c.val / rv) * 100 : null;
           if (gm != null && gm > 0 && gm < 100)
-            histMargins.push({ q: c.end.slice(0, 7), v: +gm.toFixed(1) });
+            histMargins.push({ q: edgarDateToQLabel(c.end) || c.end.slice(0, 7), v: +gm.toFixed(1) });
         });
     }
     if (histMargins.length < 4) {
-      // Synthetic fallback — use annual gross margin or 40% generic
-      const gm = ratios.grossMargin != null ? ratios.grossMargin * 100 : 40;
-      for (let i = 7; i >= 0; i--) histMargins.push({ q: `Q${(i % 4) + 1}-${i < 4 ? '25' : '24'}`, v: +(gm - i * 0.1).toFixed(1) });
+      // Synthetic fallback — Number.isFinite guards against NaN grossMargin
+      const gm = Number.isFinite(ratios.grossMargin) ? ratios.grossMargin * 100 : 40;
+      const labels = syntheticQuarters(2025, 4);
+      for (let i = 0; i < 8; i++)
+        histMargins.push({ q: labels[i], v: +(gm - (7 - i) * 0.1).toFixed(1) });
     }
     const lastGM  = histMargins[histMargins.length - 1].v;
     const fcastGM = ['Q1-26','Q2-26','Q3-26','Q4-26'].map((q, i) => ({
-      q, base: +(lastGM + i * 0.2).toFixed(1), lo: +(lastGM + i * 0.2 - 2).toFixed(1), hi: +(lastGM + i * 0.2 + 2.5).toFixed(1),
+      q,
+      base: +(lastGM + i * 0.2).toFixed(1),
+      lo:   +(lastGM + i * 0.2 - 2).toFixed(1),
+      hi:   +(lastGM + i * 0.2 + 2.5).toFixed(1),
     }));
 
-    // ── Rolling 8-quarter earnings call sentiment (QoQ revenue growth → NLP proxy)
+    // ── Rolling 8-quarter sentiment — QoQ revenue momentum proxy
     const sentQuarterly = [];
     if (histQuarters.length >= 2) {
-      const slice = histQuarters.slice(-9);
-      for (let i = 1; i < slice.length; i++) {
-        const prev = slice[i - 1].v;
-        const curr = slice[i].v;
+      // Use up to 8 QoQ pairs from the available history
+      const src = histQuarters.slice(-9);
+      for (let i = 1; i < src.length; i++) {
+        const prev = src[i - 1].v, curr = src[i].v;
         const qoq  = prev > 0 ? (curr - prev) / prev : 0;
         const score = Math.max(-25, Math.min(25, Math.round(qoq * 100)));
         const hedge = +(Math.max(0.05, 0.26 - i * 0.025)).toFixed(2);
-        sentQuarterly.push({ q: slice[i].q, score, hedge });
+        sentQuarterly.push({ q: src[i].q, score, hedge });
       }
     } else {
-      const annG  = ratios.revGrowth ?? 0;
-      const qG    = Math.pow(1 + annG, 0.25) - 1;
+      // Pure synthetic — 8 quarters chronological ending at Q4-25
+      const annG   = ratios.revGrowth ?? 0;
+      const qG     = Math.pow(1 + annG, 0.25) - 1;
+      const labels = syntheticQuarters(2025, 4);
       for (let i = 0; i < 8; i++) {
-        const q = `Q${(i % 4) + 1}-${i < 4 ? '24' : '25'}`;
         const score = Math.max(-25, Math.min(25, Math.round(qG * 100) + (i < 4 ? -5 : 3)));
-        sentQuarterly.push({ q, score, hedge: +(Math.max(0.05, 0.26 - i * 0.025)).toFixed(2) });
+        sentQuarterly.push({ q: labels[i], score, hedge: +(Math.max(0.05, 0.26 - i * 0.025)).toFixed(2) });
       }
     }
     const latestSent = sentQuarterly[sentQuarterly.length - 1]?.score ?? 0;

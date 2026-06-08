@@ -283,17 +283,39 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
                   <div className={`delta ${data.sentiment.trend === "IMPROVING" ? "up" : "dn"}`}>{data.sentiment.trend} · hedge ratio {data.sentiment.hedge_ratio_trend}</div>
                 </div>
               </div>
-              <div style={{display:"flex", alignItems:"flex-end", gap: 3, height: 60, padding: "8px 0", marginTop: 6}}>
-                {sq.map((d, i) => {
-                  const h = Math.abs(d.score) / 25 * 50 + 4;
-                  const negative = d.score < 0;
-                  return (
-                    <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4}}>
-                      <div style={{width:"70%", height:h, background: negative ? "var(--red)" : "var(--green)", opacity:0.85, borderRadius:3}}/>
-                      <div className="mono" style={{fontSize:9, color:"var(--ink-3)"}}>{d.q}</div>
+              {/* Center-line bar chart: positive bars grow up, negative grow down */}
+              <div style={{marginTop:8, paddingBottom:4}}>
+                <div style={{position:"relative", height:56}}>
+                  {/* zero line */}
+                  <div style={{position:"absolute", top:"50%", left:0, right:0, height:1, background:"var(--line-2)"}}/>
+                  <div style={{display:"flex", gap:3, height:"100%", alignItems:"stretch"}}>
+                    {sq.map((d, i) => {
+                      const maxH = 24;
+                      const h = Math.max(2, Math.min(maxH, Math.abs(d.score) / 25 * maxH));
+                      const neg = d.score < 0;
+                      return (
+                        <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center"}}>
+                          {/* top half (positive zone) */}
+                          <div style={{flex:"0 0 28px", display:"flex", alignItems:"flex-end", justifyContent:"center"}}>
+                            {!neg && <div style={{width:"72%", height:h, background:"var(--green)", opacity:0.85, borderRadius:"2px 2px 0 0"}}/>}
+                          </div>
+                          {/* bottom half (negative zone) */}
+                          <div style={{flex:"0 0 28px", display:"flex", alignItems:"flex-start", justifyContent:"center"}}>
+                            {neg && <div style={{width:"72%", height:h, background:"var(--red)", opacity:0.85, borderRadius:"0 0 2px 2px"}}/>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                {/* Quarter labels row */}
+                <div style={{display:"flex", gap:3, marginTop:3}}>
+                  {sq.map((d, i) => (
+                    <div key={i} style={{flex:1, textAlign:"center"}}>
+                      <span className="mono" style={{fontSize:8.5, color:"var(--ink-3)"}}>{d.q}</span>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
               <div className="sent-commentary">
                 <div className="sent-comm-row">
