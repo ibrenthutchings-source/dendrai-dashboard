@@ -133,6 +133,7 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
 
 // ---------- LINE + FORECAST CHART ----------
 function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)" }) {
+  if (!history?.length || !forecast?.length) return null;
   const W = 540, H = 220, PADL = 44, PADR = 14, PADT = 16, PADB = 28;
   const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
   const all = [

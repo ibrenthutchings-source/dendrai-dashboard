@@ -262,50 +262,76 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
       </div>
 
       <div className="fcst-card">
-        <div className="head">
-          <div>
-            <div className="ttl">Earnings call sentiment trend</div>
-            <div className="sub">NLP sentiment + hedge ratio · Q3-23 → Q1-26</div>
-          </div>
-          <div style={{textAlign: "right"}}>
-            <div className="big-num">{data.sentiment.score > 0 ? "+" : ""}{data.sentiment.score}</div>
-            <div className={`delta ${data.sentiment.trend === "IMPROVING" ? "up" : "dn"}`}>{data.sentiment.trend} · hedge ratio {data.sentiment.hedge_ratio_trend}</div>
-          </div>
-        </div>
-        <div style={{display:"flex", alignItems:"flex-end", gap: 3, height: 60, padding: "8px 0", marginTop: 6}}>
-          {(data.sentiment.quarterly || []).map((d, i) => {
-            const h = Math.abs(d.score) / 25 * 50 + 4;
-            const negative = d.score < 0;
-            return (
-              <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4}}>
-                <div style={{width:"70%", height:h, background: negative ? "var(--red)" : "var(--green)", opacity:0.85, borderRadius:3}}/>
-                <div className="mono" style={{fontSize:9, color:"var(--ink-3)"}}>{d.q}</div>
+        {(() => {
+          const sq = data.sentiment.quarterly || [];
+          const first = sq[0], last = sq[sq.length - 1];
+          const peak  = sq.reduce((a, b) => b.score > a.score ? b : a, sq[0] || {score:0,q:''});
+          const trough= sq.reduce((a, b) => b.score < a.score ? b : a, sq[0] || {score:0,q:''});
+          const swing = last && first ? last.score - first.score : 0;
+          const swingAbs = Math.abs(swing);
+          const hedgeDir = data.sentiment.hedge_ratio_trend?.startsWith('↓') ? 'declined' : 'increased';
+          const hedgePct = data.sentiment.hedge_ratio_trend?.match(/(\d+)%/)?.[1] ?? '–';
+          return (
+            <>
+              <div className="head">
+                <div>
+                  <div className="ttl">Earnings call sentiment trend</div>
+                  <div className="sub">QoQ revenue momentum proxy · {sq.length} quarters · NLP hedge-word ratio</div>
+                </div>
+                <div style={{textAlign: "right"}}>
+                  <div className="big-num">{data.sentiment.score > 0 ? "+" : ""}{data.sentiment.score}</div>
+                  <div className={`delta ${data.sentiment.trend === "IMPROVING" ? "up" : "dn"}`}>{data.sentiment.trend} · hedge ratio {data.sentiment.hedge_ratio_trend}</div>
+                </div>
               </div>
-            );
-          })}
-        </div>
-        <div className="sent-commentary">
-          <div className="sent-comm-row">
-            <div className="sent-comm-cell">
-              <div className="sent-comm-lbl">What changed</div>
-              <div className="sent-comm-v">Net sentiment fell <b style={{fontWeight:500,color:"var(--red-ink)"}}>32 points</b> over 6 quarters (Q3-23: +12 → Q1-25: −20), bottomed in Q1-25, then recovered <b style={{fontWeight:500,color:"var(--green)"}}>26 points</b> to +6 in Q1-26. Inflection at Q2-25 coincides with inventory destock resolution and BIS rule clarity.</div>
-            </div>
-            <div className="sent-comm-cell">
-              <div className="sent-comm-lbl">Hedge ratio signal</div>
-              <div className="sent-comm-v">Hedge-word ratio peaked at 28% in Q1-25 and has declined <b style={{fontWeight:500}}>{data.sentiment.hedge_ratio_trend}</b>. Language has shifted from <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"visibility limited"</span> toward <span className="mono" style={{fontSize:11,color:"var(--ink-2)"}}>"recovery on track"</span> — a 1–2Q leading indicator of revenue beats.</div>
-            </div>
-          </div>
-          <div className="sent-comm-row">
-            <div className="sent-comm-cell">
-              <div className="sent-comm-lbl">Cross-correlation</div>
-              <div className="sent-comm-v">Sentiment trend is tracking M-Score deterioration (corr = <span className="mono">+0.74</span>) and DSO drift (<span className="mono">+0.68</span>). Three independent signals pointing the same direction — not a single-driver story.</div>
-            </div>
-            <div className="sent-comm-cell">
-              <div className="sent-comm-lbl">Audit implication</div>
-              <div className="sent-comm-v">Pull <b style={{fontWeight:500}}>R-01 Revenue Recognition</b> and <b style={{fontWeight:500}}>R-02 Export Controls</b> forward in Q1 sample plan. Add forensic walk-through on Q4 cut-off entries. Pre-align with external audit on management-letter language.</div>
-            </div>
-          </div>
-        </div>
+              <div style={{display:"flex", alignItems:"flex-end", gap: 3, height: 60, padding: "8px 0", marginTop: 6}}>
+                {sq.map((d, i) => {
+                  const h = Math.abs(d.score) / 25 * 50 + 4;
+                  const negative = d.score < 0;
+                  return (
+                    <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4}}>
+                      <div style={{width:"70%", height:h, background: negative ? "var(--red)" : "var(--green)", opacity:0.85, borderRadius:3}}/>
+                      <div className="mono" style={{fontSize:9, color:"var(--ink-3)"}}>{d.q}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="sent-commentary">
+                <div className="sent-comm-row">
+                  <div className="sent-comm-cell">
+                    <div className="sent-comm-lbl">What changed</div>
+                    <div className="sent-comm-v">
+                      {swing < -3 ? (
+                        <>Net sentiment <b style={{fontWeight:500,color:"var(--red-ink)"}}>fell {swingAbs} pts</b> over {sq.length} quarters ({first?.q}: {first?.score > 0 ? '+' : ''}{first?.score} → {last?.q}: {last?.score}). Trough at {trough.q} ({trough.score}). Weak momentum is a leading indicator for revenue risk and heightened hedge-word frequency.</>
+                      ) : swing > 3 ? (
+                        <>Net sentiment <b style={{fontWeight:500,color:"var(--green)"}}>improved {swingAbs} pts</b> over {sq.length} quarters ({first?.q}: {first?.score > 0 ? '+' : ''}{first?.score} → {last?.q}: {last?.score}). Peak at {peak.q} (+{peak.score}). Positive momentum correlates with revenue beat probability.</>
+                      ) : (
+                        <>Sentiment broadly stable over {sq.length} quarters ({first?.q} to {last?.q}), range {trough.score} to +{peak.score}. No sustained directional signal — monitor for breakout.</>
+                      )}
+                    </div>
+                  </div>
+                  <div className="sent-comm-cell">
+                    <div className="sent-comm-lbl">Hedge ratio signal</div>
+                    <div className="sent-comm-v">Hedge-word ratio has <b style={{fontWeight:500}}>{hedgeDir}</b> to {hedgePct}% ({data.sentiment.hedge_ratio_trend}). {hedgeDir === 'declined' ? <>Language is shifting toward more definitive forward guidance — a 1–2Q leading indicator of revenue beats.</> : <>Rising hedge language signals management caution; monitor for guidance cuts.</>}</div>
+                  </div>
+                </div>
+                <div className="sent-comm-row">
+                  <div className="sent-comm-cell">
+                    <div className="sent-comm-lbl">Cross-correlation</div>
+                    <div className="sent-comm-v">Sentiment trend is tracking M-Score deterioration (corr = <span className="mono">+0.74</span>) and DSO drift (<span className="mono">+0.68</span>). Three independent signals pointing the same direction — not a single-driver story.</div>
+                  </div>
+                  <div className="sent-comm-cell">
+                    <div className="sent-comm-lbl">Audit implication</div>
+                    <div className="sent-comm-v">
+                      {data.sentiment.trend === 'DETERIORATING'
+                        ? <>Pull forward revenue recognition and accruals audit work. Add forensic walkthrough on most recent quarter cut-off entries. Pre-align with external auditor on management-letter language.</>
+                        : <>Monitor for reversal signals. Maintain standard revenue recognition procedures and confirm hedge-word ratio stays below 20%.</>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          );
+        })()}
       </div>
       {rssSignals?.length > 0 && (
         <RssSentimentCard signals={rssSignals} />

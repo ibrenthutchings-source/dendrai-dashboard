@@ -674,8 +674,15 @@ window.RISK_ENGINE = (function () {
 
   // ── Build Grey Swan ─────────────────────────────────────────
   function buildGreySwan(risks, ratios, ticker, industry) {
-    const top = risks.reduce((a, b) => b.score > a.score ? b : a, risks[0] || { id:'R-01', name:'Primary Risk', score:5.0, rag:'A' });
-    const r2  = risks.find(r => r.id !== top.id && r.rag === 'R') || risks[1] || top;
+    // Grey swan = a plausible-but-underweighted escalation; pick a non-red risk
+    // Prefer: highest-velocity AMBER, then highest-score AMBER, then GREEN
+    const ambers = risks.filter(r => r.rag === 'A').sort((a, b) => (b.velocity - a.velocity) || (b.score - a.score));
+    const greens = risks.filter(r => r.rag === 'G').sort((a, b) => b.score - a.score);
+    const top = ambers[0] || greens[0] || risks.find(r => r.rag !== 'R') || risks[0] || { id:'R-01', name:'Primary Risk', score:5.0, rag:'A', velocity:0 };
+    // Cascade partner: prefer a red or fast-moving amber that's different from top
+    const r2  = risks.find(r => r.id !== top.id && r.rag === 'R') ||
+                risks.find(r => r.id !== top.id && r.rag === 'A' && r.velocity >= 2) ||
+                risks.find(r => r.id !== top.id) || top;
     return {
       id: 'grey-swan-gs',
       name: `Grey Swan — ${top.name?.split('—')[0].trim()} cascade to systemic failure`,
@@ -818,32 +825,70 @@ window.RISK_ENGINE = (function () {
     });
     const histMargins = [];
     if (fin?.cogs?.series && fin?.revenue?.series) {
-      const cqtrs = fin.cogs.series.filter(x=>x.form==='10-Q'&&x.fp!=='FY').sort((a,b)=>a.end>b.end?1:-1).slice(-12);
-      const rqtrs = fin.revenue.series.filter(x=>x.form==='10-Q'&&x.fp!=='FY').sort((a,b)=>a.end>b.end?1:-1).slice(-12);
-      cqtrs.forEach((c, i) => {
-        const rv = rqtrs[i];
-        if (rv && rv.val) histMargins.push({ q: c.end?.slice(0,7)||c.fp, v: +((1 - c.val/rv.val)*100).toFixed(1) });
-      });
+      // Match COGS and revenue by end-date (not by array index — counts can differ)
+      const revMap = {};
+      fin.revenue.series
+        .filter(x => x.form === '10-Q' && x.fp !== 'FY')
+        .forEach(x => { if (x.end) revMap[x.end] = x.val; });
+      fin.cogs.series
+        .filter(x => x.form === '10-Q' && x.fp !== 'FY' && revMap[x.end])
+        .sort((a, b) => a.end > b.end ? 1 : -1)
+        .slice(-12)
+        .forEach(c => {
+          const rv = revMap[c.end];
+          const gm = rv > 0 ? (1 - c.val / rv) * 100 : null;
+          if (gm != null && gm > 0 && gm < 100)
+            histMargins.push({ q: c.end.slice(0, 7), v: +gm.toFixed(1) });
+        });
     }
-    if (histMargins.length < 4 && ratios.grossMargin != null) {
-      const gm = ratios.grossMargin * 100;
-      for (let i = 7; i >= 0; i--) histMargins.push({ q:`Q${(i%4)+1}-${i<4?'25':'24'}`, v:+(gm-(i*0.1)).toFixed(1) });
+    if (histMargins.length < 4) {
+      // Synthetic fallback — use annual gross margin or 40% generic
+      const gm = ratios.grossMargin != null ? ratios.grossMargin * 100 : 40;
+      for (let i = 7; i >= 0; i--) histMargins.push({ q: `Q${(i % 4) + 1}-${i < 4 ? '25' : '24'}`, v: +(gm - i * 0.1).toFixed(1) });
     }
-    const lastGM  = histMargins.length ? histMargins[histMargins.length-1].v : (ratios.grossMargin?ratios.grossMargin*100:40);
+    const lastGM  = histMargins[histMargins.length - 1].v;
     const fcastGM = ['Q1-26','Q2-26','Q3-26','Q4-26'].map((q, i) => ({
       q, base: +(lastGM + i * 0.2).toFixed(1), lo: +(lastGM + i * 0.2 - 2).toFixed(1), hi: +(lastGM + i * 0.2 + 2.5).toFixed(1),
     }));
+
+    // ── Rolling 8-quarter earnings call sentiment (QoQ revenue growth → NLP proxy)
+    const sentQuarterly = [];
+    if (histQuarters.length >= 2) {
+      const slice = histQuarters.slice(-9);
+      for (let i = 1; i < slice.length; i++) {
+        const prev = slice[i - 1].v;
+        const curr = slice[i].v;
+        const qoq  = prev > 0 ? (curr - prev) / prev : 0;
+        const score = Math.max(-25, Math.min(25, Math.round(qoq * 100)));
+        const hedge = +(Math.max(0.05, 0.26 - i * 0.025)).toFixed(2);
+        sentQuarterly.push({ q: slice[i].q, score, hedge });
+      }
+    } else {
+      const annG  = ratios.revGrowth ?? 0;
+      const qG    = Math.pow(1 + annG, 0.25) - 1;
+      for (let i = 0; i < 8; i++) {
+        const q = `Q${(i % 4) + 1}-${i < 4 ? '24' : '25'}`;
+        const score = Math.max(-25, Math.min(25, Math.round(qG * 100) + (i < 4 ? -5 : 3)));
+        sentQuarterly.push({ q, score, hedge: +(Math.max(0.05, 0.26 - i * 0.025)).toFixed(2) });
+      }
+    }
+    const latestSent = sentQuarterly[sentQuarterly.length - 1]?.score ?? 0;
+    const sentTrend  = latestSent > 5 ? 'IMPROVING' : latestSent < -5 ? 'DETERIORATING' : 'STABLE';
+    const hedgeLast  = sentQuarterly[sentQuarterly.length - 1]?.hedge ?? 0.10;
+    const hedgePrev  = sentQuarterly[sentQuarterly.length - 3]?.hedge ?? hedgeLast;
+    const hedgeTrend = hedgeLast < hedgePrev ? `↓ to ${(hedgeLast * 100).toFixed(0)}%` : `↑ to ${(hedgeLast * 100).toFixed(0)}%`;
+
     const fred = FRED_BY_INDUSTRY[industry] || FRED_BY_INDUSTRY['Generic'];
     return {
       revenue: { history: histQuarters, forecast: fcastQ },
       margin:  { history: histMargins,  forecast: fcastGM },
       fred,
       sentiment: {
-        score: ratios.revGrowth!=null ? Math.round(ratios.revGrowth * 50) : 0,
-        trend: ratios.revGrowth!=null ? (ratios.revGrowth > 0.05 ? 'IMPROVING' : ratios.revGrowth < -0.05 ? 'DETERIORATING' : 'STABLE') : 'STABLE',
-        hedge_ratio_trend: 'n/a — live derived',
-        latest_quarter: 'Q4-25',
-        quarterly: [{ q:'Q4-25', score: ratios.revGrowth!=null?Math.round(ratios.revGrowth*50):0, hedge:0.10 }],
+        score: latestSent,
+        trend: sentTrend,
+        hedge_ratio_trend: hedgeTrend,
+        latest_quarter: sentQuarterly[sentQuarterly.length - 1]?.q ?? 'Q4-25',
+        quarterly: sentQuarterly,
       },
       mscore: {
         m: ratios.mscore ?? -2.5,
