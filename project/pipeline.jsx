@@ -342,30 +342,33 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             return (
               <div key={r.id} className={"s2-ctrl-risk" + (breachesAppetite ? " breach" : "")}>
                 <div className="s2-ctrl-risk-head">
-                  <RAGChip rag={r.rag}>{fmt2(r.score)}</RAGChip>
-                  <span style={{flex:1, fontWeight:500, fontSize:11.5}}>{r.name}</span>
-                  <VelocityPill v={r.velocity}/>
-
-                  {/* Per-risk appetite selector */}
-                  <select className="s2-appetite-sel"
-                    value={perLevel}
-                    onChange={e => setPerRiskAppetite && setPerRiskAppetite(prev => ({...prev, [r.id]: e.target.value}))}
-                    onClick={e => e.stopPropagation()}
-                    style={{color: perLevel === "GREEN" ? "var(--green-ink)" : perLevel === "AMBER" ? "var(--amber-ink)" : "var(--red-ink)"}}>
-                    <option value="GREEN">APT: G</option>
-                    <option value="AMBER">APT: A</option>
-                    <option value="RED">APT: R</option>
-                  </select>
-
-                  {breachesAppetite && (
-                    <span className="mono" style={{fontSize:9, color:"var(--red-ink)", letterSpacing:"0.04em"}}>BREACH</span>
-                  )}
-                  {onOpenAdjustRisk && (
-                    <button className="btn btn-sm" style={{padding:"2px 8px", fontSize:10}}
-                      onClick={e => { e.stopPropagation(); onOpenAdjustRisk(r.id); }}>
-                      Adjust
-                    </button>
-                  )}
+                  {/* Row 1: score + name + velocity */}
+                  <div className="s2-ctrl-risk-title">
+                    <RAGChip rag={r.rag}>{fmt2(r.score)}</RAGChip>
+                    <span className="s2-ctrl-risk-name">{r.name}</span>
+                    <VelocityPill v={r.velocity}/>
+                  </div>
+                  {/* Row 2: appetite selector + breach flag + adjust */}
+                  <div className="s2-ctrl-risk-actions">
+                    <select className="s2-appetite-sel"
+                      value={perLevel}
+                      onChange={e => setPerRiskAppetite && setPerRiskAppetite(prev => ({...prev, [r.id]: e.target.value}))}
+                      onClick={e => e.stopPropagation()}
+                      style={{color: perLevel === "GREEN" ? "var(--green-ink)" : perLevel === "AMBER" ? "var(--amber-ink)" : "var(--red-ink)"}}>
+                      <option value="GREEN">APT: G</option>
+                      <option value="AMBER">APT: A</option>
+                      <option value="RED">APT: R</option>
+                    </select>
+                    {breachesAppetite && (
+                      <span className="mono" style={{fontSize:9, color:"var(--red-ink)", letterSpacing:"0.04em"}}>BREACH</span>
+                    )}
+                    {onOpenAdjustRisk && (
+                      <button className="btn btn-sm" style={{padding:"2px 8px", fontSize:10}}
+                        onClick={e => { e.stopPropagation(); onOpenAdjustRisk(r.id); }}>
+                        Adjust
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Signal evidence */}
