@@ -1,6 +1,5 @@
 
 // tweaks-panel.jsx
-import React from 'react'
 // Reusable Tweaks shell + form-control helpers.
 //
 // Owns the host protocol (listens for __activate_edit_mode / __deactivate_edit_mode,
