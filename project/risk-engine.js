@@ -890,6 +890,42 @@ window.RISK_ENGINE = (function () {
              velocity_threshold_recommendation:2.5 };
   }
 
+  // ── Risk Flow metadata ─────────────────────────────────────
+  const CATEGORY_IMPACTS = {
+    'Revenue':             ['Revenue Recognition', 'Sales Operations', 'Customer Relationships', 'Investor Relations'],
+    'Operational':         ['Product Development', 'Manufacturing', 'Supply Chain', 'Operations'],
+    'Financial Reporting': ['Finance', 'Accounting', 'External Reporting', 'Investor Relations'],
+    'Supply':              ['Supply Chain', 'Procurement', 'Manufacturing', 'Operations'],
+    'Cybersecurity':       ['Information Technology', 'Legal & Compliance', 'Customer Trust', 'Operations'],
+    'Trade Compliance':    ['Legal & Compliance', 'Sales Operations', 'Finance', 'Government Relations'],
+    'ESG':                 ['Corporate Governance', 'Investor Relations', 'Operations', 'Legal & Compliance'],
+    'Compliance':          ['Legal & Compliance', 'Government Relations', 'Finance', 'Operations'],
+    'Legal':               ['Legal & Compliance', 'Finance', 'Operations', 'Customer Relationships'],
+  };
+  const DEFAULT_IMPACTS = ['Operations', 'Finance', 'Legal & Compliance', 'Customer Relationships'];
+
+  function buildRiskFlow(risks, industry, maps) {
+    const cadenceFor = vel => {
+      if (vel >= 3) return ['T+7d',  'T+21d', 'T+45d', 'T+75d'];
+      if (vel >= 2) return ['T+14d', 'T+45d', 'T+75d'];
+      if (vel >= 1) return ['T+21d', 'T+60d', 'T+90d'];
+      if (vel < 0)  return ['T+60d', 'T+90d'];
+      return ['T+45d', 'T+90d'];
+    };
+    const tmpl = TEMPLATES[industry] || TEMPLATES['Generic'];
+    const flow = {};
+    risks.forEach(r => {
+      const t = tmpl.find(x => x.id === r.id);
+      flow[r.id] = {
+        impacts:  CATEGORY_IMPACTS[r.category] || DEFAULT_IMPACTS,
+        controls: (t?.controls || []).map(name => ({ name, ce: r.ce })),
+        audits:   (maps || []).filter(m => m.linked_risk === r.id).map(m => m.id),
+        cadence:  cadenceFor(r.velocity ?? 0),
+      };
+    });
+    return flow;
+  }
+
   // ── Main: buildProfile ───────────────────────────────────────
   function buildProfile(ticker, fin, sic, industryHint) {
     const industry = industryHint || sic2industry(sic) || 'Generic';
@@ -907,7 +943,8 @@ window.RISK_ENGINE = (function () {
     const entity     = buildEntity(ticker, fin, industry);
     const eventTemplates = window.MOCK?.eventTemplates || [];
     return { entity, signals, risks, objectives, maps, closure, loop,
-             eventTemplates, forecasts, scenarios, greySwan, riskFlow:{},
+             eventTemplates, forecasts, scenarios, greySwan,
+             riskFlow: buildRiskFlow(risks, industry, maps),
              personas, fred:forecasts.fred };
   }
 
