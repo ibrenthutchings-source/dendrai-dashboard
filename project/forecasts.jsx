@@ -61,14 +61,16 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
         const revEns = revFcAll.ensemble;
         const mgEns  = mgFcAll.ensemble;
 
+        // Use Number.isFinite — ?? passes NaN through, which breaks .toFixed()
+        const safeV = (v, fallback) => Number.isFinite(v) ? v : fallback;
         setModelOutput({
           revenue: {
             history: data.revenue.history,
             forecast: data.revenue.forecast.map((f, i) => ({
               q:    f.q,
-              base: revEns?.base[i] ?? f.base,
-              lo:   revEns?.lo[i]   ?? f.lo,
-              hi:   revEns?.hi[i]   ?? f.hi,
+              base: safeV(revEns?.base[i], f.base),
+              lo:   safeV(revEns?.lo[i],   f.lo),
+              hi:   safeV(revEns?.hi[i],   f.hi),
             })),
             all: revFcAll,
             backtest: revBT,
@@ -78,9 +80,9 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
             history: data.margin.history,
             forecast: data.margin.forecast.map((f, i) => ({
               q:    f.q,
-              base: mgEns?.base[i]  ?? f.base,
-              lo:   mgEns?.lo[i]    ?? f.lo,
-              hi:   mgEns?.hi[i]    ?? f.hi,
+              base: safeV(mgEns?.base[i], f.base),
+              lo:   safeV(mgEns?.lo[i],   f.lo),
+              hi:   safeV(mgEns?.hi[i],   f.hi),
             })),
             all: mgFcAll,
             backtest: mgBT,
@@ -283,40 +285,40 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
                   <div className={`delta ${data.sentiment.trend === "IMPROVING" ? "up" : "dn"}`}>{data.sentiment.trend} · hedge ratio {data.sentiment.hedge_ratio_trend}</div>
                 </div>
               </div>
-              {/* Center-line bar chart: positive bars grow up, negative grow down */}
-              <div style={{marginTop:8, paddingBottom:4}}>
-                <div style={{position:"relative", height:56}}>
-                  {/* zero line */}
-                  <div style={{position:"absolute", top:"50%", left:0, right:0, height:1, background:"var(--line-2)"}}/>
-                  <div style={{display:"flex", gap:3, height:"100%", alignItems:"stretch"}}>
+              {/* SVG sentiment bar chart — zero-baseline, positive up / negative down */}
+              {sq.length > 0 ? (() => {
+                const W = 480, H = 72, MID = 34, PAD = 6;
+                const n = sq.length;
+                const barW = Math.max(4, (W - PAD * 2 - (n - 1) * 3) / n);
+                const maxAbs = Math.max(1, ...sq.map(d => Math.abs(d.score)));
+                const scaleH = (MID - 8) / maxAbs;
+                return (
+                  <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%", display:"block", marginTop:8}} xmlns="http://www.w3.org/2000/svg">
+                    {/* zero line */}
+                    <line x1={PAD} y1={MID} x2={W - PAD} y2={MID} stroke="var(--line-2)" strokeWidth="1"/>
                     {sq.map((d, i) => {
-                      const maxH = 24;
-                      const h = Math.max(2, Math.min(maxH, Math.abs(d.score) / 25 * maxH));
+                      const x = PAD + i * (barW + 3);
+                      const barH = Math.max(3, Math.abs(d.score) * scaleH);
                       const neg = d.score < 0;
+                      const barY = neg ? MID : MID - barH;
+                      const fill = neg ? "var(--red)" : "var(--green)";
                       return (
-                        <div key={i} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center"}}>
-                          {/* top half (positive zone) */}
-                          <div style={{flex:"0 0 28px", display:"flex", alignItems:"flex-end", justifyContent:"center"}}>
-                            {!neg && <div style={{width:"72%", height:h, background:"var(--green)", opacity:0.85, borderRadius:"2px 2px 0 0"}}/>}
-                          </div>
-                          {/* bottom half (negative zone) */}
-                          <div style={{flex:"0 0 28px", display:"flex", alignItems:"flex-start", justifyContent:"center"}}>
-                            {neg && <div style={{width:"72%", height:h, background:"var(--red)", opacity:0.85, borderRadius:"0 0 2px 2px"}}/>}
-                          </div>
-                        </div>
+                        <g key={i}>
+                          <rect x={x} y={barY} width={barW} height={barH} fill={fill} opacity="0.82" rx="2"/>
+                          <text x={x + barW / 2} y={H - 2} textAnchor="middle" fontSize="8" fontFamily="Geist Mono,monospace" fill="var(--ink-3)">{d.q}</text>
+                          {Math.abs(d.score) >= 5 && (
+                            <text x={x + barW / 2} y={neg ? barY + barH - 3 : barY - 2} textAnchor="middle" fontSize="7.5" fontFamily="Geist Mono,monospace" fill={neg ? "var(--red-ink)" : "var(--green-ink)"}>{d.score > 0 ? '+' : ''}{d.score}</text>
+                          )}
+                        </g>
                       );
                     })}
-                  </div>
+                  </svg>
+                );
+              })() : (
+                <div style={{height:72, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--ink-4)", fontSize:11}}>
+                  Run loop to populate sentiment history
                 </div>
-                {/* Quarter labels row */}
-                <div style={{display:"flex", gap:3, marginTop:3}}>
-                  {sq.map((d, i) => (
-                    <div key={i} style={{flex:1, textAlign:"center"}}>
-                      <span className="mono" style={{fontSize:8.5, color:"var(--ink-3)"}}>{d.q}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              )}
               <div className="sent-commentary">
                 <div className="sent-comm-row">
                   <div className="sent-comm-cell">

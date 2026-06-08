@@ -823,13 +823,13 @@ window.RISK_ENGINE = (function () {
         histQuarters.push({ q: label, v: +(q.val / 1e6).toFixed(0) });
       });
     }
-    // if < 4 quarters from EDGAR, synthesise 8 quarters from annual revenue
-    if (histQuarters.length < 4 && ratios.rev) {
-      const annualM = ratios.rev / 1e6;
+    // If EDGAR gave fewer than 4 quarters, clear partials and synthesise a full 8-quarter series
+    if (histQuarters.length < 4) {
+      histQuarters.length = 0; // discard any partial EDGAR entries to avoid mixed series
+      const annualM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 1000;
       const qBase   = annualM / 4;
-      const qp      = ratios.revP ? ratios.revP / 1e6 / 4 : qBase;
-      // Chronological: Q1-24 … Q4-25 (8 quarters ending at Q4-25)
-      const labels = syntheticQuarters(2025, 4);
+      const qp      = Number.isFinite(ratios.revP) ? ratios.revP / 1e6 / 4 : qBase;
+      const labels  = syntheticQuarters(2025, 4);
       for (let i = 0; i < 8; i++) {
         const frac = i / 7;
         histQuarters.push({ q: labels[i], v: +(qp + (qBase - qp) * frac).toFixed(0) });
@@ -868,7 +868,8 @@ window.RISK_ENGINE = (function () {
       for (let i = 0; i < 8; i++)
         histMargins.push({ q: labels[i], v: +(gm - (7 - i) * 0.1).toFixed(1) });
     }
-    const lastGM  = histMargins[histMargins.length - 1].v;
+    const rawGM  = histMargins[histMargins.length - 1]?.v;
+    const lastGM = Number.isFinite(rawGM) ? rawGM : 40;
     const fcastGM = ['Q1-26','Q2-26','Q3-26','Q4-26'].map((q, i) => ({
       q,
       base: +(lastGM + i * 0.2).toFixed(1),
