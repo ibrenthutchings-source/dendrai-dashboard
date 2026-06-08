@@ -976,3 +976,4 @@ window.MOCK = (function () {
   }
 
   return { entity, signals, risks, objectives, maps, closure, loop, eventTemplates, forecasts, scenarios, greySwan, riskFlow, personas, fred: forecasts.fred, getProfile };
+})();
