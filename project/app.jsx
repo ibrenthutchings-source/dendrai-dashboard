@@ -121,12 +121,15 @@ function App() {
     setLoopLog((prev) => [...prev, { ts: new Date().toISOString(), msg }]);
   }, []);
 
+  // ---- Company profile (keyed on ticker for multi-company support) ----
+  const profile = useMemo(() => MOCK.getProfile(cfg.ticker), [cfg.ticker]);
+
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
     if (n === 1) {
-      const risksNow = (output.s2?.risks) || MOCK.risks;
+      const risksNow = (output.s2?.risks) || profile.risks;
       const init = {};
       risksNow.forEach(r => { init[r.id] = { status: "pending" }; });
       setRiskApprovals(init);
@@ -137,7 +140,7 @@ function App() {
       });
     }
     if (n === 2) {
-      const objsNow = (output.s3?.objectives) || MOCK.objectives;
+      const objsNow = (output.s3?.objectives) || profile.objectives;
       const init = {};
       objsNow.forEach(o => { init[o.id] = { status: "pending" }; });
       setScopeApprovals(init);
@@ -398,7 +401,7 @@ function App() {
     }
 
     // STAGE 1 — Signal Intake
-    const mockSigs = MOCK.signals.filter((s) =>
+    const mockSigs = profile.signals.filter((s) =>
       s.src === "EDGAR 10-K" && signalSet.has("edgar") ||
       s.src === "Peer 10-K" && signalSet.has("peers") ||
       s.src === "Industry RSS" && signalSet.has("industry") ||
@@ -411,7 +414,7 @@ function App() {
     await runStage("s1", { signals: sigsList, sourceCount: signalSet.size }, 1200);
 
     // STAGE 2 — Risk assessment with signal-adjusted scoring
-    const adjustedRisks = adjustRiskScores(MOCK.risks, sigsList, currentRssSignals);
+    const adjustedRisks = adjustRiskScores(profile.risks, sigsList, currentRssSignals);
     const threshold = APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5;
     const breachingIds = adjustedRisks.filter(r => r.score >= threshold).map(r => r.id);
     const riskAppetiteResult = {
@@ -432,7 +435,7 @@ function App() {
     setStageState((prev) => ({ ...prev, s3: "idle" }));
 
     // STAGE 3 — Audit scope
-    await runStage("s3", { objectives: MOCK.objectives }, 1500);
+    await runStage("s3", { objectives: profile.objectives }, 1500);
 
     // GATE 2 — Audit scope
     if (hitl.scope) {
@@ -443,14 +446,14 @@ function App() {
     setStageState((prev) => ({ ...prev, s4: "idle" }));
 
     // STAGE 4 — MAPs
-    await runStage("s4", { maps: MOCK.maps }, 1400);
+    await runStage("s4", { maps: profile.maps }, 1400);
     setActiveRailTab("map");
 
     // STAGE 5 — Closure
-    await runStage("s5", { closure: MOCK.closure }, 1200);
+    await runStage("s5", { closure: profile.closure }, 1200);
 
     // STAGE 6 — Loop calibration
-    await runStage("s6", { loop: MOCK.loop }, 1200);
+    await runStage("s6", { loop: profile.loop }, 1200);
     setActiveRailTab("loop");
 
     log("Loop complete");
@@ -469,17 +472,17 @@ function App() {
     setOutput(prev => { const n = {...prev}; delete n.s3; delete n.s4; delete n.s5; delete n.s6; return n; });
     setGateState(prev => ({ ...prev, g2: null }));
     await t(300);
-    await runStage("s3", { objectives: MOCK.objectives }, 1500);
+    await runStage("s3", { objectives: profile.objectives }, 1500);
     if (hitl.scope) {
       setStageState(prev => ({ ...prev, s4: "waiting", s5: "waiting", s6: "waiting" }));
       const gres = await showGate(2);
       log(gres.ok ? "Gate 2 passed" : `Gate 2 overridden: ${gres.reason}`);
     }
     setStageState(prev => ({ ...prev, s4: "idle" }));
-    await runStage("s4", { maps: MOCK.maps }, 1400);
+    await runStage("s4", { maps: profile.maps }, 1400);
     setActiveRailTab("map");
-    await runStage("s5", { closure: MOCK.closure }, 1200);
-    await runStage("s6", { loop: MOCK.loop }, 1200);
+    await runStage("s5", { closure: profile.closure }, 1200);
+    await runStage("s6", { loop: profile.loop }, 1200);
     setActiveRailTab("loop");
     log("Re-run from Stage 3 complete");
     setRunning(false);
@@ -560,7 +563,7 @@ function App() {
   // ---- Report payload ----
   const reportPayload = useMemo(() => {
     if (!hasRun) return null;
-    const risksCur = output.s2?.risks || MOCK.risks;
+    const risksCur = output.s2?.risks || profile.risks;
     const top3 = [...risksCur].sort((a, b) => b.score - a.score).slice(0, 3).map((r) => r.name);
     const sigsList = output.s1?.signals || [];
     const fredContrCount = sigsList.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
@@ -575,7 +578,7 @@ function App() {
     const adjObjCount  = Object.values(scopeApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
 
     return {
-      entity: `${MOCK.entity.name} (${cfg.ticker})`,
+      entity: `${profile.entity.name} (${cfg.ticker})`,
       ts: new Date().toISOString(),
       cfg: {
         industry: cfg.industry,
@@ -584,19 +587,19 @@ function App() {
       },
       signals: { count: sigsList.length, highVel: sigsList.filter((s) => s.velocity >= 3).length },
       risks: risksCur,
-      baseRisks: MOCK.risks,
+      baseRisks: profile.risks,
       top3,
       riskAppetite: riskAppetiteResult,
       objectives: output.s3?.objectives || [],
       maps: output.s4?.maps || [],
       closure: output.s5?.closure || {},
       loop: output.s6?.loop || {},
-      scenarios: output.s7?.scenarios || MOCK.scenarios,
-      greySwan: output.s7?.greySwan || MOCK.greySwan,
-      personas: output.s7?.personas || MOCK.personas,
+      scenarios: output.s7?.scenarios || profile.scenarios,
+      greySwan: output.s7?.greySwan || profile.greySwan,
+      personas: output.s7?.personas || profile.personas,
       log: loopLog,
       // Methodology data
-      fredSeries: MOCK.fred || [],
+      fredSeries: profile.fred || [],
       fredContrCount,
       rssHighVelCount,
       rssLinkedCount,
@@ -636,7 +639,7 @@ function App() {
           : []),
       ],
     };
-  }, [hasRun, output, loopLog, signalSet, cfg, velocity, liveMode, riskApprovals, scopeApprovals]);
+  }, [hasRun, output, loopLog, signalSet, cfg, velocity, liveMode, riskApprovals, scopeApprovals, profile]);
 
   // ---- Tab definitions ----
   const mainTabs = [
@@ -658,7 +661,8 @@ function App() {
       <Header
         cfg={cfg}
         liveMode={liveMode} livefacts={livefacts}
-        running={running} hasRun={hasRun} />
+        running={running} hasRun={hasRun}
+        entityName={profile.entity.name} />
       
 
       <div className="app-body">
@@ -767,14 +771,14 @@ function App() {
             )}
             {activePipeTab === "fcst" && (
               <ForecastsPanel
-                data={hasRun ? MOCK.forecasts : null}
+                data={hasRun ? profile.forecasts : null}
                 liveMode={liveMode}
                 livefacts={livefacts}
                 fredSeries={fredLive}
                 rssSignals={rssSignals} />
             )}
             {activePipeTab === "scen" && (
-              <ScenariosPanel scenarios={hasRun ? MOCK.scenarios : null} greySwan={hasRun ? MOCK.greySwan : null} />
+              <ScenariosPanel scenarios={hasRun ? profile.scenarios : null} greySwan={hasRun ? profile.greySwan : null} />
             )}
           </div>
 
@@ -791,13 +795,13 @@ function App() {
           {/* ---- Risk Flow ---- */}
           <div className={"panel" + (activeMainTab === "flow" ? " active" : "")}>
             <FlowPanel
-              risks={output.s2?.risks || (hasRun ? MOCK.risks : null)}
-              maps={output.s4?.maps || (hasRun ? MOCK.maps : null)}
-              flowMeta={hasRun ? MOCK.riskFlow : null}
+              risks={output.s2?.risks || (hasRun ? profile.risks : null)}
+              maps={output.s4?.maps || (hasRun ? profile.maps : null)}
+              flowMeta={hasRun ? profile.riskFlow : null}
               selectedId={selectedRiskId} setSelectedId={setSelectedRiskId}
               liveMode={liveMode}
               rssSignals={rssSignals}
-              fredData={MOCK.forecasts?.fred}
+              fredData={profile.forecasts?.fred}
               appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
           </div>
         </main>
@@ -805,17 +809,17 @@ function App() {
         <Rail
           activeTab={activeRailTab} setActiveTab={setActiveRailTab}
           output={output}
-          risks={output.s2?.risks || (hasRun ? MOCK.risks : null)}
+          risks={output.s2?.risks || (hasRun ? profile.risks : null)}
           maps={output.s4?.maps || null}
           loop={output.s6?.loop || null}
           notifLog={notifLog}
-          forecasts={hasRun ? MOCK.forecasts : null}
-          flowMeta={hasRun ? MOCK.riskFlow : null}
+          forecasts={hasRun ? profile.forecasts : null}
+          flowMeta={hasRun ? profile.riskFlow : null}
           activeQuarter={activeQuarter} setActiveQuarter={setActiveQuarter}
           selectedRiskId={selectedRiskId} setSelectedRiskId={setSelectedRiskId}
           selectedPersona={selectedPersona} setSelectedPersona={setSelectedPersona}
-          personas={hasRun ? MOCK.personas : null}
-          scenarios={hasRun ? MOCK.scenarios : null}
+          personas={hasRun ? profile.personas : null}
+          scenarios={hasRun ? profile.scenarios : null}
           onOpenMainFlow={() => setActiveMainTab("flow")}
           periodBegin={cfg.periodBegin}
           periodEnd={cfg.periodEnd} />
@@ -831,7 +835,7 @@ function App() {
         onSubmit={submitAdjustment} />
       <AdjustObjectiveModal
         open={adjustObjOpen}
-        obj={(output.s3?.objectives || MOCK.objectives || []).find(o => o.id === adjustingObjId)}
+        obj={(output.s3?.objectives || profile.objectives || []).find(o => o.id === adjustingObjId)}
         onClose={() => { setAdjustObjOpen(false); setAdjustingObjId(null); }}
         onSubmit={submitObjAdjustment} />
 
@@ -843,7 +847,7 @@ function App() {
 }
 
 // ---- Header ----
-function Header({ cfg, liveMode, livefacts, running, hasRun }) {
+function Header({ cfg, liveMode, livefacts, running, hasRun, entityName }) {
   return (
     <header className="hdr">
       <div className="hdr-brand">
@@ -854,7 +858,7 @@ function Header({ cfg, liveMode, livefacts, running, hasRun }) {
       <div className="hdr-ctx">
         <span className="hdr-ctx-tkr">{cfg.ticker}</span>
         <span className="muted">·</span>
-        <span style={{ fontSize: 11.5 }}>{livefacts?.entity || cfg.company || MOCK.entity.name}</span>
+        <span style={{ fontSize: 11.5 }}>{livefacts?.entity || cfg.company || entityName}</span>
         {(() => {
           const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
           if (!focusList.length) return null;
