@@ -4,7 +4,17 @@
 
 function ReportModal({ open, onClose, payload }) {
   if (!open || !payload) return null;
-  const { entity, ts, cfg, signals, risks, top3, riskAppetite, objectives, maps, closure, loop, scenarios, greySwan, personas, assumptions, obstacles, log } = payload;
+  const {
+    entity, ts, cfg, signals, risks, baseRisks, top3, riskAppetite,
+    objectives, maps, closure, loop, scenarios, greySwan, personas,
+    fredSeries, fredContrCount, rssHighVelCount, rssLinkedCount, liveMode,
+    riskApprovals, scopeApprovals,
+    assumptions, obstacles, log,
+  } = payload;
+
+  const adjRisks = risks.filter(r => riskApprovals?.[r.id]?.status === "adjusted" || riskApprovals?.[r.id]?.status === "signed");
+  const adjObjs  = objectives.filter(o => scopeApprovals?.[o.id]?.status === "adjusted" || scopeApprovals?.[o.id]?.status === "signed");
+
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
       <div className="modal-box" style={{width: 920}}>
@@ -19,6 +29,7 @@ function ReportModal({ open, onClose, payload }) {
           <div className="rep-h1">{entity}</div>
           <div className="rep-h1-sub">{cfg.industry} · {(Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus]).join(" · ")} · {new Date(ts).toLocaleDateString()}</div>
 
+          {/* ── Executive Summary ────────────────────────────── */}
           <div className="rep-section">
             <h3>Executive Summary</h3>
             <Row k="Entity"           v={entity}/>
@@ -30,9 +41,7 @@ function ReportModal({ open, onClose, payload }) {
             <Row k="Top 3 Risks"      v={top3.join(", ")}/>
             <Row k="Risk Appetite" v={
               <span style={{display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
-                <RAGChip rag={
-                  (riskAppetite?.status || riskAppetite) === "BREACHED" ? "R" : "G"
-                }>{riskAppetite?.status || riskAppetite}</RAGChip>
+                <RAGChip rag={(riskAppetite?.status || riskAppetite) === "BREACHED" ? "R" : "G"}>{riskAppetite?.status || riskAppetite}</RAGChip>
                 {riskAppetite?.threshold != null && (
                   <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>
                     threshold ≥ {riskAppetite.threshold} · {riskAppetite.breaching?.length || 0} risk{(riskAppetite.breaching?.length || 0) !== 1 ? "s" : ""} breach{(riskAppetite.breaching?.length || 0) !== 1 ? "" : ""}
@@ -45,7 +54,174 @@ function ReportModal({ open, onClose, payload }) {
             <Row k="MAPs"             v={`${maps.length} generated · ${loop.maps_open || 0} open`}/>
             <Row k="Projected Reduction" v={`${closure.projected_total_risk_reduction_pct || 0}%`}/>
             <Row k="Loop Health"      v={<><RAGChip rag={loop.loop_health || "A"}>{loop.loop_health}</RAGChip> <span className="muted mono" style={{marginLeft: 8}}>impact {loop.audit_impact_score}/10</span></>}/>
+            <Row k="Data Mode"        v={liveMode ? "Live (EDGAR + FRED)" : "Mock / Simulated"}/>
           </div>
+
+          {/* ── Methodology ──────────────────────────────────── */}
+          <div className="rep-section">
+            <h3>Methodology</h3>
+
+            <RepSubhead>Forecast Development</RepSubhead>
+            <div style={{fontSize:12, color:"var(--ink-2)", lineHeight:1.65, marginBottom:10}}>
+              Individual risk score projections use a <b>velocity-dampened linear model</b> applied per risk:
+              <span className="mono" style={{display:"block", background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius:6, padding:"6px 10px", margin:"7px 0", fontSize:11}}>
+                Q<em>n</em> score = base + (velocity × CE_mult × 0.4 × 0.85^(n−1)), capped [1, 10]
+              </span>
+              The 0.85 decay factor reduces velocity impact by 15% each quarter, preventing indefinite trend extrapolation.
+              Control-effectiveness multipliers modulate velocity: <b>NONE ×1.20, WEAK ×1.10, ADEQUATE ×0.95, STRONG ×0.80</b>.
+            </div>
+            <div style={{fontSize:12, color:"var(--ink-2)", lineHeight:1.65, marginBottom:4}}>
+              Macro-level forecasting uses a <b>three-model ensemble</b> — ARIMA, Prophet, and Random Forest — with FRED macro series
+              as exogenous features. Ensemble weights update iteratively by inverse mean absolute percentage error (MAPE) from backtesting,
+              so the best-performing model on recent history receives the highest weight. Random Forest features include lags 1–4,
+              rolling mean and standard deviation, time index, quarter dummies, and current FRED indicator readings.
+            </div>
+
+            <RepSubhead style={{marginTop:14}}>Risk Velocity Calculation</RepSubhead>
+            <div style={{fontSize:12, color:"var(--ink-2)", lineHeight:1.65, marginBottom:8}}>
+              Velocity is a composite integer in [−2, +5] representing the expected quarter-on-quarter score change.
+              The signal-adjustment process adds three components to each risk's base velocity:
+            </div>
+            <table className="rep-table" style={{marginBottom:10}}>
+              <thead><tr><th>Component</th><th>Formula</th><th>Scope</th><th>This run</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><b>FRED macro</b></td>
+                  <td className="mono">+0.08 per contractionary signal</td>
+                  <td>Macro-category risks only</td>
+                  <td className="mono">{fredContrCount} signal{fredContrCount !== 1 ? "s" : ""} → +{(fredContrCount * 0.08).toFixed(2)} max</td>
+                </tr>
+                <tr>
+                  <td><b>RSS-linked</b></td>
+                  <td className="mono">signal_velocity × 0.08 per link</td>
+                  <td>Directly linked risks; velocity = max(base, signal)</td>
+                  <td className="mono">{rssLinkedCount} linked signal{rssLinkedCount !== 1 ? "s" : ""}</td>
+                </tr>
+                <tr>
+                  <td><b>Industry pressure</b></td>
+                  <td className="mono">+0.05 per signal ≥ v3, cap +0.20</td>
+                  <td>All risks</td>
+                  <td className="mono">{rssHighVelCount} high-vel signal{rssHighVelCount !== 1 ? "s" : ""} → +{Math.min(0.20, rssHighVelCount * 0.05).toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style={{fontSize:12, color:"var(--ink-2)", lineHeight:1.65}}>
+              Score adjustments are summed and capped at 10.0. RAG is recalculated post-adjustment:
+              ≥7.5 → <b style={{color:"var(--red-ink)"}}>RED</b>, 5.0–7.4 → <b style={{color:"var(--amber-ink)"}}>AMBER</b>, &lt;5.0 → <b style={{color:"var(--green-ink)"}}>GREEN</b>.
+            </div>
+          </div>
+
+          {/* ── Macro Indicators ─────────────────────────────── */}
+          {fredSeries?.length > 0 && (
+            <div className="rep-section">
+              <h3>Macro Indicators</h3>
+              <div style={{fontSize:12, color:"var(--ink-3)", marginBottom:10, lineHeight:1.55}}>
+                FRED series used as exogenous features in ensemble forecasting and as velocity-adjustment signals.
+                Pearson correlations (r) computed against company revenue over available history.
+                Lead lag indicates how many quarters ahead the indicator moves relative to company KPIs.
+              </div>
+              <table className="rep-table">
+                <thead>
+                  <tr><th>Series ID</th><th>Indicator</th><th>Correlation (r)</th><th>Lead</th><th>Signal</th><th>Current Reading</th></tr>
+                </thead>
+                <tbody>
+                  {fredSeries.map(f => {
+                    const strength = Math.abs(f.r) >= 0.75 ? "var(--emerald-ink)" : Math.abs(f.r) >= 0.60 ? "var(--amber-ink)" : "var(--ink-3)";
+                    return (
+                      <tr key={f.id}>
+                        <td className="mono" style={{fontSize:10}}>{f.id}</td>
+                        <td>{f.name}</td>
+                        <td className="mono" style={{color: strength, fontWeight: Math.abs(f.r) >= 0.75 ? 600 : 400}}>
+                          {f.r > 0 ? "+" : ""}{f.r.toFixed(2)}
+                        </td>
+                        <td className="mono">{f.lead}Q</td>
+                        <td>
+                          <span style={{fontSize:11, fontWeight:500, color: f.dir === "CONTRACTIONARY" ? "var(--red-ink)" : f.dir === "NEUTRAL" ? "var(--ink-3)" : "var(--green-ink)"}}>
+                            {f.dir}
+                          </span>
+                        </td>
+                        <td className="mono" style={{color: f.dir === "CONTRACTIONARY" ? "var(--red-ink)" : "var(--ink-2)"}}>{f.reading}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="mono" style={{fontSize:10, color:"var(--ink-4)", marginTop:6}}>
+                r ≥ 0.75 = strong (green) · r 0.60–0.74 = moderate (amber) · r &lt; 0.60 = weak (grey)
+              </div>
+            </div>
+          )}
+
+          {/* ── Changes to Risks & Audit Plan ────────────────── */}
+          {(adjRisks.length > 0 || adjObjs.length > 0) && (
+            <div className="rep-section">
+              <h3>Changes to Risks &amp; Audit Plan</h3>
+              <div style={{fontSize:12, color:"var(--ink-3)", marginBottom:12, lineHeight:1.55}}>
+                The following items were modified by auditors through HITL gate review.
+                All changes are captured verbatim in the audit trail below.
+              </div>
+
+              {adjRisks.length > 0 && (
+                <>
+                  <RepSubhead>Risk Register Adjustments · Gate 1</RepSubhead>
+                  {adjRisks.map(r => {
+                    const a = riskApprovals[r.id];
+                    const orig = baseRisks?.find(b => b.id === r.id);
+                    return (
+                      <div key={r.id} className="rep-finding A" style={{marginBottom:8}}>
+                        <div style={{display:"flex", gap:8, alignItems:"center", marginBottom:6, flexWrap:"wrap"}}>
+                          <b style={{fontWeight:500}}>{r.name}</b>
+                          <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{r.id}</span>
+                        </div>
+                        {a?.adjustments && (
+                          <div style={{display:"grid", gap:3}}>
+                            {a.adjustments.score != null && orig && (
+                              <Row k="Score" v={<span className="mono">{orig.score?.toFixed(1)} → <b style={{color:"var(--amber-ink)"}}>{a.adjustments.score?.toFixed(1)}</b></span>}/>
+                            )}
+                            {a.adjustments.rag && orig && (
+                              <Row k="RAG" v={<span>{orig.rag} → <RAGChip rag={a.adjustments.rag}>{a.adjustments.rag}</RAGChip></span>}/>
+                            )}
+                            {a.adjustments.velocity != null && orig && (
+                              <Row k="Velocity" v={<span className="mono">v{orig.velocity >= 0 ? "+" : ""}{orig.velocity} → <b>v{a.adjustments.velocity >= 0 ? "+" : ""}{a.adjustments.velocity}</b></span>}/>
+                            )}
+                            {a.adjustments.ce && orig && (
+                              <Row k="Control Eff." v={`${orig.ce} → ${a.adjustments.ce}`}/>
+                            )}
+                          </div>
+                        )}
+                        {a?.rationale && <Row k="Auditor rationale" v={a.rationale}/>}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+
+              {adjObjs.length > 0 && (
+                <>
+                  <RepSubhead style={{marginTop: adjRisks.length > 0 ? 14 : 0}}>Audit Plan Adjustments · Gate 2</RepSubhead>
+                  {adjObjs.map(o => {
+                    const a = scopeApprovals[o.id];
+                    return (
+                      <div key={o.id} className="rep-finding A" style={{marginBottom:8}}>
+                        <div style={{display:"flex", gap:8, alignItems:"center", marginBottom:6, flexWrap:"wrap"}}>
+                          <b style={{fontWeight:500}}>{o.objective}</b>
+                          <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{o.id}</span>
+                        </div>
+                        {a?.adjustments && (
+                          <div style={{display:"grid", gap:3}}>
+                            {a.adjustments.priority && <Row k="Priority" v={`${o.priority} → ${a.adjustments.priority}`}/>}
+                            {a.adjustments.sprint   && <Row k="Sprint"   v={`${o.sprint} → ${a.adjustments.sprint}`}/>}
+                            {a.adjustments.hours != null && <Row k="Hours" v={<span className="mono">{o.hours}h → <b>{a.adjustments.hours}h</b></span>}/>}
+                          </div>
+                        )}
+                        {a?.rationale && <Row k="Auditor rationale" v={a.rationale}/>}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          )}
 
           <div className="rep-section">
             <h3>Risk Register · 4-Quarter Projections</h3>
@@ -216,21 +392,30 @@ function ReportModal({ open, onClose, payload }) {
 
           <div className="rep-section">
             <h3>Analytical Assumptions</h3>
+            <div style={{fontSize:12, color:"var(--ink-3)", marginBottom:10, lineHeight:1.55}}>
+              The following assumptions governed scoring, projection, and signal-adjustment computations in this loop run.
+            </div>
             {assumptions.map((a, i) => (
-              <div key={i} style={{display:"flex", gap: 10, padding: "5px 0", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.55}}>
-                <span className="mono" style={{color: "var(--ink-3)", flexShrink: 0, width: 18}}>{i+1}.</span>
+              <div key={i} style={{display:"flex", gap:10, padding:"6px 0", fontSize:12, color:"var(--ink-2)", lineHeight:1.6, borderBottom: i < assumptions.length - 1 ? "1px solid var(--line)" : "none"}}>
+                <span className="mono" style={{color:"var(--ink-4)", flexShrink:0, width:20, paddingTop:1}}>{i+1}.</span>
                 <span>{a}</span>
               </div>
             ))}
           </div>
 
           <div className="rep-section">
-            <h3>Obstacles & Flags</h3>
+            <h3>Obstacles &amp; Flags</h3>
             {obstacles.length === 0
-              ? <div style={{fontSize: 12, color: "var(--green-ink)"}}>No obstacles. All stages completed within expected parameters.</div>
+              ? <div style={{fontSize:12, color:"var(--green-ink)", display:"flex", alignItems:"center", gap:6}}>
+                  <Icon name="check" size={13}/> No obstacles. All stages completed within expected parameters.
+                </div>
               : obstacles.map((o, i) => (
-                <div key={i} className="rep-finding A" style={{marginBottom: 6}}>{o}</div>
-              ))}
+                <div key={i} className="rep-finding A" style={{marginBottom:6, display:"flex", gap:8, alignItems:"flex-start"}}>
+                  <Icon name="alert" size={12} style={{flexShrink:0, marginTop:2}}/>
+                  <span style={{fontSize:12, lineHeight:1.55}}>{o}</span>
+                </div>
+              ))
+            }
           </div>
 
           <div className="rep-section">
@@ -262,6 +447,14 @@ function Row({ k, v }) {
     <div className="rep-row">
       <span className="rep-key">{k}</span>
       <span className="rep-val">{v}</span>
+    </div>
+  );
+}
+
+function RepSubhead({ children, style }) {
+  return (
+    <div style={{fontWeight:600, fontSize:12, color:"var(--ink)", margin:"12px 0 7px", ...style}}>
+      {children}
     </div>
   );
 }
