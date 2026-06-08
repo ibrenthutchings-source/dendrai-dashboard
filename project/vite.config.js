@@ -4,7 +4,7 @@ import AutoImport from 'unplugin-auto-import/vite'
 
 export default defineConfig({
   plugins: [
-    react(),
+    react({ jsxRuntime: 'classic' }),
     AutoImport({
       imports: [
         {
