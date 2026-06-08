@@ -26,9 +26,9 @@ function App() {
 
   // ---- Sidebar config ----
   const [cfg, setCfg] = useState({
-    ticker: MOCK.entity.ticker,
-    industry: MOCK.entity.industry,
-    focus: Array.isArray(MOCK.entity.focus) ? MOCK.entity.focus : [MOCK.entity.focus],
+    ticker: "ON",
+    industry: "Semiconductors",
+    focus: ["Revenue Recognition"],
     periodBegin: "Q1 2025",
     periodEnd: "Q4 2025",
     appetiteLevel: "AMBER",
@@ -121,15 +121,17 @@ function App() {
     setLoopLog((prev) => [...prev, { ts: new Date().toISOString(), msg }]);
   }, []);
 
-  // ---- Company profile (keyed on ticker for multi-company support) ----
-  const profile = useMemo(() => MOCK.getProfile(cfg.ticker), [cfg.ticker]);
+  // ---- Company profile — built from EDGAR + FRED + RISK_ENGINE during run ----
+  const [profile, setProfile] = useState(() => RISK_ENGINE.buildProfile("ON", null, "3674", "Semiconductors"));
+  const profileRef = useRef(profile);
+  useEffect(() => { profileRef.current = profile; }, [profile]);
 
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
     if (n === 1) {
-      const risksNow = (output.s2?.risks) || profile.risks;
+      const risksNow = (output.s2?.risks) || profileRef.current?.risks || [];
       const init = {};
       risksNow.forEach(r => { init[r.id] = { status: "pending" }; });
       setRiskApprovals(init);
@@ -140,7 +142,7 @@ function App() {
       });
     }
     if (n === 2) {
-      const objsNow = (output.s3?.objectives) || profile.objectives;
+      const objsNow = (output.s3?.objectives) || profileRef.current?.objectives || [];
       const init = {};
       objsNow.forEach(o => { init[o.id] = { status: "pending" }; });
       setScopeApprovals(init);
@@ -384,24 +386,39 @@ function App() {
       }
     }
 
-    // --- EDGAR only in live mode ---
-    if (liveMode) {
+    // --- EDGAR fetch (always attempted; required for risk profile) ---
+    let edgarFin = null;
+    let edgarSic = null;
+    {
       setLiveStatus("Fetching EDGAR companyfacts…");
       try {
         const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
         const extracted = LIVE.extractFinancials(facts);
+        edgarFin = extracted;
+        edgarSic = facts?.sic ?? null;
         setLivefacts(extracted);
         setLiveStatus(`EDGAR OK · ${extracted.entity} · CIK ${extracted.cik}`);
         log(`EDGAR: ${cfg.ticker}`);
       } catch(e) {
+        edgarFin = null;
         setLivefacts(null);
-        setLiveStatus(`EDGAR failed: ${e.message} · mock`);
-        log(`EDGAR failed: ${e.message}`);
+        setLiveStatus(`EDGAR unavailable: ${e.message} · industry template`);
+        log(`EDGAR unavailable: ${e.message}`);
       }
     }
 
+    // --- Build company risk profile from EDGAR + industry template ---
+    {
+      const edgarProfile = LIVE.fetchEdgarProfile ? null : null; // profile from submissions
+      const industry = cfg.industry || RISK_ENGINE.sic2industry(edgarSic);
+      const builtProfile = RISK_ENGINE.buildProfile(cfg.ticker, edgarFin, edgarSic, industry);
+      profileRef.current = builtProfile;
+      setProfile(builtProfile);
+      log(`Profile: ${builtProfile.entity.name} · ${industry} · ${builtProfile.risks.length} risks derived`);
+    }
+
     // STAGE 1 — Signal Intake
-    const mockSigs = profile.signals.filter((s) =>
+    const mockSigs = profileRef.current.signals.filter((s) =>
       s.src === "EDGAR 10-K" && signalSet.has("edgar") ||
       s.src === "Peer 10-K" && signalSet.has("peers") ||
       s.src === "Industry RSS" && signalSet.has("industry") ||
@@ -414,7 +431,7 @@ function App() {
     await runStage("s1", { signals: sigsList, sourceCount: signalSet.size }, 1200);
 
     // STAGE 2 — Risk assessment with signal-adjusted scoring
-    const adjustedRisks = adjustRiskScores(profile.risks, sigsList, currentRssSignals);
+    const adjustedRisks = adjustRiskScores(profileRef.current.risks, sigsList, currentRssSignals);
     const threshold = APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5;
     const breachingIds = adjustedRisks.filter(r => r.score >= threshold).map(r => r.id);
     const riskAppetiteResult = {
@@ -435,7 +452,7 @@ function App() {
     setStageState((prev) => ({ ...prev, s3: "idle" }));
 
     // STAGE 3 — Audit scope
-    await runStage("s3", { objectives: profile.objectives }, 1500);
+    await runStage("s3", { objectives: profileRef.current.objectives }, 1500);
 
     // GATE 2 — Audit scope
     if (hitl.scope) {
@@ -446,14 +463,14 @@ function App() {
     setStageState((prev) => ({ ...prev, s4: "idle" }));
 
     // STAGE 4 — MAPs
-    await runStage("s4", { maps: profile.maps }, 1400);
+    await runStage("s4", { maps: profileRef.current.maps }, 1400);
     setActiveRailTab("map");
 
     // STAGE 5 — Closure
-    await runStage("s5", { closure: profile.closure }, 1200);
+    await runStage("s5", { closure: profileRef.current.closure }, 1200);
 
     // STAGE 6 — Loop calibration
-    await runStage("s6", { loop: profile.loop }, 1200);
+    await runStage("s6", { loop: profileRef.current.loop }, 1200);
     setActiveRailTab("loop");
 
     log("Loop complete");
@@ -472,17 +489,17 @@ function App() {
     setOutput(prev => { const n = {...prev}; delete n.s3; delete n.s4; delete n.s5; delete n.s6; return n; });
     setGateState(prev => ({ ...prev, g2: null }));
     await t(300);
-    await runStage("s3", { objectives: profile.objectives }, 1500);
+    await runStage("s3", { objectives: profileRef.current.objectives }, 1500);
     if (hitl.scope) {
       setStageState(prev => ({ ...prev, s4: "waiting", s5: "waiting", s6: "waiting" }));
       const gres = await showGate(2);
       log(gres.ok ? "Gate 2 passed" : `Gate 2 overridden: ${gres.reason}`);
     }
     setStageState(prev => ({ ...prev, s4: "idle" }));
-    await runStage("s4", { maps: profile.maps }, 1400);
+    await runStage("s4", { maps: profileRef.current.maps }, 1400);
     setActiveRailTab("map");
-    await runStage("s5", { closure: profile.closure }, 1200);
-    await runStage("s6", { loop: profile.loop }, 1200);
+    await runStage("s5", { closure: profileRef.current.closure }, 1200);
+    await runStage("s6", { loop: profileRef.current.loop }, 1200);
     setActiveRailTab("loop");
     log("Re-run from Stage 3 complete");
     setRunning(false);
