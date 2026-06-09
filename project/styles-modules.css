@@ -1365,7 +1365,9 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   border-bottom: 1px solid var(--line);
   transition: background .15s;
   grid-auto-rows: min-content;
+  align-items: start;
 }
+.rar-td-action { align-self: center; }
 .rar-row:hover { background: var(--hover); }
 .rar-row-approved { background: color-mix(in oklch, var(--green-soft) 50%, transparent); }
 .rar-row-approved:hover { background: color-mix(in oklch, var(--green-soft) 70%, transparent); }
@@ -1376,7 +1378,8 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .rar-td { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .rar-td-rag { flex-direction: column; align-items: flex-start; }
 .rar-td-name { flex-direction: column; align-items: flex-start; gap: 2px; }
-.rar-td-score { flex-direction: column; align-items: flex-start; gap: 3px; }
+.rar-td-score { flex-direction: column; align-items: flex-start; gap: 3px; padding-top: 2px; }
+.rar-td-vel   { padding-top: 4px; }
 .rar-rname { font-size: 12.5px; color: var(--ink); font-weight: 500; line-height: 1.35; }
 .rar-rmeta {
   display: flex; gap: 6px; font-size: 10px; color: var(--ink-3);
