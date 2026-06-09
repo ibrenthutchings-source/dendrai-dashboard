@@ -27,5 +27,28 @@ import '../tweaks.jsx'
 
 import App from '../app.jsx'
 
+class RootBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{padding: 48, fontFamily: 'system-ui, sans-serif', background: '#fff', minHeight: '100vh'}}>
+          <div style={{fontSize: 14, fontWeight: 600, color: '#111', marginBottom: 8}}>Application error — something went wrong.</div>
+          <div style={{fontSize: 11, color: '#888', fontFamily: 'monospace', marginBottom: 20, whiteSpace: 'pre-wrap', maxWidth: 640}}>
+            {this.state.err?.message || 'Unknown error'}
+            {this.state.err?.stack ? '\n\n' + this.state.err.stack.slice(0, 600) : ''}
+          </div>
+          <button style={{fontSize: 12, padding: '6px 18px', borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer', background: '#f8f8f8'}}
+            onClick={() => this.setState({ err: null })}>
+            Dismiss and retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const root = ReactDOM.createRoot(document.getElementById('root'))
-root.render(<App />)
+root.render(<RootBoundary><App /></RootBoundary>)

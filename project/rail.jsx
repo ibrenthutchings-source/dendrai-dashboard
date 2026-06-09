@@ -308,12 +308,12 @@ function FlowMiniTab({ risks, maps, flowMeta, selectedId, onSelect, onOpenMain }
                 <span className="mono" style={{fontSize: 10, color: ragInk[r.rag]}}>{r.score.toFixed(1)}</span>
               </div>
               <div className="flow-mini-impact">
-                {meta.impacts.slice(0, 3).map(im => <span key={im} className="scen-pill">{im}</span>)}
-                {meta.impacts.length > 3 && <span className="scen-pill" style={{opacity: 0.7}}>+{meta.impacts.length - 3}</span>}
+                {(meta.impacts || []).slice(0, 3).map(im => <span key={im} className="scen-pill">{im}</span>)}
+                {(meta.impacts || []).length > 3 && <span className="scen-pill" style={{opacity: 0.7}}>+{(meta.impacts || []).length - 3}</span>}
               </div>
               <div className="flow-mini-foot">
                 <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>
-                  {meta.controls.length} control{meta.controls.length === 1 ? "" : "s"} · {meta.cadence?.length || 0} checkpoint{(meta.cadence?.length || 0) === 1 ? "" : "s"}
+                  {(meta.controls || []).length} control{(meta.controls || []).length === 1 ? "" : "s"} · {meta.cadence?.length || 0} checkpoint{(meta.cadence?.length || 0) === 1 ? "" : "s"}
                 </span>
                 <span className="flow-mini-aud">
                   {counts.open  > 0 && <span className="chip-pill" style={{background: "var(--amber-soft)", color: "var(--amber-ink)"}}>{counts.open} in flight</span>}
