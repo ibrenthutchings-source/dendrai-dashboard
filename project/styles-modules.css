@@ -1348,7 +1348,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .rar-table-wrap { margin-top: 12px; }
 .rar-thead, .rar-row {
   display: grid;
-  grid-template-columns: 78px 1fr 120px 84px 96px 230px;
+  grid-template-columns: 68px 1fr 155px 78px 90px 175px;
   gap: 12px;
   align-items: center;
 }
@@ -1637,7 +1637,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 /* Responsive — collapse rar grid on narrow */
 @media (max-width: 1100px) {
   .rar-thead, .rar-row {
-    grid-template-columns: 60px 1fr 110px 70px 200px;
+    grid-template-columns: 58px 1fr 135px 68px 168px;
   }
   .rar-th-ce, .rar-td-ce { display: none; }
   .rar-row-detail { grid-template-columns: 1fr; }
