@@ -845,13 +845,15 @@ window.RISK_ENGINE = (function () {
 
     const histMargins = [];
     if (fin?.cogs?.series && fin?.revenue?.series) {
-      // Match COGS and revenue by end-date (not by array index)
+      // Only use standalone quarterly periods (fp='Q1'/'Q2'/'Q3') to avoid mixing
+      // cumulative H1/9M COGS with standalone quarterly revenue or vice-versa
+      const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
       const revMap = {};
       fin.revenue.series
-        .filter(x => x.form === '10-Q' && x.fp !== 'FY')
+        .filter(x => x.form === '10-Q' && isStandaloneQ(x))
         .forEach(x => { if (x.end) revMap[x.end] = x.val; });
       fin.cogs.series
-        .filter(x => x.form === '10-Q' && x.fp !== 'FY' && revMap[x.end])
+        .filter(x => x.form === '10-Q' && isStandaloneQ(x) && revMap[x.end])
         .sort((a, b) => a.end > b.end ? 1 : -1)
         .slice(-12)
         .forEach(c => {
@@ -862,7 +864,8 @@ window.RISK_ENGINE = (function () {
         });
     }
     if (histMargins.length < 4) {
-      // Synthetic fallback — Number.isFinite guards against NaN grossMargin
+      // Clear any partial EDGAR entries to avoid a mixed EDGAR+synthetic series
+      histMargins.length = 0;
       const gm = Number.isFinite(ratios.grossMargin) ? ratios.grossMargin * 100 : 40;
       const labels = syntheticQuarters(2025, 4);
       for (let i = 0; i < 8; i++)
