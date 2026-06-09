@@ -184,13 +184,16 @@ window.LIVE = (function () {
       capex: pickConcept(facts, ["PaymentsToAcquirePropertyPlantAndEquipment"], "USD"),
       rd: pickConcept(facts, ["ResearchAndDevelopmentExpense"], "USD"),
       sga: pickConcept(facts, ["SellingGeneralAndAdministrativeExpense"], "USD"),
-      cogs: pickConcept(facts, ["CostOfRevenue", "CostOfGoodsAndServicesSold"], "USD"),
+      cogs: pickConcept(facts, ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"], "USD"),
+      grossProfit: pickConcept(facts, ["GrossProfit"], "USD"),
     };
     // Derive headline ratios from latest annual fact for each
     const ttmRev = out.revenue && out.revenue.latestAnnual;
     const grossMargin =
-      ttmRev && out.cogs && out.cogs.latestAnnual
+      ttmRev && out.cogs?.latestAnnual
         ? (1 - out.cogs.latestAnnual.val / ttmRev.val) * 100
+        : ttmRev && out.grossProfit?.latestAnnual
+        ? (out.grossProfit.latestAnnual.val / ttmRev.val) * 100
         : null;
     out.grossMarginPct = grossMargin;
     return out;

@@ -863,6 +863,25 @@ window.RISK_ENGINE = (function () {
             histMargins.push({ q: edgarDateToQLabel(c.end) || c.end.slice(0, 7), v: +gm.toFixed(1) });
         });
     }
+    // Fallback: use GrossProfit series directly if COGS-based matching gave < 4 quarters
+    if (histMargins.length < 4 && fin?.grossProfit?.series && fin?.revenue?.series) {
+      histMargins.length = 0;
+      const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
+      const revMap2 = {};
+      fin.revenue.series
+        .filter(x => x.form === '10-Q' && isStandaloneQ(x))
+        .forEach(x => { if (x.end) revMap2[x.end] = x.val; });
+      fin.grossProfit.series
+        .filter(x => x.form === '10-Q' && isStandaloneQ(x) && revMap2[x.end])
+        .sort((a, b) => a.end > b.end ? 1 : -1)
+        .slice(-12)
+        .forEach(p => {
+          const rv = revMap2[p.end];
+          const gm = rv > 0 ? (p.val / rv) * 100 : null;
+          if (gm != null && gm > 0 && gm < 100)
+            histMargins.push({ q: edgarDateToQLabel(p.end) || p.end.slice(0, 7), v: +gm.toFixed(1) });
+        });
+    }
     if (histMargins.length < 4) {
       // Clear any partial EDGAR entries to avoid a mixed EDGAR+synthetic series
       histMargins.length = 0;
