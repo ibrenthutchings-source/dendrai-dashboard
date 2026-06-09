@@ -344,6 +344,50 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   flex-shrink: 0;
 }
 
+/* S3 individual audit plan */
+.s3-audit-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.s3-audit-empty {
+  font-size: 11.5px; color: var(--ink-3); padding: 10px 0; line-height: 1.55;
+}
+.s3-audit-list { display: flex; flex-direction: column; gap: 6px; }
+.s3-audit-item {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 11px; background: var(--surface);
+}
+.s3-audit-item-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+  margin-bottom: 5px;
+}
+.s3-audit-item-title {
+  font-size: 12px; font-weight: 500; color: var(--ink); line-height: 1.35; flex: 1;
+}
+.s3-audit-remove { padding: 2px 5px; opacity: 0.5; }
+.s3-audit-remove:hover { opacity: 1; }
+.s3-audit-item-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 10px;
+}
+.s3-risk-sel {
+  width: 100%; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--surface);
+  font-size: 11.5px; color: var(--ink); font-family: "Geist Mono", monospace;
+}
+.s3-risk-sel:focus { outline: none; border-color: var(--acc); }
+/* Residual risk preview panel */
+.s3-residual-preview {
+  margin-top: 14px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface-2);
+}
+.s3-res-label { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 10px; }
+.s3-res-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.s3-res-item .l { font-size: 9.5px; color: var(--ink-3); margin-bottom: 2px; }
+.s3-res-item .v { font-size: 18px; font-weight: 600; }
+.s3-res-arrow { font-size: 16px; color: var(--ink-3); }
+
 /* S2 control-by-control tolerance list */
 .s2-ctrl-list { display: flex; flex-direction: column; gap: 7px; }
 .s2-ctrl-risk {
@@ -361,6 +405,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .s2-ctrl-risk-title {
   display: flex; align-items: center; gap: 7px;
 }
+.s2-ctrl-score { font-size: 13px; font-weight: 600; min-width: 30px; }
 .s2-ctrl-risk-name {
   flex: 1; min-width: 0;
   font-weight: 500; font-size: 11.5px; line-height: 1.35;

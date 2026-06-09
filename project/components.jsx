@@ -40,6 +40,7 @@ function Icon({ name, size = 14, className = "" }) {
     case "compass":  return <svg {...common}><circle cx="8" cy="8" r="6"/><path d="M10.5 5.5L9 9l-3.5 1.5L7 7l3.5-1.5z" fill={stroke} stroke="none"/></svg>;
     case "download": return <svg {...common}><path d="M8 1v9M4 7l4 4 4-4M2 14h12"/></svg>;
     case "wifi":     return <svg {...common}><path d="M1.5 5.5a10 10 0 0 1 13 0M3.5 8a7 7 0 0 1 9 0M5.5 10.5a4 4 0 0 1 5 0"/><circle cx="8" cy="13" r=".5" fill={stroke}/></svg>;
+    case "plus":     return <svg {...common}><path d="M8 2v12M2 8h12"/></svg>;
     default:         return null;
   }
 }

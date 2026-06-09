@@ -195,7 +195,7 @@ function RiskDetail({ risk, meta, maps }) {
         <div className="risk-detail-r">
           <div className="risk-detail-metric">
             <div className="l">Score</div>
-            <div className="v" style={{color: ragInk[risk.rag]}}>{risk.score.toFixed(1)}</div>
+            <div className="v" style={{color: ragInk[risk.rag]}}>{(risk.score ?? 0).toFixed(1)}</div>
           </div>
           <div className="risk-detail-metric">
             <div className="l">Velocity</div>
@@ -212,13 +212,13 @@ function RiskDetail({ risk, meta, maps }) {
         <div className="risk-detail-col">
           <div className="risk-detail-lbl">Impacts these business areas <span className="muted mono" style={{marginLeft: 6}}>{meta.impacts.length}</span></div>
           <div className="risk-detail-chips">
-            {meta.impacts.map(im => <span key={im} className="risk-chip">{im}</span>)}
+            {(meta.impacts || []).map(im => <span key={im} className="risk-chip">{im}</span>)}
           </div>
         </div>
 
         <div className="risk-detail-col">
-          <div className="risk-detail-lbl">Controls in place <span className="muted mono" style={{marginLeft: 6}}>{meta.controls.length}</span></div>
-          {meta.controls.map((c, i) => (
+          <div className="risk-detail-lbl">Controls in place <span className="muted mono" style={{marginLeft: 6}}>{(meta.controls || []).length}</span></div>
+          {(meta.controls || []).map((c, i) => (
             <div key={i} className="risk-ctrl-row">
               <span className="risk-ctrl-name">{c.name}</span>
               <span className={`risk-ctrl-pill ce-${c.ce}`}>{c.ce}</span>
@@ -227,8 +227,8 @@ function RiskDetail({ risk, meta, maps }) {
         </div>
 
         <div className="risk-detail-col">
-          <div className="risk-detail-lbl">Audit / MAP coverage <span className="muted mono" style={{marginLeft: 6}}>{meta.audits.length}</span></div>
-          {meta.audits.map((a, i) => {
+          <div className="risk-detail-lbl">Audit / MAP coverage <span className="muted mono" style={{marginLeft: 6}}>{(meta.audits || []).length}</span></div>
+          {(meta.audits || []).map((a, i) => {
             const linked = maps.find(m => m.id === a || a.includes(m.id));
             if (linked) {
               const p = linked.completion_pct || 0;
@@ -280,7 +280,7 @@ function FlowEmptyDetail({ topRisks, onSelect }) {
               <span className="rag-chip" style={{background: ragSoft[r.rag], color: ragInk[r.rag]}}>{r.rag}</span>
               <span className="mono" style={{color: "var(--ink-3)", fontSize: 10.5}}>{r.id}</span>
               <span className="risk-quickpick-name">{r.name}</span>
-              <span className="muted mono" style={{fontSize: 10.5}}>{r.score.toFixed(1)}</span>
+              <span className="muted mono" style={{fontSize: 10.5}}>{(r.score ?? 0).toFixed(1)}</span>
             </button>
           );
         })}
