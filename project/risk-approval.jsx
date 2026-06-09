@@ -164,7 +164,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
             <span className="rar-was mono">was {fmt2(risk.score)}</span>
           )}
         </div>
-        <div style={{display:"flex", alignItems:"center", gap:4, marginTop:3}}>
+        <div style={{display:"flex", alignItems:"center", gap:4}}>
           <span className={"rar-tol-badge " + (breachesAppetite ? "breach" : "ok")}>
             {breachesAppetite ? "BREACH" : "OK"}
           </span>
