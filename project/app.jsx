@@ -379,6 +379,7 @@ function App() {
 
   async function runLoop() {
     setRunning(true);
+    setHasRun(false);
     setLoopLog([]);
     setStageState({});
     setOutput({});
@@ -389,6 +390,13 @@ function App() {
     setSelectedRiskId(null);
     setRiskApprovals({});
     log("Loop started");
+    try { await _runLoopBody(); } catch (err) {
+      log(`Run error: ${err?.message || err}`);
+      setRunning(false);
+    }
+  }
+
+  async function _runLoopBody() {
 
     // --- Auto-ingest RSS (live fetch when liveMode, else simulate) ---
     let currentRssSignals = [...rssSignals];
@@ -516,26 +524,30 @@ function App() {
   async function rerunFromS3() {
     if (running) return;
     setRunning(true);
-    log("Re-run triggered from Stage 3");
-    setStageState(prev => ({ ...prev, s3: "idle", s4: "idle", s5: "idle", s6: "idle" }));
-    setOutput(prev => { const n = {...prev}; delete n.s3; delete n.s4; delete n.s5; delete n.s6; return n; });
-    setGateState(prev => ({ ...prev, g2: null }));
-    await t(300);
-    await runStage("s3", { objectives: profileRef.current.objectives }, 1500);
-    if (hitl.scope) {
-      setStageState(prev => ({ ...prev, s4: "waiting", s5: "waiting", s6: "waiting" }));
-      const gres = await showGate(2);
-      log(gres.ok ? "Gate 2 passed" : `Gate 2 overridden: ${gres.reason}`);
+    try {
+      log("Re-run triggered from Stage 3");
+      setStageState(prev => ({ ...prev, s3: "idle", s4: "idle", s5: "idle", s6: "idle" }));
+      setOutput(prev => { const n = {...prev}; delete n.s3; delete n.s4; delete n.s5; delete n.s6; return n; });
+      setGateState(prev => ({ ...prev, g2: null }));
+      await t(300);
+      await runStage("s3", { objectives: profileRef.current.objectives }, 1500);
+      if (hitl.scope) {
+        setStageState(prev => ({ ...prev, s4: "waiting", s5: "waiting", s6: "waiting" }));
+        const gres = await showGate(2);
+        log(gres.ok ? "Gate 2 passed" : `Gate 2 overridden: ${gres.reason}`);
+      }
+      setStageState(prev => ({ ...prev, s4: "idle" }));
+      await runStage("s4", { maps: profileRef.current.maps }, 1400);
+      setActiveRailTab("map");
+      await runStage("s5", { closure: profileRef.current.closure }, 1200);
+      await runStage("s6", { loop: profileRef.current.loop }, 1200);
+      setActiveRailTab("loop");
+      log("Re-run from Stage 3 complete");
+      setHasRun(true);
+    } catch (err) {
+      log(`Re-run error: ${err?.message || err}`);
     }
-    setStageState(prev => ({ ...prev, s4: "idle" }));
-    await runStage("s4", { maps: profileRef.current.maps }, 1400);
-    setActiveRailTab("map");
-    await runStage("s5", { closure: profileRef.current.closure }, 1200);
-    await runStage("s6", { loop: profileRef.current.loop }, 1200);
-    setActiveRailTab("loop");
-    log("Re-run from Stage 3 complete");
     setRunning(false);
-    setHasRun(true);
   }
 
   function resetAll() {

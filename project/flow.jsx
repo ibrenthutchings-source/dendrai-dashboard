@@ -210,7 +210,7 @@ function RiskDetail({ risk, meta, maps }) {
 
       <div className="risk-detail-grid">
         <div className="risk-detail-col">
-          <div className="risk-detail-lbl">Impacts these business areas <span className="muted mono" style={{marginLeft: 6}}>{meta.impacts.length}</span></div>
+          <div className="risk-detail-lbl">Impacts these business areas <span className="muted mono" style={{marginLeft: 6}}>{(meta.impacts || []).length}</span></div>
           <div className="risk-detail-chips">
             {(meta.impacts || []).map(im => <span key={im} className="risk-chip">{im}</span>)}
           </div>
