@@ -4,6 +4,28 @@
    data mode (mock/live), tweaks.
    ============================================================ */
 
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{padding: 40, fontFamily: "system-ui, sans-serif", color: "var(--ink, #111)"}}>
+          <div style={{fontSize: 13, fontWeight: 600, marginBottom: 8}}>Something went wrong rendering this section.</div>
+          <div style={{fontSize: 11, color: "var(--ink-3, #888)", marginBottom: 16, fontFamily: "monospace"}}>
+            {this.state.err?.message || "Unknown error"}
+          </div>
+          <button style={{fontSize: 11, padding: "5px 14px", borderRadius: 6, border: "1px solid var(--line, #ddd)", cursor: "pointer", background: "var(--surface, #fff)"}}
+            onClick={() => this.setState({ err: null })}>
+            Dismiss and retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
   "accent": "emerald",
   "density": "comfortable",
@@ -119,6 +141,16 @@ function App() {
   // ---- Logging helper ----
   const log = useCallback((msg) => {
     setLoopLog((prev) => [...prev, { ts: new Date().toISOString(), msg }]);
+  }, []);
+
+  // ---- Manual audit plan entries ----
+  const [manualAudits, setManualAudits] = useState([]);
+  const addManualAudit = useCallback((audit) => {
+    setManualAudits(prev => [...prev, audit]);
+    log(`Manual audit added: ${audit.title} · ${audit.when} · linked to ${audit.riskId}`);
+  }, [log]);
+  const removeManualAudit = useCallback((id) => {
+    setManualAudits(prev => prev.filter(a => a.id !== id));
   }, []);
 
   // ---- Company profile — built from EDGAR + FRED + RISK_ENGINE during run ----
@@ -522,6 +554,7 @@ function App() {
     setPerRiskAppetite({});
     setAdjustOpen(false);
     setAdjustingRiskId(null);
+    setManualAudits([]);
   }
 
   // ---- CEM event firing ----
@@ -675,6 +708,7 @@ function App() {
   // ---- RENDER ----
   return (
     <div className="app">
+      <ErrorBoundary>
       <Header
         cfg={cfg}
         liveMode={liveMode} livefacts={livefacts}
@@ -725,12 +759,12 @@ function App() {
                 <div className="mono" style={{ display: "flex", gap: 12, alignItems: "center", color: "var(--ink-3)", fontSize: 11 }}>
                   {output.s2?.riskAppetite?.status === "BREACHED" && (
                     <span style={{color:"var(--red-ink)", fontWeight:500}}>
-                      Appetite <RAGChip rag={output.s2.riskAppetite.level?.charAt(0)}>{output.s2.riskAppetite.level}</RAGChip> BREACHED · {output.s2.riskAppetite.breaching.length} risk{output.s2.riskAppetite.breaching.length !== 1 ? "s" : ""} exceed tolerance
+                      Appetite <RAGChip rag={output.s2.riskAppetite.level?.charAt(0)}>{output.s2.riskAppetite.level}</RAGChip> BREACHED · {output.s2.riskAppetite.breaching?.length ?? 0} risk{(output.s2.riskAppetite.breaching?.length ?? 0) !== 1 ? "s" : ""} exceed tolerance
                     </span>
                   )}
-                  <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s2?.risks.length || 0}</b> risks</span>
-                  <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s3?.objectives.length || 0}</b> objectives</span>
-                  <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s4?.maps.length || 0}</b> MAPs</span>
+                  <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s2?.risks?.length || 0}</b> risks</span>
+                  <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s3?.objectives?.length || 0}</b> objectives</span>
+                  <span><b style={{ color: "var(--ink)", fontWeight: 500 }}>{output.s4?.maps?.length || 0}</b> MAPs</span>
                 </div>
               }
             </div>
@@ -776,7 +810,10 @@ function App() {
                 onApproveObjective={approveObjective}
                 onOpenAdjustObjective={openAdjustObjective}
                 onApproveAllObjectives={approveAllRemainingObjectives}
-                onSignoffObjective={signoffObjective} />
+                onSignoffObjective={signoffObjective}
+                manualAudits={manualAudits}
+                onAddAudit={addManualAudit}
+                onRemoveAudit={removeManualAudit} />
             )}
             {activePipeTab === "rss" && (
               <RSSPanel
@@ -859,6 +896,7 @@ function App() {
       <DendraiTweaks tweaks={tweaks} setTweak={setTweak}
         hitl={hitl} setHitl={setHitl}
         velocity={velocity} setVelocity={setVelocity} />
+      </ErrorBoundary>
     </div>);
 
 }

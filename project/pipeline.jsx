@@ -24,7 +24,8 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
                     riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
-                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective }) {
+                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective,
+                    manualAudits = [], onAddAudit, onRemoveAudit }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
@@ -34,6 +35,12 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     allSignals: allSignals || [],
     onOpenAdjustRisk,
     onRerunFromS3,
+  };
+  const s3Extra = {
+    manualAudits,
+    onAddAudit,
+    onRemoveAudit,
+    risks: output.s2?.risks || [],
   };
   return (
     <div className="pipeline">
@@ -57,6 +64,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               signals={signals}
               livefacts={livefacts}
               s2Extra={s.id === "s2" ? s2Extra : null}
+              s3Extra={s.id === "s3" ? s3Extra : null}
             />
             {i < STAGES.length - 1 && (
               <Connector active={status === "done" || status === "running"}/>
@@ -109,7 +117,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
   );
 }
 
-function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s2Extra }) {
+function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s2Extra, s3Extra }) {
   const statusCls = status === "running" ? "running" : status === "done" ? "done" : "";
   const pill =
     status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
@@ -130,7 +138,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s2
       </div>
       {isOpen && (
         <div className="stage-body">
-          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s2Extra={s2Extra}/>
+          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s2Extra={s2Extra} s3Extra={s3Extra}/>
         </div>
       )}
     </div>
@@ -181,7 +189,7 @@ function HITLGate({ num, state, onApprove, onOverride }) {
 }
 
 // ------ Stage body content ------
-function StageBody({ id, status, output, signals, livefacts, s2Extra }) {
+function StageBody({ id, status, output, signals, livefacts, s2Extra, s3Extra }) {
   if (status === "idle") {
     return <Empty>Awaiting run — toggle signal sources in the sidebar and press Run Loop.</Empty>;
   }
@@ -197,7 +205,8 @@ function StageBody({ id, status, output, signals, livefacts, s2Extra }) {
   }
   if (id === "s1") return <S1Body output={output} signals={signals} livefacts={livefacts}/>;
   if (id === "s2") return <S2Body output={output} {...(s2Extra || {})}/>;
-  if (id === "s3") return <S3Body output={output}/>;
+  if (id === "s3") return <S3Body output={output} {...(s3Extra || {})}/>;
+
   if (id === "s4") return <S4Body output={output}/>;
   if (id === "s5") return <S5Body output={output}/>;
   if (id === "s6") return <S6Body output={output}/>;
@@ -342,9 +351,10 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             return (
               <div key={r.id} className={"s2-ctrl-risk" + (breachesAppetite ? " breach" : "")}>
                 <div className="s2-ctrl-risk-head">
-                  {/* Row 1: score + name + velocity */}
+                  {/* Row 1: RAG dot + score + name + velocity */}
                   <div className="s2-ctrl-risk-title">
-                    <RAGChip rag={r.rag}>{fmt2(r.score)}</RAGChip>
+                    <span className={`rag-dot ${r.rag}`} style={{flexShrink:0}}/>
+                    <span className="mono s2-ctrl-score" style={{color: scoreColorInk(r.score)}}>{fmt2(r.score)}</span>
                     <span className="s2-ctrl-risk-name">{r.name}</span>
                     <VelocityPill v={r.velocity}/>
                   </div>
@@ -440,19 +450,23 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
   );
 }
 
-function S3Body({ output }) {
+function S3Body({ output, manualAudits = [], onAddAudit, onRemoveAudit, risks = [] }) {
   const objs = output?.objectives || [];
   const p1 = objs.filter(o => o.priority === "P1").length;
   const p2 = objs.filter(o => o.priority === "P2").length;
   const totalHrs = objs.reduce((a, o) => a + (o.hours || 0), 0);
+  const [modalOpen, setModalOpen] = React.useState(false);
+
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
-        <Stat l="Audit objectives" v={objs.length}/>
+        <Stat l="AI objectives" v={objs.length}/>
         <Stat l="P1 priority" v={p1} mono color="var(--red-ink)"/>
         <Stat l="P2 priority" v={p2} mono color="var(--amber-ink)"/>
         <Stat l="Effort (hrs)" v={totalHrs} mono/>
+        <Stat l="Planned audits" v={manualAudits.length} mono color={manualAudits.length > 0 ? "var(--acc-ink)" : undefined}/>
       </div>
+
       <div className="stage-detail">
         <h5>Sprint-ready objectives</h5>
         <ul>
@@ -465,6 +479,59 @@ function S3Body({ output }) {
           ))}
         </ul>
       </div>
+
+      <div className="stage-detail">
+        <div className="s3-audit-header">
+          <h5 style={{margin: 0}}>
+            Individual audits
+            {manualAudits.length > 0 && <span className="mono muted" style={{fontWeight: 400, marginLeft: 6}}>({manualAudits.length})</span>}
+          </h5>
+          {onAddAudit && (
+            <button className="btn btn-sm" onClick={() => setModalOpen(true)}>
+              <Icon name="plus" size={10}/> Add Audit
+            </button>
+          )}
+        </div>
+
+        {manualAudits.length === 0 ? (
+          <div className="s3-audit-empty">
+            No individual audits planned. Use <strong>Add Audit</strong> to schedule targeted risk-reduction activities linked to specific risks.
+          </div>
+        ) : (
+          <div className="s3-audit-list">
+            {manualAudits.map(a => {
+              const risk = risks.find(r => r.id === a.riskId);
+              const ragColors = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
+              return (
+                <div key={a.id} className="s3-audit-item">
+                  <div className="s3-audit-item-head">
+                    <div className="s3-audit-item-title">{a.title}</div>
+                    {onRemoveAudit && (
+                      <button className="btn btn-sm btn-ghost s3-audit-remove" onClick={() => onRemoveAudit(a.id)}>
+                        <Icon name="x" size={10}/>
+                      </button>
+                    )}
+                  </div>
+                  <div className="s3-audit-item-meta">
+                    <span className="tag mono">{a.when}</span>
+                    <span className="mono muted">Linked: {a.riskId}</span>
+                    {risk && <span className="mono" style={{color: ragColors[risk.rag]}}>{fmt2(risk.score)} → {fmt2(a.residualScore)}</span>}
+                    <span className="mono" style={{color: "var(--green-ink)"}}>−{a.reduction}% risk</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {modalOpen && onAddAudit && (
+        <AddAuditModal
+          risks={risks}
+          onClose={() => setModalOpen(false)}
+          onSubmit={(audit) => { onAddAudit(audit); setModalOpen(false); }}
+        />
+      )}
     </div>
   );
 }
@@ -547,6 +614,127 @@ function Stat({ l, v, mono, color }) {
     <div className="stage-stat">
       <div className="l">{l}</div>
       <div className={"v" + (mono ? " mono" : "")} style={color ? { color } : null}>{v}</div>
+    </div>
+  );
+}
+
+// ---- Add Audit Modal ----
+const AUDIT_QUARTERS = ["Q3 2026","Q4 2026","Q1 2027","Q2 2027","Q3 2027","Q4 2027"];
+
+function AddAuditModal({ risks, onClose, onSubmit }) {
+  const [riskId, setRiskId] = React.useState("");
+  const [when, setWhen] = React.useState("Q3 2026");
+  const [title, setTitle] = React.useState("");
+  const [reduction, setReduction] = React.useState(20);
+
+  const selectedRisk = risks.find(r => r.id === riskId);
+  const baseScore = selectedRisk?.score ?? 0;
+  const residualScore = parseFloat(Math.max(0, baseScore * (1 - reduction / 100)).toFixed(1));
+
+  const valid = riskId && title.trim().length >= 5;
+
+  return (
+    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+      <div className="modal-box" style={{width: 580}}>
+        <div className="modal-head">
+          <div>
+            <div className="modal-title">Add Individual Audit</div>
+            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>
+              Schedule a targeted audit linked to a specific risk with anticipated reduction
+            </div>
+          </div>
+          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+        </div>
+
+        <div className="modal-body">
+          <div className="ar-grid" style={{gridTemplateColumns: "1fr 1fr"}}>
+            <div className="ar-field" style={{gridColumn: "1 / -1"}}>
+              <label className="ar-label">Linked Risk</label>
+              <select value={riskId} onChange={e => setRiskId(e.target.value)} className="s3-risk-sel">
+                <option value="">— Select a risk —</option>
+                {[...risks].sort((a,b) => b.score - a.score).map(r => (
+                  <option key={r.id} value={r.id}>
+                    {r.id} · {r.name} · score {fmt2(r.score)} ({r.rag})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="ar-field" style={{gridColumn: "1 / -1"}}>
+              <label className="ar-label">Audit Objective</label>
+              <input type="text" value={title} onChange={e => setTitle(e.target.value)}
+                className="fi-input"
+                placeholder="e.g. Revenue recognition testing — controls walkthrough"/>
+            </div>
+
+            <div className="ar-field">
+              <label className="ar-label">Scheduled Period</label>
+              <div className="ar-ce-row" style={{flexWrap: "wrap", gap: 4}}>
+                {AUDIT_QUARTERS.map(q => (
+                  <button key={q} className={`ar-ce-opt ${when === q ? "active" : ""}`}
+                    onClick={() => setWhen(q)}>{q}</button>
+                ))}
+              </div>
+            </div>
+
+            <div className="ar-field">
+              <label className="ar-label">
+                Anticipated Risk Reduction <span className="mono ar-val">{reduction}%</span>
+              </label>
+              <input type="range" min="5" max="80" step="5" value={reduction}
+                onChange={e => setReduction(parseInt(e.target.value))} className="ar-slider"/>
+              <div className="ar-orig mono">Applied to selected risk's current score</div>
+            </div>
+          </div>
+
+          {selectedRisk && (
+            <div className="s3-residual-preview">
+              <div className="s3-res-label mono">Residual Risk Projection</div>
+              <div className="s3-res-row">
+                <div className="s3-res-item">
+                  <div className="l">Current Score</div>
+                  <div className="v mono" style={{color: scoreColorInk(baseScore)}}>{fmt2(baseScore)}</div>
+                </div>
+                <div className="s3-res-arrow">→</div>
+                <div className="s3-res-item">
+                  <div className="l">Residual Score</div>
+                  <div className="v mono" style={{color: scoreColorInk(residualScore)}}>{fmt2(residualScore)}</div>
+                </div>
+                <div className="s3-res-item">
+                  <div className="l">Score Reduction</div>
+                  <div className="v mono" style={{color: "var(--green-ink)"}}>−{fmt2(baseScore - residualScore)}</div>
+                </div>
+                <div className="s3-res-item">
+                  <div className="l">Control</div>
+                  <div className="v mono">{selectedRisk.ce}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-foot">
+          <span className="muted mono" style={{fontSize: 11}}>
+            {!riskId ? "Select a risk to continue" : !valid ? "Audit objective must be at least 5 characters" : "Ready to add to plan"}
+          </span>
+          <div style={{display: "flex", gap: 6}}>
+            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+            <button className="btn btn-sm btn-primary" disabled={!valid}
+              onClick={() => onSubmit({
+                id: `MA-${Date.now().toString(36).toUpperCase()}`,
+                riskId,
+                riskName: selectedRisk?.name || riskId,
+                when,
+                title: title.trim(),
+                reduction,
+                baseScore,
+                residualScore,
+              })}>
+              <Icon name="plus" size={10}/> Add to Plan
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
