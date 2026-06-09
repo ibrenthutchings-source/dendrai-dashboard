@@ -1303,7 +1303,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .rar-table-wrap { margin-top: 12px; }
 .rar-thead, .rar-row {
   display: grid;
-  grid-template-columns: 78px 1fr 80px 84px 96px 230px;
+  grid-template-columns: 78px 1fr 120px 84px 96px 230px;
   gap: 12px;
   align-items: center;
 }
@@ -1331,6 +1331,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .rar-td { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .rar-td-rag { flex-direction: column; align-items: flex-start; }
 .rar-td-name { flex-direction: column; align-items: flex-start; gap: 2px; }
+.rar-td-score { flex-direction: column; align-items: flex-start; gap: 3px; }
 .rar-rname { font-size: 12.5px; color: var(--ink); font-weight: 500; line-height: 1.35; }
 .rar-rmeta {
   display: flex; gap: 6px; font-size: 10px; color: var(--ink-3);
@@ -1588,7 +1589,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 /* Responsive — collapse rar grid on narrow */
 @media (max-width: 1100px) {
   .rar-thead, .rar-row {
-    grid-template-columns: 60px 1fr 70px 70px 200px;
+    grid-template-columns: 60px 1fr 110px 70px 200px;
   }
   .rar-th-ce, .rar-td-ce { display: none; }
   .rar-row-detail { grid-template-columns: 1fr; }
