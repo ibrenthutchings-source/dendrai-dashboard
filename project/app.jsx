@@ -252,7 +252,13 @@ function App() {
       ...prev,
       [id]: {
         status: "adjusted",
-        adjustments: { priority: payload.priority, sprint: payload.sprint, hours: payload.hours },
+        adjustments: {
+          priority: payload.priority,
+          sprint: payload.sprint,
+          hours: payload.hours,
+          linked_risks: payload.linked_risks,
+          residualRiskReduction: payload.residualRiskReduction,
+        },
         rationale: payload.rationale,
         adjustedBy: auditorName,
         adjustedAt: Date.now(),
@@ -721,6 +727,18 @@ function App() {
       ],
     };
   }, [hasRun, output, loopLog, signalSet, cfg, velocity, liveMode, riskApprovals, scopeApprovals, profile]);
+
+  // ---- Gate 2 residual risk reductions (for Sankey) ----
+  const gate2Reductions = useMemo(() => {
+    const map = {};
+    (output.s3?.objectives || []).forEach(o => {
+      const reduction = o.residualRiskReduction || 0;
+      if (!reduction) return;
+      const linkedRisks = o.linked_risks || (o.linked_risk ? [o.linked_risk] : []);
+      linkedRisks.forEach(rid => { map[rid] = (map[rid] || 0) + reduction; });
+    });
+    return map;
+  }, [output.s3?.objectives]);
 
   // ---- Tab definitions ----
   const mainTabs = [

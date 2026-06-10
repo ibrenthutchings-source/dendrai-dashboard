@@ -1599,6 +1599,44 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   accent-color: var(--ink);
 }
 
+/* Hours number input in adjust modal */
+.fi-input {
+  width: 100%; padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--surface-2);
+  font-size: 13px; color: var(--ink); outline: none;
+  transition: border-color 0.15s;
+}
+.fi-input:focus { border-color: var(--acc); background: var(--surface); }
+
+/* Multi-risk selector in adjust modal */
+.ar-risk-list {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  max-height: 156px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+.ar-risk-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+  transition: background 0.1s;
+}
+.ar-risk-item:last-child { border-bottom: none; }
+.ar-risk-item:hover { background: var(--surface-2); }
+.ar-risk-item.selected { background: var(--acc-soft); }
+.ar-risk-item input[type="checkbox"] { flex-shrink: 0; accent-color: var(--acc); margin: 0; }
+
+/* Residual risk preview in adjust modal */
+.ar-residual-preview {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 6px; padding: 6px 10px;
+  background: var(--surface-2); border-radius: 6px;
+  font-size: 10.5px;
+}
+
 .ar-rationale { display: flex; flex-direction: column; gap: 6px; }
 .ar-rationale-meta {
   display: flex; gap: 8px; font-size: 10.5px;
