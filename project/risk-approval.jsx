@@ -135,15 +135,14 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
   return (
     <div className={`rar-row rar-row-${status}`}>
-      <div className="rar-td rar-td-rag">
-        <RAGChip rag={effRag}>{effRag}</RAGChip>
-        {isAdjusted && effRag !== risk.rag && (
-          <div className="rar-was mono">was <RAGChip rag={risk.rag}>{risk.rag}</RAGChip></div>
-        )}
-      </div>
-
       <div className="rar-td rar-td-name">
-        <div className="rar-rname">{risk.name}</div>
+        <div className="rar-name-head">
+          <RAGChip rag={effRag}>{effRag}</RAGChip>
+          {isAdjusted && effRag !== risk.rag && (
+            <span className="rar-was mono">was <RAGChip rag={risk.rag}>{risk.rag}</RAGChip></span>
+          )}
+          <div className="rar-rname">{risk.name}</div>
+        </div>
         <div className="rar-rmeta mono">
           <span>{risk.id}</span>
           <span>·</span>
