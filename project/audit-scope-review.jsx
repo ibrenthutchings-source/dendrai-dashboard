@@ -293,33 +293,64 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
   );
 }
 
-function AdjustObjectiveModal({ open, obj, onClose, onSubmit }) {
+function AdjustObjectiveModal({ open, obj, risks = [], onClose, onSubmit }) {
   const [priority, setPriority] = useState(obj?.priority || "P2");
   const [sprint, setSprint] = useState(obj?.sprint ?? 1);
-  const [hours, setHours] = useState(obj?.hours ?? 40);
+  const [hours, setHours] = useState(String(obj?.hours ?? 40));
   const [rationale, setRationale] = useState("");
+  const [linkedRiskIds, setLinkedRiskIds] = useState(() => {
+    if (obj?.linked_risks?.length) return obj.linked_risks;
+    if (obj?.linked_risk) return [obj.linked_risk];
+    return [];
+  });
+  const [residualReduction, setResidualReduction] = useState(obj?.residualRiskReduction ?? 0);
 
   useEffect(() => {
     if (open && obj) {
       setPriority(obj.priority);
       setSprint(obj.sprint);
-      setHours(obj.hours);
+      setHours(String(obj.hours ?? 40));
       setRationale("");
+      setLinkedRiskIds(obj.linked_risks?.length ? obj.linked_risks : obj.linked_risk ? [obj.linked_risk] : []);
+      setResidualReduction(obj.residualRiskReduction ?? 0);
     }
   }, [open, obj?.id]);
 
   if (!open || !obj) return null;
 
-  const changed = priority !== obj.priority || sprint !== obj.sprint || hours !== obj.hours;
-  const valid = changed && rationale.trim().length >= 30;
+  const sortedRisks = [...risks].sort((a, b) => b.score - a.score);
+  const hoursNum = parseInt(hours, 10);
+  const hoursValid = !isNaN(hoursNum) && hoursNum >= 1 && hoursNum <= 9999;
+
+  const toggleRisk = (id) => {
+    setLinkedRiskIds(prev => prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id]);
+  };
+
+  const origLinkedRiskIds = obj.linked_risks?.length ? obj.linked_risks
+    : obj.linked_risk ? [obj.linked_risk] : [];
+  const origResidual = obj.residualRiskReduction ?? 0;
+
+  const riskIdsChanged = JSON.stringify([...linkedRiskIds].sort()) !== JSON.stringify([...origLinkedRiskIds].sort());
+  const changed = priority !== obj.priority || sprint !== obj.sprint
+    || (hoursValid && hoursNum !== obj.hours)
+    || riskIdsChanged
+    || residualReduction !== origResidual;
+  const valid = changed && rationale.trim().length >= 30 && hoursValid;
+
+  const ragInk = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
+  const primaryRisk = sortedRisks.find(r => linkedRiskIds.includes(r.id));
+  const residualScore = primaryRisk
+    ? Math.max(0, parseFloat((primaryRisk.score - residualReduction).toFixed(1)))
+    : null;
+  const residualRag = residualScore == null ? null : residualScore >= 7.5 ? "R" : residualScore >= 5.0 ? "A" : "G";
 
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
-      <div className="modal-box" style={{width: 620}}>
+      <div className="modal-box" style={{width: 640}}>
         <div className="modal-head">
           <div>
             <div className="modal-title">Adjust Objective · {obj.id}</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3, maxWidth: 480, lineHeight: 1.4}}>
+            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3, maxWidth: 500, lineHeight: 1.4}}>
               {obj.objective}
             </div>
           </div>
@@ -350,11 +381,90 @@ function AdjustObjectiveModal({ open, obj, onClose, onSubmit }) {
             </div>
 
             <div className="ar-field">
-              <label className="ar-label">Hours <span className="mono ar-val">{hours}h</span></label>
-              <input type="range" min="8" max="200" step="4" value={hours}
-                onChange={e => setHours(parseInt(e.target.value))} className="ar-slider"/>
-              <div className="ar-orig mono">AI estimated: {obj.hours}h</div>
+              <label className="ar-label">Hours</label>
+              <input type="number" min="1" max="9999" value={hours}
+                onChange={e => setHours(e.target.value)}
+                className="fi-input"
+                style={{fontFamily: "Geist Mono, monospace", fontSize: 13}}/>
+              <div className="ar-orig mono">
+                AI estimated: {obj.hours}h
+                {!hoursValid && hours !== "" && <span style={{color:"var(--red-ink)", marginLeft:6}}>invalid</span>}
+              </div>
             </div>
+          </div>
+
+          {/* Linked Key Risks — multi-select */}
+          <div className="ar-field" style={{marginBottom: 14}}>
+            <label className="ar-label">
+              Linked Key Risks
+              <span className="muted" style={{marginLeft: 6}}>· select one or more</span>
+              {linkedRiskIds.length > 0 && (
+                <span className="mono" style={{marginLeft: 6, color: "var(--acc-ink)", fontSize: 10.5}}>
+                  {linkedRiskIds.length} selected
+                </span>
+              )}
+            </label>
+            <div className="ar-risk-list">
+              {sortedRisks.length === 0 ? (
+                <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", padding: "7px 10px"}}>
+                  No risks available — run the pipeline first
+                </div>
+              ) : sortedRisks.map(r => {
+                const checked = linkedRiskIds.includes(r.id);
+                return (
+                  <label key={r.id} className={`ar-risk-item${checked ? " selected" : ""}`}>
+                    <input type="checkbox" checked={checked} onChange={() => toggleRisk(r.id)}/>
+                    <span className="mono" style={{color: ragInk[r.rag], fontSize: 10, fontWeight: 600, minWidth: 34}}>
+                      {r.id}
+                    </span>
+                    <span style={{flex: 1, fontSize: 11, color: "var(--ink)"}}>{r.name}</span>
+                    <span className="mono" style={{fontSize: 10, color: ragInk[r.rag], marginLeft: 4}}>
+                      {(r.score ?? 0).toFixed(1)}
+                    </span>
+                    <span className={`rag-dot ${r.rag}`} style={{flexShrink: 0}}/>
+                  </label>
+                );
+              })}
+            </div>
+            {origLinkedRiskIds.length > 0 && (
+              <div className="ar-orig mono">Original: {origLinkedRiskIds.join(", ")}</div>
+            )}
+          </div>
+
+          {/* Project Residual Risk */}
+          <div className="ar-field" style={{marginBottom: 14}}>
+            <label className="ar-label">
+              Project Residual Risk
+              <span className="mono ar-val" style={{marginLeft: 6, color: residualReduction > 0 ? "var(--green-ink)" : "var(--ink-3)"}}>
+                {residualReduction > 0 ? `−${residualReduction.toFixed(1)} pts` : "no reduction set"}
+              </span>
+            </label>
+            <input type="range" min="0" max="5" step="0.5" value={residualReduction}
+              onChange={e => setResidualReduction(parseFloat(e.target.value))} className="ar-slider"/>
+            {primaryRisk ? (
+              <div className="ar-residual-preview">
+                <span className="mono" style={{color: "var(--ink-3)"}}>
+                  {primaryRisk.id} base:
+                  <span style={{color: ragInk[primaryRisk.rag], fontWeight: 600, marginLeft: 4}}>
+                    {primaryRisk.score.toFixed(1)}
+                  </span>
+                </span>
+                <span className="mono" style={{color: "var(--ink-3)"}}>→</span>
+                <span className="mono">
+                  Residual:
+                  <span style={{color: ragInk[residualRag], fontWeight: 700, marginLeft: 4}}>
+                    {residualScore.toFixed(1)}
+                  </span>
+                </span>
+                {residualReduction > 0 && (
+                  <span className="mono" style={{color: "var(--green-ink)", marginLeft: "auto"}}>
+                    −{residualReduction.toFixed(1)} pts applied
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="ar-orig mono">Select a linked risk above to see residual projection</div>
+            )}
           </div>
 
           <div className="ar-field" style={{marginBottom: 14}}>
@@ -366,6 +476,9 @@ function AdjustObjectiveModal({ open, obj, onClose, onSubmit }) {
                   {c}
                 </span>
               ))}
+              {(obj.controls || []).length === 0 && (
+                <span className="mono" style={{fontSize:10.5,color:"var(--ink-3)"}}>None assigned</span>
+              )}
             </div>
           </div>
 
@@ -410,7 +523,14 @@ function AdjustObjectiveModal({ open, obj, onClose, onSubmit }) {
           <div style={{display:"flex",gap:6}}>
             <button className="btn btn-sm" onClick={onClose}>Cancel</button>
             <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({ priority, sprint, hours, rationale: rationale.trim() })}>
+              onClick={() => onSubmit({
+                priority,
+                sprint,
+                hours: hoursValid ? hoursNum : obj.hours,
+                linked_risks: linkedRiskIds,
+                residualRiskReduction: residualReduction,
+                rationale: rationale.trim(),
+              })}>
               Submit Adjustment
             </button>
           </div>
