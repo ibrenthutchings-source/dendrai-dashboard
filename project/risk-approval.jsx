@@ -79,7 +79,6 @@ function RiskApprovalReview({
 
       <div className="rar-table-wrap">
         <div className="rar-thead">
-          <div className="rar-th rar-th-rag">RAG</div>
           <div className="rar-th rar-th-name">Risk</div>
           <div className="rar-th rar-th-score">Score</div>
           <div className="rar-th rar-th-vel">Velocity</div>

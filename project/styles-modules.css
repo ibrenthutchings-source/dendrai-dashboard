@@ -1345,13 +1345,12 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 }
 
 /* Table */
-.rar-table-wrap { margin-top: 12px; overflow-x: auto; }
+.rar-table-wrap { margin-top: 12px; }
 .rar-thead, .rar-row {
   display: grid;
-  grid-template-columns: 68px minmax(100px, 1fr) 155px 78px 90px 175px;
+  grid-template-columns: minmax(120px, 1fr) 140px 72px 90px 160px;
   gap: 12px;
   align-items: center;
-  min-width: 660px;
 }
 .rar-thead {
   padding: 8px 12px; font-family: "Geist Mono", monospace;
@@ -1359,7 +1358,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   color: var(--ink-3);
   border-bottom: 1px solid var(--line);
 }
-.rar-th-rag, .rar-th-score { text-align: center; }
+.rar-th-score { text-align: center; }
 .rar-tbody { display: flex; flex-direction: column; }
 .rar-row {
   position: relative;
@@ -1378,7 +1377,6 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .rar-row:last-child { border-bottom: none; }
 
 .rar-td { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; overflow: hidden; }
-.rar-td-rag { flex-direction: column; align-items: center; overflow: visible; }
 .rar-td-name { flex-direction: column; align-items: flex-start; gap: 2px; }
 .rar-td-score { flex-direction: column; align-items: center; gap: 3px; padding-top: 2px; }
 .rar-td-vel   { padding-top: 4px; }
