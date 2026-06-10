@@ -12,17 +12,25 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
 
   const points = risks.map((r, ridx) => {
     const qs = projectQuarters(r);
-    const qIdx = { "Now": -1, "Q1": 0, "Q2": 1, "Q3": 2, "Q4": 3 }[activeQ];
-    const curSc = qIdx === -1 ? r.score : qs[qIdx];
+    const qIdx = { "Now": -1, "Q1": 0, "Q2": 1, "Q3": 2, "Q4": 3 }[activeQ] ?? -1;
+    // "Now" baseline positions
+    const nowImp = clamp(r.inherent || r.score + 1, 1, 10);
+    const nowLik = likelihoodFromCE(r.ce);
+    const nowX = PAD + ((nowLik - 1) / 9) * plotW;
+    const nowY = H - PAD - ((nowImp - 1) / 9) * plotH;
+    // Q4 projected positions
     const q4Sc = qs[3];
-    const curImp = clamp(r.inherent || curSc + 1, 1, 10);
-    const q4Imp = clamp(curImp + (r.velocity || 0) * 0.3, 1, 10);
-    const curLik = likelihoodFromCE(r.ce);
-    const q4Lik = clamp(curLik + (r.velocity || 0) * 0.2, 1, 10);
-    const curX = PAD + ((curLik - 1) / 9) * plotW;
-    const curY = H - PAD - ((curImp - 1) / 9) * plotH;
+    const q4Imp = clamp(nowImp + (r.velocity || 0) * 0.3, 1, 10);
+    const q4Lik = clamp(nowLik + (r.velocity || 0) * 0.2, 1, 10);
     const q4X = PAD + ((q4Lik - 1) / 9) * plotW;
     const q4Y = H - PAD - ((q4Imp - 1) / 9) * plotH;
+    // Active-quarter bubble: interpolate from Now toward Q4
+    const t = qIdx === -1 ? 0 : (qIdx + 1) / 4;
+    const curX = nowX + (q4X - nowX) * t;
+    const curY = nowY + (q4Y - nowY) * t;
+    const curSc = qIdx === -1 ? r.score : qs[qIdx];
+    const curImp = nowImp + (q4Imp - nowImp) * t;
+    const curLik = nowLik + (q4Lik - nowLik) * t;
     const size = Math.sqrt(curImp * curLik) * 4.6;
     const q4Size = Math.sqrt(q4Imp * q4Lik) * 3.6;
     return { r, ridx, curX, curY, q4X, q4Y, size, q4Size,
