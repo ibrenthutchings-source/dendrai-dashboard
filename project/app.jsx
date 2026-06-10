@@ -904,6 +904,8 @@ function App() {
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
               maps={output.s4?.maps || (hasRun ? profile.maps : null)}
               flowMeta={hasRun ? profile.riskFlow : null}
+              objectives={output.s3?.objectives || []}
+              gate2Reductions={gate2Reductions}
               selectedId={selectedRiskId} setSelectedId={setSelectedRiskId}
               liveMode={liveMode}
               rssSignals={rssSignals}
@@ -942,6 +944,7 @@ function App() {
       <AdjustObjectiveModal
         open={adjustObjOpen}
         obj={(output.s3?.objectives || profile.objectives || []).find(o => o.id === adjustingObjId)}
+        risks={output.s2?.risks || []}
         onClose={() => { setAdjustObjOpen(false); setAdjustingObjId(null); }}
         onSubmit={submitObjAdjustment} />
 

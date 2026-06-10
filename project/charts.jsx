@@ -289,7 +289,7 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
 // it impacts and to the audit/control work addressing it. Hovering
 // or clicking a risk highlights its full path. A velocity strip
 // below the chart shows when oversight cadence ramps up over 90d.
-function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, hoverId, rssSignals, fredData, appetiteThreshold = 7.0 }) {
+function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reductions = {}, selectedId, onSelect, onHover, hoverId, rssSignals, fredData, appetiteThreshold = 7.0 }) {
   if (!risks?.length || !flowMeta) return null;
 
   // All risks sorted by score descending
@@ -309,16 +309,18 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
   ];
 
   // For each risk, classify its audit count into the 3 buckets
-  // based on the linked MAP completion %.
+  // based on the linked MAP completion % + Gate 2 objectives.
   function audCountsFor(rid) {
     const meta = flowMeta[rid];
-    if (!meta) return { open: 0, plan: 0, closed: 0 };
-    // Number of audit/MAP items
     const linkedMaps = (maps || []).filter(m => m.linked_risk === rid);
-    const planned = Math.max(0, (meta.audits?.length || 0) - linkedMaps.length);
+    const gate2Objs = (objectives || []).filter(o => {
+      const linkedRisks = o.linked_risks || (o.linked_risk ? [o.linked_risk] : []);
+      return linkedRisks.includes(rid);
+    });
+    const basePlanned = meta ? Math.max(0, (meta.audits?.length || 0) - linkedMaps.length) : 0;
     const open = linkedMaps.filter(m => (m.completion_pct || 0) < 100).length;
     const closed = linkedMaps.filter(m => (m.completion_pct || 0) >= 100).length;
-    return { open, plan: planned, closed };
+    return { open, plan: basePlanned + gate2Objs.length, closed };
   }
 
   // Residual risk computation
@@ -335,7 +337,8 @@ function RiskFlowSankey({ risks, maps, flowMeta, selectedId, onSelect, onHover, 
     // Macro: average FRED velocity signal (contractionary = +0.2, neutral = 0, expansionary = -0.1)
     const macroAdj = (fredData || []).filter(f => f.dir === "CONTRACTIONARY").length * 0.08;
 
-    const projected = risk.score + velContrib + ceAdj + rssVel + macroAdj;
+    const gate2Adj = (gate2Reductions || {})[risk.id] || 0;
+    const projected = risk.score + velContrib + ceAdj + rssVel + macroAdj - gate2Adj;
     return Math.max(1, Math.min(10, parseFloat(projected.toFixed(1))));
   }
 
