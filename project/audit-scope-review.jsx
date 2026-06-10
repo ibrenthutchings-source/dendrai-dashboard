@@ -107,13 +107,18 @@ function ScopeApprovalReview({
         </div>
         <div className="rar-tbody">
           {objectives.map(o => {
-            const linkedRisk = risks.find(r => r.id === o.linked_risk);
+            const CE_RANK = { NONE: 0, WEAK: 1, ADEQUATE: 2, STRONG: 3 };
+            const linkedIds = o.linked_risks?.length ? o.linked_risks : o.linked_risk ? [o.linked_risk] : [];
+            const linkedCEs = linkedIds.map(id => risks.find(r => r.id === id)?.ce || "ADEQUATE");
+            const worstCE = linkedCEs.reduce((worst, ce) =>
+              (CE_RANK[ce] ?? 2) < (CE_RANK[worst] ?? 2) ? ce : worst
+            , "ADEQUATE");
             return (
               <ObjectiveRow
                 key={o.id}
                 obj={o}
                 approval={approvals[o.id] || { status: "pending" }}
-                linkedRiskCE={linkedRisk?.ce || "ADEQUATE"}
+                linkedRiskCE={worstCE}
                 riskReduction={riskReductions[o.id] ?? 15}
                 onSetRiskReduction={val => setRiskReductions(prev => ({ ...prev, [o.id]: val }))}
                 onApprove={() => onApproveObjective(o.id)}
@@ -182,7 +187,15 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
       </div>
 
       <div className="rar-td sar-td-risk">
-        <span className="sar-risk-chip mono">{obj.linked_risk}</span>
+        {(() => {
+          const ids = obj.linked_risks?.length ? obj.linked_risks : obj.linked_risk ? [obj.linked_risk] : [];
+          return ids.length === 0 ? <span className="mono" style={{color:"var(--ink-4)"}}>—</span>
+            : ids.slice(0, 2).map((id, i) => (
+              <span key={i} className="sar-risk-chip mono" style={{marginBottom: 1}}>{id}</span>
+            )).concat(ids.length > 2
+              ? [<span key="more" className="mono" style={{fontSize:9.5, color:"var(--ink-3)"}}>+{ids.length-2}</span>]
+              : []);
+        })()}
       </div>
 
       <div className="rar-td sar-td-ctrl">
