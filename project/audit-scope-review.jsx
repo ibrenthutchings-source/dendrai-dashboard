@@ -15,17 +15,37 @@ function priSoft(p) {
   return p === "P1" ? "var(--red-soft)" : p === "P2" ? "var(--amber-soft)" : "var(--green-soft)";
 }
 
+const CE_LABEL = { STRONG: "Strong", ADEQUATE: "Adequate", WEAK: "Weak", NONE: "None" };
+const CE_COLOR = { STRONG: "var(--green-ink)", ADEQUATE: "var(--acc-ink)", WEAK: "var(--amber-ink)", NONE: "var(--red-ink)" };
+
+function defaultRiskReduction(priority, ce) {
+  const base = { P1: 20, P2: 15, P3: 10 }[priority] ?? 15;
+  const adj = { NONE: 8, WEAK: 4, ADEQUATE: 0, STRONG: -3 }[ce] ?? 0;
+  return Math.min(50, Math.max(5, base + adj));
+}
+
 function ScopeApprovalReview({
   objectives,
   approvals,
+  risks = [],
   onApproveObjective,
   onOpenAdjust,
   onApproveAll,
   onSignoff,
   onSubmit,
   onOverrideGate,
+  onAddObjective,
 }) {
   if (!objectives || objectives.length === 0) return null;
+
+  const [riskReductions, setRiskReductions] = React.useState(() => {
+    const map = {};
+    objectives.forEach(o => {
+      const linkedRisk = risks.find(r => r.id === o.linked_risk);
+      map[o.id] = defaultRiskReduction(o.priority, linkedRisk?.ce || "ADEQUATE");
+    });
+    return map;
+  });
 
   const total = objectives.length;
   const decided = objectives.filter(o => {
@@ -37,6 +57,10 @@ function ScopeApprovalReview({
   ).length;
   const pendingSig = objectives.filter(o => approvals[o.id]?.status === "adjusted").length;
   const allResolved = decided === total;
+
+  const totalHours = objectives.reduce((sum, o) => {
+    return sum + (approvals[o.id]?.adjustments?.hours ?? o.hours ?? 0);
+  }, 0);
 
   return (
     <div className="rar sar" data-screen-label="HITL · Scope approval">
@@ -75,28 +99,47 @@ function ScopeApprovalReview({
           <div className="rar-th sar-th-pri">Pri</div>
           <div className="rar-th sar-th-obj">Objective</div>
           <div className="rar-th sar-th-risk">Risk</div>
+          <div className="rar-th sar-th-ctrl">Control</div>
+          <div className="rar-th sar-th-rr">Risk Red.</div>
           <div className="rar-th sar-th-num">Hrs</div>
           <div className="rar-th sar-th-num">Sprint</div>
           <div className="rar-th sar-th-action">Disposition</div>
         </div>
         <div className="rar-tbody">
-          {objectives.map(o => (
-            <ObjectiveRow
-              key={o.id}
-              obj={o}
-              approval={approvals[o.id] || { status: "pending" }}
-              onApprove={() => onApproveObjective(o.id)}
-              onAdjust={() => onOpenAdjust(o.id)}
-              onSignoff={(role) => onSignoff(o.id, role)}
-            />
-          ))}
+          {objectives.map(o => {
+            const linkedRisk = risks.find(r => r.id === o.linked_risk);
+            return (
+              <ObjectiveRow
+                key={o.id}
+                obj={o}
+                approval={approvals[o.id] || { status: "pending" }}
+                linkedRiskCE={linkedRisk?.ce || "ADEQUATE"}
+                riskReduction={riskReductions[o.id] ?? 15}
+                onSetRiskReduction={val => setRiskReductions(prev => ({ ...prev, [o.id]: val }))}
+                onApprove={() => onApproveObjective(o.id)}
+                onAdjust={() => onOpenAdjust(o.id)}
+                onSignoff={(role) => onSignoff(o.id, role)}
+              />
+            );
+          })}
         </div>
+      </div>
+
+      <div className="sar-footer-meta">
+        <span className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>
+          Total hours: <b style={{color: "var(--ink)", fontWeight: 500}}>{totalHours}h</b>
+        </span>
       </div>
 
       <div className="rar-foot">
         <button className="btn btn-sm" onClick={onOverrideGate}>
           <Icon name="alert" size={11}/> Override entire gate
         </button>
+        {onAddObjective && (
+          <button className="btn btn-sm" onClick={onAddObjective}>
+            <Icon name="plus" size={11}/> Add Objective
+          </button>
+        )}
         <div className="rar-foot-spacer"/>
         <button className="btn btn-sm" onClick={onApproveAll} disabled={allResolved}>
           Approve all remaining ({total - decided - pendingSig})
@@ -109,13 +152,14 @@ function ScopeApprovalReview({
   );
 }
 
-function ObjectiveRow({ obj, approval, onApprove, onAdjust, onSignoff }) {
+function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskReduction, onApprove, onAdjust, onSignoff }) {
   const status = approval.status || "pending";
   const adj = approval.adjustments || null;
   const effPri = adj?.priority ?? obj.priority;
   const effHours = adj?.hours ?? obj.hours;
   const effSprint = adj?.sprint ?? obj.sprint;
   const isAdjusted = status === "adjusted" || status === "signed";
+  const [sliderOpen, setSliderOpen] = React.useState(false);
 
   return (
     <div className={`rar-row sar-row rar-row-${status}`}>
@@ -139,6 +183,29 @@ function ObjectiveRow({ obj, approval, onApprove, onAdjust, onSignoff }) {
 
       <div className="rar-td sar-td-risk">
         <span className="sar-risk-chip mono">{obj.linked_risk}</span>
+      </div>
+
+      <div className="rar-td sar-td-ctrl">
+        <span className="mono" style={{fontSize: 10.5, color: CE_COLOR[linkedRiskCE] || "var(--ink-2)", fontWeight: 500}}>
+          {CE_LABEL[linkedRiskCE] || linkedRiskCE}
+        </span>
+      </div>
+
+      <div className="rar-td sar-td-rr">
+        {sliderOpen ? (
+          <div className="sar-rr-slider-wrap">
+            <span className="mono" style={{fontSize: 10, color: "var(--ink)", fontWeight: 500, minWidth: 28}}>{riskReduction}%</span>
+            <input type="range" min="5" max="50" step="5" value={riskReduction}
+              onChange={e => onSetRiskReduction(parseInt(e.target.value))}
+              className="ar-slider sar-rr-slider"/>
+            <button className="sar-rr-close" onClick={() => setSliderOpen(false)}>✕</button>
+          </div>
+        ) : (
+          <button className="sar-rr-badge" onClick={() => setSliderOpen(true)}
+            title="Click to adjust expected risk reduction">
+            {riskReduction}%
+          </button>
+        )}
       </div>
 
       <div className="rar-td sar-td-num">

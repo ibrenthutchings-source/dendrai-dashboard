@@ -287,6 +287,25 @@ function App() {
     log(`Bulk-approve: all remaining objectives accepted by ${auditorName}`);
   }, [auditorName, log]);
 
+  const addObjective = useCallback(() => {
+    const newId = `OBJ-${String((output.s3?.objectives?.length || 0) + 1).padStart(2, "0")}`;
+    const newObj = {
+      id: newId,
+      objective: "New audit objective — click Adjust to define scope",
+      priority: "P2",
+      linked_risk: output.s2?.risks?.[0]?.id || "R-01",
+      controls: [],
+      hours: 40,
+      sprint: 1,
+    };
+    setOutput(prev => ({
+      ...prev,
+      s3: { ...(prev.s3 || {}), objectives: [...(prev.s3?.objectives || []), newObj] },
+    }));
+    setScopeApprovals(prev => ({ ...prev, [newId]: { status: "pending" } }));
+    log(`Added new objective ${newId}`);
+  }, [output.s3?.objectives?.length, output.s2?.risks, log]);
+
   const approveGate = (n) => {
     // For Gate 1, commit per-risk adjustments back into output.s2.risks
     if (n === 1) {
@@ -823,6 +842,7 @@ function App() {
                 onOpenAdjustObjective={openAdjustObjective}
                 onApproveAllObjectives={approveAllRemainingObjectives}
                 onSignoffObjective={signoffObjective}
+                onAddObjective={addObjective}
                 manualAudits={manualAudits}
                 onAddAudit={addManualAudit}
                 onRemoveAudit={removeManualAudit} />

@@ -1391,7 +1391,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 }
 .rar-was .rag { font-size: 9.5px; padding: 0 5px; }
 
-.rar-actions { display: flex; gap: 4px; }
+.rar-actions { display: flex; flex-direction: column; gap: 3px; align-items: stretch; }
 .rar-btn-approve {
   background: var(--green-soft);
   border-color: color-mix(in oklch, var(--green) 30%, var(--line));
@@ -1651,7 +1651,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .sar .rar-thead,
 .sar .rar-row,
 .sar .sar-row {
-  grid-template-columns: 44px 1fr 60px 52px 48px 148px;
+  grid-template-columns: 36px 1fr 44px 64px 54px 38px 34px 110px;
 }
 .sar-pill { background: color-mix(in oklch, var(--acc) 18%, var(--surface-2)); color: var(--acc-ink); }
 .sar-td-pri { flex-direction: column; align-items: flex-start; }
@@ -1666,11 +1666,37 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   font-size: 10px; padding: 2px 6px;
   border: 1px solid var(--line); border-radius: 4px; color: var(--ink-2);
 }
+.sar-td-ctrl { align-items: flex-start; }
+.sar-td-rr  { align-items: flex-start; flex-direction: column; gap: 4px; }
 .sar-td-num { flex-direction: column; align-items: flex-start; gap: 1px; }
+
+/* Risk reduction badge (click to open slider) */
+.sar-rr-badge {
+  font-family: "Geist Mono", monospace; font-size: 10px; font-weight: 600;
+  padding: 2px 7px; border-radius: 4px; cursor: pointer;
+  background: var(--green-soft); color: var(--green-ink);
+  border: 1px solid color-mix(in oklch, var(--green) 30%, var(--line));
+  transition: all .12s;
+}
+.sar-rr-badge:hover { background: var(--green); color: var(--surface); }
+.sar-rr-slider-wrap { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.sar-rr-slider { width: 64px; flex-shrink: 0; }
+.sar-rr-close {
+  background: none; border: none; cursor: pointer; padding: 0 2px;
+  font-size: 9px; color: var(--ink-3); line-height: 1;
+}
+.sar-rr-close:hover { color: var(--ink); }
+
+/* Total hours footer row */
+.sar-footer-meta {
+  padding: 8px 12px 4px;
+  border-top: 1px solid var(--line);
+  display: flex; align-items: center; gap: 16px;
+}
 
 @media (max-width: 1100px) {
   .sar .rar-thead, .sar .rar-row, .sar .sar-row {
-    grid-template-columns: 44px 1fr 60px 148px;
+    grid-template-columns: 44px 1fr 72px 60px 140px;
   }
   .sar .sar-td-risk, .sar .sar-td-num { display: none; }
 }

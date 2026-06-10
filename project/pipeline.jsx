@@ -24,7 +24,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
                     riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
-                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective,
+                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s2Extra = {
@@ -90,12 +90,14 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                   <ScopeApprovalReview
                     objectives={output.s3?.objectives || []}
                     approvals={scopeApprovals}
+                    risks={output.s2?.risks || []}
                     onApproveObjective={onApproveObjective}
                     onOpenAdjust={onOpenAdjustObjective}
                     onApproveAll={onApproveAllObjectives}
                     onSignoff={onSignoffObjective}
                     onSubmit={() => onApprove(2)}
                     onOverrideGate={() => onOverride(2)}
+                    onAddObjective={onAddObjective}
                   />
                 ) : (
                   <HITLGate
