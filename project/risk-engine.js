@@ -683,15 +683,19 @@ window.RISK_ENGINE = (function () {
     const r2  = risks.find(r => r.id !== top.id && r.rag === 'R') ||
                 risks.find(r => r.id !== top.id && r.rag === 'A' && r.velocity >= 2) ||
                 risks.find(r => r.id !== top.id) || top;
+    // Impact ladder derived from quarterly revenue; falls back to $500M proxy
+    const qRevM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 / 4 : 500;
+    const topScore = Number.isFinite(top.score) ? top.score : 5.0;
+    const topVel   = Number.isFinite(top.velocity) ? top.velocity : 0;
     return {
       id: 'grey-swan-gs',
       name: `Grey Swan — ${top.name?.split('—')[0].trim()} cascade to systemic failure`,
       risk_id: top.id, risk_name: top.name,
-      starting_rag: top.rag, starting_score: top.score,
-      ending_rag: 'R', ending_score: Math.min(9.5, top.score + 2.2),
+      starting_rag: top.rag, starting_score: topScore,
+      ending_rag: 'R', ending_score: Math.min(9.5, topScore + 2.2),
       probability: 'LOW · plausible',
       headline: `${top.name?.split('—')[0].trim()} control failure cascades into ${r2.name?.split('—')[0].trim()} and reputational damage`,
-      description: `Foreseeable but under-weighted: ${top.name?.split('—')[0].trim()} deteriorates beyond current score (${top.score}/10) as primary controls fail. This cascades into ${r2.name?.split('—')[0].trim()} and triggers reputational and regulatory escalation — a sequence that begins with a single control point failure.`,
+      description: `Foreseeable but under-weighted: ${top.name?.split('—')[0].trim()} deteriorates beyond current score (${topScore}/10) as primary controls fail. This cascades into ${r2.name?.split('—')[0].trim()} and triggers reputational and regulatory escalation — a sequence that begins with a single control point failure.`,
       catalysts: [
         `${top.name?.split('—')[0].trim()} control effectiveness degrades from ADEQUATE to WEAK`,
         `Related internal control deficiency identified by external auditor`,
@@ -699,7 +703,7 @@ window.RISK_ENGINE = (function () {
         `${r2.name?.split('—')[0].trim()} crosses IA escalation threshold simultaneously`,
       ],
       impacts_at_max: [
-        `Primary risk score reaches ${Math.min(9.5, top.score + 2.2).toFixed(1)}/10 — material audit finding`,
+        `Primary risk score reaches ${Math.min(9.5, topScore + 2.2).toFixed(1)}/10 — material audit finding`,
         `Regulatory escalation requires external specialist engagement`,
         `Management credibility risk with Audit Committee`,
       ],
@@ -713,13 +717,13 @@ window.RISK_ENGINE = (function () {
         `Accelerate MAP-01 implementation; escalate to AC if missed by due date`,
         `Commission targeted IA deep-dive if velocity reaches +3`,
         `Engage external specialist if regulatory inquiry received`,
-        `Notify Board if score exceeds ${Math.min(9.5, top.score + 1.5).toFixed(1)}/10`,
+        `Notify Board if score exceeds ${Math.min(9.5, topScore + 1.5).toFixed(1)}/10`,
       ],
       timeline: [
-        { t:'T+0',  label:'Early signal',    score:top.score, rag:top.rag, impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`, signals:[`Score ${top.score}/10`,`Velocity ${top.velocity>0?'+':''}${top.velocity}`,`MAP in progress`], action:'IA initiates focused review' },
-        { t:'T+30', label:'Stress building', score:Math.min(9.5,top.score+0.8), rag:'R', impact:'Primary control effectiveness degrades; KRI breach at 80% threshold', signals:[`Score ${(top.score+0.8).toFixed(1)}/10`,'Control WEAK','Escalation flag'], action:'Emergency controls review; AC notified' },
-        { t:'T+60', label:'Cascade risk',    score:Math.min(9.5,top.score+1.5), rag:'R', impact:`${r2.name?.split('—')[0].trim()} also elevating; dual-risk scenario active`, signals:[`Score ${(top.score+1.5).toFixed(1)}/10`,'Dual-risk active','Regulatory monitoring'], action:'External specialist engaged; Board briefed' },
-        { t:'T+90', label:'Systemic',        score:Math.min(9.5,top.score+2.2), rag:'R', impact:'Material control failure; external auditor notified', signals:[`Score ${Math.min(9.5,top.score+2.2).toFixed(1)}/10`,'Material finding','Regulatory escalation'], action:'Structured remediation plan; investor communication' },
+        { t:'T+0',  label:'Early signal',    score:topScore,                       rag:top.rag, likelihood:0.05, impact_$m:0,                              impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`,                              signals:[`Score ${topScore.toFixed(1)}/10`,`Velocity ${topVel>0?'+':''}${topVel}`,`MAP in progress`],                                              action:'IA initiates focused review' },
+        { t:'T+30', label:'Stress building', score:Math.min(9.5,topScore+0.8),     rag:'R',     likelihood:0.12, impact_$m:Math.round(qRevM * 0.05),        impact:'Primary control effectiveness degrades; KRI breach at 80% threshold',                            signals:[`Score ${(topScore+0.8).toFixed(1)}/10`,'Control WEAK','Escalation flag'],                                                action:'Emergency controls review; AC notified' },
+        { t:'T+60', label:'Cascade risk',    score:Math.min(9.5,topScore+1.5),     rag:'R',     likelihood:0.20, impact_$m:Math.round(qRevM * 0.10),        impact:`${r2.name?.split('—')[0].trim()} also elevating; dual-risk scenario active`,                     signals:[`Score ${(topScore+1.5).toFixed(1)}/10`,'Dual-risk active','Regulatory monitoring'],                                    action:'External specialist engaged; Board briefed' },
+        { t:'T+90', label:'Systemic',        score:Math.min(9.5,topScore+2.2),     rag:'R',     likelihood:0.30, impact_$m:Math.round(qRevM * 0.18),        impact:'Material control failure; external auditor notified',                                            signals:[`Score ${Math.min(9.5,topScore+2.2).toFixed(1)}/10`,'Material finding','Regulatory escalation'],                        action:'Structured remediation plan; investor communication' },
       ],
     };
   }
