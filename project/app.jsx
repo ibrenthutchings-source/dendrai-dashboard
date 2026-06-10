@@ -841,7 +841,9 @@ function App() {
                 liveMode={liveMode}
                 livefacts={livefacts}
                 fredSeries={fredLive}
-                rssSignals={rssSignals} />
+                rssSignals={rssSignals}
+                industry={hasRun ? profile.entity?.industry : cfg.industry}
+                ticker={cfg.ticker} />
             )}
             {activePipeTab === "scen" && (
               <ScenariosPanel scenarios={hasRun ? profile.scenarios : null} greySwan={hasRun ? profile.greySwan : null} />

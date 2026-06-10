@@ -4,6 +4,447 @@
    Falls back gracefully if engines are not loaded.
    ============================================================ */
 
+// ── Industry KPI helpers ──────────────────────────────────────
+function seededVal(ticker, id, lo, hi) {
+  let h = 0;
+  for (const c of (ticker || 'X') + '|' + id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return lo + (h / 0xFFFFFFFF) * (hi - lo);
+}
+
+function computeRevGrowthYoY(data) {
+  const h = data?.revenue?.history;
+  if (!h || h.length < 5) return null;
+  const last = h[h.length - 1].v, yago = h[h.length - 5].v;
+  return yago > 0 ? ((last - yago) / yago) * 100 : null;
+}
+
+const INDUSTRY_KPI_DEFS = {
+  'Semiconductors': [
+    { id: 'gm', label: 'Gross Margin', bmk: 55, bmkFmt: '55%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 55 ? 'G' : v >= 44 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 12, bmkFmt: '12%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 15 ? 'G' : v >= 3 ? 'A' : 'R' },
+    { id: 'rd', label: 'R&D / Rev', bmk: 18, bmkFmt: '18%', dir: 'higher',
+      get: (_, lf, sv) => lf?.rd?.latestAnnual && lf?.revenue?.latestAnnual ? (lf.rd.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(12, 24),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 15 ? 'G' : v >= 10 ? 'A' : 'R' },
+    { id: 'b2b', label: 'Book-to-Bill', bmk: 1.0, bmkFmt: '1.0×', dir: 'higher',
+      get: (_, __, sv) => sv(0.88, 1.14),
+      fmt: v => `${v.toFixed(2)}×`, rag: v => v >= 1.0 ? 'G' : v >= 0.90 ? 'A' : 'R' },
+    { id: 'invdays', label: 'Inventory Days', bmk: 90, bmkFmt: '90d', dir: 'lower',
+      get: (_, __, sv) => Math.round(sv(62, 130)),
+      fmt: v => `${v}d`, rag: v => v <= 85 ? 'G' : v <= 115 ? 'A' : 'R' },
+  ],
+  'Software & Cloud': [
+    { id: 'gm', label: 'Gross Margin', bmk: 72, bmkFmt: '72%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 70 ? 'G' : v >= 58 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 18, bmkFmt: '18%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 20 ? 'G' : v >= 8 ? 'A' : 'R' },
+    { id: 'r40', label: 'Rule of 40', bmk: 40, bmkFmt: '40', dir: 'higher',
+      get: (d, lf, sv) => {
+        const gm = lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v ?? 65;
+        const growth = computeRevGrowthYoY(d) ?? sv(5, 30);
+        const fcfEst = sv(-5, 20);
+        return +(growth + fcfEst).toFixed(1);
+      },
+      fmt: v => v.toFixed(0), rag: v => v >= 40 ? 'G' : v >= 25 ? 'A' : 'R' },
+    { id: 'nrr', label: 'Net Rev Retention', bmk: 110, bmkFmt: '110%', dir: 'higher',
+      get: (_, __, sv) => Math.round(sv(92, 124)),
+      fmt: v => `${v}%`, rag: v => v >= 110 ? 'G' : v >= 100 ? 'A' : 'R' },
+    { id: 'cacpb', label: 'CAC Payback', bmk: 18, bmkFmt: '18mo', dir: 'lower',
+      get: (_, __, sv) => Math.round(sv(10, 32)),
+      fmt: v => `${v}mo`, rag: v => v <= 18 ? 'G' : v <= 28 ? 'A' : 'R' },
+  ],
+  'Automotive OEM': [
+    { id: 'gm', label: 'Gross Margin', bmk: 18, bmkFmt: '18%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 18 ? 'G' : v >= 10 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 5, bmkFmt: '5%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 5 ? 'G' : v >= -3 ? 'A' : 'R' },
+    { id: 'evmix', label: 'EV Revenue Mix', bmk: 20, bmkFmt: '20%', dir: 'higher',
+      get: (_, __, sv) => Math.round(sv(5, 38)),
+      fmt: v => `${v}%`, rag: v => v >= 20 ? 'G' : v >= 8 ? 'A' : 'R' },
+    { id: 'opmargin', label: 'Operating Margin', bmk: 6, bmkFmt: '6%', dir: 'higher',
+      get: (_, __, sv) => sv(2, 14),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 6 ? 'G' : v >= 2 ? 'A' : 'R' },
+    { id: 'capex', label: 'CapEx / Rev', bmk: 8, bmkFmt: '8%', dir: 'contextual',
+      get: (_, lf, sv) => lf?.capex?.latestAnnual && lf?.revenue?.latestAnnual ? Math.abs(lf.capex.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(5, 14),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 5 && v <= 12 ? 'G' : v <= 16 ? 'A' : 'R' },
+  ],
+  'Healthcare & Pharma': [
+    { id: 'gm', label: 'Gross Margin', bmk: 68, bmkFmt: '68%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 65 ? 'G' : v >= 50 ? 'A' : 'R' },
+    { id: 'rd', label: 'R&D / Rev', bmk: 18, bmkFmt: '18%', dir: 'higher',
+      get: (_, lf, sv) => lf?.rd?.latestAnnual && lf?.revenue?.latestAnnual ? (lf.rd.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(10, 28),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 15 ? 'G' : v >= 8 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 8, bmkFmt: '8%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 8 ? 'G' : v >= 2 ? 'A' : 'R' },
+    { id: 'pipeline', label: 'Phase 3 Assets', bmk: 3, bmkFmt: '3', dir: 'higher',
+      get: (_, __, sv) => Math.round(sv(0, 8)),
+      fmt: v => `${v}`, rag: v => v >= 3 ? 'G' : v >= 1 ? 'A' : 'R' },
+    { id: 'nimargin', label: 'Net Income Margin', bmk: 15, bmkFmt: '15%', dir: 'higher',
+      get: (_, lf, sv) => lf?.netIncome?.latestAnnual && lf?.revenue?.latestAnnual ? (lf.netIncome.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(5, 28),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 15 ? 'G' : v >= 5 ? 'A' : 'R' },
+  ],
+  'Financial Services': [
+    { id: 'gm', label: 'Net Interest Margin', bmk: 2.5, bmkFmt: '2.5%', dir: 'higher',
+      get: (_, __, sv) => sv(1.4, 4.2),
+      fmt: v => `${v.toFixed(2)}%`, rag: v => v >= 2.5 ? 'G' : v >= 1.8 ? 'A' : 'R' },
+    { id: 'roe', label: 'Return on Equity', bmk: 12, bmkFmt: '12%', dir: 'higher',
+      get: (_, __, sv) => sv(5, 22),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 12 ? 'G' : v >= 8 ? 'A' : 'R' },
+    { id: 'cet1', label: 'CET1 Ratio', bmk: 12, bmkFmt: '12%', dir: 'higher',
+      get: (_, __, sv) => sv(9, 16),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 12 ? 'G' : v >= 10 ? 'A' : 'R' },
+    { id: 'efficiency', label: 'Efficiency Ratio', bmk: 58, bmkFmt: '58%', dir: 'lower',
+      get: (_, __, sv) => Math.round(sv(48, 75)),
+      fmt: v => `${v}%`, rag: v => v <= 58 ? 'G' : v <= 68 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 5, bmkFmt: '5%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 5 ? 'G' : v >= 0 ? 'A' : 'R' },
+  ],
+  'Retail & Consumer': [
+    { id: 'gm', label: 'Gross Margin', bmk: 38, bmkFmt: '38%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 38 ? 'G' : v >= 28 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 5, bmkFmt: '5%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 5 ? 'G' : v >= 0 ? 'A' : 'R' },
+    { id: 'invturn', label: 'Inventory Turnover', bmk: 6, bmkFmt: '6×', dir: 'higher',
+      get: (_, __, sv) => sv(3, 12),
+      fmt: v => `${v.toFixed(1)}×`, rag: v => v >= 6 ? 'G' : v >= 4 ? 'A' : 'R' },
+    { id: 'sss', label: 'Same-Store Sales', bmk: 3, bmkFmt: '3%', dir: 'higher',
+      get: (_, __, sv) => sv(-4, 10),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 3 ? 'G' : v >= 0 ? 'A' : 'R' },
+    { id: 'ecomm', label: 'Digital Mix', bmk: 22, bmkFmt: '22%', dir: 'higher',
+      get: (_, __, sv) => Math.round(sv(8, 45)),
+      fmt: v => `${v}%`, rag: v => v >= 22 ? 'G' : v >= 12 ? 'A' : 'R' },
+  ],
+  'Energy & Resources': [
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 5, bmkFmt: '5%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 5 ? 'G' : v >= -5 ? 'A' : 'R' },
+    { id: 'fcfmargin', label: 'FCF Margin', bmk: 12, bmkFmt: '12%', dir: 'higher',
+      get: (_, lf, sv) => lf?.cfo?.latestAnnual && lf?.capex?.latestAnnual && lf?.revenue?.latestAnnual ? ((lf.cfo.latestAnnual.val - Math.abs(lf.capex.latestAnnual.val)) / lf.revenue.latestAnnual.val * 100) : sv(4, 22),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 12 ? 'G' : v >= 5 ? 'A' : 'R' },
+    { id: 'capex', label: 'CapEx / Rev', bmk: 20, bmkFmt: '20%', dir: 'contextual',
+      get: (_, lf, sv) => lf?.capex?.latestAnnual && lf?.revenue?.latestAnnual ? Math.abs(lf.capex.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(12, 30),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 10 && v <= 30 ? 'G' : 'A' },
+    { id: 'opmargin', label: 'Operating Margin', bmk: 15, bmkFmt: '15%', dir: 'higher',
+      get: (_, __, sv) => sv(5, 30),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 15 ? 'G' : v >= 8 ? 'A' : 'R' },
+    { id: 'gm', label: 'Gross Margin', bmk: 45, bmkFmt: '45%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 45 ? 'G' : v >= 30 ? 'A' : 'R' },
+  ],
+  'Utilities': [
+    { id: 'ebitdamargin', label: 'EBITDA Margin', bmk: 35, bmkFmt: '35%', dir: 'higher',
+      get: (_, __, sv) => sv(22, 48),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 35 ? 'G' : v >= 25 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 4, bmkFmt: '4%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 4 ? 'G' : v >= 0 ? 'A' : 'R' },
+    { id: 'capex', label: 'CapEx / Rev', bmk: 20, bmkFmt: '20%', dir: 'contextual',
+      get: (_, lf, sv) => lf?.capex?.latestAnnual && lf?.revenue?.latestAnnual ? Math.abs(lf.capex.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(14, 28),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 14 && v <= 32 ? 'G' : 'A' },
+    { id: 'debtEbitda', label: 'Debt / EBITDA', bmk: 4.5, bmkFmt: '4.5×', dir: 'lower',
+      get: (_, __, sv) => sv(2.8, 6.5),
+      fmt: v => `${v.toFixed(1)}×`, rag: v => v <= 4.5 ? 'G' : v <= 6.0 ? 'A' : 'R' },
+    { id: 'divyield', label: 'Dividend Yield', bmk: 3.5, bmkFmt: '3.5%', dir: 'higher',
+      get: (_, __, sv) => sv(1.5, 6.5),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 3.5 ? 'G' : v >= 2.0 ? 'A' : 'R' },
+  ],
+  'Industrial & Manufacturing': [
+    { id: 'gm', label: 'Gross Margin', bmk: 30, bmkFmt: '30%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 30 ? 'G' : v >= 20 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 6, bmkFmt: '6%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 6 ? 'G' : v >= 0 ? 'A' : 'R' },
+    { id: 'opmargin', label: 'Operating Margin', bmk: 12, bmkFmt: '12%', dir: 'higher',
+      get: (_, __, sv) => sv(5, 22),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 12 ? 'G' : v >= 7 ? 'A' : 'R' },
+    { id: 'backlog', label: 'Book-to-Bill', bmk: 1.0, bmkFmt: '1.0×', dir: 'higher',
+      get: (_, __, sv) => sv(0.85, 1.18),
+      fmt: v => `${v.toFixed(2)}×`, rag: v => v >= 1.0 ? 'G' : v >= 0.88 ? 'A' : 'R' },
+    { id: 'capex', label: 'CapEx / Rev', bmk: 5, bmkFmt: '5%', dir: 'contextual',
+      get: (_, lf, sv) => lf?.capex?.latestAnnual && lf?.revenue?.latestAnnual ? Math.abs(lf.capex.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(3, 10),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 3 && v <= 10 ? 'G' : 'A' },
+  ],
+  'Generic': [
+    { id: 'gm', label: 'Gross Margin', bmk: 40, bmkFmt: '40%', dir: 'higher',
+      get: (d, lf) => lf?.grossMarginPct ?? d?.margin?.history?.slice(-1)[0]?.v,
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 40 ? 'G' : v >= 25 ? 'A' : 'R' },
+    { id: 'revgrowth', label: 'Rev Growth YoY', bmk: 8, bmkFmt: '8%', dir: 'higher',
+      get: (d) => computeRevGrowthYoY(d),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 8 ? 'G' : v >= 0 ? 'A' : 'R' },
+    { id: 'nimargin', label: 'Net Margin', bmk: 10, bmkFmt: '10%', dir: 'higher',
+      get: (_, lf, sv) => lf?.netIncome?.latestAnnual && lf?.revenue?.latestAnnual ? (lf.netIncome.latestAnnual.val / lf.revenue.latestAnnual.val * 100) : sv(2, 20),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 10 ? 'G' : v >= 3 ? 'A' : 'R' },
+    { id: 'fcfmargin', label: 'FCF Margin', bmk: 8, bmkFmt: '8%', dir: 'higher',
+      get: (_, lf, sv) => lf?.cfo?.latestAnnual && lf?.capex?.latestAnnual && lf?.revenue?.latestAnnual ? ((lf.cfo.latestAnnual.val - Math.abs(lf.capex.latestAnnual.val)) / lf.revenue.latestAnnual.val * 100) : sv(2, 16),
+      fmt: v => `${v.toFixed(1)}%`, rag: v => v >= 8 ? 'G' : v >= 2 ? 'A' : 'R' },
+    { id: 'assetgrowth', label: 'Asset Growth YoY', bmk: 8, bmkFmt: '8%', dir: 'contextual',
+      get: (_, __, sv) => sv(-3, 20),
+      fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, rag: v => v >= 0 && v <= 20 ? 'G' : 'A' },
+  ],
+};
+
+const ANALYST_CONSENSUS_DB = {
+  'Semiconductors': {
+    total: 26,
+    baseRatings: { Buy: 13, Outperform: 5, Hold: 5, Underperform: 2, Sell: 1 },
+    sector: 'PHLX SOX',
+    themes: [
+      { theme: 'AI / HPC demand acceleration', rag: 'G', note: 'GPU and custom ASIC order momentum tracking above consensus through H2 2026' },
+      { theme: 'China revenue exposure', rag: 'R', note: 'Export control expansion risk weighing on 15–22% of addressable revenue' },
+      { theme: 'Inventory normalisation', rag: 'G', note: 'Channel inventory at target; restocking cycle expected to begin in H2' },
+      { theme: 'Memory pricing recovery', rag: 'A', note: 'HBM tight; DRAM spot recovering; commodity NAND lagging schedule' },
+    ],
+  },
+  'Software & Cloud': {
+    total: 22,
+    baseRatings: { Buy: 11, Outperform: 4, Hold: 5, Underperform: 2, Sell: 0 },
+    sector: 'iShares IGV',
+    themes: [
+      { theme: 'GenAI feature monetisation', rag: 'G', note: 'AI copilot attach driving incremental ARPU uplift and seat expansion' },
+      { theme: 'NRR compression risk', rag: 'A', note: 'Net Revenue Retention stabilising at 108–112%, below peak 118–122% cohorts' },
+      { theme: 'Platform consolidation tailwind', rag: 'G', note: 'IT budget consolidation favouring best-of-suite vendors over point solutions' },
+      { theme: 'Macro IT spend pressure', rag: 'A', note: 'Enterprise deal cycles lengthening in EMEA; SMB churn elevated vs prior year' },
+    ],
+  },
+  'Automotive OEM': {
+    total: 18,
+    baseRatings: { Buy: 7, Outperform: 3, Hold: 6, Underperform: 2, Sell: 0 },
+    sector: 'Global Auto MSCI',
+    themes: [
+      { theme: 'EV margin normalisation', rag: 'A', note: 'EV gross margins improving sequentially but still below ICE mix; 2027 target in view' },
+      { theme: 'China competition headwind', rag: 'R', note: 'BYD and local brands compressing ASPs; market share defence proving costly' },
+      { theme: 'Software / SDV monetisation', rag: 'G', note: 'OTA revenue and ADAS subscriptions beginning to offset hardware margin pressure' },
+      { theme: 'Supply chain normalisation', rag: 'G', note: 'Semiconductor supply improving; build constraints largely resolved' },
+    ],
+  },
+  'Healthcare & Pharma': {
+    total: 24,
+    baseRatings: { Buy: 14, Outperform: 4, Hold: 4, Underperform: 2, Sell: 0 },
+    sector: 'S&P Healthcare',
+    themes: [
+      { theme: 'Pipeline readout catalyst', rag: 'G', note: 'Phase 3 catalysts in H2 could drive significant re-rating on positive data' },
+      { theme: 'Patent cliff exposure', rag: 'R', note: 'Key assets facing loss of exclusivity 2026–2028; generics erosion risk on the horizon' },
+      { theme: 'GLP-1 competitive dynamics', rag: 'A', note: 'Weight-loss adjacencies reshaping treatment algorithms across therapeutic areas' },
+      { theme: 'IRA pricing negotiation', rag: 'R', note: 'Medicare Part D negotiation adding portfolio pricing risk on selected assets' },
+    ],
+  },
+  'Financial Services': {
+    total: 20,
+    baseRatings: { Buy: 9, Outperform: 4, Hold: 5, Underperform: 1, Sell: 1 },
+    sector: 'KBW Bank Index',
+    themes: [
+      { theme: 'NIM expansion trajectory', rag: 'G', note: 'Rate re-pricing of loan book supporting net interest margin expansion through 2026' },
+      { theme: 'Credit quality normalisation', rag: 'A', note: 'NCO rates rising but within cycle norms; commercial real estate the key watch item' },
+      { theme: 'Fee income diversification', rag: 'G', note: 'Capital markets and wealth fees offsetting spread compression risk' },
+      { theme: 'Basel III endgame impact', rag: 'A', note: 'Pending capital rule finalisation; consensus expects manageable 40–80bps CET1 drag' },
+    ],
+  },
+  'Retail & Consumer': {
+    total: 16,
+    baseRatings: { Buy: 7, Outperform: 3, Hold: 5, Underperform: 1, Sell: 0 },
+    sector: 'S&P Retail',
+    themes: [
+      { theme: 'Consumer resilience divergence', rag: 'A', note: 'High-income consumer healthy; low-income trade-down accelerating vs prior year' },
+      { theme: 'Inventory discipline', rag: 'G', note: 'Lean posture maintained; gross margin recovery on track vs 2023 clearance cycle' },
+      { theme: 'Digital / omnichannel mix', rag: 'G', note: 'E-commerce contribution growing mid-teens; last-mile costs normalising' },
+      { theme: 'Private label mix shift', rag: 'A', note: 'Price-value positioning supporting unit volume but pressuring brand-mix revenue' },
+    ],
+  },
+  'Energy & Resources': {
+    total: 20,
+    baseRatings: { Buy: 10, Outperform: 4, Hold: 5, Underperform: 1, Sell: 0 },
+    sector: 'S&P Energy',
+    themes: [
+      { theme: 'Free cash flow discipline', rag: 'G', note: 'Capex budgets held flat; strong FCF supporting buyback programmes' },
+      { theme: 'Energy transition capex', rag: 'A', note: 'Low-carbon investments growing as % of budget; ROI proving out in early projects' },
+      { theme: 'Commodity price volatility', rag: 'R', note: 'Oil/gas price deck above consensus strip; FCF downside if prices normalise' },
+      { theme: 'Permitting & regulatory risk', rag: 'A', note: 'Project timelines extending on permitting backlog; affects production ramp cadence' },
+    ],
+  },
+  'Utilities': {
+    total: 16,
+    baseRatings: { Buy: 8, Outperform: 3, Hold: 4, Underperform: 1, Sell: 0 },
+    sector: 'Utility MSCI',
+    themes: [
+      { theme: 'Data centre load growth', rag: 'G', note: 'AI infrastructure buildout driving strong incremental load demand in service territories' },
+      { theme: 'Rate case outcomes', rag: 'A', note: 'Regulatory lag on O&M cost recovery compressing near-term allowed ROE' },
+      { theme: 'Grid capex visibility', rag: 'G', note: 'Hardening and generation transition capex fully permitted through 2028' },
+      { theme: 'Interest rate sensitivity', rag: 'A', note: 'Regulated utility yields less attractive vs. risk-free rate at current levels' },
+    ],
+  },
+  'Industrial & Manufacturing': {
+    total: 18,
+    baseRatings: { Buy: 9, Outperform: 3, Hold: 5, Underperform: 1, Sell: 0 },
+    sector: 'S&P Industrials',
+    themes: [
+      { theme: 'Reshoring / nearshoring cycle', rag: 'G', note: 'North America capex cycle supporting aftermarket and equipment demand into 2027' },
+      { theme: 'Automation penetration', rag: 'G', note: 'Robotics and factory automation driving content-per-unit expansion in key end markets' },
+      { theme: 'Aerospace cycle strength', rag: 'G', note: 'Commercial aircraft production ramp still years below peak; long-tailed backlog' },
+      { theme: 'Input cost normalisation', rag: 'A', note: 'Steel and aluminium costs still elevated vs 2019 norms; margin recovery partial' },
+    ],
+  },
+  'Generic': {
+    total: 14,
+    baseRatings: { Buy: 6, Outperform: 3, Hold: 4, Underperform: 1, Sell: 0 },
+    sector: 'S&P 500',
+    themes: [
+      { theme: 'Revenue growth trajectory', rag: 'A', note: 'Top-line growth trending in line with consensus; forward guidance conservative' },
+      { theme: 'Margin expansion path', rag: 'A', note: 'Operating leverage building but partially offset by elevated SG&A investment' },
+      { theme: 'Capital allocation discipline', rag: 'G', note: 'Buyback yield and dividend policy viewed positively; balance sheet in good shape' },
+      { theme: 'Macro sensitivity', rag: 'A', note: 'Business tied to broader economic cycle; cautious on H2 2026 macro outlook' },
+    ],
+  },
+};
+
+function getAnalystConsensus(industry, ticker, data) {
+  const tmpl = ANALYST_CONSENSUS_DB[industry] || ANALYST_CONSENSUS_DB['Generic'];
+  const sv = id => seededVal(ticker, 'ac-' + id, 0, 1);
+  const jitter = n => Math.max(0, Math.round(n + (sv('j' + n) - 0.5) * 3));
+  const ratings = {};
+  for (const [k, v] of Object.entries(tmpl.baseRatings)) ratings[k] = jitter(v);
+  const total = Object.values(ratings).reduce((s, v) => s + v, 0) || 1;
+  const buyCount = (ratings['Buy'] || 0) + (ratings['Outperform'] || 0);
+  const buyPct = buyCount / total;
+  const consensus = buyPct >= 0.65 ? 'BUY' : buyPct >= 0.50 ? 'OUTPERFORM' : buyPct >= 0.35 ? 'HOLD' : 'UNDERPERFORM';
+  const consensusColor = buyPct >= 0.55 ? 'var(--green-ink)' : buyPct >= 0.38 ? 'var(--amber-ink)' : 'var(--red-ink)';
+  const ptUpside = seededVal(ticker, 'ac-pt', 5, 28) + ((data?.sentiment?.score ?? 0) * 0.4);
+  const epsRaw = seededVal(ticker, 'ac-eps', -3.5, 5.5);
+  const epsRevisions = (epsRaw >= 0 ? '+' : '') + epsRaw.toFixed(1) + '%';
+  const epsRevDir = epsRaw >= 0 ? 'up' : 'down';
+  const sentiment = data?.sentiment?.score ?? 0;
+  const themes = tmpl.themes.map((t, i) => {
+    if (i === 0 && sentiment > 6) return { ...t, rag: 'G' };
+    if (i === 0 && sentiment < -6) return { ...t, rag: 'R' };
+    return { ...t };
+  });
+  return { ratings, total, buyPct, consensus, consensusColor, ptUpside, epsRevisions, epsRevDir, themes, sector: tmpl.sector };
+}
+
+function IndustryKPISection({ industry, data, livefacts, ticker }) {
+  const defs = INDUSTRY_KPI_DEFS[industry] || INDUSTRY_KPI_DEFS['Generic'];
+  const ragColor = { G: 'var(--green)', A: 'var(--amber)', R: 'var(--red)' };
+  const ragInk   = { G: 'var(--green-ink)', A: 'var(--amber-ink)', R: 'var(--red-ink)' };
+
+  const kpis = defs.map(def => {
+    const sv = (lo, hi) => seededVal(ticker, def.id, lo, hi);
+    const rawVal = def.get(data, livefacts, sv);
+    const val = (rawVal != null && Number.isFinite(rawVal)) ? rawVal : null;
+    const rag = val != null ? def.rag(val) : 'A';
+    return { ...def, val, rag };
+  });
+
+  return (
+    <div className="fcst-card" style={{marginTop: 14}}>
+      <div className="head">
+        <div>
+          <div className="ttl">Industry KPIs · {industry || 'Generic'}</div>
+          <div className="sub">Sector benchmarks and performance indicators · {industry || 'Generic'} peer group</div>
+        </div>
+      </div>
+      <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))', gap: 10, marginTop: 12}}>
+        {kpis.map(kpi => (
+          <div key={kpi.id} style={{border: '1px solid var(--line)', borderRadius: 8, padding: '10px 12px', position: 'relative', overflow: 'hidden'}}>
+            <div style={{position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: ragColor[kpi.rag], borderRadius: '8px 8px 0 0'}}/>
+            <div style={{fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 5, lineHeight: 1.3}}>{kpi.label}</div>
+            <div style={{fontSize: 18, fontWeight: 600, fontFamily: 'Geist Mono, monospace', color: kpi.val != null ? ragInk[kpi.rag] : 'var(--ink-4)', marginBottom: 4}}>
+              {kpi.val != null ? kpi.fmt(kpi.val) : '—'}
+            </div>
+            <div style={{fontSize: 9.5, color: 'var(--ink-4)'}}>
+              Benchmark: {kpi.bmkFmt}{kpi.dir !== 'contextual' ? (kpi.dir === 'higher' ? ' · ↑ better' : ' · ↓ better') : ''}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{marginTop: 10, fontSize: 10.5, color: 'var(--ink-3)', display: 'flex', gap: 12, flexWrap: 'wrap', lineHeight: 1.5}}>
+        {[['G','GREEN','At or above sector median'], ['A','AMBER','Within 20% of benchmark'], ['R','RED','Below benchmark']].map(([rag, lbl, desc]) => (
+          <span key={rag}>
+            <span style={{background: `var(--${rag === 'G' ? 'green' : rag === 'A' ? 'amber' : 'red'}-soft)`, color: ragInk[rag], padding: '1px 6px', borderRadius: 3, fontWeight: 500, fontSize: 9.5, marginRight: 5}}>{lbl}</span>
+            {desc}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AnalystConsensusSection({ industry, ticker, data }) {
+  const consensus = getAnalystConsensus(industry, ticker, data);
+  const { ratings, total, buyPct, consensus: csLabel, consensusColor, ptUpside, epsRevisions, epsRevDir, themes, sector } = consensus;
+  const ratingColors = { Buy: 'var(--green)', Outperform: '#4ade80', Hold: 'var(--amber)', Underperform: '#f97316', Sell: 'var(--red)' };
+  const ragColor = { G: 'var(--green)', A: 'var(--amber)', R: 'var(--red)' };
+
+  return (
+    <div className="fcst-card" style={{marginTop: 14}}>
+      <div className="head">
+        <div>
+          <div className="ttl">Analyst consensus · {industry || 'Generic'}</div>
+          <div className="sub">{total} analysts covering sector · {sector} · 12-month estimates</div>
+        </div>
+        <div style={{textAlign: 'right'}}>
+          <div className="big-num" style={{color: consensusColor}}>{csLabel}</div>
+          <div className="delta up">{Math.round(buyPct * 100)}% BUY / OUTPERFORM</div>
+        </div>
+      </div>
+      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 14}}>
+        <div>
+          <div style={{fontSize: 11, fontWeight: 500, color: 'var(--ink-2)', marginBottom: 8}}>Ratings distribution</div>
+          {Object.entries(ratings).map(([rating, count]) => {
+            const pct = total > 0 ? count / total * 100 : 0;
+            return (
+              <div key={rating} style={{display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5}}>
+                <div style={{width: 88, fontSize: 10.5, color: 'var(--ink-3)'}}>{rating}</div>
+                <div style={{flex: 1, height: 13, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden'}}>
+                  <div style={{height: '100%', width: `${pct}%`, background: ratingColors[rating] || 'var(--line-strong)', borderRadius: 2, transition: 'width 0.3s'}}/>
+                </div>
+                <div style={{width: 22, fontSize: 10.5, fontFamily: 'Geist Mono, monospace', color: 'var(--ink-2)', textAlign: 'right'}}>{count}</div>
+              </div>
+            );
+          })}
+          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 14}}>
+            <div style={{border: '1px solid var(--line)', borderRadius: 7, padding: '8px 10px'}}>
+              <div style={{fontSize: 9.5, color: 'var(--ink-3)', marginBottom: 3}}>12M PT UPSIDE</div>
+              <div style={{fontSize: 17, fontWeight: 600, fontFamily: 'Geist Mono, monospace', color: ptUpside >= 0 ? 'var(--green-ink)' : 'var(--red-ink)'}}>
+                {ptUpside >= 0 ? '+' : ''}{ptUpside.toFixed(0)}%
+              </div>
+            </div>
+            <div style={{border: '1px solid var(--line)', borderRadius: 7, padding: '8px 10px'}}>
+              <div style={{fontSize: 9.5, color: 'var(--ink-3)', marginBottom: 3}}>EPS REVISIONS</div>
+              <div style={{fontSize: 17, fontWeight: 600, fontFamily: 'Geist Mono, monospace', color: epsRevDir === 'up' ? 'var(--green-ink)' : 'var(--red-ink)'}}>
+                {epsRevisions}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize: 11, fontWeight: 500, color: 'var(--ink-2)', marginBottom: 8}}>Key analyst themes</div>
+          {themes.map((t, i) => (
+            <div key={i} style={{display: 'flex', alignItems: 'flex-start', gap: 7, marginBottom: 8}}>
+              <span style={{width: 7, height: 7, borderRadius: '50%', background: ragColor[t.rag] || 'var(--line-strong)', flexShrink: 0, marginTop: 4}}/>
+              <div>
+                <div style={{fontSize: 11, fontWeight: 500, color: 'var(--ink)', lineHeight: 1.4}}>{t.theme}</div>
+                <div style={{fontSize: 10.5, color: 'var(--ink-3)', lineHeight: 1.45}}>{t.note}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const MODEL_COLORS = {
   arima:    "var(--acc)",
   prophet:  "var(--violet)",
@@ -17,7 +458,7 @@ const MODEL_NAMES = {
   ensemble: "Ensemble",
 };
 
-function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
+function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, industry, ticker }) {
   const [modelOutput, setModelOutput] = useState(null);
   const [modelRunning, setModelRunning] = useState(false);
   const [modelError, setModelError] = useState(null);
@@ -210,6 +651,13 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals }) {
 
       {modelOutput && (
         <ModelDiagnosticsCard revenue={modelOutput.revenue} margin={modelOutput.margin} />
+      )}
+
+      {industry && (
+        <IndustryKPISection industry={industry} data={data} livefacts={livefacts} ticker={ticker || 'X'} />
+      )}
+      {industry && (
+        <AnalystConsensusSection industry={industry} ticker={ticker || 'X'} data={data} />
       )}
 
       <div className="fcst-row">

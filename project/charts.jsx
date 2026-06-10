@@ -133,6 +133,8 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
 
 // ---------- LINE + FORECAST CHART ----------
 function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)" }) {
+  const [tooltip, setTooltip] = useState(null);
+
   if (!history?.length || !forecast?.length) return null;
   const W = 540, H = 220, PADL = 44, PADR = 14, PADT = 16, PADB = 28;
   const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
@@ -151,21 +153,44 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)" })
   const fc = forecast.map((d, j) => xy(history.length - 1 + j + 1, d.base));
   const fcLo = forecast.map((d, j) => xy(history.length - 1 + j + 1, d.lo));
   const fcHi = forecast.map((d, j) => xy(history.length - 1 + j + 1, d.hi));
-  // Connect history end to forecast start
   const transitionLine = [hist[hist.length - 1], fc[0]];
 
-  // Band path: hi forward then lo reversed
   const lastHist = hist[hist.length - 1];
   const bandPath = "M" + lastHist[0] + "," + lastHist[1]
     + " " + fcHi.map(([x,y]) => `L${x},${y}`).join(" ")
     + " " + [...fcLo].reverse().map(([x,y]) => `L${x},${y}`).join(" ")
     + " Z";
 
-  // Y axis ticks (4)
   const ticks = [0, .25, .5, .75, 1].map(t => min + range * t);
 
+  const fmtV = v => unit === "$M"
+    ? (v >= 1000 ? `$${(v / 1000).toFixed(1)}B` : `$${v.toFixed(0)}M`)
+    : `${v.toFixed(1)}%`;
+
+  const renderTooltip = () => {
+    if (!tooltip) return null;
+    const { x, y, label, value, lo, hi, isForecast } = tooltip;
+    const bw = 100, bpad = 8;
+    const bh = isForecast && lo != null ? 56 : 42;
+    const bx = Math.min(Math.max(PADL, x - bw / 2), W - PADR - bw);
+    const by = Math.max(PADT, y - bh - 12);
+    return (
+      <g pointerEvents="none">
+        <rect x={bx} y={by} width={bw} height={bh} rx="5"
+          fill="var(--bg)" stroke="var(--line-strong)" strokeWidth="0.8"
+          style={{filter: "drop-shadow(0 2px 5px rgba(0,0,0,0.12))"}}/>
+        <text x={bx + bpad} y={by + 14} fontSize="9" fontFamily="Geist Mono,monospace" fill="var(--ink-3)">{label}</text>
+        <text x={bx + bpad} y={by + 29} fontSize="12.5" fontWeight="600" fontFamily="Geist Mono,monospace" fill={isForecast ? color : "var(--ink)"}>{fmtV(value)}</text>
+        {isForecast && lo != null && hi != null && (
+          <text x={bx + bpad} y={by + 46} fontSize="8.5" fontFamily="Geist Mono,monospace" fill="var(--ink-3)">{fmtV(lo)} – {fmtV(hi)}</text>
+        )}
+      </g>
+    );
+  };
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width: "100%", display: "block"}} xmlns="http://www.w3.org/2000/svg">
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width: "100%", display: "block"}} xmlns="http://www.w3.org/2000/svg"
+      onMouseLeave={() => setTooltip(null)}>
       {/* Y gridlines */}
       {ticks.map((t, i) => {
         const y = PADT + plotH - ((t - min) / range) * plotH;
@@ -209,6 +234,18 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)" })
         const x = PADL + i * step;
         return <text key={"x" + i} x={x} y={H - 8} textAnchor="middle" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{d.q}</text>;
       })}
+
+      {/* Invisible hit areas for hover — rendered last so they're on top */}
+      {hist.map(([x, y], i) => (
+        <circle key={"hit-h" + i} cx={x} cy={y} r="10" fill="transparent" style={{cursor: "crosshair"}}
+          onMouseEnter={() => setTooltip({ x, y, label: history[i].q, value: history[i].v, isForecast: false })}/>
+      ))}
+      {fc.map(([x, y], j) => (
+        <circle key={"hit-f" + j} cx={x} cy={y} r="10" fill="transparent" style={{cursor: "crosshair"}}
+          onMouseEnter={() => setTooltip({ x, y, label: forecast[j].q, value: forecast[j].base, lo: forecast[j].lo, hi: forecast[j].hi, isForecast: true })}/>
+      ))}
+
+      {renderTooltip()}
     </svg>
   );
 }
