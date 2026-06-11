@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useUser, UserButton } from '@clerk/react';
 import { 
   Activity, 
   ShieldAlert, 
@@ -217,8 +218,12 @@ export default function DendraiRiskApp() {
   const [endQuarter, setEndQuarter] = useState('Q4');
   const [endYear, setEndYear] = useState('2027');
   
+  const { user } = useUser();
+
   // App State
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
   const [populatingPeers, setPopulatingPeers] = useState(false);
   const [detectingIndustry, setDetectingIndustry] = useState(false);
   const [industryOptions, setIndustryOptions] = useState([
@@ -498,6 +503,30 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
       console.error('Auto-populate peers error:', err);
       setError("Failed to auto-populate peers. Please enter manually.");
     } finally { setPopulatingPeers(false); }
+  };
+
+  const handleSaveReport = async () => {
+    if (!reportData) return;
+    setSaving(true);
+    setSaveMessage('');
+    try {
+      const res = await fetch('/api/reports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity, industry, stakeholder, horizon, data: reportData }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setSaveMessage(err.error || 'Save failed.');
+      } else {
+        setSaveMessage('Report saved.');
+        setTimeout(() => setSaveMessage(''), 3000);
+      }
+    } catch (err) {
+      setSaveMessage('Save failed: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleGenerateReport = async () => {
@@ -979,8 +1008,16 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
             <div style={{fontSize:16,fontWeight:800,color:B.text}}>Risk & Intelligence Synthesizer</div>
           </div>
         </div>
-        <div className="hidden md:flex items-center space-x-2" style={{fontSize:10, color:B.muted}}>
-          <Database size={14} /> <span>ONLINE</span>
+        <div className="hidden md:flex items-center space-x-4" style={{fontSize:10, color:B.muted}}>
+          <div className="flex items-center space-x-2">
+            <Database size={14} /> <span>ONLINE</span>
+          </div>
+          {user && (
+            <div className="flex items-center space-x-2">
+              <span style={{fontSize:10, color:B.muted}}>{user.primaryEmailAddress?.emailAddress}</span>
+              <UserButton afterSignOutUrl="/" />
+            </div>
+          )}
         </div>
       </header>
 
@@ -1104,12 +1141,27 @@ Identify the single most critical "Green" (safe) assumption made in your analysi
                 </div>
               )}
 
-              <button 
+              <button
                 onClick={handleGenerateReport} disabled={loading}
                 style={{width:"100%", background:B.text, color:B.card, fontWeight:700, fontSize:12, padding:"12px", borderRadius:4, marginTop:10, cursor:loading?"default":"pointer", opacity:loading?0.7:1, display:"flex", justifyContent:"center", alignItems:"center"}}
               >
                 {loading ? <span className="flex items-center"><Activity className="animate-spin mr-2" size={16} /> SYNTHESIZING...</span> : 'GENERATE INTELLIGENCE'}
               </button>
+
+              {reportData && (
+                <button
+                  onClick={handleSaveReport} disabled={saving}
+                  style={{width:"100%", background:B.greenBg, color:B.text, fontWeight:700, fontSize:12, padding:"12px", borderRadius:4, marginTop:8, cursor:saving?"default":"pointer", opacity:saving?0.7:1, border:`1px solid ${B.mint}`, display:"flex", justifyContent:"center", alignItems:"center"}}
+                >
+                  {saving ? 'SAVING...' : 'SAVE REPORT'}
+                </button>
+              )}
+
+              {saveMessage && (
+                <div style={{fontSize:11, marginTop:8, padding:"6px 10px", borderRadius:4, background: saveMessage.includes('saved') ? B.greenBg : B.redBg, color: saveMessage.includes('saved') ? B.mint : B.red, border:`1px solid ${saveMessage.includes('saved') ? B.mint : B.red}44`}}>
+                  {saveMessage}
+                </div>
+              )}
             </div>
           </Card>
         </div>
