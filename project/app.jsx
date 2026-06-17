@@ -662,7 +662,7 @@ function App() {
     const sigsList = [...mockSigs, ...rssSigsFiltered];
     const stage1Trace = buildTrace({
       assumptions: [
-        `Ingest signals from ${signalSet.has("edgar") ? "EDGAR" : "no EDGAR"} / ${signalSet.has("industry") ? "industry RSS" : "no RSS"} / ${signalSet.has("fred") ? "FRED" : "no FRED"} / ${signalSet.has("internal") ? "internal KRIs" : "no internal KRIs"}.`,
+        `Ingest signals from ${signalSet.has("edgar") ? "EDGAR 10-K" : "no EDGAR"} / ${signalSet.has("peers") ? "peer 10-Ks" : "no peers"} / ${signalSet.has("proxy") ? "DEF 14A proxy" : "no proxy"} / ${signalSet.has("industry") ? "industry RSS" : "no RSS"} / ${signalSet.has("industrydata") ? "industry benchmarks" : "no industry data"} / ${signalSet.has("fred") ? "FRED" : "no FRED"} / ${signalSet.has("internal") ? "internal KRIs" : "no internal KRIs"}.`,
         "Signal relevance is mapped to risk templates using industry domain keywords and risk category matching.",
       ],
       decisions: [
@@ -1146,29 +1146,56 @@ function App() {
             )}
           </div>
 
-          {/* ---- Controls Monitor ---- */}
-          <div className={"panel" + (activeMainTab === "cem" ? " active" : "")}>
-            <CEMPanel
-              events={events} setEvents={setEvents}
-              filter={cemFilter} setFilter={setCemFilter}
-              expanded={cemExpanded} setExpanded={setCemExpanded}
-              onAckNotif={ackNotif}
-              onInject={() => fireSyntheticEvent(1)} />
-          </div>
-
-          {/* ---- Risk Flow ---- */}
-          <div className={"panel" + (activeMainTab === "flow" ? " active" : "")}>
-            <FlowPanel
-              risks={output.s2?.risks || (hasRun ? profile.risks : null)}
-              maps={output.s4?.maps || (hasRun ? profile.maps : null)}
-              flowMeta={hasRun ? profile.riskFlow : null}
-              objectives={output.s3?.objectives || []}
-              gate2Reductions={gate2Reductions}
-              selectedId={selectedRiskId} setSelectedId={setSelectedRiskId}
-              liveMode={liveMode}
-              rssSignals={rssSignals}
-              fredData={profile.forecasts?.fred}
-              appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
+          {/* ---- Risk Monitoring & Mitigation ---- */}
+          <div className={"panel mon-panel" + (activeMainTab === "mon" ? " active" : "")}>
+            <div className="panel-head">
+              <div>
+                <div className="kicker">Real-time risk visibility</div>
+                <div className="panel-title mt-8">Risk Monitoring & Mitigation</div>
+                <div className="panel-sub">Live controls event monitoring and risk-to-audit flow visualization.</div>
+              </div>
+              {events.length > 0 && (
+                <div className="mono" style={{fontSize:11, color:"var(--ink-3)", display:"flex", gap:12, alignItems:"center"}}>
+                  <span><b style={{color:"var(--ink)", fontWeight:500}}>{events.length}</b> control event{events.length !== 1 ? "s" : ""}</span>
+                  {unreadCEM > 0 && <span style={{color:"var(--red-ink)", fontWeight:500}}>{unreadCEM} unread</span>}
+                </div>
+              )}
+            </div>
+            <div className="pipe-sub-tabs">
+              <button className={"pipe-sub-tab" + (activeMonTab === "cem" ? " active" : "")}
+                onClick={() => { setActiveMonTab("cem"); setUnreadCEM(0); }}>
+                Controls Monitor
+                {events.length > 0 && <span className="count">{events.length}</span>}
+                {unreadCEM > 0 && <span className="pulse"/>}
+              </button>
+              <button className={"pipe-sub-tab" + (activeMonTab === "flow" ? " active" : "")}
+                onClick={() => setActiveMonTab("flow")}>
+                Risk Flow
+              </button>
+            </div>
+            {activeMonTab === "cem" && (
+              <CEMPanel
+                events={events} setEvents={setEvents}
+                filter={cemFilter} setFilter={setCemFilter}
+                expanded={cemExpanded} setExpanded={setCemExpanded}
+                onAckNotif={ackNotif}
+                onInject={() => fireSyntheticEvent(1)} />
+            )}
+            {activeMonTab === "flow" && (
+              <div className="mon-flow-wrap">
+                <FlowPanel
+                  risks={output.s2?.risks || (hasRun ? profile.risks : null)}
+                  maps={output.s4?.maps || (hasRun ? profile.maps : null)}
+                  flowMeta={hasRun ? profile.riskFlow : null}
+                  objectives={output.s3?.objectives || []}
+                  gate2Reductions={gate2Reductions}
+                  selectedId={selectedRiskId} setSelectedId={setSelectedRiskId}
+                  liveMode={liveMode}
+                  rssSignals={rssSignals}
+                  fredData={profile.forecasts?.fred}
+                  appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
+              </div>
+            )}
           </div>
 
           {/* ---- Governance Intelligence ---- */}
@@ -1198,7 +1225,7 @@ function App() {
           selectedPersona={selectedPersona} setSelectedPersona={setSelectedPersona}
           personas={hasRun ? profile.personas : null}
           scenarios={hasRun ? profile.scenarios : null}
-          onOpenMainFlow={() => setActiveMainTab("flow")}
+          onOpenMainFlow={() => { setActiveMainTab("mon"); setActiveMonTab("flow"); }}
           periodBegin={cfg.periodBegin}
           periodEnd={cfg.periodEnd} />
         
