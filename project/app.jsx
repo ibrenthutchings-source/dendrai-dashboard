@@ -31,7 +31,8 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
   "density": "comfortable",
   "runSpeed": 1.0,
   "autoExpand": true,
-  "persona": "Internal Audit"
+  "persona": "Internal Audit",
+  "dark": false
 } /*EDITMODE-END*/;
 
 const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
@@ -40,11 +41,12 @@ function App() {
   // ---- Tweaks ----
   const [tweaks, setTweak] = useTweaks(DEFAULT_TWEAKS);
 
-  // Apply accent + density at body level
+  // Apply accent, density, and theme at body level
   useEffect(() => {
     document.body.dataset.accent = tweaks.accent;
     document.body.dataset.density = tweaks.density;
-  }, [tweaks.accent, tweaks.density]);
+    document.body.dataset.theme = tweaks.dark ? "dark" : "";
+  }, [tweaks.accent, tweaks.density, tweaks.dark]);
 
   // ---- Sidebar config ----
   const [cfg, setCfg] = useState({
