@@ -383,7 +383,21 @@ function App() {
         ? Math.max(r.velocity, Math.max(...rssLinked.map(s => s.velocity || 0)))
         : r.velocity;
       const adjRag = adjScore >= 7.5 ? "R" : adjScore >= 5.0 ? "A" : "G";
-      return { ...r, score: adjScore, velocity: adjVelocity, rag: adjRag };
+
+      // Regenerate hist so the sparkline direction matches the adjusted score trend.
+      // r.hist[0] is the original base; the line must end at adjScore.
+      const histBase = r.hist?.[0] ?? r.score;
+      const histLen  = r.hist?.length ?? 6;
+      const histStep = (adjScore - histBase) / Math.max(1, histLen - 1);
+      const adjHist  = Array.from({ length: histLen }, (_, i) =>
+        +Math.max(1.0, Math.min(10.0, histBase + histStep * i)).toFixed(1)
+      );
+
+      // Update CE to reflect the adjusted score's distance from the original base.
+      const deltaFromBase = adjScore - histBase;
+      const adjCe = deltaFromBase > 2.0 ? "WEAK" : deltaFromBase > 0.5 ? "ADEQUATE" : "STRONG";
+
+      return { ...r, score: adjScore, velocity: adjVelocity, rag: adjRag, hist: adjHist, ce: adjCe };
     });
   }
 

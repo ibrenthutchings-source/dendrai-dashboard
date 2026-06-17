@@ -12,7 +12,7 @@ window.RISK_ENGINE = (function () {
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const pct   = (v, d=1) => v != null ? (v * 100).toFixed(d) + '%' : 'n/a';
   const fmt   = (v, d=0) => v != null ? v.toFixed(d) : 'n/a';
-  const ragOf = s => s >= 7.0 ? 'R' : s >= 5.0 ? 'A' : 'G';
+  const ragOf = s => s >= 7.5 ? 'R' : s >= 5.0 ? 'A' : 'G';
   const ceOf  = (s, base) => {
     const d = s - base;
     if (d > 2.0) return 'WEAK';
