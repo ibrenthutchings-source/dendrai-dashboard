@@ -12,7 +12,7 @@ Usage:
 
 Vite proxy (add to vite.config.js server.proxy):
     '/api/mcp': { target: 'http://127.0.0.1:8001', changeOrigin: true,
-                  rewrite: p => p.replace(/^\/api\/mcp/, '') }
+                  rewrite: p => p.replace(/^[/]api[/]mcp/, '') }
 
 Endpoints:
     GET  /health
