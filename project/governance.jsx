@@ -1,17 +1,18 @@
 /* ============================================================
-   Governance Intelligence — bottom slide-out pane
-   Surfaces DEF 14A proxy data + SIC peer benchmarking
+   Governance Intelligence
+   • GovernancePane  — bottom navigation slideout (bar + nav strip)
+   • GovernanceView  — main-pane content (all tabs live here)
    ============================================================ */
 
 const GOV_TABS = [
-  { id: "overview", l: "Overview" },
-  { id: "board",    l: "Board & Audit Committee" },
-  { id: "comp",     l: "Exec Compensation" },
-  { id: "proposals",l: "Shareholder Proposals" },
-  { id: "peers",    l: "Peer Benchmarking" },
+  { id: "overview",  l: "Overview" },
+  { id: "board",     l: "Board & Audit Committee" },
+  { id: "comp",      l: "Exec Compensation" },
+  { id: "proposals", l: "Shareholder Proposals" },
+  { id: "peers",     l: "Peer Benchmarking" },
 ];
 
-// ── Section text renderer (raw proxy text → readable paragraphs) ─────────────
+// ── Section text renderer ────────────────────────────────────────────────────
 function ProxySection({ text }) {
   if (!text) return <div className="gov-empty">No data extracted from filing.</div>;
   const paras = text.split(/\n{2,}/).filter(p => p.trim().length > 40).slice(0, 6);
@@ -79,14 +80,12 @@ function FilingPicker({ filings, selected, onSelect }) {
   );
 }
 
-// ── Main pane ────────────────────────────────────────────────────────────────
-function GovernancePane({ open, onToggle, data, peerData, ticker, loading }) {
-  const [activeTab, setActiveTab] = useState("overview");
-  const [filingIdx, setFilingIdx] = useState(0);
-
-  const proxy   = data?.proxy_filings   || [];
-  const filing  = proxy[filingIdx];
-  const sections = filing?.sections || {};
+// ── Bottom navigation slideout ────────────────────────────────────────────────
+// Shows the persistent bar + a navigation strip when open.
+// Clicking a nav item calls onSelectTab(id), which app.jsx wires to switch the
+// main pane to the Governance tab with the right sub-section active.
+function GovernancePane({ open, onToggle, data, peerData, ticker, loading, activeTab, onSelectTab }) {
+  const proxy = data?.proxy_filings || [];
 
   return (
     <div className={"gov-shell" + (open ? " open" : "")}>
@@ -126,131 +125,176 @@ function GovernancePane({ open, onToggle, data, peerData, ticker, loading }) {
         </div>
       </div>
 
-      {/* ── Expandable content ── */}
+      {/* ── Navigation strip ── */}
       <div className="gov-pane">
-        <div className="gov-pane-inner">
-
-          {/* Tab bar */}
-          <div className="gov-tab-bar">
-            {GOV_TABS.map(t => (
-              <button key={t.id}
-                className={"gov-tab" + (activeTab === t.id ? " active" : "")}
-                onClick={(e) => { e.stopPropagation(); setActiveTab(t.id); }}>
-                {t.l}
-              </button>
-            ))}
-            {proxy.length > 1 && (
-              <div style={{marginLeft: "auto"}}>
-                <FilingPicker filings={proxy} selected={filingIdx} onSelect={setFilingIdx}/>
-              </div>
-            )}
-          </div>
-
-          {/* Content */}
-          {!data && !loading && (
-            <div className="gov-splash">
-              <div className="gov-splash-icon">
-                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                  <rect x="3" y="3" width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".25"/>
-                  <rect x="18" y="3" width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".45"/>
-                  <rect x="3" y="18" width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".65"/>
-                  <rect x="18" y="18" width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".2"/>
-                </svg>
-              </div>
-              <div className="gov-splash-title">Governance Intelligence</div>
-              <div className="gov-splash-desc">
-                Switch to MCP mode and run the loop to fetch proxy data (DEF 14A), board composition, exec compensation, and peer benchmarks from SEC EDGAR.
-              </div>
-            </div>
-          )}
-
-          {loading && (
-            <div className="gov-splash">
-              <span className="spin" style={{width:20,height:20,borderWidth:2}}/>
-              <div className="gov-splash-desc" style={{marginTop: 12}}>Fetching governance data from SEC EDGAR…</div>
-            </div>
-          )}
-
-          {data && !loading && (
-            <>
-              {activeTab === "overview" && (
-                <div className="gov-content">
-                  <div className="gov-overview-grid">
-                    <GovInfoCard title="Company" value={data.company_name || ticker}/>
-                    <GovInfoCard title="Latest Proxy" value={proxy[0]?.filing_date || "—"}/>
-                    <GovInfoCard title="Proxy Filings" value={`${proxy.length} in range`}/>
-                    {peerData && <GovInfoCard title="Industry Peers" value={`${peerData.peers?.length || 0} (SIC ${peerData.sic})`}/>}
-                  </div>
-                  <div className="gov-section-hd">Key Governance Sections Found</div>
-                  <div className="gov-section-chips">
-                    {Object.keys(sections).map(k => (
-                      <span key={k} className="gov-chip">{_sectionLabel(k)}</span>
-                    ))}
-                    {Object.keys(sections).length === 0 && (
-                      <span className="gov-empty">No structured sections extracted from this filing.</span>
-                    )}
-                  </div>
-                  {sections.executive_compensation && (
-                    <>
-                      <div className="gov-section-hd">Compensation Snapshot</div>
-                      <ProxySection text={sections.executive_compensation}/>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {activeTab === "board" && (
-                <div className="gov-content">
-                  {sections.audit_committee ? (
-                    <>
-                      <div className="gov-section-hd">Audit Committee</div>
-                      <ProxySection text={sections.audit_committee}/>
-                    </>
-                  ) : (
-                    <div className="gov-empty">Audit committee section not extracted from this proxy filing.</div>
-                  )}
-                </div>
-              )}
-
-              {activeTab === "comp" && (
-                <div className="gov-content">
-                  {sections.executive_compensation ? (
-                    <>
-                      <div className="gov-section-hd">Compensation Discussion & Analysis (CD&A)</div>
-                      <ProxySection text={sections.executive_compensation}/>
-                    </>
-                  ) : (
-                    <div className="gov-empty">Compensation section not extracted from this proxy filing.</div>
-                  )}
-                </div>
-              )}
-
-              {activeTab === "proposals" && (
-                <div className="gov-content">
-                  {sections.shareholder_proposals ? (
-                    <>
-                      <div className="gov-section-hd">Shareholder Proposals</div>
-                      <ProxySection text={sections.shareholder_proposals}/>
-                    </>
-                  ) : (
-                    <div className="gov-empty">No shareholder proposals extracted from this proxy filing.</div>
-                  )}
-                </div>
-              )}
-
-              {activeTab === "peers" && (
-                <div className="gov-content">
-                  <PeerTable
-                    peers={peerData?.peers}
-                    sic={peerData?.sic}
-                    sic_description={peerData?.sic_description}
-                    ticker={ticker}/>
-                </div>
-              )}
-            </>
-          )}
+        <div className="gov-nav">
+          <span className="gov-nav-hint">Jump to section:</span>
+          {GOV_TABS.map(t => (
+            <button key={t.id}
+              className={"gov-nav-item" + (activeTab === t.id ? " active" : "")}
+              onClick={(e) => { e.stopPropagation(); onSelectTab(t.id); }}>
+              {t.l}
+            </button>
+          ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Main-pane Governance view ─────────────────────────────────────────────────
+// Rendered inside a .panel div in app.jsx. Contains all five sub-tab views.
+function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChange, govFetchError }) {
+  const [filingIdx, setFilingIdx] = useState(0);
+
+  const proxy    = data?.proxy_filings || [];
+  const filing   = proxy[filingIdx];
+  const sections = filing?.sections || {};
+
+  return (
+    <div className="gov-view">
+      {/* Header */}
+      <div className="panel-head">
+        <div>
+          <div className="kicker">Proxy Data · SEC EDGAR DEF 14A</div>
+          <div className="panel-title mt-8">Governance Intelligence</div>
+          {data
+            ? <div className="panel-sub">
+                {data.company_name || ticker} · {proxy.length} proxy filing{proxy.length !== 1 ? "s" : ""}
+                {peerData ? ` · ${peerData.peers?.length || 0} SIC peers` : ""}
+              </div>
+            : <div className="panel-sub">
+                Board composition, exec compensation, shareholder proposals &amp; peer benchmarks from SEC EDGAR.
+              </div>
+          }
+        </div>
+      </div>
+
+      {/* Tab bar */}
+      <div className="gov-tab-bar gov-view-tab-bar">
+        {GOV_TABS.map(t => (
+          <button key={t.id}
+            className={"gov-tab" + (activeTab === t.id ? " active" : "")}
+            onClick={() => onTabChange(t.id)}>
+            {t.l}
+          </button>
+        ))}
+        {proxy.length > 1 && (
+          <div style={{marginLeft: "auto"}}>
+            <FilingPicker filings={proxy} selected={filingIdx} onSelect={setFilingIdx}/>
+          </div>
+        )}
+      </div>
+
+      {/* Splash — no data yet */}
+      {!data && !loading && (
+        <div className="gov-splash gov-view-splash">
+          <div className="gov-splash-icon">
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+              <rect x="3"  y="3"  width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".25"/>
+              <rect x="18" y="3"  width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".45"/>
+              <rect x="3"  y="18" width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".65"/>
+              <rect x="18" y="18" width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".2"/>
+            </svg>
+          </div>
+          <div className="gov-splash-title">Governance Intelligence</div>
+          <div className="gov-splash-desc">
+            {govFetchError
+              ? <>MCP server unreachable — start <code style={{fontFamily:"monospace",fontSize:11}}>api_server.py</code> before running in MCP mode.
+                  <br/><span style={{color:"var(--red-ink)", marginTop: 4, display:"block"}}>{govFetchError}</span></>
+              : "Switch to MCP mode and run the loop to fetch proxy data (DEF 14A), board composition, exec compensation, and peer benchmarks from SEC EDGAR."
+            }
+          </div>
+        </div>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <div className="gov-splash gov-view-splash">
+          <span className="spin" style={{width:20,height:20,borderWidth:2}}/>
+          <div className="gov-splash-desc" style={{marginTop: 12}}>Fetching governance data from SEC EDGAR…</div>
+        </div>
+      )}
+
+      {/* Content */}
+      {data && !loading && (
+        <div className="gov-view-content">
+          {activeTab === "overview" && (
+            <div className="gov-content">
+              <div className="gov-overview-grid">
+                <GovInfoCard title="Company" value={data.company_name || ticker}/>
+                <GovInfoCard title="Latest Proxy" value={proxy[0]?.filing_date || "—"}/>
+                <GovInfoCard title="Proxy Filings" value={`${proxy.length} in range`}/>
+                {peerData && <GovInfoCard title="Industry Peers" value={`${peerData.peers?.length || 0} (SIC ${peerData.sic})`}/>}
+              </div>
+              <div className="gov-section-hd">Key Governance Sections Found</div>
+              <div className="gov-section-chips">
+                {Object.keys(sections).map(k => (
+                  <span key={k} className="gov-chip">{_sectionLabel(k)}</span>
+                ))}
+                {Object.keys(sections).length === 0 && (
+                  <span className="gov-empty">No structured sections extracted from this filing.</span>
+                )}
+              </div>
+              {sections.executive_compensation && (
+                <>
+                  <div className="gov-section-hd">Compensation Snapshot</div>
+                  <ProxySection text={sections.executive_compensation}/>
+                </>
+              )}
+            </div>
+          )}
+
+          {activeTab === "board" && (
+            <div className="gov-content">
+              {sections.audit_committee ? (
+                <>
+                  <div className="gov-section-hd">Audit Committee</div>
+                  <ProxySection text={sections.audit_committee}/>
+                </>
+              ) : (
+                <div className="gov-empty">Audit committee section not extracted from this proxy filing.</div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "comp" && (
+            <div className="gov-content">
+              {sections.executive_compensation ? (
+                <>
+                  <div className="gov-section-hd">Compensation Discussion & Analysis (CD&A)</div>
+                  <ProxySection text={sections.executive_compensation}/>
+                </>
+              ) : (
+                <div className="gov-empty">Compensation section not extracted from this proxy filing.</div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "proposals" && (
+            <div className="gov-content">
+              {sections.shareholder_proposals ? (
+                <>
+                  <div className="gov-section-hd">Shareholder Proposals</div>
+                  <ProxySection text={sections.shareholder_proposals}/>
+                </>
+              ) : (
+                <div className="gov-empty">No shareholder proposals extracted from this proxy filing.</div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "peers" && (
+            <div className="gov-content">
+              <PeerTable
+                peers={peerData?.peers}
+                sic={peerData?.sic}
+                sic_description={peerData?.sic_description}
+                ticker={ticker}/>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -277,3 +321,4 @@ function _sectionLabel(key) {
 }
 
 window.GovernancePane = GovernancePane;
+window.GovernanceView = GovernanceView;
