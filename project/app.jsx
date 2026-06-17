@@ -127,6 +127,8 @@ function App() {
   const [govData, setGovData] = useState(null);     // proxy data from DEF 14A
   const [govPeerData, setGovPeerData] = useState(null);
   const [govLoading, setGovLoading] = useState(false);
+  const [govFetchError, setGovFetchError] = useState(null);
+  const [activeGovTab, setActiveGovTab] = useState("overview");
 
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
@@ -531,12 +533,17 @@ function App() {
 
         // Proxy data + peer benchmarks → Governance pane (fire and forget, non-blocking)
         setGovLoading(true);
+        setGovFetchError(null);
         Promise.allSettled([
           MCP.fetchProxyData(cfg.ticker),
           MCP.fetchPeerBenchmarks(cfg.ticker),
         ]).then(([proxyRes, peerRes]) => {
-          if (proxyRes.status === "fulfilled") setGovData(proxyRes.value);
+          if (proxyRes.status === "fulfilled") { setGovData(proxyRes.value); setGovFetchError(null); }
           if (peerRes.status  === "fulfilled") setGovPeerData(peerRes.value);
+          if (proxyRes.status === "rejected" && peerRes.status === "rejected") {
+            setGovFetchError(proxyRes.reason?.message || "MCP server unreachable — ensure api_server.py is running");
+            log(`MCP Governance: server unreachable — ${proxyRes.reason?.message || "connection refused"}`);
+          }
           setGovLoading(false);
           if (proxyRes.status === "fulfilled") log(`MCP Governance: proxy data loaded`);
           if (peerRes.status  === "fulfilled") log(`MCP Peers: ${peerRes.value?.peers?.length || 0} SIC peers loaded`);
@@ -830,6 +837,7 @@ function App() {
     setGovData(null);
     setGovPeerData(null);
     setGovLoading(false);
+    setGovFetchError(null);
   }
 
   // ---- CEM event firing ----
@@ -978,11 +986,19 @@ function App() {
     return map;
   }, [output.s3?.objectives]);
 
+  // ---- Governance tab navigation ----
+  const selectGovTab = useCallback((tabId) => {
+    setActiveGovTab(tabId);
+    setActiveMainTab("gov");
+    setGovOpen(false);
+  }, []);
+
   // ---- Tab definitions ----
   const mainTabs = [
     { id: "pipe", l: "Pipeline" },
     { id: "cem",  l: "Controls Monitor", count: events.length, pulse: unreadCEM > 0 },
     { id: "flow", l: "Risk Flow" },
+    { id: "gov",  l: "Governance" },
   ];
   const pipeTabs = [
     { id: "stages", l: "Pipeline" },
@@ -1151,6 +1167,18 @@ function App() {
               fredData={profile.forecasts?.fred}
               appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
           </div>
+
+          {/* ---- Governance Intelligence ---- */}
+          <div className={"panel gov-panel" + (activeMainTab === "gov" ? " active" : "")}>
+            <GovernanceView
+              data={govData}
+              peerData={govPeerData}
+              ticker={cfg.ticker}
+              loading={govLoading}
+              activeTab={activeGovTab}
+              onTabChange={setActiveGovTab}
+              govFetchError={govFetchError} />
+          </div>
         </main>
 
         <Rail
@@ -1179,7 +1207,9 @@ function App() {
         data={govData}
         peerData={govPeerData}
         ticker={cfg.ticker}
-        loading={govLoading} />
+        loading={govLoading}
+        activeTab={activeGovTab}
+        onSelectTab={selectGovTab} />
 
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
