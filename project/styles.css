@@ -88,6 +88,33 @@
   --acc-ink:    oklch(26% 0.020 230);
 }
 
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg:           oklch(14% 0.008 80);
+  --surface:      oklch(18% 0.010 80);
+  --surface-2:    oklch(21% 0.010 80);
+  --surface-3:    oklch(24% 0.010 80);
+  --hover:        oklch(26% 0.010 80);
+
+  /* Text */
+  --ink:          oklch(92% 0.006 80);
+  --ink-2:        oklch(74% 0.006 80);
+  --ink-3:        oklch(56% 0.006 80);
+  --ink-4:        oklch(40% 0.006 80);
+
+  /* Borders */
+  --line:         oklch(28% 0.008 80);
+  --line-2:       oklch(33% 0.008 80);
+  --line-strong:  oklch(42% 0.008 80);
+
+  /* Shadows (more visible on dark) */
+  --shadow-sm: 0 1px 0 oklch(0% 0 0 / 0.20);
+  --shadow:    0 1px 2px oklch(0% 0 0 / 0.25), 0 4px 12px oklch(0% 0 0 / 0.20);
+  --shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.30), 0 12px 32px oklch(0% 0 0 / 0.35);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
   background: var(--bg);

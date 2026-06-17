@@ -25,6 +25,11 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
           ]}
           onChange={(v) => setTweak("density", v)}
         />
+        <TweakToggle
+          label="Dark mode"
+          value={!!tweaks.dark}
+          onChange={(v) => setTweak("dark", v)}
+        />
       </TweakSection>
 
       <TweakSection label="Behavior">
