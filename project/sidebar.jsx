@@ -86,7 +86,9 @@ function Sidebar({
   velocity,
   hitl,
   running, hasRun, onRun, onReset, onOpenReport, onOpenPersona, onOpenConfig,
-  liveMode, setLiveMode, liveStatus,
+  liveMode, setLiveMode,
+  mcpMode, setMcpMode,
+  liveStatus,
 }) {
   const SIGNAL_OPTS = [
     { id: "edgar",     name: "10-K / EDGAR",     sub: "SEC filings" },
@@ -234,20 +236,31 @@ function Sidebar({
       {/* Data mode */}
       <div className="lsb-section tight">
         <SectionLabel right={
-          <span className="mono" style={{fontSize:10, color: liveMode ? "var(--green-ink)" : "var(--ink-3)"}}>
-            <span className={`live-dot ${liveMode ? "on" : ""}`} style={{display:"inline-block", marginRight: 4, verticalAlign: 1}}/>
-            {liveMode ? "LIVE" : "MOCK"}
+          <span className="mono" style={{fontSize:10, color: mcpMode ? "var(--accent-ink,#2563eb)" : liveMode ? "var(--green-ink)" : "var(--ink-3)"}}>
+            <span className={`live-dot ${liveMode || mcpMode ? "on" : ""}`} style={{display:"inline-block", marginRight: 4, verticalAlign: 1}}/>
+            {mcpMode ? "MCP" : liveMode ? "LIVE" : "MOCK"}
           </span>
         }>Data Mode</SectionLabel>
         <div style={{display:"flex", gap: 6}}>
-          <button className={`btn btn-sm ${!liveMode ? "btn-primary" : ""}`} style={{flex:1}} onClick={() => setLiveMode(false)}>Mock</button>
-          <button className={`btn btn-sm ${liveMode ? "btn-primary" : ""}`} style={{flex:1}} onClick={() => setLiveMode(true)}>
+          <button className={`btn btn-sm ${!liveMode && !mcpMode ? "btn-primary" : ""}`} style={{flex:1}}
+            onClick={() => { setLiveMode(false); setMcpMode(false); }}>
+            Mock
+          </button>
+          <button className={`btn btn-sm ${liveMode && !mcpMode ? "btn-primary" : ""}`} style={{flex:1}}
+            onClick={() => { setLiveMode(true); setMcpMode(false); }}>
             <Icon name="wifi" size={11}/> Live
           </button>
+          <button className={`btn btn-sm ${mcpMode ? "btn-primary" : ""}`} style={{flex:1}}
+            onClick={() => { setMcpMode(true); setLiveMode(false); }}
+            title="Use Python MCP servers (api_server.py must be running)">
+            <Icon name="gear" size={11}/> MCP
+          </button>
         </div>
-        {liveMode && (
+        {(liveMode || mcpMode) && (
           <div style={{marginTop: 8, fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
-            {liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled"}
+            {mcpMode
+              ? (liveStatus || "Python MCP servers · start api_server.py")
+              : (liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled")}
           </div>
         )}
       </div>

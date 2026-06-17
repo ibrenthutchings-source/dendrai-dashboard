@@ -83,6 +83,13 @@ export default defineConfig({
           'Accept': 'application/json',
         },
       },
+      // Proxy Python MCP API server (project/agentic-tools/api_server.py)
+      // Start server first: python project/agentic-tools/api_server.py
+      '/api/mcp': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
+      },
     },
   },
 })
