@@ -5,6 +5,7 @@ window.React = React
 
 import '../mock-data.js'
 import '../live-data.js'
+import '../mcp-data.js'
 import '../risk-engine.js'
 import '../forecasting.js'
 import '../backtesting.js'

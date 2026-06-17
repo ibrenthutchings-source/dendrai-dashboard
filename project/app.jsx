@@ -59,8 +59,9 @@ function App() {
   const [velocity, setVelocity] = useState(3);
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
 
-  // ---- Live mode + EDGAR/FRED data ----
+  // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
   const [liveMode, setLiveMode] = useState(false);
+  const [mcpMode, setMcpMode] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [livefacts, setLivefacts] = useState(null);
   const [fredLive, setFredLive] = useState(null);
@@ -423,63 +424,125 @@ function App() {
 
   async function _runLoopBody() {
 
-    // --- Auto-ingest RSS (live fetch when liveMode, else simulate) ---
+    // --- Data ingestion: MCP (Python servers) OR Live JS OR Mock ---
     let currentRssSignals = [...rssSignals];
-    if (signalSet.has("industry")) {
-      try {
-        log(liveMode ? "Fetching live RSS signals…" : "Generating simulated RSS signals…");
-        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: !liveMode });
-        const freshSigs = RSS_ENGINE.toSignals(ingestResult);
-        currentRssSignals = freshSigs;
-        setRssSignals(freshSigs);
-        setRssLastUpdated(Date.now());
-        log(`RSS: ${freshSigs.length} signals graded`);
-      } catch(e) {
-        log(`RSS ingest: ${e.message || "using prior signals"}`);
-      }
-    }
 
-    // --- Always fetch FRED ---
-    if (signalSet.has("fred")) {
+    if (mcpMode) {
+      // ── MCP mode: delegate all ingestion to Python predictive analytics server ──
+      setLiveStatus("Calling Python MCP servers…");
+      log("MCP: Starting full analysis…");
       try {
-        log("Fetching FRED snapshot…");
-        const fred = await LIVE.loadFred();
-        setFredLive(fred.series);
-        log(`FRED: ${Object.keys(fred.series || {}).length} series loaded`);
-      } catch(e) {
-        log(`FRED snapshot: ${e.message || "using mock"}`);
-      }
-    }
+        const mcpResult = await MCP.fetchFullAnalysis(cfg.ticker, {
+          industry:      cfg.industry,
+          includeRss:   signalSet.has("industry"),
+          includeFred:  signalSet.has("fred"),
+        });
 
-    // --- EDGAR fetch (always attempted; required for risk profile) ---
-    let edgarFin = null;
-    let edgarSic = null;
-    {
-      setLiveStatus("Fetching EDGAR companyfacts…");
-      try {
-        const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
-        const extracted = LIVE.extractFinancials(facts);
-        edgarFin = extracted;
-        edgarSic = facts?.sic ?? null;
-        setLivefacts(extracted);
-        setLiveStatus(`EDGAR OK · ${extracted.entity} · CIK ${extracted.cik}`);
-        log(`EDGAR: ${cfg.ticker}`);
-      } catch(e) {
-        edgarFin = null;
-        setLivefacts(null);
-        setLiveStatus(`EDGAR unavailable: ${e.message} · industry template`);
-        log(`EDGAR unavailable: ${e.message}`);
-      }
-    }
+        const industry = mcpResult.industry || cfg.industry || RISK_ENGINE.sic2industry(mcpResult.sic);
+        setLiveStatus(`MCP OK · ${mcpResult.company_name} · ${industry}`);
+        log(`MCP: ${mcpResult.ticker} · ${industry} · ${mcpResult.risk_scores?.risks?.length || 0} risks scored`);
 
-    // --- Build company risk profile from EDGAR + industry template ---
-    {
-      const edgarProfile = LIVE.fetchEdgarProfile ? null : null; // profile from submissions
-      const industry = cfg.industry || RISK_ENGINE.sic2industry(edgarSic);
-      const builtProfile = RISK_ENGINE.buildProfile(cfg.ticker, edgarFin, edgarSic, industry);
-      profileRef.current = builtProfile;
-      setProfile(builtProfile);
-      log(`Profile: ${builtProfile.entity.name} · ${industry} · ${builtProfile.risks.length} risks derived`);
+        // Build template profile for narrative text (objectives, MAPs, controls)
+        const templateProfile = RISK_ENGINE.buildProfile(cfg.ticker, null, mcpResult.sic, industry);
+
+        // Overlay MCP-computed scores onto template risks
+        const mergedRisks = MCP.mergeRiskScores(templateProfile.risks, mcpResult.risk_scores);
+
+        // MCP RSS signals → Loop signal format
+        if (mcpResult.rss_signals && signalSet.has("industry")) {
+          const rssSigs = MCP.mapRssSignals(mcpResult, mergedRisks);
+          currentRssSignals = rssSigs;
+          setRssSignals(rssSigs);
+          setRssLastUpdated(Date.now());
+          log(`MCP RSS: ${rssSigs.length} signals graded`);
+        }
+
+        // MCP FRED indicators → Loop signal format (appended to RSS)
+        if (mcpResult.macro_leading_indicators && signalSet.has("fred")) {
+          const fredSigs = MCP.mapFredSignals(mcpResult);
+          currentRssSignals = [...currentRssSignals, ...fredSigs];
+          setFredLive(mcpResult.macro_leading_indicators);
+          log(`MCP FRED: ${fredSigs.length} macro indicators`);
+        }
+
+        // Expose financial ratios in the same shape live-data.js uses
+        setLivefacts({
+          entity: mcpResult.company_name,
+          ticker: mcpResult.ticker,
+          ...mcpResult.financial_ratios,
+        });
+
+        profileRef.current = { ...templateProfile, risks: mergedRisks };
+        setProfile(profileRef.current);
+        log(`Profile: ${templateProfile.entity.name} · ${industry} · ${mergedRisks.length} risks (MCP-scored)`);
+
+      } catch (e) {
+        log(`MCP error: ${e.message} · falling back to industry template`);
+        setLiveStatus(`MCP unavailable: ${e.message} · industry template`);
+        const fallback = RISK_ENGINE.buildProfile(cfg.ticker, null, null, cfg.industry);
+        profileRef.current = fallback;
+        setProfile(fallback);
+      }
+
+    } else {
+      // ── Live JS mode or Mock mode ─────────────────────────────────────────────
+
+      // RSS ingest (live fetch when liveMode, else simulate)
+      if (signalSet.has("industry")) {
+        try {
+          log(liveMode ? "Fetching live RSS signals…" : "Generating simulated RSS signals…");
+          const ingestResult = await RSS_ENGINE.ingestAll({ simulate: !liveMode });
+          const freshSigs = RSS_ENGINE.toSignals(ingestResult);
+          currentRssSignals = freshSigs;
+          setRssSignals(freshSigs);
+          setRssLastUpdated(Date.now());
+          log(`RSS: ${freshSigs.length} signals graded`);
+        } catch(e) {
+          log(`RSS ingest: ${e.message || "using prior signals"}`);
+        }
+      }
+
+      // FRED bundled snapshot
+      if (signalSet.has("fred")) {
+        try {
+          log("Fetching FRED snapshot…");
+          const fred = await LIVE.loadFred();
+          setFredLive(fred.series);
+          log(`FRED: ${Object.keys(fred.series || {}).length} series loaded`);
+        } catch(e) {
+          log(`FRED snapshot: ${e.message || "using mock"}`);
+        }
+      }
+
+      // EDGAR direct fetch
+      let edgarFin = null;
+      let edgarSic = null;
+      {
+        setLiveStatus("Fetching EDGAR companyfacts…");
+        try {
+          const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
+          const extracted = LIVE.extractFinancials(facts);
+          edgarFin = extracted;
+          edgarSic = facts?.sic ?? null;
+          setLivefacts(extracted);
+          setLiveStatus(`EDGAR OK · ${extracted.entity} · CIK ${extracted.cik}`);
+          log(`EDGAR: ${cfg.ticker}`);
+        } catch(e) {
+          edgarFin = null;
+          setLivefacts(null);
+          setLiveStatus(`EDGAR unavailable: ${e.message} · industry template`);
+          log(`EDGAR unavailable: ${e.message}`);
+        }
+      }
+
+      // Build company risk profile from EDGAR + industry template
+      {
+        const industry = cfg.industry || RISK_ENGINE.sic2industry(edgarSic);
+        const builtProfile = RISK_ENGINE.buildProfile(cfg.ticker, edgarFin, edgarSic, industry);
+        profileRef.current = builtProfile;
+        setProfile(builtProfile);
+        log(`Profile: ${builtProfile.entity.name} · ${industry} · ${builtProfile.risks.length} risks derived`);
+      }
     }
 
     // STAGE 1 — Signal Intake
@@ -780,6 +843,7 @@ function App() {
             window.postMessage({type: '__activate_edit_mode'}, '*');
           }}
           liveMode={liveMode} setLiveMode={setLiveMode}
+          mcpMode={mcpMode} setMcpMode={setMcpMode}
           liveStatus={liveStatus} />
         
 
