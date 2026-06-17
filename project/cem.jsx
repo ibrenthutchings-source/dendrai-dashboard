@@ -70,7 +70,7 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
       </div>
 
       {filtered.length === 0 ? (
-        <Empty>No control events match this filter. Click "Inject event" to fire a synthetic alert, or run the pipeline.</Empty>
+        <Empty>No control events match this filter. Click "Inject event" to fire a synthetic alert, or run in MCP/Live mode to load real 8-K events.</Empty>
       ) : (
         filtered.map(ev => (
           <CEMEvent
@@ -106,6 +106,11 @@ function CEMEvent({ ev, expanded, onToggle, onAckNotif }) {
       <div className="cem-head" onClick={onToggle}>
         <span className="sev">{ev.severity}</span>
         <span className="name">{ev.control}</span>
+        {ev.source === "8-K Filing" && (
+          <span style={{fontSize:10, padding:"1px 6px", borderRadius:4, background:"var(--blue-soft)", color:"var(--blue-ink)", fontWeight:600, letterSpacing:".04em", flexShrink:0}}>
+            8-K {ev.filingDate || ""}
+          </span>
+        )}
         <span className="ts mono">{new Date(ev.ts).toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
         <Icon name={expanded ? "chev-u" : "chev-d"} size={14} className="muted"/>
       </div>

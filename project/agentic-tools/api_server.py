@@ -45,8 +45,11 @@ from edgar_tool import (
     get_company_info,
     fetch_xbrl_facts,
     extract_risk_factors,
+    extract_proxy_sections,
+    fetch_sic_peers,
     parse_filings,
     fetch_filing_text,
+    annotate_8k,
 )
 from rss_tool import run_rss_analysis
 
@@ -186,6 +189,70 @@ def rss_news(req: RssRequest):
     finally:
         if out_path.exists():
             out_path.unlink(missing_ok=True)
+
+
+@app.post("/edgar/8k-events")
+def edgar_8k_events(req: TickerRequest):
+    """Return annotated 8-K material events from the past 5 years."""
+    try:
+        meta, sub = get_company_info(req.ticker)
+        filings = parse_filings(sub, {"8-K"})["8-K"][:30]
+        events = [annotate_8k(dict(f)) for f in filings]
+        return {
+            "ticker": req.ticker.upper(),
+            "company_name": meta["company_name"],
+            "events": events,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/edgar/peers")
+def edgar_peers(req: TickerRequest):
+    """Return SIC peer companies (name, ticker, CIK, SIC)."""
+    try:
+        meta, _ = get_company_info(req.ticker)
+        sic = meta.get("sic", "")
+        peers = fetch_sic_peers(sic, max_peers=15)
+        return {
+            "ticker": req.ticker.upper(),
+            "company_name": meta["company_name"],
+            "sic": sic,
+            "sic_description": meta.get("sic_description", ""),
+            "peers": peers,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/edgar/proxy")
+def edgar_proxy(req: RiskFactorsRequest):
+    """Return governance sections extracted from DEF 14A proxy filings."""
+    try:
+        meta, sub = get_company_info(req.ticker)
+        filings = parse_filings(sub, {"DEF 14A"})["DEF 14A"][: req.max_filings]
+        results = []
+        for f in filings:
+            text = fetch_filing_text(meta["cik"], f)
+            sections = extract_proxy_sections(text) if text else {}
+            results.append({
+                "filing_date": f["date"],
+                "accession_number": f["accession_number"],
+                "sections": {k: v[:8_000] for k, v in sections.items()},
+            })
+        return {
+            "ticker": req.ticker.upper(),
+            "company_name": meta["company_name"],
+            "proxy_filings": results,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/fred/correlations")
