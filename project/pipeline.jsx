@@ -192,6 +192,7 @@ function HITLGate({ num, state, onApprove, onOverride }) {
 
 // ------ Stage body content ------
 function StageBody({ id, status, output, signals, livefacts, s2Extra, s3Extra }) {
+  const trace = output?.trace;
   if (status === "idle") {
     return <Empty>Awaiting run — toggle signal sources in the sidebar and press Run Loop.</Empty>;
   }
@@ -205,14 +206,39 @@ function StageBody({ id, status, output, signals, livefacts, s2Extra, s3Extra })
       </div>
     );
   }
-  if (id === "s1") return <S1Body output={output} signals={signals} livefacts={livefacts}/>;
-  if (id === "s2") return <S2Body output={output} {...(s2Extra || {})}/>;
-  if (id === "s3") return <S3Body output={output} {...(s3Extra || {})}/>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts}/><StageTrace trace={trace}/></>;
+  if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})}/><StageTrace trace={trace}/></>;
+  if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
-  if (id === "s4") return <S4Body output={output}/>;
-  if (id === "s5") return <S5Body output={output}/>;
-  if (id === "s6") return <S6Body output={output}/>;
+  if (id === "s4") return <><S4Body output={output}/><StageTrace trace={trace}/></>;
+  if (id === "s5") return <><S5Body output={output}/><StageTrace trace={trace}/></>;
+  if (id === "s6") return <><S6Body output={output}/><StageTrace trace={trace}/></>;
   return null;
+}
+
+function StageTrace({ trace }) {
+  if (!trace) return null;
+  const renderList = (label, items) => {
+    if (!items?.length) return null;
+    return (
+      <div className="stage-trace-block">
+        <div className="stage-trace-label">{label}</div>
+        <ul>
+          {items.map((item, idx) => <li key={idx}>{item}</li>)}
+        </ul>
+      </div>
+    );
+  };
+
+  return (
+    <div className="stage-trace">
+      <div className="stage-trace-title">Stage reasoning</div>
+      {renderList("Assumptions", trace.assumptions)}
+      {renderList("Decisions", trace.decisions)}
+      {renderList("Obstacles", trace.obstacles)}
+      {trace.conclusion ? <div className="stage-trace-summary"><strong>Conclusion:</strong> {trace.conclusion}</div> : null}
+    </div>
+  );
 }
 
 function S1Body({ output, signals, livefacts }) {

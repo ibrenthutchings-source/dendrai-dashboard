@@ -413,6 +413,10 @@ function App() {
   const speed = tweaks.runSpeed || 1;
   const t = (ms) => new Promise((res) => setTimeout(res, ms / speed));
 
+  function buildTrace({ assumptions = [], decisions = [], obstacles = [], conclusion = "" }) {
+    return { assumptions, decisions, obstacles, conclusion };
+  }
+
   async function runStage(id, payload, durationMs = 1400) {
     setStageState((prev) => ({ ...prev, [id]: "running" }));
     if (tweaks.autoExpand) {
@@ -645,7 +649,21 @@ function App() {
     );
     const rssSigsFiltered = signalSet.has("industry") ? currentRssSignals : [];
     const sigsList = [...mockSigs, ...rssSigsFiltered];
-    await runStage("s1", { signals: sigsList, sourceCount: signalSet.size }, 1200);
+    const stage1Trace = buildTrace({
+      assumptions: [
+        `Ingest signals from ${signalSet.has("edgar") ? "EDGAR" : "no EDGAR"} / ${signalSet.has("industry") ? "industry RSS" : "no RSS"} / ${signalSet.has("fred") ? "FRED" : "no FRED"} / ${signalSet.has("internal") ? "internal KRIs" : "no internal KRIs"}.`,
+        "Signal relevance is mapped to risk templates using industry domain keywords and risk category matching.",
+      ],
+      decisions: [
+        `Collected ${sigsList.length} signals from ${signalSet.size} source(s).`,
+        `${currentRssSignals.length} industry RSS signal(s) included in the risk feed.`,
+      ],
+      obstacles: [
+        !liveMode && signalSet.has("edgar") ? "EDGAR live data disabled; using cached or mock financial signals." : null,
+      ].filter(Boolean),
+      conclusion: `${sigsList.length} signals ingested; ${sigsList.filter(s => s.velocity >= 3).length} high-velocity signal(s) identified.`,
+    });
+    await runStage("s1", { signals: sigsList, sourceCount: signalSet.size, trace: stage1Trace }, 1200);
 
     // STAGE 2 — Risk assessment with signal-adjusted scoring
     const adjustedRisks = adjustRiskScores(profileRef.current.risks, sigsList, currentRssSignals);
@@ -657,7 +675,25 @@ function App() {
       breaching: breachingIds,
       status: breachingIds.length > 0 ? "BREACHED" : "WITHIN APPETITE",
     };
-    await runStage("s2", { risks: adjustedRisks, riskAppetite: riskAppetiteResult }, 1500);
+    const counts = adjustedRisks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
+    const stage2Trace = buildTrace({
+      assumptions: [
+        "FRED contractionary indicators increase macro-category risk scores by +0.08 each.",
+        "RSS-linked signals add risk pressure at velocity × 0.08 to directly affected risks.",
+        "High-velocity industry RSS adds systemic pressure, capped at +0.20 to all risks.",
+        "RAG thresholds are RED ≥ 7.5, AMBER ≥ 5.0, GREEN < 5.0.",
+      ],
+      decisions: [
+        `Applied signal-driven adjustments to ${adjustedRisks.length} risks.`,
+        `Risk appetite threshold set to ${threshold} (${cfg.appetiteLevel}).`,
+      ],
+      obstacles: [
+        breachingIds.length > 0 ? `Risk appetite breached by ${breachingIds.length} risk(s).` : null,
+        sigsList.length === 0 ? "No signals were available; using base risk profile only." : null,
+      ].filter(Boolean),
+      conclusion: `${counts.R || 0} RED, ${counts.A || 0} AMBER, ${counts.G || 0} GREEN after adjustment.`,
+    });
+    await runStage("s2", { risks: adjustedRisks, riskAppetite: riskAppetiteResult, trace: stage2Trace }, 1500);
     setActiveRailTab("rr");
 
     // GATE 1 — Risk assessment
@@ -669,7 +705,23 @@ function App() {
     setStageState((prev) => ({ ...prev, s3: "idle" }));
 
     // STAGE 3 — Audit scope
-    await runStage("s3", { objectives: profileRef.current.objectives }, 1500);
+    const stage3Objectives = profileRef.current.objectives || [];
+    const stage3Hours = stage3Objectives.reduce((sum, o) => sum + (o.hours || 0), 0);
+    const stage3Trace = buildTrace({
+      assumptions: [
+        "Audit objectives are derived from the risk register and template control gaps.",
+        "Priority labels indicate estimated effort and risk mitigation urgency.",
+      ],
+      decisions: [
+        `Generated ${stage3Objectives.length} objectives with ${stage3Objectives.filter(o => o.priority === "P1").length} P1 items.`,
+        `Planned ${stage3Hours} total audit hours for the scope package.`,
+      ],
+      obstacles: [
+        stage3Objectives.length === 0 ? "No audit objectives generated; review risk template coverage." : null,
+      ].filter(Boolean),
+      conclusion: `${stage3Objectives.length} objectives ready for scope review; ${stage3Hours} audit hours planned.`,
+    });
+    await runStage("s3", { objectives: stage3Objectives, trace: stage3Trace }, 1500);
 
     // GATE 2 — Audit scope
     if (hitl.scope) {
@@ -680,14 +732,45 @@ function App() {
     setStageState((prev) => ({ ...prev, s4: "idle" }));
 
     // STAGE 4 — MAPs
-    await runStage("s4", { maps: profileRef.current.maps }, 1400);
+    const stage4Maps = profileRef.current.maps || [];
+    const stage4Trace = buildTrace({
+      assumptions: [
+        "Management action plans target findings linked to high-risk areas.",
+        "Projected reduction percentages are estimated from the underlying risk template model.",
+      ],
+      decisions: [
+        `Generated ${stage4Maps.length} MAPs based on identified objectives and risk controls.`,
+      ],
+      conclusion: `${stage4Maps.length} action plans created.`,
+    });
+    await runStage("s4", { maps: stage4Maps, trace: stage4Trace }, 1400);
     setActiveRailTab("map");
 
     // STAGE 5 — Closure
-    await runStage("s5", { closure: profileRef.current.closure }, 1200);
+    const stage5Closure = profileRef.current.closure || {};
+    const stage5Trace = buildTrace({
+      assumptions: [
+        "Closure evaluates risk reduction using MAP completion and residual risk counts.",
+      ],
+      decisions: [
+        `Projected ${stage5Closure.projected_total_risk_reduction_pct || 0}% total risk reduction.`,
+      ],
+      conclusion: `${stage5Closure.risks_closed || 0} risks closed and ${stage5Closure.risks_reduced || 0} reduced.`,
+    });
+    await runStage("s5", { closure: stage5Closure, trace: stage5Trace }, 1200);
 
     // STAGE 6 — Loop calibration
-    await runStage("s6", { loop: profileRef.current.loop }, 1200);
+    const stage6Loop = profileRef.current.loop || {};
+    const stage6Trace = buildTrace({
+      assumptions: [
+        "Loop health is calibrated from RAG counts, risk velocity, and control environment effectiveness.",
+      ],
+      decisions: [
+        `Set next trigger to ${stage6Loop.next_trigger_days || 0} days and captured ${stage6Loop.lessons_learned?.length || 0} lessons learned.`,
+      ],
+      conclusion: `Loop health ${stage6Loop.loop_health || "—"}; next focus: ${stage6Loop.next_cycle_focus || "re-run risk loop"}.`,
+    });
+    await runStage("s6", { loop: stage6Loop, trace: stage6Trace }, 1200);
     setActiveRailTab("loop");
 
     log("Loop complete");
