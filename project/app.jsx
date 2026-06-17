@@ -1051,8 +1051,8 @@ function Header({ cfg, liveMode, livefacts, running, hasRun, entityName }) {
           <span>{running ? "Running" : hasRun ? "Idle · last run live" : "Ready"}</span>
         </div>
         <div className="item">
-          <Icon name={liveMode ? "wifi" : "satellite"} size={12} className="muted" />
-          <span className="val">{liveMode ? "LIVE" : "MOCK"}</span>
+          <Icon name={mcpMode ? "gear" : liveMode ? "wifi" : "satellite"} size={12} className="muted" />
+          <span className="val">{mcpMode ? "MCP" : liveMode ? "LIVE" : "MOCK"}</span>
         </div>
         <div className="item">
           <span className="muted">Cycle</span>
