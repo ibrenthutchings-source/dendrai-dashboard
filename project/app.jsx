@@ -823,7 +823,7 @@ function App() {
       <ErrorBoundary>
       <Header
         cfg={cfg}
-        liveMode={liveMode} livefacts={livefacts}
+        liveMode={liveMode} mcpMode={mcpMode} livefacts={livefacts}
         running={running} hasRun={hasRun}
         entityName={profile.entity.name} />
       
@@ -1021,7 +1021,7 @@ function App() {
 }
 
 // ---- Header ----
-function Header({ cfg, liveMode, livefacts, running, hasRun, entityName }) {
+function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName }) {
   return (
     <header className="hdr">
       <div className="hdr-brand">
