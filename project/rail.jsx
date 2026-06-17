@@ -104,6 +104,14 @@ function RiskTable({ risks, selectedId, onSelect }) {
               <button className="btn btn-sm btn-ghost" onClick={() => onSelect(null)}><Icon name="x" size={11}/></button>
             </div>
             <div style={{fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.55, marginBottom: 10}}>{r.narrative}</div>
+            {r.filingSnippet && (
+              <div style={{background:"var(--blue-soft)", border:"1px solid var(--line)", borderRadius:7, padding:"8px 10px", marginBottom:10}}>
+                <div style={{fontSize:10, fontWeight:600, letterSpacing:".05em", textTransform:"uppercase", color:"var(--blue-ink)", marginBottom:4}}>
+                  10-K Item 1A · {r.filingDate || "Filing"}
+                </div>
+                <div style={{fontSize:11, color:"var(--ink-2)", lineHeight:1.6}}>{r.filingSnippet}</div>
+              </div>
+            )}
             <div className="sec-lbl" style={{marginBottom: 6}}>4-Quarter Projection</div>
             <div style={{display:"flex", gap: 4}}>
               {["Now", "Q1", "Q2", "Q3", "Q4"].map((q, i) => {

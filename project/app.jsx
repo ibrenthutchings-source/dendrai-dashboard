@@ -122,6 +122,12 @@ function App() {
   const [notifLog, setNotifLog] = useState([]);
   const [unreadCEM, setUnreadCEM] = useState(0);
 
+  // ---- Governance Intelligence pane ----
+  const [govOpen, setGovOpen] = useState(false);
+  const [govData, setGovData] = useState(null);     // proxy data from DEF 14A
+  const [govPeerData, setGovPeerData] = useState(null);
+  const [govLoading, setGovLoading] = useState(false);
+
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
   const [overrideOpen, setOverrideOpen] = useState(false);
@@ -488,9 +494,53 @@ function App() {
           ...mcpResult.financial_ratios,
         });
 
-        profileRef.current = { ...templateProfile, risks: mergedRisks };
+        // Item 1A risk factors → enrich risk narratives with filing snippets
+        let enrichedRisks = mergedRisks;
+        if (signalSet.has("edgar")) {
+          try {
+            const factors = await MCP.fetchRiskFactors(cfg.ticker);
+            enrichedRisks = MCP.enrichRisksFromFactors(mergedRisks, factors);
+            log(`MCP Risk Factors: ${factors.filings?.length || 0} filings parsed, snippets matched`);
+          } catch(e) { log(`MCP Risk Factors unavailable: ${e.message}`); }
+        }
+
+        // 8-K material events → seed CEM with real events
+        try {
+          const eightK = await MCP.fetch8kEvents(cfg.ticker);
+          const cemEvs = MCP.map8kToCemEvents(eightK);
+          if (cemEvs.length) {
+            setEvents(cemEvs);
+            cemEvs.forEach(ev => {
+              TIERS.filter(t => t.sevs.includes(ev.severity)).forEach(tier => {
+                const msg = notifMsgFor(tier, ev);
+                const sentAt = Date.now();
+                setEvents(prev => prev.map(e => e.id === ev.id
+                  ? { ...e, notifs: [...(e.notifs||[]), { tid: tier.id, tier: tier.label, msg, sentAt, status: "sent", ackAt: null }] }
+                  : e));
+                setNotifLog(prev => [{ tier: tier.label, control: ev.control, msg, status: "sent", sentAt }, ...prev]);
+              });
+            });
+            log(`MCP 8-K Events: ${cemEvs.length} material events loaded into CEM`);
+            setUnreadCEM(u => u + cemEvs.length);
+          }
+        } catch(e) { log(`MCP 8-K Events unavailable: ${e.message}`); }
+
+        // Proxy data + peer benchmarks → Governance pane (fire and forget, non-blocking)
+        setGovLoading(true);
+        Promise.allSettled([
+          MCP.fetchProxyData(cfg.ticker),
+          MCP.fetchPeerBenchmarks(cfg.ticker),
+        ]).then(([proxyRes, peerRes]) => {
+          if (proxyRes.status === "fulfilled") setGovData(proxyRes.value);
+          if (peerRes.status  === "fulfilled") setGovPeerData(peerRes.value);
+          setGovLoading(false);
+          if (proxyRes.status === "fulfilled") log(`MCP Governance: proxy data loaded`);
+          if (peerRes.status  === "fulfilled") log(`MCP Peers: ${peerRes.value?.peers?.length || 0} SIC peers loaded`);
+        });
+
+        profileRef.current = { ...templateProfile, risks: enrichedRisks };
         setProfile(profileRef.current);
-        log(`Profile: ${templateProfile.entity.name} · ${industry} · ${mergedRisks.length} risks (MCP-scored)`);
+        log(`Profile: ${templateProfile.entity.name} · ${industry} · ${enrichedRisks.length} risks (MCP-scored)`);
 
       } catch (e) {
         log(`MCP error: ${e.message} · falling back to industry template`);
@@ -558,6 +608,29 @@ function App() {
         profileRef.current = builtProfile;
         setProfile(builtProfile);
         log(`Profile: ${builtProfile.entity.name} · ${industry} · ${builtProfile.risks.length} risks derived`);
+      }
+
+      // 8-K material events via MCP bridge (Live mode — opportunistic)
+      if (liveMode) {
+        try {
+          const eightK = await MCP.fetch8kEvents(cfg.ticker);
+          const cemEvs = MCP.map8kToCemEvents(eightK);
+          if (cemEvs.length) {
+            setEvents(cemEvs);
+            cemEvs.forEach(ev => {
+              TIERS.filter(t => t.sevs.includes(ev.severity)).forEach(tier => {
+                const msg = notifMsgFor(tier, ev);
+                const sentAt = Date.now();
+                setEvents(prev => prev.map(e => e.id === ev.id
+                  ? { ...e, notifs: [...(e.notifs||[]), { tid: tier.id, tier: tier.label, msg, sentAt, status: "sent", ackAt: null }] }
+                  : e));
+                setNotifLog(prev => [{ tier: tier.label, control: ev.control, msg, status: "sent", sentAt }, ...prev]);
+              });
+            });
+            log(`8-K Events: ${cemEvs.length} material events loaded into CEM`);
+            setUnreadCEM(u => u + cemEvs.length);
+          }
+        } catch(e) { /* 8-K fetch optional in Live mode — requires MCP bridge */ }
       }
     }
 
@@ -671,6 +744,9 @@ function App() {
     setAdjustOpen(false);
     setAdjustingRiskId(null);
     setManualAudits([]);
+    setGovData(null);
+    setGovPeerData(null);
+    setGovLoading(false);
   }
 
   // ---- CEM event firing ----
@@ -1013,6 +1089,14 @@ function App() {
           periodEnd={cfg.periodEnd} />
         
       </div>
+
+      <GovernancePane
+        open={govOpen}
+        onToggle={() => setGovOpen(o => !o)}
+        data={govData}
+        peerData={govPeerData}
+        ticker={cfg.ticker}
+        loading={govLoading} />
 
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
