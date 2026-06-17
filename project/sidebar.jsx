@@ -91,12 +91,14 @@ function Sidebar({
   liveStatus,
 }) {
   const SIGNAL_OPTS = [
-    { id: "edgar",     name: "10-K / EDGAR",     sub: "SEC filings" },
-    { id: "peers",     name: "Peer 10-Ks",       sub: "Benchmarking" },
-    { id: "industry",  name: "Industry RSS",     sub: "Threat feeds" },
-    { id: "internal",  name: "Internal KRIs",    sub: "Control data" },
-    { id: "fred",      name: "FRED Macro",       sub: "Economic" },
-    { id: "incidents", name: "Incidents",        sub: "Near-misses" },
+    { id: "edgar",       name: "10-K / EDGAR",    sub: "SEC filings" },
+    { id: "peers",       name: "Peer 10-Ks",      sub: "Benchmarking" },
+    { id: "proxy",       name: "Proxy Data",      sub: "DEF 14A / Gov" },
+    { id: "industry",    name: "Industry RSS",    sub: "Threat feeds" },
+    { id: "industrydata",name: "Industry Data",   sub: "Sector benchmarks" },
+    { id: "internal",    name: "Internal KRIs",   sub: "Control data" },
+    { id: "fred",        name: "FRED Macro",      sub: "Economic" },
+    { id: "incidents",   name: "Incidents",       sub: "Near-misses" },
   ];
   const toggleSig = (id) => {
     const next = new Set(signalSet);
@@ -267,7 +269,7 @@ function Sidebar({
 
       {/* Signals */}
       <div className="lsb-section">
-        <SectionLabel right={<span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{signalSet.size}/6</span>}>Signal Sources</SectionLabel>
+        <SectionLabel right={<span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{signalSet.size}/8</span>}>Signal Sources</SectionLabel>
         <div className="sig-grid">
           {SIGNAL_OPTS.map(s => (
             <button key={s.id} className={"sig" + (signalSet.has(s.id) ? " on" : "")} onClick={() => toggleSig(s.id)}>
