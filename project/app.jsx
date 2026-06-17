@@ -57,7 +57,7 @@ function App() {
     periodEnd: "Q4 2025",
     appetiteLevel: "AMBER",
   });
-  const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal", "fred", "incidents"]));
+  const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "proxy", "industry", "industrydata", "internal", "fred", "incidents"]));
   const [velocity, setVelocity] = useState(3);
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
 
@@ -81,8 +81,9 @@ function App() {
   const gateResRef = useRef({});
 
   // ---- Tabs ----
-  const [activeMainTab, setActiveMainTab] = useState("pipe"); // pipe | cem | flow
+  const [activeMainTab, setActiveMainTab] = useState("pipe"); // pipe | mon | gov
   const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss | fcst | scen
+  const [activeMonTab, setActiveMonTab] = useState("cem"); // cem | flow
   const [activeRailTab, setActiveRailTab] = useState("rr"); // rr | hm | map | loop | notif | fcst | pers
   const [activeQuarter, setActiveQuarter] = useState("Now");
   const [selectedRiskId, setSelectedRiskId] = useState(null);
@@ -531,7 +532,9 @@ function App() {
           }
         } catch(e) { log(`MCP 8-K Events unavailable: ${e.message}`); }
 
-        // Proxy data + peer benchmarks → Governance pane (fire and forget, non-blocking)
+        // Proxy data + peer benchmarks → Governance pane (only if Proxy Data signal enabled)
+        if (!signalSet.has("proxy")) { setGovData(null); setGovLoading(false); }
+        else {
         setGovLoading(true);
         setGovFetchError(null);
         Promise.allSettled([
@@ -548,6 +551,7 @@ function App() {
           if (proxyRes.status === "fulfilled") log(`MCP Governance: proxy data loaded`);
           if (peerRes.status  === "fulfilled") log(`MCP Peers: ${peerRes.value?.peers?.length || 0} SIC peers loaded`);
         });
+        } // end proxy signal gate
 
         profileRef.current = { ...templateProfile, risks: enrichedRisks };
         setProfile(profileRef.current);
@@ -871,7 +875,7 @@ function App() {
         setEvents((prev) => prev.map((e) => e.id === ev.id ? { ...e, rcLoading: false, rc: tpl.rc } : e));
       }, 2200 / speed);
     }
-    if (activeMainTab !== "cem") setUnreadCEM((u) => u + count);
+    if (!(activeMainTab === "mon" && activeMonTab === "cem")) setUnreadCEM((u) => u + count);
   }
 
   function ackNotif(eventId, tierId) {
@@ -996,8 +1000,7 @@ function App() {
   // ---- Tab definitions ----
   const mainTabs = [
     { id: "pipe", l: "Pipeline" },
-    { id: "cem",  l: "Controls Monitor", count: events.length, pulse: unreadCEM > 0 },
-    { id: "flow", l: "Risk Flow" },
+    { id: "mon",  l: "Risk Monitoring & Mitigation", count: events.length, pulse: unreadCEM > 0 },
     { id: "gov",  l: "Governance" },
   ];
   const pipeTabs = [
@@ -1043,7 +1046,7 @@ function App() {
             {mainTabs.map((t) =>
             <button key={t.id}
             className={"tab" + (activeMainTab === t.id ? " active" : "")}
-            onClick={() => {setActiveMainTab(t.id);if (t.id === "cem") setUnreadCEM(0);}}>
+            onClick={() => {setActiveMainTab(t.id);if (t.id === "mon") setUnreadCEM(0);}}>
                 {t.l}
                 {t.count > 0 && <span className="count">{t.count}</span>}
                 {t.pulse && <span className="pulse" />}
