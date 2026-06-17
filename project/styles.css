@@ -472,7 +472,9 @@ a { color: inherit; text-decoration: none; }
 
 /* Governance main-pane view */
 .gov-panel {
-  padding: 0 !important;   /* override .panel padding — gov-view manages its own */
+  padding: 0 !important;      /* override .panel padding — gov-view manages its own */
+  overflow: hidden !important; /* gov-view-content handles its own scroll */
+  min-height: 0;
 }
 .gov-view {
   display: flex;
