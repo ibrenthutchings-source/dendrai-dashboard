@@ -337,6 +337,19 @@ function App() {
   }, [output.s3?.objectives?.length, output.s2?.risks, log]);
 
   const approveGate = (n) => {
+    if (mcpMode && runIdRef.current) {
+      if (n === 1) {
+        fetch('/api/mcp/loop/hitl/risk-approvals', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ run_id: runIdRef.current, approvals: riskApprovals }),
+        }).catch(() => {});
+      } else if (n === 2) {
+        fetch('/api/mcp/loop/hitl/scope-approvals', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ run_id: runIdRef.current, approvals: scopeApprovals }),
+        }).catch(() => {});
+      }
+    }
     // For Gate 1, commit per-risk adjustments back into output.s2.risks
     if (n === 1) {
       setOutput(prev => {
@@ -448,6 +461,9 @@ function App() {
     setRunning(true);
     setHasRun(false);
     setLoopLog([]);
+    runIdRef.current = null;
+    loopLogRef.current = [];
+    manualAuditsRef.current = [];
     setStageState({});
     setOutput({});
     setGateState({ g1: null, g2: null });
@@ -467,6 +483,7 @@ function App() {
 
     // --- Data ingestion: MCP (Python servers) OR Live JS OR Mock ---
     let currentRssSignals = [...rssSignals];
+    let _capturedCemEvents = [];
 
     if (mcpMode) {
       // ── MCP mode: delegate all ingestion to Python predictive analytics server ──
@@ -478,6 +495,8 @@ function App() {
           includeRss:   signalSet.has("industry"),
           includeFred:  signalSet.has("fred"),
         });
+
+        if (mcpResult._db_id) runIdRef.current = mcpResult._db_id;
 
         const industry = mcpResult.industry || cfg.industry || RISK_ENGINE.sic2industry(mcpResult.sic);
         setLiveStatus(`MCP OK · ${mcpResult.company_name} · ${industry}`);
@@ -528,6 +547,7 @@ function App() {
           const eightK = await MCP.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);
           if (cemEvs.length) {
+            _capturedCemEvents = cemEvs;
             setEvents(cemEvs);
             cemEvs.forEach(ev => {
               TIERS.filter(t => t.sevs.includes(ev.severity)).forEach(tier => {
@@ -794,6 +814,20 @@ function App() {
     setActiveRailTab("loop");
 
     log("Loop complete");
+
+    if (mcpMode && runIdRef.current) {
+      fetch('/api/mcp/loop/persist', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          run_id: runIdRef.current,
+          loop_log: loopLogRef.current,
+          objectives: stage3Objectives,
+          cem_events: _capturedCemEvents,
+          manual_audits: manualAuditsRef.current,
+        }),
+      }).catch(() => {});
+    }
+
     setRunning(false);
     setHasRun(true);
 
@@ -847,6 +881,9 @@ function App() {
     setAdjustOpen(false);
     setAdjustingRiskId(null);
     setManualAudits([]);
+    runIdRef.current = null;
+    loopLogRef.current = [];
+    manualAuditsRef.current = [];
     setGovData(null);
     setGovPeerData(null);
     setGovLoading(false);
