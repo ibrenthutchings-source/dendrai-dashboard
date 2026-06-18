@@ -16,6 +16,28 @@ model User {
 
   reports   Report[]
   auditLogs AuditLog[]
+  configs   AuditConfig[]
+}
+
+model AuditConfig {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticker        String
+  industry      String?
+  periodBegin   String
+  periodEnd     String
+  focus         String[]            // audit universe focus domains
+  signalSources String[]            // enabled signal source ids
+  velocity      Float    @default(3.0)
+  hitlGates     Json                // { risk, scope, map }
+  appetiteLevel String   @default("AMBER")
+  scheduleCron  String?
+  dataMode      String   @default("mock")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, ticker])        // one saved config per entity per user
 }
 
 model Report {

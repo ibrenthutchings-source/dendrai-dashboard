@@ -61,6 +61,32 @@ function App() {
   const [velocity, setVelocity] = useState(3);
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
 
+  // ---- Config persistence (localStorage in the prototype; AuditConfig table in prod) ----
+  const [lastSaved, setLastSaved] = useState(null);
+  const cfgLoadedRef = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("dendrai.config");
+      if (raw) {
+        const s = JSON.parse(raw);
+        if (s.cfg) setCfg(c => ({ ...c, ...s.cfg }));
+        if (Array.isArray(s.signals)) setSignalSet(new Set(s.signals));
+        if (typeof s.velocity === "number") setVelocity(s.velocity);
+        if (s.hitl) setHitl(s.hitl);
+        if (s.savedAt) setLastSaved(s.savedAt);
+      }
+    } catch {}
+    cfgLoadedRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (!cfgLoadedRef.current) return;
+    const savedAt = Date.now();
+    try {
+      localStorage.setItem("dendrai.config", JSON.stringify({ cfg, signals: [...signalSet], velocity, hitl, savedAt }));
+      setLastSaved(savedAt);
+    } catch {}
+  }, [cfg, signalSet, velocity, hitl]);
+
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
   const [liveMode, setLiveMode] = useState(false);
   const [mcpMode, setMcpMode] = useState(false);
@@ -84,9 +110,10 @@ function App() {
   const manualAuditsRef = useRef([]);
 
   // ---- Tabs ----
-  const [activeMainTab, setActiveMainTab] = useState("pipe"); // pipe | cem | flow
+  const [activeScreen, setActiveScreen] = useState("pipeline"); // config|pipeline|register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
   const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss | fcst | scen
-  const [activeRailTab, setActiveRailTab] = useState("rr"); // rr | hm | map | loop | notif | fcst | pers
+  const [activeRailTab, setActiveRailTab] = useState("rr"); // Risk Register sub-tab: rr | hm | loop (also nudged by the run)
+  const [personaOpen, setPersonaOpen] = useState(false);
   const [activeQuarter, setActiveQuarter] = useState("Now");
   const [selectedRiskId, setSelectedRiskId] = useState(null);
   const [selectedPersona, setSelectedPersona] = useState(tweaks.persona);
@@ -126,7 +153,6 @@ function App() {
   const [unreadCEM, setUnreadCEM] = useState(0);
 
   // ---- Governance Intelligence pane ----
-  const [govOpen, setGovOpen] = useState(false);
   const [govData, setGovData] = useState(null);     // proxy data from DEF 14A
   const [govPeerData, setGovPeerData] = useState(null);
   const [govLoading, setGovLoading] = useState(false);
@@ -921,7 +947,7 @@ function App() {
         setEvents((prev) => prev.map((e) => e.id === ev.id ? { ...e, rcLoading: false, rc: tpl.rc } : e));
       }, 2200 / speed);
     }
-    if (activeMainTab !== "cem") setUnreadCEM((u) => u + count);
+    if (activeScreen !== "controls") setUnreadCEM((u) => u + count);
   }
 
   function ackNotif(eventId, tierId) {
@@ -1039,17 +1065,10 @@ function App() {
   // ---- Governance tab navigation ----
   const selectGovTab = useCallback((tabId) => {
     setActiveGovTab(tabId);
-    setActiveMainTab("gov");
-    setGovOpen(false);
+    setActiveScreen("gov");
   }, []);
 
-  // ---- Tab definitions ----
-  const mainTabs = [
-    { id: "pipe", l: "Pipeline" },
-    { id: "cem",  l: "Controls Monitor", count: events.length, pulse: unreadCEM > 0 },
-    { id: "flow", l: "Risk Flow" },
-    { id: "gov",  l: "Governance" },
-  ];
+  // ---- Pipeline sub-tab definitions ----
   const pipeTabs = [
     { id: "stages", l: "Pipeline" },
     { id: "rss",    l: "RSS Signals" },
@@ -1057,6 +1076,8 @@ function App() {
     { id: "scen",   l: "Scenarios" },
   ];
 
+  const railRisks = output.s2?.risks || (hasRun ? profile.risks : null);
+  const railMaps  = output.s4?.maps || null;
 
   // ---- RENDER ----
   return (
@@ -1067,42 +1088,55 @@ function App() {
         liveMode={liveMode} mcpMode={mcpMode} livefacts={livefacts}
         running={running} hasRun={hasRun}
         entityName={profile.entity.name} />
-      
+
 
       <div className="app-body">
-        <Sidebar
-          cfg={cfg} setCfg={setCfg}
-          signalSet={signalSet} setSignalSet={setSignalSet}
-          velocity={velocity}
-          hitl={hitl}
-          running={running} hasRun={hasRun}
-          onRun={runLoop} onReset={resetAll}
-          onOpenReport={() => setReportOpen(true)}
-          onOpenPersona={() => {setActiveRailTab("pers");}}
-          onOpenConfig={() => {
-            // Surface the tweaks panel — same affordance as the toolbar toggle.
-            window.postMessage({type: '__activate_edit_mode'}, '*');
+        <LeftNav
+          activeScreen={activeScreen}
+          activeGovTab={activeGovTab}
+          onNavigate={(screen, govTab) => {
+            setActiveScreen(screen);
+            if (govTab) setActiveGovTab(govTab);
+            if (screen === "controls") setUnreadCEM(0);
           }}
-          liveMode={liveMode} setLiveMode={setLiveMode}
-          mcpMode={mcpMode} setMcpMode={setMcpMode}
-          liveStatus={liveStatus} />
-        
+          counts={{
+            controls: events.length,
+            controlsPulse: unreadCEM > 0,
+            maps: output.s4?.maps?.length || 0,
+            notifs: notifLog.length,
+          }} />
 
         <main className="main" data-screen-label="Main canvas">
-          <div className="main-tabs">
-            {mainTabs.map((t) =>
-            <button key={t.id}
-            className={"tab" + (activeMainTab === t.id ? " active" : "")}
-            onClick={() => {setActiveMainTab(t.id);if (t.id === "cem") setUnreadCEM(0);}}>
-                {t.l}
-                {t.count > 0 && <span className="count">{t.count}</span>}
-                {t.pulse && <span className="pulse" />}
-              </button>
-            )}
-          </div>
 
-          {/* ---- Pipeline panel (with sub-tabs) ---- */}
-          <div className={"panel" + (activeMainTab === "pipe" ? " active" : "")}>
+          {/* ---- Configuration / Setup ---- */}
+          {activeScreen === "config" && (
+            <div className="panel active">
+              <ConfigScreen
+                cfg={cfg} setCfg={setCfg}
+                signalSet={signalSet} setSignalSet={setSignalSet}
+                velocity={velocity} setVelocity={setVelocity}
+                hitl={hitl} setHitl={setHitl}
+                liveMode={liveMode} setLiveMode={setLiveMode}
+                mcpMode={mcpMode} setMcpMode={setMcpMode}
+                liveStatus={liveStatus}
+                lastSaved={lastSaved} />
+            </div>
+          )}
+
+          {/* ---- Pipeline (with action bar + sub-tabs) ---- */}
+          {activeScreen === "pipeline" && (
+          <div className="panel active">
+            {/* Action bar — primary verbs live with the pipeline they drive */}
+            <div className="pipe-action-bar">
+              <button className="btn btn-acc" disabled={running} onClick={runLoop}>
+                {running ? <><span className="spin"/> Running loop…</> : <><Icon name="play" size={12}/> Run Loop</>}
+              </button>
+              <button className="btn" disabled={!hasRun} onClick={() => setReportOpen(true)}><Icon name="doc" size={11}/> Loop Report</button>
+              <button className="btn" disabled={!hasRun} onClick={() => setPersonaOpen(true)}><Icon name="user" size={11}/> Persona</button>
+              <div style={{flex:1}} />
+              {hasRun && <button className="btn btn-ghost" onClick={resetAll}><Icon name="reset" size={11}/> Reset</button>}
+            </div>
+
             <div className="panel-head">
               <div>
                 <div className="kicker">Risk → Audit closed loop</div>
@@ -1192,9 +1226,35 @@ function App() {
               <ScenariosPanel scenarios={hasRun ? profile.scenarios : null} greySwan={hasRun ? profile.greySwan : null} />
             )}
           </div>
+          )}
+
+          {/* ---- Risk Register (Risks · Heatmap · Loop) ---- */}
+          {activeScreen === "register" && (() => {
+            const regTab = ["rr","hm","loop"].includes(activeRailTab) ? activeRailTab : "rr";
+            return (
+            <div className="panel active">
+              <div className="panel-head">
+                <div>
+                  <div className="kicker">Execution · Live Register</div>
+                  <div className="panel-title mt-8">Risk Register</div>
+                  <div className="panel-sub">{(railRisks?.length || 0)} risks · {(railMaps?.length || 0)} MAPs · {cfg.periodBegin || "—"} → {cfg.periodEnd || "—"}</div>
+                </div>
+                <div className="pipe-sub-tabs" style={{margin:0, borderBottom:"none"}}>
+                  {[{id:"rr",l:"Register"},{id:"hm",l:"Heatmap"},{id:"loop",l:"Loop"}].map(t => (
+                    <button key={t.id} className={"pipe-sub-tab" + (regTab === t.id ? " active" : "")} onClick={() => setActiveRailTab(t.id)}>{t.l}</button>
+                  ))}
+                </div>
+              </div>
+              {regTab === "rr"   && <RiskTable risks={railRisks} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
+              {regTab === "hm"   && <HeatmapTab risks={railRisks} activeQ={activeQuarter} setActiveQ={setActiveQuarter} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
+              {regTab === "loop" && <LoopTab loop={output.s6?.loop || null}/>}
+            </div>
+            );
+          })()}
 
           {/* ---- Controls Monitor ---- */}
-          <div className={"panel" + (activeMainTab === "cem" ? " active" : "")}>
+          {activeScreen === "controls" && (
+          <div className="panel active">
             <CEMPanel
               events={events} setEvents={setEvents}
               filter={cemFilter} setFilter={setCemFilter}
@@ -1202,9 +1262,11 @@ function App() {
               onAckNotif={ackNotif}
               onInject={() => fireSyntheticEvent(1)} />
           </div>
+          )}
 
           {/* ---- Risk Flow ---- */}
-          <div className={"panel" + (activeMainTab === "flow" ? " active" : "")}>
+          {activeScreen === "flow" && (
+          <div className="panel active">
             <FlowPanel
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
               maps={output.s4?.maps || (hasRun ? profile.maps : null)}
@@ -1217,9 +1279,70 @@ function App() {
               fredData={profile.forecasts?.fred}
               appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
           </div>
+          )}
+
+          {/* ---- MAPs ---- */}
+          {activeScreen === "maps" && (
+          <div className="panel active">
+            <div className="panel-head">
+              <div>
+                <div className="kicker">Execution</div>
+                <div className="panel-title mt-8">Management Action Plans</div>
+                <div className="panel-sub">Findings, owners, due dates, and completion across the register.</div>
+              </div>
+            </div>
+            <MapsTab maps={railMaps}/>
+          </div>
+          )}
+
+          {/* ---- Notifications ---- */}
+          {activeScreen === "notifs" && (
+          <div className="panel active">
+            <div className="panel-head">
+              <div>
+                <div className="kicker">Execution</div>
+                <div className="panel-title mt-8">Notifications</div>
+                <div className="panel-sub">Tiered stakeholder cascade from the Control Event Monitor.</div>
+              </div>
+            </div>
+            <NotifTab log={notifLog}/>
+          </div>
+          )}
+
+          {/* ---- Audit Scope ---- */}
+          {activeScreen === "scope" && (
+          <div className="panel active">
+            <AuditScopeScreen
+              objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
+              maps={railMaps}
+              risks={railRisks}
+              hasRun={hasRun} />
+          </div>
+          )}
+
+          {/* ---- Risk-as-Code ---- */}
+          {activeScreen === "riskcode" && (
+          <div className="panel active">
+            <RiskAsCodeScreen
+              risks={output.s2?.risks || (hasRun ? profile.risks : null)}
+              baseRisks={profile.risks} />
+          </div>
+          )}
+
+          {/* ---- Policy-as-Code ---- */}
+          {activeScreen === "policycode" && (
+          <div className="panel active">
+            <PolicyAsCodeScreen
+              events={events}
+              maps={railMaps}
+              risks={railRisks}
+              appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
+          </div>
+          )}
 
           {/* ---- Governance Intelligence ---- */}
-          <div className={"panel gov-panel" + (activeMainTab === "gov" ? " active" : "")}>
+          {activeScreen === "gov" && (
+          <div className="panel gov-panel active">
             <GovernanceView
               data={govData}
               peerData={govPeerData}
@@ -1229,37 +1352,24 @@ function App() {
               onTabChange={setActiveGovTab}
               govFetchError={govFetchError} />
           </div>
+          )}
         </main>
 
-        <Rail
-          activeTab={activeRailTab} setActiveTab={setActiveRailTab}
-          output={output}
-          risks={output.s2?.risks || (hasRun ? profile.risks : null)}
-          maps={output.s4?.maps || null}
-          loop={output.s6?.loop || null}
-          notifLog={notifLog}
-          forecasts={hasRun ? profile.forecasts : null}
-          flowMeta={hasRun ? profile.riskFlow : null}
-          activeQuarter={activeQuarter} setActiveQuarter={setActiveQuarter}
-          selectedRiskId={selectedRiskId} setSelectedRiskId={setSelectedRiskId}
-          selectedPersona={selectedPersona} setSelectedPersona={setSelectedPersona}
-          personas={hasRun ? profile.personas : null}
-          scenarios={hasRun ? profile.scenarios : null}
-          onOpenMainFlow={() => setActiveMainTab("flow")}
-          periodBegin={cfg.periodBegin}
-          periodEnd={cfg.periodEnd} />
-        
       </div>
 
-      <GovernancePane
-        open={govOpen}
-        onToggle={() => setGovOpen(o => !o)}
-        data={govData}
-        peerData={govPeerData}
-        ticker={cfg.ticker}
-        loading={govLoading}
-        activeTab={activeGovTab}
-        onSelectTab={selectGovTab} />
+      {personaOpen && (
+        <div className="pm-overlay" onClick={() => setPersonaOpen(false)}>
+          <div className="pm-card" onClick={e => e.stopPropagation()}>
+            <div className="pm-head">
+              <div className="pm-title">Persona Report</div>
+              <button className="btn btn-sm btn-ghost" onClick={() => setPersonaOpen(false)}><Icon name="x" size={12}/></button>
+            </div>
+            <div className="pm-body">
+              <PersonaTab personas={hasRun ? profile.personas : null} selected={selectedPersona} setSelected={setSelectedPersona}/>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
