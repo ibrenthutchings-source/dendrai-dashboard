@@ -1,23 +1,14 @@
 #!/usr/bin/env python3
 """
-Dendrai MCP API Server
+Dendrai MCP API Server  v2.0.0
 
-HTTP bridge that exposes the Python MCP tool functions as REST endpoints so
-the browser-based Risk Loop app can call them through the Vite dev-server proxy.
-
-Usage:
-    pip install -r requirements.txt
-    python api_server.py              # default http://127.0.0.1:8001
-    python api_server.py --port 8002
-
-Vite proxy (add to vite.config.js server.proxy):
-    '/api/mcp': { target: 'http://127.0.0.1:8001', changeOrigin: true,
-                  rewrite: p => p.replace(/^[/]api[/]mcp/, '') }
+HTTP bridge exposing Python MCP tool functions as REST endpoints.
 
 Endpoints:
     GET  /health
     GET  /db/status
-    POST /predictive/full-analysis    All 10 analytics models in one call
+
+    POST /predictive/full-analysis    All 10 analytics models
     POST /edgar/financials            XBRL financial time-series
     POST /edgar/risk-factors          Item 1A risk factors from 10-K filings
     POST /edgar/8k-events             Material 8-K events
@@ -26,8 +17,12 @@ Endpoints:
     POST /rss/news                    Industry RSS feed analysis
     POST /fred/correlations           FRED macro leading indicator correlations
 
-    GET  /history/{tool_name}         Recent saved results for a tool
-    GET  /history/{tool_name}/{ticker} Ticker-specific saved results
+    POST /loop/hitl/risk-approvals    Gate 1 per-risk HITL decisions
+    POST /loop/hitl/scope-approvals   Gate 2 per-objective HITL decisions
+    POST /loop/persist                Loop completion batch (log, CEM, objectives, manual audits)
+
+    GET  /history/runs/{ticker}              Recent runs for a ticker
+    GET  /history/runs/{ticker}/{run_id}     Single run detail
 """
 
 import argparse
@@ -37,7 +32,7 @@ import sys
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -78,16 +73,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     db_ready = db.init_db()
-    if db_ready:
-        logger.info("Database persistence: ENABLED")
-    else:
-        logger.info("Database persistence: DISABLED (set DATABASE_URL to enable)")
+    logger.info("Database persistence: %s", "ENABLED" if db_ready else "DISABLED (set DATABASE_URL to enable)")
     yield
 
 
 app = FastAPI(
     title="Dendrai MCP API",
-    version="1.1.0",
+    version="2.0.0",
     docs_url="/docs",
     lifespan=lifespan,
 )
@@ -126,11 +118,28 @@ class FredRequest(BaseModel):
 class RssRequest(BaseModel):
     ticker: str
 
+class RiskApprovalsRequest(BaseModel):
+    run_id: int
+    persona: str = ""
+    approvals: Dict[str, Any] = {}
+
+class ScopeApprovalsRequest(BaseModel):
+    run_id: int
+    persona: str = ""
+    approvals: Dict[str, Any] = {}
+
+class LoopPersistRequest(BaseModel):
+    run_id: int
+    persona: str = ""
+    loop_log: List[Any] = []
+    objectives: List[Any] = []
+    cem_events: List[Any] = []
+    manual_audits: List[Any] = []
+
 
 # ── Utility ────────────────────────────────────────────────────────────────────
 
 def _company_name_from_result(result: dict, fallback: str = "") -> str:
-    """Extract company_name from any tool result dict."""
     for key in ("company_name", "company", "name"):
         val = result.get(key)
         if isinstance(val, str) and val:
@@ -140,19 +149,65 @@ def _company_name_from_result(result: dict, fallback: str = "") -> str:
     return fallback
 
 
+def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[int]:
+    """Normalize and save a full_analysis result to the DB. Returns run_id."""
+    if not db.is_available():
+        return None
+
+    company_meta = {
+        "ticker": result.get("ticker", req.ticker),
+        "company_name": result.get("company_name", req.ticker),
+        "cik": result.get("cik", ""),
+        "sic": result.get("sic", ""),
+        "sic_description": result.get("sic_description", ""),
+    }
+    company_id = db.upsert_company(company_meta)
+
+    run_config = {
+        "ticker": result.get("ticker", req.ticker),
+        "industry": result.get("industry", req.industry),
+        "data_mode": "mcp",
+        "forecast_metric": req.forecast_metric,
+        "forecast_horizon": req.forecast_horizon,
+    }
+    run_id = db.create_risk_loop_run(company_id, run_config)
+    if not run_id:
+        return None
+
+    db.save_financial_ratios(run_id, result.get("financial_ratios", {}))
+    db.save_beneish_mscore(run_id, result.get("beneish_mscore", {}))
+
+    risk_data = result.get("risk_scores", {})
+    db.save_risk_scores(run_id, risk_data.get("risks", []))
+
+    db.save_scenario_analyses(run_id, result.get("scenario_analysis", {}))
+    db.save_grey_swan(run_id, result.get("grey_swan", {}))
+
+    if result.get("forecast"):
+        db.save_forecasts(run_id, req.forecast_metric, result["forecast"])
+    if result.get("backtest"):
+        db.save_backtest_metrics(run_id, result["backtest"])
+    if result.get("qoq_momentum"):
+        db.save_qoq_momentum(run_id, result["qoq_momentum"])
+    if result.get("rss_signals"):
+        db.save_rss_signals(run_id, result["rss_signals"])
+
+    db.complete_risk_loop_run(run_id)
+    return run_id
+
+
 # ── Infrastructure endpoints ───────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "dendrai-mcp-api"}
+    return {"status": "ok", "service": "dendrai-mcp-api", "version": "2.0.0"}
 
 
 @app.get("/db/status")
 def db_status():
-    """Report whether PostgreSQL persistence is active."""
     return {
         "database_enabled": db.is_available(),
-        "note": "Set DATABASE_URL env var to enable persistence." if not db.is_available() else "",
+        "note": "" if db.is_available() else "Set DATABASE_URL env var to enable persistence.",
     }
 
 
@@ -161,11 +216,8 @@ def db_status():
 @app.post("/predictive/full-analysis")
 def predictive_full_analysis(req: FullAnalysisRequest):
     """
-    Run all 10 Dendrai Risk Loop predictive analytics models.
-    Returns financial ratios, Beneish M-Score, industry risk scores,
-    scenario analysis, Grey Swan, FRED macro indicators, ensemble forecast,
-    backtest metrics, RSS signals, and QoQ revenue momentum.
-    Result is saved to the database when DATABASE_URL is configured.
+    Run all 10 Dendrai Risk Loop predictive analytics models and persist
+    the full result to the normalized DB schema.
     """
     try:
         result = run_full_analysis(
@@ -180,10 +232,9 @@ def predictive_full_analysis(req: FullAnalysisRequest):
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
-        company_name = _company_name_from_result(result, req.ticker)
-        saved_id = db.save_result("risk_loop", req.ticker, company_name, result)
-        if saved_id:
-            result["_db_id"] = saved_id
+        run_id = _persist_full_analysis(req, result)
+        if run_id:
+            result["_db_id"] = run_id
 
         return result
     except HTTPException:
@@ -194,7 +245,7 @@ def predictive_full_analysis(req: FullAnalysisRequest):
 
 @app.post("/edgar/financials")
 def edgar_financials(req: TickerRequest):
-    """Return XBRL financial time-series for the past 5 years."""
+    """Return XBRL financial time-series and save to normalized DB tables."""
     try:
         meta, _ = get_company_info(req.ticker)
         xbrl = fetch_xbrl_facts(meta["cik"])
@@ -206,9 +257,26 @@ def edgar_financials(req: TickerRequest):
             "sic_description": meta.get("sic_description", ""),
             "xbrl": xbrl,
         }
-        saved_id = db.save_result("edgar_financials", req.ticker, meta["company_name"], result)
-        if saved_id:
-            result["_db_id"] = saved_id
+
+        if db.is_available():
+            company_id = db.upsert_company({
+                "ticker": req.ticker,
+                "company_name": meta["company_name"],
+                "cik": meta.get("cik", ""),
+                "sic": meta.get("sic", ""),
+                "sic_description": meta.get("sic_description", ""),
+                "entity_type": meta.get("entity_type"),
+                "state_of_inc": meta.get("state_of_inc"),
+                "fiscal_year_end": meta.get("fiscal_year_end"),
+                "exchanges": meta.get("exchanges"),
+            })
+            if company_id:
+                for metric_name, data_points in (xbrl or {}).items():
+                    if isinstance(data_points, list) and data_points:
+                        series_id = db.upsert_xbrl_series(company_id, metric_name)
+                        if series_id:
+                            db.save_xbrl_data_points(series_id, data_points)
+
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -218,11 +286,22 @@ def edgar_financials(req: TickerRequest):
 
 @app.post("/edgar/risk-factors")
 def edgar_risk_factors_endpoint(req: RiskFactorsRequest):
-    """Return Item 1A Risk Factors from the most recent 10-K filings."""
+    """Return Item 1A Risk Factors and save to edgar_risk_factor_filings."""
     try:
         meta, sub = get_company_info(req.ticker)
         filings = parse_filings(sub, {"10-K"})["10-K"][: req.max_filings]
         results = []
+        company_id = None
+
+        if db.is_available():
+            company_id = db.upsert_company({
+                "ticker": req.ticker,
+                "company_name": meta["company_name"],
+                "cik": meta.get("cik", ""),
+                "sic": meta.get("sic", ""),
+                "sic_description": meta.get("sic_description", ""),
+            })
+
         for f in filings:
             text = fetch_filing_text(meta["cik"], f)
             risks = extract_risk_factors(text) if text else ""
@@ -231,14 +310,19 @@ def edgar_risk_factors_endpoint(req: RiskFactorsRequest):
                 "accession_number": f["accession_number"],
                 "risk_factors": risks[:30_000],
             })
+            if company_id:
+                db.save_edgar_risk_factors(
+                    company_id,
+                    f["date"],
+                    f["accession_number"],
+                    risks[:30_000],
+                )
+
         result = {
             "ticker": req.ticker.upper(),
             "company_name": meta["company_name"],
             "filings": results,
         }
-        saved_id = db.save_result("edgar_risk_factors", req.ticker, meta["company_name"], result)
-        if saved_id:
-            result["_db_id"] = saved_id
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -250,10 +334,16 @@ def rss_news(req: RssRequest):
     out_path = Path(tempfile.mktemp(suffix=".json"))
     try:
         result = run_rss_analysis(ticker=req.ticker, output_path=out_path)
-        company_name = result.get("company_name", req.ticker)
-        saved_id = db.save_result("rss_news", req.ticker, company_name, result)
-        if saved_id:
-            result["_db_id"] = saved_id
+
+        if db.is_available():
+            company_name = result.get("company_name", req.ticker)
+            company_id = db.upsert_company({
+                "ticker": req.ticker,
+                "company_name": company_name,
+            })
+            if company_id:
+                db.save_rss_articles_full(company_id, result)
+
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -266,7 +356,7 @@ def rss_news(req: RssRequest):
 
 @app.post("/edgar/8k-events")
 def edgar_8k_events(req: TickerRequest):
-    """Return annotated 8-K material events from the past 5 years."""
+    """Return annotated 8-K material events and save to edgar_8k_events."""
     try:
         meta, sub = get_company_info(req.ticker)
         filings = parse_filings(sub, {"8-K"})["8-K"][:30]
@@ -276,9 +366,17 @@ def edgar_8k_events(req: TickerRequest):
             "company_name": meta["company_name"],
             "events": events,
         }
-        saved_id = db.save_result("edgar_8k_events", req.ticker, meta["company_name"], result)
-        if saved_id:
-            result["_db_id"] = saved_id
+
+        if db.is_available():
+            company_id = db.upsert_company({
+                "ticker": req.ticker,
+                "company_name": meta["company_name"],
+                "cik": meta.get("cik", ""),
+                "sic": meta.get("sic", ""),
+            })
+            if company_id:
+                db.save_edgar_8k_events(company_id, events)
+
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -288,7 +386,7 @@ def edgar_8k_events(req: TickerRequest):
 
 @app.post("/edgar/peers")
 def edgar_peers(req: TickerRequest):
-    """Return SIC peer companies (name, ticker, CIK, SIC)."""
+    """Return SIC peer companies and save to sic_peers."""
     try:
         meta, _ = get_company_info(req.ticker)
         sic = meta.get("sic", "")
@@ -300,9 +398,18 @@ def edgar_peers(req: TickerRequest):
             "sic_description": meta.get("sic_description", ""),
             "peers": peers,
         }
-        saved_id = db.save_result("edgar_peers", req.ticker, meta["company_name"], result)
-        if saved_id:
-            result["_db_id"] = saved_id
+
+        if db.is_available():
+            company_id = db.upsert_company({
+                "ticker": req.ticker,
+                "company_name": meta["company_name"],
+                "cik": meta.get("cik", ""),
+                "sic": sic,
+                "sic_description": meta.get("sic_description", ""),
+            })
+            if company_id:
+                db.save_sic_peers(company_id, peers)
+
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -312,27 +419,43 @@ def edgar_peers(req: TickerRequest):
 
 @app.post("/edgar/proxy")
 def edgar_proxy(req: RiskFactorsRequest):
-    """Return governance sections extracted from DEF 14A proxy filings."""
+    """Return DEF 14A proxy governance sections and save to edgar_proxy_filings."""
     try:
         meta, sub = get_company_info(req.ticker)
         filings = parse_filings(sub, {"DEF 14A"})["DEF 14A"][: req.max_filings]
         results = []
+        company_id = None
+
+        if db.is_available():
+            company_id = db.upsert_company({
+                "ticker": req.ticker,
+                "company_name": meta["company_name"],
+                "cik": meta.get("cik", ""),
+                "sic": meta.get("sic", ""),
+            })
+
         for f in filings:
             text = fetch_filing_text(meta["cik"], f)
             sections = extract_proxy_sections(text) if text else {}
+            truncated = {k: v[:8_000] for k, v in sections.items()}
             results.append({
                 "filing_date": f["date"],
                 "accession_number": f["accession_number"],
-                "sections": {k: v[:8_000] for k, v in sections.items()},
+                "sections": truncated,
             })
+            if company_id:
+                db.save_edgar_proxy(
+                    company_id,
+                    f["date"],
+                    f["accession_number"],
+                    sections,
+                )
+
         result = {
             "ticker": req.ticker.upper(),
             "company_name": meta["company_name"],
             "proxy_filings": results,
         }
-        saved_id = db.save_result("edgar_proxy", req.ticker, meta["company_name"], result)
-        if saved_id:
-            result["_db_id"] = saved_id
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -342,7 +465,7 @@ def edgar_proxy(req: RiskFactorsRequest):
 
 @app.post("/fred/correlations")
 def fred_correlations(req: FredRequest):
-    """Identify leading FRED macro indicators correlated with company financials."""
+    """Identify FRED macro leading indicators and save correlations to DB."""
     if not _HAS_FRED:
         raise HTTPException(status_code=503, detail="fred_tool not available")
     api_key = req.api_key or os.environ.get("FRED_API_KEY", "")
@@ -359,10 +482,22 @@ def fred_correlations(req: FredRequest):
             min_r=req.min_correlation,
             output_path=out_path,
         )
-        company_name = result.get("company_name", req.ticker)
-        saved_id = db.save_result("fred_correlations", req.ticker, company_name, result)
-        if saved_id:
-            result["_db_id"] = saved_id
+
+        if db.is_available():
+            company_name = result.get("company_name", req.ticker)
+            company_id = db.upsert_company({
+                "ticker": req.ticker,
+                "company_name": company_name,
+            })
+            if company_id:
+                # Save series + observations
+                if result.get("series_data"):
+                    db.save_fred_series_and_observations(result["series_data"])
+                # Save correlations
+                indicators = result.get("significant_indicators", result.get("correlations", []))
+                if indicators:
+                    db.save_fred_correlations(company_id, indicators)
+
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -371,85 +506,87 @@ def fred_correlations(req: FredRequest):
             out_path.unlink(missing_ok=True)
 
 
+# ── HITL persistence endpoints ─────────────────────────────────────────────────
+
+@app.post("/loop/hitl/risk-approvals")
+def persist_risk_approvals(req: RiskApprovalsRequest):
+    """
+    Persist Gate 1 per-risk HITL decisions from the frontend.
+    Called fire-and-forget from app.jsx when the user confirms Gate 1.
+    """
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+    if not req.approvals:
+        return {"saved": False, "reason": "no approvals provided"}
+
+    db.save_risk_approvals(req.run_id, req.approvals, req.persona or None)
+    return {"saved": True, "run_id": req.run_id, "count": len(req.approvals)}
+
+
+@app.post("/loop/hitl/scope-approvals")
+def persist_scope_approvals(req: ScopeApprovalsRequest):
+    """
+    Persist Gate 2 per-objective HITL decisions from the frontend.
+    Called fire-and-forget from app.jsx when the user confirms Gate 2.
+    """
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+    if not req.approvals:
+        return {"saved": False, "reason": "no approvals provided"}
+
+    db.save_objective_approvals(req.run_id, req.approvals, req.persona or None)
+    return {"saved": True, "run_id": req.run_id, "count": len(req.approvals)}
+
+
+@app.post("/loop/persist")
+def persist_loop_completion(req: LoopPersistRequest):
+    """
+    Batch-save loop completion data: loop log, audit objectives, CEM events,
+    manual audits. Called fire-and-forget from app.jsx after the loop finishes.
+    """
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+
+    db.save_loop_log(req.run_id, req.loop_log)
+    db.save_audit_objectives(req.run_id, req.objectives)
+    db.save_cem_events(req.run_id, req.cem_events)
+    db.save_manual_audits(req.run_id, req.manual_audits)
+
+    return {
+        "saved": True,
+        "run_id": req.run_id,
+        "log_entries": len(req.loop_log),
+        "objectives": len(req.objectives),
+        "cem_events": len(req.cem_events),
+        "manual_audits": len(req.manual_audits),
+    }
+
+
 # ── History endpoints ──────────────────────────────────────────────────────────
 
-_VALID_TOOLS = {
-    "risk_loop",
-    "edgar_financials",
-    "edgar_risk_factors",
-    "edgar_8k_events",
-    "edgar_peers",
-    "edgar_proxy",
-    "rss_news",
-    "fred_correlations",
-}
-
-
-@app.get("/history/{tool_name}")
-def history_tool(
-    tool_name: str,
+@app.get("/history/runs/{ticker}")
+def history_runs(
+    ticker: str,
     limit: int = Query(default=20, ge=1, le=100),
 ):
-    """
-    Return the most recent saved results for a tool across all tickers.
-    tool_name must be one of: risk_loop, edgar_financials, edgar_risk_factors,
-    edgar_8k_events, edgar_peers, edgar_proxy, rss_news, fred_correlations.
-    """
-    if tool_name not in _VALID_TOOLS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown tool '{tool_name}'. Valid tools: {sorted(_VALID_TOOLS)}",
-        )
+    """Recent risk loop runs for a ticker, newest first."""
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
-    rows = db.get_results(tool_name, limit=limit)
-    return {
-        "tool_name": tool_name,
-        "count": len(rows),
-        "results": rows,
-    }
+    rows = db.get_run_history(ticker, limit=limit)
+    return {"ticker": ticker.upper(), "count": len(rows), "runs": rows}
 
 
-@app.get("/history/{tool_name}/{ticker}")
-def history_ticker(
-    tool_name: str,
-    ticker: str,
-    limit: int = Query(default=10, ge=1, le=50),
-):
-    """
-    Return saved results for a specific tool + ticker combination.
-    Useful for comparing successive runs of the Risk Loop on the same company.
-    """
-    if tool_name not in _VALID_TOOLS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown tool '{tool_name}'. Valid tools: {sorted(_VALID_TOOLS)}",
-        )
+@app.get("/history/runs/{ticker}/{run_id}")
+def history_run_detail(ticker: str, run_id: int):
+    """Full detail for a single run including risk scores and Beneish M-Score."""
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
-    rows = db.get_results(tool_name, ticker=ticker, limit=limit)
-    return {
-        "tool_name": tool_name,
-        "ticker": ticker.upper(),
-        "count": len(rows),
-        "results": rows,
-    }
-
-
-@app.get("/history/{tool_name}/{ticker}/latest")
-def history_ticker_latest(tool_name: str, ticker: str):
-    """Return only the most recent saved result for a tool + ticker."""
-    if tool_name not in _VALID_TOOLS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown tool '{tool_name}'. Valid tools: {sorted(_VALID_TOOLS)}",
-        )
-    if not db.is_available():
-        raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
-    rows = db.get_results(tool_name, ticker=ticker, limit=1)
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"No saved results for {tool_name}/{ticker.upper()}")
-    return rows[0]
+    detail = db.get_run_detail(run_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if detail.get("ticker", "").upper() != ticker.upper():
+        raise HTTPException(status_code=404, detail=f"Run {run_id} does not belong to ticker {ticker.upper()}")
+    return detail
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

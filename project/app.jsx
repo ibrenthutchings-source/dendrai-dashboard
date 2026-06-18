@@ -79,6 +79,9 @@ function App() {
 
   // Pending gate promise resolvers (so the run sequence can await user action)
   const gateResRef = useRef({});
+  const runIdRef = useRef(null);
+  const loopLogRef = useRef([]);
+  const manualAuditsRef = useRef([]);
 
   // ---- Tabs ----
   const [activeMainTab, setActiveMainTab] = useState("pipe"); // pipe | cem | flow
@@ -151,17 +154,27 @@ function App() {
 
   // ---- Logging helper ----
   const log = useCallback((msg) => {
-    setLoopLog((prev) => [...prev, { ts: new Date().toISOString(), msg }]);
+    const entry = { ts: new Date().toISOString(), msg };
+    loopLogRef.current = [...loopLogRef.current, entry];
+    setLoopLog(loopLogRef.current);
   }, []);
 
   // ---- Manual audit plan entries ----
   const [manualAudits, setManualAudits] = useState([]);
   const addManualAudit = useCallback((audit) => {
-    setManualAudits(prev => [...prev, audit]);
+    setManualAudits(prev => {
+      const next = [...prev, audit];
+      manualAuditsRef.current = next;
+      return next;
+    });
     log(`Manual audit added: ${audit.title} · ${audit.when} · linked to ${audit.riskId}`);
   }, [log]);
   const removeManualAudit = useCallback((id) => {
-    setManualAudits(prev => prev.filter(a => a.id !== id));
+    setManualAudits(prev => {
+      const next = prev.filter(a => a.id !== id);
+      manualAuditsRef.current = next;
+      return next;
+    });
   }, []);
 
   // ---- Company profile — built from EDGAR + FRED + RISK_ENGINE during run ----

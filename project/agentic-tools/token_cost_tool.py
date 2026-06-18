@@ -331,6 +331,15 @@ def track_usage(
 
     _save_state(state, data_file)
 
+    try:
+        import db
+        if db.is_available():
+            session_db_id = db.upsert_token_session(session)
+            if session_db_id:
+                db.save_token_call(session_db_id, entry, dict(t))
+    except Exception:
+        pass
+
     return {"call": entry, "session_totals": dict(t), "session": session}
 
 
