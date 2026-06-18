@@ -92,4 +92,32 @@ export default defineConfig({
       },
     },
   },
+  // vite preview (port 4173) needs its own proxy block — server.proxy is dev-only
+  preview: {
+    proxy: {
+      '/api/edgar': {
+        target: 'https://data.sec.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/edgar/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; DendraiBot/1.0; +https://dendrai.ai)',
+          'Accept': 'application/json',
+        },
+      },
+      '/api/sec': {
+        target: 'https://www.sec.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/sec/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; DendraiBot/1.0; +https://dendrai.ai)',
+          'Accept': 'application/json',
+        },
+      },
+      '/api/mcp': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
+      },
+    },
+  },
 })
