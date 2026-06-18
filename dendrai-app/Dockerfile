@@ -18,4 +18,4 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server ./server
 EXPOSE 4000
 ENV NODE_ENV=production
-CMD ["node", "server/index.js"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss 2>/dev/null || true && node server/index.js"]

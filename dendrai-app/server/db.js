@@ -1,12 +1,14 @@
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
+import pg from 'pg'
 
 function createClient() {
   if (!process.env.DATABASE_URL) {
-    // Return a no-op proxy so the server starts without a DB (reports endpoints will fail gracefully)
+    // Return null so the server starts without a DB (reports endpoints fail gracefully with 503)
     return null
   }
-  const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL })
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
+  const adapter = new PrismaPg(pool)
   return new PrismaClient({ adapter })
 }
 
