@@ -347,4 +347,7 @@ function Sidebar({
   );
 }
 
-window.Sidebar = Sidebar;
+Object.assign(window, {
+  Sidebar,
+  FOCUS_OPTS, TICKER_META, FISCAL_QUARTERS, findTickerMeta, resolveIndustryFromSec,
+});

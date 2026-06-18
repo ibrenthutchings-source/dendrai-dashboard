@@ -441,4 +441,60 @@ function PersonaTab({ personas, selected, setSelected }) {
   );
 }
 
-Object.assign(window, { Rail, RAIL_TABS });
+// ---------- SCHEDULE BUILDER (extracted so Config screen can reuse it) ----------
+function ScheduleBuilder({ focusText: focusTextProp }) {
+  const [cadence, setCadence] = useState("monthly");
+  const [copied, setCopied]   = useState(false);
+
+  const sel = LOOP_CADENCES.find(c => c.id === cadence);
+  const focusText = focusTextProp || "Re-run Dendrai risk loop, re-score all risks, flag velocity-3 breaches and RAG changes, post summary.";
+  const schedCmd  = `/schedule "${focusText}" --cron "${sel.cron}"`;
+
+  function copyCmd() {
+    navigator.clipboard?.writeText(schedCmd).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div style={{background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius: 9, padding: 12}}>
+      <div style={{display:"flex", gap: 5, marginBottom: 10}}>
+        {LOOP_CADENCES.map(c => (
+          <button key={c.id}
+            className={"btn btn-sm" + (cadence === c.id ? "" : " btn-ghost")}
+            style={{flex: 1, fontSize: 10.5}}
+            onClick={() => setCadence(c.id)}>
+            {c.label}
+          </button>
+        ))}
+      </div>
+      <div className="mono" style={{fontSize: 10, color:"var(--ink-3)", marginBottom: 10}}>
+        {sel.desc} · cron <span style={{color:"var(--acc-ink)"}}>{sel.cron}</span>
+      </div>
+      <div style={{fontSize: 10.5, color:"var(--ink-2)", padding:"7px 9px",
+        background:"var(--surface)", border:"1px solid var(--line)", borderRadius: 6,
+        lineHeight: 1.55, marginBottom: 10}}>
+        <span style={{fontSize: 10, color:"var(--ink-3)", display:"block", marginBottom: 3}}>FOCUS (auto-filled from loop output)</span>
+        {focusText}
+      </div>
+      <div className="mono" style={{fontSize: 9.5, color:"var(--ink-3)",
+        padding:"6px 9px", background:"var(--surface)", border:"1px solid var(--line)",
+        borderRadius: 6, wordBreak:"break-all", lineHeight: 1.65, marginBottom: 10}}>
+        {schedCmd}
+      </div>
+      <button className="btn btn-sm" style={{width:"100%"}} onClick={copyCmd}>
+        <Icon name={copied ? "check" : "download"} size={11}/>
+        {copied ? "Copied to clipboard" : "Copy /schedule command"}
+      </button>
+      <div style={{fontSize: 10.5, color:"var(--ink-3)", marginTop: 10, lineHeight: 1.55}}>
+        Paste into the Claude Code terminal to register a recurring cloud agent that re-runs the loop automatically.
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, {
+  Rail, RAIL_TABS,
+  RiskTable, HeatmapTab, MapsTab, LoopTab, NotifTab, FlowMiniTab, PersonaTab,
+  ScheduleBuilder,
+});
