@@ -26,6 +26,7 @@ Endpoints:
 """
 
 import argparse
+import concurrent.futures
 import logging
 import os
 import sys
@@ -48,6 +49,7 @@ from predictive_analytics_tool import run_full_analysis
 from edgar_tool import (
     get_company_info,
     fetch_xbrl_facts,
+    summarize_xbrl_annual,
     extract_risk_factors,
     extract_proxy_sections,
     fetch_sic_peers,
@@ -384,13 +386,47 @@ def edgar_8k_events(req: TickerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _enrich_peer_financials(peer: dict) -> dict:
+    """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity, revenue_growth."""
+    try:
+        cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
+        if not cik or cik == "0000000000":
+            return peer
+        xbrl = fetch_xbrl_facts(cik)
+        if not xbrl:
+            return peer
+
+        def latest_two_annual(metric):
+            pts = [p for p in xbrl.get(metric, {}).get("data_points", [])
+                   if p.get("form") in {"10-K", "20-F", "10-K/A"} and p.get("val") is not None]
+            pts.sort(key=lambda p: p.get("end", ""), reverse=True)
+            curr = pts[0]["val"] if len(pts) > 0 else None
+            prev = pts[1]["val"] if len(pts) > 1 else None
+            return curr, prev
+
+        rev,    rev_prev = latest_two_annual("Revenue")
+        gp,     _        = latest_two_annual("GrossProfit")
+        rd,     _        = latest_two_annual("ResearchAndDevelopment")
+
+        peer["gross_margin"]   = (gp  / rev) if rev and gp  is not None else None
+        peer["rd_intensity"]   = (rd  / rev) if rev and rd  is not None else None
+        peer["revenue_growth"] = ((rev - rev_prev) / rev_prev) if rev and rev_prev else None
+    except Exception:
+        pass
+    return peer
+
+
 @app.post("/edgar/peers")
 def edgar_peers(req: TickerRequest):
-    """Return SIC peer companies and save to sic_peers."""
+    """Return SIC peer companies with financial benchmarks and save to sic_peers."""
     try:
         meta, _ = get_company_info(req.ticker)
         sic = meta.get("sic", "")
         peers = fetch_sic_peers(sic, max_peers=15)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            peers = list(pool.map(_enrich_peer_financials, peers))
+
         result = {
             "ticker": req.ticker.upper(),
             "company_name": meta["company_name"],
