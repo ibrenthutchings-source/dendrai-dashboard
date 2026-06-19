@@ -13,10 +13,10 @@ const NAV_SECTIONS = [
   {
     label: "Execution",
     items: [
+      // Risk Register, Risk Flow, Forecasts and Scenarios now live in the
+      // right-hand Live Register rail on the Pipeline screen (post-run).
       { id: "pipeline", icon: "flow",      l: "Pipeline" },
-      { id: "register", icon: "table",     l: "Risk Register" },
       { id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "flow",     icon: "trend",     l: "Risk Flow" },
       { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
