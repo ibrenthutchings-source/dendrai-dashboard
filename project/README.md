@@ -2,16 +2,21 @@
 
 A six-stage, AI-augmented internal audit and risk governance platform built in React. It derives live risk profiles from SEC EDGAR filings, FRED macro data, and industry RSS signals, runs them through a human-in-the-loop (HITL) review pipeline, and produces a Management Action Plan (MAP) register with quarterly projections and a closing loop calibration.
 
+The platform pairs a **deterministic analytics core** (statistical models — ARIMA, Beneish M-score, correlation, templated scoring) with an **agentic layer** powered by Claude (`claude-opus-4-8`): AI-drafted HITL gate dispositions, SEC filing narrative analysis, role-tailored persona briefs, board-ready report generation, and a tool-use investigation agent. The deterministic numbers remain ground truth the model cites — never invents. See [AI-Augmented Features](#ai-augmented-features).
+
 ---
 
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
+- [Navigation & Layout](#navigation--layout)
 - [Six-Stage Pipeline](#six-stage-pipeline)
 - [Data Modes](#data-modes)
-- [Live Register Tabs](#live-register-tabs)
+- [Live Register Rail](#live-register-rail)
 - [Risk Engine](#risk-engine)
 - [Predictive Analytics (10 Models)](#predictive-analytics-10-models)
+- [AI-Augmented Features](#ai-augmented-features)
+- [Peer Intelligence](#peer-intelligence)
 - [API & MCP Servers](#api--mcp-servers)
 - [File Structure](#file-structure)
 - [Development Setup](#development-setup)
