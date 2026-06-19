@@ -72,15 +72,20 @@ def extract_competitor_names(ticker: str, meta: Optional[dict] = None, sub: Opti
     if not text:
         return []
 
-    # Pull the Competition section (Item 1 Business). Fall back to the head of the
-    # business narrative if no explicit heading is found.
-    section = _extract_section(
-        text,
-        start_patterns=[r"\bcompetition\b", r"\bcompetitors?\b", r"competitive landscape", r"we compete"],
-        stop_patterns=[r"item\s*1a", r"risk factors", r"human capital", r"\bemployees\b",
-                       r"intellectual property", r"government regulation"],
-        max_chars=18_000,
-    ) or text[:18_000]
+    # A 10-K mentions "competition" many times (forward-looking bullets, risk
+    # factors). The real Competition discussion sits under a standalone heading in
+    # Item 1 Business — grab a window after each heading-like occurrence and after
+    # "we compete" prose, where the named competitors actually appear.
+    windows: list[str] = []
+    for m in re.finditer(r"(?im)(?:^|\n)\s*(?:competition|competitors)\b", text):
+        windows.append(text[m.start(): m.start() + 6_000])
+        if len(windows) >= 4:
+            break
+    for m in re.finditer(r"(?i)we\s+compete\b", text):
+        windows.append(text[m.start(): m.start() + 4_000])
+        if len(windows) >= 6:
+            break
+    section = "\n\n---\n\n".join(windows)[:24_000] or text[:18_000]
 
     schema = {
         "type": "object",
