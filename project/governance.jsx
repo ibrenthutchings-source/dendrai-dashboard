@@ -172,7 +172,7 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
           {data
             ? <div className="panel-sub">
                 {data.company_name || ticker} · {proxy.length} proxy filing{proxy.length !== 1 ? "s" : ""}
-                {peerData ? ` · ${peerData.peers?.length || 0} SIC peers` : ""}
+                {peerData ? ` · ${peerData.peers?.length || 0} peers` : ""}
               </div>
             : <div className="panel-sub">
                 Board composition, exec compensation, shareholder proposals &amp; peer benchmarks from SEC EDGAR.
@@ -236,7 +236,7 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
                 <GovInfoCard title="Company" value={data.company_name || ticker}/>
                 <GovInfoCard title="Latest Proxy" value={proxy[0]?.filing_date || "—"}/>
                 <GovInfoCard title="Proxy Filings" value={`${proxy.length} in range`}/>
-                {peerData && <GovInfoCard title="Industry Peers" value={`${peerData.peers?.length || 0} (SIC ${peerData.sic})`}/>}
+                {peerData && <GovInfoCard title="Peers" value={`${peerData.peers?.length || 0} · ${peerData.peer_source || "SIC"}`}/>}
               </div>
               <div className="gov-section-hd">Key Governance Sections Found</div>
               <div className="gov-section-chips">
@@ -301,6 +301,8 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
                 peers={peerData?.peers}
                 sic={peerData?.sic}
                 sic_description={peerData?.sic_description}
+                peerSource={peerData?.peer_source}
+                namedCompetitors={peerData?.named_competitors}
                 ticker={ticker}/>
             </div>
           )}
