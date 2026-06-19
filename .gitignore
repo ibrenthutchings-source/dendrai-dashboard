@@ -2,3 +2,10 @@ node_modules/
 project/vendor/
 project/dist/
 dendrai-app/dist/
+
+# Secrets — never commit real .env files (templates live in *.env.example)
+.env
+**/.env
+.env.*
+!.env.example
+!**/.env.example
