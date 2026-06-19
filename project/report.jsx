@@ -3,9 +3,13 @@
    ============================================================ */
 
 function ReportModal({ open, onClose, payload }) {
+  // Hooks must run unconditionally — declare before the early return.
+  const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null });
+  React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null }); }, [payload?.ts]);
+
   if (!open || !payload) return null;
   const {
-    entity, ts, cfg, signals, risks, baseRisks, top3, riskAppetite,
+    entity, ticker, runId, ts, cfg, signals, risks, baseRisks, top3, riskAppetite,
     objectives, maps, closure, loop, scenarios, greySwan, personas,
     fredSeries, fredContrCount, rssHighVelCount, rssLinkedCount, liveMode,
     riskApprovals, scopeApprovals,
@@ -14,6 +18,22 @@ function ReportModal({ open, onClose, payload }) {
 
   const adjRisks = risks.filter(r => riskApprovals?.[r.id]?.status === "adjusted" || riskApprovals?.[r.id]?.status === "signed");
   const adjObjs  = objectives.filter(o => scopeApprovals?.[o.id]?.status === "adjusted" || scopeApprovals?.[o.id]?.status === "signed");
+
+  // #4 — Generate a board-ready narrative audit report with Claude.
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiAuditReport;
+  async function generateAiReport() {
+    if (!aiAvailable) return;
+    setAiReport({ loading: true, error: null, markdown: null });
+    try {
+      const res = await window.MCP.aiAuditReport(
+        ticker || entity,
+        { risks, objectives, maps, loop }, runId || null,
+      );
+      setAiReport({ loading: false, error: null, markdown: res?.markdown || "" });
+    } catch (e) {
+      setAiReport({ loading: false, error: e.message || "AI unavailable", markdown: null });
+    }
+  }
 
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
@@ -28,6 +48,22 @@ function ReportModal({ open, onClose, payload }) {
         <div className="modal-body">
           <div className="rep-h1">{entity}</div>
           <div className="rep-h1-sub">{cfg.industry} · {(Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus]).join(" · ")} · {new Date(ts).toLocaleDateString()}</div>
+
+          {/* ── AI Narrative (#4) ────────────────────────────── */}
+          {aiReport.error && (
+            <div className="mono" style={{fontSize: 11, color: "var(--red-ink)", margin: "8px 0"}}>
+              AI narrative unavailable: {aiReport.error}
+            </div>
+          )}
+          {aiReport.markdown && (
+            <div className="rep-section">
+              <h3>AI Narrative Report <span className="mono" style={{fontSize: 10, color: "var(--acc-ink)", fontWeight: 400}}>· Claude-generated</span></h3>
+              <div style={{whiteSpace: "pre-wrap", fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7,
+                background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "14px 16px"}}>
+                {aiReport.markdown}
+              </div>
+            </div>
+          )}
 
           {/* ── Executive Summary ────────────────────────────── */}
           <div className="rep-section">
@@ -433,6 +469,12 @@ function ReportModal({ open, onClose, payload }) {
         <div className="modal-foot">
           <span className="mono muted" style={{fontSize: 11}}>{loop.audit_impact_score ? `Audit impact ${loop.audit_impact_score}/10` : ""} · {risks.length} risks · {maps.length} MAPs</span>
           <div style={{display: "flex", gap: 6}}>
+            {aiAvailable && (
+              <button className="btn btn-sm" onClick={generateAiReport} disabled={aiReport.loading}
+                title="Generate a board-ready narrative report with Claude">
+                <Icon name="spark" size={11}/> {aiReport.loading ? "Generating…" : aiReport.markdown ? "Regenerate AI report" : "Generate AI report"}
+              </button>
+            )}
             <button className="btn btn-sm" onClick={() => window.print()}><Icon name="download" size={11}/> Print / PDF</button>
             <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
           </div>
