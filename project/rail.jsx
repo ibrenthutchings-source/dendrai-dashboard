@@ -1,26 +1,33 @@
 /* ============================================================
-   Right rail — multi-tab live register
-   tabs: risks · heatmap · maps · loop · notifs · forecast · persona
+   Right rail — multi-tab live register (Pipeline screen, post-run)
+   Home for the Risk Register, Risk Flow, Forecasts and Scenarios that
+   used to live as separate nav screens / pipeline sub-tabs.
+   tabs: risks · heatmap · risk flow · forecasts · scenarios · maps · loop · notifs · persona
    ============================================================ */
 
 const RAIL_TABS = [
   { id: "rr",     l: "Risks" },
   { id: "hm",     l: "Heatmap" },
+  { id: "flow",   l: "Risk Flow" },
+  { id: "fcst",   l: "Forecasts" },
+  { id: "scen",   l: "Scenarios" },
   { id: "map",    l: "MAPs" },
   { id: "loop",   l: "Loop" },
   { id: "notif",  l: "Notifs" },
-  { id: "flow",   l: "Flow" },
   { id: "pers",   l: "Persona" },
 ];
 
 function Rail({
   activeTab, setActiveTab,
-  output, risks, maps, loop, notifLog, forecasts, scenarios, flowMeta,
+  output, risks, maps, loop, notifLog, forecasts, scenarios, greySwan, flowMeta,
   activeQuarter, setActiveQuarter,
   selectedRiskId, setSelectedRiskId,
   selectedPersona, setSelectedPersona,
   personas, onOpenMainFlow,
   periodBegin, periodEnd,
+  // Risk Flow + Forecasts context (panels moved in from the old nav screens)
+  objectives, gate2Reductions, appetiteThreshold,
+  liveMode, livefacts, fredSeries, rssSignals, industry, ticker, loopStats, runId,
 }) {
   return (
     <aside className="rsb" data-screen-label="Live register rail">
@@ -43,11 +50,14 @@ function Rail({
       <div className="rbody">
         {activeTab === "rr"    && <RiskTable    risks={risks} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
         {activeTab === "hm"    && <HeatmapTab   risks={risks} activeQ={activeQuarter} setActiveQ={setActiveQuarter} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
+        {activeTab === "flow"  && <FlowMiniTab    risks={risks} maps={maps} flowMeta={flowMeta} selectedId={selectedRiskId} onSelect={setSelectedRiskId} onOpenMain={onOpenMainFlow}/>}
+        {activeTab === "fcst"  && <ForecastsPanel data={forecasts} liveMode={liveMode} livefacts={livefacts} fredSeries={fredSeries} rssSignals={rssSignals} industry={industry} ticker={ticker}/>}
+        {activeTab === "scen"  && <ScenariosPanel scenarios={scenarios} greySwan={greySwan}/>}
         {activeTab === "map"   && <MapsTab      maps={maps}/>}
         {activeTab === "loop"  && <LoopTab      loop={loop}/>}
         {activeTab === "notif" && <NotifTab     log={notifLog}/>}
-        {activeTab === "flow"  && <FlowMiniTab    risks={risks} maps={maps} flowMeta={flowMeta} selectedId={selectedRiskId} onSelect={setSelectedRiskId} onOpenMain={onOpenMainFlow}/>}
-        {activeTab === "pers"  && <PersonaTab   personas={personas} selected={selectedPersona} setSelected={setSelectedPersona}/>}
+        {activeTab === "pers"  && <PersonaTab   personas={personas} selected={selectedPersona} setSelected={setSelectedPersona}
+                                                ticker={ticker} risks={risks} loopStats={loopStats} runId={runId}/>}
       </div>
     </aside>
   );
