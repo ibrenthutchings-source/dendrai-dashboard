@@ -111,7 +111,7 @@ function App() {
 
   // ---- Tabs ----
   const [activeScreen, setActiveScreen] = useState("pipeline"); // config|pipeline|register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
-  const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss | fcst | scen
+  const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss (forecasts/scenarios moved to the rail)
   const [activeRailTab, setActiveRailTab] = useState("rr"); // Risk Register sub-tab: rr | hm | loop (also nudged by the run)
   const [personaOpen, setPersonaOpen] = useState(false);
   const [activeQuarter, setActiveQuarter] = useState("Now");
