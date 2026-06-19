@@ -605,7 +605,7 @@ function App() {
           }
           setGovLoading(false);
           if (proxyRes.status === "fulfilled") log(`MCP Governance: proxy data loaded`);
-          if (peerRes.status  === "fulfilled") log(`MCP Peers: ${peerRes.value?.peers?.length || 0} SIC peers loaded`);
+          if (peerRes.status  === "fulfilled") log(`MCP Peers: ${peerRes.value?.peers?.length || 0} peers with data (${peerRes.value?.peer_source || "SIC peers"})`);
         });
 
         profileRef.current = { ...templateProfile, risks: enrichedRisks };
