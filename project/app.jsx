@@ -988,6 +988,8 @@ function App() {
 
     return {
       entity: `${profile.entity.name} (${cfg.ticker})`,
+      ticker: cfg.ticker,
+      runId: runIdRef.current,
       ts: new Date().toISOString(),
       cfg: {
         industry: cfg.industry,
