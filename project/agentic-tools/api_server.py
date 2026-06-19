@@ -62,6 +62,7 @@ import db
 
 import ai_endpoints
 import claude_client
+import peer_intel
 
 try:
     from fred_tool import run_analysis as fred_run_analysis
