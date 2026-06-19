@@ -24,17 +24,28 @@ function ProxySection({ text }) {
 }
 
 // ── Peer table ───────────────────────────────────────────────────────────────
-function PeerTable({ peers, sic, sic_description, ticker }) {
-  if (!peers?.length) return <div className="gov-empty">No peer data — run in MCP mode to fetch SIC peers.</div>;
+function PeerTable({ peers, sic, sic_description, ticker, peerSource, namedCompetitors }) {
+  if (!peers?.length) return <div className="gov-empty">No peer data — run in MCP mode to fetch peer intelligence.</div>;
+  const fromTenK = peerSource && peerSource.startsWith("10-K");
   return (
     <div>
       <div className="gov-meta-row">
-        <span className="gov-meta-label">SIC</span>
+        <span className="gov-meta-label">Source</span>
+        <span className="gov-meta-val">{peerSource || "SIC peers"}</span>
+        <span className="gov-meta-label" style={{marginLeft: 16}}>SIC</span>
         <span className="gov-meta-val mono">{sic}</span>
         <span className="gov-meta-label" style={{marginLeft: 16}}>Industry</span>
         <span className="gov-meta-val">{sic_description || "—"}</span>
-        <span className="gov-meta-label" style={{marginLeft: 16}}>{peers.length} peers identified</span>
+        <span className="gov-meta-label" style={{marginLeft: 16}}>{peers.length} with data</span>
       </div>
+      {fromTenK && namedCompetitors?.length > 0 && (
+        <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", margin: "0 0 10px", lineHeight: 1.5}}>
+          Named in {ticker?.toUpperCase()}'s 10-K: {namedCompetitors.join(" · ")}
+          {namedCompetitors.length > peers.length && (
+            <span> — {namedCompetitors.length - peers.length} dropped (no EDGAR financial data)</span>
+          )}
+        </div>
+      )}
       <table className="gov-table">
         <thead>
           <tr>
