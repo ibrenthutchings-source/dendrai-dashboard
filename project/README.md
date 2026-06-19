@@ -115,19 +115,27 @@ Select in the sidebar. Each mode changes what gets fetched during a run.
 
 ---
 
-## Live Register Tabs
+## Navigation & Layout
 
-The right rail shows seven tabs populated progressively as stages complete.
+The left nav routes the main canvas (Setup, Pipeline, Controls Monitor, MAPs, Notifications, Audit Scope, Risk-as-Code, Policy-as-Code, Governance Intelligence).
+
+The **Live Register rail** is a contextual right-hand pane that appears **only on the Pipeline screen, and only after a run has produced data** (`hasRun`). It is the single home for the risk-output views that used to be scattered as separate nav screens and pipeline sub-tabs — **Risk Register, Risk Flow, Forecasts, and Scenarios all live here now** (they are no longer separate left-nav items or sub-tabs). The main canvas widens to a third grid column (`.app-body.has-rail`) when the rail is shown.
+
+## Live Register Rail
+
+Nine tabs, populated progressively as stages complete:
 
 | Tab | Contents |
 |-----|----------|
 | **Risks** | Full risk register — RAG dot, score, velocity pill, sparkline trend, control effectiveness. Click any row to expand the 4-quarter projection panel. |
 | **Heatmap** | Impact × Likelihood bubble chart. Animated Q1–Q4 projections driven by velocity. Dashed circles show Q4 forecast positions. Click a bubble for velocity/delta detail. |
+| **Risk Flow** | Mini Risk Flow — top risks fanning out to impact areas and audit buckets. "Full view" drills into the complete Sankey chart. |
+| **Forecasts** | Revenue / gross-margin history + 4-quarter ensemble forecast with confidence band (moved in from the old pipeline sub-tab). |
+| **Scenarios** | Bear / Base / Bull scenario outlook + Grey Swan escalation model (moved in from the old pipeline sub-tab). |
 | **MAPs** | Management Action Plan cards — finding, owner, due date, progress bar, completion %, estimated risk reduction %. |
 | **Loop** | Loop calibration stats (risk reduction %, MAPs open, risks closed, next cycle). Lessons learned. **Recurring Schedule** panel to generate and copy a `/schedule` command (monthly / weekly / quarterly cadence). |
 | **Notifs** | Escalation notification log from the Controls Event Monitor (CEM). Shows tier, message, sent time, ACK status. |
-| **Flow** | Mini Risk Flow panel — top risks fanning out to impact areas and audit buckets. Links to the full Sankey chart in the main canvas. |
-| **Persona** | Role-tailored summaries for Chief Audit Executive, CFO, and COO. Sections and headlines adapt to the run's risk composition. |
+| **Persona** | Role-tailored summaries for Chief Audit Executive, CFO, and COO. Includes a **"Generate with AI"** button that replaces the template brief with a Claude-generated one (see [AI-Augmented Features](#ai-augmented-features)). |
 
 ### Recurring Schedule Panel (Loop tab)
 After a run completes, the **Loop → Recurring Schedule** panel generates a pre-filled `/schedule` command. Pick a cadence (Monthly / Weekly / Quarterly), review the auto-populated next-cycle focus text (derived from velocity-3 risks), then copy the command and paste it into the Claude Code terminal to register a cloud agent that runs the loop automatically.
