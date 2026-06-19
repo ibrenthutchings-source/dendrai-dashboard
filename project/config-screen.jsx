@@ -231,8 +231,70 @@ function ConfigScreen({
         <ConfigCard title="Recurring Schedule" sub="Register a cloud agent to re-run the loop on a cadence.">
           <ScheduleBuilder focusText={`Re-run Dendrai risk loop for ${cfg.ticker || "entity"}, re-score all risks, flag velocity breaches and RAG changes, post summary.`} />
         </ConfigCard>
+
+        {/* ---- Investigation Agent (#1) ---- */}
+        <InvestigationCard ticker={cfg.ticker} />
       </div>
     </div>
+  );
+}
+
+// #1 — Tool-use investigation agent. Claude decides which EDGAR/FRED/RSS/quant
+// tools to call, then returns an investigation memo. Self-contained; runs against
+// the bridge's /agent/investigate endpoint (requires ANTHROPIC_API_KEY there).
+function InvestigationCard({ ticker }) {
+  const [focus, setFocus] = useState("");
+  const [state, setState] = useState({ loading: false, error: null, result: null });
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.agentInvestigate;
+
+  async function run() {
+    if (!aiAvailable || !ticker) return;
+    setState({ loading: true, error: null, result: null });
+    try {
+      const res = await window.MCP.agentInvestigate(ticker, focus, null);
+      setState({ loading: false, error: null, result: res });
+    } catch (e) {
+      setState({ loading: false, error: e.message || "AI unavailable", result: null });
+    }
+  }
+
+  return (
+    <ConfigCard title="Investigation Agent" sub="Claude investigates the company like an auditor — pulls filings, peers, and quant models, then writes a memo.">
+      {!aiAvailable ? (
+        <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
+          Requires the Python bridge with ANTHROPIC_API_KEY set. Start api_server.py and reload.
+        </div>
+      ) : (
+        <>
+          <input className="fi-input" value={focus} onChange={e => setFocus(e.target.value)}
+            placeholder={`Optional focus (e.g. "margin trend", "8-K events") for ${ticker || "entity"}`}
+            style={{width: "100%", marginBottom: 8, fontSize: 12}}/>
+          <button className="btn btn-sm" style={{width: "100%"}} onClick={run} disabled={state.loading || !ticker}>
+            <Icon name="spark" size={11}/> {state.loading ? "Investigating… (may take 1–3 min)" : "Run investigation"}
+          </button>
+          {state.error && (
+            <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 8}}>
+              {state.error}
+            </div>
+          )}
+          {state.result && (
+            <div style={{marginTop: 10}}>
+              <div className="mono" style={{fontSize: 10, color: "var(--ink-3)", marginBottom: 6}}>
+                {state.result.iterations} iterations · {(state.result.tool_calls || []).length} tool calls
+                {(state.result.tool_calls || []).length > 0 && (
+                  <span> · {[...new Set((state.result.tool_calls || []).map(t => t.tool))].join(", ")}</span>
+                )}
+              </div>
+              <div style={{whiteSpace: "pre-wrap", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.65,
+                background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, padding: "12px 14px",
+                maxHeight: 360, overflowY: "auto"}}>
+                {state.result.final_text}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </ConfigCard>
   );
 }
 
