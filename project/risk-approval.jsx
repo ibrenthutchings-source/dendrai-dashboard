@@ -296,12 +296,13 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 }
 
 // ----------- Adjust Risk Modal -----------
-function AdjustRiskModal({ open, risk, onClose, onSubmit }) {
+function AdjustRiskModal({ open, risk, ticker, runId, onClose, onSubmit }) {
   const [rag, setRag] = useState(risk?.rag || "A");
   const [score, setScore] = useState(risk?.score ?? 5);
   const [velocity, setVelocity] = useState(risk?.velocity ?? 0);
   const [ce, setCe] = useState(risk?.ce || "ADEQUATE");
   const [rationale, setRationale] = useState("");
+  const [aiState, setAiState] = useState({ loading: false, error: null, reco: null });
 
   useEffect(() => {
     if (open && risk) {
@@ -310,8 +311,31 @@ function AdjustRiskModal({ open, risk, onClose, onSubmit }) {
       setVelocity(risk.velocity);
       setCe(risk.ce);
       setRationale("");
+      setAiState({ loading: false, error: null, reco: null });
     }
   }, [open, risk?.id]);
+
+  // #2 — AI-assisted HITL: draft a disposition the auditor accepts or overrides.
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiGate1Recommend;
+  async function runAiSuggest() {
+    if (!aiAvailable || !risk) return;
+    setAiState({ loading: true, error: null, reco: null });
+    try {
+      const res = await window.MCP.aiGate1Recommend(ticker || "", [risk], {}, runId || null);
+      const reco = (res?.recommendations || [])[0];
+      if (!reco) throw new Error("no recommendation returned");
+      setRag(reco.suggested_rag ?? rag);
+      setScore(reco.suggested_score ?? score);
+      setVelocity(reco.suggested_velocity ?? velocity);
+      setCe(reco.suggested_ce ?? ce);
+      setRationale(
+        `[AI suggestion · ${reco.confidence || "?"} confidence] ${reco.rationale || ""}`.trim()
+      );
+      setAiState({ loading: false, error: null, reco });
+    } catch (e) {
+      setAiState({ loading: false, error: e.message || "AI unavailable", reco: null });
+    }
+  }
 
   if (!open || !risk) return null;
 
@@ -328,8 +352,26 @@ function AdjustRiskModal({ open, risk, onClose, onSubmit }) {
               {risk.name} · {risk.category}
             </div>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          <div style={{display: "flex", alignItems: "center", gap: 6}}>
+            {aiAvailable && (
+              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+                title="Draft a disposition with Claude — review and override as needed">
+                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          </div>
         </div>
+        {aiState.error && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+            AI suggestion unavailable: {aiState.error}
+          </div>
+        )}
+        {aiState.reco && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
+          </div>
+        )}
         <div className="modal-body">
           <div className="ar-grid">
             <div className="ar-field">

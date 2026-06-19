@@ -1376,6 +1376,8 @@ function App() {
       <AdjustRiskModal
         open={adjustOpen}
         risk={(output.s2?.risks || []).find(r => r.id === adjustingRiskId)}
+        ticker={cfg.ticker}
+        runId={runIdRef.current}
         onClose={() => { setAdjustOpen(false); setAdjustingRiskId(null); }}
         onSubmit={submitAdjustment} />
       <AdjustObjectiveModal

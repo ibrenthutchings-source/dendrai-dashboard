@@ -442,6 +442,27 @@ CREATE TABLE IF NOT EXISTS token_usage_calls (
     cache_write_tokens INT,
     cost_usd           NUMERIC(12,8)
 );
+
+-- AI-generated analyses (LLM provenance, kept distinct from human HITL decisions).
+-- One row per model output: gate recommendations, narrative analysis, persona
+-- briefs, the investigation agent transcript, generated audit reports.
+CREATE TABLE IF NOT EXISTS ai_analyses (
+    id            BIGSERIAL PRIMARY KEY,
+    run_id        INT REFERENCES risk_loop_runs(id),
+    ticker        VARCHAR(16),
+    kind          VARCHAR(48) NOT NULL,
+    subject_ref   VARCHAR(64),
+    model         VARCHAR(64),
+    effort        VARCHAR(16),
+    content       JSONB       NOT NULL,
+    summary       TEXT,
+    input_tokens  INT,
+    output_tokens INT,
+    cost_usd      NUMERIC(12,8),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_analyses_run  ON ai_analyses (run_id, kind);
+CREATE INDEX IF NOT EXISTS idx_ai_analyses_tick ON ai_analyses (ticker, kind, created_at DESC);
 """
 
 
@@ -1480,6 +1501,75 @@ def save_token_call(session_id: int, call: dict, session_totals: dict) -> None:
                     ),
                 )
     _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI analyses (LLM outputs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_ai_analysis(
+    kind: str,
+    content: dict,
+    *,
+    run_id: Optional[int] = None,
+    ticker: Optional[str] = None,
+    subject_ref: Optional[str] = None,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+    summary: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+) -> Optional[int]:
+    """Persist a single AI/LLM output with provenance. Returns the row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO ai_analyses
+                        (run_id, ticker, kind, subject_ref, model, effort,
+                         content, summary, input_tokens, output_tokens, cost_usd)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id
+                    """,
+                    (
+                        run_id, (ticker or None) and ticker.upper(), kind, subject_ref,
+                        model, effort, Json(content), summary,
+                        input_tokens, output_tokens, cost_usd,
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_ai_analyses(run_id: int, kind: Optional[str] = None, limit: int = 50) -> list:
+    """Recent AI analyses for a run, optionally filtered by kind."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if kind:
+                    cur.execute(
+                        "SELECT id, kind, subject_ref, model, content, summary, created_at "
+                        "FROM ai_analyses WHERE run_id = %s AND kind = %s "
+                        "ORDER BY created_at DESC LIMIT %s",
+                        (run_id, kind, limit),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT id, kind, subject_ref, model, content, summary, created_at "
+                        "FROM ai_analyses WHERE run_id = %s ORDER BY created_at DESC LIMIT %s",
+                        (run_id, limit),
+                    )
+                return [
+                    {
+                        "id": r[0], "kind": r[1], "subject_ref": r[2], "model": r[3],
+                        "content": r[4], "summary": r[5],
+                        "created_at": r[6].isoformat() if r[6] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

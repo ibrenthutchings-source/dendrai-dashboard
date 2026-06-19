@@ -60,6 +60,9 @@ from edgar_tool import (
 from rss_tool import run_rss_analysis
 import db
 
+import ai_endpoints
+import claude_client
+
 try:
     from fred_tool import run_analysis as fred_run_analysis
     _HAS_FRED = True
@@ -92,6 +95,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# AI-augmented endpoints (recommendations #1–#4). Active only when ANTHROPIC_API_KEY
+# is set; otherwise each route returns 503 and the deterministic pipeline is unaffected.
+app.include_router(ai_endpoints.router)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
@@ -202,7 +209,13 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "dendrai-mcp-api", "version": "2.0.0"}
+    return {
+        "status": "ok",
+        "service": "dendrai-mcp-api",
+        "version": "2.0.0",
+        "ai_enabled": claude_client.is_available(),
+        "ai_model": claude_client.MODEL if claude_client.is_available() else None,
+    }
 
 
 @app.get("/db/status")
@@ -610,6 +623,15 @@ def history_runs(
         raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
     rows = db.get_run_history(ticker, limit=limit)
     return {"ticker": ticker.upper(), "count": len(rows), "runs": rows}
+
+
+@app.get("/history/runs/{run_id}/ai-analyses")
+def history_ai_analyses(run_id: int, kind: str = Query(default="")):
+    """AI/LLM outputs persisted for a run (gate recs, narrative, persona, agent memo)."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
+    rows = db.get_ai_analyses(run_id, kind=kind or None)
+    return {"run_id": run_id, "kind": kind or "all", "count": len(rows), "analyses": rows}
 
 
 @app.get("/history/runs/{ticker}/{run_id}")
