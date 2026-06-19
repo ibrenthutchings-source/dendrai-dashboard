@@ -1365,7 +1365,9 @@ function App() {
               <button className="btn btn-sm btn-ghost" onClick={() => setPersonaOpen(false)}><Icon name="x" size={12}/></button>
             </div>
             <div className="pm-body">
-              <PersonaTab personas={hasRun ? profile.personas : null} selected={selectedPersona} setSelected={setSelectedPersona}/>
+              <PersonaTab personas={hasRun ? profile.personas : null} selected={selectedPersona} setSelected={setSelectedPersona}
+                ticker={cfg.ticker} risks={output.s2?.risks || profile.risks || []}
+                loopStats={output.s6 || loop || {}} runId={runIdRef.current}/>
             </div>
           </div>
         </div>
