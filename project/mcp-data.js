@@ -18,13 +18,14 @@ window.MCP = (function () {
 
   const BASE = '/api/mcp';
   const TIMEOUT_MS = 120_000; // 2 min — full analysis can take 30-90s
+  const AI_TIMEOUT_MS = 300_000; // 5 min — adaptive-thinking agent runs can be long
 
-  async function _post(path, body) {
+  async function _post(path, body, timeoutMs = TIMEOUT_MS) {
     const res = await fetch(BASE + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       let detail = res.statusText;
@@ -33,6 +34,8 @@ window.MCP = (function () {
     }
     return res.json();
   }
+
+  function _postAi(path, body) { return _post(path, body, AI_TIMEOUT_MS); }
 
   async function _get(path) {
     const res = await fetch(BASE + path, { signal: AbortSignal.timeout(5000) });
@@ -373,6 +376,54 @@ window.MCP = (function () {
     return cemEvents.sort((a, b) => b.ts - a.ts).slice(0, 20);
   }
 
+  // ── AI-augmented endpoints (recommendations #1–#4) ───────────────────────────
+  // All return 503 if ANTHROPIC_API_KEY is not set on the bridge; callers should
+  // treat a thrown error as "AI unavailable" and fall back to the manual flow.
+
+  /** True when the bridge has a configured language model. */
+  async function aiEnabled() {
+    try { return !!(await _get('/health')).ai_enabled; } catch { return false; }
+  }
+
+  /** #2 — Per-risk HITL Gate 1 dispositions. Returns { recommendations: [...] }. */
+  function aiGate1Recommend(ticker, risks, context = {}, runId = null) {
+    return _postAi('/ai/gate1/recommend', { ticker, run_id: runId, risks, context });
+  }
+
+  /** #2 — Per-objective HITL Gate 2 scope drafts. Returns { recommendations: [...] }. */
+  function aiGate2Recommend(ticker, objectives, risks, runId = null) {
+    return _postAi('/ai/gate2/recommend', { ticker, run_id: runId, objectives, risks });
+  }
+
+  /** #3 — Item 1A / proxy narrative analysis. Returns emerging_risks, yoy_changes, summary. */
+  function aiNarrative(ticker, runId = null, opts = {}) {
+    return _postAi('/ai/narrative-analysis', {
+      ticker, run_id: runId,
+      max_filings: opts.maxFilings || 1,
+      include_proxy: opts.includeProxy !== false,
+    });
+  }
+
+  /** #4 — Role-tailored persona brief (CAE / CFO / COO). */
+  function aiPersonaBrief(ticker, persona, risks, loopStats = {}, runId = null) {
+    return _postAi('/ai/persona-brief', { ticker, run_id: runId, persona, risks, loop_stats: loopStats });
+  }
+
+  /** #4 — Full markdown audit report. Returns { markdown }. */
+  function aiAuditReport(ticker, { risks = [], objectives = [], maps = [], loop = {} } = {}, runId = null) {
+    return _postAi('/ai/audit-report', { ticker, run_id: runId, risks, objectives, maps, loop });
+  }
+
+  /** #1 — Tool-use investigation agent. Returns { final_text, tool_calls, iterations }. */
+  function agentInvestigate(ticker, focus = '', runId = null) {
+    return _postAi('/agent/investigate', { ticker, run_id: runId, focus });
+  }
+
+  /** Read back persisted AI analyses for a run. */
+  function fetchAiAnalyses(runId, kind = '') {
+    return _get(`/history/runs/${runId}/ai-analyses${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`);
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -387,5 +438,14 @@ window.MCP = (function () {
     fetchPeerBenchmarks,
     enrichRisksFromFactors,
     map8kToCemEvents,
+    // AI-augmented (#1–#4)
+    aiEnabled,
+    aiGate1Recommend,
+    aiGate2Recommend,
+    aiNarrative,
+    aiPersonaBrief,
+    aiAuditReport,
+    agentInvestigate,
+    fetchAiAnalyses,
   };
 })();
