@@ -150,6 +150,13 @@ a { color: inherit; text-decoration: none; }
 [data-density="compact"] .app-body {
   grid-template-columns: 208px 1fr;
 }
+/* Pipeline screen, post-run: third column hosts the Live Register rail */
+.app-body.has-rail {
+  grid-template-columns: 232px 1fr 408px;
+}
+[data-density="compact"] .app-body.has-rail {
+  grid-template-columns: 208px 1fr 372px;
+}
 
 /* ============================================================
    Left navigation rail
