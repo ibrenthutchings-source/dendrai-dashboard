@@ -430,22 +430,53 @@ def _enrich_peer_financials(peer: dict) -> dict:
     return peer
 
 
+def _peer_has_data(peer: dict) -> bool:
+    """A peer is kept only if at least one financial benchmark resolved."""
+    return any(peer.get(k) is not None for k in ("gross_margin", "rd_intensity", "revenue_growth"))
+
+
 @app.post("/edgar/peers")
 def edgar_peers(req: TickerRequest):
-    """Return SIC peer companies with financial benchmarks and save to sic_peers."""
+    """
+    Peer intelligence. Primary source is the competitors the company names in its
+    own latest 10-K (resolved to EDGAR CIK/ticker); falls back to SIC-code peers
+    when 10-K extraction is unavailable. Companies with no financial data are dropped.
+    """
     try:
-        meta, _ = get_company_info(req.ticker)
+        meta, sub = get_company_info(req.ticker)
         sic = meta.get("sic", "")
-        peers = fetch_sic_peers(sic, max_peers=15)
+
+        # 1) Primary — competitors the filer names itself in the 10-K.
+        named_competitors: list = []
+        peers: list = []
+        peer_source = "10-K named competitors"
+        try:
+            named_competitors = peer_intel.extract_competitor_names(req.ticker, meta, sub)
+            if named_competitors:
+                peers = peer_intel.resolve_names_to_edgar(
+                    named_competitors, exclude_cik=meta.get("cik_plain", "")
+                )
+        except Exception as exc:
+            logger.info("10-K competitor extraction failed: %s", exc)
+
+        # 2) Fallback — SIC peers when no 10-K-named peers resolved.
+        if not peers:
+            peer_source = "SIC peers"
+            peers = fetch_sic_peers(sic, max_peers=15)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             peers = list(pool.map(_enrich_peer_financials, peers))
+
+        # 3) Remove all companies that have no data.
+        peers = [p for p in peers if _peer_has_data(p)]
 
         result = {
             "ticker": req.ticker.upper(),
             "company_name": meta["company_name"],
             "sic": sic,
             "sic_description": meta.get("sic_description", ""),
+            "peer_source": peer_source,
+            "named_competitors": named_competitors,
             "peers": peers,
         }
 
