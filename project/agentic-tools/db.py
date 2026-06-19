@@ -465,6 +465,17 @@ CREATE INDEX IF NOT EXISTS idx_ai_analyses_run  ON ai_analyses (run_id, kind);
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_tick ON ai_analyses (ticker, kind, created_at DESC);
 """
 
+# Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
+# table that already exists, so databases created from an older DDL drift silently.
+# These ADD COLUMN IF NOT EXISTS statements reconcile that drift on every startup.
+_MIGRATIONS = """
+ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS period_end_col VARCHAR(16);
+ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS period_begin   VARCHAR(16);
+ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS appetite_level VARCHAR(8);
+ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS persona        VARCHAR(64);
+ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS signal_set     TEXT[];
+"""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pool management
@@ -487,10 +498,11 @@ def init_db() -> bool:
         try:
             with conn.cursor() as cur:
                 cur.execute(_DDL)
+                cur.execute(_MIGRATIONS)  # reconcile column drift on existing tables
             conn.commit()
         finally:
             _pool.putconn(conn)
-        logger.info("PostgreSQL database initialized (28 tables)")
+        logger.info("PostgreSQL database initialized (tables + migrations applied)")
         return True
     except Exception as exc:
         logger.error("Database init failed: %s", exc)
