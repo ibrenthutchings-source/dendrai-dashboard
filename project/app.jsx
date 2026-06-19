@@ -1091,7 +1091,7 @@ function App() {
         entityName={profile.entity.name} />
 
 
-      <div className="app-body">
+      <div className={"app-body" + (activeScreen === "pipeline" && hasRun ? " has-rail" : "")}>
         <LeftNav
           activeScreen={activeScreen}
           activeGovTab={activeGovTab}
@@ -1216,29 +1216,8 @@ function App() {
           </div>
           )}
 
-          {/* ---- Risk Register (Risks · Heatmap · Loop) ---- */}
-          {activeScreen === "register" && (() => {
-            const regTab = ["rr","hm","loop"].includes(activeRailTab) ? activeRailTab : "rr";
-            return (
-            <div className="panel active">
-              <div className="panel-head">
-                <div>
-                  <div className="kicker">Execution · Live Register</div>
-                  <div className="panel-title mt-8">Risk Register</div>
-                  <div className="panel-sub">{(railRisks?.length || 0)} risks · {(railMaps?.length || 0)} MAPs · {cfg.periodBegin || "—"} → {cfg.periodEnd || "—"}</div>
-                </div>
-                <div className="pipe-sub-tabs" style={{margin:0, borderBottom:"none"}}>
-                  {[{id:"rr",l:"Register"},{id:"hm",l:"Heatmap"},{id:"loop",l:"Loop"}].map(t => (
-                    <button key={t.id} className={"pipe-sub-tab" + (regTab === t.id ? " active" : "")} onClick={() => setActiveRailTab(t.id)}>{t.l}</button>
-                  ))}
-                </div>
-              </div>
-              {regTab === "rr"   && <RiskTable risks={railRisks} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
-              {regTab === "hm"   && <HeatmapTab risks={railRisks} activeQ={activeQuarter} setActiveQ={setActiveQuarter} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
-              {regTab === "loop" && <LoopTab loop={output.s6?.loop || null}/>}
-            </div>
-            );
-          })()}
+          {/* Risk Register, Risk Flow, Forecasts and Scenarios now live in the
+              right-hand Live Register rail (rendered below, post-run). */}
 
           {/* ---- Controls Monitor ---- */}
           {activeScreen === "controls" && (
@@ -1342,6 +1321,43 @@ function App() {
           </div>
           )}
         </main>
+
+        {/* ---- Live Register rail — Pipeline screen, post-run only ---- */}
+        {activeScreen === "pipeline" && hasRun && (
+          <Rail
+            activeTab={activeRailTab}
+            setActiveTab={setActiveRailTab}
+            output={output}
+            risks={railRisks}
+            maps={railMaps}
+            loop={output.s6?.loop || null}
+            notifLog={notifLog}
+            forecasts={hasRun ? profile.forecasts : null}
+            scenarios={hasRun ? profile.scenarios : null}
+            greySwan={hasRun ? profile.greySwan : null}
+            flowMeta={hasRun ? profile.riskFlow : null}
+            activeQuarter={activeQuarter}
+            setActiveQuarter={setActiveQuarter}
+            selectedRiskId={selectedRiskId}
+            setSelectedRiskId={setSelectedRiskId}
+            selectedPersona={selectedPersona}
+            setSelectedPersona={setSelectedPersona}
+            personas={hasRun ? profile.personas : null}
+            onOpenMainFlow={() => setActiveScreen("flow")}
+            periodBegin={cfg.periodBegin}
+            periodEnd={cfg.periodEnd}
+            objectives={output.s3?.objectives || []}
+            gate2Reductions={gate2Reductions}
+            appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
+            liveMode={liveMode}
+            livefacts={livefacts}
+            fredSeries={fredLive}
+            rssSignals={rssSignals}
+            industry={hasRun ? profile.entity?.industry : cfg.industry}
+            ticker={cfg.ticker}
+            loopStats={output.s6 || output.s6?.loop || {}}
+            runId={runIdRef.current} />
+        )}
 
       </div>
 
