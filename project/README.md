@@ -219,6 +219,42 @@ Implemented in `project/agentic-tools/predictive_analytics_tool.py`. Activated v
 
 ---
 
+## AI-Augmented Features
+
+The agentic layer puts Claude (`claude-opus-4-8`, adaptive thinking) in the loop alongside the deterministic models. All of it goes through one shared client, `agentic-tools/claude_client.py` (model selection, prompt caching, structured-output handling, token-cost accounting). Every feature **degrades gracefully**: if `ANTHROPIC_API_KEY` is not set on the Python bridge, the AI routes return HTTP `503` and the deterministic pipeline is unaffected — the UI affordances simply don't appear.
+
+| Feature | UI surface | Endpoint | What it does |
+|---------|-----------|----------|--------------|
+| **AI-assisted HITL — Gate 1** | "Suggest with AI" in the Adjust Risk modal | `POST /ai/gate1/recommend` | Drafts a per-risk disposition (approve / adjust RAG·score·velocity·CE) with a cited rationale; the auditor accepts or overrides. |
+| **AI-assisted HITL — Gate 2** | "Suggest with AI" in the Adjust Objective modal | `POST /ai/gate2/recommend` | Drafts per-objective scope (priority, sprint, hours, linked risks) justified against the linked risks. |
+| **Narrative analysis** | — (server) | `POST /ai/narrative-analysis` | Extracts emerging risks and year-over-year language shifts from Item 1A / DEF 14A text the app already downloads, mapped to register categories. |
+| **Persona brief** | "Generate with AI" on the Persona tab | `POST /ai/persona-brief` | Role-tailored CAE / CFO / COO briefing from the scored register. |
+| **Audit report** | "Generate AI report" in the Loop Report modal | `POST /ai/audit-report` | Board-ready Markdown report from the full run output. |
+| **Investigation agent** | "Run investigation" card on the Setup screen | `POST /agent/investigate` | Tool-use agent that decides its own path — pulls financials, follows anomalies into filings, benchmarks peers, runs the quant models — and writes an investigation memo. |
+
+Every AI output is persisted with provenance (model, effort, tokens, cost) to the `ai_analyses` table and is readable via `GET /history/runs/{run_id}/ai-analyses`.
+
+The investigation agent's tool surface (`agentic-tools/agent_tools.py`) wraps the existing EDGAR / FRED / RSS / analytics functions as Claude tools: `get_financials`, `get_risk_factors`, `get_8k_events`, `get_peers`, `get_industry_news`, `run_quant_models`. The quant models are presented to the agent as ground truth to cite.
+
+### Managed Agents (scheduled cloud agent)
+
+`agentic-tools/managed_agent_setup.py` provisions a **Managed Agents** deployment — a persisted Agent + Environment + cron Deployment that re-investigates a ticker autonomously on a schedule, the real version of the Loop tab's copy-paste `/schedule` panel. Run once: `python managed_agent_setup.py --ticker ON --cron "0 8 * * 1"` (optional `--run-now` to smoke-test, `--list` to see runs).
+
+---
+
+## Peer Intelligence
+
+Governance Intelligence → **Peer Benchmarking** sources peers from the **competitors the target names in its own 10-K**, not from a noisy SIC-code sweep.
+
+1. The latest 10-K's Competition discussion (Item 1 Business) is located and the named competitors are extracted by Claude (`agentic-tools/peer_intel.py`).
+2. Each name is resolved to an EDGAR CIK/ticker — by exact ticker symbol (catches abbreviations like "AMD") or fuzzy title match.
+3. Resolved peers are enriched with gross margin, R&D intensity, and revenue growth from XBRL.
+4. **Companies with no financial data are dropped** — including foreign competitors with no US EDGAR financials.
+
+If the company names no competitors (some 10-Ks are generic) or `ANTHROPIC_API_KEY` is unset, it **falls back to SIC-code peers** — also filtered for data. The response carries `peer_source` (`"10-K named competitors"` or `"SIC peers"`) and the full `named_competitors` list, surfaced in the UI (e.g. for Intel: AMD, NVIDIA, Qualcomm, Broadcom, … with TSMC / Samsung / MediaTek dropped as having no US financial data).
+
+---
+
 ## API & MCP Servers
 
 ### Python FastAPI Bridge (`project/agentic-tools/api_server.py`)
@@ -234,14 +270,25 @@ python api_server.py --port 8002  # custom port
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Liveness check |
+| GET | `/health` | Liveness check — reports `ai_enabled` / `ai_model` |
+| GET | `/db/status` | Whether Postgres persistence is configured |
 | POST | `/predictive/full-analysis` | All 10 analytics models in one call |
 | POST | `/edgar/financials` | XBRL financial time-series |
 | POST | `/edgar/risk-factors` | Item 1A risk factors from 10-K filings |
+| POST | `/edgar/8k-events` | Annotated 8-K material events |
+| POST | `/edgar/peers` | Peer intelligence — 10-K-named competitors, no-data dropped (see [Peer Intelligence](#peer-intelligence)) |
+| POST | `/edgar/proxy` | DEF 14A governance sections |
 | POST | `/rss/news` | Industry RSS feed analysis |
 | POST | `/fred/correlations` | FRED macro leading indicator correlations |
+| POST | `/ai/gate1/recommend` · `/ai/gate2/recommend` | AI-assisted HITL gate dispositions |
+| POST | `/ai/narrative-analysis` | Item 1A / proxy narrative extraction |
+| POST | `/ai/persona-brief` · `/ai/audit-report` | Persona brief / Markdown audit report |
+| POST | `/agent/investigate` | Tool-use investigation agent |
+| POST | `/loop/hitl/risk-approvals` · `/loop/hitl/scope-approvals` · `/loop/persist` | Persist HITL decisions + loop completion |
+| GET | `/history/runs/{ticker}` · `/history/runs/{ticker}/{run_id}` | Run history |
+| GET | `/history/runs/{run_id}/ai-analyses` | Persisted AI outputs for a run |
 
-Interactive API docs available at `http://127.0.0.1:8001/docs`.
+The `/ai/*` and `/agent/*` routes require `ANTHROPIC_API_KEY`; without it they return `503`. Interactive API docs available at `http://127.0.0.1:8001/docs`.
 
 The Vite dev server proxies `/api/mcp/*` → `http://127.0.0.1:8001/*` so the browser never makes cross-origin requests.
 
@@ -315,13 +362,17 @@ dendrai-dashboard/
 │   ├── rss-engine.js               # RSS feed ingestion + signal grading
 │   ├── forecasting.js              # ARIMA/ensemble forecasting (JS)
 │   ├── backtesting.js              # Walk-forward backtesting (JS)
+│   ├── nav.jsx                     # Left navigation rail (menu → main canvas)
+│   ├── rail.jsx                    # Right-hand Live Register rail (pipeline, post-run)
 │   ├── cem.jsx                     # Controls Event Monitor panel
-│   ├── forecasts.jsx               # Forecasts sub-tab
-│   ├── scenarios.jsx               # Scenarios + Grey Swan sub-tab
+│   ├── forecasts.jsx               # Forecasts panel (now a rail tab)
+│   ├── scenarios.jsx               # Scenarios + Grey Swan panel (now a rail tab)
 │   ├── flow.jsx                    # Risk Flow Sankey full panel
-│   ├── report.jsx                  # PDF-style audit report modal
-│   ├── risk-approval.jsx           # HITL Gate 1 per-risk adjust modal
-│   ├── audit-scope-review.jsx      # HITL Gate 2 per-objective adjust modal
+│   ├── governance.jsx              # Governance Intelligence + Peer Benchmarking
+│   ├── config-screen.jsx           # Setup screen (config, schedule, investigation agent)
+│   ├── report.jsx                  # Audit report modal (+ AI report generation)
+│   ├── risk-approval.jsx           # HITL Gate 1 per-risk adjust modal (+ AI suggest)
+│   ├── audit-scope-review.jsx      # HITL Gate 2 per-objective adjust modal (+ AI suggest)
 │   ├── rss.jsx                     # RSS Signals sub-tab
 │   ├── tweaks.jsx                  # Tweaks panel hook + state
 │   ├── tweaks-panel.jsx            # Tweaks panel UI (accent, density, run speed)
@@ -329,8 +380,15 @@ dendrai-dashboard/
 │   ├── vite.config.js              # Vite config — CORS proxies (EDGAR, SEC, MCP, RSS)
 │   ├── data/
 │   │   └── fred_data.json          # Bundled FRED snapshot (Q1 2021 → Q1 2026)
-│   └── agentic-tools/              # Python analytics backend
+│   └── agentic-tools/              # Python analytics + AI backend
 │       ├── api_server.py           # FastAPI bridge — exposes tools as REST endpoints
+│       ├── claude_client.py        # Shared Claude client (model, caching, tool loop, cost)
+│       ├── ai_endpoints.py         # AI router — gate recs, narrative, persona, report
+│       ├── agent_tools.py          # Investigation agent tool surface (EDGAR/FRED/RSS/quant)
+│       ├── peer_intel.py           # 10-K competitor extraction + EDGAR resolution
+│       ├── managed_agent_setup.py  # Managed Agents scheduled deployment (control plane)
+│       ├── db.py                   # Postgres persistence (incl. ai_analyses + migrations)
+│       ├── integration_test.py     # Live DB INSERT/UPDATE/UPSERT integration test
 │       ├── predictive_analytics_tool.py   # 10 analytics models
 │       ├── predictive_analytics_mcp_server.py
 │       ├── edgar_tool.py           # SEC EDGAR XBRL fetcher
@@ -342,6 +400,7 @@ dendrai-dashboard/
 │       ├── token_cost_tool.py      # Token cost estimator
 │       ├── token_cost_mcp_server.py
 │       ├── requirements.txt
+│       ├── .env.example            # DATABASE_URL · ANTHROPIC_API_KEY · FRED_API_KEY
 │       └── ON/                     # Cached EDGAR data for onsemi (ON)
 │           ├── financials.json
 │           ├── proxy.json
@@ -406,13 +465,26 @@ Then register in `claude_desktop_config.json` as shown in [Node.js MCP Server](#
 
 ## Environment Variables
 
-Place a `.env` file in `project/agentic-tools/` (or export to shell):
+Place a `.env` file in `project/agentic-tools/` (copy `.env.example`). The bridge loads it automatically via `python-dotenv`. **None are required to start** — features unlock as each is set.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `FRED_API_KEY` | For FRED tools | Free key from [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html) |
+| Variable | Enables | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | All AI features (`/ai/*`, `/agent/*`, 10-K peer intelligence) | Without it those routes return `503` and the deterministic pipeline is unaffected. |
+| `DATABASE_URL` | Postgres persistence | `postgresql://user:pass@host:port/db`. Unset = persistence disabled (app still runs). On Railway use the public proxy host (`…proxy.rlwy.net:PORT`) from outside Railway, or the internal host when deployed on Railway. The schema self-heals on startup (`db.init_db()` runs DDL + idempotent column migrations). |
+| `FRED_API_KEY` | FRED correlation analysis | Free key from [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html). |
+| `DENDRAI_CLAUDE_MODEL` | — | Optional model override (default `claude-opus-4-8`). |
+| `DENDRAI_MCP_URL` | Managed Agents tool access | Optional hosted MCP server URL for the scheduled cloud agent. |
 
-The Python tools load this automatically via `python-dotenv`. Omitting it disables FRED correlation analysis; all other features work without it.
+> **Secrets:** `.env` files are git-ignored — never commit real keys; the committed `.env.example` files are the templates.
+
+### Database persistence
+
+When `DATABASE_URL` is set, runs persist to a normalized Postgres schema (companies, XBRL series, risk scores, HITL approvals, AI analyses, token usage, …). `integration_test.py` exercises the INSERT / UPDATE / UPSERT path end-to-end against a live database and cleans up after itself:
+
+```bash
+cd project/agentic-tools
+DATABASE_URL=postgresql://… python integration_test.py
+```
 
 ---
 
