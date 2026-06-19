@@ -166,10 +166,21 @@ def resolve_names_to_edgar(names: list[str], exclude_cik: str = "") -> list[dict
     index = _ticker_index()
     if not index:
         return []
+    # Ticker-symbol lookup catches abbreviations a 10-K uses (e.g. "AMD") that
+    # won't fuzzy-match EDGAR's legal title ("Advanced Micro Devices").
+    by_ticker = {e["ticker"].upper(): e for _, e in index if e.get("ticker")}
     exclude = re.sub(r"\D", "", exclude_cik or "")
     out, used = [], set()
 
     for raw in names:
+        sym = re.sub(r"[^A-Za-z]", "", raw or "").upper()
+        if 2 <= len(sym) <= 5 and sym in by_ticker:
+            entry = by_ticker[sym]
+            if entry["cik_plain"] != exclude and entry["cik_plain"] not in used:
+                used.add(entry["cik_plain"])
+                out.append({**entry, "matched_from": raw})
+            continue
+
         target = _norm(raw)
         if not target:
             continue
