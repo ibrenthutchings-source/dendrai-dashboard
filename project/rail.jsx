@@ -414,29 +414,84 @@ function FlowMiniTab({ risks, maps, flowMeta, selectedId, onSelect, onOpenMain }
 }
 
 // ---------- PERSONA ----------
-function PersonaTab({ personas, selected, setSelected }) {
+function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopStats = {}, runId }) {
   if (!personas) return <Empty>Persona reports populate after the loop completes.</Empty>;
   const names = Object.keys(personas);
   const cur = personas[selected];
+
+  // #4 — AI-generated persona briefs replace the template when requested.
+  const [aiBriefs, setAiBriefs] = useState({});   // { [personaName]: brief }
+  const [ai, setAi] = useState({ loading: false, error: null });
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiPersonaBrief;
+  const aiBrief = aiBriefs[selected];
+
+  async function regenerate() {
+    if (!aiAvailable) return;
+    setAi({ loading: true, error: null });
+    try {
+      const res = await window.MCP.aiPersonaBrief(ticker || "", selected, risks, loopStats, runId || null);
+      setAiBriefs(prev => ({ ...prev, [selected]: res }));
+      setAi({ loading: false, error: null });
+    } catch (e) {
+      setAi({ loading: false, error: e.message || "AI unavailable" });
+    }
+  }
+
   return (
     <>
-      <SectionLabel>Persona Report</SectionLabel>
+      <SectionLabel right={aiAvailable ? (
+        <button className="btn btn-sm" onClick={regenerate} disabled={ai.loading}
+          title="Generate a role-tailored brief with Claude">
+          <Icon name="spark" size={10}/> {ai.loading ? "Generating…" : aiBrief ? "Regenerate" : "Generate with AI"}
+        </button>
+      ) : null}>Persona Report</SectionLabel>
       <div className="persona-pick">
         {names.map(n => (
           <button key={n} className={"pp" + (selected === n ? " active" : "")} onClick={() => setSelected(n)}>{n}</button>
         ))}
       </div>
-      <div className="persona-card">
-        <div className="kicker" style={{marginBottom: 6}}>Headline</div>
-        <div className="persona-headline">{cur.headline}</div>
-        <div className="persona-summary">{cur.summary}</div>
-      </div>
-      <div className="persona-card">
-        <div className="kicker" style={{marginBottom: 6}}>Report sections</div>
-        <ul className="scen-list" style={{fontSize: 11.5}}>
-          {cur.sections.map((s, i) => <li key={i}>{s}</li>)}
-        </ul>
-      </div>
+      {ai.error && (
+        <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", margin: "4px 0"}}>
+          AI brief unavailable: {ai.error}
+        </div>
+      )}
+
+      {aiBrief ? (
+        <>
+          <div className="persona-card">
+            <div className="kicker" style={{marginBottom: 6, color: "var(--acc-ink)"}}>Headline · AI-generated</div>
+            <div className="persona-headline">{aiBrief.headline}</div>
+          </div>
+          {(aiBrief.sections || []).map((s, i) => (
+            <div className="persona-card" key={i}>
+              <div className="kicker" style={{marginBottom: 6}}>{s.title}</div>
+              <div className="persona-summary">{s.body}</div>
+            </div>
+          ))}
+          {(aiBrief.callouts || []).length > 0 && (
+            <div className="persona-card">
+              <div className="kicker" style={{marginBottom: 6}}>Callouts</div>
+              <ul className="scen-list" style={{fontSize: 11.5}}>
+                {aiBrief.callouts.map((c, i) => <li key={i}>{c}</li>)}
+              </ul>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="persona-card">
+            <div className="kicker" style={{marginBottom: 6}}>Headline</div>
+            <div className="persona-headline">{cur.headline}</div>
+            <div className="persona-summary">{cur.summary}</div>
+          </div>
+          <div className="persona-card">
+            <div className="kicker" style={{marginBottom: 6}}>Report sections</div>
+            <ul className="scen-list" style={{fontSize: 11.5}}>
+              {cur.sections.map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+          </div>
+        </>
+      )}
     </>
   );
 }
