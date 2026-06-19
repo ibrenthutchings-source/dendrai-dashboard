@@ -1,13 +1,11 @@
+import 'dotenv/config'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import express from 'express'
 import cors from 'cors'
-import dotenv from 'dotenv'
 import rateLimit from 'express-rate-limit'
 import { clerkMiddleware } from '@clerk/express'
 import reportsRouter from './routes/reports.js'
-
-dotenv.config()
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
