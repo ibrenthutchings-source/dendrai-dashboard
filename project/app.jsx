@@ -1071,11 +1071,10 @@ function App() {
   }, []);
 
   // ---- Pipeline sub-tab definitions ----
+  // Forecasts & Scenarios moved to the right-hand Live Register rail (post-run).
   const pipeTabs = [
     { id: "stages", l: "Pipeline" },
     { id: "rss",    l: "RSS Signals" },
-    { id: "fcst",   l: "Forecasts" },
-    { id: "scen",   l: "Scenarios" },
   ];
 
   const railRisks = output.s2?.risks || (hasRun ? profile.risks : null);
@@ -1213,19 +1212,6 @@ function App() {
                   setRssSignals(sigs);
                   log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
                 }} />
-            )}
-            {activePipeTab === "fcst" && (
-              <ForecastsPanel
-                data={hasRun ? profile.forecasts : null}
-                liveMode={liveMode}
-                livefacts={livefacts}
-                fredSeries={fredLive}
-                rssSignals={rssSignals}
-                industry={hasRun ? profile.entity?.industry : cfg.industry}
-                ticker={cfg.ticker} />
-            )}
-            {activePipeTab === "scen" && (
-              <ScenariosPanel scenarios={hasRun ? profile.scenarios : null} greySwan={hasRun ? profile.greySwan : null} />
             )}
           </div>
           )}
