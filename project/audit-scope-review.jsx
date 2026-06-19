@@ -306,7 +306,7 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
   );
 }
 
-function AdjustObjectiveModal({ open, obj, risks = [], onClose, onSubmit }) {
+function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, onSubmit }) {
   const [priority, setPriority] = useState(obj?.priority || "P2");
   const [sprint, setSprint] = useState(obj?.sprint ?? 1);
   const [hours, setHours] = useState(String(obj?.hours ?? 40));
@@ -317,6 +317,7 @@ function AdjustObjectiveModal({ open, obj, risks = [], onClose, onSubmit }) {
     return [];
   });
   const [residualReduction, setResidualReduction] = useState(obj?.residualRiskReduction ?? 0);
+  const [aiState, setAiState] = useState({ loading: false, error: null, reco: null });
 
   useEffect(() => {
     if (open && obj) {
@@ -326,8 +327,39 @@ function AdjustObjectiveModal({ open, obj, risks = [], onClose, onSubmit }) {
       setRationale("");
       setLinkedRiskIds(obj.linked_risks?.length ? obj.linked_risks : obj.linked_risk ? [obj.linked_risk] : []);
       setResidualReduction(obj.residualRiskReduction ?? 0);
+      setAiState({ loading: false, error: null, reco: null });
     }
   }, [open, obj?.id]);
+
+  // #2 — AI-assisted HITL Gate 2: draft a scope the planner accepts or overrides.
+  // Prefills the unambiguous fields (priority/sprint/hours/linked risks); the AI's
+  // residual-reduction reasoning goes into the rationale to avoid a unit mismatch
+  // (endpoint returns a %, the slider below is in score points).
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiGate2Recommend;
+  async function runAiSuggest() {
+    if (!aiAvailable || !obj) return;
+    setAiState({ loading: true, error: null, reco: null });
+    try {
+      const res = await window.MCP.aiGate2Recommend(ticker || "", [obj], risks, runId || null);
+      const reco = (res?.recommendations || [])[0];
+      if (!reco) throw new Error("no recommendation returned");
+      if (reco.suggested_priority) setPriority(reco.suggested_priority);
+      if (typeof reco.suggested_sprint === "number") setSprint(reco.suggested_sprint);
+      if (typeof reco.suggested_hours === "number") setHours(String(reco.suggested_hours));
+      if (Array.isArray(reco.suggested_linked_risks) && reco.suggested_linked_risks.length) {
+        const valid = reco.suggested_linked_risks.filter(id => risks.some(r => r.id === id));
+        if (valid.length) setLinkedRiskIds(valid);
+      }
+      const pct = reco.suggested_residual_reduction;
+      setRationale(
+        `[AI suggestion] ${reco.rationale || ""}`.trim()
+        + (typeof pct === "number" ? ` Expected residual-risk reduction ≈ ${pct}%.` : "")
+      );
+      setAiState({ loading: false, error: null, reco });
+    } catch (e) {
+      setAiState({ loading: false, error: e.message || "AI unavailable", reco: null });
+    }
+  }
 
   if (!open || !obj) return null;
 
@@ -367,8 +399,26 @@ function AdjustObjectiveModal({ open, obj, risks = [], onClose, onSubmit }) {
               {obj.objective}
             </div>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          <div style={{display: "flex", alignItems: "center", gap: 6}}>
+            {aiAvailable && (
+              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+                title="Draft a scope with Claude — review and override as needed">
+                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          </div>
         </div>
+        {aiState.error && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+            AI suggestion unavailable: {aiState.error}
+          </div>
+        )}
+        {aiState.reco && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+            AI recommends: <b>{aiState.reco.recommendation}</b> — fields pre-filled below, edit freely.
+          </div>
+        )}
         <div className="modal-body">
           <div className="ar-grid" style={{gridTemplateColumns:"1fr 1fr 1fr"}}>
             <div className="ar-field">

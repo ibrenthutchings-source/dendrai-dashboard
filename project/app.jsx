@@ -1384,6 +1384,8 @@ function App() {
         open={adjustObjOpen}
         obj={(output.s3?.objectives || profile.objectives || []).find(o => o.id === adjustingObjId)}
         risks={output.s2?.risks || []}
+        ticker={cfg.ticker}
+        runId={runIdRef.current}
         onClose={() => { setAdjustObjOpen(false); setAdjustingObjId(null); }}
         onSubmit={submitObjAdjustment} />
 
