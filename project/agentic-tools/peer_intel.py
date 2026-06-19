@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 _SUFFIXES = re.compile(
     r"\b(inc|incorporated|corp|corporation|co|company|companies|ltd|limited|plc|"
     r"llc|lp|holdings?|group|technologies|technology|systems|semiconductor|"
-    r"semiconductors|international|industries|labs?|laboratories|the|and|&)\b",
+    r"semiconductors|international|industries|labs?|laboratories|the|and|&|"
+    r"nv|sa|ag|se|ab|oyj|spa|kk|gmbh|bv)\b",
     re.IGNORECASE,
 )
 _NONWORD = re.compile(r"[^a-z0-9 ]+")
