@@ -1332,17 +1332,17 @@ function App() {
             maps={railMaps}
             loop={output.s6?.loop || null}
             notifLog={notifLog}
-            forecasts={hasRun ? profile.forecasts : null}
-            scenarios={hasRun ? profile.scenarios : null}
-            greySwan={hasRun ? profile.greySwan : null}
-            flowMeta={hasRun ? profile.riskFlow : null}
+            forecasts={profile.forecasts}
+            scenarios={profile.scenarios}
+            greySwan={profile.greySwan}
+            flowMeta={profile.riskFlow}
             activeQuarter={activeQuarter}
             setActiveQuarter={setActiveQuarter}
             selectedRiskId={selectedRiskId}
             setSelectedRiskId={setSelectedRiskId}
             selectedPersona={selectedPersona}
             setSelectedPersona={setSelectedPersona}
-            personas={hasRun ? profile.personas : null}
+            personas={profile.personas}
             onOpenMainFlow={() => setActiveScreen("flow")}
             periodBegin={cfg.periodBegin}
             periodEnd={cfg.periodEnd}
