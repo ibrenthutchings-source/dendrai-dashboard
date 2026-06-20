@@ -387,7 +387,7 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
   const residualScore = primaryRisk
     ? Math.max(0, parseFloat((primaryRisk.score - residualReduction).toFixed(1)))
     : null;
-  const residualRag = residualScore == null ? null : residualScore >= 7.5 ? "R" : residualScore >= 5.0 ? "A" : "G";
+  const residualRag = residualScore == null ? null : residualScore >= 15 ? "R" : residualScore >= 9 ? "A" : "G";
 
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>

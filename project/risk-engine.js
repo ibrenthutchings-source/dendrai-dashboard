@@ -12,25 +12,26 @@ window.RISK_ENGINE = (function () {
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const pct   = (v, d=1) => v != null ? (v * 100).toFixed(d) + '%' : 'n/a';
   const fmt   = (v, d=0) => v != null ? v.toFixed(d) : 'n/a';
-  const ragOf = s => s >= 7.5 ? 'R' : s >= 5.0 ? 'A' : 'G';
+  // Thresholds on 0-25 scale (impact × likelihood)
+  const ragOf = s => s >= 15 ? 'R' : s >= 9 ? 'A' : 'G';
   const ceOf  = (s, base) => {
     const d = s - base;
-    if (d > 2.0) return 'WEAK';
-    if (d > 0.5) return 'ADEQUATE';
+    if (d > 5.0)  return 'WEAK';
+    if (d > 1.25) return 'ADEQUATE';
     return 'STRONG';
   };
   const velOf = (score, base) => {
     const d = score - base;
-    if (d > 1.5) return 3;
-    if (d > 0.7) return 2;
-    if (d > 0.1) return 1;
-    if (d < -0.8) return -1;
+    if (d > 3.75) return 3;
+    if (d > 1.75) return 2;
+    if (d > 0.25) return 1;
+    if (d < -2.0) return -1;
     return 0;
   };
   const histOf = (score, base, n = 6) => {
     const step = (score - base) / Math.max(1, n - 1);
     return Array.from({ length: n }, (_, i) =>
-      +clamp(base + step * i, 1.0, 10.0).toFixed(1));
+      +clamp(base + step * i, 1.0, 25.0).toFixed(1));
   };
   // tier(val, fallback, [pred, delta], ...) — picks FIRST matching
   function tier(val, fallback, ...tiers) {
@@ -40,6 +41,20 @@ window.RISK_ENGINE = (function () {
     }
     return fallback;
   }
+
+  // ── Impact by category (0-5 scale) ────────────────────────
+  const CATEGORY_IMPACT = {
+    'Revenue':             4,
+    'Operational':         3,
+    'Financial Reporting': 4,
+    'Supply':              4,
+    'Cybersecurity':       4,
+    'Trade Compliance':    5,
+    'ESG':                 2,
+    'Compliance':          3,
+    'Legal':               3,
+    'Strategic':           3,
+  };
 
   // ── SIC → Industry ─────────────────────────────────────────
   function sic2industry(sic) {
@@ -570,25 +585,32 @@ window.RISK_ENGINE = (function () {
   TEMPLATES['Utilities']                   = TEMPLATES['Generic'];
 
   // ── Build Risk Array from template + ratios ─────────────────
+  // score = impact (0-5) × likelihood (0-5) → 0-25 scale
   function buildRisks(industry, ratios, ticker) {
     const tmpl = TEMPLATES[industry] || TEMPLATES['Generic'];
     return tmpl.map(t => {
-      const delta  = t.delta(ratios);
-      const score  = clamp(t.base + delta, 1.5, 9.5);
-      const ce     = ceOf(score, t.base);
-      const vel    = velOf(score, t.base);
+      const delta      = t.delta(ratios);
+      const rawScore   = clamp(t.base + delta, 1.5, 9.5);   // 0-10 intermediate
+      const likelihood = clamp(rawScore / 2, 0.5, 5.0);     // 0-5 scale
+      const impact     = CATEGORY_IMPACT[t.category] || 3;  // 0-5 scale
+      const score      = +(impact * likelihood).toFixed(1);  // 0-25 scale
+      const base25     = impact * (t.base / 2);              // base on 0-25 scale
+      const ce         = ceOf(score, base25);
+      const vel        = velOf(score, base25);
       return {
         id:       t.id,
         name:     t.name,
         category: t.category,
-        score:    +score.toFixed(1),
+        impact,
+        likelihood: +likelihood.toFixed(1),
+        score,
         rag:      ragOf(score),
         velocity: vel,
         ce,
-        inherent: +clamp(score + 1.0, score, 10.0).toFixed(1),
-        residual: +score.toFixed(1),
-        peer:     score > t.base + 1.0 ? 'above' : score < t.base - 0.5 ? 'below' : 'in-line',
-        hist:     histOf(score, t.base),
+        inherent: +clamp(score + 2.5, score, 25.0).toFixed(1),
+        residual: score,
+        peer:     score > base25 + 2.5 ? 'above' : score < base25 - 1.25 ? 'below' : 'in-line',
+        hist:     histOf(score, base25),
         narrative: t.narrative(ratios, ticker),
       };
     });
@@ -600,7 +622,7 @@ window.RISK_ENGINE = (function () {
     const sorted = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
     return sorted.map((r, i) => {
       const t = tmpl.find(x => x.id === r.id) || tmpl[0];
-      const priority = r.score >= 7.0 ? 'P1' : r.score >= 5.0 ? 'P2' : 'P3';
+      const priority = r.score >= 17 ? 'P1' : r.score >= 11 ? 'P2' : 'P3';
       return {
         id: `O-${String(i + 1).padStart(2, '0')}`,
         priority,
@@ -609,7 +631,7 @@ window.RISK_ENGINE = (function () {
         sprint: priority === 'P1' ? 1 : priority === 'P2' ? 2 : 3,
         hours: priority === 'P1' ? 120 : priority === 'P2' ? 80 : 40,
         controls: t.controls || [],
-        rationale: `${r.name} score ${r.score}/10 (${r.rag}), velocity ${r.velocity > 0 ? '+' : ''}${r.velocity}. ${r.narrative.slice(0, 120)}…`,
+        rationale: `${r.name} score ${r.score}/25 (${r.rag}), velocity ${r.velocity > 0 ? '+' : ''}${r.velocity}. ${r.narrative.slice(0, 120)}…`,
       };
     });
   }
@@ -625,7 +647,7 @@ window.RISK_ENGINE = (function () {
         id: `MAP-${String(i + 1).padStart(2, '0')}`,
         finding: tmpl?.mapFinding || `${r.name} — control gap identified`,
         condition: r.narrative,
-        root_cause: `Root cause analysis required — risk score ${r.score}/10 with velocity ${r.velocity > 0 ? '+' : ''}${r.velocity}.`,
+        root_cause: `Root cause analysis required — risk score ${r.score}/25 with velocity ${r.velocity > 0 ? '+' : ''}${r.velocity}.`,
         risk_impact: r.rag,
         linked_risk: r.id,
         action: tmpl?.mapAction || `Implement controls to reduce ${r.name} risk to target level`,
@@ -692,10 +714,10 @@ window.RISK_ENGINE = (function () {
       name: `Grey Swan — ${top.name?.split('—')[0].trim()} cascade to systemic failure`,
       risk_id: top.id, risk_name: top.name,
       starting_rag: top.rag, starting_score: topScore,
-      ending_rag: 'R', ending_score: Math.min(9.5, topScore + 2.2),
+      ending_rag: 'R', ending_score: Math.min(25, topScore + 5.5),
       probability: 'LOW · plausible',
       headline: `${top.name?.split('—')[0].trim()} control failure cascades into ${r2.name?.split('—')[0].trim()} and reputational damage`,
-      description: `Foreseeable but under-weighted: ${top.name?.split('—')[0].trim()} deteriorates beyond current score (${topScore}/10) as primary controls fail. This cascades into ${r2.name?.split('—')[0].trim()} and triggers reputational and regulatory escalation — a sequence that begins with a single control point failure.`,
+      description: `Foreseeable but under-weighted: ${top.name?.split('—')[0].trim()} deteriorates beyond current score (${topScore}/25) as primary controls fail. This cascades into ${r2.name?.split('—')[0].trim()} and triggers reputational and regulatory escalation — a sequence that begins with a single control point failure.`,
       catalysts: [
         `${top.name?.split('—')[0].trim()} control effectiveness degrades from ADEQUATE to WEAK`,
         `Related internal control deficiency identified by external auditor`,
@@ -703,7 +725,7 @@ window.RISK_ENGINE = (function () {
         `${r2.name?.split('—')[0].trim()} crosses IA escalation threshold simultaneously`,
       ],
       impacts_at_max: [
-        `Primary risk score reaches ${Math.min(9.5, topScore + 2.2).toFixed(1)}/10 — material audit finding`,
+        `Primary risk score reaches ${Math.min(25, topScore + 5.5).toFixed(1)}/25 — material audit finding`,
         `Regulatory escalation requires external specialist engagement`,
         `Management credibility risk with Audit Committee`,
       ],
@@ -717,13 +739,13 @@ window.RISK_ENGINE = (function () {
         `Accelerate MAP-01 implementation; escalate to AC if missed by due date`,
         `Commission targeted IA deep-dive if velocity reaches +3`,
         `Engage external specialist if regulatory inquiry received`,
-        `Notify Board if score exceeds ${Math.min(9.5, topScore + 1.5).toFixed(1)}/10`,
+        `Notify Board if score exceeds ${Math.min(25, topScore + 3.75).toFixed(1)}/25`,
       ],
       timeline: [
-        { t:'T+0',  label:'Early signal',    score:topScore,                       rag:top.rag, likelihood:0.05, impact_$m:0,                              impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`,                              signals:[`Score ${topScore.toFixed(1)}/10`,`Velocity ${topVel>0?'+':''}${topVel}`,`MAP in progress`],                                              action:'IA initiates focused review' },
-        { t:'T+30', label:'Stress building', score:Math.min(9.5,topScore+0.8),     rag:'R',     likelihood:0.12, impact_$m:Math.round(qRevM * 0.05),        impact:'Primary control effectiveness degrades; KRI breach at 80% threshold',                            signals:[`Score ${(topScore+0.8).toFixed(1)}/10`,'Control WEAK','Escalation flag'],                                                action:'Emergency controls review; AC notified' },
-        { t:'T+60', label:'Cascade risk',    score:Math.min(9.5,topScore+1.5),     rag:'R',     likelihood:0.20, impact_$m:Math.round(qRevM * 0.10),        impact:`${r2.name?.split('—')[0].trim()} also elevating; dual-risk scenario active`,                     signals:[`Score ${(topScore+1.5).toFixed(1)}/10`,'Dual-risk active','Regulatory monitoring'],                                    action:'External specialist engaged; Board briefed' },
-        { t:'T+90', label:'Systemic',        score:Math.min(9.5,topScore+2.2),     rag:'R',     likelihood:0.30, impact_$m:Math.round(qRevM * 0.18),        impact:'Material control failure; external auditor notified',                                            signals:[`Score ${Math.min(9.5,topScore+2.2).toFixed(1)}/10`,'Material finding','Regulatory escalation'],                        action:'Structured remediation plan; investor communication' },
+        { t:'T+0',  label:'Early signal',    score:topScore,                        rag:top.rag, likelihood:0.05, impact_$m:0,                              impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`,     signals:[`Score ${topScore.toFixed(1)}/25`,`Velocity ${topVel>0?'+':''}${topVel}`,`MAP in progress`],                                  action:'IA initiates focused review' },
+        { t:'T+30', label:'Stress building', score:Math.min(25,topScore+2.0),  rag:'R',     likelihood:0.12, impact_$m:Math.round(qRevM * 0.05),        impact:'Primary control effectiveness degrades; KRI breach at 80% threshold', signals:[`Score ${Math.min(25,topScore+2.0).toFixed(1)}/25`,'Control WEAK','Escalation flag'],                                                action:'Emergency controls review; AC notified' },
+        { t:'T+60', label:'Cascade risk',    score:Math.min(25,topScore+3.75), rag:'R',     likelihood:0.20, impact_$m:Math.round(qRevM * 0.10),        impact:`${r2.name?.split('—')[0].trim()} also elevating; dual-risk scenario active`, signals:[`Score ${Math.min(25,topScore+3.75).toFixed(1)}/25`,'Dual-risk active','Regulatory monitoring'],                              action:'External specialist engaged; Board briefed' },
+        { t:'T+90', label:'Systemic',        score:Math.min(25,topScore+5.5),  rag:'R',     likelihood:0.30, impact_$m:Math.round(qRevM * 0.18),        impact:'Material control failure; external auditor notified',                  signals:[`Score ${Math.min(25,topScore+5.5).toFixed(1)}/25`,'Material finding','Regulatory escalation'],                              action:'Structured remediation plan; investor communication' },
       ],
     };
   }
@@ -979,8 +1001,8 @@ window.RISK_ENGINE = (function () {
              rerun_recommended:risks.filter(r=>r.velocity>=3).map(r=>r.id) };
   }
   function buildLoop(risks) {
-    const impact = +(5.0 + risks.filter(r=>r.rag==='R').length*0.4 + risks.filter(r=>r.velocity>=2).length*0.15).toFixed(1);
-    return { loop_health:impact>=7?'R':impact>=5?'A':'G', audit_impact_score:Math.min(10,impact),
+    const impact = +(12.5 + risks.filter(r=>r.rag==='R').length*1.0 + risks.filter(r=>r.velocity>=2).length*0.375).toFixed(1);
+    return { loop_health:impact>=17.5?'R':impact>=12.5?'A':'G', audit_impact_score:Math.min(25,impact),
              risk_reduction_pct:Math.round(15+risks.filter(r=>r.velocity<0).length*3),
              maps_open:risks.length, risks_closed:risks.filter(r=>r.rag==='G').length,
              next_trigger_days:30, next_cycle_focus:`Re-test ${risks.filter(r=>r.velocity>=3).map(r=>r.name.split('—')[0].trim()).join('; ') || 'top velocity risks'}`,

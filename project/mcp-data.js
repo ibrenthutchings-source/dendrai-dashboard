@@ -88,7 +88,7 @@ window.MCP = (function () {
   function _mkHist(base, score) {
     return Array.from({ length: 6 }, (_, k) => {
       const frac = k / 5;
-      return +Math.max(1, Math.min(10, base + (score - base) * frac)).toFixed(1);
+      return +Math.max(1, Math.min(25, base + (score - base) * frac)).toFixed(1);
     });
   }
 
@@ -116,8 +116,9 @@ window.MCP = (function () {
       const mr = byIndex || byCategory;
       if (!mr) return tr;
 
-      const score = mr.score    ?? tr.score;
-      const base  = mr.base_score ?? tr.base;
+      // MCP server returns scores on 0-10 scale; scale to 0-25
+      const score = mr.score    != null ? +(mr.score * 2.5).toFixed(1) : tr.score;
+      const base  = mr.base_score != null ? +(mr.base_score * 2.5).toFixed(1) : tr.base;
       return {
         ...tr,
         score,

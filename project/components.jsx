@@ -80,20 +80,20 @@ function Sparkline({ data, w = 60, h = 18, color }) {
 
 // ---- Score → color helper ----
 function scoreColor(s) {
-  if (s >= 7.5) return "var(--red)";
-  if (s >= 5.0) return "var(--amber)";
+  if (s >= 15) return "var(--red)";
+  if (s >= 9)  return "var(--amber)";
   return "var(--green)";
 }
 function scoreColorInk(s) {
-  if (s >= 7.5) return "var(--red-ink)";
-  if (s >= 5.0) return "var(--amber-ink)";
+  if (s >= 15) return "var(--red-ink)";
+  if (s >= 9)  return "var(--amber-ink)";
   return "var(--green-ink)";
 }
-function ragFromScore(s) { return s >= 7.5 ? "R" : s >= 5.0 ? "A" : "G"; }
+function ragFromScore(s) { return s >= 15 ? "R" : s >= 9 ? "A" : "G"; }
 
-// ---- Likelihood from control effectiveness ----
+// ---- Likelihood from control effectiveness (1-5 scale for heatmap) ----
 function likelihoodFromCE(ce) {
-  return ({ NONE: 9, WEAK: 7, ADEQUATE: 5, STRONG: 3 })[ce] || 5;
+  return ({ NONE: 4.5, WEAK: 3.5, ADEQUATE: 2.5, STRONG: 1.5 })[ce] || 2.5;
 }
 function ceMultiplier(ce) {
   return ({ NONE: 1.2, WEAK: 1.1, ADEQUATE: 0.95, STRONG: 0.8 })[ce] || 1.0;
@@ -107,8 +107,8 @@ function projectQuarters(risk) {
   const qs = [];
   for (let q = 1; q <= 4; q++) {
     const velContrib = vel * Math.pow(0.85, q - 1);
-    const raw = base + velContrib * cem * 0.4; // 0.4 calibrated for visible movement w/o blowing scale
-    qs.push(Math.max(1, Math.min(10, raw)));
+    const raw = base + velContrib * cem * 1.0; // calibrated for 0-25 scale
+    qs.push(Math.max(1, Math.min(25, raw)));
   }
   return qs;
 }

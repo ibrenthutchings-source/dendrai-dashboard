@@ -13,17 +13,17 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
   const points = risks.map((r, ridx) => {
     const qs = projectQuarters(r);
     const qIdx = { "Now": -1, "Q1": 0, "Q2": 1, "Q3": 2, "Q4": 3 }[activeQ] ?? -1;
-    // "Now" baseline positions
-    const nowImp = clamp(r.inherent || r.score + 1, 1, 10);
-    const nowLik = likelihoodFromCE(r.ce);
-    const nowX = PAD + ((nowLik - 1) / 9) * plotW;
-    const nowY = H - PAD - ((nowImp - 1) / 9) * plotH;
+    // "Now" baseline positions — impact and likelihood on 1-5 scale
+    const nowImp = clamp(r.impact || likelihoodFromCE(r.ce), 1, 5);
+    const nowLik = clamp(r.likelihood || likelihoodFromCE(r.ce), 1, 5);
+    const nowX = PAD + ((nowLik - 1) / 4) * plotW;
+    const nowY = H - PAD - ((nowImp - 1) / 4) * plotH;
     // Q4 projected positions
     const q4Sc = qs[3];
-    const q4Imp = clamp(nowImp + (r.velocity || 0) * 0.3, 1, 10);
-    const q4Lik = clamp(nowLik + (r.velocity || 0) * 0.2, 1, 10);
-    const q4X = PAD + ((q4Lik - 1) / 9) * plotW;
-    const q4Y = H - PAD - ((q4Imp - 1) / 9) * plotH;
+    const q4Imp = clamp(nowImp + (r.velocity || 0) * 0.15, 1, 5);
+    const q4Lik = clamp(nowLik + (r.velocity || 0) * 0.10, 1, 5);
+    const q4X = PAD + ((q4Lik - 1) / 4) * plotW;
+    const q4Y = H - PAD - ((q4Imp - 1) / 4) * plotH;
     // Active-quarter bubble: interpolate from Now toward Q4
     const t = qIdx === -1 ? 0 : (qIdx + 1) / 4;
     const curX = nowX + (q4X - nowX) * t;
@@ -31,8 +31,8 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
     const curSc = qIdx === -1 ? r.score : qs[qIdx];
     const curImp = nowImp + (q4Imp - nowImp) * t;
     const curLik = nowLik + (q4Lik - nowLik) * t;
-    const size = Math.sqrt(curImp * curLik) * 4.6;
-    const q4Size = Math.sqrt(q4Imp * q4Lik) * 3.6;
+    const size = Math.sqrt(curImp * curLik) * 9.0;
+    const q4Size = Math.sqrt(q4Imp * q4Lik) * 7.0;
     return { r, ridx, curX, curY, q4X, q4Y, size, q4Size,
       curRag: ragFromScore(curSc), q4Rag: ragFromScore(q4Sc), curSc, vel: r.velocity || 0 };
   });
@@ -61,9 +61,9 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
       <rect x={PAD} y={PAD} width={plotW} height={plotH} fill="url(#hm-bg)" rx="6"/>
 
       {/* Grid */}
-      {[1,2,3,4,5,6,7,8].map((i) => {
-        const gx = PAD + (i / 9) * plotW;
-        const gy = H - PAD - (i / 9) * plotH;
+      {[1,2,3,4].map((i) => {
+        const gx = PAD + (i / 4) * plotW;
+        const gy = H - PAD - (i / 4) * plotH;
         return (
           <g key={i}>
             <line x1={gx} y1={PAD} x2={gx} y2={H - PAD} stroke="var(--line)" strokeWidth="0.5" strokeDasharray="2 3"/>
@@ -78,10 +78,10 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
       <text x={12} y={H/2} textAnchor="middle" fontSize="10" fill="var(--ink-3)" fontFamily="Geist Mono, monospace" transform={`rotate(-90 12,${H/2})`}>IMPACT</text>
 
       {/* Tick labels */}
-      {[1,3,5,7,9].map(v => (
+      {[1,2,3,4,5].map(v => (
         <g key={v}>
-          <text x={PAD + (v-1)/9 * plotW} y={H - PAD + 14} textAnchor="middle" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{v}</text>
-          <text x={PAD - 6} y={H - PAD - (v-1)/9 * plotH + 3} textAnchor="end" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{v}</text>
+          <text x={PAD + (v-1)/4 * plotW} y={H - PAD + 14} textAnchor="middle" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{v}</text>
+          <text x={PAD - 6} y={H - PAD - (v-1)/4 * plotH + 3} textAnchor="end" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{v}</text>
         </g>
       ))}
 
@@ -325,21 +325,21 @@ function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reduction
 
   // Residual risk computation
   function computeResidual(risk) {
-    const velContrib = (risk.velocity || 0) * 0.35;
-    const ceAdj = ({ STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 })[risk.ce] || 0;
+    const velContrib = (risk.velocity || 0) * 0.875;
+    const ceAdj = ({ STRONG: -1.75, ADEQUATE: -0.75, WEAK: 0.25, NONE: 1.0 })[risk.ce] || 0;
 
     // RSS contribution: sum velocity of signals linked to this risk
     const rssVel = (rssSignals || [])
       .filter(s => (s.affectedRisks || []).includes(risk.id) ||
         (s.domains || []).some(d => (flowMeta[risk.id]?.impacts || []).some(im => im.toLowerCase().includes(d.toLowerCase()))))
-      .reduce((sum, s) => sum + (s.velocity || 0) * 0.08, 0);
+      .reduce((sum, s) => sum + (s.velocity || 0) * 0.20, 0);
 
-    // Macro: average FRED velocity signal (contractionary = +0.2, neutral = 0, expansionary = -0.1)
-    const macroAdj = (fredData || []).filter(f => f.dir === "CONTRACTIONARY").length * 0.08;
+    // Macro: FRED contractionary signals add pressure
+    const macroAdj = (fredData || []).filter(f => f.dir === "CONTRACTIONARY").length * 0.20;
 
     const gate2Adj = (gate2Reductions || {})[risk.id] || 0;
     const projected = risk.score + velContrib + ceAdj + rssVel + macroAdj - gate2Adj;
-    return Math.max(1, Math.min(10, parseFloat(projected.toFixed(1))));
+    return Math.max(1, Math.min(25, parseFloat(projected.toFixed(1))));
   }
 
   // ---- Layout ----
@@ -514,7 +514,7 @@ function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reduction
     sortedByResidual.forEach(r => {
       const origIdx = topRisks.indexOf(r);
       const proj = projectionsByRisk[r.id];
-      const projRag = proj >= 7.5 ? "R" : proj >= 5.0 ? "A" : "G";
+      const projRag = proj >= 15 ? "R" : proj >= 9 ? "A" : "G";
       const h = (riskWeights[origIdx] / totalRW) * usableR;
       residualNodes[r.id] = {
         y, h, proj, projRag,

@@ -62,23 +62,23 @@ function CodeEditorScreen({ kicker, title, sub, storageKey, defaultCode, fileLab
 // ---------- RISK-AS-CODE ----------
 const RISK_CODE_DEFAULT = `# Risk scoring rules — applied at Stage 2
 thresholds:
-  red:   7.5
-  amber: 5.0
+  red:   15.0
+  amber: 9.0
 
 adjustments:
   - when: category contains "macro"
-    per_signal: +0.08          # each contractionary FRED signal
+    per_signal: +0.20          # each contractionary FRED signal
   - when: rss.linked
-    add: velocity * 0.08       # signals linked to the risk
+    add: velocity * 0.20       # signals linked to the risk
   - when: rss.industry.high_velocity   # velocity >= 3
-    add: +0.05
-    cap: +0.20
+    add: +0.125
+    cap: +0.50
 
 control_effectiveness:
-  none: 9
-  weak: 7
-  adequate: 5
-  strong: 3
+  none: 4.5
+  weak: 3.5
+  adequate: 2.5
+  strong: 1.5
 `;
 
 function RiskAsCodeScreen({ risks, baseRisks }) {
