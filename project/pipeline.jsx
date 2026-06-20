@@ -618,7 +618,7 @@ function S6Body({ output }) {
     <div className="stage-body-grid">
       <div className="stage-stat-row">
         <Stat l="Loop health" v={l.loop_health || "—"} mono color="var(--amber-ink)"/>
-        <Stat l="Audit impact" v={`${l.audit_impact_score || "—"}/10`} mono/>
+        <Stat l="Audit impact" v={`${l.audit_impact_score || "—"}/25`} mono/>
         <Stat l="MAPs open" v={l.maps_open || 0} mono/>
         <Stat l="Next cycle" v={`${l.next_trigger_days || 0}d`} mono/>
       </div>

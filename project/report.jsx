@@ -89,7 +89,7 @@ function ReportModal({ open, onClose, payload }) {
             <Row k="Audit Objectives" v={`${objectives.length} · ${objectives.filter(o=>o.priority==="P1").length} P1`}/>
             <Row k="MAPs"             v={`${maps.length} generated · ${loop.maps_open || 0} open`}/>
             <Row k="Projected Reduction" v={`${closure.projected_total_risk_reduction_pct || 0}%`}/>
-            <Row k="Loop Health"      v={<><RAGChip rag={loop.loop_health || "A"}>{loop.loop_health}</RAGChip> <span className="muted mono" style={{marginLeft: 8}}>impact {loop.audit_impact_score}/10</span></>}/>
+            <Row k="Loop Health"      v={<><RAGChip rag={loop.loop_health || "A"}>{loop.loop_health}</RAGChip> <span className="muted mono" style={{marginLeft: 8}}>impact {loop.audit_impact_score}/25</span></>}/>
             <Row k="Data Mode"        v={liveMode ? "Live (EDGAR + FRED)" : "Mock / Simulated"}/>
           </div>
 
@@ -101,7 +101,7 @@ function ReportModal({ open, onClose, payload }) {
             <div style={{fontSize:12, color:"var(--ink-2)", lineHeight:1.65, marginBottom:10}}>
               Individual risk score projections use a <b>velocity-dampened linear model</b> applied per risk:
               <span className="mono" style={{display:"block", background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius:6, padding:"6px 10px", margin:"7px 0", fontSize:11}}>
-                Q<em>n</em> score = base + (velocity × CE_mult × 0.4 × 0.85^(n−1)), capped [1, 10]
+                Q<em>n</em> score = base + (velocity × CE_mult × 1.0 × 0.85^(n−1)), capped [1, 25]
               </span>
               The 0.85 decay factor reduces velocity impact by 15% each quarter, preventing indefinite trend extrapolation.
               Control-effectiveness multipliers modulate velocity: <b>NONE ×1.20, WEAK ×1.10, ADEQUATE ×0.95, STRONG ×0.80</b>.
@@ -123,27 +123,27 @@ function ReportModal({ open, onClose, payload }) {
               <tbody>
                 <tr>
                   <td><b>FRED macro</b></td>
-                  <td className="mono">+0.08 per contractionary signal</td>
+                  <td className="mono">+0.20 per contractionary signal</td>
                   <td>Macro-category risks only</td>
                   <td className="mono">{fredContrCount} signal{fredContrCount !== 1 ? "s" : ""} → +{(fredContrCount * 0.08).toFixed(2)} max</td>
                 </tr>
                 <tr>
                   <td><b>RSS-linked</b></td>
-                  <td className="mono">signal_velocity × 0.08 per link</td>
+                  <td className="mono">signal_velocity × 0.20 per link</td>
                   <td>Directly linked risks; velocity = max(base, signal)</td>
                   <td className="mono">{rssLinkedCount} linked signal{rssLinkedCount !== 1 ? "s" : ""}</td>
                 </tr>
                 <tr>
                   <td><b>Industry pressure</b></td>
-                  <td className="mono">+0.05 per signal ≥ v3, cap +0.20</td>
+                  <td className="mono">+0.125 per signal ≥ v3, cap +0.50</td>
                   <td>All risks</td>
-                  <td className="mono">{rssHighVelCount} high-vel signal{rssHighVelCount !== 1 ? "s" : ""} → +{Math.min(0.20, rssHighVelCount * 0.05).toFixed(2)}</td>
+                  <td className="mono">{rssHighVelCount} high-vel signal{rssHighVelCount !== 1 ? "s" : ""} → +{Math.min(0.50, rssHighVelCount * 0.125).toFixed(2)}</td>
                 </tr>
               </tbody>
             </table>
             <div style={{fontSize:12, color:"var(--ink-2)", lineHeight:1.65}}>
-              Score adjustments are summed and capped at 10.0. RAG is recalculated post-adjustment:
-              ≥7.5 → <b style={{color:"var(--red-ink)"}}>RED</b>, 5.0–7.4 → <b style={{color:"var(--amber-ink)"}}>AMBER</b>, &lt;5.0 → <b style={{color:"var(--green-ink)"}}>GREEN</b>.
+              Score adjustments are summed and capped at 25.0. RAG is recalculated post-adjustment:
+              ≥15 → <b style={{color:"var(--red-ink)"}}>RED</b>, 9–14 → <b style={{color:"var(--amber-ink)"}}>AMBER</b>, &lt;9 → <b style={{color:"var(--green-ink)"}}>GREEN</b>.
             </div>
           </div>
 
@@ -467,7 +467,7 @@ function ReportModal({ open, onClose, payload }) {
           </div>
         </div>
         <div className="modal-foot">
-          <span className="mono muted" style={{fontSize: 11}}>{loop.audit_impact_score ? `Audit impact ${loop.audit_impact_score}/10` : ""} · {risks.length} risks · {maps.length} MAPs</span>
+          <span className="mono muted" style={{fontSize: 11}}>{loop.audit_impact_score ? `Audit impact ${loop.audit_impact_score}/25` : ""} · {risks.length} risks · {maps.length} MAPs</span>
           <div style={{display: "flex", gap: 6}}>
             {aiAvailable && (
               <button className="btn btn-sm" onClick={generateAiReport} disabled={aiReport.loading}

@@ -35,7 +35,7 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
   "dark": false
 } /*EDITMODE-END*/;
 
-const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
+const APPETITE_THRESHOLDS = { GREEN: 12.0, AMBER: 18.0, RED: 23.0 };
 
 function App() {
   // ---- Tweaks ----
@@ -430,21 +430,21 @@ function App() {
     return baseRisks.map(r => {
       // FRED contractionary signals lift macro-category risks
       const fredContr = allSigs.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
-      const macroAdj = r.category.toLowerCase().includes("macro") ? fredContr * 0.08 : 0;
+      const macroAdj = r.category.toLowerCase().includes("macro") ? fredContr * 0.20 : 0;
 
       // RSS signals directly linked to this risk
       const rssLinked = rssSigs.filter(s => (s.affectedRisks || []).includes(r.id));
-      const rssAdj = rssLinked.reduce((sum, s) => sum + (s.velocity || 0) * 0.08, 0);
+      const rssAdj = rssLinked.reduce((sum, s) => sum + (s.velocity || 0) * 0.20, 0);
 
       // High-velocity industry signals add minor pressure to all risks
       const highVelIndustry = allSigs.filter(s => s.src === "Industry RSS" && s.velocity >= 3).length;
-      const industryAdj = Math.min(0.2, highVelIndustry * 0.05);
+      const industryAdj = Math.min(0.5, highVelIndustry * 0.125);
 
-      const adjScore = Math.min(10, parseFloat((r.score + macroAdj + rssAdj + industryAdj).toFixed(1)));
+      const adjScore = Math.min(25, parseFloat((r.score + macroAdj + rssAdj + industryAdj).toFixed(1)));
       const adjVelocity = rssLinked.length > 0
         ? Math.max(r.velocity, Math.max(...rssLinked.map(s => s.velocity || 0)))
         : r.velocity;
-      const adjRag = adjScore >= 7.5 ? "R" : adjScore >= 5.0 ? "A" : "G";
+      const adjRag = adjScore >= 15 ? "R" : adjScore >= 9 ? "A" : "G";
 
       // Regenerate hist so the sparkline direction matches the adjusted score trend.
       // r.hist[0] is the original base; the line must end at adjScore.
@@ -452,12 +452,12 @@ function App() {
       const histLen  = r.hist?.length ?? 6;
       const histStep = (adjScore - histBase) / Math.max(1, histLen - 1);
       const adjHist  = Array.from({ length: histLen }, (_, i) =>
-        +Math.max(1.0, Math.min(10.0, histBase + histStep * i)).toFixed(1)
+        +Math.max(1.0, Math.min(25.0, histBase + histStep * i)).toFixed(1)
       );
 
       // Update CE to reflect the adjusted score's distance from the original base.
       const deltaFromBase = adjScore - histBase;
-      const adjCe = deltaFromBase > 2.0 ? "WEAK" : deltaFromBase > 0.5 ? "ADEQUATE" : "STRONG";
+      const adjCe = deltaFromBase > 5.0 ? "WEAK" : deltaFromBase > 1.25 ? "ADEQUATE" : "STRONG";
 
       return { ...r, score: adjScore, velocity: adjVelocity, rag: adjRag, hist: adjHist, ce: adjCe };
     });
@@ -1019,7 +1019,7 @@ function App() {
       riskApprovals,
       scopeApprovals,
       assumptions: [
-        `Quarterly score projections use a velocity-dampened linear model: base + (velocity × CE_mult × 0.4 × 0.85^(q−1)), capped at 10.0.`,
+        `Quarterly score projections use a velocity-dampened linear model: base + (velocity × CE_mult × 1.0 × 0.85^(q−1)), capped at 25.0.`,
         `Control-effectiveness multipliers applied to velocity contribution: NONE=1.20×, WEAK=1.10×, ADEQUATE=0.95×, STRONG=0.80×.`,
         `FRED macro adjustment: each contractionary FRED signal adds +0.08 to macro-category risk scores (${fredContrCount} contractionary signal${fredContrCount !== 1 ? "s" : ""} in this run).`,
         `RSS signal adjustment: linked industry signals add (signal velocity × 0.08) to directly linked risks; risk velocity set to max of base velocity or linked signal velocity.`,
@@ -1027,7 +1027,7 @@ function App() {
         `Macro ensemble forecasts use ARIMA + Prophet + Random Forest with FRED series as exogenous features; ensemble weights update iteratively by inverse MAPE from backtesting.`,
         `Random Forest features: lags 1–4, rolling mean and std, time index, quarter dummies, and current FRED series values.`,
         `Likelihood proxy from control effectiveness: NONE→9, WEAK→7, ADEQUATE→5, STRONG→3. Impact proxy from inherent_score field.`,
-        `Risk appetite threshold: score ≥ 7.5 = RED, 5.0–7.4 = AMBER, < 5.0 = GREEN (configured: ${cfg.appetiteLevel || "AMBER"}).`,
+        `Risk appetite threshold: score ≥ 15 = RED, 9–14 = AMBER, < 9 = GREEN (configured: ${cfg.appetiteLevel || "AMBER"}).`,
         liveMode
           ? `Live mode active — EDGAR companyfacts fetched directly from data.sec.gov; FRED loaded from bundled snapshot.`
           : `Live mode inactive — all financial signals derived from mock dataset; EDGAR companyfacts not fetched.`,
