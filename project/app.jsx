@@ -1091,7 +1091,7 @@ function App() {
         entityName={profile.entity.name} />
 
 
-      <div className={"app-body" + (activeScreen === "pipeline" && hasRun ? " has-rail" : "")}>
+      <div className={"app-body" + (activeScreen === "pipeline" && (hasRun || output.s2?.risks?.length > 0) ? " has-rail" : "")}>
         <LeftNav
           activeScreen={activeScreen}
           activeGovTab={activeGovTab}
@@ -1322,8 +1322,8 @@ function App() {
           )}
         </main>
 
-        {/* ---- Live Register rail — Pipeline screen, post-run only ---- */}
-        {activeScreen === "pipeline" && hasRun && (
+        {/* ---- Live Register rail — Pipeline screen, visible from Stage 2 onward ---- */}
+        {activeScreen === "pipeline" && (hasRun || output.s2?.risks?.length > 0) && (
           <Rail
             activeTab={activeRailTab}
             setActiveTab={setActiveRailTab}
