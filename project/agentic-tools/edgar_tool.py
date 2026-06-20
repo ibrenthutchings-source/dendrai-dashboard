@@ -18,7 +18,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import warnings
 
@@ -29,6 +29,7 @@ try:
     warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
     _BS4 = True
 except ImportError:
+    BeautifulSoup: Any = None
     _BS4 = False
 
 # ── Constants ─────────────────────────────────────────────────────────────────
