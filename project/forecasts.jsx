@@ -473,20 +473,33 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
 
     const handle = setTimeout(() => {
       try {
-        // Build revenue series — prefer EDGAR XBRL annual data when available
+        // Build revenue series — prefer EDGAR XBRL quarterly data (same filter as risk-engine.js buildForecasts)
         let revSeries = null, revSource = "mock";
         if (livefacts?.revenue?.series) {
-          const annual = livefacts.revenue.series
-            .filter(x => x.form === "10-K" && x.fp === "FY")
+          // Primary: standalone quarterly 10-Q periods (≥4 quarters)
+          const qtrs = livefacts.revenue.series
+            .filter(x => x.form === "10-Q" && x.fp !== "FY")
             .sort((a, b) => (a.end < b.end ? -1 : 1));
-          if (annual.length >= 6) {
-            revSeries = annual.map(x => x.val / 1e6);
+          if (qtrs.length >= 4) {
+            revSeries = qtrs.map(x => x.val / 1e6);
             revSource = "edgar";
+          } else {
+            // Fallback: annual 10-K FY data (lowered threshold from 6 to 4)
+            const annual = livefacts.revenue.series
+              .filter(x => x.form === "10-K" && x.fp === "FY")
+              .sort((a, b) => (a.end < b.end ? -1 : 1));
+            if (annual.length >= 4) {
+              revSeries = annual.map(x => x.val / 1e6);
+              revSource = "edgar";
+            }
           }
         }
+        // data.revenue.history is already built from EDGAR quarterly data by risk-engine.js when available
         if (!revSeries) revSeries = data.revenue.history.map(x => x.v);
 
+        // margin history already uses EDGAR quarterly COGS/grossProfit when livefacts was present
         const mgSeries = data.margin.history.map(x => x.v);
+        const mgSource = livefacts ? "edgar" : "mock";
 
         // Walk-forward backtests calibrate ensemble weights
         const revBT = BACKTESTING.backtestAll(revSeries);
@@ -527,7 +540,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
             })),
             all: mgFcAll,
             backtest: mgBT,
-            source: "mock",
+            source: mgSource,
           },
         });
       } catch (e) {
@@ -633,7 +646,9 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
           <div className="head">
             <div>
               <div className="ttl">Gross margin</div>
-              <div className="sub">Quarterly % · 8 history + 4 forecast</div>
+              <div className="sub">
+                {modelOutput ? `${modelOutput.margin.source === "edgar" ? "EDGAR XBRL" : "Mock"} series · ensemble` : "Quarterly % · 8 history + 4 forecast"}
+              </div>
             </div>
             <div style={{textAlign:"right"}}>
               <div className="big-num">{lastFcMg.toFixed(1)}%</div>
