@@ -1247,7 +1247,10 @@ function App() {
                 onAddObjective={addObjective}
                 manualAudits={manualAudits}
                 onAddAudit={addManualAudit}
-                onRemoveAudit={removeManualAudit} />
+                onRemoveAudit={removeManualAudit}
+                narrativeResult={narrativeResult}
+                onNarrativeResult={setNarrativeResult}
+                ticker={cfg.ticker || ""} />
             )}
             {activePipeTab === "rss" && (
               <RSSPanel
