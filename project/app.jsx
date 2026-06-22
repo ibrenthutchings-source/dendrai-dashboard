@@ -131,6 +131,9 @@ function App() {
   const [rssRunProgress, setRssRunProgress] = useState(null);
   const [perRiskAppetite, setPerRiskAppetite] = useState({});
 
+  // ---- Narrative analysis results (from S1 AI extract, fed to Gate 1 context) ----
+  const [narrativeResult, setNarrativeResult] = useState(null);
+
   // Periodic RSS refresh while pipeline is running
   useEffect(() => {
     if (!running) return;
