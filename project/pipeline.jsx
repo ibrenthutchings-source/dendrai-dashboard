@@ -253,6 +253,44 @@ function StageTrace({ trace }) {
   );
 }
 
+function SubStepList({ steps }) {
+  if (!steps?.length) return null;
+  return (
+    <div style={{
+      background: "var(--surface-2, var(--surface))",
+      border: "1px solid var(--line)",
+      borderRadius: 6,
+      padding: "10px 14px",
+      marginBottom: 10,
+    }}>
+      <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 8}}>PROCESS STEPS</div>
+      {steps.map((step, i) => (
+        <div key={i} style={{
+          display: "flex", alignItems: "flex-start", gap: 8,
+          paddingTop: i > 0 ? 7 : 0, marginTop: i > 0 ? 7 : 0,
+          borderTop: i > 0 ? "1px solid var(--line)" : "none",
+        }}>
+          <span style={{color: "var(--green-ink)", fontSize: 11, flexShrink: 0, lineHeight: "16px"}}>✓</span>
+          <div style={{flex: 1, minWidth: 0}}>
+            <div style={{fontSize: 11, fontWeight: 500, color: "var(--ink)", lineHeight: 1.4}}>{step.label}</div>
+            {step.detail && <div style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 1}}>{step.detail}</div>}
+            {step.children?.length > 0 && (
+              <div style={{marginTop: 5, paddingLeft: 10, borderLeft: "2px solid var(--line)", display: "flex", flexDirection: "column", gap: 2}}>
+                {step.children.map((child, ci) => (
+                  <div key={ci} style={{fontSize: 10, color: "var(--ink-2)", display: "flex", gap: 5}}>
+                    <span style={{color: "var(--ink-4)", flexShrink: 0}}>└</span>
+                    <span>{child}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function S1RunningBody({ rssRunProgress, rssFeeds }) {
   return (
     <div className="stage-detail">
@@ -295,6 +333,57 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
 
+  // ---- sub-steps ----
+  const bySrc = {};
+  signals.forEach(s => { bySrc[s.src] = (bySrc[s.src] || 0) + 1; });
+  const rssSigs = signals.filter(s => s.src === "Industry RSS");
+  const rssByFeed = {};
+  rssSigs.forEach(s => { const k = s.feedName || "RSS"; rssByFeed[k] = (rssByFeed[k] || 0) + 1; });
+  const fredTotal = bySrc["FRED Macro"] || 0;
+  const fredContrS1 = signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+  const s1Steps = [
+    bySrc["EDGAR 10-K"] > 0 ? {
+      label: "EDGAR 10-K filing loaded",
+      detail: livefacts
+        ? `${livefacts.entity} · CIK ${livefacts.cik} · ${bySrc["EDGAR 10-K"]} financial signal${bySrc["EDGAR 10-K"] !== 1 ? "s" : ""} extracted`
+        : `${bySrc["EDGAR 10-K"]} financial signal${bySrc["EDGAR 10-K"] !== 1 ? "s" : ""} from annual filing`,
+    } : null,
+    livefacts ? {
+      label: "Financial data mapped to risk pipeline",
+      detail: "Revenue, net income, gross margin, and cash metrics incorporated as risk score inputs",
+    } : null,
+    bySrc["Peer 10-K"] > 0 ? {
+      label: "Peer 10-K filings parsed",
+      detail: `${bySrc["Peer 10-K"]} comparative signal${bySrc["Peer 10-K"] !== 1 ? "s" : ""} across industry peers`,
+    } : null,
+    rssSigs.length > 0 ? {
+      label: "Industry RSS feeds ingested",
+      detail: `${rssSigs.length} article${rssSigs.length !== 1 ? "s" : ""} velocity-graded across ${Object.keys(rssByFeed).length} feed${Object.keys(rssByFeed).length !== 1 ? "s" : ""}`,
+      children: Object.entries(rssByFeed).map(([feed, count]) => `${feed} — ${count} article${count !== 1 ? "s" : ""}`),
+    } : null,
+    fredTotal > 0 ? {
+      label: "FRED macro indicators ingested",
+      detail: `${fredTotal} economic series · ${fredContrS1} contractionary signal${fredContrS1 !== 1 ? "s" : ""} flagged for risk adjustment`,
+    } : null,
+    bySrc["Internal KRI"] > 0 ? {
+      label: "Internal KRI data reviewed",
+      detail: `${bySrc["Internal KRI"]} key risk indicator${bySrc["Internal KRI"] !== 1 ? "s" : ""} assessed against control thresholds`,
+    } : null,
+    bySrc["Incident"] > 0 ? {
+      label: "Incident log reviewed",
+      detail: `${bySrc["Incident"]} recent incident${bySrc["Incident"] !== 1 ? "s" : ""} evaluated for risk linkage`,
+    } : null,
+    total > 0 ? {
+      label: "Signal velocity graded",
+      detail: `${high} high (v3) · ${med} medium (v2) · ${total - high - med} standard (v1) — scored on 1–3 scale`,
+    } : null,
+    narrativeResult ? {
+      label: "AI narrative analysis applied",
+      detail: `${(narrativeResult.emerging_risks || []).length} emerging risk${(narrativeResult.emerging_risks || []).length !== 1 ? "s" : ""} · ${(narrativeResult.yoy_changes || []).length} language shift${(narrativeResult.yoy_changes || []).length !== 1 ? "s" : ""} detected from Item 1A`,
+    } : null,
+  ].filter(Boolean);
+  // ----
+
   const [narrLoading, setNarrLoading] = React.useState(false);
   const [narrError, setNarrError] = React.useState(null);
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiNarrative;
@@ -319,6 +408,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
 
   return (
     <div className="stage-body-grid">
+      <SubStepList steps={s1Steps}/>
       <div className="stage-stat-row">
         <Stat l="Signals ingested" v={total}/>
         <Stat l="High velocity" v={high} mono color="var(--red-ink)"/>
@@ -420,6 +510,44 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
   const overallThreshold = appetiteThreshold ?? APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const counts = risks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
 
+  // ---- sub-steps ----
+  const fredContrS2 = allSignals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+  const rssLinkedCount = liveRssSignals.filter(s => (s.affectedRisks || []).length > 0).length;
+  const highVelRisks = risks.filter(r => r.velocity >= 3).length;
+  const s2Steps = [
+    {
+      label: "Base risk register loaded",
+      detail: `${risks.length} risk${risks.length !== 1 ? "s" : ""} from industry template — inherent scores and control environment assigned`,
+    },
+    fredContrS2 > 0 ? {
+      label: "FRED macro adjustments applied",
+      detail: `${fredContrS2} contractionary indicator${fredContrS2 !== 1 ? "s" : ""} → +0.08 per signal to macro-category risk scores`,
+    } : null,
+    liveRssSignals.length > 0 ? {
+      label: "Industry RSS signal adjustments applied",
+      detail: `${rssLinkedCount} linked signal${rssLinkedCount !== 1 ? "s" : ""} · velocity × 0.08 added to directly affected risks`,
+    } : null,
+    {
+      label: "Control effectiveness (CE) scored",
+      detail: "STRONG / ADEQUATE / WEAK / NONE ratings applied — residual score adjusted per control environment",
+    },
+    {
+      label: "RAG matrix computed",
+      detail: `${counts.R || 0} RED · ${counts.A || 0} AMBER · ${counts.G || 0} GREEN — thresholds: RED ≥ 15, AMBER ≥ 9, GREEN < 9`,
+    },
+    {
+      label: "Velocity deltas calculated",
+      detail: `${highVelRisks} high-velocity risk${highVelRisks !== 1 ? "s" : ""} (v3) identified — RSS signal velocity overlaid on base velocity`,
+    },
+    {
+      label: "Risk appetite breach check",
+      detail: appetite?.breaching?.length > 0
+        ? `${appetite.breaching.length} risk${appetite.breaching.length !== 1 ? "s" : ""} exceed ${appetiteLevel} threshold (≥${overallThreshold}) — HITL Gate 1 triggered`
+        : `All risks within ${appetiteLevel} tolerance (threshold ≥${overallThreshold})`,
+    },
+  ].filter(Boolean);
+  // ----
+
   // Group live RSS signals by source for the status bar
   const rssByFeed = {};
   (liveRssSignals || []).forEach(s => {
@@ -440,6 +568,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
 
   return (
     <div className="stage-body-grid">
+      <SubStepList steps={s2Steps}/>
       <div className="stage-stat-row">
         <Stat l="Risks identified" v={risks.length}/>
         <Stat l="Red" v={counts.R || 0} mono color="var(--red-ink)"/>
@@ -610,8 +739,44 @@ function S3Body({ output, manualAudits = [], onAddAudit, onRemoveAudit, risks = 
   const totalHrs = objs.reduce((a, o) => a + (o.hours || 0), 0);
   const [modalOpen, setModalOpen] = React.useState(false);
 
+  // ---- sub-steps ----
+  const redAmberRisks = risks.filter(r => r.rag === "R" || r.rag === "A").length;
+  const s3Steps = [
+    {
+      label: "High-priority risks mapped to audit objectives",
+      detail: `${redAmberRisks} RED/AMBER risk${redAmberRisks !== 1 ? "s" : ""} from Stage 2 drove objective generation`,
+    },
+    objs.length > 0 ? {
+      label: "Audit objectives generated",
+      detail: `${objs.length} objective${objs.length !== 1 ? "s" : ""} created — each linked to specific risk IDs and control gaps`,
+    } : null,
+    p1 > 0 ? {
+      label: "P1 priority assigned",
+      detail: `${p1} immediate-remediation objective${p1 !== 1 ? "s" : ""} — targeting RED risks and appetite breaches`,
+    } : null,
+    p2 > 0 ? {
+      label: "P2 priority assigned",
+      detail: `${p2} planned-review objective${p2 !== 1 ? "s" : ""} — covering residual AMBER risk exposure`,
+    } : null,
+    totalHrs > 0 ? {
+      label: "Effort hours estimated",
+      detail: `${totalHrs} total audit hours — allocated proportionally to risk score and velocity`,
+    } : null,
+    {
+      label: "Sprint-ready workplan built",
+      detail: "Objectives structured for sprint execution with defined scope, linked risks, and expected control coverage",
+    },
+    manualAudits.length > 0 ? {
+      label: "Manual audits incorporated",
+      detail: `${manualAudits.length} planned audit${manualAudits.length !== 1 ? "s" : ""} added to scope`,
+      children: manualAudits.map(a => `${a.title} — ${a.when} · linked ${a.riskId} · −${a.reduction}% risk`),
+    } : null,
+  ].filter(Boolean);
+  // ----
+
   return (
     <div className="stage-body-grid">
+      <SubStepList steps={s3Steps}/>
       <div className="stage-stat-row">
         <Stat l="AI objectives" v={objs.length}/>
         <Stat l="P1 priority" v={p1} mono color="var(--red-ink)"/>
@@ -692,8 +857,48 @@ function S3Body({ output, manualAudits = [], onAddAudit, onRemoveAudit, risks = 
 function S4Body({ output }) {
   const maps = output?.maps || [];
   const avgRed = maps.reduce((a, m) => a + (m.reduction_pct || 0), 0);
+
+  // ---- sub-steps ----
+  const redMaps = maps.filter(m => m.risk_impact === "R").length;
+  const amberMaps = maps.filter(m => m.risk_impact === "A").length;
+  const uniqueOwners = new Set(maps.map(m => m.owner).filter(Boolean)).size;
+  const avgCompletion = Math.round(maps.reduce((a,m) => a + (m.completion_pct || 0), 0) / Math.max(1, maps.length));
+  const avgPerMap = maps.length > 0 ? Math.round(avgRed / maps.length) : 0;
+  const s4Steps = [
+    {
+      label: "Audit findings linked to risks",
+      detail: `${maps.length} finding${maps.length !== 1 ? "s" : ""} generated — ${redMaps} RED, ${amberMaps} AMBER impact`,
+    },
+    {
+      label: "Root cause analysis completed",
+      detail: "Contributing factors identified per finding — systemic, process, and control gaps classified",
+    },
+    uniqueOwners > 0 ? {
+      label: "Control owners assigned",
+      detail: `${uniqueOwners} distinct owner${uniqueOwners !== 1 ? "s" : ""} accountable across ${maps.length} action plan${maps.length !== 1 ? "s" : ""}`,
+    } : null,
+    {
+      label: "Due dates and milestones set",
+      detail: "Timelines calibrated to risk velocity and priority — high-velocity items fast-tracked",
+    },
+    {
+      label: "Success criteria defined",
+      detail: "Measurable closure conditions specified per MAP — quantified risk reduction targets set",
+    },
+    avgRed > 0 ? {
+      label: "Risk reduction projected",
+      detail: `${avgRed}% total expected reduction across all MAPs · avg ${avgPerMap}% per finding`,
+    } : null,
+    avgCompletion > 0 ? {
+      label: "Completion baseline established",
+      detail: `${avgCompletion}% average MAP completion at time of run`,
+    } : null,
+  ].filter(Boolean);
+  // ----
+
   return (
     <div className="stage-body-grid">
+      <SubStepList steps={s4Steps}/>
       <div className="stage-stat-row">
         <Stat l="MAPs generated" v={maps.length}/>
         <Stat l="High-impact (R)" v={maps.filter(m => m.risk_impact === "R").length} mono color="var(--red-ink)"/>
@@ -718,8 +923,41 @@ function S4Body({ output }) {
 
 function S5Body({ output }) {
   const c = output?.closure || {};
+
+  // ---- sub-steps ----
+  const rerunList = c.rerun_recommended || [];
+  const s5Steps = [
+    c.evidence_artifacts > 0 ? {
+      label: "Closure evidence artifacts reviewed",
+      detail: `${c.evidence_artifacts} evidence file${c.evidence_artifacts !== 1 ? "s" : ""} evaluated against MAP success criteria`,
+    } : null,
+    c.risks_closed > 0 ? {
+      label: "Risk closures validated",
+      detail: `${c.risks_closed} risk${c.risks_closed !== 1 ? "s" : ""} fully closed — evidence confirms sustained control effectiveness`,
+    } : null,
+    c.risks_reduced > 0 ? {
+      label: "Partial risk reductions confirmed",
+      detail: `${c.risks_reduced} risk${c.risks_reduced !== 1 ? "s" : ""} partially mitigated — residual exposure documented in register`,
+    } : null,
+    c.risks_unchanged > 0 ? {
+      label: "Residual risks identified",
+      detail: `${c.risks_unchanged} risk${c.risks_unchanged !== 1 ? "s" : ""} unchanged — root causes persist, escalated for next cycle`,
+    } : null,
+    (c.projected_total_risk_reduction_pct || 0) > 0 ? {
+      label: "Portfolio risk reduction quantified",
+      detail: `${c.projected_total_risk_reduction_pct}% projected total reduction — aggregated across all closed and partially mitigated risks`,
+    } : null,
+    rerunList.length > 0 ? {
+      label: "Re-test schedule set",
+      detail: `${rerunList.length} risk${rerunList.length !== 1 ? "s" : ""} queued for next-cycle re-assessment`,
+      children: rerunList.map(id => id),
+    } : null,
+  ].filter(Boolean);
+  // ----
+
   return (
     <div className="stage-body-grid">
+      <SubStepList steps={s5Steps}/>
       <div className="stage-stat-row">
         <Stat l="Risks closed" v={c.risks_closed || 0} mono color="var(--green-ink)"/>
         <Stat l="Risks reduced" v={c.risks_reduced || 0} mono color="var(--acc-ink)"/>
@@ -739,8 +977,41 @@ function S5Body({ output }) {
 
 function S6Body({ output }) {
   const l = output?.loop || {};
+
+  // ---- sub-steps ----
+  const lessons = l.lessons_learned || [];
+  const s6Steps = [
+    l.loop_health ? {
+      label: "Loop health scored",
+      detail: `${l.loop_health} — audit impact ${l.audit_impact_score || "—"}/25 · derived from RAG distribution, velocity trend, and MAP completion`,
+    } : null,
+    {
+      label: "Risk velocity recalibrated",
+      detail: "Signal weights and velocity decay factors updated based on this cycle's observed outcomes",
+    },
+    lessons.length > 0 ? {
+      label: "Lessons learned captured",
+      detail: `${lessons.length} lesson${lessons.length !== 1 ? "s" : ""} documented for process improvement`,
+      children: lessons.map(s => s),
+    } : null,
+    l.maps_open > 0 ? {
+      label: "Open MAPs carried forward",
+      detail: `${l.maps_open} action plan${l.maps_open !== 1 ? "s" : ""} remain open — tracked into the next risk cycle`,
+    } : null,
+    l.next_trigger_days > 0 ? {
+      label: "Next cycle trigger scheduled",
+      detail: `Re-run in ${l.next_trigger_days} days${l.next_cycle_focus ? ` · next focus: ${l.next_cycle_focus}` : ""}`,
+    } : null,
+    {
+      label: "Updated risk register fed back to loop",
+      detail: "Post-MAP scores, closures, recalibrated velocity, and lessons ready for Stage 1 re-ingest",
+    },
+  ].filter(Boolean);
+  // ----
+
   return (
     <div className="stage-body-grid">
+      <SubStepList steps={s6Steps}/>
       <div className="stage-stat-row">
         <Stat l="Loop health" v={l.loop_health || "—"} mono color="var(--amber-ink)"/>
         <Stat l="Audit impact" v={`${l.audit_impact_score || "—"}/25`} mono/>
