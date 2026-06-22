@@ -3,13 +3,14 @@
    Fetch → parse → keyword-relevance grade → velocity delta
 
    Fetch path:
-     1. Real fetch via rss2json.com (CORS-friendly, rate-limited)
-     2. Fallback: domain-appropriate simulated articles
+     Live fetch via /api/rss-proxy (Vite dev-server middleware
+     that forwards the request server-side, bypassing CORS).
+     If a feed is unreachable the result is marked "failed"
+     and no articles are returned — there is no simulation fallback.
 
    Grading:
      - Relevance  0→1  (keyword density against risk domain vocab)
      - Severity   0→1  (urgency language detection)
-     - Novelty    0→1  (dedup against seen-article cache)
      - Velocity   rounded integer, calibrated to [-2, +5]
    ============================================================ */
 
@@ -61,26 +62,6 @@ window.RSS_ENGINE = (function () {
       risks: ["R-07"],
       weight: 0.8,
       icon: "compass",
-    },
-    {
-      id: "sia",
-      name: "Semiconductor Industry (SIA)",
-      url: "",
-      domains: ["Operational", "Supply"],
-      risks: ["R-03", "R-06", "R-10"],
-      weight: 1.1,
-      icon: "bolt",
-      simulateOnly: true,
-    },
-    {
-      id: "peers",
-      name: "Peer Company Disclosures",
-      url: "",
-      domains: ["Financial Reporting", "Trade Compliance", "Operational", "Macro"],
-      risks: ["R-01", "R-02", "R-03", "R-09"],
-      weight: 1.3,
-      icon: "users",
-      simulateOnly: true,
     },
   ];
 
@@ -151,79 +132,6 @@ window.RSS_ENGINE = (function () {
     "Legal": [
       "patent", "litigation", "lawsuit", "ip", "intellectual property",
       "injunction", "royalty", "cross-license", "settlement", "verdict",
-    ],
-  };
-
-  // ── Simulated article templates per feed ─────────────────
-  const SIMULATED_ARTICLES = {
-    bis: [
-      { title: "BIS Expands Entity List — 14 Chinese Semiconductor Entities Added", severity_hint: 3.0, risks: ["R-02"] },
-      { title: "Commerce Dept Proposes New ECCN Classification for Advanced Logic Chips", severity_hint: 2.0, risks: ["R-02"] },
-      { title: "Export Administration Regulations (EAR) Annual Review Published", severity_hint: 1.0, risks: ["R-02"] },
-      { title: "BIS Issues Advisory on Proliferation-Related Export Control Violations", severity_hint: 2.5, risks: ["R-02"] },
-      { title: "BIS Final Rule: Advanced Semiconductor Equipment Added to CCL — 3nm and Below", severity_hint: 3.0, risks: ["R-02"] },
-      { title: "Commerce Dept Tightens Foreign Direct Product Rule for China Fabs", severity_hint: 2.5, risks: ["R-02"] },
-      { title: "BIS Civil Penalty: $12M for Unlicensed ECCN 3E001 Technology Transfer", severity_hint: 2.5, risks: ["R-02"] },
-      { title: "Validated End-User Authorization Revoked for Three Chinese Research Institutes", severity_hint: 2.0, risks: ["R-02"] },
-    ],
-    cisa: [
-      { title: "CISA Issues Advisory on ICS Vulnerabilities in Semiconductor Manufacturing Equipment", severity_hint: 2.5, risks: ["R-04"] },
-      { title: "Alert: Privileged Access Management Gaps in OT Environments", severity_hint: 2.0, risks: ["R-04"] },
-      { title: "Known Exploited Vulnerabilities Catalog Updated — 8 New Entries", severity_hint: 1.5, risks: ["R-04"] },
-      { title: "CISA #StopRansomware: Threat Actor Targets Semiconductor Fab SCADA Systems", severity_hint: 3.0, risks: ["R-04"] },
-      { title: "Critical CVE in Siemens SIMATIC Used in Wafer Fab Automation — Patch Immediately", severity_hint: 2.5, risks: ["R-04"] },
-      { title: "CISA BOD: Patch EMS/SCADA Systems Within 14 Days", severity_hint: 2.0, risks: ["R-04"] },
-      { title: "Supply Chain Attack Vector Identified in Third-Party EDA Software Update", severity_hint: 3.0, risks: ["R-04"] },
-    ],
-    sec: [
-      { title: "SEC Comment Letters: Revenue Recognition in Semiconductor Sector Under Scrutiny", severity_hint: 2.0, risks: ["R-01", "R-05"] },
-      { title: "SEC Climate Disclosure Rule: Implementation Guidance for Semiconductor Manufacturers", severity_hint: 1.5, risks: ["R-07"] },
-      { title: "SEC Enforcement: Revenue Recognition Manipulation — $34M Settlement with Analog Peer", severity_hint: 3.0, risks: ["R-01"] },
-      { title: "SEC Staff Bulletin: Channel Stuffing Disclosures Under ASC 606 — Distributor Sell-Through", severity_hint: 2.0, risks: ["R-01"] },
-      { title: "SEC Charges CFO for Improper Revenue Cut-Off in Bill-and-Hold Arrangements", severity_hint: 3.0, risks: ["R-01", "R-05"] },
-      { title: "SEC Comment Letter Trend: Inventory Reserve Adequacy — Analog/Mixed-Signal Sector", severity_hint: 1.5, risks: ["R-03", "R-05"] },
-      { title: "SEC Cyber Disclosure Rule: 8-K Incident Reporting Compliance Review — Semiconductors", severity_hint: 1.5, risks: ["R-04"] },
-    ],
-    fed: [
-      { title: "Fed Beige Book: Manufacturing Sector Reports Continued Contraction", severity_hint: 1.5, risks: ["R-09"] },
-      { title: "Philadelphia Fed Manufacturing Survey: Index Falls to −5.4", severity_hint: 2.0, risks: ["R-09"] },
-      { title: "FOMC Minutes: Elevated Rate Uncertainty — Semiconductor CapEx Commentary", severity_hint: 1.2, risks: ["R-06", "R-09"] },
-      { title: "ISM Manufacturing PMI: 47.2 — 9th Consecutive Month Below 50", severity_hint: 2.0, risks: ["R-09"] },
-      { title: "Fed Senior Loan Officer Survey: Tightening Conditions for Capital Equipment Financing", severity_hint: 1.5, risks: ["R-06", "R-09"] },
-      { title: "Richmond Fed: Semiconductor Capital Goods Orders Down 23% YoY", severity_hint: 2.0, risks: ["R-06", "R-09"] },
-      { title: "FOMC Holds Rates — Statement Flags Persistent Industrial Goods Disinflation", severity_hint: 1.0, risks: ["R-09"] },
-    ],
-    epa: [
-      { title: "EPA Issues Water Scarcity Designation for Central Arizona — Fab Cluster Impact", severity_hint: 2.0, risks: ["R-07"] },
-      { title: "EPA Climate Enforcement: New Reporting Requirements for Semiconductor Fabs", severity_hint: 1.5, risks: ["R-07"] },
-      { title: "EPA Proposes Stricter Wastewater Effluent Standards for Electronics Manufacturers", severity_hint: 2.0, risks: ["R-07"] },
-      { title: "Arizona Drought Monitor: Exceptional Drought Covers 60% of Fab-Concentrated Counties", severity_hint: 2.5, risks: ["R-07"] },
-      { title: "EPA GHG Reporting: Semiconductor Industry Scope 1 Emissions Up 8% — F-Gas Drivers", severity_hint: 1.5, risks: ["R-07"] },
-      { title: "EPA Enforcement: $4.2M Penalty for PFC Emissions Violations at Semiconductor Plant", severity_hint: 2.5, risks: ["R-07"] },
-    ],
-    sia: [
-      { title: "SIA: Global Semiconductor Sales Down 12% YoY — Auto Segment Weakest", severity_hint: 2.0, risks: ["R-03", "R-09"] },
-      { title: "SIA Members Report Extended Inventory Correction — SiC Product Family Most Exposed", severity_hint: 2.5, risks: ["R-03"] },
-      { title: "SIA Annual Report: Conflict Minerals RMAP Coverage Improves to 97%", severity_hint: 0.5, risks: ["R-10"] },
-      { title: "SEMI Manufacturing Equipment Orders Fall 18% — Capacity Discipline Maintained", severity_hint: 1.5, risks: ["R-06"] },
-      { title: "SIA: Book-to-Bill Ratio Drops to 0.87 — Weakest Reading Since Q3 2019", severity_hint: 2.0, risks: ["R-03", "R-01"] },
-      { title: "SEMI World Fab Forecast: $38B Investment Deferred to 2026+", severity_hint: 1.5, risks: ["R-06"] },
-      { title: "SIA State of Industry: SiC Oversupply Expected to Persist Through Mid-2026", severity_hint: 2.5, risks: ["R-03", "R-06"] },
-      { title: "SIA Conflict Minerals Report: Tin Smelter Non-Conformance Rate Rises to 6%", severity_hint: 1.5, risks: ["R-10"] },
-    ],
-    peers: [
-      { title: "TXN Q4 Earnings: Export Control Headwinds Cut Revenue Guidance 8% — BIS License Delays Cited", severity_hint: 2.5, risks: ["R-02", "R-01"] },
-      { title: "STMicroelectronics Discloses €420M NRV Reserve on SiC Inventory Overbuild", severity_hint: 2.5, risks: ["R-03"] },
-      { title: "Microchip Technology 10-K: Material Weakness in Revenue Cut-Off Controls — SOX 404(b) Finding", severity_hint: 3.0, risks: ["R-01", "R-05"] },
-      { title: "NXP Semiconductors Updates BIS Compliance Program — EAR License Required for 6 SKUs", severity_hint: 2.0, risks: ["R-02"] },
-      { title: "Analog Semi Peer Round-Up: Q1 Book-to-Bill Ratio Below 1.0 for 4th Consecutive Quarter", severity_hint: 1.5, risks: ["R-09", "R-01"] },
-      { title: "Broadcom Q1 Earnings: Channel Inventory Normalising in Auto, Industrial Still Elevated", severity_hint: 1.5, risks: ["R-03", "R-09"] },
-      { title: "Texas Instruments Issues SEC Comment Letter Response on Revenue Recognition Disclosures", severity_hint: 2.0, risks: ["R-01"] },
-      { title: "ADI Q2 Earnings Miss: Industrial Destocking Worse Than Expected — SiC Write-Down Flagged", severity_hint: 2.5, risks: ["R-03", "R-01"] },
-      { title: "Wolfspeed Reduces SiC Capacity Guidance 30% — Auto Customer Pushouts Cited", severity_hint: 3.0, risks: ["R-03", "R-06"] },
-      { title: "Skyworks: China Revenue Down 34% YoY — BIS Entity List Expansion Primary Driver", severity_hint: 2.5, risks: ["R-02", "R-09"] },
-      { title: "MCHP Discloses SEC Investigation into Distributor Revenue Timing — Stock Halted", severity_hint: 3.0, risks: ["R-01", "R-05"] },
-      { title: "NXP 8-K: Material Cybersecurity Incident — Fab OT Systems Isolated, Production Impacted", severity_hint: 3.0, risks: ["R-04"] },
     ],
   };
 
@@ -315,9 +223,9 @@ window.RSS_ENGINE = (function () {
 
   // ── Fetch feed XML via local dev-server proxy ─────────────
   // Routes through /api/rss-proxy (vite.config.js) so the request is made
-  // server-side, bypassing browser CORS restrictions and rss2json 422s.
+  // server-side, bypassing browser CORS restrictions.
   async function fetchFeed(feed) {
-    if (feed.simulateOnly || !feed.url) return null;
+    if (!feed.url) return null;
     try {
       const res = await fetch(`/api/rss-proxy?url=${encodeURIComponent(feed.url)}`, {
         signal: AbortSignal.timeout(10000),
@@ -330,45 +238,26 @@ window.RSS_ENGINE = (function () {
     }
   }
 
-  // ── Simulate articles for a feed ─────────────────────────
-  function simulateFeed(feed, count = 4) {
-    const templates = SIMULATED_ARTICLES[feed.id] || [];
-    if (!templates.length) return [];
-    // Pick random subset, add noise to pubDate
-    const shuffled = [...templates].sort(() => Math.random() - 0.5);
-    return shuffled.slice(0, Math.min(count, templates.length)).map(t => ({
-      ...t,
-      pubDate: new Date(Date.now() - Math.random() * 7 * 86400000).toISOString(),
-      link: null,
-    }));
-  }
-
   // ── Main ingestion run ────────────────────────────────────
+  // opts.enabledFeedIds — array of feed IDs to include; defaults to all
+  // opts.onProgress(msg, feedId, done) — called per feed
   async function ingestAll(opts = {}) {
-    const { onProgress, simulate = false } = opts;
+    const { onProgress, enabledFeedIds } = opts;
+    const feeds = enabledFeedIds
+      ? FEEDS.filter(f => enabledFeedIds.includes(f.id))
+      : FEEDS;
     const results = [];
 
-    for (const feed of FEEDS) {
-      onProgress?.(`Fetching ${feed.name}…`);
-
-      let rawArticles = null;
-      let fetchStatus = "ok";
-
-      if (!simulate && !feed.simulateOnly) {
-        rawArticles = await fetchFeed(feed);
-        if (!rawArticles) fetchStatus = "simulated";
-      }
-
-      if (!rawArticles) {
-        rawArticles = simulateFeed(feed, 3);
-        fetchStatus = feed.simulateOnly ? "simulated" : "fallback";
-      }
-
-      const graded = rawArticles.map(a => gradeArticle(a, feed));
+    for (const feed of feeds) {
+      onProgress?.(`Fetching ${feed.name}…`, feed.id, false);
+      const rawArticles = await fetchFeed(feed);
+      const fetchStatus = rawArticles ? "ok" : "failed";
+      const graded = (rawArticles || []).map(a => gradeArticle(a, feed));
       results.push({ feed, articles: graded, fetchStatus });
+      onProgress?.(`${feed.name} fetched`, feed.id, true);
     }
 
-    onProgress?.("Grading complete.");
+    onProgress?.("Grading complete.", null, false);
     return results;
   }
 
@@ -387,7 +276,6 @@ window.RSS_ENGINE = (function () {
     scoreSeverity,
     velocityFromScores,
     ingestAll,
-    simulateFeed,
     toSignals,
   };
 })();
