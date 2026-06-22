@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI-augmented endpoints for the Dendrai Risk Loop (recommendations #1–#4).
+AI-augmented endpoints for the Dendrai Risk Loop (recommendations #1–#5).
 
 These are the first endpoints that actually put a language model in the loop.
 They sit alongside the existing deterministic /predictive/* pipeline and degrade
@@ -13,7 +13,11 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
     POST /ai/narrative-analysis  #3  Item 1A / proxy narrative extraction
     POST /ai/persona-brief       #4  role-tailored summary (CAE / CFO / COO)
     POST /ai/audit-report        #4  full markdown audit report
+    POST /ai/loop-calibrate      #4b loop calibration recommendations (Gate 3)
     POST /agent/investigate      #1  tool-use investigation agent
+    POST /agent/schedule         #5  provision Managed Agent + scheduled deployment
+    POST /agent/schedule/run-now #5  trigger an immediate deployment run
+    GET  /agent/schedule/status  #5  list recent deployment runs
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import claude_client
@@ -476,6 +481,183 @@ def audit_report(req: ReportRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# #1b — Streaming investigation agent (SSE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/agent/investigate/stream")
+def investigate_stream(req: InvestigateRequest):
+    """
+    Server-Sent Events version of /agent/investigate.
+    Emits one JSON event per tool call/result, then a final 'done' event.
+    Frontend can render a live thinking trace instead of a blank spinner.
+    """
+    _require_ai()
+    import agent_tools
+
+    prior_context = ""
+    if db.is_available():
+        prior = db.get_prior_investigation(req.ticker)
+        if prior:
+            memo = (prior.get("content") or {}).get("memo", prior.get("summary", ""))
+            if memo:
+                prior_context = (
+                    f"\n\n--- Prior cycle findings ({prior['created_at']}) ---\n"
+                    f"{memo[:4000]}\n"
+                    "--- End of prior findings ---\n\n"
+                    "Compare the current state against these prior findings. "
+                    "Note what has changed, worsened, or improved. "
+                    "Escalate with ‼️ ESCALATION only if a risk has materially worsened."
+                )
+
+    focus = f"\n\nSpecific focus from the auditor: {req.focus}" if req.focus else ""
+    user = (
+        f"Investigate the risk posture of {req.ticker.upper()} and produce an "
+        f"investigation memo.{prior_context}{focus}"
+    )
+
+    def _generate():
+        all_tool_calls: list[dict] = []
+        final_event: dict = {}
+        for event in claude_client.run_tool_loop_streaming(
+            _AGENT_SYSTEM, user, agent_tools.TOOLS, agent_tools.IMPLS,
+            label="investigate_stream", effort="high", max_tokens=10_000, max_iterations=14,
+        ):
+            if event.get("type") == "tool_call":
+                all_tool_calls.append({"tool": event["tool"], "input": event["input"], "is_error": False})
+            if event.get("type") == "done":
+                final_event = event
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+        # Persist after the stream finishes
+        if final_event:
+            db.save_ai_analysis(
+                "agent_investigation",
+                {"memo": final_event.get("final_text", ""), "tool_calls": all_tool_calls,
+                 "iterations": final_event.get("iterations", 0), "stopped": final_event.get("stopped", "")},
+                run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+                summary=f"{final_event.get('iterations', 0)} iterations (stream), {len(all_tool_calls)} tool calls",
+            )
+
+    return StreamingResponse(_generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #4b — Loop Calibration AI assist (Gate 3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CALIBRATE_SYSTEM = """You are a Chief Audit Executive reviewing the completed risk loop \
+cycle and recommending calibration adjustments for the next cycle. You receive:
+- Loop statistics (risk reduction achieved, MAPs open/closed, HITL override rate)
+- The final risk register (scores, RAG, velocity after all adjustments)
+- The initial risk register (scores before the cycle)
+- Lessons learned from this cycle
+
+Produce calibration guidance the audit team can act on immediately:
+1. What worked well this cycle (model accuracy, gate efficiency, risk coverage)
+2. What to tune for the next cycle (velocity thresholds, appetite levels, scope focus)
+3. Recommended re-run frequency based on the risk velocity profile
+4. The top 3 risks to prioritize in the next cycle (cite scores and trends)
+5. Any model drift indicators (high override rate, appetite threshold mismatches)
+
+Be specific, cite numbers, and write in the measured voice of an audit review. \
+Do not invent data beyond what is supplied."""
+
+_CALIBRATE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "what_worked": {"type": "array", "items": {"type": "string"}},
+        "tune_for_next_cycle": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "area": {"type": "string"},
+                    "recommendation": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["area", "recommendation", "rationale"],
+            },
+        },
+        "recommended_frequency": {
+            "type": "string",
+            "enum": ["weekly", "monthly", "quarterly", "semi-annual"],
+        },
+        "next_cycle_focus_risks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "risk_ref": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["risk_ref", "reason"],
+            },
+        },
+        "drift_indicators": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+    },
+    "required": ["what_worked", "tune_for_next_cycle", "recommended_frequency",
+                 "next_cycle_focus_risks", "drift_indicators", "summary"],
+}
+
+
+class CalibrateRequest(BaseModel):
+    ticker: str
+    run_id: Optional[int] = None
+    loop_stats: Dict[str, Any] = {}
+    risks_final: List[Dict[str, Any]] = []
+    risks_initial: List[Dict[str, Any]] = []
+    hitl_override_rate: float = 0.0
+    lessons_learned: List[str] = []
+
+
+@router.post("/ai/loop-calibrate")
+def loop_calibrate(req: CalibrateRequest):
+    """Gate 3 — AI-assisted loop calibration recommendations for the next cycle."""
+    _require_ai()
+    risk_delta = []
+    for rf in req.risks_final:
+        ri = next((r for r in req.risks_initial if r.get("id") == rf.get("id")), None)
+        if ri:
+            risk_delta.append({
+                "risk_ref": rf.get("id"),
+                "name": rf.get("name"),
+                "initial_score": ri.get("score"),
+                "final_score": rf.get("score"),
+                "delta": round((rf.get("score") or 0) - (ri.get("score") or 0), 2),
+                "rag": rf.get("rag"),
+                "velocity": rf.get("velocity"),
+                "ce": rf.get("ce"),
+            })
+
+    user = (
+        f"Company: {req.ticker}\n\n"
+        f"Loop statistics:\n{json.dumps(req.loop_stats, indent=2, default=str)}\n\n"
+        f"HITL override rate: {req.hitl_override_rate:.0%}\n\n"
+        f"Risk score delta (initial → final):\n{json.dumps(risk_delta, indent=2, default=str)}\n\n"
+        f"Lessons learned:\n{json.dumps(req.lessons_learned, indent=2, default=str)}\n\n"
+        "Produce loop calibration recommendations."
+    )
+    try:
+        result = claude_client.complete_json(
+            _CALIBRATE_SYSTEM, user, _CALIBRATE_SCHEMA, label="loop_calibrate", effort="high",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+
+    db.save_ai_analysis(
+        "loop_calibration", result,
+        run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+        summary=result.get("summary", "")[:500],
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # #1 — Tool-use investigation agent
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -496,10 +678,28 @@ the evidence for each, and a recommended audit focus. Be specific and cite figur
 def investigate(req: InvestigateRequest):
     _require_ai()
     import agent_tools
+
+    # Cross-run memory: prepend the most recent prior investigation so the agent
+    # can detect drift (new risks, changed metrics) without starting cold every cycle.
+    prior_context = ""
+    if db.is_available():
+        prior = db.get_prior_investigation(req.ticker)
+        if prior:
+            memo = (prior.get("content") or {}).get("memo", prior.get("summary", ""))
+            if memo:
+                prior_context = (
+                    f"\n\n--- Prior cycle findings ({prior['created_at']}) ---\n"
+                    f"{memo[:4000]}\n"
+                    "--- End of prior findings ---\n\n"
+                    "Compare the current state against these prior findings. "
+                    "Note what has changed, worsened, or improved. "
+                    "Escalate with ‼️ ESCALATION only if a risk has materially worsened."
+                )
+
     focus = f"\n\nSpecific focus from the auditor: {req.focus}" if req.focus else ""
     user = (
         f"Investigate the risk posture of {req.ticker.upper()} and produce an "
-        f"investigation memo.{focus}"
+        f"investigation memo.{prior_context}{focus}"
     )
     try:
         result = claude_client.run_tool_loop(
@@ -517,3 +717,105 @@ def investigate(req: InvestigateRequest):
         summary=f"{result['iterations']} iterations, {len(result['tool_calls'])} tool calls",
     )
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #5 — Managed Agent scheduled deployment
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ScheduleRequest(BaseModel):
+    ticker: str
+    cron: str = "0 8 * * 1"
+    mcp_url: str = ""
+
+
+class ScheduleRunNowRequest(BaseModel):
+    ticker: str
+
+
+@router.post("/agent/schedule")
+def agent_schedule(req: ScheduleRequest):
+    """Provision (or reuse) the Dendrai Managed Agent + Deployment for a ticker."""
+    _require_ai()
+    try:
+        import managed_agent_setup
+        import anthropic
+        client = anthropic.Anthropic()
+        env = managed_agent_setup.ensure_environment(client)
+        import os
+        if req.mcp_url:
+            os.environ["DENDRAI_MCP_URL"] = req.mcp_url
+        agent = managed_agent_setup.ensure_agent(client)
+        deployment = managed_agent_setup.create_deployment(client, agent, env, req.ticker, req.cron)
+        if deployment is None:
+            # SDK pre-dates deployments; return the shell command instead.
+            return {
+                "status": "sdk_upgrade_required",
+                "agent_id": agent.id,
+                "message": "Upgrade the anthropic SDK to create deployments. See server logs for the curl command.",
+            }
+        return {
+            "status": "ok",
+            "deployment_id": deployment.id,
+            "agent_id": agent.id,
+            "cron": req.cron,
+            "ticker": req.ticker,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Managed Agent setup failed: {exc}")
+
+
+@router.post("/agent/schedule/run-now")
+def agent_schedule_run_now(req: ScheduleRunNowRequest):
+    """Trigger an immediate run of the existing scheduled deployment."""
+    _require_ai()
+    try:
+        import managed_agent_setup
+        import anthropic
+        client = anthropic.Anthropic()
+        if not hasattr(client.beta, "deployments"):
+            raise HTTPException(status_code=400, detail="SDK has no deployments support; upgrade anthropic.")
+        deps = list(client.beta.deployments.list()) if hasattr(client.beta.deployments, "list") else []
+        target = managed_agent_setup._find_by_name(deps, f"Dendrai {req.ticker} risk loop")
+        if not target:
+            raise HTTPException(status_code=404, detail=f"No deployment found for {req.ticker}. Call /agent/schedule first.")
+        run = client.beta.deployments.run(target.id)
+        sid = getattr(run, "session_id", None)
+        return {"status": "ok", "session_id": sid, "deployment_id": target.id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Run trigger failed: {exc}")
+
+
+@router.get("/agent/schedule/status/{ticker}")
+def agent_schedule_status(ticker: str):
+    """List recent scheduled runs for a ticker's deployment."""
+    _require_ai()
+    try:
+        import managed_agent_setup
+        import anthropic
+        client = anthropic.Anthropic()
+        if not hasattr(client.beta, "deployments"):
+            return {"status": "sdk_upgrade_required", "runs": []}
+        deps = list(client.beta.deployments.list()) if hasattr(client.beta.deployments, "list") else []
+        target = managed_agent_setup._find_by_name(deps, f"Dendrai {ticker.upper()} risk loop")
+        if not target:
+            return {"status": "not_provisioned", "runs": []}
+        runs = []
+        for run in client.beta.deployment_runs.list(deployment_id=target.id):
+            runs.append({
+                "session_id": getattr(run, "session_id", None),
+                "created_at": str(getattr(run, "created_at", "")),
+                "error": str(getattr(run, "error", "")) or None,
+            })
+        return {
+            "status": "ok",
+            "deployment_id": target.id,
+            "deployment_status": str(getattr(target, "status", "")),
+            "runs": runs[:10],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Status check failed: {exc}")

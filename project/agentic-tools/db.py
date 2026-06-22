@@ -1584,6 +1584,66 @@ def get_ai_analyses(run_id: int, kind: Optional[str] = None, limit: int = 50) ->
     return _run(_do) or []
 
 
+def get_run_token_cost(run_id: int) -> dict:
+    """Aggregate token usage and estimated cost for all AI analyses in a run."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT kind, SUM(input_tokens), SUM(output_tokens), SUM(cost_usd), COUNT(*) "
+                    "FROM ai_analyses WHERE run_id = %s "
+                    "GROUP BY kind ORDER BY SUM(cost_usd) DESC NULLS LAST",
+                    (run_id,),
+                )
+                rows = cur.fetchall()
+                by_kind = [
+                    {
+                        "kind": r[0],
+                        "input_tokens": int(r[1] or 0),
+                        "output_tokens": int(r[2] or 0),
+                        "cost_usd": float(r[3] or 0),
+                        "calls": int(r[4] or 0),
+                    }
+                    for r in rows
+                ]
+                total_cost = sum(k["cost_usd"] for k in by_kind)
+                total_in   = sum(k["input_tokens"] for k in by_kind)
+                total_out  = sum(k["output_tokens"] for k in by_kind)
+                return {
+                    "run_id": run_id,
+                    "total_cost_usd": total_cost,
+                    "total_input_tokens": total_in,
+                    "total_output_tokens": total_out,
+                    "by_kind": by_kind,
+                }
+    return _run(_do) or {
+        "run_id": run_id, "total_cost_usd": 0.0,
+        "total_input_tokens": 0, "total_output_tokens": 0, "by_kind": [],
+    }
+
+
+def get_prior_investigation(ticker: str) -> Optional[dict]:
+    """Return the most recent agent_investigation memo for a ticker (cross-run memory)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT content, summary, created_at FROM ai_analyses "
+                    "WHERE ticker = %s AND kind = 'agent_investigation' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (ticker.upper(),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "content": row[0],
+                    "summary": row[1],
+                    "created_at": row[2].isoformat() if row[2] else None,
+                }
+    return _run(_do)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Query helpers
 # ─────────────────────────────────────────────────────────────────────────────
