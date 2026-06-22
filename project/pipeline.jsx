@@ -27,7 +27,9 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
-  const s1Extra = { rssRunProgress, rssFeeds: rssFeeds || [] };
+  const s1Extra = { rssRunProgress, rssFeeds: rssFeeds || [], ticker: output.s1?.ticker || "" };
+  // Expose narrative result + setter via s1Extra so S1Body can lift state up
+  // These are threaded in by the parent (app.jsx) via the narrativeResult/onNarrativeResult props
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
     appetiteLevel, appetiteThreshold: threshold,
@@ -211,7 +213,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -283,10 +285,30 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
   );
 }
 
-function S1Body({ output, signals, livefacts }) {
+function S1Body({ output, signals, livefacts, ticker: tickerProp = "" }) {
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
+
+  // Narrative analysis state
+  const [narr, setNarr] = React.useState({ loading: false, error: null, result: null });
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiNarrative;
+  const ticker = tickerProp || output?.ticker || livefacts?.entity || "";
+
+  async function runNarrative() {
+    if (!aiAvailable || !ticker) return;
+    setNarr({ loading: true, error: null, result: null });
+    try {
+      const res = await window.MCP.aiNarrative(ticker, null, { maxFilings: 2, includeProxy: true });
+      setNarr({ loading: false, error: null, result: res });
+    } catch (e) {
+      setNarr({ loading: false, error: e.message || "AI unavailable", result: null });
+    }
+  }
+
+  const narrRisks = narr.result?.emerging_risks || [];
+  const narrChanges = narr.result?.yoy_changes || [];
+
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
@@ -294,6 +316,7 @@ function S1Body({ output, signals, livefacts }) {
         <Stat l="High velocity" v={high} mono color="var(--red-ink)"/>
         <Stat l="Medium velocity" v={med} mono color="var(--amber-ink)"/>
         <Stat l="Sources" v={output?.sourceCount || 4}/>
+        {narrRisks.length > 0 && <Stat l="Narrative risks" v={narrRisks.length} mono color="var(--acc-ink)"/>}
       </div>
       {livefacts && (
         <div className="stage-detail">
@@ -320,6 +343,58 @@ function S1Body({ output, signals, livefacts }) {
           ))}
         </ul>
       </div>
+
+      {/* AI Narrative Analysis */}
+      {aiAvailable && (
+        <div className="stage-detail">
+          <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: narrRisks.length ? 10 : 0}}>
+            <h5 style={{margin:0}}>Item 1A · AI narrative signals</h5>
+            <button className="btn btn-sm" onClick={runNarrative} disabled={narr.loading || !ticker}>
+              <Icon name="spark" size={10}/> {narr.loading ? "Extracting…" : narr.result ? "Re-extract" : "Extract narrative"}
+            </button>
+          </div>
+          {narr.error && (
+            <div className="mono" style={{fontSize:10.5, color:"var(--red-ink)", marginTop:6}}>{narr.error}</div>
+          )}
+          {narr.result?.summary && (
+            <div style={{fontSize:11.5, color:"var(--ink-2)", lineHeight:1.55, marginTop:8, marginBottom:8,
+              background:"var(--surface)", border:"1px solid var(--line)", borderRadius:6, padding:"8px 12px"}}>
+              {narr.result.summary}
+            </div>
+          )}
+          {narrRisks.length > 0 && (
+            <ul>
+              {narrRisks.map((r, i) => (
+                <li key={i}>
+                  <span className={`tag mono ${r.severity === "high" ? "sev-high" : r.severity === "medium" ? "sev-med" : ""}`}
+                    style={{background: r.severity === "high" ? "var(--red-soft)" : r.severity === "medium" ? "var(--amber-soft)" : undefined,
+                            color:      r.severity === "high" ? "var(--red-ink)"  : r.severity === "medium" ? "var(--amber-ink)"  : undefined}}>
+                    {r.severity?.toUpperCase()}
+                  </span>
+                  <span style={{flex:1}}>{r.title}</span>
+                  <span className="mono muted" style={{fontSize:9.5}}>{r.category}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {narrChanges.length > 0 && (
+            <>
+              <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", letterSpacing:"0.06em", margin:"8px 0 4px"}}>YoY LANGUAGE SHIFTS</div>
+              <ul>
+                {narrChanges.map((c, i) => (
+                  <li key={i}>
+                    <span className="tag mono" style={{
+                      background: c.direction === "expanded" ? "var(--red-soft)"   : c.direction === "new" ? "var(--amber-soft)" : "var(--surface-2)",
+                      color:      c.direction === "expanded" ? "var(--red-ink)"    : c.direction === "new" ? "var(--amber-ink)"  : "var(--ink-3)",
+                    }}>{c.direction}</span>
+                    <span style={{flex:1, fontSize:11}}>{c.change}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
