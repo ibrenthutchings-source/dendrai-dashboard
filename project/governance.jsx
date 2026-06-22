@@ -15,11 +15,41 @@ const GOV_TABS = [
 // ── Section text renderer ────────────────────────────────────────────────────
 function ProxySection({ text }) {
   if (!text) return <div className="gov-empty">No data extracted from filing.</div>;
-  const paras = text.split(/\n{2,}/).filter(p => p.trim().length > 40).slice(0, 6);
+
+  const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+  const bulletPat = /^([•·▪\-\*]|\d+[\.\)])\s+/;
+  const hasBullets = lines.filter(l => l.length > 15).some(l => bulletPat.test(l));
+
+  let items;
+  if (hasBullets) {
+    items = [];
+    let cur = null;
+    for (const line of lines) {
+      if (bulletPat.test(line)) {
+        if (cur !== null) items.push(cur.trim());
+        cur = line.replace(bulletPat, "");
+      } else if (cur !== null) {
+        cur += " " + line;
+      } else if (line.length > 30) {
+        items.push(line);
+      }
+    }
+    if (cur !== null) items.push(cur.trim());
+  } else {
+    const full = lines.join(" ");
+    items = full
+      .split(/\.\s+(?=[A-Z"'])/)
+      .map(s => s.trim())
+      .filter(s => s.length > 30)
+      .map(s => (s.endsWith(".") ? s : s + "."));
+  }
+
   return (
-    <div className="gov-prose">
-      {paras.map((p, i) => <p key={i}>{p.trim()}</p>)}
-    </div>
+    <ul className="gov-bullet-list">
+      {items.slice(0, 14).map((item, i) => (
+        <li key={i} className="gov-bullet-item">{item}</li>
+      ))}
+    </ul>
   );
 }
 
