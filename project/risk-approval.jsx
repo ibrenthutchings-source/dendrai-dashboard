@@ -296,7 +296,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 }
 
 // ----------- Adjust Risk Modal -----------
-function AdjustRiskModal({ open, risk, ticker, runId, onClose, onSubmit }) {
+function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, onSubmit }) {
   const [rag, setRag] = useState(risk?.rag || "A");
   const [score, setScore] = useState(risk?.score ?? 5);
   const [velocity, setVelocity] = useState(risk?.velocity ?? 0);
@@ -321,7 +321,10 @@ function AdjustRiskModal({ open, risk, ticker, runId, onClose, onSubmit }) {
     if (!aiAvailable || !risk) return;
     setAiState({ loading: true, error: null, reco: null });
     try {
-      const res = await window.MCP.aiGate1Recommend(ticker || "", [risk], {}, runId || null);
+      const gate1Context = narrativeResult
+        ? { emerging_risks: narrativeResult.emerging_risks, yoy_changes: narrativeResult.yoy_changes, narrative_summary: narrativeResult.summary }
+        : {};
+      const res = await window.MCP.aiGate1Recommend(ticker || "", [risk], gate1Context, runId || null);
       const reco = (res?.recommendations || [])[0];
       if (!reco) throw new Error("no recommendation returned");
       setRag(reco.suggested_rag ?? rag);
