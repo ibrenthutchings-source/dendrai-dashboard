@@ -866,7 +866,7 @@ function App() {
     await runStage("s5", { closure: stage5Closure, trace: stage5Trace }, 1200);
 
     // STAGE 6 — Loop calibration
-    const stage6Loop = profileRef.current.loop || {};
+    const stage6Loop = RISK_ENGINE.buildLoop(adjustedRisks);
     const stage6Trace = buildTrace({
       assumptions: [
         "Loop health is calibrated from RAG counts, risk velocity, and control environment effectiveness.",
@@ -920,7 +920,8 @@ function App() {
       await runStage("s4", { maps: profileRef.current.maps }, 1400);
       setActiveRailTab("map");
       await runStage("s5", { closure: profileRef.current.closure }, 1200);
-      await runStage("s6", { loop: profileRef.current.loop }, 1200);
+      const rerunRisks = output.s2?.risks || profileRef.current.risks || [];
+      await runStage("s6", { loop: RISK_ENGINE.buildLoop(rerunRisks) }, 1200);
       setActiveRailTab("loop");
       log("Re-run from Stage 3 complete");
       setHasRun(true);
