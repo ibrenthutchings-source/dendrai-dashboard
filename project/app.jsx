@@ -60,6 +60,7 @@ function App() {
   const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal", "fred", "incidents"]));
   const [velocity, setVelocity] = useState(3);
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
+  const [rssEnabledFeeds, setRssEnabledFeeds] = useState(() => RSS_ENGINE.FEEDS.map(f => f.id));
 
   // ---- Config persistence (localStorage in the prototype; AuditConfig table in prod) ----
   const [lastSaved, setLastSaved] = useState(null);
@@ -73,6 +74,7 @@ function App() {
         if (Array.isArray(s.signals)) setSignalSet(new Set(s.signals));
         if (typeof s.velocity === "number") setVelocity(s.velocity);
         if (s.hitl) setHitl(s.hitl);
+        if (Array.isArray(s.rssEnabledFeeds)) setRssEnabledFeeds(s.rssEnabledFeeds);
         if (s.savedAt) setLastSaved(s.savedAt);
       }
     } catch {}
@@ -82,10 +84,10 @@ function App() {
     if (!cfgLoadedRef.current) return;
     const savedAt = Date.now();
     try {
-      localStorage.setItem("dendrai.config", JSON.stringify({ cfg, signals: [...signalSet], velocity, hitl, savedAt }));
+      localStorage.setItem("dendrai.config", JSON.stringify({ cfg, signals: [...signalSet], velocity, hitl, rssEnabledFeeds, savedAt }));
       setLastSaved(savedAt);
     } catch {}
-  }, [cfg, signalSet, velocity, hitl]);
+  }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds]);
 
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
   const [liveMode, setLiveMode] = useState(false);
@@ -125,6 +127,8 @@ function App() {
   const [rssSignals, setRssSignals] = useState([]);
   const [rssLastUpdated, setRssLastUpdated] = useState(null);
   const [rssRefreshing, setRssRefreshing] = useState(false);
+  // { msg: string, feedsDone: string[] } | null — tracks per-feed progress during pipeline run
+  const [rssRunProgress, setRssRunProgress] = useState(null);
   const [perRiskAppetite, setPerRiskAppetite] = useState({});
 
   // Periodic RSS refresh while pipeline is running
@@ -134,7 +138,7 @@ function App() {
       if (!signalSet.has("industry")) return;
       setRssRefreshing(true);
       try {
-        const ingestResult = await RSS_ENGINE.ingestAll({ simulate: !liveMode });
+        const ingestResult = await RSS_ENGINE.ingestAll({ enabledFeedIds: rssEnabledFeeds });
         const freshSigs = RSS_ENGINE.toSignals(ingestResult);
         setRssSignals(freshSigs);
         setRssLastUpdated(Date.now());
