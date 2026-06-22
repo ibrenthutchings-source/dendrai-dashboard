@@ -538,13 +538,36 @@ function App() {
         // Overlay MCP-computed scores onto template risks
         const mergedRisks = MCP.mergeRiskScores(templateProfile.risks, mcpResult.risk_scores);
 
-        // MCP RSS signals → Loop signal format
+        // MCP RSS signals → Loop signal format (industry feeds from predictive analytics)
         if (mcpResult.rss_signals && signalSet.has("industry")) {
           const rssSigs = MCP.mapRssSignals(mcpResult, mergedRisks);
           currentRssSignals = rssSigs;
-          setRssSignals(rssSigs);
-          setRssLastUpdated(Date.now());
-          log(`MCP RSS: ${rssSigs.length} signals graded`);
+          log(`MCP RSS industry: ${rssSigs.length} signals`);
+        }
+
+        // Compliance RSS (BIS/CISA/SEC/Fed/EPA) — server-side cached, supplement industry signals
+        if (signalSet.has("industry") && rssEnabledFeeds.length > 0) {
+          try {
+            const rssFeeds = RSS_ENGINE.FEEDS.filter(f => rssEnabledFeeds.includes(f.id));
+            setRssRunProgress({ msg: "Fetching compliance feeds via MCP…", feedsDone: [] });
+            const complianceResult = await MCP.ingestRssFeeds(rssEnabledFeeds);
+            // Mark all feeds that came back ok as done for the progress display
+            const doneFeedIds = complianceResult.feeds
+              .filter(r => r.fetchStatus === "ok")
+              .map(r => r.feed.id);
+            setRssRunProgress({ msg: "Compliance feeds complete", feedsDone: doneFeedIds });
+            const complianceSigs = complianceResult.feeds.flatMap(r =>
+              r.articles.filter(a => a.velocity > 0)
+            );
+            currentRssSignals = [...currentRssSignals, ...complianceSigs];
+            setRssSignals(currentRssSignals);
+            setRssLastUpdated(Date.now());
+            log(`MCP compliance RSS: ${complianceSigs.length} signals · ${complianceResult.live_feeds} live · ${complianceResult.feeds.filter(r => r.cached).length} cached`);
+            setRssRunProgress(null);
+          } catch(e) {
+            setRssRunProgress(null);
+            log(`MCP compliance RSS: ${e.message || "fetch failed"}`);
+          }
         }
 
         // MCP FRED indicators → Loop signal format (appended to RSS)
