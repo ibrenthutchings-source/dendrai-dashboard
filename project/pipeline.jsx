@@ -136,6 +136,9 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1
     status === "waiting" ? <span className="stage-pill wait"><span className="dot"/>AWAITING GATE</span> :
                            <span className="stage-pill"><span className="dot"/>IDLE</span>;
   const num = stage.id.replace("s", "");
+  const subSteps = status === "done"
+    ? buildSubSteps(stage.id, output, signals, livefacts, s1Extra, s2Extra, s3Extra)
+    : [];
   return (
     <div className={`stage ${statusCls}`} data-screen-label={`Stage ${num}`}>
       <div className="stage-head" onClick={onToggle}>
@@ -147,6 +150,23 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1
         {pill}
         <Icon name={isOpen ? "chev-u" : "chev-d"} size={14} className="muted"/>
       </div>
+      {subSteps.length > 0 && (
+        <div style={{
+          padding: "8px 16px 10px 16px",
+          borderTop: "1px solid var(--line)",
+          display: "flex", flexDirection: "column", gap: 4,
+        }}>
+          <div className="mono" style={{fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 2}}>COMPLETED STEPS</div>
+          <div style={{display: "flex", flexWrap: "wrap", gap: "4px 20px"}}>
+            {subSteps.map((step, i) => (
+              <div key={i} style={{display: "flex", alignItems: "baseline", gap: 5, fontSize: 11, color: "var(--ink-2)"}}>
+                <span style={{color: "var(--green-ink)", fontSize: 10, flexShrink: 0}}>✓</span>
+                <span>{step}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {isOpen && (
         <div className="stage-body">
           <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra}/>
@@ -197,6 +217,118 @@ function HITLGate({ num, state, onApprove, onOverride }) {
       </div>
     </div>
   );
+}
+
+// ------ Compact sub-step builder (always-visible on completed stage cards) ------
+function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extra, s3Extra) {
+  if (!output) return [];
+
+  if (stageId === "s1") {
+    const bySrc = {};
+    signals.forEach(s => { bySrc[s.src] = (bySrc[s.src] || 0) + 1; });
+    const rssSigs = signals.filter(s => s.src === "Industry RSS");
+    const rssByFeed = {};
+    rssSigs.forEach(s => { const k = s.feedName || "RSS"; rssByFeed[k] = (rssByFeed[k] || 0) + 1; });
+    const fredTotal = bySrc["FRED Macro"] || 0;
+    const fredContr = signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+    const total = signals.length;
+    const high = signals.filter(s => s.velocity >= 3).length;
+    const med  = signals.filter(s => s.velocity === 2).length;
+    return [
+      bySrc["EDGAR 10-K"] > 0 && `EDGAR 10-K loaded${livefacts ? ` · ${livefacts.entity} (CIK ${livefacts.cik})` : ` · ${bySrc["EDGAR 10-K"]} signals`}`,
+      livefacts            && "Financial metrics mapped to risk score inputs",
+      bySrc["Peer 10-K"] > 0 && `Peer 10-K parsed · ${bySrc["Peer 10-K"]} comparative signal${bySrc["Peer 10-K"] !== 1 ? "s" : ""}`,
+      rssSigs.length > 0   && `Industry RSS · ${Object.keys(rssByFeed).length} feed${Object.keys(rssByFeed).length !== 1 ? "s" : ""} · ${rssSigs.length} article${rssSigs.length !== 1 ? "s" : ""} ingested`,
+      fredTotal > 0        && `FRED macro · ${fredTotal} series · ${fredContr} contractionary signal${fredContr !== 1 ? "s" : ""} flagged`,
+      bySrc["Internal KRI"] > 0 && `Internal KRIs · ${bySrc["Internal KRI"]} indicator${bySrc["Internal KRI"] !== 1 ? "s" : ""} assessed`,
+      bySrc["Incident"] > 0     && `Incident log · ${bySrc["Incident"]} recent event${bySrc["Incident"] !== 1 ? "s" : ""} reviewed`,
+      total > 0            && `${total} signals velocity-graded · ${high} high · ${med} medium · ${total - high - med} standard`,
+      s1Extra?.narrativeResult && `AI narrative (Item 1A) · ${(s1Extra.narrativeResult.emerging_risks || []).length} emerging risk${(s1Extra.narrativeResult.emerging_risks || []).length !== 1 ? "s" : ""} detected`,
+    ].filter(Boolean);
+  }
+
+  if (stageId === "s2") {
+    const risks   = output?.risks || [];
+    const counts  = risks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
+    const appetite = output?.riskAppetite;
+    const allSigs  = s2Extra?.allSignals || [];
+    const liveRss  = s2Extra?.liveRssSignals || [];
+    const fredContr  = allSigs.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+    const rssLinked  = liveRss.filter(s => (s.affectedRisks || []).length > 0).length;
+    const highVel    = risks.filter(r => r.velocity >= 3).length;
+    return [
+      `${risks.length} risks loaded from industry template`,
+      fredContr > 0   && `FRED macro adjustments applied · ${fredContr} contractionary signal${fredContr !== 1 ? "s" : ""}`,
+      rssLinked > 0   && `RSS signal adjustments applied · ${rssLinked} linked signal${rssLinked !== 1 ? "s" : ""}`,
+      "Control effectiveness (CE) scored per risk",
+      `RAG matrix computed · ${counts.R || 0} RED · ${counts.A || 0} AMBER · ${counts.G || 0} GREEN`,
+      highVel > 0     && `${highVel} high-velocity risk${highVel !== 1 ? "s" : ""} flagged for escalation`,
+      appetite && (appetite.breaching?.length > 0
+        ? `Appetite breached · ${appetite.breaching.length} risk${appetite.breaching.length !== 1 ? "s" : ""} exceed ${appetite.level} threshold`
+        : `All risks within ${appetite.level} appetite tolerance`),
+    ].filter(Boolean);
+  }
+
+  if (stageId === "s3") {
+    const objs   = output?.objectives || [];
+    const p1     = objs.filter(o => o.priority === "P1").length;
+    const p2     = objs.filter(o => o.priority === "P2").length;
+    const hrs    = objs.reduce((a, o) => a + (o.hours || 0), 0);
+    const manual = s3Extra?.manualAudits || [];
+    const risks  = s3Extra?.risks || [];
+    const redAmber = risks.filter(r => r.rag === "R" || r.rag === "A").length;
+    return [
+      `${redAmber} RED/AMBER risk${redAmber !== 1 ? "s" : ""} mapped to audit objectives`,
+      `${objs.length} audit objective${objs.length !== 1 ? "s" : ""} generated`,
+      p1 > 0 && `${p1} P1 (immediate) · ${p2} P2 (planned) priority objectives`,
+      hrs > 0 && `${hrs} total audit hours estimated across all objectives`,
+      "Sprint-ready workplan built with linked risk IDs and control coverage",
+      manual.length > 0 && `${manual.length} manual audit${manual.length !== 1 ? "s" : ""} incorporated into scope`,
+    ].filter(Boolean);
+  }
+
+  if (stageId === "s4") {
+    const maps   = output?.maps || [];
+    const avgRed = maps.reduce((a, m) => a + (m.reduction_pct || 0), 0);
+    const owners = new Set(maps.map(m => m.owner).filter(Boolean)).size;
+    const redMaps = maps.filter(m => m.risk_impact === "R").length;
+    return [
+      `${maps.length} finding${maps.length !== 1 ? "s" : ""} linked to risks · ${redMaps} RED impact`,
+      "Root cause analysis completed per finding",
+      owners > 0 && `${owners} control owner${owners !== 1 ? "s" : ""} assigned`,
+      "Due dates and milestones set — high-velocity items fast-tracked",
+      "Success criteria defined with measurable closure conditions",
+      avgRed > 0 && `${avgRed}% total risk reduction projected across all MAPs`,
+    ].filter(Boolean);
+  }
+
+  if (stageId === "s5") {
+    const c = output?.closure || {};
+    const rerun = (c.rerun_recommended || []).length;
+    return [
+      c.evidence_artifacts > 0 && `${c.evidence_artifacts} evidence artifact${c.evidence_artifacts !== 1 ? "s" : ""} reviewed against MAP success criteria`,
+      c.risks_closed > 0   && `${c.risks_closed} risk${c.risks_closed !== 1 ? "s" : ""} fully closed`,
+      c.risks_reduced > 0  && `${c.risks_reduced} risk${c.risks_reduced !== 1 ? "s" : ""} partially mitigated`,
+      c.risks_unchanged > 0 && `${c.risks_unchanged} risk${c.risks_unchanged !== 1 ? "s" : ""} unchanged — escalated for next cycle`,
+      (c.projected_total_risk_reduction_pct || 0) > 0 && `${c.projected_total_risk_reduction_pct}% projected portfolio risk reduction`,
+      rerun > 0 && `${rerun} risk${rerun !== 1 ? "s" : ""} queued for next-cycle re-test`,
+    ].filter(Boolean);
+  }
+
+  if (stageId === "s6") {
+    const l       = output?.loop || {};
+    const lessons = (l.lessons_learned || []).length;
+    return [
+      l.loop_health && `Loop health: ${l.loop_health} · audit impact ${l.audit_impact_score || "—"}/25`,
+      "Risk velocity weights recalibrated from this cycle's outcomes",
+      lessons > 0  && `${lessons} lesson${lessons !== 1 ? "s" : ""} documented`,
+      l.maps_open > 0 && `${l.maps_open} open MAP${l.maps_open !== 1 ? "s" : ""} carried forward`,
+      l.next_trigger_days > 0 && `Next cycle in ${l.next_trigger_days} days${l.next_cycle_focus ? ` · focus: ${l.next_cycle_focus}` : ""}`,
+      "Updated risk register and lessons fed back to Stage 1",
+    ].filter(Boolean);
+  }
+
+  return [];
 }
 
 // ------ Stage body content ------
