@@ -25,11 +25,16 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
                     riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
-                    manualAudits = [], onAddAudit, onRemoveAudit }) {
+                    manualAudits = [], onAddAudit, onRemoveAudit,
+                    narrativeResult, onNarrativeResult, ticker: pipelineTicker = "" }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
-  const s1Extra = { rssRunProgress, rssFeeds: rssFeeds || [], ticker: output.s1?.ticker || "" };
-  // Expose narrative result + setter via s1Extra so S1Body can lift state up
-  // These are threaded in by the parent (app.jsx) via the narrativeResult/onNarrativeResult props
+  const s1Extra = {
+    rssRunProgress,
+    rssFeeds: rssFeeds || [],
+    ticker: pipelineTicker || output.s1?.ticker || "",
+    narrativeResult,
+    onNarrativeResult,
+  };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
     appetiteLevel, appetiteThreshold: threshold,
@@ -213,7 +218,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -285,29 +290,32 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
   );
 }
 
-function S1Body({ output, signals, livefacts, ticker: tickerProp = "" }) {
+function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult }) {
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
 
-  // Narrative analysis state
-  const [narr, setNarr] = React.useState({ loading: false, error: null, result: null });
+  const [narrLoading, setNarrLoading] = React.useState(false);
+  const [narrError, setNarrError] = React.useState(null);
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiNarrative;
   const ticker = tickerProp || output?.ticker || livefacts?.entity || "";
 
   async function runNarrative() {
     if (!aiAvailable || !ticker) return;
-    setNarr({ loading: true, error: null, result: null });
+    setNarrLoading(true);
+    setNarrError(null);
     try {
       const res = await window.MCP.aiNarrative(ticker, null, { maxFilings: 2, includeProxy: true });
-      setNarr({ loading: false, error: null, result: res });
+      onNarrativeResult?.(res);
     } catch (e) {
-      setNarr({ loading: false, error: e.message || "AI unavailable", result: null });
+      setNarrError(e.message || "AI unavailable");
+    } finally {
+      setNarrLoading(false);
     }
   }
 
-  const narrRisks = narr.result?.emerging_risks || [];
-  const narrChanges = narr.result?.yoy_changes || [];
+  const narrRisks = narrativeResult?.emerging_risks || [];
+  const narrChanges = narrativeResult?.yoy_changes || [];
 
   return (
     <div className="stage-body-grid">
@@ -349,14 +357,14 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "" }) {
         <div className="stage-detail">
           <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: narrRisks.length ? 10 : 0}}>
             <h5 style={{margin:0}}>Item 1A · AI narrative signals</h5>
-            <button className="btn btn-sm" onClick={runNarrative} disabled={narr.loading || !ticker}>
-              <Icon name="spark" size={10}/> {narr.loading ? "Extracting…" : narr.result ? "Re-extract" : "Extract narrative"}
+            <button className="btn btn-sm" onClick={runNarrative} disabled={narrLoading || !ticker}>
+              <Icon name="spark" size={10}/> {narrLoading ? "Extracting…" : narrativeResult ? "Re-extract" : "Extract narrative"}
             </button>
           </div>
-          {narr.error && (
-            <div className="mono" style={{fontSize:10.5, color:"var(--red-ink)", marginTop:6}}>{narr.error}</div>
+          {narrError && (
+            <div className="mono" style={{fontSize:10.5, color:"var(--red-ink)", marginTop:6}}>{narrError}</div>
           )}
-          {narr.result?.summary && (
+          {narrativeResult?.summary && (
             <div style={{fontSize:11.5, color:"var(--ink-2)", lineHeight:1.55, marginTop:8, marginBottom:8,
               background:"var(--surface)", border:"1px solid var(--line)", borderRadius:6, padding:"8px 12px"}}>
               {narr.result.summary}
