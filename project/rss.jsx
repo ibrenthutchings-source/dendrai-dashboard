@@ -1,28 +1,30 @@
 /* ============================================================
    RSS Ingestion Panel
-   - Feed status grid (6 registered feeds)
+   - Feed status grid (feeds registered in RSS_ENGINE.FEEDS)
    - Article queue with relevance / severity / velocity grades
-   - "Run ingestion" triggers real fetch + fallback simulation
+   - "Run ingestion" triggers real live fetch — no simulation fallback
    - Graded signals propagate to Stage 1 signal list
    ============================================================ */
 
 const RSS_RAG = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
 const RSS_RAG_SOFT = { R: "var(--red-soft)", A: "var(--amber-soft)", G: "var(--green-soft)" };
 
-function RSSPanel({ onSignalsReady, liveMode = false }) {
+function RSSPanel({ onSignalsReady, enabledFeedIds }) {
   const [ingestState, setIngestState] = useState("idle"); // idle | running | done | error
   const [progress, setProgress]       = useState("");
   const [feedResults, setFeedResults] = useState([]);
   const [expanded, setExpanded]       = useState(new Set());
-  const [simMode, setSimMode]         = useState(!liveMode);
 
-  // Sync simulation mode when liveMode changes
-  useEffect(() => { setSimMode(!liveMode); }, [liveMode]);
+  const enabledFeeds = enabledFeedIds
+    ? RSS_ENGINE.FEEDS.filter(f => enabledFeedIds.includes(f.id))
+    : RSS_ENGINE.FEEDS;
 
   const allArticles = feedResults.flatMap(r => r.articles);
   const highVel = allArticles.filter(a => a.velocity >= 3).length;
   const medVel  = allArticles.filter(a => a.velocity === 2).length;
   const totalSignals = allArticles.filter(a => a.velocity > 0).length;
+  const liveFeedsCount = feedResults.filter(r => r.fetchStatus === "ok").length;
+  const failedFeedsCount = feedResults.filter(r => r.fetchStatus === "failed").length;
 
   async function runIngestion() {
     setIngestState("running");
@@ -31,7 +33,7 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
 
     try {
       const results = await RSS_ENGINE.ingestAll({
-        simulate: simMode,
+        enabledFeedIds: enabledFeedIds,
         onProgress: (msg) => setProgress(msg),
       });
       setFeedResults(results);
@@ -60,23 +62,16 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
       <BBTermHeader
         section="RSS SIGNALS"
         title="Industry News · Regulatory · Macro Feeds"
-        liveMode={!simMode}
+        liveMode={true}
         status={
           ingestState === "running" ? `⟳  ${progress}` :
-          ingestState === "done"    ? `${allArticles.length} ARTICLES GRADED  ·  ${totalSignals} VELOCITY SIGNALS  ·  ${feedResults.filter(r=>r.fetchStatus==="ok").length} LIVE FEEDS` :
-          "READY — CLICK RUN INGESTION TO GRADE INDUSTRY-REPRESENTATIVE SIGNALS"
+          ingestState === "done"    ? `${allArticles.length} ARTICLES GRADED  ·  ${totalSignals} VELOCITY SIGNALS  ·  ${liveFeedsCount} LIVE${failedFeedsCount > 0 ? `  ·  ${failedFeedsCount} FAILED` : ""}` :
+          "READY — CLICK RUN INGESTION TO GRADE LIVE INDUSTRY SIGNALS"
         }
         actions={
-          <>
-            <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"var(--ink-3)",cursor:"pointer",userSelect:"none",fontFamily:"Geist Mono,monospace",letterSpacing:"0.06em"}}>
-              <input type="checkbox" checked={simMode} onChange={e=>setSimMode(e.target.checked)}
-                style={{width:12,height:12,cursor:"pointer",accentColor:"var(--acc)"}}/>
-              {simMode ? <span style={{color:"var(--amber-ink)"}}>SIMULATED</span> : <span style={{color:"var(--green-ink)"}}>LIVE FEED</span>}
-            </label>
-            <button className="btn btn-sm btn-primary" onClick={runIngestion} disabled={ingestState==="running"}>
-              {ingestState==="running" ? <><span className="spin" style={{marginRight:5}}/> RUNNING…</> : <><Icon name="satellite" size={12}/> RUN INGESTION</>}
-            </button>
-          </>
+          <button className="btn btn-sm btn-primary" onClick={runIngestion} disabled={ingestState==="running"}>
+            {ingestState==="running" ? <><span className="spin" style={{marginRight:5}}/> RUNNING…</> : <><Icon name="satellite" size={12}/> RUN INGESTION</>}
+          </button>
         }
       />
 
@@ -87,18 +82,20 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
           <div className="bb-ticker-item"><div className="bb-ticker-label">HIGH VEL</div><div className="bb-ticker-val red">{highVel}</div></div>
           <div className="bb-ticker-item"><div className="bb-ticker-label">MED VEL</div><div className="bb-ticker-val amber">{medVel}</div></div>
           <div className="bb-ticker-item"><div className="bb-ticker-label">SIGNALS</div><div className="bb-ticker-val orange">{totalSignals}</div></div>
-          <div className="bb-ticker-item"><div className="bb-ticker-label">LIVE FEEDS</div><div className="bb-ticker-val green">{feedResults.filter(r=>r.fetchStatus==="ok").length}</div></div>
-          <div className="bb-ticker-item"><div className="bb-ticker-label">SIMULATED</div><div className="bb-ticker-val">{feedResults.filter(r=>r.fetchStatus!=="ok").length}</div></div>
+          <div className="bb-ticker-item"><div className="bb-ticker-label">LIVE FEEDS</div><div className="bb-ticker-val green">{liveFeedsCount}</div></div>
+          {failedFeedsCount > 0 && (
+            <div className="bb-ticker-item"><div className="bb-ticker-label">FAILED</div><div className="bb-ticker-val red">{failedFeedsCount}</div></div>
+          )}
         </div>
       )}
 
       {/* Feed status grid */}
       <div className="bb-section-sep">
         <span>FEED STATUS</span>
-        <span>{RSS_ENGINE.FEEDS.length} FEEDS REGISTERED</span>
+        <span>{enabledFeeds.length} FEEDS ENABLED · LIVE ONLY</span>
       </div>
       <div className="rss-feed-grid">
-        {RSS_ENGINE.FEEDS.map(feed => {
+        {enabledFeeds.map(feed => {
           const result = feedResults.find(r => r.feed.id === feed.id);
           const status = ingestState === "running" ? "pending" : result ? result.fetchStatus : "idle";
           const articles = result?.articles || [];
@@ -107,8 +104,8 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
             <div
               key={feed.id}
               className={`rss-feed-card ${result ? "rss-feed-done" : ""}`}
-              onClick={() => result && toggleExpand(feed.id)}
-              style={{cursor: result ? "pointer" : "default"}}
+              onClick={() => result && result.fetchStatus === "ok" && toggleExpand(feed.id)}
+              style={{cursor: result && result.fetchStatus === "ok" ? "pointer" : "default"}}
             >
               <div className="rss-feed-head">
                 <Icon name={feed.icon || "wifi"} size={14} className="muted"/>
@@ -117,10 +114,13 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
               </div>
               <div className="rss-feed-meta">
                 <span className="mono">{feed.domains.join(", ")}</span>
-                {result && (
+                {result && result.fetchStatus === "ok" && (
                   <span className="mono" style={{color: topVel >= 3 ? RSS_RAG.R : topVel >= 2 ? RSS_RAG.A : "var(--ink-3)"}}>
                     {articles.length} articles · max v={topVel >= 0 ? "+" : ""}{topVel}
                   </span>
+                )}
+                {result && result.fetchStatus === "failed" && (
+                  <span className="mono" style={{color: "var(--red-ink)", fontSize: 10}}>Unreachable — check proxy</span>
                 )}
               </div>
             </div>
@@ -135,9 +135,7 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
           <div key={result.feed.id} className="rss-article-list">
             <div className="rss-article-list-head">
               <div style={{fontWeight:500, fontSize:12.5}}>{result.feed.name}</div>
-              <div className="mono" style={{fontSize:10.5, color:"var(--ink-3)"}}>
-                {result.fetchStatus === "ok" ? "Live fetch" : result.fetchStatus === "simulated" ? "Simulated" : "Fallback simulation"}
-              </div>
+              <div className="mono" style={{fontSize:10.5, color:"var(--ink-3)"}}>Live fetch</div>
               <button className="btn btn-sm btn-ghost" onClick={() => toggleExpand(result.feed.id)} style={{marginLeft:"auto"}}>
                 <Icon name="x" size={12}/>
               </button>
@@ -148,7 +146,7 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
       })}
 
       {/* Flat article queue when nothing expanded */}
-      {ingestState === "done" && expanded.size === 0 && (
+      {ingestState === "done" && expanded.size === 0 && allArticles.length > 0 && (
         <div>
           <div className="bb-section-sep">
             <span>ARTICLE QUEUE</span>
@@ -173,6 +171,13 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
         </div>
       )}
 
+      {/* Empty state after failed ingestion */}
+      {ingestState === "done" && allArticles.length === 0 && (
+        <div style={{padding:"24px 0", textAlign:"center", color:"var(--ink-3)", fontSize:11.5}}>
+          No articles retrieved — all feeds failed to fetch. Check the rss-proxy is running and the feed URLs are reachable.
+        </div>
+      )}
+
       {/* Grading methodology note */}
       <div style={{flex:1}}/>
       <div className="rss-method-note">
@@ -188,11 +193,10 @@ function RSSPanel({ onSignalsReady, liveMode = false }) {
 }
 
 function FeedStatusBadge({ status }) {
-  if (status === "idle")      return <span className="rss-badge rss-badge-idle mono">IDLE</span>;
-  if (status === "pending")   return <span className="rss-badge rss-badge-pending mono"><span className="spin" style={{marginRight:4}}/>FETCHING</span>;
-  if (status === "ok")        return <span className="rss-badge rss-badge-ok mono">LIVE</span>;
-  if (status === "fallback")  return <span className="rss-badge rss-badge-sim mono">FALLBACK</span>;
-  if (status === "simulated") return <span className="rss-badge rss-badge-sim mono">SIMULATED</span>;
+  if (status === "idle")    return <span className="rss-badge rss-badge-idle mono">IDLE</span>;
+  if (status === "pending") return <span className="rss-badge rss-badge-pending mono"><span className="spin" style={{marginRight:4}}/>FETCHING</span>;
+  if (status === "ok")      return <span className="rss-badge rss-badge-ok mono">LIVE</span>;
+  if (status === "failed")  return <span className="rss-badge rss-badge-sim mono" style={{color:"var(--red-ink)"}}>FAILED</span>;
   return null;
 }
 

@@ -33,7 +33,7 @@ function ConfigScreen({
   cfg, setCfg, signalSet, setSignalSet,
   velocity, setVelocity, hitl, setHitl,
   liveMode, setLiveMode, mcpMode, setMcpMode, liveStatus,
-  lastSaved,
+  lastSaved, rssEnabledFeeds, setRssEnabledFeeds,
 }) {
   const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
 
@@ -149,6 +149,41 @@ function ConfigScreen({
             ))}
           </div>
         </ConfigCard>
+
+        {/* ---- RSS Feed Sources (shown when Industry RSS is enabled) ---- */}
+        {signalSet.has("industry") && (
+          <ConfigCard title="RSS Feed Sources"
+            sub="Live feeds polled during signal ingestion. All fetches are live — no simulated fallback."
+            right={
+              <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>
+                {(rssEnabledFeeds || []).length}/{RSS_ENGINE.FEEDS.length} enabled
+              </span>
+            }>
+            <div className="sig-grid">
+              {RSS_ENGINE.FEEDS.map(feed => {
+                const on = (rssEnabledFeeds || []).includes(feed.id);
+                return (
+                  <button key={feed.id}
+                    className={"sig" + (on ? " on" : "")}
+                    onClick={() => {
+                      const current = rssEnabledFeeds || RSS_ENGINE.FEEDS.map(f => f.id);
+                      const next = on
+                        ? current.filter(id => id !== feed.id)
+                        : [...current, feed.id];
+                      // keep at least one feed enabled
+                      if (next.length > 0) setRssEnabledFeeds(next);
+                    }}>
+                    <div className="sig-name">{feed.name}</div>
+                    <div className="sig-sub">{feed.domains.join(" · ")}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mono" style={{fontSize:10, color:"var(--ink-3)", marginTop:6, lineHeight:1.5}}>
+              Fetched via /api/rss-proxy · failed feeds show as FAILED (no fallback data)
+            </div>
+          </ConfigCard>
+        )}
 
         {/* ---- Run Configuration ---- */}
         <ConfigCard title="Run Configuration" sub="Velocity threshold, human-in-the-loop gates, and risk appetite.">
