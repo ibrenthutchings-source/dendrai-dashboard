@@ -574,6 +574,45 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         </ul>
       </div>
 
+      {/* How signals feed into Stage 2 scoring */}
+      {total > 0 && (
+        <div className="stage-detail">
+          <h5>How these signals adjust risk scores in Stage 2</h5>
+          <div style={{display:"flex", flexDirection:"column", gap:6, marginTop:4}}>
+            {signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length > 0 && (
+              <div style={{display:"flex", alignItems:"baseline", gap:8, fontSize:11}}>
+                <span className="tag mono" style={{background:"var(--amber-soft)", color:"var(--amber-ink)", flexShrink:0}}>FRED</span>
+                <span style={{color:"var(--ink-2)", flex:1}}>
+                  {signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length} contractionary signal{signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length !== 1 ? "s" : ""}
+                  {" "}→ <span className="mono">+{(signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length * 0.08).toFixed(2)}</span> applied to macro-category risks
+                </span>
+              </div>
+            )}
+            {signals.filter(s => s.src === "Industry RSS").length > 0 && (
+              <div style={{display:"flex", alignItems:"baseline", gap:8, fontSize:11}}>
+                <span className="tag mono" style={{background:"var(--acc-soft,var(--surface))", color:"var(--acc-ink,var(--ink-2))", flexShrink:0}}>RSS</span>
+                <span style={{color:"var(--ink-2)", flex:1}}>
+                  Linked signals → <span className="mono">velocity × 0.08</span> added per directly linked risk · max velocity propagated
+                </span>
+              </div>
+            )}
+            {signals.filter(s => s.velocity >= 3).length > 0 && (
+              <div style={{display:"flex", alignItems:"baseline", gap:8, fontSize:11}}>
+                <span className="tag mono" style={{background:"var(--red-soft)", color:"var(--red-ink)", flexShrink:0}}>HIGH-VEL</span>
+                <span style={{color:"var(--ink-2)", flex:1}}>
+                  {signals.filter(s => s.velocity >= 3).length} high-velocity signal{signals.filter(s => s.velocity >= 3).length !== 1 ? "s" : ""}
+                  {" "}→ systemic lift <span className="mono">+{Math.min(0.20, signals.filter(s => s.velocity >= 3).length * 0.05).toFixed(2)}</span> (capped at 0.20) applied to all risks
+                </span>
+              </div>
+            )}
+            <div style={{marginTop:2, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+              <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Stage 2 residual formula: </span>
+              <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>score = inherent + FRED_adj + RSS_adj + industry_adj − CE_discount</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* AI Narrative Analysis */}
       {aiAvailable && (
         <div className="stage-detail">
@@ -629,7 +668,15 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
   );
 }
 
-const CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
+const CE_ADJ  = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
+const CE_MULT = { STRONG: 0.80, ADEQUATE: 0.95, WEAK: 1.10, NONE: 1.20 };
+
+function forecastRisk(risk, quarters = 4) {
+  const mult = CE_MULT[risk.ce] ?? 1.0;
+  return Array.from({ length: quarters }, (_, i) =>
+    +Math.min(25, Math.max(0, risk.score + risk.velocity * mult * Math.pow(0.85, i))).toFixed(1)
+  );
+}
 
 function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefreshing = false,
                   appetiteLevel = "AMBER", appetiteThreshold,
@@ -860,6 +907,88 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           })}
         </div>
       </div>
+
+      {/* Scoring methodology */}
+      <div className="stage-detail">
+        <h5>Scoring methodology</h5>
+        <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11, color:"var(--ink-2)"}}>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Residual score: </span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + signal_adjustments + CE_adj</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:12}}>CE adj: STRONG −0.7 · ADEQUATE −0.3 · WEAK +0.1 · NONE +0.4</span>
+          </div>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>RAG thresholds: </span>
+            <span className="mono" style={{fontSize:10, color:"var(--red-ink)"}}>RED ≥ 15</span>
+            <span className="mono" style={{fontSize:10, color:"var(--amber-ink)", marginLeft:10}}>AMBER ≥ 9</span>
+            <span className="mono" style={{fontSize:10, color:"var(--green-ink)", marginLeft:10}}>GREEN &lt; 9</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Quarterly forecast for top risks */}
+      {risks.length > 0 && (
+        <div className="stage-detail">
+          <h5>Quarterly forecast · velocity-dampened model</h5>
+          <div style={{padding:"5px 10px 6px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)", marginBottom:8}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Q_n = score + (velocity × CE_mult × 0.85^(n−1)) · capped at 25 · CE_mult: STRONG 0.80 · ADEQUATE 0.95 · WEAK 1.10 · NONE 1.20</span>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:11}}>
+              <thead>
+                <tr style={{borderBottom:"1px solid var(--line)"}}>
+                  <th style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>RISK</th>
+                  <th style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>CE</th>
+                  <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>NOW</th>
+                  <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+1</th>
+                  <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+2</th>
+                  <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+3</th>
+                  <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+4</th>
+                  <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>TREND</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...risks].sort((a,b) => b.score - a.score).slice(0,6).map(r => {
+                  const qs = forecastRisk(r, 4);
+                  const q4Rag = qs[3] >= 15 ? "R" : qs[3] >= 9 ? "A" : "G";
+                  const ragInk = { R:"var(--red-ink)", A:"var(--amber-ink)", G:"var(--green-ink)" };
+                  const rising = qs[3] > r.score + 0.2;
+                  const falling = qs[3] < r.score - 0.2;
+                  return (
+                    <tr key={r.id} style={{borderBottom:"1px solid var(--line)", background: r.rag === "R" ? "color-mix(in oklch, var(--red-soft) 40%, transparent)" : "transparent"}}>
+                      <td style={{padding:"5px 6px"}}>
+                        <span className={`rag-dot ${r.rag}`} style={{marginRight:5}}/>
+                        <span style={{fontSize:10.5, color:"var(--ink-2)", fontWeight:500}}>{r.name}</span>
+                      </td>
+                      <td style={{padding:"5px 6px"}}>
+                        <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{r.ce}</span>
+                      </td>
+                      <td style={{padding:"5px 6px", textAlign:"right"}}>
+                        <span className="mono" style={{fontSize:10.5, fontWeight:600, color:scoreColorInk(r.score)}}>{r.score.toFixed(1)}</span>
+                      </td>
+                      {qs.map((q,qi) => (
+                        <td key={qi} style={{padding:"5px 6px", textAlign:"right"}}>
+                          <span className="mono" style={{fontSize:10.5, color:scoreColorInk(q)}}>{q.toFixed(1)}</span>
+                        </td>
+                      ))}
+                      <td style={{padding:"5px 6px", textAlign:"right"}}>
+                        <span className="mono" style={{fontSize:11, color: rising ? "var(--red-ink)" : falling ? "var(--green-ink)" : "var(--ink-4)"}}>
+                          {rising ? "↑" : falling ? "↓" : "→"}
+                          {" "}
+                          <span style={{color:ragInk[q4Rag], fontSize:9}}>{q4Rag}</span>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginTop:6}}>
+            Forecast used by Stage 3 to prioritize sprint allocation · high-trajectory risks earn P1 objectives regardless of current RAG
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -915,6 +1044,42 @@ function S3Body({ output, manualAudits = [], onAddAudit, onRemoveAudit, risks = 
         <Stat l="P2 priority" v={p2} mono color="var(--amber-ink)"/>
         <Stat l="Effort (hrs)" v={totalHrs} mono/>
         <Stat l="Planned audits" v={manualAudits.length} mono color={manualAudits.length > 0 ? "var(--acc-ink)" : undefined}/>
+      </div>
+
+      {/* Scoping derivation logic */}
+      <div className="stage-detail">
+        <h5>How risks drive scope and hours</h5>
+        <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11}}>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Priority rules: </span>
+            <span className="mono" style={{fontSize:10, color:"var(--red-ink)"}}>RED ≥ 15 → P1</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-3)", margin:"0 6px"}}>·</span>
+            <span className="mono" style={{fontSize:10, color:"var(--amber-ink)"}}>AMBER 9–14 or velocity ≥ 3 → P1</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-3)", margin:"0 6px"}}>·</span>
+            <span className="mono" style={{fontSize:10, color:"var(--green-ink)"}}>remaining AMBER → P2</span>
+          </div>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Hours formula: </span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>P1 base 80h · P2 base 40h · scaled proportionally by residual risk score</span>
+          </div>
+          {risks.length > 0 && (
+            <div style={{marginTop:2}}>
+              {[...risks].filter(r => r.rag === "R" || r.rag === "A").sort((a,b) => b.score - a.score).slice(0,5).map(r => {
+                const linked = objs.filter(o => o.linked_risk === r.id || (o.linked_risks||[]).includes(r.id));
+                return (
+                  <div key={r.id} style={{display:"flex", alignItems:"center", gap:6, padding:"3px 0", borderBottom:"1px solid var(--line)"}}>
+                    <span className={`rag-dot ${r.rag}`}/>
+                    <span className="mono" style={{fontSize:10, color:"var(--ink-3)", minWidth:48}}>{r.id}</span>
+                    <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{r.name}</span>
+                    <span className="mono" style={{fontSize:10, color:scoreColorInk(r.score), minWidth:28}}>{r.score.toFixed(1)}</span>
+                    <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>→ {linked.length} obj{linked.length !== 1 ? "s" : ""}</span>
+                    <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{linked.reduce((a,o)=>a+(o.hours||0),0)}h</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="stage-detail">
@@ -1037,6 +1202,38 @@ function S4Body({ output }) {
         <Stat l="Total reduction" v={`${avgRed}%`} mono/>
         <Stat l="Avg completion" v={`${Math.round(maps.reduce((a,m)=>a+(m.completion_pct||0),0) / Math.max(1,maps.length))}%`} mono/>
       </div>
+      {/* Risk reduction math */}
+      {maps.length > 0 && (
+        <div className="stage-detail">
+          <h5>Projected risk reduction per MAP</h5>
+          <div style={{padding:"5px 10px 6px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)", marginBottom:8}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Residual = current_score × (1 − reduction_pct / 100) · aggregated across all MAPs for portfolio reduction</span>
+          </div>
+          <div style={{display:"flex", flexDirection:"column", gap:3}}>
+            {maps.slice(0, 6).map(m => {
+              const pct = m.reduction_pct || 0;
+              const barW = Math.round(pct * 1.25);
+              return (
+                <div key={m.id} style={{display:"flex", alignItems:"center", gap:8, padding:"4px 0", borderBottom:"1px solid var(--line)"}}>
+                  <span className="mono" style={{fontSize:9.5, color:"var(--ink-4)", minWidth:52}}>{m.id}</span>
+                  <RAGChip rag={m.risk_impact}>{m.risk_impact}</RAGChip>
+                  <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)", minWidth:0, overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis"}}>{m.finding}</span>
+                  <div style={{display:"flex", alignItems:"center", gap:5, flexShrink:0}}>
+                    <div style={{width:70, height:5, background:"var(--line)", borderRadius:3, overflow:"hidden"}}>
+                      <div style={{width:`${barW}%`, height:"100%", background:"var(--green-ink)", borderRadius:3}}/>
+                    </div>
+                    <span className="mono" style={{fontSize:10, color:"var(--green-ink)", minWidth:30, textAlign:"right"}}>−{pct}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginTop:6}}>
+            These projections feed Stage 5 closure scoring · owners and due dates set by velocity — high-velocity items fast-tracked
+          </div>
+        </div>
+      )}
+
       <div className="stage-detail">
         <h5>Action plans</h5>
         <ul>
@@ -1096,6 +1293,32 @@ function S5Body({ output }) {
         <Stat l="Risks unchanged" v={c.risks_unchanged || 0} mono color="var(--ink-3)"/>
         <Stat l="Projected reduction" v={`${c.projected_total_risk_reduction_pct || 0}%`} mono/>
       </div>
+      {/* Closure validation criteria */}
+      <div className="stage-detail">
+        <h5>Closure validation logic</h5>
+        <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11}}>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>CLOSED: </span>
+            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>Evidence confirms success criteria met and control effectiveness sustained — risk removed from active register</span>
+          </div>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--amber-ink)"}}>REDUCED: </span>
+            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>Partial evidence — some success criteria met, residual exposure documented and carried to next cycle</span>
+          </div>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--red-ink)"}}>UNCHANGED: </span>
+            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>Root causes persist or evidence insufficient — escalated for priority treatment in Stage 6 recalibration</span>
+          </div>
+          {(c.projected_total_risk_reduction_pct || 0) > 0 && (
+            <div style={{padding:"6px 10px", background:"var(--green-soft)", borderRadius:5, border:"1px solid color-mix(in oklch, var(--green-ink) 30%, var(--line))"}}>
+              <span className="mono" style={{fontSize:10, color:"var(--green-ink)"}}>Portfolio reduction = </span>
+              <span className="mono" style={{fontSize:10, color:"var(--green-ink)", fontWeight:600}}>{c.projected_total_risk_reduction_pct}%</span>
+              <span style={{fontSize:10, color:"var(--green-ink)", marginLeft:6}}>aggregated across {(c.risks_closed||0) + (c.risks_reduced||0)} closed/mitigated risks — fed to Stage 6 loop health score</span>
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="stage-detail">
         <h5>Evidence summary</h5>
         <ul>
@@ -1150,6 +1373,36 @@ function S6Body({ output }) {
         <Stat l="MAPs open" v={l.maps_open || 0} mono/>
         <Stat l="Next cycle" v={`${l.next_trigger_days || 0}d`} mono/>
       </div>
+      {/* Loop health scoring criteria */}
+      <div className="stage-detail">
+        <h5>Loop health · scoring criteria</h5>
+        <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11}}>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Audit impact score (0–25): </span>
+            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>RAG distribution (10pts) + velocity trend (7pts) + MAP completion rate (8pts)</span>
+          </div>
+          <div style={{display:"flex", gap:6}}>
+            {[["STRONG", "≥ 20/25", "var(--green-ink)", "var(--green-soft)"], ["ADEQUATE", "12–19", "var(--amber-ink)", "var(--amber-soft)"], ["WEAK", "< 12/25", "var(--red-ink)", "var(--red-soft)"]].map(([label, range, ink, bg]) => (
+              <div key={label} style={{flex:1, padding:"6px 10px", background:bg, borderRadius:5, border:`1px solid color-mix(in oklch, ${ink} 25%, var(--line))`}}>
+                <div className="mono" style={{fontSize:9.5, color:ink, fontWeight:600}}>{label}</div>
+                <div style={{fontSize:10.5, color:ink, marginTop:2}}>{range}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Signal weights recalibrated: </span>
+            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>velocity decay factors and CE multipliers updated from observed outcomes — fed back to Stage 1 on next run</span>
+          </div>
+          {l.next_trigger_days > 0 && (
+            <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+              <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Next cycle trigger: </span>
+              <span className="mono" style={{fontSize:10, color:"var(--ink-2)", fontWeight:600}}>{l.next_trigger_days} days</span>
+              {l.next_cycle_focus && <span style={{fontSize:10.5, color:"var(--ink-2)", marginLeft:8}}>· focus: {l.next_cycle_focus}</span>}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="stage-detail">
         <h5>Lessons learned</h5>
         <ul>
