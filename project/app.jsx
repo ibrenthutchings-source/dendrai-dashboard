@@ -89,48 +89,6 @@ function App() {
     } catch {}
   }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds]);
 
-  // ---- Last loop persistence — restore completed run on page reload ----
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("dendrai.lastLoop");
-      if (raw) {
-        const s = JSON.parse(raw);
-        if (s.output)          setOutput(s.output);
-        if (s.stageState)      setStageState(s.stageState);
-        if (s.gateState)       setGateState(s.gateState);
-        if (s.loopLog)         { setLoopLog(s.loopLog); loopLogRef.current = s.loopLog; }
-        if (s.hasRun)          setHasRun(true);
-        if (s.livefacts)       setLivefacts(s.livefacts);
-        if (s.perRiskAppetite) setPerRiskAppetite(s.perRiskAppetite);
-        if (s.riskApprovals)   setRiskApprovals(s.riskApprovals);
-        if (s.scopeApprovals)  setScopeApprovals(s.scopeApprovals);
-        if (s.manualAudits)    { setManualAudits(s.manualAudits); manualAuditsRef.current = s.manualAudits; }
-        if (s.narrativeResult) setNarrativeResult(s.narrativeResult);
-        if (s.openStages)      setOpenStages(new Set(s.openStages));
-      }
-    } catch {}
-  }, []);
-  useEffect(() => {
-    if (!hasRun) return;
-    try {
-      localStorage.setItem("dendrai.lastLoop", JSON.stringify({
-        output,
-        stageState,
-        gateState,
-        loopLog,
-        hasRun,
-        livefacts,
-        perRiskAppetite,
-        riskApprovals,
-        scopeApprovals,
-        manualAudits,
-        narrativeResult,
-        openStages: [...openStages],
-        savedAt: Date.now(),
-      }));
-    } catch {}
-  }, [hasRun, output]);
-
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
   const [liveMode, setLiveMode] = useState(false);
   const [mcpMode, setMcpMode] = useState(false);
@@ -224,6 +182,48 @@ function App() {
   const [scopeApprovals, setScopeApprovals] = useState({});
   const [adjustObjOpen, setAdjustObjOpen] = useState(false);
   const [adjustingObjId, setAdjustingObjId] = useState(null);
+
+  // ---- Last loop persistence — restore completed run on page reload ----
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("dendrai.lastLoop");
+      if (raw) {
+        const s = JSON.parse(raw);
+        if (s.output)          setOutput(s.output);
+        if (s.stageState)      setStageState(s.stageState);
+        if (s.gateState)       setGateState(s.gateState);
+        if (s.loopLog)         { setLoopLog(s.loopLog); loopLogRef.current = s.loopLog; }
+        if (s.hasRun)          setHasRun(true);
+        if (s.livefacts)       setLivefacts(s.livefacts);
+        if (s.perRiskAppetite) setPerRiskAppetite(s.perRiskAppetite);
+        if (s.riskApprovals)   setRiskApprovals(s.riskApprovals);
+        if (s.scopeApprovals)  setScopeApprovals(s.scopeApprovals);
+        if (s.manualAudits)    { setManualAudits(s.manualAudits); manualAuditsRef.current = s.manualAudits; }
+        if (s.narrativeResult) setNarrativeResult(s.narrativeResult);
+        if (s.openStages)      setOpenStages(new Set(s.openStages));
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    if (!hasRun) return;
+    try {
+      localStorage.setItem("dendrai.lastLoop", JSON.stringify({
+        output,
+        stageState,
+        gateState,
+        loopLog,
+        hasRun,
+        livefacts,
+        perRiskAppetite,
+        riskApprovals,
+        scopeApprovals,
+        manualAudits,
+        narrativeResult,
+        openStages: [...openStages],
+        savedAt: Date.now(),
+      }));
+    } catch {}
+  }, [hasRun, output]);
 
   const auditorName = (selectedPersona && selectedPersona !== "Internal Audit") ? selectedPersona : "Internal Audit";
 
