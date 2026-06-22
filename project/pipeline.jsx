@@ -20,13 +20,14 @@ const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
 
 // Insert HITL gates after stages 2 and 3
 function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts,
-                    liveRssSignals, rssLastUpdated, rssRefreshing,
+                    liveRssSignals, rssLastUpdated, rssRefreshing, rssRunProgress, rssFeeds,
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
                     riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
+  const s1Extra = { rssRunProgress, rssFeeds: rssFeeds || [] };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
     appetiteLevel, appetiteThreshold: threshold,
@@ -63,6 +64,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               output={output[s.id]}
               signals={signals}
               livefacts={livefacts}
+              s1Extra={s.id === "s1" ? s1Extra : null}
               s2Extra={s.id === "s2" ? s2Extra : null}
               s3Extra={s.id === "s3" ? s3Extra : null}
             />
@@ -119,7 +121,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
   );
 }
 
-function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s2Extra, s3Extra }) {
+function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1Extra, s2Extra, s3Extra }) {
   const statusCls = status === "running" ? "running" : status === "done" ? "done" : "";
   const pill =
     status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
@@ -140,7 +142,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s2
       </div>
       {isOpen && (
         <div className="stage-body">
-          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s2Extra={s2Extra} s3Extra={s3Extra}/>
+          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra}/>
         </div>
       )}
     </div>
@@ -191,7 +193,7 @@ function HITLGate({ num, state, onApprove, onOverride }) {
 }
 
 // ------ Stage body content ------
-function StageBody({ id, status, output, signals, livefacts, s2Extra, s3Extra }) {
+function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s3Extra }) {
   const trace = output?.trace;
   if (status === "idle") {
     return <Empty>Awaiting run — toggle signal sources in the sidebar and press Run Loop.</Empty>;
@@ -200,6 +202,9 @@ function StageBody({ id, status, output, signals, livefacts, s2Extra, s3Extra })
     return <Empty>Awaiting gate approval — review and confirm the previous stage before this one runs.</Empty>;
   }
   if (status === "running") {
+    if (id === "s1" && s1Extra?.rssRunProgress) {
+      return <S1RunningBody rssRunProgress={s1Extra.rssRunProgress} rssFeeds={s1Extra.rssFeeds || []}/>;
+    }
     return (
       <div className="stage-detail">
         <span className="spin"/> Stage running… synthesizing structured output.
@@ -237,6 +242,43 @@ function StageTrace({ trace }) {
       {renderList("Decisions", trace.decisions)}
       {renderList("Obstacles", trace.obstacles)}
       {trace.conclusion ? <div className="stage-trace-summary"><strong>Conclusion:</strong> {trace.conclusion}</div> : null}
+    </div>
+  );
+}
+
+function S1RunningBody({ rssRunProgress, rssFeeds }) {
+  return (
+    <div className="stage-detail">
+      <div style={{display:"flex", alignItems:"center", gap:8, marginBottom:10}}>
+        <span className="spin"/>
+        <span style={{fontSize:11.5, color:"var(--ink-2)"}}>Stage 1 running — {rssRunProgress.msg}</span>
+      </div>
+      {rssFeeds.length > 0 && (
+        <>
+          <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginBottom:5, letterSpacing:"0.06em"}}>RSS FEED INGESTION</div>
+          <div style={{display:"flex", gap:5, flexWrap:"wrap"}}>
+            {rssFeeds.map(f => {
+              const done   = rssRunProgress.feedsDone.includes(f.id);
+              const active = !done && rssRunProgress.msg.includes(f.name);
+              return (
+                <span key={f.id} className="mono" style={{
+                  fontSize: 10, padding: "3px 8px", borderRadius: 4,
+                  border: "1px solid var(--line)",
+                  background: done   ? "var(--green-soft)"
+                             : active ? "var(--amber-soft)"
+                             : "var(--surface-2, var(--surface))",
+                  color: done   ? "var(--green-ink)"
+                       : active ? "var(--amber-ink)"
+                       : "var(--ink-4)",
+                  transition: "background 0.2s, color 0.2s",
+                }}>
+                  {f.name}{done ? " ✓" : active ? " ⟳" : ""}
+                </span>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }

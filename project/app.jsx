@@ -627,17 +627,27 @@ function App() {
     } else {
       // ── Live JS mode or Mock mode ─────────────────────────────────────────────
 
-      // RSS ingest (live fetch when liveMode, else simulate)
+      // RSS ingest — live fetch only, no simulation fallback
       if (signalSet.has("industry")) {
         try {
-          log(liveMode ? "Fetching live RSS signals…" : "Generating simulated RSS signals…");
-          const ingestResult = await RSS_ENGINE.ingestAll({ simulate: !liveMode });
+          log("Fetching live RSS signals…");
+          const feedsDoneRef = [];
+          setRssRunProgress({ msg: "Starting…", feedsDone: [] });
+          const ingestResult = await RSS_ENGINE.ingestAll({
+            enabledFeedIds: rssEnabledFeeds,
+            onProgress: (msg, feedId, done) => {
+              if (done && feedId) feedsDoneRef.push(feedId);
+              setRssRunProgress({ msg, feedsDone: [...feedsDoneRef] });
+            },
+          });
+          setRssRunProgress(null);
           const freshSigs = RSS_ENGINE.toSignals(ingestResult);
           currentRssSignals = freshSigs;
           setRssSignals(freshSigs);
           setRssLastUpdated(Date.now());
-          log(`RSS: ${freshSigs.length} signals graded`);
+          log(`RSS: ${freshSigs.length} signals graded from ${ingestResult.filter(r => r.fetchStatus === "ok").length} live feeds`);
         } catch(e) {
+          setRssRunProgress(null);
           log(`RSS ingest: ${e.message || "using prior signals"}`);
         }
       }
@@ -1124,7 +1134,9 @@ function App() {
                 liveMode={liveMode} setLiveMode={setLiveMode}
                 mcpMode={mcpMode} setMcpMode={setMcpMode}
                 liveStatus={liveStatus}
-                lastSaved={lastSaved} />
+                lastSaved={lastSaved}
+                rssEnabledFeeds={rssEnabledFeeds}
+                setRssEnabledFeeds={setRssEnabledFeeds} />
             </div>
           )}
 
@@ -1188,6 +1200,8 @@ function App() {
                 liveRssSignals={rssSignals}
                 rssLastUpdated={rssLastUpdated}
                 rssRefreshing={rssRefreshing}
+                rssRunProgress={rssRunProgress}
+                rssFeeds={RSS_ENGINE.FEEDS.filter(f => rssEnabledFeeds.includes(f.id))}
                 appetiteLevel={cfg.appetiteLevel || "AMBER"}
                 appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
                 perRiskAppetite={perRiskAppetite}
@@ -1211,7 +1225,7 @@ function App() {
             )}
             {activePipeTab === "rss" && (
               <RSSPanel
-                liveMode={liveMode}
+                enabledFeedIds={rssEnabledFeeds}
                 onSignalsReady={(sigs) => {
                   setRssSignals(sigs);
                   log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
