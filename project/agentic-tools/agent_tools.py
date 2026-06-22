@@ -81,13 +81,39 @@ def _eightk_events(inp: dict) -> Any:
 
 def _peers(inp: dict) -> Any:
     ticker = (inp.get("ticker") or "").upper()
-    meta, _ = get_company_info(ticker)
-    peers = fetch_sic_peers(meta.get("sic", ""), max_peers=int(inp.get("max_peers", 10)))
+    meta, sub = get_company_info(ticker)
+    sic = meta.get("sic", "")
+
+    # Primary: 10-K-named competitors (Claude NLP + EDGAR resolution)
+    peer_source = "10-K named competitors"
+    named: list = []
+    peers: list = []
+    try:
+        import peer_intel
+        named = peer_intel.extract_competitor_names(ticker, meta, sub)
+        if named:
+            peers = peer_intel.resolve_names_to_edgar(named, exclude_cik=meta.get("cik_plain", ""))
+    except Exception as exc:
+        logger.debug("peer_intel extraction failed: %s", exc)
+
+    # Fallback: SIC peers when fewer than 3 resolved
+    if len(peers) < 3:
+        peer_source = "SIC peers" if not peers else "mixed (10-K + SIC)"
+        sic_peers = fetch_sic_peers(sic, max_peers=int(inp.get("max_peers", 10)))
+        existing_ciks = {p.get("cik_plain") for p in peers}
+        for p in sic_peers:
+            if p.get("cik_plain") not in existing_ciks:
+                peers.append(p)
+            if len(peers) >= int(inp.get("max_peers", 10)):
+                break
+
     return {
         "ticker": ticker,
-        "sic": meta.get("sic"),
+        "sic": sic,
         "sic_description": meta.get("sic_description"),
-        "peers": peers,
+        "peer_source": peer_source,
+        "named_competitors": named,
+        "peers": peers[:int(inp.get("max_peers", 10))],
     }
 
 

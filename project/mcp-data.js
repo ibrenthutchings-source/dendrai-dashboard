@@ -420,9 +420,89 @@ window.MCP = (function () {
     return _postAi('/agent/investigate', { ticker, run_id: runId, focus });
   }
 
+  /**
+   * #1b — Streaming investigation agent via SSE.
+   * Calls onEvent(event) for each SSE event:
+   *   { type: "tool_call",   tool, input, iteration }
+   *   { type: "tool_result", tool, result_preview, is_error, iteration }
+   *   { type: "done",        final_text, iterations, stopped }
+   *   { type: "error",       message }
+   * Returns a Promise that resolves to the final { final_text, tool_calls, iterations } object.
+   */
+  async function agentInvestigateStream(ticker, focus = '', runId = null, onEvent = () => {}) {
+    const res = await fetch(BASE + '/agent/investigate/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker, run_id: runId, focus }),
+      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP /agent/investigate/stream: ${res.status} — ${detail}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const toolCalls = [];
+    let finalEvent = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop(); // keep incomplete line
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const event = JSON.parse(line.slice(6));
+          onEvent(event);
+          if (event.type === 'tool_call') toolCalls.push({ tool: event.tool, input: event.input });
+          if (event.type === 'done') finalEvent = event;
+        } catch {}
+      }
+    }
+    if (!finalEvent) throw new Error('Stream ended without a done event');
+    return { final_text: finalEvent.final_text, tool_calls: toolCalls,
+             iterations: finalEvent.iterations, stopped: finalEvent.stopped };
+  }
+
   /** Read back persisted AI analyses for a run. */
   function fetchAiAnalyses(runId, kind = '') {
     return _get(`/history/runs/${runId}/ai-analyses${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`);
+  }
+
+  /** Aggregate token usage and estimated cost for all AI calls in a run. */
+  function fetchRunTokenCost(runId) {
+    return _get(`/history/runs/${runId}/token-cost`);
+  }
+
+  /** #4b — Loop calibration AI assist (Gate 3). */
+  function aiLoopCalibrate(ticker, { loopStats = {}, risksFinal = [], risksInitial = [], hitlOverrideRate = 0, lessonsLearned = [] } = {}, runId = null) {
+    return _postAi('/ai/loop-calibrate', {
+      ticker, run_id: runId,
+      loop_stats: loopStats,
+      risks_final: risksFinal,
+      risks_initial: risksInitial,
+      hitl_override_rate: hitlOverrideRate,
+      lessons_learned: lessonsLearned,
+    });
+  }
+
+  /** Provision (or reuse) a Managed Agent + scheduled Deployment for a ticker. */
+  function agentScheduleProvision(ticker, cron = '0 8 * * 1', mcpUrl = '') {
+    return _postAi('/agent/schedule', { ticker, cron, mcp_url: mcpUrl });
+  }
+
+  /** Trigger an immediate run of the existing scheduled deployment. */
+  function agentScheduleRunNow(ticker) {
+    return _postAi('/agent/schedule/run-now', { ticker });
+  }
+
+  /** List recent scheduled runs for a ticker's deployment. */
+  function agentScheduleStatus(ticker) {
+    return _get(`/agent/schedule/status/${encodeURIComponent(ticker)}`);
   }
 
   // ── Compliance RSS ingest (server-side cached) ───────────────────────────────
@@ -470,15 +550,22 @@ window.MCP = (function () {
     fetchPeerBenchmarks,
     enrichRisksFromFactors,
     map8kToCemEvents,
-    // AI-augmented (#1–#4)
+    // AI-augmented (#1–#4b)
     aiEnabled,
     aiGate1Recommend,
     aiGate2Recommend,
     aiNarrative,
     aiPersonaBrief,
     aiAuditReport,
+    aiLoopCalibrate,
     agentInvestigate,
+    agentInvestigateStream,
     fetchAiAnalyses,
+    fetchRunTokenCost,
+    // Scheduled Managed Agent (#2b)
+    agentScheduleProvision,
+    agentScheduleRunNow,
+    agentScheduleStatus,
     // Compliance RSS ingest
     ingestRssFeeds,
     fetchRssFeedStatus,

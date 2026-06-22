@@ -351,3 +351,110 @@ def run_tool_loop(
         "iterations": iterations,
         "stopped": stopped,
     }
+
+
+def run_tool_loop_streaming(
+    system: str,
+    user: str,
+    tools: list[dict],
+    tool_impls: dict[str, Callable[[dict], Any]],
+    *,
+    label: str = "agent",
+    effort: str = "high",
+    max_tokens: int = 8000,
+    max_iterations: int = 12,
+    model: Optional[str] = None,
+):
+    """
+    Like run_tool_loop but yields SSE-style JSON events as the agent progresses.
+
+    Yield types:
+      {"type": "tool_call",   "tool": name, "input": {...}, "iteration": n}
+      {"type": "tool_result", "tool": name, "result_preview": str, "is_error": bool, "iteration": n}
+      {"type": "done",        "final_text": str, "iterations": n, "stopped": str}
+      {"type": "error",       "message": str}
+    """
+    import json as _json
+    client = get_client()
+    if client is None:
+        yield {"type": "error", "message": "Claude client unavailable (set ANTHROPIC_API_KEY)"}
+        return
+    model = model or MODEL
+
+    cached_tools = [dict(t) for t in tools]
+    if cached_tools:
+        cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
+
+    messages: list[dict] = [{"role": "user", "content": user}]
+    tool_calls: list[dict] = []
+    iterations = 0
+    stopped = "max_iterations"
+
+    while iterations < max_iterations:
+        iterations += 1
+        try:
+            message = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                thinking={"type": "adaptive"},
+                output_config={"effort": effort},
+                system=_system_blocks(system),
+                tools=cached_tools,
+                messages=messages,
+            )
+        except Exception as exc:
+            yield {"type": "error", "message": str(exc)}
+            return
+        _record_cost(message, f"{label}:{iterations}", model)
+
+        if message.stop_reason == "pause_turn":
+            messages.append({"role": "assistant", "content": message.content})
+            continue
+        if message.stop_reason != "tool_use":
+            stopped = message.stop_reason or "end_turn"
+            messages.append({"role": "assistant", "content": message.content})
+            break
+
+        messages.append({"role": "assistant", "content": message.content})
+        results = []
+        for block in message.content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            name, tool_input = block.name, block.input or {}
+            yield {"type": "tool_call", "tool": name, "input": tool_input, "iteration": iterations}
+            impl = tool_impls.get(name)
+            try:
+                if impl is None:
+                    raise KeyError(f"unknown tool {name}")
+                output = impl(tool_input)
+                is_error = False
+            except Exception as exc:
+                output = {"error": str(exc)}
+                is_error = True
+            tool_calls.append({"tool": name, "input": tool_input, "is_error": is_error})
+            preview = _json.dumps(output, default=str)[:300]
+            yield {"type": "tool_result", "tool": name, "result_preview": preview,
+                   "is_error": is_error, "iteration": iterations}
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": _json.dumps(output, default=str)[:60_000],
+                "is_error": is_error,
+            })
+        messages.append({"role": "user", "content": results})
+
+    # Recover final text
+    final_text = ""
+    for m in reversed(messages):
+        if m["role"] == "assistant":
+            content = m["content"]
+            if isinstance(content, list):
+                final_text = "".join(
+                    getattr(b, "text", "") for b in content if getattr(b, "type", None) == "text"
+                )
+            elif isinstance(content, str):
+                final_text = content
+            if final_text:
+                break
+
+    yield {"type": "done", "final_text": final_text, "iterations": iterations, "stopped": stopped}

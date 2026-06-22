@@ -274,24 +274,46 @@ function ConfigScreen({
   );
 }
 
-// #1 — Tool-use investigation agent. Claude decides which EDGAR/FRED/RSS/quant
-// tools to call, then returns an investigation memo. Self-contained; runs against
-// the bridge's /agent/investigate endpoint (requires ANTHROPIC_API_KEY there).
+// #1 — Tool-use investigation agent. Uses SSE streaming endpoint so each tool
+// call result appears live in the UI rather than waiting for the full response.
 function InvestigationCard({ ticker }) {
   const [focus, setFocus] = useState("");
   const [state, setState] = useState({ loading: false, error: null, result: null });
-  const aiAvailable = typeof window !== "undefined" && window.MCP?.agentInvestigate;
+  const [trace, setTrace] = useState([]); // live tool-call events
+  const aiAvailable = typeof window !== "undefined" && (window.MCP?.agentInvestigateStream || window.MCP?.agentInvestigate);
+  const hasStream = typeof window !== "undefined" && window.MCP?.agentInvestigateStream;
 
   async function run() {
     if (!aiAvailable || !ticker) return;
     setState({ loading: true, error: null, result: null });
+    setTrace([]);
     try {
-      const res = await window.MCP.agentInvestigate(ticker, focus, null);
+      let res;
+      if (hasStream) {
+        res = await window.MCP.agentInvestigateStream(ticker, focus, null, (event) => {
+          if (event.type === "tool_call") {
+            setTrace(prev => [...prev, { kind: "call", tool: event.tool, iteration: event.iteration }]);
+          } else if (event.type === "tool_result") {
+            setTrace(prev => [...prev, { kind: "result", tool: event.tool, preview: event.result_preview, isError: event.is_error, iteration: event.iteration }]);
+          }
+        });
+      } else {
+        res = await window.MCP.agentInvestigate(ticker, focus, null);
+      }
       setState({ loading: false, error: null, result: res });
     } catch (e) {
       setState({ loading: false, error: e.message || "AI unavailable", result: null });
     }
   }
+
+  const TOOL_LABELS = {
+    get_financials:    "Fetching EDGAR financials",
+    get_risk_factors:  "Reading 10-K risk factors",
+    get_8k_events:     "Scanning 8-K events",
+    get_peers:         "Benchmarking peers",
+    get_industry_news: "Ingesting industry RSS",
+    run_quant_models:  "Running quant models",
+  };
 
   return (
     <ConfigCard title="Investigation Agent" sub="Claude investigates the company like an auditor — pulls filings, peers, and quant models, then writes a memo.">
@@ -305,8 +327,26 @@ function InvestigationCard({ ticker }) {
             placeholder={`Optional focus (e.g. "margin trend", "8-K events") for ${ticker || "entity"}`}
             style={{width: "100%", marginBottom: 8, fontSize: 12}}/>
           <button className="btn btn-sm" style={{width: "100%"}} onClick={run} disabled={state.loading || !ticker}>
-            <Icon name="spark" size={11}/> {state.loading ? "Investigating… (may take 1–3 min)" : "Run investigation"}
+            <Icon name="spark" size={11}/> {state.loading ? "Investigating…" : "Run investigation"}
           </button>
+
+          {/* Live thinking trace (streaming) */}
+          {state.loading && trace.length > 0 && (
+            <div style={{marginTop: 8, background:"var(--surface-2)", border:"1px solid var(--line)",
+              borderRadius: 6, padding:"8px 10px", maxHeight: 180, overflowY: "auto"}}>
+              <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginBottom:5, letterSpacing:"0.06em"}}>AGENT TRACE</div>
+              {trace.map((t, i) => (
+                <div key={i} style={{display:"flex", gap:6, padding:"3px 0", fontSize:10.5,
+                  color: t.kind === "result" && t.isError ? "var(--red-ink)" : t.kind === "result" ? "var(--green-ink)" : "var(--acc-ink)"}}>
+                  <span className="mono" style={{flexShrink:0, fontSize:9.5, opacity:0.7}}>i{t.iteration}</span>
+                  <span className="mono" style={{flexShrink:0}}>{t.kind === "call" ? "→" : "←"}</span>
+                  <span>{t.kind === "call" ? (TOOL_LABELS[t.tool] || t.tool) : t.tool + (t.isError ? " error" : " ✓")}</span>
+                </div>
+              ))}
+              {state.loading && <div style={{display:"flex", gap:6, marginTop:4}}><span className="spin" style={{width:10,height:10,borderWidth:1.5}}/><span style={{fontSize:10.5, color:"var(--ink-3)"}}>thinking…</span></div>}
+            </div>
+          )}
+
           {state.error && (
             <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 8}}>
               {state.error}

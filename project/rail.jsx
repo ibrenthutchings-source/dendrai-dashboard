@@ -54,7 +54,7 @@ function Rail({
         {activeTab === "fcst"  && <ForecastsPanel data={forecasts} liveMode={liveMode} livefacts={livefacts} fredSeries={fredSeries} rssSignals={rssSignals} industry={industry} ticker={ticker}/>}
         {activeTab === "scen"  && <ScenariosPanel scenarios={scenarios} greySwan={greySwan}/>}
         {activeTab === "map"   && <MapsTab      maps={maps}/>}
-        {activeTab === "loop"  && <LoopTab      loop={loop}/>}
+        {activeTab === "loop"  && <LoopTab      loop={loop} ticker={ticker} risks={risks} loopStats={loopStats} runId={runId}/>}
         {activeTab === "notif" && <NotifTab     log={notifLog}/>}
         {activeTab === "pers"  && <PersonaTab   personas={personas} selected={selectedPersona} setSelected={setSelectedPersona}
                                                 ticker={ticker} risks={risks} loopStats={loopStats} runId={runId}/>}
@@ -231,21 +231,77 @@ const LOOP_CADENCES = [
   { id: "quarterly", label: "Quarterly", cron: "0 8 1 1,4,7,10 *", desc: "Jan / Apr / Jul / Oct" },
 ];
 
-function LoopTab({ loop }) {
+function LoopTab({ loop, ticker = "", risks = [], loopStats = {}, runId = null }) {
   const [schedOpen, setSchedOpen] = useState(false);
   const [cadence, setCadence]     = useState("monthly");
   const [copied, setCopied]       = useState(false);
+  const [schedState, setSchedState] = useState({ loading: false, error: null, result: null });
+  const [runNowState, setRunNowState] = useState({ loading: false, error: null, result: null });
+  const [calibState, setCalibState] = useState({ loading: false, error: null, result: null });
+  const [costData, setCostData]     = useState(null);
+  const aiAvailableCalib = typeof window !== "undefined" && window.MCP?.aiLoopCalibrate;
+  const canFetchCost = typeof window !== "undefined" && window.MCP?.fetchRunTokenCost;
+
+  // Fetch session cost whenever runId becomes available
+  React.useEffect(() => {
+    if (!runId || !canFetchCost) return;
+    window.MCP.fetchRunTokenCost(runId)
+      .then(d => setCostData(d))
+      .catch(() => {});
+  }, [runId]);
 
   if (!loop || !loop.risk_reduction_pct) return <Empty>Loop calibration populates after Stage 6.</Empty>;
 
   const sel = LOOP_CADENCES.find(c => c.id === cadence);
   const focusText = loop.next_cycle_focus || "Re-run Dendrai risk loop, re-score all risks, flag velocity-3 breaches and RAG changes, post summary.";
   const schedCmd  = `/schedule "${focusText}" --cron "${sel.cron}"`;
+  const mcpAvailable = typeof window !== "undefined" && window.MCP?.agentScheduleProvision;
 
   function copyCmd() {
     navigator.clipboard?.writeText(schedCmd).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function runCalibrate() {
+    if (!aiAvailableCalib || !ticker) return;
+    setCalibState({ loading: true, error: null, result: null });
+    try {
+      const overrideRate = loop.hitl_override_count != null && loop.hitl_total_count
+        ? loop.hitl_override_count / loop.hitl_total_count : 0;
+      const res = await window.MCP.aiLoopCalibrate(ticker, {
+        loopStats: { ...loopStats, ...loop },
+        risksFinal: risks,
+        risksInitial: [],
+        hitlOverrideRate: overrideRate,
+        lessonsLearned: loop.lessons_learned || [],
+      }, runId);
+      setCalibState({ loading: false, error: null, result: res });
+    } catch (e) {
+      setCalibState({ loading: false, error: e.message || "AI unavailable", result: null });
+    }
+  }
+
+  async function provisionAgent() {
+    if (!mcpAvailable || !ticker) return;
+    setSchedState({ loading: true, error: null, result: null });
+    try {
+      const res = await window.MCP.agentScheduleProvision(ticker, sel.cron);
+      setSchedState({ loading: false, error: null, result: res });
+    } catch (e) {
+      setSchedState({ loading: false, error: e.message || "Provisioning failed", result: null });
+    }
+  }
+
+  async function runNow() {
+    if (!mcpAvailable || !ticker) return;
+    setRunNowState({ loading: true, error: null, result: null });
+    try {
+      const res = await window.MCP.agentScheduleRunNow(ticker);
+      setRunNowState({ loading: false, error: null, result: res });
+    } catch (e) {
+      setRunNowState({ loading: false, error: e.message || "Run trigger failed", result: null });
+    }
   }
 
   return (
@@ -280,6 +336,106 @@ function LoopTab({ loop }) {
           </div>
         ))}
       </div>
+
+      {/* ── Loop Calibration AI Assist (Gate 3) ── */}
+      {aiAvailableCalib && (
+        <div style={{marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 14}}>
+          <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: calibState.result ? 12 : 0}}>
+            <div className="sec-lbl" style={{marginBottom: 0}}>AI Calibration Assist</div>
+            <button className="btn btn-sm" onClick={runCalibrate} disabled={calibState.loading || !ticker}>
+              <Icon name="spark" size={10}/>
+              {calibState.loading ? "Calibrating…" : calibState.result ? "Regenerate" : "Calibrate with AI"}
+            </button>
+          </div>
+          {calibState.error && (
+            <div className="mono" style={{fontSize:10.5, color:"var(--red-ink)", marginTop:6}}>{calibState.error}</div>
+          )}
+          {calibState.result && (
+            <div style={{marginTop: 8}}>
+              {calibState.result.summary && (
+                <div style={{fontSize:11.5, color:"var(--ink-2)", lineHeight:1.55,
+                  background:"var(--surface)", border:"1px solid var(--line)", borderRadius:6,
+                  padding:"8px 12px", marginBottom:10}}>
+                  {calibState.result.summary}
+                </div>
+              )}
+              <div style={{display:"flex", gap:6, marginBottom:10, alignItems:"center"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--ink-4)"}}>RECOMMENDED FREQUENCY</span>
+                <span className="mono" style={{fontSize:11, fontWeight:600, color:"var(--acc-ink)"}}>
+                  {calibState.result.recommended_frequency?.toUpperCase()}
+                </span>
+              </div>
+              {(calibState.result.next_cycle_focus_risks || []).length > 0 && (
+                <>
+                  <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginBottom:4, letterSpacing:"0.06em"}}>NEXT CYCLE FOCUS</div>
+                  {calibState.result.next_cycle_focus_risks.map((r, i) => (
+                    <div key={i} style={{display:"flex", gap:8, padding:"5px 0", fontSize:11, color:"var(--ink-2)", borderBottom:"1px dashed var(--line)"}}>
+                      <span className="mono" style={{color:"var(--acc-ink)", flexShrink:0}}>{r.risk_ref}</span>
+                      <span>{r.reason}</span>
+                    </div>
+                  ))}
+                </>
+              )}
+              {(calibState.result.tune_for_next_cycle || []).length > 0 && (
+                <div style={{marginTop:10}}>
+                  <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginBottom:4, letterSpacing:"0.06em"}}>TUNE FOR NEXT CYCLE</div>
+                  {calibState.result.tune_for_next_cycle.map((t, i) => (
+                    <div key={i} style={{padding:"5px 0", borderBottom:"1px dashed var(--line)"}}>
+                      <div style={{fontSize:11, fontWeight:600, color:"var(--ink-1)"}}>{t.area}</div>
+                      <div style={{fontSize:11, color:"var(--ink-2)", marginTop:2}}>{t.recommendation}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(calibState.result.drift_indicators || []).length > 0 && (
+                <div style={{marginTop:10}}>
+                  <div className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", marginBottom:4, letterSpacing:"0.06em"}}>DRIFT INDICATORS</div>
+                  {calibState.result.drift_indicators.map((d, i) => (
+                    <div key={i} style={{fontSize:11, color:"var(--amber-ink)", padding:"3px 0"}}>{d}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Session AI Cost ── */}
+      {costData && (costData.total_cost_usd > 0 || costData.total_input_tokens > 0) && (
+        <div style={{marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 14}}>
+          <div className="sec-lbl">Session AI Cost</div>
+          <div style={{display:"flex", gap:8, marginTop:8, marginBottom: costData.by_kind?.length ? 10 : 0, flexWrap:"wrap"}}>
+            <div style={{background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius:6, padding:"6px 10px", flex:1}}>
+              <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)"}}>TOTAL COST</div>
+              <div className="mono" style={{fontSize:13, fontWeight:600, color:"var(--acc-ink)", marginTop:2}}>
+                ${costData.total_cost_usd < 0.01
+                  ? costData.total_cost_usd.toFixed(5)
+                  : costData.total_cost_usd.toFixed(4)}
+              </div>
+            </div>
+            <div style={{background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius:6, padding:"6px 10px", flex:1}}>
+              <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)"}}>TOKENS IN / OUT</div>
+              <div className="mono" style={{fontSize:11, fontWeight:600, color:"var(--ink-1)", marginTop:2}}>
+                {(costData.total_input_tokens || 0).toLocaleString()} / {(costData.total_output_tokens || 0).toLocaleString()}
+              </div>
+            </div>
+          </div>
+          {(costData.by_kind || []).length > 0 && (
+            <div>
+              {costData.by_kind.map((k, i) => (
+                <div key={i} style={{display:"flex", gap:6, padding:"4px 0", fontSize:10.5,
+                  borderBottom:"1px dashed var(--line)", alignItems:"center"}}>
+                  <span className="mono" style={{flex:1, color:"var(--ink-2)"}}>{k.kind}</span>
+                  <span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{k.calls} call{k.calls !== 1 ? "s" : ""}</span>
+                  <span className="mono" style={{fontSize:10, color:"var(--ink-3)", minWidth:60, textAlign:"right"}}>
+                    {k.cost_usd > 0 ? `$${k.cost_usd.toFixed(4)}` : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Schedule panel ── */}
       <div style={{marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 14}}>
@@ -317,21 +473,71 @@ function LoopTab({ loop }) {
               {focusText}
             </div>
 
-            {/* generated command */}
-            <div className="mono" style={{fontSize: 9.5, color:"var(--ink-3)",
-              padding:"6px 9px", background:"var(--surface)", border:"1px solid var(--line)",
-              borderRadius: 6, wordBreak:"break-all", lineHeight: 1.65, marginBottom: 10}}>
-              {schedCmd}
-            </div>
-
-            <button className="btn btn-sm" style={{width:"100%"}} onClick={copyCmd}>
-              <Icon name={copied ? "check" : "download"} size={11}/>
-              {copied ? "Copied to clipboard" : "Copy /schedule command"}
-            </button>
-
-            <div style={{fontSize: 10.5, color:"var(--ink-3)", marginTop: 10, lineHeight: 1.55}}>
-              Paste into the Claude Code terminal to register a recurring cloud agent that re-runs the loop automatically.
-            </div>
+            {/* Provision via MCP bridge (primary) or copy CLI command (fallback) */}
+            {mcpAvailable ? (
+              <>
+                <div style={{display:"flex", gap: 6, marginBottom: 8}}>
+                  <button className="btn btn-sm btn-primary" style={{flex: 1}}
+                    onClick={provisionAgent} disabled={schedState.loading || !ticker}>
+                    <Icon name="bolt" size={11}/>
+                    {schedState.loading ? "Provisioning…" : schedState.result ? "Re-provision" : "Provision agent"}
+                  </button>
+                  {schedState.result && (
+                    <button className="btn btn-sm" style={{flex: 1}}
+                      onClick={runNow} disabled={runNowState.loading}>
+                      <Icon name="spark" size={11}/>
+                      {runNowState.loading ? "Triggering…" : "Run now"}
+                    </button>
+                  )}
+                </div>
+                {schedState.error && (
+                  <div className="mono" style={{fontSize:10.5, color:"var(--red-ink)", marginBottom:8}}>{schedState.error}</div>
+                )}
+                {schedState.result && (
+                  <div className="mono" style={{fontSize:10, color:"var(--green-ink)", marginBottom:8, lineHeight:1.55}}>
+                    {schedState.result.status === "ok"
+                      ? `Agent provisioned · deployment ${schedState.result.deployment_id?.slice(0, 12)}…`
+                      : schedState.result.message || "Provisioned"}
+                  </div>
+                )}
+                {runNowState.result && (
+                  <div className="mono" style={{fontSize:10, color:"var(--acc-ink)", marginBottom:8}}>
+                    Run triggered · session {runNowState.result.session_id?.slice(0, 16)}…
+                  </div>
+                )}
+                {runNowState.error && (
+                  <div className="mono" style={{fontSize:10.5, color:"var(--red-ink)", marginBottom:8}}>{runNowState.error}</div>
+                )}
+                <div style={{borderTop:"1px dashed var(--line)", paddingTop:8, marginTop:4}}>
+                  <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginBottom:6}}>OR PASTE INTO CLAUDE CODE TERMINAL</div>
+                  <div className="mono" style={{fontSize: 9.5, color:"var(--ink-3)",
+                    padding:"6px 9px", background:"var(--surface)", border:"1px solid var(--line)",
+                    borderRadius: 6, wordBreak:"break-all", lineHeight: 1.65, marginBottom: 8}}>
+                    {schedCmd}
+                  </div>
+                  <button className="btn btn-sm btn-ghost" style={{width:"100%"}} onClick={copyCmd}>
+                    <Icon name={copied ? "check" : "download"} size={11}/>
+                    {copied ? "Copied" : "Copy /schedule command"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* generated command */}
+                <div className="mono" style={{fontSize: 9.5, color:"var(--ink-3)",
+                  padding:"6px 9px", background:"var(--surface)", border:"1px solid var(--line)",
+                  borderRadius: 6, wordBreak:"break-all", lineHeight: 1.65, marginBottom: 10}}>
+                  {schedCmd}
+                </div>
+                <button className="btn btn-sm" style={{width:"100%"}} onClick={copyCmd}>
+                  <Icon name={copied ? "check" : "download"} size={11}/>
+                  {copied ? "Copied to clipboard" : "Copy /schedule command"}
+                </button>
+                <div style={{fontSize: 10.5, color:"var(--ink-3)", marginTop: 10, lineHeight: 1.55}}>
+                  Paste into the Claude Code terminal to register a recurring cloud agent that re-runs the loop automatically.
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

@@ -731,6 +731,15 @@ def history_ai_analyses(run_id: int, kind: str = Query(default="")):
     return {"run_id": run_id, "kind": kind or "all", "count": len(rows), "analyses": rows}
 
 
+@app.get("/history/runs/{run_id}/token-cost")
+def history_token_cost(run_id: int):
+    """Aggregate token usage and estimated cost for all AI calls in a run."""
+    if not db.is_available():
+        return {"run_id": run_id, "total_cost_usd": 0.0, "total_input_tokens": 0,
+                "total_output_tokens": 0, "by_kind": [], "db_unavailable": True}
+    return db.get_run_token_cost(run_id)
+
+
 @app.get("/history/runs/{ticker}/{run_id}")
 def history_run_detail(ticker: str, run_id: int):
     """Full detail for a single run including risk scores and Beneish M-Score."""
