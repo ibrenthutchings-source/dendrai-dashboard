@@ -16,37 +16,41 @@ const GOV_TABS = [
 function ProxySection({ text }) {
   if (!text) return <div className="gov-empty">No data extracted from filing.</div>;
 
-  const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
   const bulletPat = /^([•·▪\-\*]|\d+[\.\)])\s+/;
-  const hasBullets = lines.filter(l => l.length > 15).some(l => bulletPat.test(l));
 
+  // Prefer paragraph-level splits (double newline) — each paragraph is a
+  // coherent unit of legal text. Sentence-splitting breaks on abbreviations.
+  let chunks = text.split(/\n{2,}/).map(c => c.replace(/\n/g, " ").trim()).filter(c => c.length > 30);
+
+  // Fall back to single-newline lines if the text has no paragraph structure
+  if (chunks.length <= 1) {
+    chunks = text.split(/\n/).map(c => c.trim()).filter(c => c.length > 20);
+  }
+
+  // If lines already carry explicit bullet markers, merge continuation lines
+  const hasBullets = chunks.some(c => bulletPat.test(c));
   let items;
   if (hasBullets) {
     items = [];
     let cur = null;
-    for (const line of lines) {
-      if (bulletPat.test(line)) {
+    for (const chunk of chunks) {
+      if (bulletPat.test(chunk)) {
         if (cur !== null) items.push(cur.trim());
-        cur = line.replace(bulletPat, "");
+        cur = chunk.replace(bulletPat, "");
       } else if (cur !== null) {
-        cur += " " + line;
-      } else if (line.length > 30) {
-        items.push(line);
+        cur += " " + chunk;
+      } else if (chunk.length > 30) {
+        items.push(chunk);
       }
     }
     if (cur !== null) items.push(cur.trim());
   } else {
-    const full = lines.join(" ");
-    items = full
-      .split(/\.\s+(?=[A-Z"'])/)
-      .map(s => s.trim())
-      .filter(s => s.length > 30)
-      .map(s => (s.endsWith(".") ? s : s + "."));
+    items = chunks;
   }
 
   return (
     <ul className="gov-bullet-list">
-      {items.slice(0, 14).map((item, i) => (
+      {items.slice(0, 10).map((item, i) => (
         <li key={i} className="gov-bullet-item">{item}</li>
       ))}
     </ul>
