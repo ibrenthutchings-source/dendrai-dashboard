@@ -14,7 +14,9 @@ Endpoints:
     POST /edgar/8k-events             Material 8-K events
     POST /edgar/peers                 SIC peer companies
     POST /edgar/proxy                 DEF 14A proxy governance sections
-    POST /rss/news                    Industry RSS feed analysis
+    POST /rss/news                    Industry RSS feed analysis (ticker-based discovery)
+    POST /rss/ingest                  Compliance RSS feeds with server-side TTL cache
+    GET  /rss/feeds/status            Cache health for all compliance RSS feeds
     POST /fred/correlations           FRED macro leading indicator correlations
 
     POST /loop/hitl/risk-approvals    Gate 1 per-risk HITL decisions
@@ -58,6 +60,7 @@ from edgar_tool import (
     annotate_8k,
 )
 from rss_tool import run_rss_analysis
+from rss_ingest_service import ingest_feeds, get_feed_status, FEEDS as RSS_INGEST_FEEDS
 import db
 
 import ai_endpoints
@@ -127,6 +130,11 @@ class FredRequest(BaseModel):
 
 class RssRequest(BaseModel):
     ticker: str
+
+class RssIngestRequest(BaseModel):
+    feed_ids: List[str] = []
+    force_refresh: bool = False
+    ttl_minutes: int = 30
 
 class RiskApprovalsRequest(BaseModel):
     run_id: int
@@ -368,6 +376,63 @@ def rss_news(req: RssRequest):
     finally:
         if out_path.exists():
             out_path.unlink(missing_ok=True)
+
+
+@app.post("/rss/ingest")
+def rss_ingest(req: RssIngestRequest):
+    """
+    Fetch and grade the compliance/regulatory RSS feeds registered in the dashboard
+    (BIS Export Controls, CISA ICS, SEC EDGAR, Federal Reserve Press, EPA Climate).
+
+    Results are cached server-side (default 30-min TTL) so repeated pipeline runs
+    reuse warm signals without re-fetching every feed. Pass force_refresh=true to
+    bypass the cache.
+
+    Returns articles in the same shape as RSS_ENGINE.ingestAll() on the frontend,
+    so the existing signal-mapping code in app.jsx applies without modification.
+    """
+    try:
+        result = ingest_feeds(
+            feed_ids=req.feed_ids or None,
+            force_refresh=req.force_refresh,
+            ttl_minutes=req.ttl_minutes,
+        )
+
+        # Persist graded articles to DB for velocity trending (best-effort)
+        if db.is_available() and result.get("feeds"):
+            db.save_rss_articles_full(None, {"feeds": [
+                {
+                    "name": r["feed"]["name"],
+                    "url":  r["feed"]["url"],
+                    "articles": [
+                        {
+                            "title":     a["title"],
+                            "url":       a.get("url"),
+                            "published": a.get("pubDate"),
+                            "summary":   a.get("label"),
+                        }
+                        for a in r["articles"]
+                    ],
+                }
+                for r in result["feeds"]
+            ]})
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/rss/feeds/status")
+def rss_feeds_status():
+    """
+    Return per-feed cache health for all compliance RSS feeds registered in the
+    dashboard. Shows last_fetched timestamp, article count, and fetch_status
+    (ok / failed / not_fetched) for each feed.
+    """
+    return {
+        "feeds": get_feed_status(),
+        "registered": len(RSS_INGEST_FEEDS),
+    }
 
 
 @app.post("/edgar/8k-events")

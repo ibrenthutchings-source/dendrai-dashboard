@@ -425,6 +425,37 @@ window.MCP = (function () {
     return _get(`/history/runs/${runId}/ai-analyses${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`);
   }
 
+  // ── Compliance RSS ingest (server-side cached) ───────────────────────────────
+
+  /**
+   * Fetch and grade the compliance/regulatory RSS feeds via the MCP server.
+   * Results are cached server-side (default 30-min TTL) so this is fast on
+   * repeat calls within a session.
+   *
+   * Returns the same shape as RSS_ENGINE.ingestAll() on the frontend:
+   *   { fetched_at, feeds: [{feed, articles, fetchStatus, cached}], total_articles, ... }
+   *
+   * @param {string[]} feedIds      Feed IDs to ingest (empty = all registered feeds)
+   * @param {object}   opts
+   *   forceRefresh  bool  — bypass cache (default false)
+   *   ttlMinutes    int   — cache TTL in minutes (default 30)
+   */
+  async function ingestRssFeeds(feedIds = [], opts = {}) {
+    return _post('/rss/ingest', {
+      feed_ids:      feedIds,
+      force_refresh: opts.forceRefresh  || false,
+      ttl_minutes:   opts.ttlMinutes    || 30,
+    });
+  }
+
+  /**
+   * Return per-feed cache health for all registered compliance RSS feeds.
+   * Shows last_fetched, article_count, fetch_status for each feed.
+   */
+  async function fetchRssFeedStatus() {
+    return _get('/rss/feeds/status');
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -448,5 +479,8 @@ window.MCP = (function () {
     aiAuditReport,
     agentInvestigate,
     fetchAiAnalyses,
+    // Compliance RSS ingest
+    ingestRssFeeds,
+    fetchRssFeedStatus,
   };
 })();
