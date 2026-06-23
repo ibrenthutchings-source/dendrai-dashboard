@@ -334,7 +334,7 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
 }
 
 // ------ Stage body content ------
-function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s3Extra }) {
+function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s3Extra, forecasts }) {
   const trace = output?.trace;
   if (status === "idle") {
     return <Empty>Awaiting run — toggle signal sources in the sidebar and press Run Loop.</Empty>;
@@ -352,8 +352,8 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult}/><StageTrace trace={trace}/></>;
-  if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts}/><StageTrace trace={trace}/></>;
+  if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
   if (id === "s4") return <><S4Body output={output}/><StageTrace trace={trace}/></>;
@@ -462,7 +462,7 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
   );
 }
 
-function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult }) {
+function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts }) {
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
@@ -614,6 +614,68 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           </div>
         </div>
       )}
+
+      {/* Beneish M-Score gauge */}
+      {forecasts?.mscore != null && (() => {
+        const MSG = window.MScoreGauge;
+        const ms = forecasts.mscore;
+        if (!MSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Beneish M-Score · financial reporting risk</h5>
+            <MSG m={ms.m}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>M = {ms.m?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: ms.m > -1.78 ? "var(--red-soft)" : ms.m > -2.22 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      ms.m > -1.78 ? "var(--red-ink)"  : ms.m > -2.22 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{ms.band || (ms.m > -1.78 ? "ELEVATED" : ms.m > -2.22 ? "GRAY ZONE" : "NORMAL")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≥ −1.78 · ELEVATED</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>−2.22 to −1.78 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>≤ −2.22 · NORMAL</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
+                {ms.m > -1.78 ? " Score exceeds likely-manipulator threshold — accruals and revenue recognition warrant IA review." : ms.m > -2.22 ? " Gray zone — accruals monitoring recommended." : " Score within normal range — no elevated financial reporting risk detected."}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Revenue forecast chart */}
+      {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Revenue forecast · quarterly · used in Stage 2 risk scoring</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
+            </div>
+            <FC history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M"/>
+          </div>
+        );
+      })()}
+
+      {/* Gross margin forecast chart */}
+      {forecasts?.margin?.history?.length > 0 && forecasts?.margin?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Gross margin forecast · quarterly</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
+            </div>
+            <FC history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)"/>
+          </div>
+        );
+      })()}
 
       {/* AI Narrative Analysis */}
       {aiAvailable && (
