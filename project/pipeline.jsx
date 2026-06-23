@@ -745,7 +745,7 @@ function forecastRisk(risk, quarters = 4) {
 function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefreshing = false,
                   appetiteLevel = "AMBER", appetiteThreshold,
                   perRiskAppetite = {}, setPerRiskAppetite,
-                  allSignals = [], onOpenAdjustRisk, onRerunFromS3 }) {
+                  allSignals = [], onOpenAdjustRisk, onRerunFromS3, forecasts }) {
   const [expandedSigs, setExpandedSigs] = React.useState(new Set());
   const risks = output?.risks || [];
   const appetite = output?.riskAppetite;
@@ -1053,6 +1053,54 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           </div>
         </div>
       )}
+
+      {/* Top-risk trajectory chart — shows score over time for the highest-scoring risk */}
+      {risks.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        const topRisk = [...risks].sort((a, b) => b.score - a.score)[0];
+        if (!topRisk) return null;
+        const qs = forecastRisk(topRisk, 4);
+        const synthLabels = ["Q1-25","Q2-25","Q3-25","Q4-25"];
+        const hist = synthLabels.map((q, i) => ({
+          q,
+          v: +Math.max(0, topRisk.score - (3 - i) * topRisk.velocity * 0.3).toFixed(1),
+        }));
+        const fcast = ["Q1-26","Q2-26","Q3-26","Q4-26"].map((q, i) => ({
+          q, base: qs[i],
+          lo: +Math.max(0, qs[i] - 1.5).toFixed(1),
+          hi: +Math.min(25, qs[i] + 1.5).toFixed(1),
+        }));
+        return (
+          <div className="stage-detail">
+            <h5>Top-risk trajectory · {topRisk.name}</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Velocity-dampened score trajectory for the highest-scoring risk. Dashed line = 4-quarter AI forecast used by Stage 3 to set audit priority. Confidence band ±1.5 pts.
+            </div>
+            <FC
+              history={hist}
+              forecast={fcast}
+              unit="score"
+              color={topRisk.rag === "R" ? "var(--red)" : topRisk.rag === "A" ? "var(--amber)" : "var(--green)"}
+            />
+          </div>
+        );
+      })()}
+
+      {/* Revenue context from Stage 1 — shows how macro/revenue trend feeds risk */}
+      {forecasts?.revenue?.history?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Revenue context · how it feeds risk scores</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Revenue trajectory from Stage 1 (EDGAR). Declining QoQ momentum or trend reversal raises the velocity delta on financial-reporting and supply-chain risks in this stage.
+            </div>
+            <FC history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M"/>
+          </div>
+        );
+      })()}
     </div>
   );
 }
