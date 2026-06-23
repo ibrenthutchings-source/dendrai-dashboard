@@ -99,7 +99,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                 <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady}/>
               </PipelinePanel>
             )}
-            {isDone && s.id === "s2" && forecasts && window.ForecastChart && (
+            {isDone && s.id === "s2" && forecasts && (
               <PipelinePanel label="Forecasts">
                 <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}/>
               </PipelinePanel>
@@ -109,7 +109,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                 <MapsTab maps={output.s4.maps}/>
               </PipelinePanel>
             )}
-            {isDone && s.id === "s5" && window.RiskFlowSankey && flowMeta && (output.s2?.risks?.length > 0) && (
+            {isDone && s.id === "s5" && flowMeta && (output.s2?.risks?.length > 0) && (
               <PipelinePanel label="Risk Flow">
                 <SankeyInline
                   risks={output.s2.risks}
@@ -220,8 +220,17 @@ function Connector({ active }) {
 }
 
 function ForecastChartsInline({ forecasts, livefacts }) {
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!window.ForecastChart) {
+      const id = setTimeout(() => setTick(t => t + 1), 300);
+      return () => clearTimeout(id);
+    }
+  }, [tick]);
+
   const FC = window.ForecastChart;
-  if (!FC || !forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Forecast data unavailable.</div>;
+  if (!forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>No forecast data — run the loop first.</div>;
+  if (!FC) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Loading chart engine…</div>;
   const rev = forecasts.revenue;
   const mg  = forecasts.margin;
   const lastRev  = rev?.history?.slice(-1)[0]?.v;
@@ -270,8 +279,16 @@ function ForecastChartsInline({ forecasts, livefacts }) {
 function SankeyInline({ risks, maps, flowMeta, objectives, onOpenMain }) {
   const [selId, setSelId] = React.useState(null);
   const [hovId, setHovId] = React.useState(null);
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!window.RiskFlowSankey) {
+      const id = setTimeout(() => setTick(t => t + 1), 300);
+      return () => clearTimeout(id);
+    }
+  }, [tick]);
+
   const RS = window.RiskFlowSankey;
-  if (!RS) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>RiskFlowSankey not loaded.</div>;
+  if (!RS) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Loading chart engine…</div>;
   if (!risks?.length || !flowMeta) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Flow data populates after Stage 2 and Risk Flow generation.</div>;
   return (
     <div>
