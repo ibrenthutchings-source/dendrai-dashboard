@@ -109,7 +109,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                 <MapsTab maps={output.s4.maps}/>
               </PipelinePanel>
             )}
-            {isDone && s.id === "s5" && flowMeta && (output.s2?.risks?.length > 0) && (
+            {isDone && s.id === "s2" && flowMeta && (output.s2?.risks?.length > 0) && (
               <PipelinePanel label="Risk Flow">
                 <SankeyInline
                   risks={output.s2.risks}
@@ -1018,7 +1018,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           {narrativeResult?.summary && (
             <div style={{fontSize:11.5, color:"var(--ink-2)", lineHeight:1.55, marginTop:8, marginBottom:8,
               background:"var(--surface)", border:"1px solid var(--line)", borderRadius:6, padding:"8px 12px"}}>
-              {narr.result.summary}
+              {narrativeResult.summary}
             </div>
           )}
           {narrRisks.length > 0 && (
