@@ -19,3 +19,6 @@
 [2m9:40:53 AM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/pipeline.jsx[22m
 [2m9:41:00 AM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/pipeline.jsx[22m
 [2m9:41:20 AM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/pipeline.jsx[22m
+[2m9:50:58 AM[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /predictive/full-analysis[39m
+Error: connect ECONNREFUSED 127.0.0.1:8001
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1705:16)
