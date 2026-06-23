@@ -99,17 +99,9 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                 <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady}/>
               </PipelinePanel>
             )}
-            {isDone && s.id === "s2" && window.ForecastsPanel && (
+            {isDone && s.id === "s2" && forecasts && window.ForecastChart && (
               <PipelinePanel label="Forecasts">
-                <ForecastsPanel
-                  data={forecasts}
-                  liveMode={liveMode}
-                  livefacts={livefacts}
-                  fredSeries={fredSeries}
-                  rssSignals={liveRssSignals}
-                  industry={industry}
-                  ticker={pipelineTicker}
-                />
+                <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}/>
               </PipelinePanel>
             )}
             {isDone && s.id === "s4" && window.MapsTab && (output.s4?.maps?.length > 0) && (
@@ -117,12 +109,13 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                 <MapsTab maps={output.s4.maps}/>
               </PipelinePanel>
             )}
-            {isDone && s.id === "s5" && window.FlowMiniTab && flowMeta && (output.s2?.risks?.length > 0) && (
+            {isDone && s.id === "s5" && window.RiskFlowSankey && flowMeta && (output.s2?.risks?.length > 0) && (
               <PipelinePanel label="Risk Flow">
-                <FlowMiniTab
+                <SankeyInline
                   risks={output.s2.risks}
                   maps={output.s4?.maps || []}
                   flowMeta={flowMeta}
+                  objectives={output.s3?.objectives || []}
                   onOpenMain={onOpenMainFlow}
                 />
               </PipelinePanel>
@@ -222,6 +215,83 @@ function Connector({ active }) {
   return (
     <div className={"conn" + (active ? " on" : "")}>
       <div className="line"/>
+    </div>
+  );
+}
+
+function ForecastChartsInline({ forecasts, livefacts }) {
+  const FC = window.ForecastChart;
+  if (!FC || !forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Forecast data unavailable.</div>;
+  const rev = forecasts.revenue;
+  const mg  = forecasts.margin;
+  const lastRev  = rev?.history?.slice(-1)[0]?.v;
+  const fcRev    = rev?.forecast?.slice(-1)[0]?.base;
+  const lastMg   = mg?.history?.slice(-1)[0]?.v;
+  const fcMg     = mg?.forecast?.slice(-1)[0]?.base;
+  const revDelta = lastRev && fcRev ? ((fcRev - lastRev) / lastRev * 100) : null;
+  const mgDelta  = lastMg != null && fcMg != null ? (fcMg - lastMg) * 100 : null;
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:18}}>
+      {rev?.history?.length > 0 && (
+        <div>
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
+            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue · TTM ($M)</div>
+            {revDelta != null && (
+              <div style={{fontSize:10, fontFamily:"var(--mono)", color: revDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
+                {revDelta >= 0 ? "▲" : "▼"}{Math.abs(revDelta).toFixed(1)}% · 4Q forecast ${fcRev?.toFixed(0)}M
+              </div>
+            )}
+          </div>
+          <FC history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)"/>
+        </div>
+      )}
+      {mg?.history?.length > 0 && (
+        <div>
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
+            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Gross Margin (%)</div>
+            {mgDelta != null && (
+              <div style={{fontSize:10, fontFamily:"var(--mono)", color: mgDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
+                {mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps · 4Q forecast {fcMg?.toFixed(1)}%
+              </div>
+            )}
+          </div>
+          <FC history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
+        </div>
+      )}
+      {livefacts && (
+        <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)"}}>
+          Source: EDGAR XBRL — {livefacts.entity} · {livefacts.cik}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SankeyInline({ risks, maps, flowMeta, objectives, onOpenMain }) {
+  const [selId, setSelId] = React.useState(null);
+  const [hovId, setHovId] = React.useState(null);
+  const RS = window.RiskFlowSankey;
+  if (!RS) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>RiskFlowSankey not loaded.</div>;
+  if (!risks?.length || !flowMeta) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Flow data populates after Stage 2 and Risk Flow generation.</div>;
+  return (
+    <div>
+      <RS
+        risks={risks}
+        maps={maps || []}
+        flowMeta={flowMeta}
+        objectives={objectives || []}
+        selectedId={selId}
+        onSelect={setSelId}
+        hoverId={hovId}
+        onHover={setHovId}
+      />
+      {onOpenMain && (
+        <div style={{display:"flex", justifyContent:"flex-end", marginTop:10}}>
+          <button className="cfg-link" onClick={onOpenMain} type="button" style={{fontSize:11}}>
+            Full risk flow view <Icon name="chev-r" size={10}/>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
