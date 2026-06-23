@@ -26,7 +26,10 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit,
-                    narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "" }) {
+                    narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "",
+                    liveMode = false, fredSeries = null, industry = "",
+                    enabledFeedIds = [], onRssSignalsReady = null,
+                    flowMeta = null, onOpenMainFlow = null }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s1Extra = {
     rssRunProgress,
@@ -35,6 +38,8 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     narrativeResult,
     onNarrativeResult,
     forecasts,
+    enabledFeedIds,
+    onRssSignalsReady,
   };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
@@ -44,12 +49,20 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     allSignals: allSignals || [],
     onOpenAdjustRisk,
     onRerunFromS3,
+    liveMode, livefacts, fredSeries, industry,
+    ticker: pipelineTicker || "",
   };
   const s3Extra = {
     manualAudits,
     onAddAudit,
     onRemoveAudit,
     risks: output.s2?.risks || [],
+  };
+  const s5Extra = {
+    flowMeta,
+    risks: output.s2?.risks || [],
+    maps: output.s4?.maps || [],
+    onOpenMain: onOpenMainFlow,
   };
   return (
     <div className="pipeline">
@@ -76,6 +89,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               s1Extra={s.id === "s1" ? s1Extra : null}
               s2Extra={s.id === "s2" ? s2Extra : null}
               s3Extra={s.id === "s3" ? s3Extra : null}
+              s5Extra={s.id === "s5" ? s5Extra : null}
             />
             {i < STAGES.length - 1 && (
               <Connector active={status === "done" || status === "running"}/>
@@ -130,7 +144,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
   );
 }
 
-function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1Extra, s2Extra, s3Extra, forecasts }) {
+function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1Extra, s2Extra, s3Extra, s5Extra, forecasts }) {
   const statusCls = status === "running" ? "running" : status === "done" ? "done" : "";
   const pill =
     status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
@@ -171,7 +185,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1
       )}
       {isOpen && (
         <div className="stage-body">
-          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} forecasts={forecasts}/>
+          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
         </div>
       )}
     </div>
@@ -334,7 +348,7 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
 }
 
 // ------ Stage body content ------
-function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s3Extra, forecasts }) {
+function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s3Extra, s5Extra, forecasts }) {
   const trace = output?.trace;
   if (status === "idle") {
     return <Empty>Awaiting run — toggle signal sources in the sidebar and press Run Loop.</Empty>;
@@ -352,12 +366,12 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
   if (id === "s4") return <><S4Body output={output}/><StageTrace trace={trace}/></>;
-  if (id === "s5") return <><S5Body output={output}/><StageTrace trace={trace}/></>;
+  if (id === "s5") return <><S5Body output={output} flowMeta={s5Extra?.flowMeta} risks={s5Extra?.risks} maps={s5Extra?.maps}/><StageTrace trace={trace}/></>;
   if (id === "s6") return <><S6Body output={output}/><StageTrace trace={trace}/></>;
   return null;
 }
@@ -462,7 +476,7 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
   );
 }
 
-function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts }) {
+function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null }) {
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
@@ -728,6 +742,13 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           )}
         </div>
       )}
+
+      {/* RSS Signals panel — ingest and manage industry RSS feeds */}
+      {window.RSSPanel && (
+        <div className="stage-detail" style={{padding:0, overflow:"hidden"}}>
+          <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady}/>
+        </div>
+      )}
     </div>
   );
 }
@@ -745,7 +766,8 @@ function forecastRisk(risk, quarters = 4) {
 function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefreshing = false,
                   appetiteLevel = "AMBER", appetiteThreshold,
                   perRiskAppetite = {}, setPerRiskAppetite,
-                  allSignals = [], onOpenAdjustRisk, onRerunFromS3, forecasts }) {
+                  allSignals = [], onOpenAdjustRisk, onRerunFromS3, forecasts,
+                  liveMode = false, livefacts = null, fredSeries = null, industry = "", ticker = "" }) {
   const [expandedSigs, setExpandedSigs] = React.useState(new Set());
   const risks = output?.risks || [];
   const appetite = output?.riskAppetite;
