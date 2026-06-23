@@ -3559,3 +3559,337 @@ Error: connect ECONNREFUSED 127.0.0.1:8001
 [2m2:24:42 PM[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /predictive/full-analysis[39m
 Error: connect ECONNREFUSED 127.0.0.1:8001
     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1705:16)
+[2m3:12:44 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:12:44 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:12:44 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in the <RiskFlowSankey> component:
+
+    at RiskFlowSankey (http://localhost:5173/charts.jsx:942:27)
+    at div
+    at SankeyInline (http://localhost:5173/pipeline.jsx?t=1782248565995:665:25)
+    at div
+    at div
+    at PipelinePanel (http://localhost:5173/pipeline.jsx?t=1782248565995:761:26)
+    at div
+    at Pipeline (http://localhost:5173/pipeline.jsx?t=1782248565995:50:21)
+    at div
+    at main
+    at div
+    at ErrorBoundary (http://localhost:5173/app.jsx?t=1782239863675:12:3)
+    at div
+    at App (http://localhost:5173/app.jsx?t=1782239863675:94:29)
+    at RootBoundary (http://localhost:5173/src/main.jsx?t=1782248565995:35:3)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, ErrorBoundary.
+[2m3:15:17 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:15:17 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:15:17 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in the <RiskFlowSankey> component:
+
+    at RiskFlowSankey (http://localhost:5173/charts.jsx:942:27)
+    at div
+    at SankeyInline (http://localhost:5173/pipeline.jsx?t=1782248565995:665:25)
+    at div
+    at div
+    at PipelinePanel (http://localhost:5173/pipeline.jsx?t=1782248565995:761:26)
+    at div
+    at Pipeline (http://localhost:5173/pipeline.jsx?t=1782248565995:50:21)
+    at div
+    at main
+    at div
+    at ErrorBoundary (http://localhost:5173/app.jsx?t=1782239863675:12:3)
+    at div
+    at App (http://localhost:5173/app.jsx?t=1782239863675:94:29)
+    at RootBoundary (http://localhost:5173/src/main.jsx?t=1782248565995:35:3)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, ErrorBoundary.
+[2m3:24:07 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/pipeline.jsx[22m
+[2m3:24:08 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/pipeline.jsx[22m Could not Fast Refresh ("true" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m3:24:08 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/main.jsx[22m
+[2m3:24:08 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it.
+[2m3:24:08 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/main.jsx[22m Could not Fast Refresh ("true" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m3:24:08 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/main.jsx[22m
+[2m3:24:08 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it.
+[2m3:24:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in the <RiskFlowSankey> component:
+
+    at RiskFlowSankey (http://localhost:5173/charts.jsx:942:27)
+    at div
+    at SankeyInline (http://localhost:5173/pipeline.jsx?t=1782253447508:665:25)
+    at div
+    at div
+    at PipelinePanel (http://localhost:5173/pipeline.jsx?t=1782253447508:761:26)
+    at div
+    at Pipeline (http://localhost:5173/pipeline.jsx?t=1782253447508:50:21)
+    at div
+    at main
+    at div
+    at ErrorBoundary (http://localhost:5173/app.jsx?t=1782239863675:12:3)
+    at div
+    at App (http://localhost:5173/app.jsx?t=1782239863675:94:29)
+    at RootBoundary (http://localhost:5173/src/main.jsx?t=1782253447508:35:3)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, ErrorBoundary.
+[2m3:24:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it.
+[2m3:24:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in the <RiskFlowSankey> component:
+
+    at RiskFlowSankey (http://localhost:5173/charts.jsx:942:27)
+    at div
+    at SankeyInline (http://localhost:5173/pipeline.jsx?t=1782253447508:665:25)
+    at div
+    at div
+    at PipelinePanel (http://localhost:5173/pipeline.jsx?t=1782253447508:761:26)
+    at div
+    at Pipeline (http://localhost:5173/pipeline.jsx?t=1782253447508:50:21)
+    at div
+    at main
+    at div
+    at ErrorBoundary (http://localhost:5173/app.jsx?t=1782239863675:12:3)
+    at div
+    at App (http://localhost:5173/app.jsx?t=1782239863675:94:29)
+    at RootBoundary (http://localhost:5173/src/main.jsx?t=1782253447508:35:3)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, ErrorBoundary.
+[2m3:24:15 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/pipeline.jsx[22m
+[2m3:24:15 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/pipeline.jsx[22m Could not Fast Refresh ("true" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m3:24:15 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/main.jsx[22m
+[2m3:24:15 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it.
+[2m3:24:15 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/main.jsx[22m Could not Fast Refresh ("true" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m3:24:15 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/main.jsx[22m
+[2m3:24:15 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it.
+[2m3:24:15 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:16 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:16 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in the <RiskFlowSankey> component:
+
+    at RiskFlowSankey (http://localhost:5173/charts.jsx:942:27)
+    at div
+    at SankeyInline (http://localhost:5173/pipeline.jsx?t=1782253455573:665:25)
+    at div
+    at div
+    at PipelinePanel (http://localhost:5173/pipeline.jsx?t=1782253455573:761:26)
+    at div
+    at Pipeline (http://localhost:5173/pipeline.jsx?t=1782253455573:50:21)
+    at div
+    at main
+    at div
+    at ErrorBoundary (http://localhost:5173/app.jsx?t=1782239863675:12:3)
+    at div
+    at App (http://localhost:5173/app.jsx?t=1782239863675:94:29)
+    at RootBoundary (http://localhost:5173/src/main.jsx?t=1782253455573:35:3)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, ErrorBoundary.
+[2m3:24:16 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mWarning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it.
+[2m3:24:16 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:16 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mTypeError[22m: Cannot read properties of undefined (reading 'length')
+[39m > truncate charts.jsx:717:35
+    715 |  }
+    716 |  
+    717 |  function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+        |                                     ^
+    718 |  
+    719 |  Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+ > charts.jsx:625:15
+ > RiskFlowSankey charts.jsx:611:16
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+
+[2m3:24:16 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in the <RiskFlowSankey> component:
+
+    at RiskFlowSankey (http://localhost:5173/charts.jsx:942:27)
+    at div
+    at SankeyInline (http://localhost:5173/pipeline.jsx?t=1782253455573:665:25)
+    at div
+    at div
+    at PipelinePanel (http://localhost:5173/pipeline.jsx?t=1782253455573:761:26)
+    at div
+    at Pipeline (http://localhost:5173/pipeline.jsx?t=1782253455573:50:21)
+    at div
+    at main
+    at div
+    at ErrorBoundary (http://localhost:5173/app.jsx?t=1782239863675:12:3)
+    at div
+    at App (http://localhost:5173/app.jsx?t=1782239863675:94:29)
+    at RootBoundary (http://localhost:5173/src/main.jsx?t=1782253455573:35:3)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, ErrorBoundary.
