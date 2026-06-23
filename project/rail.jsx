@@ -1,14 +1,13 @@
 /* ============================================================
    Right rail — multi-tab live register (Pipeline screen, post-run)
-   Home for the Risk Register, Risk Flow, Forecasts and Scenarios that
-   used to live as separate nav screens / pipeline sub-tabs.
-   tabs: risks · heatmap · risk flow · forecasts · scenarios · maps · loop · notifs · persona
+   tabs: risks · heatmap · scenarios · loop · notifs · persona
+   RSS Signals, Forecasts, MAPs, and Risk Flow now live inside
+   their respective pipeline stages (S1, S2, S4, S5).
    ============================================================ */
 
 const RAIL_TABS = [
   { id: "rr",     l: "Risks" },
   { id: "hm",     l: "Heatmap" },
-  { id: "flow",   l: "Risk Flow" },
   { id: "scen",   l: "Scenarios" },
   { id: "loop",   l: "Loop" },
   { id: "notif",  l: "Notifs" },
@@ -48,7 +47,6 @@ function Rail({
       <div className="rbody">
         {activeTab === "rr"    && <RiskTable    risks={risks} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
         {activeTab === "hm"    && <HeatmapTab   risks={risks} activeQ={activeQuarter} setActiveQ={setActiveQuarter} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
-        {activeTab === "flow"  && <FlowMiniTab    risks={risks} maps={maps} flowMeta={flowMeta} selectedId={selectedRiskId} onSelect={setSelectedRiskId} onOpenMain={onOpenMainFlow}/>}
         {activeTab === "scen"  && <ScenariosPanel scenarios={scenarios} greySwan={greySwan}/>}
         {activeTab === "loop"  && <LoopTab      loop={loop} ticker={ticker} risks={risks} loopStats={loopStats} runId={runId}/>}
         {activeTab === "notif" && <NotifTab     log={notifLog}/>}

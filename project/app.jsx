@@ -892,7 +892,6 @@ function App() {
       conclusion: `${stage4Maps.length} action plans created.`,
     });
     await runStage("s4", { maps: stage4Maps, trace: stage4Trace }, 1400);
-    setActiveRailTab("map");
 
     // STAGE 5 — Closure
     const stage5Closure = profileRef.current.closure || {};
@@ -960,7 +959,6 @@ function App() {
       }
       setStageState(prev => ({ ...prev, s4: "idle" }));
       await runStage("s4", { maps: profileRef.current.maps }, 1400);
-      setActiveRailTab("map");
       await runStage("s5", { closure: profileRef.current.closure }, 1200);
       const rerunRisks = output.s2?.risks || profileRef.current.risks || [];
       await runStage("s6", { loop: RISK_ENGINE.buildLoop(rerunRisks) }, 1200);
@@ -1244,16 +1242,18 @@ function App() {
               }
             </div>
 
-            {/* Sub-tabs */}
-            <div className="pipe-sub-tabs">
-              {pipeTabs.map(t => (
-                <button key={t.id}
-                  className={"pipe-sub-tab" + (activePipeTab === t.id ? " active" : "")}
-                  onClick={() => setActivePipeTab(t.id)}>
-                  {t.l}
-                </button>
-              ))}
-            </div>
+            {/* Sub-tabs — hidden when only one tab exists */}
+            {pipeTabs.length > 1 && (
+              <div className="pipe-sub-tabs">
+                {pipeTabs.map(t => (
+                  <button key={t.id}
+                    className={"pipe-sub-tab" + (activePipeTab === t.id ? " active" : "")}
+                    onClick={() => setActivePipeTab(t.id)}>
+                    {t.l}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {activePipeTab === "stages" && (
               <Pipeline
@@ -1303,7 +1303,9 @@ function App() {
                 onRssSignalsReady={(sigs) => {
                   setRssSignals(sigs);
                   log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
-                }} />
+                }}
+                flowMeta={profile.riskFlow}
+                onOpenMainFlow={() => setActiveScreen("flow")} />
             )}
           </div>
           )}

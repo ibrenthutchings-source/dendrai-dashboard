@@ -1123,6 +1123,19 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           </div>
         );
       })()}
+
+      {/* Forecasts panel — revenue / margin / M-Score / FRED correlates */}
+      {window.ForecastsPanel && (
+        <ForecastsPanel
+          data={forecasts}
+          liveMode={liveMode}
+          livefacts={livefacts}
+          fredSeries={fredSeries}
+          rssSignals={liveRssSignals}
+          industry={industry}
+          ticker={ticker}
+        />
+      )}
     </div>
   );
 }
@@ -1380,11 +1393,18 @@ function S4Body({ output }) {
           ))}
         </ul>
       </div>
+
+      {/* Full MAP cards */}
+      {window.MapsTab && maps.length > 0 && (
+        <div className="stage-detail" style={{padding:0, overflow:"hidden"}}>
+          <MapsTab maps={maps}/>
+        </div>
+      )}
     </div>
   );
 }
 
-function S5Body({ output }) {
+function S5Body({ output, flowMeta = null, risks = [], maps = [], onOpenMain = null }) {
   const c = output?.closure || {};
 
   // ---- sub-steps ----
@@ -1460,6 +1480,13 @@ function S5Body({ output }) {
           <li><span className="tag mono">Re-run</span> <span style={{flex:1}}>Risks flagged for next-cycle re-test</span> <span className="mono">{(c.rerun_recommended || []).join(", ")}</span></li>
         </ul>
       </div>
+
+      {/* Risk Flow — top risks fan-out after closure scoring */}
+      {window.FlowMiniTab && flowMeta && risks.length > 0 && (
+        <div className="stage-detail" style={{padding:0, overflow:"hidden"}}>
+          <FlowMiniTab risks={risks} maps={maps} flowMeta={flowMeta} onOpenMain={onOpenMain}/>
+        </div>
+      )}
     </div>
   );
 }
