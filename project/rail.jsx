@@ -9,9 +9,7 @@ const RAIL_TABS = [
   { id: "rr",     l: "Risks" },
   { id: "hm",     l: "Heatmap" },
   { id: "flow",   l: "Risk Flow" },
-  { id: "fcst",   l: "Forecasts" },
   { id: "scen",   l: "Scenarios" },
-  { id: "map",    l: "MAPs" },
   { id: "loop",   l: "Loop" },
   { id: "notif",  l: "Notifs" },
   { id: "pers",   l: "Persona" },
@@ -51,9 +49,7 @@ function Rail({
         {activeTab === "rr"    && <RiskTable    risks={risks} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
         {activeTab === "hm"    && <HeatmapTab   risks={risks} activeQ={activeQuarter} setActiveQ={setActiveQuarter} selectedId={selectedRiskId} onSelect={setSelectedRiskId}/>}
         {activeTab === "flow"  && <FlowMiniTab    risks={risks} maps={maps} flowMeta={flowMeta} selectedId={selectedRiskId} onSelect={setSelectedRiskId} onOpenMain={onOpenMainFlow}/>}
-        {activeTab === "fcst"  && <ForecastsPanel data={forecasts} liveMode={liveMode} livefacts={livefacts} fredSeries={fredSeries} rssSignals={rssSignals} industry={industry} ticker={ticker}/>}
         {activeTab === "scen"  && <ScenariosPanel scenarios={scenarios} greySwan={greySwan}/>}
-        {activeTab === "map"   && <MapsTab      maps={maps}/>}
         {activeTab === "loop"  && <LoopTab      loop={loop} ticker={ticker} risks={risks} loopStats={loopStats} runId={runId}/>}
         {activeTab === "notif" && <NotifTab     log={notifLog}/>}
         {activeTab === "pers"  && <PersonaTab   personas={personas} selected={selectedPersona} setSelected={setSelectedPersona}

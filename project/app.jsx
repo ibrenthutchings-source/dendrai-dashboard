@@ -1156,10 +1156,9 @@ function App() {
   }, []);
 
   // ---- Pipeline sub-tab definitions ----
-  // Forecasts & Scenarios moved to the right-hand Live Register rail (post-run).
+  // RSS Signals, Forecasts, and MAPs now live inside their respective pipeline stages.
   const pipeTabs = [
     { id: "stages", l: "Pipeline" },
-    { id: "rss",    l: "RSS Signals" },
   ];
 
   const railRisks = output.s2?.risks || (hasRun ? profile.risks : null);
@@ -1296,12 +1295,12 @@ function App() {
                 narrativeResult={narrativeResult}
                 onNarrativeResult={setNarrativeResult}
                 forecasts={profile.forecasts}
-                ticker={cfg.ticker || ""} />
-            )}
-            {activePipeTab === "rss" && (
-              <RSSPanel
+                ticker={cfg.ticker || ""}
+                liveMode={liveMode}
+                fredSeries={fredLive}
+                industry={hasRun ? profile.entity?.industry : cfg.industry}
                 enabledFeedIds={rssEnabledFeeds}
-                onSignalsReady={(sigs) => {
+                onRssSignalsReady={(sigs) => {
                   setRssSignals(sigs);
                   log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
                 }} />
