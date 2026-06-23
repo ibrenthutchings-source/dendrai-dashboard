@@ -72,6 +72,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               output={output[s.id]}
               signals={signals}
               livefacts={livefacts}
+              forecasts={forecasts}
               s1Extra={s.id === "s1" ? s1Extra : null}
               s2Extra={s.id === "s2" ? s2Extra : null}
               s3Extra={s.id === "s3" ? s3Extra : null}
@@ -129,7 +130,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
   );
 }
 
-function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1Extra, s2Extra, s3Extra }) {
+function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1Extra, s2Extra, s3Extra, forecasts }) {
   const statusCls = status === "running" ? "running" : status === "done" ? "done" : "";
   const pill =
     status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
@@ -170,7 +171,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1
       )}
       {isOpen && (
         <div className="stage-body">
-          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra}/>
+          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} forecasts={forecasts}/>
         </div>
       )}
     </div>
