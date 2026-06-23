@@ -91,7 +91,7 @@ function App() {
 
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
   const [liveMode, setLiveMode] = useState(false);
-  const [mcpMode, setMcpMode] = useState(false);
+  const [mcpMode, setMcpMode] = useState(true);
   const [liveStatus, setLiveStatus] = useState("");
   const [livefacts, setLivefacts] = useState(null);
   const [fredLive, setFredLive] = useState(null);

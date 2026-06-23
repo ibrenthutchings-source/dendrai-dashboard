@@ -68,6 +68,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     <div className="pipeline">
       {STAGES.map((s, i) => {
         const status = stageState[s.id] || "idle";
+        const isDone = status === "done";
         const isOpen = openStages.has(s.id);
         const showGate = (i === 1 && hitl.risk && gateState.g1) || (i === 2 && hitl.scope && gateState.g2);
         const gateNum = i === 1 ? 1 : 2;
@@ -91,6 +92,42 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               s3Extra={s.id === "s3" ? s3Extra : null}
               s5Extra={s.id === "s5" ? s5Extra : null}
             />
+
+            {/* ── Stage-linked panels (always visible when stage is done) ── */}
+            {isDone && s.id === "s1" && window.RSSPanel && (
+              <PipelinePanel label="RSS Signals">
+                <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady}/>
+              </PipelinePanel>
+            )}
+            {isDone && s.id === "s2" && window.ForecastsPanel && (
+              <PipelinePanel label="Forecasts">
+                <ForecastsPanel
+                  data={forecasts}
+                  liveMode={liveMode}
+                  livefacts={livefacts}
+                  fredSeries={fredSeries}
+                  rssSignals={liveRssSignals}
+                  industry={industry}
+                  ticker={pipelineTicker}
+                />
+              </PipelinePanel>
+            )}
+            {isDone && s.id === "s4" && window.MapsTab && (output.s4?.maps?.length > 0) && (
+              <PipelinePanel label="Management Action Plans">
+                <MapsTab maps={output.s4.maps}/>
+              </PipelinePanel>
+            )}
+            {isDone && s.id === "s5" && window.FlowMiniTab && flowMeta && (output.s2?.risks?.length > 0) && (
+              <PipelinePanel label="Risk Flow">
+                <FlowMiniTab
+                  risks={output.s2.risks}
+                  maps={output.s4?.maps || []}
+                  flowMeta={flowMeta}
+                  onOpenMain={onOpenMainFlow}
+                />
+              </PipelinePanel>
+            )}
+
             {i < STAGES.length - 1 && (
               <Connector active={status === "done" || status === "running"}/>
             )}
@@ -196,6 +233,24 @@ function Connector({ active }) {
   return (
     <div className={"conn" + (active ? " on" : "")}>
       <div className="line"/>
+    </div>
+  );
+}
+
+function PipelinePanel({ label, children }) {
+  const [open, setOpen] = React.useState(true);
+  return (
+    <div className="stage" style={{marginTop: 0, borderStyle: "dashed", opacity: 0.97}}>
+      <div className="stage-head" onClick={() => setOpen(o => !o)} style={{cursor: "pointer"}}>
+        <div className="stage-num" style={{background: "var(--acc-soft)", color: "var(--acc-ink)", border: "1px solid var(--acc-ink, var(--line))", fontSize: 9, letterSpacing: "0.04em", fontFamily: "var(--mono)", minWidth: 32, padding: "0 6px", display: "flex", alignItems: "center", justifyContent: "center"}}>
+          {label.toUpperCase().slice(0, 4)}
+        </div>
+        <div className="stage-meta">
+          <div className="stage-name">{label}</div>
+        </div>
+        <Icon name={open ? "chev-u" : "chev-d"} size={14} className="muted"/>
+      </div>
+      {open && <div className="stage-body">{children}</div>}
     </div>
   );
 }
@@ -743,12 +798,6 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         </div>
       )}
 
-      {/* RSS Signals panel — ingest and manage industry RSS feeds */}
-      {window.RSSPanel && (
-        <div className="stage-detail" style={{padding:0, overflow:"hidden"}}>
-          <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady}/>
-        </div>
-      )}
     </div>
   );
 }
@@ -1124,18 +1173,6 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         );
       })()}
 
-      {/* Forecasts panel — revenue / margin / M-Score / FRED correlates */}
-      {window.ForecastsPanel && (
-        <ForecastsPanel
-          data={forecasts}
-          liveMode={liveMode}
-          livefacts={livefacts}
-          fredSeries={fredSeries}
-          rssSignals={liveRssSignals}
-          industry={industry}
-          ticker={ticker}
-        />
-      )}
     </div>
   );
 }
@@ -1394,12 +1431,6 @@ function S4Body({ output }) {
         </ul>
       </div>
 
-      {/* Full MAP cards */}
-      {window.MapsTab && maps.length > 0 && (
-        <div className="stage-detail" style={{padding:0, overflow:"hidden"}}>
-          <MapsTab maps={maps}/>
-        </div>
-      )}
     </div>
   );
 }
@@ -1481,12 +1512,6 @@ function S5Body({ output, flowMeta = null, risks = [], maps = [], onOpenMain = n
         </ul>
       </div>
 
-      {/* Risk Flow — top risks fan-out after closure scoring */}
-      {window.FlowMiniTab && flowMeta && risks.length > 0 && (
-        <div className="stage-detail" style={{padding:0, overflow:"hidden"}}>
-          <FlowMiniTab risks={risks} maps={maps} flowMeta={flowMeta} onOpenMain={onOpenMain}/>
-        </div>
-      )}
     </div>
   );
 }
