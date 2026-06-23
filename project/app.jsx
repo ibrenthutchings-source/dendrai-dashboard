@@ -1295,6 +1295,7 @@ function App() {
                 onRemoveAudit={removeManualAudit}
                 narrativeResult={narrativeResult}
                 onNarrativeResult={setNarrativeResult}
+                forecasts={profile.forecasts}
                 ticker={cfg.ticker || ""} />
             )}
             {activePipeTab === "rss" && (

@@ -26,7 +26,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit,
-                    narrativeResult, onNarrativeResult, ticker: pipelineTicker = "" }) {
+                    narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "" }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s1Extra = {
     rssRunProgress,
@@ -34,6 +34,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     ticker: pipelineTicker || output.s1?.ticker || "",
     narrativeResult,
     onNarrativeResult,
+    forecasts,
   };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
