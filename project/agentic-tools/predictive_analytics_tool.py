@@ -1708,10 +1708,30 @@ def run_full_analysis(
             )
             result["forecast"]["metric"]  = forecast_metric
             result["forecast"]["quarters"] = [p["quarter_end"] for p in q_series]
+            result["forecast"]["history"]  = q_series  # raw quarterly values for JS chart
         else:
-            result["forecast"] = {"note": f"Only {len(vals)} quarters available for {forecast_metric}; need ≥8"}
+            result["forecast"] = {
+                "note": f"Only {len(vals)} quarters available for {forecast_metric}; need ≥8",
+                "history": q_series,
+            }
     else:
         result["forecast"] = {"note": f"No quarterly {forecast_metric} data in XBRL"}
+
+    # Gross margin quarterly history — needed by the JS forecast chart
+    try:
+        gp_series = extract_quarterly_series(xbrl, "GrossProfit")
+        rev_map   = {p["quarter_end"]: p["value"] for p in q_series} if q_series else {}
+        gm_history = []
+        for gp in gp_series:
+            rv = rev_map.get(gp["quarter_end"])
+            if rv and rv > 0:
+                gm = gp["value"] / rv * 100
+                if 0 < gm < 100:
+                    gm_history.append({"quarter_end": gp["quarter_end"], "value": round(gm, 2)})
+        if gm_history:
+            result["forecast"]["margin_history"] = gm_history
+    except Exception:
+        pass
 
     # ── 9. RSS Signal Grading ─────────────────────────────────────────────────
     if include_rss:

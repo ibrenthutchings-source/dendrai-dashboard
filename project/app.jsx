@@ -580,6 +580,46 @@ function App() {
         // Build template profile for narrative text (objectives, MAPs, controls)
         const templateProfile = RISK_ENGINE.buildProfile(cfg.ticker, null, mcpResult.sic, industry);
 
+        // Override synthetic forecast history with real EDGAR quarterly series from MCP
+        const _mcpForecast = mcpResult.forecast;
+        if (_mcpForecast) {
+          const _toQL = (d) => { if (!d) return null; const [y,m] = d.slice(0,7).split('-').map(Number); return `Q${Math.ceil(m/3)}-${String(y).slice(-2)}`; };
+          const { fcLabels } = RISK_ENGINE.quarterBoundaries();
+
+          const revHist = (_mcpForecast.history || []).slice(-12).map(p => ({
+            q: _toQL(p.quarter_end) || p.quarter_end,
+            v: +(p.value / 1e6).toFixed(0),
+          }));
+          if (revHist.length >= 4) {
+            templateProfile.forecasts.revenue.history = revHist;
+            // Replace simple trend-based forecast with MCP ensemble forecast points
+            if (_mcpForecast.forecasts?.length) {
+              templateProfile.forecasts.revenue.forecast = _mcpForecast.forecasts.map((f, i) => ({
+                q:    fcLabels[i] || `H${i + 1}`,
+                base: +(f.point / 1e6).toFixed(0),
+                lo:   +(f.ci_lower / 1e6).toFixed(0),
+                hi:   +(f.ci_upper / 1e6).toFixed(0),
+              }));
+            }
+          }
+
+          const mgHist = (_mcpForecast.margin_history || []).slice(-12).map(p => ({
+            q: _toQL(p.quarter_end) || p.quarter_end,
+            v: +p.value.toFixed(1),
+          }));
+          if (mgHist.length >= 4) {
+            templateProfile.forecasts.margin.history = mgHist;
+            // Recompute simple margin forecast from last real data point
+            const lastMG = mgHist[mgHist.length - 1].v;
+            templateProfile.forecasts.margin.forecast = fcLabels.map((q, i) => ({
+              q,
+              base: +(lastMG + i * 0.2).toFixed(1),
+              lo:   +(lastMG + i * 0.2 - 2).toFixed(1),
+              hi:   +(lastMG + i * 0.2 + 2.5).toFixed(1),
+            }));
+          }
+        }
+
         // Overlay MCP-computed scores onto template risks
         const mergedRisks = MCP.mergeRiskScores(templateProfile.risks, mcpResult.risk_scores);
 
