@@ -67,6 +67,7 @@ import ai_endpoints
 import claude_client
 import peer_intel
 import risks_as_code
+import oracle_fusion_endpoints
 
 try:
     from fred_tool import run_analysis as fred_run_analysis
@@ -107,6 +108,9 @@ app.include_router(ai_endpoints.router)
 
 # Risks-as-Code: OSCAL + COSO ERM translators + SSE live stream.
 app.include_router(risks_as_code.router)
+
+# Oracle Fusion: control library, test results, issues, SOD, audit events.
+app.include_router(oracle_fusion_endpoints.router)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
