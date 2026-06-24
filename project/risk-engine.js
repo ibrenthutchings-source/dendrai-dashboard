@@ -652,7 +652,7 @@ window.RISK_ENGINE = (function () {
         linked_risk: r.id,
         action: tmpl?.mapAction || `Implement controls to reduce ${r.name} risk to target level`,
         owner: tmpl?.mapOwner || 'Chief Risk Officer',
-        due_date: `2025-Q${Math.min(4, i + 1 + (r.rag === 'R' ? 0 : 1))}`,
+        due_date: (() => { const now = new Date(); const y = now.getFullYear(); const q = Math.min(4, Math.ceil((now.getMonth()+1)/3) + 1 + (r.rag === 'R' ? 0 : 1) + i); return q > 4 ? `${y+1}-Q${q-4}` : `${y}-Q${q}`; })(),
         completion_pct: Math.max(0, 30 - i * 5),
         success_criteria: tmpl?.mapSuccessCriteria || `${r.name} risk score reduced to target level; controls validated by IA`,
         reduction_pct: tmpl?.reductionPct || 12,
@@ -836,8 +836,27 @@ window.RISK_ENGINE = (function () {
     return qs;
   }
 
+  // Compute dynamic quarter boundaries so historical/forecast labels are never stale.
+  // Returns the last *completed* fiscal quarter (Q2-2026 is still open on 2026-06-24,
+  // so last completed = Q1-2026) plus 4 future forecast quarter labels.
+  function _quarterBoundaries() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const curQ = Math.ceil((now.getMonth() + 1) / 3);
+    let lastY = year, lastQ = curQ - 1;
+    if (lastQ < 1) { lastQ = 4; lastY--; }
+    const fcLabels = [];
+    let fqY = year, fqQ = curQ;
+    for (let i = 0; i < 4; i++) {
+      fcLabels.push(`Q${fqQ}-${String(fqY).slice(-2)}`);
+      fqQ++; if (fqQ > 4) { fqQ = 1; fqY++; }
+    }
+    return { lastY, lastQ, fcLabels, defaultLatestQ: `Q${lastQ}-${String(lastY).slice(-2)}` };
+  }
+
   // ── Build Forecasts from EDGAR quarterly series ─────────────
   function buildForecasts(ratios, ticker, industry, fin) {
+    const { lastY, lastQ, fcLabels, defaultLatestQ } = _quarterBoundaries();
     const histQuarters = [];
     if (fin?.revenue?.series) {
       const qtrs = fin.revenue.series
@@ -855,7 +874,7 @@ window.RISK_ENGINE = (function () {
       const annualM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 1000;
       const qBase   = annualM / 4;
       const qp      = Number.isFinite(ratios.revP) ? ratios.revP / 1e6 / 4 : qBase;
-      const labels  = syntheticQuarters(2025, 4);
+      const labels  = syntheticQuarters(lastY, lastQ);
       for (let i = 0; i < 8; i++) {
         const frac = i / 7;
         histQuarters.push({ q: labels[i], v: +(qp + (qBase - qp) * frac).toFixed(0) });
@@ -864,7 +883,7 @@ window.RISK_ENGINE = (function () {
     const lastV   = histQuarters.length ? histQuarters[histQuarters.length - 1].v : 1000;
     const trend   = ratios.revGrowth ?? 0;
     const qGrowth = Math.pow(1 + trend, 0.25) - 1;
-    const fcastQ  = ['Q1-26','Q2-26','Q3-26','Q4-26'].map((q, i) => {
+    const fcastQ  = fcLabels.map((q, i) => {
       const base = +(lastV * Math.pow(1 + qGrowth, i + 1)).toFixed(0);
       return { q, base, lo: +(base * 0.92).toFixed(0), hi: +(base * 1.08).toFixed(0) };
     });
@@ -912,13 +931,13 @@ window.RISK_ENGINE = (function () {
       // Clear any partial EDGAR entries to avoid a mixed EDGAR+synthetic series
       histMargins.length = 0;
       const gm = Number.isFinite(ratios.grossMargin) ? ratios.grossMargin * 100 : 40;
-      const labels = syntheticQuarters(2025, 4);
+      const labels = syntheticQuarters(lastY, lastQ);
       for (let i = 0; i < 8; i++)
         histMargins.push({ q: labels[i], v: +(gm - (7 - i) * 0.1).toFixed(1) });
     }
     const rawGM  = histMargins[histMargins.length - 1]?.v;
     const lastGM = Number.isFinite(rawGM) ? rawGM : 40;
-    const fcastGM = ['Q1-26','Q2-26','Q3-26','Q4-26'].map((q, i) => ({
+    const fcastGM = fcLabels.map((q, i) => ({
       q,
       base: +(lastGM + i * 0.2).toFixed(1),
       lo:   +(lastGM + i * 0.2 - 2).toFixed(1),
@@ -938,10 +957,10 @@ window.RISK_ENGINE = (function () {
         sentQuarterly.push({ q: src[i].q, score, hedge });
       }
     } else {
-      // Pure synthetic — 8 quarters chronological ending at Q4-25
+      // Pure synthetic — 8 quarters chronological ending at last completed quarter
       const annG   = ratios.revGrowth ?? 0;
       const qG     = Math.pow(1 + annG, 0.25) - 1;
-      const labels = syntheticQuarters(2025, 4);
+      const labels = syntheticQuarters(lastY, lastQ);
       for (let i = 0; i < 8; i++) {
         const score = Math.max(-25, Math.min(25, Math.round(qG * 100) + (i < 4 ? -5 : 3)));
         sentQuarterly.push({ q: labels[i], score, hedge: +(Math.max(0.05, 0.26 - i * 0.025)).toFixed(2) });
@@ -962,7 +981,7 @@ window.RISK_ENGINE = (function () {
         score: latestSent,
         trend: sentTrend,
         hedge_ratio_trend: hedgeTrend,
-        latest_quarter: sentQuarterly[sentQuarterly.length - 1]?.q ?? 'Q4-25',
+        latest_quarter: sentQuarterly[sentQuarterly.length - 1]?.q ?? defaultLatestQ,
         quarterly: sentQuarterly,
       },
       mscore: {
@@ -982,9 +1001,9 @@ window.RISK_ENGINE = (function () {
       ticker: ticker.toUpperCase(),
       industry,
       focus: industry,
-      period: 'Q1 2022 — Q4 2024',
-      periodBegin: 'Q1 2025',
-      periodEnd: 'Q4 2025',
+      period: (() => { const y = new Date().getFullYear(); return `Q1 ${y-4} — Q4 ${y-2}`; })(),
+      periodBegin: (() => { const now = new Date(); const q = Math.ceil((now.getMonth()+1)/3); return `Q${q} ${now.getFullYear()}`; })(),
+      periodEnd: (() => { const y = new Date().getFullYear(); return `Q4 ${y}`; })(),
       auditor: 'Independent Auditor',
       auditor_opinion: 'Unqualified',
       fy_close: '2024-12-31',
