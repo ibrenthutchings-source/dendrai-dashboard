@@ -57,7 +57,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     onAddAudit,
     onRemoveAudit,
     risks: output.s2?.risks || [],
-  };
+  };1
   const s5Extra = {
     flowMeta,
     risks: output.s2?.risks || [],
@@ -203,7 +203,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1
         </div>
       )}
       {isOpen && (
-        <div className="stage-body">
+        <div className="stage-body open">
           <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
         </div>
       )}
@@ -326,7 +326,7 @@ function PipelinePanel({ label, children }) {
         </div>
         <Icon name={open ? "chev-u" : "chev-d"} size={14} className="muted"/>
       </div>
-      {open && <div className="stage-body">{children}</div>}
+      {open && <div className="stage-body open">{children}</div>}
     </div>
   );
 }
