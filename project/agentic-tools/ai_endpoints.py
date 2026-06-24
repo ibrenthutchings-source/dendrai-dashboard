@@ -36,6 +36,11 @@ import db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Model routing: Sonnet for structured output tasks, Opus for the open-ended investigation agent.
+# Sonnet 4.6 is $3/M input · $15/M output vs Opus 4.8 $5/M · $25/M — roughly 40 % cheaper per call.
+_MODEL_STRUCTURED = "claude-sonnet-4-6"
+_MODEL_AGENT = "claude-opus-4-8"
+
 
 def _require_ai():
     if not claude_client.is_available():
@@ -169,14 +174,15 @@ def gate1_recommend(req: Gate1Request):
     )
     try:
         result = claude_client.complete_json(
-            _GATE1_SYSTEM, user, _GATE1_SCHEMA, label="gate1", effort="high",
+            _GATE1_SYSTEM, user, _GATE1_SCHEMA, label="gate1",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
 
     db.save_ai_analysis(
         "gate1_recommendation", result,
-        run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="medium",
         summary=f"{len(result.get('recommendations', []))} risk dispositions",
     )
     return result
@@ -253,14 +259,15 @@ def gate2_recommend(req: Gate2Request):
     )
     try:
         result = claude_client.complete_json(
-            _GATE2_SYSTEM, user, _GATE2_SCHEMA, label="gate2", effort="high",
+            _GATE2_SYSTEM, user, _GATE2_SCHEMA, label="gate2",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
 
     db.save_ai_analysis(
         "gate2_recommendation", result,
-        run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="medium",
         summary=f"{len(result.get('recommendations', []))} objective scopes",
     )
     return result
@@ -356,14 +363,14 @@ def narrative_analysis(req: NarrativeRequest):
     try:
         result = claude_client.complete_json(
             _NARRATIVE_SYSTEM, user, _NARRATIVE_SCHEMA, label="narrative",
-            effort="high", max_tokens=10_000,
+            model=_MODEL_STRUCTURED, effort="high", max_tokens=6000,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
 
     db.save_ai_analysis(
         "narrative_analysis", result,
-        run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=result.get("summary", "")[:500],
     )
     return result
@@ -424,7 +431,8 @@ def persona_brief(req: PersonaRequest):
     )
     try:
         result = claude_client.complete_json(
-            _PERSONA_SYSTEM, user, _PERSONA_SCHEMA, label="persona", effort="high",
+            _PERSONA_SYSTEM, user, _PERSONA_SCHEMA, label="persona",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
@@ -432,7 +440,7 @@ def persona_brief(req: PersonaRequest):
     db.save_ai_analysis(
         "persona_brief", result,
         run_id=req.run_id, ticker=req.ticker, subject_ref=persona,
-        model=claude_client.MODEL, effort="high",
+        model=_MODEL_STRUCTURED, effort="medium",
         summary=result.get("headline", "")[:500],
     )
     return result
@@ -467,14 +475,15 @@ def audit_report(req: ReportRequest):
     )
     try:
         markdown = claude_client.complete_text(
-            _REPORT_SYSTEM, user, label="report", effort="high", max_tokens=16_000,
+            _REPORT_SYSTEM, user, label="report",
+            model=_MODEL_STRUCTURED, effort="high", max_tokens=10_000,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
 
     db.save_ai_analysis(
         "audit_report", {"markdown": markdown},
-        run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=f"{len(markdown)} char report",
     )
     return {"ticker": req.ticker, "markdown": markdown}
@@ -520,7 +529,8 @@ def investigate_stream(req: InvestigateRequest):
         final_event: dict = {}
         for event in claude_client.run_tool_loop_streaming(
             _AGENT_SYSTEM, user, agent_tools.TOOLS, agent_tools.IMPLS,
-            label="investigate_stream", effort="high", max_tokens=10_000, max_iterations=14,
+            label="investigate_stream", model=_MODEL_AGENT, effort="high",
+            max_tokens=10_000, max_iterations=14,
         ):
             if event.get("type") == "tool_call":
                 all_tool_calls.append({"tool": event["tool"], "input": event["input"], "is_error": False})
@@ -534,7 +544,7 @@ def investigate_stream(req: InvestigateRequest):
                 "agent_investigation",
                 {"memo": final_event.get("final_text", ""), "tool_calls": all_tool_calls,
                  "iterations": final_event.get("iterations", 0), "stopped": final_event.get("stopped", "")},
-                run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+                run_id=req.run_id, ticker=req.ticker, model=_MODEL_AGENT, effort="high",
                 summary=f"{final_event.get('iterations', 0)} iterations (stream), {len(all_tool_calls)} tool calls",
             )
 
@@ -644,14 +654,15 @@ def loop_calibrate(req: CalibrateRequest):
     )
     try:
         result = claude_client.complete_json(
-            _CALIBRATE_SYSTEM, user, _CALIBRATE_SCHEMA, label="loop_calibrate", effort="high",
+            _CALIBRATE_SYSTEM, user, _CALIBRATE_SCHEMA, label="loop_calibrate",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
 
     db.save_ai_analysis(
         "loop_calibration", result,
-        run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="medium",
         summary=result.get("summary", "")[:500],
     )
     return result
@@ -704,7 +715,8 @@ def investigate(req: InvestigateRequest):
     try:
         result = claude_client.run_tool_loop(
             _AGENT_SYSTEM, user, agent_tools.TOOLS, agent_tools.IMPLS,
-            label="investigate", effort="high", max_tokens=10_000, max_iterations=14,
+            label="investigate", model=_MODEL_AGENT, effort="high",
+            max_tokens=10_000, max_iterations=14,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI agent failed: {exc}")
@@ -713,7 +725,7 @@ def investigate(req: InvestigateRequest):
         "agent_investigation",
         {"memo": result["final_text"], "tool_calls": result["tool_calls"],
          "iterations": result["iterations"], "stopped": result["stopped"]},
-        run_id=req.run_id, ticker=req.ticker, model=claude_client.MODEL, effort="high",
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_AGENT, effort="high",
         summary=f"{result['iterations']} iterations, {len(result['tool_calls'])} tool calls",
     )
     return result
