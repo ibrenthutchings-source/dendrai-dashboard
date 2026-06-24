@@ -5495,3 +5495,8 @@ React will try to recreate this component tree from scratch using the error boun
     at RootBoundary (http://localhost:5173/src/main.jsx?t=1782264718344:35:3)
 
 React will try to recreate this component tree from scratch using the error boundary you provided, ErrorBoundary.
+[2m1:03:15 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/code-screens.jsx[22m
+[2m1:03:32 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/nav.jsx[22m
+[2m1:03:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/components.jsx[22m
+[2m1:04:05 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m
+[2m1:04:34 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/styles-modules.css?direct[22m

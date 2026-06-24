@@ -463,6 +463,18 @@ CREATE TABLE IF NOT EXISTS ai_analyses (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_run  ON ai_analyses (run_id, kind);
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_tick ON ai_analyses (ticker, kind, created_at DESC);
+
+-- Risks-as-Code artifacts: OSCAL and COSO ERM / ISO 31000 outputs per run
+CREATE TABLE IF NOT EXISTS risks_as_code_artifacts (
+    id           BIGSERIAL    PRIMARY KEY,
+    run_id       INT          REFERENCES risk_loop_runs(id) ON DELETE CASCADE,
+    ticker       VARCHAR(16)  NOT NULL,
+    framework    VARCHAR(32)  NOT NULL,  -- 'oscal' | 'coso_erm'
+    content_yaml TEXT         NOT NULL,
+    generated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, framework)
+);
+CREATE INDEX IF NOT EXISTS idx_rac_artifacts_ticker ON risks_as_code_artifacts (ticker, framework, generated_at DESC);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -1727,6 +1739,81 @@ def get_run_detail(run_id: int) -> Optional[dict]:
                 } if brow else None
                 return result
     return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Risks-as-Code artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_risks_as_code_artifact(run_id: int, ticker: str, framework: str, content: str) -> Optional[int]:
+    """Upsert a Risks-as-Code artifact (OSCAL or COSO ERM) for a run. Returns artifact id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO risks_as_code_artifacts (run_id, ticker, framework, content_yaml, generated_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (run_id, framework) DO UPDATE
+                        SET content_yaml = EXCLUDED.content_yaml,
+                            generated_at = NOW()
+                    RETURNING id
+                    """,
+                    (run_id, ticker.upper(), framework, content),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_risks_as_code_artifact(run_id: int, framework: str) -> Optional[dict]:
+    """Fetch a single artifact by run_id + framework."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, ticker, framework, content_yaml, generated_at FROM risks_as_code_artifacts WHERE run_id = %s AND framework = %s",
+                    (run_id, framework),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id":           row[0],
+                    "ticker":       row[1],
+                    "framework":    row[2],
+                    "content":      row[3],
+                    "generated_at": row[4].isoformat() if row[4] else None,
+                }
+    return _run(_do)
+
+
+def get_latest_risks_as_code_artifacts(ticker: str) -> list:
+    """Return the most recent artifact per framework for a ticker."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (framework)
+                        id, run_id, framework, content_yaml, generated_at
+                    FROM risks_as_code_artifacts
+                    WHERE ticker = %s
+                    ORDER BY framework, generated_at DESC
+                    """,
+                    (ticker.upper(),),
+                )
+                return [
+                    {
+                        "id":           r[0],
+                        "run_id":       r[1],
+                        "framework":    r[2],
+                        "content":      r[3],
+                        "generated_at": r[4].isoformat() if r[4] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

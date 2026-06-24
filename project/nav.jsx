@@ -21,6 +21,7 @@ const NAV_SECTIONS = [
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
       { id: "riskcode",   icon: "spark",     l: "Risk-as-Code" },
+      { id: "frameworks", icon: "code",     l: "Risks as Code (Frameworks)" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
     ],
