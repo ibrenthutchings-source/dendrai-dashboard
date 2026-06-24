@@ -80,6 +80,81 @@ An "Generate AI report" button (Claude API) produces a board-ready narrative if 
 - **Loop Report — Pipeline Execution section**: Added a full per-stage breakdown showing each stage's status, key metrics, task list (signals / risks / objectives / MAPs / recommendations), and stage reasoning trace.
 - **Bug fix**: `narr.result.summary` (undefined variable) corrected to `narrativeResult.summary` in `pipeline.jsx`.
 
+## Agentic tools backend
+
+The Python backend (`project/agentic-tools/`) exposes all data and analytics as a REST API on `http://localhost:8001` and as individual MCP servers for Claude Code / Claude Desktop.
+
+```bash
+cd project/agentic-tools
+pip install fastapi uvicorn pydantic python-dotenv requests anthropic \
+            feedparser httpx psycopg2-binary mcp pyyaml
+cp .env.example .env   # fill in API keys
+python api_server.py   # → http://localhost:8001/docs
+```
+
+### Data sources
+
+| Module | What it provides | Credentials needed |
+|---|---|---|
+| EDGAR | SEC 10-K/10-Q/8-K/DEF 14A filings, XBRL financials, peer companies | None (public) |
+| FRED | Macro leading-indicator correlations | `FRED_API_KEY` (free) |
+| RSS | Industry news + five compliance feeds (BIS, CISA, SEC, Fed, EPA) | None (public) |
+| Predictive Analytics | Ten risk models: M-Score, forecasting, scenarios, grey swan | None |
+| Risks-as-Code | OSCAL + COSO ERM YAML artifacts from live risk register | None |
+| AI endpoints | HITL gate recommendations, narrative analysis, persona briefs | `ANTHROPIC_API_KEY` |
+| **Oracle Fusion** | **Control library, test results, deficiencies, SOD violations, audit trail** | **See below** |
+
+### Oracle Fusion controls integration
+
+The Oracle Fusion module (`oracle_fusion_tool.py`) pulls automated control data from Oracle Fusion Cloud and makes it available through the REST API and as MCP tools for Claude.
+
+**What it pulls:**
+- **Control library** — all active RMCS control definitions with type, frequency, and effectiveness rating
+- **Control test results** — operating effectiveness evidence (pass/fail, exceptions noted)
+- **Control issues** — open deficiencies with severity, root cause, and remediation plan
+- **User role assignments** — SCIM 2.0 access listings for access certification reviews
+- **SOD violations** — segregation-of-duties conflicts with conflicting role pairs
+- **Audit trail** — FSCM transaction audit events by module (AP, AR, GL, Procurement, HCM)
+- **Control health summary** — aggregated RAG status + risk signals compatible with the Dendrai risk register
+
+**Setup (add to `project/agentic-tools/.env`):**
+```bash
+# Basic auth — quickest to configure
+ORACLE_FUSION_HOST=https://mycompany.fa.us6.oraclecloud.com
+ORACLE_FUSION_USERNAME=svc_dendrai
+ORACLE_FUSION_PASSWORD=your_password
+
+# OAuth 2.0 — recommended for production (takes priority over basic auth)
+ORACLE_FUSION_CLIENT_ID=your_client_id
+ORACLE_FUSION_CLIENT_SECRET=your_client_secret
+```
+
+The service account needs read access to Oracle Risk Management Cloud (RMCS), FSCM Audit, and Oracle IDCS / Identity Domains (SCIM). See `project/agentic-tools/README.md` for full Oracle Fusion setup instructions, endpoint reference, MCP server configuration, and module codes.
+
+**Key endpoints once configured:**
+```
+GET  /oracle-fusion/status          — connectivity check
+GET  /oracle-fusion/summary         — aggregated control health (start here)
+POST /oracle-fusion/sod-violations  — SOD violations by risk level
+POST /oracle-fusion/control-issues  — open deficiencies
+POST /oracle-fusion/audit-events    — transaction audit trail
+```
+
+**MCP tools for Claude** — run `oracle_fusion_mcp_server.py` and add it to `.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "oracle-fusion": {
+      "command": "python",
+      "args": ["C:/path/to/agentic-tools/oracle_fusion_mcp_server.py"]
+    }
+  }
+}
+```
+Claude can then call `fusion_control_summary`, `fusion_sod_violations`, `fusion_audit_events`, and four other tools directly.
+
+See `project/agentic-tools/README.md` for the complete backend reference.
+
 ## Backend (dendrai-app)
 
 See `dendrai-app/README.md` for the Express backend, Docker setup, and production deployment instructions.
