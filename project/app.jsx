@@ -1401,6 +1401,15 @@ function App() {
           </div>
           )}
 
+          {/* ---- Grey Swan Scenarios ---- */}
+          {activeScreen === "scenarios" && (
+          <div className="panel active">
+            <ScenariosPanel
+              scenarios={profile.scenarios}
+              greySwan={profile.greySwan} />
+          </div>
+          )}
+
           {/* ---- Governance Intelligence ---- */}
           {activeScreen === "gov" && (
           <div className="panel gov-panel active">
