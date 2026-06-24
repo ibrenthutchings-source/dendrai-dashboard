@@ -464,6 +464,95 @@ CREATE TABLE IF NOT EXISTS ai_analyses (
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_run  ON ai_analyses (run_id, kind);
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_tick ON ai_analyses (ticker, kind, created_at DESC);
 
+-- ── SOX Scoping ─────────────────────────────────────────────────────────────
+-- Materiality configuration per company + fiscal year
+CREATE TABLE IF NOT EXISTS sox_scoping_configs (
+    id                   SERIAL PRIMARY KEY,
+    company_id           INT NOT NULL REFERENCES companies(id),
+    fiscal_year          VARCHAR(8)  NOT NULL,
+    fiscal_year_end      DATE,
+    materiality_basis    VARCHAR(16) NOT NULL DEFAULT 'pretax_income',
+    materiality_pct      NUMERIC(5,3) NOT NULL DEFAULT 5.0,
+    performance_mat_pct  NUMERIC(5,3) NOT NULL DEFAULT 75.0,
+    scope_note           TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, fiscal_year)
+);
+
+-- Optional geography / business-segment financial breakdowns
+CREATE TABLE IF NOT EXISTS sox_financial_segments (
+    id               SERIAL PRIMARY KEY,
+    company_id       INT NOT NULL REFERENCES companies(id),
+    run_id           INT REFERENCES risk_loop_runs(id),
+    fiscal_year      VARCHAR(8),
+    segment_type     VARCHAR(16) NOT NULL,
+    segment_name     VARCHAR(128) NOT NULL,
+    revenue          NUMERIC,
+    revenue_pct      NUMERIC(5,2),
+    gross_profit     NUMERIC,
+    operating_income NUMERIC,
+    assets           NUMERIC,
+    source           VARCHAR(64),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, fiscal_year, segment_type, segment_name)
+);
+
+-- Extensible system registry: ERP, consolidation, reporting, sub-ledgers, etc.
+CREATE TABLE IF NOT EXISTS sox_systems (
+    id               SERIAL PRIMARY KEY,
+    company_id       INT NOT NULL REFERENCES companies(id),
+    system_name      VARCHAR(128) NOT NULL,
+    system_type      VARCHAR(32)  NOT NULL,
+    vendor           VARCHAR(128),
+    version          VARCHAR(32),
+    linked_processes TEXT[],
+    significance     VARCHAR(8)   NOT NULL DEFAULT 'medium',
+    active           BOOLEAN      NOT NULL DEFAULT TRUE,
+    notes            TEXT,
+    added_by         VARCHAR(128),
+    added_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, system_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sox_systems_co ON sox_systems (company_id);
+
+-- Computed SOX scope per risk-loop run
+CREATE TABLE IF NOT EXISTS sox_scoping_results (
+    id                      SERIAL PRIMARY KEY,
+    run_id                  INT NOT NULL REFERENCES risk_loop_runs(id),
+    company_id              INT NOT NULL REFERENCES companies(id),
+    fiscal_year             VARCHAR(8) NOT NULL,
+    scoped_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    planning_materiality    NUMERIC,
+    performance_materiality NUMERIC,
+    trivial_threshold       NUMERIC,
+    materiality_basis       VARCHAR(128),
+    revenue_forecast_fy     NUMERIC,
+    pretax_income_estimate  NUMERIC,
+    accounts_in_scope       JSONB,
+    processes_in_scope      JSONB,
+    systems_in_scope        JSONB,
+    segments_coverage       JSONB,
+    trigger_reason          TEXT,
+    input_hash              VARCHAR(64),
+    UNIQUE (run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sox_results_co ON sox_scoping_results (company_id, scoped_at DESC);
+
+-- Audit trail of rescoping triggers
+CREATE TABLE IF NOT EXISTS sox_rescoping_triggers (
+    id             BIGSERIAL PRIMARY KEY,
+    company_id     INT NOT NULL REFERENCES companies(id),
+    triggered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    trigger_type   VARCHAR(32) NOT NULL,
+    trigger_detail JSONB,
+    prev_run_id    INT REFERENCES risk_loop_runs(id),
+    new_run_id     INT REFERENCES risk_loop_runs(id),
+    rescoped       BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_sox_rescoping_co ON sox_rescoping_triggers (company_id, triggered_at DESC);
+
 -- Risks-as-Code artifacts: OSCAL and COSO ERM / ISO 31000 outputs per run
 CREATE TABLE IF NOT EXISTS risks_as_code_artifacts (
     id           BIGSERIAL    PRIMARY KEY,
@@ -486,6 +575,8 @@ ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS period_begin   VARCHAR(16);
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS appetite_level VARCHAR(8);
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS persona        VARCHAR(64);
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS signal_set     TEXT[];
+ALTER TABLE sox_systems     ADD COLUMN IF NOT EXISTS version        VARCHAR(32);
+ALTER TABLE sox_systems     ADD COLUMN IF NOT EXISTS notes          TEXT;
 """
 
 
