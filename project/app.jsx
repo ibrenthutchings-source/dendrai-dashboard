@@ -1428,6 +1428,19 @@ function App() {
           </div>
           )}
 
+          {/* ---- SOX Scope ---- */}
+          {activeScreen === "sox" && (
+          <div className="panel active" style={{overflow: "auto"}}>
+            <SoxScopePanel
+              ticker={cfg.ticker}
+              runId={runIdRef.current}
+              forecasts={profile.forecasts}
+              risks={output.s2?.risks || (hasRun ? profile.risks : []) || []}
+              ratios={profile.ratios || {}}
+              hasRun={hasRun} />
+          </div>
+          )}
+
           {/* ---- Governance Intelligence ---- */}
           {activeScreen === "gov" && (
           <div className="panel gov-panel active">

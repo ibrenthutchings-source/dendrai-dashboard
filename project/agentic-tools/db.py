@@ -1908,6 +1908,335 @@ def get_latest_risks_as_code_artifacts(ticker: str) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SOX Scoping
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_sox_config(company_id: int, fiscal_year: str, config: dict) -> Optional[int]:
+    """Create or update SOX scoping config for a company + fiscal year."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_scoping_configs
+                        (company_id, fiscal_year, fiscal_year_end, materiality_basis,
+                         materiality_pct, performance_mat_pct, scope_note)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
+                        fiscal_year_end     = COALESCE(EXCLUDED.fiscal_year_end,     sox_scoping_configs.fiscal_year_end),
+                        materiality_basis   = EXCLUDED.materiality_basis,
+                        materiality_pct     = EXCLUDED.materiality_pct,
+                        performance_mat_pct = EXCLUDED.performance_mat_pct,
+                        scope_note          = COALESCE(EXCLUDED.scope_note, sox_scoping_configs.scope_note),
+                        updated_at          = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        company_id, fiscal_year,
+                        config.get("fiscal_year_end"),
+                        config.get("materiality_basis", "pretax_income"),
+                        config.get("materiality_pct", 5.0),
+                        config.get("performance_mat_pct", 75.0),
+                        config.get("scope_note"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_sox_config(company_id: int, fiscal_year: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, fiscal_year, fiscal_year_end, materiality_basis, "
+                    "materiality_pct, performance_mat_pct, scope_note, updated_at "
+                    "FROM sox_scoping_configs WHERE company_id = %s AND fiscal_year = %s",
+                    (company_id, fiscal_year),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "fiscal_year": row[1],
+                    "fiscal_year_end": row[2].isoformat() if row[2] else None,
+                    "materiality_basis": row[3], "materiality_pct": float(row[4]),
+                    "performance_mat_pct": float(row[5]), "scope_note": row[6],
+                    "updated_at": row[7].isoformat() if row[7] else None,
+                }
+    return _run(_do)
+
+
+def save_sox_scoping_result(run_id: int, company_id: int, result: dict) -> Optional[int]:
+    """Persist a computed SOX scope. Returns row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_scoping_results
+                        (run_id, company_id, fiscal_year, planning_materiality,
+                         performance_materiality, trivial_threshold, materiality_basis,
+                         revenue_forecast_fy, pretax_income_estimate,
+                         accounts_in_scope, processes_in_scope, systems_in_scope,
+                         segments_coverage, trigger_reason, input_hash)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (run_id) DO UPDATE SET
+                        scoped_at               = NOW(),
+                        planning_materiality    = EXCLUDED.planning_materiality,
+                        performance_materiality = EXCLUDED.performance_materiality,
+                        trivial_threshold       = EXCLUDED.trivial_threshold,
+                        materiality_basis       = EXCLUDED.materiality_basis,
+                        revenue_forecast_fy     = EXCLUDED.revenue_forecast_fy,
+                        pretax_income_estimate  = EXCLUDED.pretax_income_estimate,
+                        accounts_in_scope       = EXCLUDED.accounts_in_scope,
+                        processes_in_scope      = EXCLUDED.processes_in_scope,
+                        systems_in_scope        = EXCLUDED.systems_in_scope,
+                        segments_coverage       = EXCLUDED.segments_coverage,
+                        trigger_reason          = EXCLUDED.trigger_reason,
+                        input_hash              = EXCLUDED.input_hash
+                    RETURNING id
+                    """,
+                    (
+                        run_id, company_id,
+                        result.get("fiscal_year", ""),
+                        result.get("planning_materiality"),
+                        result.get("performance_materiality"),
+                        result.get("trivial_threshold"),
+                        result.get("materiality_basis"),
+                        result.get("revenue_forecast_fy"),
+                        result.get("pretax_income_estimate"),
+                        Json(result.get("accounts_in_scope") or []),
+                        Json(result.get("processes_in_scope") or []),
+                        Json(result.get("systems_in_scope") or []),
+                        Json(result.get("segments_coverage") or []),
+                        result.get("trigger_reason"),
+                        result.get("input_hash"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_sox_scoping_result(run_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, fiscal_year, scoped_at, planning_materiality, "
+                    "performance_materiality, trivial_threshold, materiality_basis, "
+                    "revenue_forecast_fy, pretax_income_estimate, accounts_in_scope, "
+                    "processes_in_scope, systems_in_scope, segments_coverage, "
+                    "trigger_reason, input_hash "
+                    "FROM sox_scoping_results WHERE run_id = %s",
+                    (run_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "run_id": run_id,
+                    "fiscal_year": row[1],
+                    "scoped_at": row[2].isoformat() if row[2] else None,
+                    "planning_materiality": float(row[3]) if row[3] is not None else None,
+                    "performance_materiality": float(row[4]) if row[4] is not None else None,
+                    "trivial_threshold": float(row[5]) if row[5] is not None else None,
+                    "materiality_basis": row[6],
+                    "revenue_forecast_fy": float(row[7]) if row[7] is not None else None,
+                    "pretax_income_estimate": float(row[8]) if row[8] is not None else None,
+                    "accounts_in_scope": row[9] or [],
+                    "processes_in_scope": row[10] or [],
+                    "systems_in_scope": row[11] or [],
+                    "segments_coverage": row[12] or [],
+                    "trigger_reason": row[13],
+                    "input_hash": row[14],
+                }
+    return _run(_do)
+
+
+def get_latest_sox_scoping_result(company_id: int) -> Optional[dict]:
+    """Most recent SOX scoping result for a company, across all runs."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT run_id FROM sox_scoping_results WHERE company_id = %s "
+                    "ORDER BY scoped_at DESC LIMIT 1",
+                    (company_id,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    run_id = _run(_do)
+    return get_sox_scoping_result(run_id) if run_id else None
+
+
+def upsert_sox_system(company_id: int, system: dict) -> Optional[int]:
+    """Add or update a system in the SOX system registry."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_systems
+                        (company_id, system_name, system_type, vendor, version,
+                         linked_processes, significance, active, notes, added_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (company_id, system_name) DO UPDATE SET
+                        system_type      = EXCLUDED.system_type,
+                        vendor           = COALESCE(EXCLUDED.vendor,    sox_systems.vendor),
+                        version          = COALESCE(EXCLUDED.version,   sox_systems.version),
+                        linked_processes = COALESCE(EXCLUDED.linked_processes, sox_systems.linked_processes),
+                        significance     = EXCLUDED.significance,
+                        active           = EXCLUDED.active,
+                        notes            = COALESCE(EXCLUDED.notes, sox_systems.notes),
+                        updated_at       = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        company_id,
+                        system.get("system_name", ""),
+                        system.get("system_type", "custom"),
+                        system.get("vendor"),
+                        system.get("version"),
+                        system.get("linked_processes") or [],
+                        system.get("significance", "medium"),
+                        system.get("active", True),
+                        system.get("notes"),
+                        system.get("added_by"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def deactivate_sox_system(company_id: int, system_id: int) -> bool:
+    """Mark a system as inactive (soft-delete)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE sox_systems SET active = FALSE, updated_at = NOW() "
+                    "WHERE id = %s AND company_id = %s",
+                    (system_id, company_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do) or False
+
+
+def list_sox_systems(company_id: int, active_only: bool = True) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                q = ("SELECT id, system_name, system_type, vendor, version, linked_processes, "
+                     "significance, active, notes, added_by, added_at, updated_at "
+                     "FROM sox_systems WHERE company_id = %s")
+                params = [company_id]
+                if active_only:
+                    q += " AND active = TRUE"
+                q += " ORDER BY significance DESC, system_name"
+                cur.execute(q, params)
+                return [
+                    {
+                        "id": r[0], "system_name": r[1], "system_type": r[2],
+                        "vendor": r[3], "version": r[4],
+                        "linked_processes": r[5] or [],
+                        "significance": r[6], "active": r[7], "notes": r[8],
+                        "added_by": r[9],
+                        "added_at": r[10].isoformat() if r[10] else None,
+                        "updated_at": r[11].isoformat() if r[11] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def upsert_sox_segment(company_id: int, run_id: Optional[int], segment: dict) -> None:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_financial_segments
+                        (company_id, run_id, fiscal_year, segment_type, segment_name,
+                         revenue, revenue_pct, gross_profit, operating_income, assets, source)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (company_id, fiscal_year, segment_type, segment_name) DO UPDATE SET
+                        run_id           = COALESCE(EXCLUDED.run_id, sox_financial_segments.run_id),
+                        revenue          = EXCLUDED.revenue,
+                        revenue_pct      = EXCLUDED.revenue_pct,
+                        gross_profit     = EXCLUDED.gross_profit,
+                        operating_income = EXCLUDED.operating_income,
+                        assets           = EXCLUDED.assets,
+                        source           = EXCLUDED.source
+                    """,
+                    (
+                        company_id, run_id,
+                        segment.get("fiscal_year", ""),
+                        segment.get("segment_type", "geography"),
+                        segment.get("segment_name", ""),
+                        segment.get("revenue"),
+                        segment.get("revenue_pct"),
+                        segment.get("gross_profit"),
+                        segment.get("operating_income"),
+                        segment.get("assets"),
+                        segment.get("source", "manual"),
+                    ),
+                )
+    _run(_do)
+
+
+def get_sox_segments(company_id: int, fiscal_year: str) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, segment_type, segment_name, revenue, revenue_pct, "
+                    "gross_profit, operating_income, assets, source "
+                    "FROM sox_financial_segments "
+                    "WHERE company_id = %s AND fiscal_year = %s "
+                    "ORDER BY segment_type, revenue DESC NULLS LAST",
+                    (company_id, fiscal_year),
+                )
+                return [
+                    {
+                        "id": r[0], "segment_type": r[1], "segment_name": r[2],
+                        "revenue": float(r[3]) if r[3] is not None else None,
+                        "revenue_pct": float(r[4]) if r[4] is not None else None,
+                        "gross_profit": float(r[5]) if r[5] is not None else None,
+                        "operating_income": float(r[6]) if r[6] is not None else None,
+                        "assets": float(r[7]) if r[7] is not None else None,
+                        "source": r[8],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def log_sox_rescoping_trigger(
+    company_id: int,
+    trigger_type: str,
+    trigger_detail: dict,
+    prev_run_id: Optional[int] = None,
+    new_run_id: Optional[int] = None,
+    rescoped: bool = False,
+) -> None:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_rescoping_triggers
+                        (company_id, trigger_type, trigger_detail,
+                         prev_run_id, new_run_id, rescoped)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    """,
+                    (company_id, trigger_type, Json(trigger_detail),
+                     prev_run_id, new_run_id, rescoped),
+                )
+    _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Backward-compat stubs (deprecated)
 # ─────────────────────────────────────────────────────────────────────────────
 
