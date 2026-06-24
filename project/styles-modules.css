@@ -2388,6 +2388,49 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .code-eval-check.warn { background: var(--amber-soft); color: var(--amber-ink); font-weight: 700; }
 .code-eval-note { margin-top: 10px; font-size: 10.5px; color: var(--amber-ink); background: var(--amber-soft); border-radius: 6px; padding: 7px 9px; }
 
+/* ---- Risks-as-Code Live Screen ---- */
+.rac-tabs { display: flex; gap: 6px; padding: 0 0 12px 0; border-bottom: 1px solid var(--line); margin-bottom: 12px; flex-shrink: 0; }
+.rac-tab {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
+  cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+}
+.rac-tab:hover { background: var(--surface-2); color: var(--ink); }
+.rac-tab.active { background: var(--acc-soft, #e8f5f0); color: var(--acc-ink, #1a7a56); border-color: var(--acc, #27a569); }
+.rac-tab-badge {
+  font-size: 9px; font-weight: 700; letter-spacing: .06em; padding: 1px 5px;
+  border-radius: 4px; background: var(--surface-3); color: var(--ink-3);
+  font-family: "Geist Mono", monospace;
+}
+.rac-tab.active .rac-tab-badge { background: var(--acc, #27a569); color: #fff; }
+.rac-tab-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--green-ink); margin-left: 2px;
+}
+
+/* Stream status badges */
+.rac-stream-badge {
+  font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  padding: 3px 9px; border-radius: 20px; font-family: "Geist Mono", monospace;
+  display: flex; align-items: center; gap: 5px;
+}
+.rac-stream-badge::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.rac-stream-badge.connecting { background: var(--amber-soft); color: var(--amber-ink); }
+.rac-stream-badge.connecting::before { background: var(--amber-ink); animation: rac-pulse 1s infinite; }
+.rac-stream-badge.live        { background: var(--green-soft);  color: var(--green-ink); }
+.rac-stream-badge.live::before { background: var(--green-ink); animation: rac-pulse .8s infinite; }
+.rac-stream-badge.done        { background: var(--surface-2);   color: var(--ink-3); }
+.rac-stream-badge.done::before { background: var(--ink-3); }
+.rac-stream-badge.error       { background: var(--red-soft);    color: var(--red-ink); }
+.rac-stream-badge.error::before { background: var(--red-ink); }
+
+@keyframes rac-pulse {
+  0%, 100% { opacity: 1; } 50% { opacity: .3; }
+}
+
 /* ---- Persona modal ---- */
 .pm-overlay {
   position: fixed; inset: 0; z-index: 200;

@@ -66,6 +66,7 @@ import db
 import ai_endpoints
 import claude_client
 import peer_intel
+import risks_as_code
 
 try:
     from fred_tool import run_analysis as fred_run_analysis
@@ -103,6 +104,9 @@ app.add_middleware(
 # AI-augmented endpoints (recommendations #1–#4). Active only when ANTHROPIC_API_KEY
 # is set; otherwise each route returns 503 and the deterministic pipeline is unaffected.
 app.include_router(ai_endpoints.router)
+
+# Risks-as-Code: OSCAL + COSO ERM translators + SSE live stream.
+app.include_router(risks_as_code.router)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────

@@ -196,4 +196,281 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
   );
 }
 
-Object.assign(window, { CodeEditorScreen, RiskAsCodeScreen, PolicyAsCodeScreen });
+// ─────────────────────────────────────────────────────────────────────────────
+// Risks-as-Code Live Screen
+// Translates live pipeline risk signals into OSCAL (NIST) and COSO ERM /
+// ISO 31000 artifacts. Subscribes to the backend SSE stream and regenerates
+// on every Stage 2 completion. Artifacts can be downloaded as YAML files.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RAC_FRAMEWORKS = [
+  {
+    id: "oscal",
+    label: "OSCAL",
+    sub:   "NIST OSCAL 1.1.2 — Assessment Results",
+    badge: "NIST",
+    desc:  "Open Security Controls Assessment Language. Maps the Dendrai risk register to Assessment Results with findings, risks, remediations, and financial observations.",
+    ext:   "yaml",
+  },
+  {
+    id: "coso_erm",
+    label: "COSO ERM / ISO 31000",
+    sub:   "COSO ERM 2017 · ISO 31000:2018",
+    badge: "ERM",
+    desc:  "Enterprise Risk Management framework aligned to COSO's five components and ISO 31000's risk treatment clauses (6.4–6.5). Includes HITL-approved scores, MAPs, and governance statement.",
+    ext:   "yaml",
+  },
+];
+
+function RisksAsCodeLiveScreen({ risks, objectives, maps, signals, ratios, ticker, industry, period, runId }) {
+  const [activeFramework, setActiveFramework] = useState("oscal");
+  const [artifacts, setArtifacts]             = useState({});        // {framework: yaml_str}
+  const [streamStatus, setStreamStatus]       = useState("idle");    // idle | connecting | live | done | error
+  const [lastUpdated, setLastUpdated]         = useState(null);
+  const [generating, setGenerating]           = useState(false);
+  const [genError, setGenError]               = useState(null);
+  const [riskCount, setRiskCount]             = useState(0);
+  const esRef = useRef(null);
+
+  // Close any open SSE connection on unmount
+  useEffect(() => () => { esRef.current?.close(); }, []);
+
+  // Auto-generate when risks arrive (no database required)
+  useEffect(() => {
+    if (risks?.length && !artifacts.oscal) {
+      handleGenerate();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [risks?.length]);
+
+  // Open SSE stream whenever a run_id becomes available
+  useEffect(() => {
+    if (!runId) return;
+    esRef.current?.close();
+    setStreamStatus("connecting");
+
+    const es = new EventSource(`/api/risks-as-code/stream/${runId}`);
+    esRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "connected") {
+          setStreamStatus("live");
+        } else if (msg.type === "update") {
+          setArtifacts(msg.artifacts || {});
+          setRiskCount(msg.risk_count || 0);
+          setLastUpdated(new Date().toLocaleTimeString());
+          if (msg.completed) { setStreamStatus("done"); es.close(); }
+        } else if (msg.type === "done") {
+          setStreamStatus("done"); es.close();
+        } else if (msg.type === "timeout" || msg.type === "error") {
+          setStreamStatus(msg.type === "error" ? "error" : "done"); es.close();
+        }
+      } catch {}
+    };
+
+    es.onerror = () => { setStreamStatus("error"); es.close(); };
+
+    return () => es.close();
+  }, [runId]);
+
+  async function handleGenerate() {
+    if (!risks?.length) return;
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const res = await fetch("/api/risks-as-code/generate", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticker:     ticker || "",
+          run_id:     runId  || null,
+          risks:      risks  || [],
+          objectives: objectives || [],
+          maps:       maps   || [],
+          ratios:     ratios || {},
+          signals:    signals || [],
+          industry:   industry || "",
+          period:     period   || "",
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const next = {};
+      for (const [fw, val] of Object.entries(data.artifacts || {})) {
+        next[fw] = val.content;
+      }
+      setArtifacts(next);
+      setRiskCount(risks.length);
+      setLastUpdated(new Date().toLocaleTimeString());
+    } catch (err) {
+      setGenError(err.message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleDownload(fw) {
+    const content = artifacts[fw];
+    if (!content) return;
+    const meta = RAC_FRAMEWORKS.find(f => f.id === fw) || {};
+    const blob = new Blob([content], { type: "application/x-yaml" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `dendrai_${fw}_${ticker || "export"}_${runId || "run"}.${meta.ext || "yaml"}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const activeArtifact = artifacts[activeFramework] || "";
+  const noRisks  = !risks?.length;
+  const noArtifact = !activeArtifact;
+
+  const streamBadge = {
+    idle:       null,
+    connecting: { cls: "rac-stream-badge connecting", label: "Connecting…" },
+    live:       { cls: "rac-stream-badge live",       label: `Live · ${riskCount} risks` },
+    done:       { cls: "rac-stream-badge done",       label: "Up to date" },
+    error:      { cls: "rac-stream-badge error",      label: "Stream error" },
+  }[streamStatus];
+
+  return (
+    <div className="code-screen" data-screen-label="Risks as Code">
+      {/* ── Header ── */}
+      <div className="panel-head">
+        <div>
+          <div className="kicker">Execution · Risks as Code</div>
+          <div className="panel-title mt-8">Risks as Code</div>
+          <div className="panel-sub">
+            Live pipeline signals translated into industry-standard artifacts —
+            OSCAL (NIST) and COSO ERM / ISO 31000. Regenerates automatically after Stage 2.
+          </div>
+        </div>
+        <div className="code-actions" style={{ alignItems: "center", gap: 8 }}>
+          {streamBadge && <span className={streamBadge.cls}>{streamBadge.label}</span>}
+          {lastUpdated && (
+            <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>
+              Updated {lastUpdated}
+            </span>
+          )}
+          {genError && <span className="code-status err">{genError}</span>}
+          <button
+            className={"btn btn-sm btn-acc" + (generating ? " loading" : "")}
+            onClick={handleGenerate}
+            disabled={noRisks || generating}
+            title={noRisks ? "Run the loop first to load risk data" : "Regenerate artifacts from current pipeline state"}
+          >
+            <Icon name="spark" size={11} />
+            {generating ? " Generating…" : " Generate"}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Framework tabs ── */}
+      <div className="rac-tabs">
+        {RAC_FRAMEWORKS.map(fw => (
+          <button
+            key={fw.id}
+            className={"rac-tab" + (activeFramework === fw.id ? " active" : "")}
+            onClick={() => setActiveFramework(fw.id)}
+          >
+            <span className="rac-tab-badge">{fw.badge}</span>
+            {fw.label}
+            {artifacts[fw.id] && <span className="rac-tab-dot" />}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Split: description + code ── */}
+      <div className="code-split" style={{ flex: 1, minHeight: 0 }}>
+        {/* Left: framework description + download */}
+        <div className="code-pane" style={{ maxWidth: 260, minWidth: 200, flex: "0 0 240px" }}>
+          {RAC_FRAMEWORKS.filter(f => f.id === activeFramework).map(fw => (
+            <div key={fw.id} style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)" }}>{fw.sub}</div>
+              <div style={{ fontSize: 11, color: "var(--ink-2)", lineHeight: 1.6 }}>{fw.desc}</div>
+
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => handleDownload(fw.id)}
+                  disabled={!artifacts[fw.id]}
+                  style={{ justifyContent: "center" }}
+                >
+                  <Icon name="download" size={11} /> Download .yaml
+                </button>
+
+                {runId && db_enabled() && (
+                  <a
+                    className="btn btn-sm"
+                    href={`/api/risks-as-code/export/${runId}/${fw.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}
+                  >
+                    <Icon name="doc" size={11} /> From DB
+                  </a>
+                )}
+              </div>
+
+              {activeArtifact && (
+                <div className="rac-meta mono" style={{ marginTop: 6, fontSize: 9.5, color: "var(--ink-3)", lineHeight: 1.7 }}>
+                  <div>{activeArtifact.split("\n").length} lines</div>
+                  <div>{(new Blob([activeArtifact]).size / 1024).toFixed(1)} KB</div>
+                  <div>Run #{runId || "—"}</div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Right: YAML output */}
+        <div className="code-pane" style={{ flex: 1, minWidth: 0 }}>
+          <div className="code-pane-head mono" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span>
+              {RAC_FRAMEWORKS.find(f => f.id === activeFramework)?.id || activeFramework}.yaml
+            </span>
+            {activeArtifact && (
+              <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--ink-3)" }}>
+                {ticker} · {period}
+              </span>
+            )}
+          </div>
+
+          {noRisks && (
+            <Empty style={{ padding: 32 }}>
+              Run the pipeline to Stage 2 to generate Risks-as-Code artifacts.
+            </Empty>
+          )}
+
+          {!noRisks && noArtifact && (
+            <Empty style={{ padding: 32 }}>
+              Click <b>Generate</b> to translate current pipeline risks into {activeFramework.toUpperCase()} format.
+            </Empty>
+          )}
+
+          {activeArtifact && (
+            <textarea
+              className="code-editor mono"
+              spellCheck={false}
+              readOnly
+              value={activeArtifact}
+              style={{ resize: "none", color: "var(--ink)", caretColor: "transparent" }}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function db_enabled() {
+  // Heuristic: DB artifacts are available only when the backend is reachable.
+  // We don't have a synchronous way to check, so we always show the link and
+  // let the server return a 503 if the DB is not configured.
+  return true;
+}
+
+Object.assign(window, { CodeEditorScreen, RiskAsCodeScreen, PolicyAsCodeScreen, RisksAsCodeLiveScreen });

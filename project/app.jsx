@@ -1392,6 +1392,22 @@ function App() {
           </div>
           )}
 
+          {/* ---- Risks as Code (Industry Frameworks) ---- */}
+          {activeScreen === "frameworks" && (
+          <div className="panel active">
+            <RisksAsCodeLiveScreen
+              risks={output.s2?.risks || (hasRun ? profile.risks : null)}
+              objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
+              maps={output.s4?.maps || (hasRun ? profile.maps : null)}
+              signals={output.s1?.signals || []}
+              ratios={profile.ratios || {}}
+              ticker={cfg.ticker}
+              industry={cfg.industry}
+              period={cfg.periodEnd}
+              runId={runIdRef.current} />
+          </div>
+          )}
+
           {/* ---- Policy-as-Code ---- */}
           {activeScreen === "policycode" && (
           <div className="panel active">

@@ -37,6 +37,7 @@ function Icon({ name, size = 14, className = "" }) {
     case "flow":     return <svg {...common}><rect x="2" y="2" width="4" height="4"/><rect x="10" y="6" width="4" height="4"/><rect x="2" y="10" width="4" height="4"/><path d="M6 4h2a2 2 0 0 1 2 2v2M6 12h2a2 2 0 0 0 2-2v-2"/></svg>;
     case "shield":   return <svg {...common}><path d="M8 1.5L2 4v5c0 3.5 2.5 5 6 5.5 3.5-.5 6-2 6-5.5V4l-6-2.5z"/></svg>;
     case "trend":    return <svg {...common}><path d="M2 12l4-4 3 3 5-7"/></svg>;
+    case "code":     return <svg {...common}><path d="M5 4L1 8l4 4M11 4l4 4-4 4M9 2l-2 12"/></svg>;
     case "compass":  return <svg {...common}><circle cx="8" cy="8" r="6"/><path d="M10.5 5.5L9 9l-3.5 1.5L7 7l3.5-1.5z" fill={stroke} stroke="none"/></svg>;
     case "download": return <svg {...common}><path d="M8 1v9M4 7l4 4 4-4M2 14h12"/></svg>;
     case "wifi":     return <svg {...common}><path d="M1.5 5.5a10 10 0 0 1 13 0M3.5 8a7 7 0 0 1 9 0M5.5 10.5a4 4 0 0 1 5 0"/><circle cx="8" cy="13" r=".5" fill={stroke}/></svg>;
