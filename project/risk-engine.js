@@ -1087,6 +1087,6 @@ window.RISK_ENGINE = (function () {
              personas, fred:forecasts.fred };
   }
 
-  return { buildProfile, buildLoop, computeRatios, sic2industry };
+  return { buildProfile, buildLoop, computeRatios, sic2industry, quarterBoundaries: _quarterBoundaries };
 
 })();
