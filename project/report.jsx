@@ -14,6 +14,7 @@ function ReportModal({ open, onClose, payload }) {
     fredSeries, fredContrCount, rssHighVelCount, rssLinkedCount, liveMode,
     riskApprovals, scopeApprovals,
     assumptions, obstacles, log,
+    stageState = {}, stageOutput = {},
   } = payload;
 
   const adjRisks = risks.filter(r => riskApprovals?.[r.id]?.status === "adjusted" || riskApprovals?.[r.id]?.status === "signed");
@@ -91,6 +92,12 @@ function ReportModal({ open, onClose, payload }) {
             <Row k="Projected Reduction" v={`${closure.projected_total_risk_reduction_pct || 0}%`}/>
             <Row k="Loop Health"      v={<><RAGChip rag={loop.loop_health || "A"}>{loop.loop_health}</RAGChip> <span className="muted mono" style={{marginLeft: 8}}>impact {loop.audit_impact_score}/25</span></>}/>
             <Row k="Data Mode"        v={liveMode ? "Live (EDGAR + FRED)" : "Mock / Simulated"}/>
+          </div>
+
+          {/* ── Pipeline Execution ───────────────────────────── */}
+          <div className="rep-section">
+            <h3>Pipeline Execution</h3>
+            <PipelineStagesReport stageState={stageState} stageOutput={stageOutput}/>
           </div>
 
           {/* ── Methodology ──────────────────────────────────── */}
@@ -497,6 +504,141 @@ function RepSubhead({ children, style }) {
   return (
     <div style={{fontWeight:600, fontSize:12, color:"var(--ink)", margin:"12px 0 7px", ...style}}>
       {children}
+    </div>
+  );
+}
+
+// ------ Pipeline stages report section ------
+const STAGE_META = [
+  { id: "s1", name: "Signal Intake",                      desc: "10-K · peer filings · industry RSS · internal KRIs" },
+  { id: "s2", name: "Risk Assessment + Velocity",         desc: "Continuous scoring · velocity delta · RAG matrix" },
+  { id: "s3", name: "Audit Scope Generator",              desc: "Risk-linked audit plan · sprint-ready workplan" },
+  { id: "s4", name: "Findings → Management Action Plans", desc: "Root cause · owner · due date · success criteria" },
+  { id: "s5", name: "Closure Evidence + Risk Reduction",  desc: "Quantified risk reduction · MAP completion" },
+  { id: "s6", name: "Loop Calibration + Re-feed",         desc: "Updated register · velocity recalibration · lessons" },
+];
+
+function stageSummary(id, out) {
+  if (!out) return null;
+  if (id === "s1") {
+    const sigs = out.signals || [];
+    const high = sigs.filter(s => s.velocity >= 3).length;
+    const bySrc = {};
+    sigs.forEach(s => { bySrc[s.src] = (bySrc[s.src] || 0) + 1; });
+    return { metrics: [
+      { l: "Signals ingested", v: sigs.length },
+      { l: "High velocity", v: high },
+      { l: "Sources", v: out.sourceCount || Object.keys(bySrc).length },
+    ], tasks: Object.entries(bySrc).map(([src, n]) => `${src}: ${n} signal${n !== 1 ? "s" : ""}`) };
+  }
+  if (id === "s2") {
+    const risks = out.risks || [];
+    const counts = risks.reduce((a, r) => { a[r.rag] = (a[r.rag] || 0) + 1; return a; }, {});
+    return { metrics: [
+      { l: "Risks scored", v: risks.length },
+      { l: "RED", v: counts.R || 0 },
+      { l: "AMBER", v: counts.A || 0 },
+      { l: "GREEN", v: counts.G || 0 },
+    ], tasks: risks.map(r => `${r.id} · ${r.name} — score ${r.score?.toFixed(1) ?? "—"} · ${r.rag} · v${r.velocity >= 0 ? "+" : ""}${r.velocity} · ${r.ce}`) };
+  }
+  if (id === "s3") {
+    const objs = out.objectives || [];
+    const p1 = objs.filter(o => o.priority === "P1").length;
+    return { metrics: [
+      { l: "Objectives", v: objs.length },
+      { l: "P1", v: p1 },
+      { l: "Total hours", v: objs.reduce((a, o) => a + (o.hours || 0), 0) + "h" },
+    ], tasks: objs.map(o => `${o.id} [${o.priority}] · ${o.objective} — ${o.sprint} / ${o.hours}h`) };
+  }
+  if (id === "s4") {
+    const maps = out.maps || [];
+    return { metrics: [
+      { l: "MAPs generated", v: maps.length },
+      { l: "Avg reduction", v: maps.length ? Math.round(maps.reduce((a, m) => a + (m.reduction_pct || 0), 0) / maps.length) + "%" : "—" },
+    ], tasks: maps.map(m => `${m.id} · ${m.finding} — owner: ${m.owner} · due: ${m.due_date} · −${m.reduction_pct}%`) };
+  }
+  if (id === "s5") {
+    const c = out.closure || {};
+    return { metrics: [
+      { l: "Risks closed", v: c.risks_closed || 0 },
+      { l: "Risks reduced", v: c.risks_reduced || 0 },
+      { l: "Projected reduction", v: (c.projected_total_risk_reduction_pct || 0) + "%" },
+    ], tasks: [] };
+  }
+  if (id === "s6") {
+    const l = out.loop || {};
+    return { metrics: [
+      { l: "Loop health", v: l.loop_health || "—" },
+      { l: "Audit impact", v: l.audit_impact_score != null ? l.audit_impact_score + "/25" : "—" },
+      { l: "Recommendations", v: (l.recommendations || []).length },
+    ], tasks: (l.recommendations || []).map((r, i) => `${i + 1}. ${r}`) };
+  }
+  return null;
+}
+
+function PipelineStagesReport({ stageState, stageOutput }) {
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:12}}>
+      {STAGE_META.map((stage, i) => {
+        const status = stageState[stage.id] || "idle";
+        const out = stageOutput[stage.id];
+        const summary = status === "done" ? stageSummary(stage.id, out) : null;
+        const trace = out?.trace;
+        const statusColor = status === "done" ? "var(--green-ink)" : status === "running" ? "var(--acc-ink)" : status === "waiting" ? "var(--amber-ink)" : "var(--ink-4)";
+        return (
+          <div key={stage.id} style={{border:"1px solid var(--line)", borderRadius:8, overflow:"hidden"}}>
+            <div style={{display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:"var(--surface-2)"}}>
+              <span className="mono" style={{fontSize:10, fontWeight:700, color:"var(--surface)", background: status === "done" ? "var(--acc)" : "var(--ink-4)", borderRadius:4, padding:"2px 7px", minWidth:18, textAlign:"center"}}>{i+1}</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12.5, fontWeight:600, color:"var(--ink)"}}>{stage.name}</div>
+                <div style={{fontSize:10.5, color:"var(--ink-3)"}}>{stage.desc}</div>
+              </div>
+              <span className="mono" style={{fontSize:10, fontWeight:600, color:statusColor, textTransform:"uppercase"}}>{status}</span>
+            </div>
+            {summary && (
+              <div style={{padding:"10px 14px"}}>
+                <div style={{display:"flex", gap:18, marginBottom: summary.tasks.length ? 10 : 0, flexWrap:"wrap"}}>
+                  {summary.metrics.map((m, mi) => (
+                    <div key={mi} style={{fontSize:11}}>
+                      <span style={{color:"var(--ink-4)", marginRight:5}}>{m.l}:</span>
+                      <span className="mono" style={{fontWeight:600, color:"var(--ink)"}}>{m.v}</span>
+                    </div>
+                  ))}
+                </div>
+                {summary.tasks.length > 0 && (
+                  <div style={{display:"flex", flexDirection:"column", gap:3}}>
+                    {summary.tasks.map((t, ti) => (
+                      <div key={ti} style={{display:"flex", gap:8, fontSize:11, color:"var(--ink-2)", padding:"3px 0", borderTop: ti > 0 ? "1px solid var(--line)" : "none"}}>
+                        <span style={{color:"var(--green-ink)", flexShrink:0}}>✓</span>
+                        <span>{t}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {trace?.decisions?.length > 0 && (
+                  <div style={{marginTop:10}}>
+                    <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", letterSpacing:"0.06em", marginBottom:5}}>STAGE REASONING</div>
+                    <div style={{display:"flex", flexDirection:"column", gap:3}}>
+                      {trace.decisions.map((d, di) => (
+                        <div key={di} style={{fontSize:11, color:"var(--ink-3)", padding:"3px 0", borderTop: di > 0 ? "1px solid var(--line)" : "none"}}>{d}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {trace?.conclusion && (
+                  <div style={{marginTop:8, fontSize:11, color:"var(--ink-2)", fontStyle:"italic"}}>{trace.conclusion}</div>
+                )}
+              </div>
+            )}
+            {status === "idle" && (
+              <div style={{padding:"8px 14px", fontSize:11, color:"var(--ink-4)"}}>Stage did not run in this loop.</div>
+            )}
+            {status === "waiting" && (
+              <div style={{padding:"8px 14px", fontSize:11, color:"var(--amber-ink)"}}>Awaiting HITL gate approval.</div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

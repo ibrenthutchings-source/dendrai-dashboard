@@ -1101,6 +1101,8 @@ function App() {
       // HITL adjustments
       riskApprovals,
       scopeApprovals,
+      stageState,
+      stageOutput: output,
       assumptions: [
         `Quarterly score projections use a velocity-dampened linear model: base + (velocity × CE_mult × 1.0 × 0.85^(q−1)), capped at 25.0.`,
         `Control-effectiveness multipliers applied to velocity contribution: NONE=1.20×, WEAK=1.10×, ADEQUATE=0.95×, STRONG=0.80×.`,
