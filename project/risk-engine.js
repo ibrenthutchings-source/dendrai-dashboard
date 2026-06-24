@@ -652,7 +652,7 @@ window.RISK_ENGINE = (function () {
         linked_risk: r.id,
         action: tmpl?.mapAction || `Implement controls to reduce ${r.name} risk to target level`,
         owner: tmpl?.mapOwner || 'Chief Risk Officer',
-        due_date: (() => { const now = new Date(); const y = now.getFullYear(); const q = Math.min(4, Math.ceil((now.getMonth()+1)/3) + 1 + (r.rag === 'R' ? 0 : 1) + i); return q > 4 ? `${y+1}-Q${q-4}` : `${y}-Q${q}`; })(),
+        due_date: (() => { const now = new Date(); const curQ = Math.ceil((now.getMonth()+1)/3); const off = 1 + (r.rag === 'R' ? 0 : 1) + i; const tq = curQ + off; const dq = ((tq - 1) % 4) + 1; const dy = now.getFullYear() + Math.floor((tq - 1) / 4); return `${dy}-Q${dq}`; })(),
         completion_pct: Math.max(0, 30 - i * 5),
         success_criteria: tmpl?.mapSuccessCriteria || `${r.name} risk score reduced to target level; controls validated by IA`,
         reduction_pct: tmpl?.reductionPct || 12,
