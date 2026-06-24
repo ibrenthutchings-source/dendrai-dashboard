@@ -20,8 +20,9 @@ const NAV_SECTIONS = [
       { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
-      { id: "riskcode", icon: "spark",     l: "Risk-as-Code" },
+      { id: "riskcode",   icon: "spark",     l: "Risk-as-Code" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
+      { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
     ],
   },
   {
