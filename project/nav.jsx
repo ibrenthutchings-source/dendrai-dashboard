@@ -24,6 +24,7 @@ const NAV_SECTIONS = [
       { id: "frameworks", icon: "code",     l: "Risks as Code (Frameworks)" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
+      { id: "sox",        icon: "grid",    l: "SOX Scope" },
     ],
   },
   {

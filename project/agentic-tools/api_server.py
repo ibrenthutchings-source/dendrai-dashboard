@@ -68,6 +68,8 @@ import claude_client
 import peer_intel
 import risks_as_code
 import oracle_fusion_endpoints
+import sox_endpoints
+from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
     from fred_tool import run_analysis as fred_run_analysis
@@ -111,6 +113,9 @@ app.include_router(risks_as_code.router)
 
 # Oracle Fusion: control library, test results, issues, SOD, audit events.
 app.include_router(oracle_fusion_endpoints.router)
+
+# SOX Scope: materiality, accounts, processes, systems, segment coverage.
+app.include_router(sox_endpoints.router)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
@@ -219,6 +224,52 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
         db.save_rss_signals(run_id, result["rss_signals"])
 
     db.complete_risk_loop_run(run_id)
+
+    # Auto-rescope SOX if a config exists for this company + current FY
+    if company_id:
+        try:
+            from datetime import datetime as _dt
+            fiscal_year = f"FY{_dt.utcnow().year}"
+            sox_cfg = db.get_sox_config(company_id, fiscal_year)
+            forecast_data  = result.get("forecast") or {}
+            risk_data      = result.get("risk_scores") or {}
+            ratios_data    = result.get("financial_ratios") or {}
+
+            if forecast_data.get("forecasts") and risk_data.get("risks"):
+                input_hash = compute_input_hash(forecast_data, risk_data, ratios_data)
+                prev_scope = db.get_sox_scoping_result(run_id)
+                needs_rescope = (prev_scope is None) or (prev_scope.get("input_hash") != input_hash)
+
+                if needs_rescope:
+                    systems = db.list_sox_systems(company_id)
+                    segments = db.get_sox_segments(company_id, fiscal_year)
+                    mat_pct  = sox_cfg["materiality_pct"]  if sox_cfg else 5.0
+                    perf_pct = sox_cfg["performance_mat_pct"] if sox_cfg else 75.0
+                    sox_result = run_sox_scoping(
+                        run_id=run_id,
+                        forecast=forecast_data,
+                        risk_scores=risk_data,
+                        ratios=ratios_data,
+                        systems_registry=systems,
+                        segments=segments,
+                        fiscal_year=fiscal_year,
+                        materiality_pct=mat_pct,
+                        performance_mat_pct=perf_pct,
+                        trigger_reason="auto_rescope_on_new_run",
+                    )
+                    db.save_sox_scoping_result(run_id, company_id, sox_result)
+                    prev_run_id = prev_scope.get("run_id") if prev_scope else None
+                    db.log_sox_rescoping_trigger(
+                        company_id=company_id,
+                        trigger_type="new_forecast" if prev_scope else "initial_scope",
+                        trigger_detail={"input_hash": input_hash, "fiscal_year": fiscal_year},
+                        prev_run_id=prev_run_id,
+                        new_run_id=run_id,
+                        rescoped=True,
+                    )
+        except Exception as _sox_err:
+            logger.warning("SOX auto-scoping failed (non-fatal): %s", _sox_err)
+
     return run_id
 
 

@@ -29,6 +29,7 @@ import '../nav.jsx'
 import '../config-screen.jsx'
 import '../audit-scope.jsx'
 import '../code-screens.jsx'
+import '../sox-scope.jsx'
 import '../tweaks.jsx'
 
 import App from '../app.jsx'
