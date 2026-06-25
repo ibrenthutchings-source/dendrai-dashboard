@@ -75,6 +75,7 @@ function App() {
         if (typeof s.velocity === "number") setVelocity(s.velocity);
         if (s.hitl) setHitl(s.hitl);
         if (Array.isArray(s.rssEnabledFeeds)) setRssEnabledFeeds(s.rssEnabledFeeds);
+        if (s.aiChatCfg) setAiChatCfg(c => ({ ...c, ...s.aiChatCfg }));
         if (s.savedAt) setLastSaved(s.savedAt);
       }
     } catch {}
@@ -84,10 +85,10 @@ function App() {
     if (!cfgLoadedRef.current) return;
     const savedAt = Date.now();
     try {
-      localStorage.setItem("dendrai.config", JSON.stringify({ cfg, signals: [...signalSet], velocity, hitl, rssEnabledFeeds, savedAt }));
+      localStorage.setItem("dendrai.config", JSON.stringify({ cfg, signals: [...signalSet], velocity, hitl, rssEnabledFeeds, aiChatCfg, savedAt }));
       setLastSaved(savedAt);
     } catch {}
-  }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds]);
+  }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds, aiChatCfg]);
 
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
   const [liveMode, setLiveMode] = useState(false);
@@ -165,6 +166,10 @@ function App() {
   const [govLoading, setGovLoading] = useState(false);
   const [govFetchError, setGovFetchError] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
+
+  // ---- AI Chat ----
+  const [aiChatCfg, setAiChatCfg] = useState({ provider: "claude", buttonLabel: "Ask Claude" });
+  const [chatOpen, setChatOpen] = useState(false);
 
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
@@ -1258,7 +1263,10 @@ function App() {
         cfg={cfg}
         liveMode={liveMode} mcpMode={mcpMode} livefacts={livefacts}
         running={running} hasRun={hasRun}
-        entityName={profile.entity.name} />
+        entityName={profile.entity.name}
+        aiChatLabel={aiChatCfg.buttonLabel || "Ask Claude"}
+        chatOpen={chatOpen}
+        onChatToggle={() => setChatOpen(v => !v)} />
 
 
       <div className={"app-body" + (activeScreen === "pipeline" && (hasRun || output.s2?.risks?.length > 0) ? " has-rail" : "")}>
@@ -1292,7 +1300,9 @@ function App() {
                 liveStatus={liveStatus}
                 lastSaved={lastSaved}
                 rssEnabledFeeds={rssEnabledFeeds}
-                setRssEnabledFeeds={setRssEnabledFeeds} />
+                setRssEnabledFeeds={setRssEnabledFeeds}
+                aiChatCfg={aiChatCfg}
+                setAiChatCfg={setAiChatCfg} />
             </div>
           )}
 
@@ -1619,13 +1629,23 @@ function App() {
       <DendraiTweaks tweaks={tweaks} setTweak={setTweak}
         hitl={hitl} setHitl={setHitl}
         velocity={velocity} setVelocity={setVelocity} />
+
+      <AiChatPanel
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        provider={aiChatCfg.provider || "claude"}
+        buttonLabel={aiChatCfg.buttonLabel || "Ask Claude"}
+        ticker={cfg.ticker}
+        industry={cfg.industry}
+        output={output} />
       </ErrorBoundary>
     </div>);
 
 }
 
 // ---- Header ----
-function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName }) {
+function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName,
+                  aiChatLabel, chatOpen, onChatToggle }) {
   return (
     <header className="hdr">
       <div className="hdr-brand">
@@ -1663,6 +1683,14 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
           <span className="val">28d</span>
         </div>
       </div>
+      <button
+        className={"hdr-ai-btn" + (chatOpen ? " active" : "")}
+        onClick={onChatToggle}
+        title={chatOpen ? "Close AI chat" : "Open AI chat"}
+      >
+        <Icon name="spark" size={11} />
+        {aiChatLabel || "Ask Claude"}
+      </button>
     </header>);
 
 }

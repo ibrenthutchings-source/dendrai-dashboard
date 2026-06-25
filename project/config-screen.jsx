@@ -29,11 +29,105 @@ function ConfigCard({ title, sub, right, children }) {
   );
 }
 
+function AiChatConfigCard({ aiChatCfg, setAiChatCfg }) {
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("dendrai_gemini_api_key") || "");
+  const [showKey, setShowKey] = useState(false);
+
+  const saveGeminiKey = (val) => {
+    setGeminiKey(val);
+    if (val.trim()) {
+      localStorage.setItem("dendrai_gemini_api_key", val.trim());
+    } else {
+      localStorage.removeItem("dendrai_gemini_api_key");
+    }
+  };
+
+  const setProvider = (p) => {
+    const label = p === "gemini" ? "Ask Gemini" : "Ask Claude";
+    setAiChatCfg({ ...aiChatCfg, provider: p, buttonLabel: label });
+  };
+
+  return (
+    <ConfigCard
+      title="AI Chat Assistant"
+      sub="Configure the chat button label, AI provider, and API keys for the slide-out chat panel."
+    >
+      {/* Provider selector */}
+      <div className="field">
+        <label className="field-label">AI Provider</label>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[
+            { id: "claude", label: "Claude", note: "Tool access · server key" },
+            { id: "gemini", label: "Gemini", note: "Conversational · client key" },
+          ].map(p => (
+            <button
+              key={p.id}
+              type="button"
+              className={"hitl-toggle" + (aiChatCfg.provider === p.id ? " on" : "")}
+              style={{ flex: 1, flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "6px 10px" }}
+              onClick={() => setProvider(p.id)}
+            >
+              <span style={{ fontWeight: 600, fontSize: 12 }}>{p.label}</span>
+              <span style={{ fontSize: 10, opacity: 0.7, fontWeight: 400 }}>{p.note}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Button label */}
+      <div className="field">
+        <label className="field-label">Button label</label>
+        <input
+          className="input"
+          type="text"
+          maxLength={32}
+          placeholder="Ask Claude"
+          value={aiChatCfg.buttonLabel || ""}
+          onChange={e => setAiChatCfg({ ...aiChatCfg, buttonLabel: e.target.value })}
+        />
+      </div>
+
+      {/* Gemini API key (only when Gemini is selected) */}
+      {aiChatCfg.provider === "gemini" && (
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="field-label">Gemini API key</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              className="input"
+              type={showKey ? "text" : "password"}
+              placeholder="AIza…"
+              value={geminiKey}
+              onChange={e => saveGeminiKey(e.target.value)}
+              style={{ flex: 1, fontFamily: geminiKey ? "var(--mono, monospace)" : "inherit", fontSize: 12 }}
+            />
+            <button type="button" className="btn btn-sm btn-ghost"
+              onClick={() => setShowKey(v => !v)} title={showKey ? "Hide" : "Show"}>
+              {showKey ? "Hide" : "Show"}
+            </button>
+          </div>
+          <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 4 }}>
+            Stored in browser localStorage. Get a key at aistudio.google.com.
+          </div>
+        </div>
+      )}
+
+      {/* Claude key note */}
+      {aiChatCfg.provider === "claude" && (
+        <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", lineHeight: 1.5 }}>
+          Claude uses the server-side ANTHROPIC_API_KEY from project/agentic-tools/.env.
+          Start api_server.py to enable tool access.
+        </div>
+      )}
+    </ConfigCard>
+  );
+}
+
 function ConfigScreen({
   cfg, setCfg, signalSet, setSignalSet,
   velocity, setVelocity, hitl, setHitl,
   liveMode, setLiveMode, mcpMode, setMcpMode, liveStatus,
   lastSaved, rssEnabledFeeds, setRssEnabledFeeds,
+  aiChatCfg, setAiChatCfg,
 }) {
   const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
 
@@ -266,6 +360,9 @@ function ConfigScreen({
         <ConfigCard title="Recurring Schedule" sub="Register a cloud agent to re-run the loop on a cadence.">
           <ScheduleBuilder focusText={`Re-run Dendrai risk loop for ${cfg.ticker || "entity"}, re-score all risks, flag velocity breaches and RAG changes, post summary.`} />
         </ConfigCard>
+
+        {/* ---- AI Chat Assistant ---- */}
+        <AiChatConfigCard aiChatCfg={aiChatCfg} setAiChatCfg={setAiChatCfg} />
 
         {/* ---- Investigation Agent (#1) ---- */}
         <InvestigationCard ticker={cfg.ticker} />
