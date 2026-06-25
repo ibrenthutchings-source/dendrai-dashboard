@@ -2465,9 +2465,9 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 [data-theme="dark"] .hdr-ai-btn:hover,
 [data-theme="dark"] .hdr-ai-btn.active { color: #fff; }
 
-/* Slide-out panel */
+/* Slide-out panel — starts below the 56px header so the header button stays clickable */
 .ai-chat-panel {
-  position: fixed; top: 0; right: 0; bottom: 0;
+  position: fixed; top: 56px; right: 0; bottom: 0;
   width: 380px; max-width: 100vw;
   z-index: 150;
   display: flex; flex-direction: column;
