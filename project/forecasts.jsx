@@ -518,6 +518,25 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
         // Use Number.isFinite — ?? passes NaN through, which breaks .toFixed()
         const safeV = (v, fallback) => Number.isFinite(v) ? v : fallback;
 
+        // Apply MAE + Trimmed Mean Error to projection bands.
+        // TME de-biases the base estimate; MAE * sqrt(horizon) fans the confidence band.
+        function applyErrBands(baseFc, btEnsemble) {
+          const maeVal = btEnsemble?.mae;
+          const tmeVal = btEnsemble?.tme ?? 0;
+          if (!maeVal) return baseFc;
+          return baseFc.map((f, i) => {
+            const horizonFactor = Math.sqrt(i + 1);
+            const band = maeVal * horizonFactor;
+            const adj  = Number.isFinite(f.base - tmeVal) ? f.base - tmeVal : f.base;
+            return {
+              ...f,
+              base: adj,
+              lo:   Number.isFinite(adj - band) ? adj - band : f.lo,
+              hi:   Number.isFinite(adj + band) ? adj + band : f.hi,
+            };
+          });
+        }
+
         // EPS — run ensemble if ≥8 quarters available
         let epsOut = null;
         const epsSeries = data.eps?.history?.length >= 8 ? data.eps.history.map(x => x.v) : null;
@@ -526,39 +545,43 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
           const epsMapes = [epsBT.results.arima?.mape, epsBT.results.prophet?.mape, epsBT.results.rf?.mape];
           const epsFcAll = BACKTESTING.forecastAll(epsSeries, null, 4, epsMapes);
           const epsEns   = epsFcAll.ensemble;
+          const rawEpsFc = data.eps.forecast.map((f, i) => ({
+            q:    f.q,
+            base: safeV(epsEns?.base[i], f.base),
+            lo:   safeV(epsEns?.lo[i],   f.lo),
+            hi:   safeV(epsEns?.hi[i],   f.hi),
+          }));
           epsOut = {
             history:  data.eps.history,
-            forecast: data.eps.forecast.map((f, i) => ({
-              q:    f.q,
-              base: safeV(epsEns?.base[i], f.base),
-              lo:   safeV(epsEns?.lo[i],   f.lo),
-              hi:   safeV(epsEns?.hi[i],   f.hi),
-            })),
-            all:     epsFcAll,
-            backtest:epsBT,
+            forecast: applyErrBands(rawEpsFc, epsBT.results.ensemble),
+            all:      epsFcAll,
+            backtest: epsBT,
           };
         }
+        const rawRevFc = data.revenue.forecast.map((f, i) => ({
+          q:    f.q,
+          base: safeV(revEns?.base[i], f.base),
+          lo:   safeV(revEns?.lo[i],   f.lo),
+          hi:   safeV(revEns?.hi[i],   f.hi),
+        }));
+        const rawMgFc = data.margin.forecast.map((f, i) => ({
+          q:    f.q,
+          base: safeV(mgEns?.base[i], f.base),
+          lo:   safeV(mgEns?.lo[i],   f.lo),
+          hi:   safeV(mgEns?.hi[i],   f.hi),
+        }));
+
         setModelOutput({
           revenue: {
             history: data.revenue.history,
-            forecast: data.revenue.forecast.map((f, i) => ({
-              q:    f.q,
-              base: safeV(revEns?.base[i], f.base),
-              lo:   safeV(revEns?.lo[i],   f.lo),
-              hi:   safeV(revEns?.hi[i],   f.hi),
-            })),
+            forecast: applyErrBands(rawRevFc, revBT.results.ensemble),
             all: revFcAll,
             backtest: revBT,
             source: revSource,
           },
           margin: {
             history: data.margin.history,
-            forecast: data.margin.forecast.map((f, i) => ({
-              q:    f.q,
-              base: safeV(mgEns?.base[i], f.base),
-              lo:   safeV(mgEns?.lo[i],   f.lo),
-              hi:   safeV(mgEns?.hi[i],   f.hi),
-            })),
+            forecast: applyErrBands(rawMgFc, mgBT.results.ensemble),
             all: mgFcAll,
             backtest: mgBT,
             source: mgSource,
@@ -679,9 +702,9 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
               </div>
             </div>
           </div>
-          <ForecastChart history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={3}/>
+          <ForecastChart history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={2} chartMetrics={modelOutput?.revenue?.backtest?.results?.ensemble}/>
           {modelOutput?.revenue?.all && (
-            <ComponentForecastTable fcAll={modelOutput.revenue.all} labels={data.revenue.forecast.map(f => f.q)} unit="$M" decimals={3}/>
+            <ComponentForecastTable fcAll={modelOutput.revenue.all} labels={data.revenue.forecast.map(f => f.q)} unit="$M" decimals={2}/>
           )}
         </div>
 
@@ -700,7 +723,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
               </div>
             </div>
           </div>
-          <ForecastChart history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
+          <ForecastChart history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)" chartMetrics={modelOutput?.margin?.backtest?.results?.ensemble}/>
           {modelOutput?.margin?.all && (
             <ComponentForecastTable fcAll={modelOutput.margin.all} labels={data.margin.forecast.map(f => f.q)} unit="%" />
           )}
@@ -726,7 +749,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
                     {d != null && <div className={`delta ${d >= 0 ? "up" : "dn"}`}>{d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(1)}% vs latest</div>}
                   </div>
                 </div>
-                <ForecastChart history={eps.history.slice(-8)} forecast={eps.forecast} unit="$" color="var(--acc)"/>
+                <ForecastChart history={eps.history.slice(-8)} forecast={eps.forecast} unit="$" color="var(--acc)" chartMetrics={modelOutput?.eps?.backtest?.results?.ensemble}/>
                 {modelOutput?.eps?.all && (
                   <ComponentForecastTable fcAll={modelOutput.eps.all} labels={data.eps.forecast.map(f => f.q)} unit="$" />
                 )}
@@ -869,21 +892,88 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
           <div className="head">
             <div>
               <div className="ttl">Beneish M-Score</div>
-              <div className="sub">Forensic accounting probability of earnings manipulation</div>
+              <div className="sub">Forensic accounting · 8-variable earnings manipulation model</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div className="big-num" style={{color: data.mscore.m > -1.78 ? "var(--red-ink)" : data.mscore.m > -2.22 ? "var(--amber-ink)" : "var(--green-ink)"}}>
+                {data.mscore.m.toFixed(2)}
+              </div>
+              <div className="sub" style={{marginTop:2}}>
+                {data.mscore.m > -1.78 ? "ELEVATED · likely manipulator" : data.mscore.m > -2.22 ? "GRAY ZONE · monitor" : "NORMAL"}
+              </div>
             </div>
           </div>
           <MScoreGauge m={data.mscore.m}/>
           <div className="mt-12" style={{fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.55}}>
-            <b style={{fontWeight: 500}}>Key driver:</b> {data.mscore.key_driver}. Band breaches RED at M &gt; −1.78. Current reading is in the AMBER (Elevated) zone.
+            <b style={{fontWeight: 500}}>Key driver:</b> {data.mscore.key_driver}. Band breaches RED at M &gt; −1.78, AMBER &gt; −2.22.
           </div>
-          <div className="mt-12" style={{display:"grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6}}>
-            {Object.entries(data.mscore.vars).map(([k, v]) => (
-              <div key={k} className="scen-m">
-                <div className="l">{k}</div>
-                <div className="v">{typeof v === "number" ? v.toFixed(2) : v}</div>
+          {/* Individual metric breakdown */}
+          {(() => {
+            const META = {
+              DSRI: { label:'Days Sales Recv. Index',  threshold:1.465, amber:1.20, desc:'AR growing faster than revenue → potential revenue inflation' },
+              GMI:  { label:'Gross Margin Index',      threshold:1.193, amber:1.05, desc:'Declining gross margins → deteriorating profitability signal' },
+              AQI:  { label:'Asset Quality Index',     threshold:1.254, amber:1.10, desc:'Non-current / intangible assets rising → potential capitalisation of expenses' },
+              SGI:  { label:'Sales Growth Index',      threshold:1.607, amber:1.30, desc:'Aggressive revenue growth → elevated manipulation incentive' },
+              DEPI: { label:'Depreciation Index',      threshold:1.077, amber:1.00, desc:'Slower depreciation rate → possible useful-life extension to boost earnings' },
+              SGAI: { label:'SGA Expenses Index',      threshold:1.041, amber:1.00, desc:'SGA growing relative to sales → potential misclassification or cost manipulation' },
+              LVGI: { label:'Leverage Index',          threshold:1.111, amber:1.00, desc:'Increasing leverage → covenant pressure increasing manipulation motive' },
+              TATA: { label:'Accruals / Total Assets', threshold:0.031, amber:0.01, desc:'High accrual intensity → earnings diverging from cash generation' },
+            };
+            const vars = data.mscore.vars || {};
+            const elevated = Object.entries(vars).filter(([k, v]) => {
+              const m = META[k]; return m && typeof v === 'number' && v > m.threshold;
+            });
+            return (
+              <div className="mt-12">
+                {elevated.length > 0 && (
+                  <div style={{background:'color-mix(in oklch, var(--red) 8%, transparent)', border:'1px solid color-mix(in oklch, var(--red) 25%, transparent)', borderRadius:7, padding:'8px 12px', marginBottom:10, fontSize:11, color:'var(--red-ink)', lineHeight:1.5}}>
+                    <b style={{fontWeight:600}}>{elevated.length} variable{elevated.length > 1 ? 's' : ''} above manipulation threshold:</b>{' '}
+                    {elevated.map(([k]) => k).join(', ')}
+                  </div>
+                )}
+                <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(210px, 1fr))', gap:8}}>
+                  {Object.entries(vars).map(([k, v]) => {
+                    const m = META[k];
+                    if (!m || typeof v !== 'number') return (
+                      <div key={k} className="scen-m"><div className="l">{k}</div><div className="v">{v}</div></div>
+                    );
+                    const isRed   = v > m.threshold;
+                    const isAmber = !isRed && v > m.amber;
+                    const rag = isRed ? 'R' : isAmber ? 'A' : 'G';
+                    const ragColor = {R:'var(--red)', A:'var(--amber)', G:'var(--green)'};
+                    const ragInk   = {R:'var(--red-ink)', A:'var(--amber-ink)', G:'var(--green-ink)'};
+                    // Bar: show v relative to threshold (clamp at 2× threshold for display)
+                    const barMax = Math.max(m.threshold * 1.8, Math.abs(v) * 1.2, 0.1);
+                    const valPct  = Math.min(100, (Math.abs(v) / barMax) * 100);
+                    const thrPct  = Math.min(100, (m.threshold / barMax) * 100);
+                    return (
+                      <div key={k} style={{border:`1px solid ${isRed ? 'color-mix(in oklch, var(--red) 35%, var(--line))' : 'var(--line)'}`, borderRadius:8, padding:'9px 11px', position:'relative', overflow:'hidden', background: isRed ? 'color-mix(in oklch, var(--red) 4%, transparent)' : undefined}}>
+                        <div style={{position:'absolute', top:0, left:0, right:0, height:3, background:ragColor[rag], borderRadius:'8px 8px 0 0'}}/>
+                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:4}}>
+                          <span style={{fontWeight:600, fontSize:10, fontFamily:'Geist Mono, monospace', letterSpacing:'0.05em'}}>{k}</span>
+                          <span style={{fontSize:16, fontWeight:600, fontFamily:'Geist Mono, monospace', color:ragInk[rag]}}>{v.toFixed(3)}</span>
+                        </div>
+                        <div style={{fontSize:9.5, color:'var(--ink-3)', marginBottom:6, lineHeight:1.35}}>{m.label}</div>
+                        {/* Mini bar */}
+                        <div style={{height:5, background:'var(--surface-2)', borderRadius:3, position:'relative', marginBottom:5}}>
+                          <div style={{position:'absolute', left:0, top:0, height:'100%', width:`${valPct}%`, background:ragColor[rag], borderRadius:3, opacity:0.75}}/>
+                          {/* Threshold marker */}
+                          <div style={{position:'absolute', top:-2, bottom:-2, left:`${thrPct}%`, width:2, background:'var(--ink-3)', borderRadius:1}}/>
+                        </div>
+                        <div style={{display:'flex', justifyContent:'space-between', fontSize:9, color:'var(--ink-4)', fontFamily:'Geist Mono, monospace'}}>
+                          <span>{isRed ? '⚠ ELEVATED' : isAmber ? '△ WATCH' : '✓ NORMAL'}</span>
+                          <span>threshold {m.threshold}</span>
+                        </div>
+                        {isRed && (
+                          <div style={{marginTop:5, fontSize:9, color:'var(--red-ink)', lineHeight:1.35}}>{m.desc}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            ))}
-          </div>
+            );
+          })()}
         </div>
 
         <div className="fcst-card">

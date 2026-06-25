@@ -24,6 +24,26 @@ window.BACKTESTING = (function () {
     return Math.sqrt(ss / n);
   }
 
+  function mae(actuals, predicted) {
+    const n = Math.min(actuals.length, predicted.length);
+    if (!n) return null;
+    const sum = actuals.slice(0, n).reduce((s, v, i) => s + Math.abs(v - predicted[i]), 0);
+    return sum / n;
+  }
+
+  // Trimmed Mean Error: mean error after dropping the top/bottom trimFraction extremes.
+  // Positive TME → model under-predicts (bias high); negative → over-predicts.
+  function tme(actuals, predicted, trimFraction = 0.1) {
+    const n = Math.min(actuals.length, predicted.length);
+    if (!n) return null;
+    const errors = actuals.slice(0, n).map((v, i) => v - predicted[i]);
+    errors.sort((a, b) => a - b);
+    const trimCount = Math.floor(n * trimFraction);
+    const trimmed = errors.slice(trimCount, n - trimCount);
+    if (!trimmed.length) return null;
+    return trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
+  }
+
   function r2(actuals, predicted) {
     const n = Math.min(actuals.length, predicted.length);
     if (!n) return null;
@@ -84,6 +104,8 @@ window.BACKTESTING = (function () {
       mape:      mape(actuals, predicted),
       rmse:      rmse(actuals, predicted),
       r2:        r2(actuals, predicted),
+      mae:       mae(actuals, predicted),
+      tme:       tme(actuals, predicted),
       ...directionalMetrics(actuals, predicted),
     };
   }
@@ -171,7 +193,7 @@ window.BACKTESTING = (function () {
   }
 
   return {
-    mape, rmse, r2, directionalMetrics,
+    mape, rmse, r2, mae, tme, directionalMetrics,
     walkForwardBacktest, backtestAll, forecastAll,
     formatMetrics, MODEL_DEFS,
   };
