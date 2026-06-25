@@ -13,11 +13,7 @@ const NAV_SECTIONS = [
       { id: "riskcode",   icon: "spark",     l: "Risk-as-Code" },
       { id: "frameworks", icon: "code",     l: "Risks as Code (Frameworks)" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
-      { id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
-      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
-      { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
       { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"}
     ],
   },
