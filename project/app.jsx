@@ -146,7 +146,7 @@ function App() {
       if (!signalSet.has("industry")) return;
       setRssRefreshing(true);
       try {
-        const ingestResult = await RSS_ENGINE.ingestAll({ enabledFeedIds: rssEnabledFeeds });
+        const ingestResult = await RSS_ENGINE.ingestAll({ enabledFeedIds: rssEnabledFeeds, ticker: cfg.ticker });
         const freshSigs = RSS_ENGINE.toSignals(ingestResult);
         setRssSignals(freshSigs);
         setRssLastUpdated(Date.now());
@@ -686,7 +686,7 @@ function App() {
           try {
             const rssFeeds = RSS_ENGINE.FEEDS.filter(f => rssEnabledFeeds.includes(f.id));
             setRssRunProgress({ msg: "Fetching compliance feeds via MCP…", feedsDone: [] });
-            const complianceResult = await MCP.ingestRssFeeds(rssEnabledFeeds);
+            const complianceResult = await MCP.ingestRssFeeds(rssEnabledFeeds, { ticker: cfg.ticker });
             // Mark all feeds that came back ok as done for the progress display
             const doneFeedIds = complianceResult.feeds
               .filter(r => r.fetchStatus === "ok")
@@ -794,6 +794,7 @@ function App() {
           setRssRunProgress({ msg: "Starting…", feedsDone: [] });
           const ingestResult = await RSS_ENGINE.ingestAll({
             enabledFeedIds: rssEnabledFeeds,
+            ticker: cfg.ticker,
             onProgress: (msg, feedId, done) => {
               if (done && feedId) feedsDoneRef.push(feedId);
               setRssRunProgress({ msg, feedsDone: [...feedsDoneRef] });

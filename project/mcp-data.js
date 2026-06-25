@@ -517,14 +517,16 @@ window.MCP = (function () {
    *
    * @param {string[]} feedIds      Feed IDs to ingest (empty = all registered feeds)
    * @param {object}   opts
-   *   forceRefresh  bool  — bypass cache (default false)
-   *   ttlMinutes    int   — cache TTL in minutes (default 30)
+   *   forceRefresh  bool   — bypass cache (default false)
+   *   ttlMinutes    int    — cache TTL in minutes (default 30)
+   *   ticker        string — active ticker; enables peer-aware EDGAR feed
    */
   async function ingestRssFeeds(feedIds = [], opts = {}) {
     return _post('/rss/ingest', {
       feed_ids:      feedIds,
       force_refresh: opts.forceRefresh  || false,
       ttl_minutes:   opts.ttlMinutes    || 30,
+      ticker:        opts.ticker        || null,
     });
   }
 
