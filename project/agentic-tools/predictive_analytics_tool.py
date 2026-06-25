@@ -67,10 +67,24 @@ def _annual_pts(metric_data: dict) -> list:
     ]
 
 def _quarterly_pts(metric_data: dict) -> list:
-    return [
-        p for p in metric_data.get("data_points", [])
-        if p.get("form") in {"10-Q", "10-Q/A"} and p.get("val") is not None
-    ]
+    """Return only standalone quarterly entries (≈90-day periods, not YTD cumulative H1/9M)."""
+    result = []
+    for p in metric_data.get("data_points", []):
+        if p.get("form") not in {"10-Q", "10-Q/A"}:
+            continue
+        if p.get("val") is None:
+            continue
+        start, end = p.get("start"), p.get("end")
+        if start and end:
+            try:
+                from datetime import date as _date
+                days = (_date.fromisoformat(end) - _date.fromisoformat(start)).days
+                if not (60 <= days <= 110):   # reject H1 (~180d) and 9M (~270d)
+                    continue
+            except Exception:
+                pass
+        result.append(p)
+    return result
 
 def _latest(pts: list) -> Optional[float]:
     if not pts:
@@ -181,10 +195,18 @@ def compute_financial_ratios(xbrl: dict) -> dict:
 
 
 def extract_quarterly_series(xbrl: dict, metric: str) -> list[dict]:
-    """Return [{quarter_end, value}, ...] sorted oldest-first from 10-Q data points."""
+    """Return [{quarter_end, value}, ...] sorted oldest-first, deduplicated by period end."""
     pts = _quarterly_pts(xbrl.get(metric, {}))
-    pts_sorted = sorted(pts, key=lambda p: p.get("end", ""))
-    return [{"quarter_end": p["end"], "value": p["val"]} for p in pts_sorted]
+    # Keep the most recently filed entry per period end date (amended filings supersede originals)
+    by_end: dict = {}
+    for p in pts:
+        end = p.get("end")
+        if not end:
+            continue
+        if end not in by_end or p.get("filed", "") > by_end[end].get("filed", ""):
+            by_end[end] = p
+    pts_sorted = sorted(by_end.values(), key=lambda p: p.get("end", ""))
+    return [{"quarter_end": p["end"], "value": p["val"], "start": p.get("start")} for p in pts_sorted]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
