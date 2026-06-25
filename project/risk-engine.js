@@ -666,11 +666,19 @@ window.RISK_ENGINE = (function () {
     const topAmb = risks.filter(r => r.rag === 'A').map(r => r.id).slice(0, 2);
     const revStr  = ratios.revGrowth != null ? `${(ratios.revGrowth * 100).toFixed(1)}%` : 'n/a';
     const gmStr   = ratios.grossMargin != null ? `${(ratios.grossMargin * 100).toFixed(1)}%` : 'n/a';
+    // revenue_at_risk_m: dollar amount at risk in each scenario (millions).
+    // Derived from the scenario's own revenue_impact_pct so values are always consistent.
+    // Only a negative revenue impact (revenue contraction) produces a positive "at risk" figure.
+    const revM = ratios.rev != null ? ratios.rev / 1e6 : null;
+    const bearRiskM  = revM != null ? Math.round(revM * 0.18)                                                         : null;
+    const baseGrowth = ratios.revGrowth ?? -0.03;
+    const baseRiskM  = revM != null ? Math.max(0, Math.round(revM * -baseGrowth))                                     : null;
+    const bullRiskM  = 0;
     return [
       { id:'bear', name:`Bear — Dual risk materialisation: ${risks[0]?.name?.split('—')[0].trim() || 'Primary Risk'} + macro stress`,
         description: `${topRed.length > 0 ? `Red risks ${topRed.join(', ')} materialise simultaneously` : 'Top two amber risks elevate to red'}. Revenue contracts 15–25%, gross margin compressed ${ratios.grossMargin != null ? `from ${gmStr} to below ${(Math.max(0,ratios.grossMargin-0.12)*100).toFixed(1)}%` : 'materially'}. FCF turns negative; covenant headroom at risk.`,
         probability:'MEDIUM', revenue_impact_pct:-18, gross_margin_impact_bps:-380,
-        revenue_at_risk_m: ratios.rev ? Math.round(ratios.rev * 0.18 / 1e6) : null,
+        revenue_at_risk_m: bearRiskM,
         runway_qtrs:4, liquidity:'CONSTRAINED', kris_red: topRed.slice(0,3),
         recovery:'PROLONGED_5Q_PLUS', audit_focus:['Reserve/accrual adequacy','Covenant compliance','Going-concern disclosure'],
         vs_peers:`${ticker} most exposed relative to sector on ${risks[0]?.name?.split('—')[0] || 'primary risk category'}.`,
@@ -678,7 +686,7 @@ window.RISK_ENGINE = (function () {
       { id:'base', name:`Base — Managed risk profile; key controls hold`,
         description: `Risk scores stabilise with current controls effective. Revenue growth ${revStr}, gross margin near ${gmStr}. Primary risks remain elevated but within appetite. MAP implementation proceeds on schedule.`,
         probability:'HIGH', revenue_impact_pct: ratios.revGrowth!=null?Math.round(ratios.revGrowth*100):-3,
-        gross_margin_impact_bps:-50, revenue_at_risk_m: ratios.rev ? Math.round(ratios.rev * 0.05 / 1e6) : null,
+        gross_margin_impact_bps:-50, revenue_at_risk_m: baseRiskM,
         runway_qtrs:10, liquidity:'SUFFICIENT', kris_red: topRed.slice(0,1),
         recovery:'MODERATE_3_4Q', audit_focus:['Top-3 risk remediation','MAP completion vs. due dates','Velocity trend monitoring'],
         vs_peers:`${ticker} in line with sector; focused execution on P1 MAPs required.`,
@@ -686,7 +694,7 @@ window.RISK_ENGINE = (function () {
       { id:'bull', name:`Bull — Risk reduction + favourable macro`,
         description: `MAP implementation ahead of schedule; primary risks step down one RAG level. Revenue recovers ${ratios.revGrowth!=null&&ratios.revGrowth<0?'to flat/modest growth':'accelerates'}, gross margin expands. All covenant ratios comfortable.`,
         probability:'LOW', revenue_impact_pct: ratios.revGrowth!=null?Math.round((ratios.revGrowth+0.08)*100):5,
-        gross_margin_impact_bps:150, revenue_at_risk_m:0,
+        gross_margin_impact_bps:150, revenue_at_risk_m: bullRiskM,
         runway_qtrs:14, liquidity:'COMFORTABLE', kris_red:[],
         recovery:'NONE', audit_focus:['Control effectiveness validation','Revenue recognition on accelerated bookings'],
         vs_peers:`${ticker} outperforms sector on risk-adjusted basis if MAP programme executes.`,
