@@ -1474,4 +1474,5 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
   );
 }
 
-window.ForecastsPanel = ForecastsPanel;
+window.ForecastsPanel        = ForecastsPanel;
+window.GeoSegmentKPISection  = GeoSegmentKPISection;
