@@ -62,10 +62,16 @@ function NavIcon({ name, size = 14 }) {
 }
 
 function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {} }) {
+  const [collapsed, setCollapsed] = React.useState({});
+
   function isActive(item) {
     if (item.id !== activeScreen) return false;
     if (item.govTab) return item.govTab === activeGovTab;
     return true;
+  }
+
+  function toggleSection(label) {
+    setCollapsed(prev => ({ ...prev, [label]: !prev[label] }));
   }
 
   return (
@@ -76,27 +82,41 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {} }) {
       </div>
 
       <div className="lnav-scroll">
-        {NAV_SECTIONS.map(section => (
-          <div className="lnav-section" key={section.label}>
-            <div className="lnav-section-label">{section.label}</div>
-            {section.items.map(item => {
-              const active = isActive(item);
-              const count = item.countKey ? counts[item.countKey] : 0;
-              const pulse = item.pulseKey ? counts[item.pulseKey] : false;
-              return (
-                <button
-                  key={item.l}
-                  className={"lnav-item" + (active ? " active" : "")}
-                  onClick={() => onNavigate(item.id, item.govTab)}>
-                  <span className="lnav-item-icon"><NavIcon name={item.icon} size={14}/></span>
-                  <span className="lnav-item-label">{item.l}</span>
-                  {count > 0 && <span className="lnav-count">{count}</span>}
-                  {pulse && <span className="lnav-pulse" />}
-                </button>
-              );
-            })}
-          </div>
-        ))}
+        {NAV_SECTIONS.map(section => {
+          const isCollapsed = !!collapsed[section.label];
+          return (
+            <div className="lnav-section" key={section.label}>
+              <button
+                className={"lnav-section-label" + (isCollapsed ? " collapsed" : "")}
+                onClick={() => toggleSection(section.label)}
+                type="button"
+                aria-expanded={!isCollapsed}>
+                <span className="lnav-section-label-text">{section.label}</span>
+                <svg className="lnav-chevron" width="10" height="10" viewBox="0 0 10 10"
+                  fill="none" stroke="currentColor" strokeWidth="1.5"
+                  strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 4l3 3 3-3"/>
+                </svg>
+              </button>
+              {!isCollapsed && section.items.map(item => {
+                const active = isActive(item);
+                const count = item.countKey ? counts[item.countKey] : 0;
+                const pulse = item.pulseKey ? counts[item.pulseKey] : false;
+                return (
+                  <button
+                    key={item.l}
+                    className={"lnav-item" + (active ? " active" : "")}
+                    onClick={() => onNavigate(item.id, item.govTab)}>
+                    <span className="lnav-item-icon"><NavIcon name={item.icon} size={14}/></span>
+                    <span className="lnav-item-label">{item.l}</span>
+                    {count > 0 && <span className="lnav-count">{count}</span>}
+                    {pulse && <span className="lnav-pulse" />}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
       </div>
     </nav>
   );
