@@ -29,7 +29,8 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "",
                     liveMode = false, fredSeries = null, industry = "",
                     enabledFeedIds = [], onRssSignalsReady = null,
-                    flowMeta = null, onOpenMainFlow = null }) {
+                    flowMeta = null, onOpenMainFlow = null,
+                    risks = [] }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s1Extra = {
     rssRunProgress,
@@ -96,7 +97,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
             {/* ── Stage-linked panels (always visible when stage is done) ── */}
             {isDone && s.id === "s1" && window.RSSPanel && (
               <PipelinePanel label="RSS Signals">
-                <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady}/>
+                <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks}/>
               </PipelinePanel>
             )}
             {isDone && s.id === "s2" && forecasts && (
