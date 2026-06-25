@@ -219,6 +219,21 @@ function Connector({ active }) {
   );
 }
 
+// Runs backtest on history, passes metrics to ForecastChart so caption always appears
+function FCWithMetrics({ history, forecast, unit, color, decimals }) {
+  const [metrics, setMetrics] = React.useState(null);
+  React.useEffect(() => {
+    if (!history?.length || !window.BACKTESTING || !window.FORECASTING) return;
+    try {
+      const bt = window.BACKTESTING.backtestAll(history.map(h => h.v));
+      setMetrics(bt?.results?.ensemble ?? null);
+    } catch (e) {}
+  }, [history]);
+  const FC = window.ForecastChart;
+  if (!FC) return null;
+  return React.createElement(FC, { history, forecast, unit, color, decimals, chartMetrics: metrics });
+}
+
 function ForecastChartsInline({ forecasts, livefacts }) {
   const [tick, setTick] = React.useState(0);
   React.useEffect(() => {
@@ -251,7 +266,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
               </div>
             )}
           </div>
-          <FC history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={2}/>
+          <FCWithMetrics history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={2}/>
         </div>
       )}
       {mg?.history?.length > 0 && (
@@ -264,7 +279,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
               </div>
             )}
           </div>
-          <FC history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
+          <FCWithMetrics history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
         </div>
       )}
       {livefacts && (
@@ -983,7 +998,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
             </div>
-            <FC history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
+            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
           </div>
         );
       })()}
@@ -998,7 +1013,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
             </div>
-            <FC history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)"/>
+            <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)"/>
           </div>
         );
       })()}
@@ -1016,7 +1031,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
               Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
               Persistent EPS compression raises financial-reporting and liquidity risk scores.
             </div>
-            <FC history={forecasts.eps.history.slice(-8)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)"/>
+            <FCWithMetrics history={forecasts.eps.history.slice(-8)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)"/>
           </div>
         );
       })()}
@@ -1032,7 +1047,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               EBIT ÷ Revenue. Forecast: {lastF?.toFixed(1)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
             </div>
-            <FC history={forecasts.opMargin.history.slice(-8)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838"/>
+            <FCWithMetrics history={forecasts.opMargin.history.slice(-8)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838"/>
           </div>
         );
       })()}
@@ -1048,7 +1063,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
             </div>
-            <FC history={forecasts.ebitda.history.slice(-8)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)"/>
+            <FCWithMetrics history={forecasts.ebitda.history.slice(-8)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)"/>
           </div>
         );
       })()}
@@ -1468,7 +1483,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Revenue trajectory from Stage 1 (EDGAR). Declining QoQ momentum or trend reversal raises the velocity delta on financial-reporting and supply-chain risks in this stage.
             </div>
-            <FC history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
+            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
           </div>
         );
       })()}
