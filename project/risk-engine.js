@@ -716,16 +716,26 @@ window.RISK_ENGINE = (function () {
     const r2  = risks.find(r => r.id !== top.id && r.rag === 'R') ||
                 risks.find(r => r.id !== top.id && r.rag === 'A' && r.velocity >= 2) ||
                 risks.find(r => r.id !== top.id) || top;
-    // Impact ladder derived from quarterly revenue; falls back to $500M proxy
-    const qRevM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 / 4 : 500;
+    // Impact ladder derived from annual revenue; falls back to $2B proxy
+    const annRevM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 2000;
     const topScore = Number.isFinite(top.score) ? top.score : 5.0;
     const topVel   = Number.isFinite(top.velocity) ? top.velocity : 0;
+    // Derive rag from score using same thresholds as ragOf() — avoids hard-coding step colours
+    const ragAt = s => s >= 15 ? 'R' : s >= 9 ? 'A' : 'G';
+    const s30 = Math.min(25, topScore + 2.0);
+    const s60 = Math.min(25, topScore + 3.75);
+    const s90 = Math.min(25, topScore + 5.5);
+    // Revenue at risk per step: 3% / 8% / 15% of annual revenue (cumulative exposure if cascade fully realises)
+    const imp30 = Math.round(annRevM * 0.03);
+    const imp60 = Math.round(annRevM * 0.08);
+    const imp90 = Math.round(annRevM * 0.15);
     return {
       id: 'grey-swan-gs',
       name: `Grey Swan — ${top.name?.split('—')[0].trim()} cascade to systemic failure`,
       risk_id: top.id, risk_name: top.name,
       starting_rag: top.rag, starting_score: topScore,
-      ending_rag: 'R', ending_score: Math.min(25, topScore + 5.5),
+      ending_rag: 'R', ending_score: s90,
+      peak_impact_m: imp90,
       probability: 'LOW · plausible',
       headline: `${top.name?.split('—')[0].trim()} control failure cascades into ${r2.name?.split('—')[0].trim()} and reputational damage`,
       description: `Foreseeable but under-weighted: ${top.name?.split('—')[0].trim()} deteriorates beyond current score (${topScore}/25) as primary controls fail. This cascades into ${r2.name?.split('—')[0].trim()} and triggers reputational and regulatory escalation — a sequence that begins with a single control point failure.`,
@@ -736,7 +746,8 @@ window.RISK_ENGINE = (function () {
         `${r2.name?.split('—')[0].trim()} crosses IA escalation threshold simultaneously`,
       ],
       impacts_at_max: [
-        `Primary risk score reaches ${Math.min(25, topScore + 5.5).toFixed(1)}/25 — material audit finding`,
+        `Primary risk score reaches ${s90.toFixed(1)}/25 — material audit finding`,
+        `Revenue at risk at T+90: ~$${imp90}M (≈15% of annual revenue)`,
         `Regulatory escalation requires external specialist engagement`,
         `Management credibility risk with Audit Committee`,
       ],
@@ -753,10 +764,10 @@ window.RISK_ENGINE = (function () {
         `Notify Board if score exceeds ${Math.min(25, topScore + 3.75).toFixed(1)}/25`,
       ],
       timeline: [
-        { t:'T+0',  label:'Early signal',    score:topScore,                        rag:top.rag, likelihood:0.05, impact_$m:0,                              impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`,     signals:[`Score ${topScore.toFixed(1)}/25`,`Velocity ${topVel>0?'+':''}${topVel}`,`MAP in progress`],                                  action:'IA initiates focused review' },
-        { t:'T+30', label:'Stress building', score:Math.min(25,topScore+2.0),  rag:'R',     likelihood:0.12, impact_$m:Math.round(qRevM * 0.05),        impact:'Primary control effectiveness degrades; KRI breach at 80% threshold', signals:[`Score ${Math.min(25,topScore+2.0).toFixed(1)}/25`,'Control WEAK','Escalation flag'],                                                action:'Emergency controls review; AC notified' },
-        { t:'T+60', label:'Cascade risk',    score:Math.min(25,topScore+3.75), rag:'R',     likelihood:0.20, impact_$m:Math.round(qRevM * 0.10),        impact:`${r2.name?.split('—')[0].trim()} also elevating; dual-risk scenario active`, signals:[`Score ${Math.min(25,topScore+3.75).toFixed(1)}/25`,'Dual-risk active','Regulatory monitoring'],                              action:'External specialist engaged; Board briefed' },
-        { t:'T+90', label:'Systemic',        score:Math.min(25,topScore+5.5),  rag:'R',     likelihood:0.30, impact_$m:Math.round(qRevM * 0.18),        impact:'Material control failure; external auditor notified',                  signals:[`Score ${Math.min(25,topScore+5.5).toFixed(1)}/25`,'Material finding','Regulatory escalation'],                              action:'Structured remediation plan; investor communication' },
+        { t:'T+0',  label:'Early signal',    score:topScore, rag:ragAt(topScore), likelihood:0.05, impact_$m:0,      impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`,               signals:[`Score ${topScore.toFixed(1)}/25`,`Velocity ${topVel>0?'+':''}${topVel}`,`MAP in progress`],      action:'IA initiates focused review' },
+        { t:'T+30', label:'Stress building', score:s30,      rag:ragAt(s30),      likelihood:0.12, impact_$m:imp30,  impact:'Primary control effectiveness degrades; KRI breach at 80% threshold',             signals:[`Score ${s30.toFixed(1)}/25`,'Control WEAK','Escalation flag'],                                  action:'Emergency controls review; AC notified' },
+        { t:'T+60', label:'Cascade risk',    score:s60,      rag:ragAt(s60),      likelihood:0.20, impact_$m:imp60,  impact:`${r2.name?.split('—')[0].trim()} also elevating; dual-risk scenario active`,      signals:[`Score ${s60.toFixed(1)}/25`,'Dual-risk active','Regulatory monitoring'],                       action:'External specialist engaged; Board briefed' },
+        { t:'T+90', label:'Systemic',        score:s90,      rag:ragAt(s90),      likelihood:0.30, impact_$m:imp90,  impact:'Material control failure; external auditor notified',                            signals:[`Score ${s90.toFixed(1)}/25`,'Material finding','Regulatory escalation'],                        action:'Structured remediation plan; investor communication' },
       ],
     };
   }
