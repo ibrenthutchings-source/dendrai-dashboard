@@ -57,7 +57,7 @@ window.RSS_ENGINE = (function () {
     {
       id: "epa",
       name: "EPA Climate Enforcement",
-      url: "https://www.epa.gov/newsreleases/search/rss",
+      url: "https://www.federalregister.gov/agencies/environmental-protection-agency.rss",
       domains: ["ESG"],
       risks: ["R-07"],
       weight: 0.8,
