@@ -620,7 +620,9 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
       <div className="bb-stat-ticker">
         <div className="bb-ticker-item">
           <div className="bb-ticker-label">REV FORECAST</div>
-          <div className={`bb-ticker-val${revDeltaPct >= 0 ? " green" : " red"}`}>${revFcLast.base.toFixed(0)}M</div>
+          <div className={`bb-ticker-val${revDeltaPct >= 0 ? " green" : " red"}`}>
+            {revFcLast.base >= 1000 ? `$${(revFcLast.base/1000).toFixed(3)}B` : `$${revFcLast.base.toFixed(3)}M`}
+          </div>
         </div>
         <div className="bb-ticker-item">
           <div className="bb-ticker-label">REV Δ</div>
@@ -652,7 +654,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
         </div>
         <div className="bb-ticker-item">
           <div className="bb-ticker-label">FCF FCST</div>
-          <div className="bb-ticker-val">{lastFcFCF != null ? `$${lastFcFCF.toFixed(0)}M` : "—"}</div>
+          <div className="bb-ticker-val">{lastFcFCF != null ? `$${lastFcFCF.toFixed(1)}M` : "—"}</div>
         </div>
         <div className="bb-ticker-item">
           <div className="bb-ticker-label">SENTIMENT</div>
@@ -671,15 +673,15 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
               </div>
             </div>
             <div style={{textAlign:"right"}}>
-              <div className="big-num">${lastFcRev.toFixed(0)}M</div>
+              <div className="big-num">{lastFcRev >= 1000 ? `$${(lastFcRev/1000).toFixed(3)}B` : `$${lastFcRev.toFixed(3)}M`}</div>
               <div className={`delta ${revDeltaPct >= 0 ? "up" : "dn"}`}>
                 {revDeltaPct >= 0 ? "▲" : "▼"} {Math.abs(revDeltaPct).toFixed(1)}% vs latest
               </div>
             </div>
           </div>
-          <ForecastChart history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)"/>
+          <ForecastChart history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={3}/>
           {modelOutput?.revenue?.all && (
-            <ComponentForecastTable fcAll={modelOutput.revenue.all} labels={data.revenue.forecast.map(f => f.q)} unit="$M" />
+            <ComponentForecastTable fcAll={modelOutput.revenue.all} labels={data.revenue.forecast.map(f => f.q)} unit="$M" decimals={3}/>
           )}
         </div>
 
@@ -769,11 +771,11 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
                     <div className="sub">GAAP · quarterly $M</div>
                   </div>
                   <div style={{textAlign:"right"}}>
-                    <div className="big-num">${lastF != null ? lastF.toFixed(0) : "—"}M</div>
+                    <div className="big-num">${lastF != null ? lastF.toFixed(1) : "—"}M</div>
                     {d != null && <div className={`delta ${d >= 0 ? "up" : "dn"}`}>{d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(1)}%</div>}
                   </div>
                 </div>
-                <ForecastChart history={data.netIncome.history.slice(-8)} forecast={data.netIncome.forecast} unit="$M" color="var(--acc)"/>
+                <ForecastChart history={data.netIncome.history.slice(-8)} forecast={data.netIncome.forecast} unit="$M" color="var(--acc)" decimals={1}/>
               </div>
             );
           })()}
@@ -789,11 +791,11 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
                     <div className="sub">CFO − CapEx · quarterly $M</div>
                   </div>
                   <div style={{textAlign:"right"}}>
-                    <div className="big-num">${lastF != null ? lastF.toFixed(0) : "—"}M</div>
+                    <div className="big-num">${lastF != null ? lastF.toFixed(1) : "—"}M</div>
                     {d != null && <div className={`delta ${d >= 0 ? "up" : "dn"}`}>{d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(1)}%</div>}
                   </div>
                 </div>
-                <ForecastChart history={data.fcf.history.slice(-8)} forecast={data.fcf.forecast} unit="$M" color="#4aad52"/>
+                <ForecastChart history={data.fcf.history.slice(-8)} forecast={data.fcf.forecast} unit="$M" color="#4aad52" decimals={1}/>
               </div>
             );
           })()}
@@ -815,11 +817,11 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
                   <div className="sub">EBIT ÷ Revenue · quarterly %</div>
                 </div>
                 <div style={{textAlign:"right"}}>
-                  <div className="big-num">{lastF != null ? `${lastF.toFixed(1)}%` : "—"}</div>
+                  <div className="big-num">{lastF != null ? `${lastF.toFixed(2)}%` : "—"}</div>
                   {spread != null && <div className="sub" style={{marginTop:2}}>Gross−Op spread: {spread.toFixed(1)} pp</div>}
                 </div>
               </div>
-              <ForecastChart history={data.opMargin.history.slice(-8)} forecast={data.opMargin.forecast} unit="%" color="#e8a838"/>
+              <ForecastChart history={data.opMargin.history.slice(-8)} forecast={data.opMargin.forecast} unit="%" color="#e8a838" decimals={2}/>
             </div>
             <div className="fcst-card">
               <div className="head">
@@ -1070,9 +1072,15 @@ function RssSentimentCard({ signals }) {
 }
 
 // ---- Per-model forecast numbers table ----
-function ComponentForecastTable({ fcAll, labels, unit }) {
+function ComponentForecastTable({ fcAll, labels, unit, decimals }) {
   const models = ["arima","prophet","rf","ensemble"];
-  const fmt = (v, u) => v == null ? "—" : u === "$M" ? `$${v.toFixed(0)}M` : u === "$" ? `$${v.toFixed(2)}` : `${v.toFixed(1)}%`;
+  const dp = decimals ?? (unit === "$M" ? 0 : unit === "$" ? 2 : 1);
+  const fmt = (v, u) => {
+    if (v == null) return "—";
+    if (u === "$M") return v >= 1000 ? `$${(v / 1000).toFixed(dp)}B` : `$${v.toFixed(dp)}M`;
+    if (u === "$") return `$${v.toFixed(dp)}`;
+    return `${v.toFixed(dp)}%`;
+  };
   return (
     <div style={{marginTop: 10, overflowX: "auto"}}>
       <table style={{width:"100%", borderCollapse:"collapse", fontSize:10.5}}>

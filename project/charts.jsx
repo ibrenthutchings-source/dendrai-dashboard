@@ -140,11 +140,12 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
 }
 
 // ---------- LINE + FORECAST CHART ----------
-function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)" }) {
+function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", decimals }) {
   const [tooltip, setTooltip] = useState(null);
 
   if (!history?.length || !forecast?.length) return null;
-  const W = 540, H = 220, PADL = 44, PADR = 14, PADT = 16, PADB = 28;
+  const dp = decimals ?? (unit === "$M" ? 0 : unit === "$" ? 2 : 1);
+  const W = 540, H = 220, PADL = (unit === "$M" && dp >= 3) ? 56 : 44, PADR = 14, PADT = 16, PADB = 28;
   const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
   const all = [
     ...history.map(d => d.v),
@@ -171,9 +172,11 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)" })
 
   const ticks = [0, .25, .5, .75, 1].map(t => min + range * t);
 
-  const fmtV = v => unit === "$M"
-    ? (v >= 1000 ? `$${(v / 1000).toFixed(1)}B` : `$${v.toFixed(0)}M`)
-    : `${v.toFixed(1)}%`;
+  const fmtV = v => {
+    if (unit === "$M") return v >= 1000 ? `$${(v / 1000).toFixed(dp)}B` : `$${v.toFixed(dp)}M`;
+    if (unit === "$") return `$${v.toFixed(dp)}`;
+    return `${v.toFixed(dp)}%`;
+  };
 
   const renderTooltip = () => {
     if (!tooltip) return null;
@@ -206,7 +209,11 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)" })
           <g key={i}>
             <line x1={PADL} y1={y} x2={W - PADR} y2={y} stroke="var(--line)" strokeWidth="0.5" strokeDasharray={i === 0 ? "" : "2 3"}/>
             <text x={PADL - 6} y={y + 3} textAnchor="end" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">
-              {unit === "$M" ? `$${t.toFixed(0)}` : `${t.toFixed(1)}%`}
+              {unit === "$M"
+                ? (t >= 1000 ? `$${(t / 1000).toFixed(dp)}B` : `$${t.toFixed(dp)}M`)
+                : unit === "$"
+                ? `$${t.toFixed(dp)}`
+                : `${t.toFixed(dp)}%`}
             </text>
           </g>
         );
