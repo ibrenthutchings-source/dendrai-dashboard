@@ -400,7 +400,18 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
 // ── Segment coverage + SOX materiality scoring ────────────────────────────────
 
 function SegmentCoverage({ segments, scope }) {
-  if (!segments?.length) return null;
+  if (!segments?.length) {
+    return (
+      <div style={{background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "20px 16px", marginBottom: 12, textAlign: "center"}}>
+        <div style={{fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 6}}>No segment data on file</div>
+        <div style={{fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.6, maxWidth: 480, margin: "0 auto"}}>
+          Upload geographic and business-segment revenue data to enable per-segment SOX materiality scoring.
+          Use <span className="mono" style={{background: "var(--surface-2)", padding: "1px 5px", borderRadius: 3}}>POST /sox/segments/{"{ticker}"}</span> or the MCP upload tool.
+          Segments with revenue ≥ 15% of total are automatically flagged P1 (AS2201).
+        </div>
+      </div>
+    );
+  }
 
   const geoSegs = segments.filter(s => s.segment_type === "geography");
   const bizSegs = segments.filter(s => s.segment_type !== "geography");
@@ -658,7 +669,7 @@ function SoxScopePanel({
     { id: "accounts",  label: "Accounts" },
     { id: "processes", label: "Processes" },
     { id: "systems",   label: "Systems" },
-    ...(displayScope?.segments_coverage?.length ? [{ id: "segments", label: "Geography" }] : []),
+    ...(displayScope ? [{ id: "segments", label: "Geography" }] : []),
   ];
 
   return (

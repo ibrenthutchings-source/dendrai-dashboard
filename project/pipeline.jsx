@@ -100,11 +100,22 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                 <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
               </PipelinePanel>
             )}
-            {isDone && s.id === "s2" && forecasts && (
-              <PipelinePanel label="Forecasts">
-                <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}/>
-              </PipelinePanel>
-            )}
+            {isDone && s.id === "s2" && forecasts && (() => {
+              const GeoSegKPI = window.GeoSegmentKPISection;
+              return (
+                <PipelinePanel label="Forecasts">
+                  <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}/>
+                  {GeoSegKPI && (
+                    <GeoSegKPI
+                      data={forecasts}
+                      industry={industry}
+                      ticker={pipelineTicker || ""}
+                      livefacts={livefacts}
+                    />
+                  )}
+                </PipelinePanel>
+              );
+            })()}
             {isDone && s.id === "s4" && window.MapsTab && (output.s4?.maps?.length > 0) && (
               <PipelinePanel label="Management Action Plans">
                 <MapsTab maps={output.s4.maps}/>
