@@ -6261,3 +6261,47 @@ React will try to recreate this component tree from scratch using the error boun
     at RootBoundary (http://localhost:5173/src/main.jsx?t=1782351941173:37:3)
 
 React will try to recreate this component tree from scratch using the error boundary you provided, RootBoundary.
+[2m6:48:42 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mReferenceError[22m: Cannot access 'aiChatCfg' before initialization
+[39m > App app.jsx:91:55
+    89 |        setLastSaved(savedAt);
+    90 |      } catch {}
+    91 |    }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds, aiChatCfg]);
+       |                                                         ^
+    92 |  
+    93 |    // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+ > beginWork$1 node_modules/react-dom/cjs/react-dom.development.js:27490:6
+ > performUnitOfWork node_modules/react-dom/cjs/react-dom.development.js:26596:11
+ > workLoopSync node_modules/react-dom/cjs/react-dom.development.js:26505:4
+
+[2m6:48:42 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled error] [1mReferenceError[22m: Cannot access 'aiChatCfg' before initialization
+[39m > App app.jsx:91:55
+    89 |        setLastSaved(savedAt);
+    90 |      } catch {}
+    91 |    }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds, aiChatCfg]);
+       |                                                         ^
+    92 |  
+    93 |    // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
+ > renderWithHooks node_modules/react-dom/cjs/react-dom.development.js:15486:17
+ > mountIndeterminateComponent node_modules/react-dom/cjs/react-dom.development.js:20103:12
+ > beginWork node_modules/react-dom/cjs/react-dom.development.js:21626:15
+ > HTMLUnknownElement.callCallback node_modules/react-dom/cjs/react-dom.development.js:4164:13
+ > Object.invokeGuardedCallbackDev node_modules/react-dom/cjs/react-dom.development.js:4213:15
+ > invokeGuardedCallback node_modules/react-dom/cjs/react-dom.development.js:4277:30
+ > beginWork$1 node_modules/react-dom/cjs/react-dom.development.js:27490:6
+ > performUnitOfWork node_modules/react-dom/cjs/react-dom.development.js:26596:11
+ > workLoopSync node_modules/react-dom/cjs/react-dom.development.js:26505:4
+
+[2m6:48:42 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in the <App> component:
+
+    at App (http://localhost:5173/app.jsx?t=1782351881982:94:29)
+    at RootBoundary (http://localhost:5173/src/main.jsx?t=1782351941173:37:3)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootBoundary.
+[2m6:49:30 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m
+[2m6:49:35 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m

@@ -62,6 +62,10 @@ function App() {
   const [hitl, setHitl] = useState({ risk: true, scope: true, map: false });
   const [rssEnabledFeeds, setRssEnabledFeeds] = useState(() => RSS_ENGINE.FEEDS.map(f => f.id));
 
+  // ---- AI Chat (declared here so it's before the persistence effects that include it) ----
+  const [aiChatCfg, setAiChatCfg] = useState({ provider: "claude", buttonLabel: "Ask Claude" });
+  const [chatOpen, setChatOpen] = useState(false);
+
   // ---- Config persistence (localStorage in the prototype; AuditConfig table in prod) ----
   const [lastSaved, setLastSaved] = useState(null);
   const cfgLoadedRef = useRef(false);
@@ -166,10 +170,6 @@ function App() {
   const [govLoading, setGovLoading] = useState(false);
   const [govFetchError, setGovFetchError] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
-
-  // ---- AI Chat ----
-  const [aiChatCfg, setAiChatCfg] = useState({ provider: "claude", buttonLabel: "Ask Claude" });
-  const [chatOpen, setChatOpen] = useState(false);
 
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
