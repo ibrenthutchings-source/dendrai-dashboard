@@ -44,6 +44,7 @@ FEEDS: list[dict] = [
         "domains": ["Cybersecurity"],
         "risks": ["R-04"],
         "weight": 1.3,
+        "companyGated": True,  # Only surface advisories mentioning the company/its products
     },
     {
         "id": "sec",
@@ -127,6 +128,40 @@ SEVERITY_WORDS: dict[str, float] = {
     "ban": 2.5, "sanction": 2.5, "restricted": 1.5, "updated": 0.8,
     "revised": 0.7, "announced": 0.5, "proposed": 0.6, "monitoring": 0.6,
     "review": 0.5,
+}
+
+# ── Domain → risk category matching ──────────────────────────────────────────
+# Maps RSS feed domain labels to substrings searched in risk.category + risk.name.
+# Authoritative source — mirrors DOMAIN_RISK_CATS in rss-engine.js (JS loads from /scoring/config).
+DOMAIN_RISK_CATS: dict[str, list[str]] = {
+    "Financial Reporting": ["financial", "revenue", "reporting", "accounting"],
+    "Cybersecurity":       ["cybersecurity", "it ", "technology", "digital", "information"],
+    "Trade Compliance":    ["compliance", "trade", "legal", "regulatory"],
+    "Supply Chain":        ["supply", "operations", "procurement", "sourcing"],
+    "Macro":               ["macro", "economic", "market", "operational"],
+    "Regulatory":          ["compliance", "legal", "regulatory", "esg"],
+    "Environmental":       ["esg", "environmental", "climate", "sustainability"],
+    "ESG":                 ["esg", "environmental", "climate", "sustainability"],
+    "Competitive":         ["competitive", "market", "commercial", "operational"],
+    "Operational":         ["operational", "operations"],
+}
+
+# ── Item 1A risk factor keyword matching ──────────────────────────────────────
+# Maps risk categories to filing keywords; used for enrichRisksFromFactors().
+# Authoritative source — mirrors _RISK_KW in mcp-data.js (JS loads from /scoring/config).
+RISK_KW: dict[str, list[str]] = {
+    "Financial Reporting": ["revenue recognition","accrual","restatement","gaap","icfr","material weakness","audit","financial statement"],
+    "Supply Chain":        ["supply chain","supplier","component","inventory","procurement","lead time","single source"],
+    "Cybersecurity":       ["cyber","information security","data breach","ransomware","it system","unauthorized access"],
+    "Trade Compliance":    ["export control","tariff","sanction","trade restriction","itar","ear","embargo"],
+    "Macro":               ["macro","interest rate","inflation","recession","economic","gdp","monetary"],
+    "Operational":         ["operational","execution","talent","retention","key personnel","workforce"],
+    "Regulatory":          ["regulatory","compliance","enforcement","epa","fda","sec","legal","litigation"],
+    "ESG":                 ["esg","climate","emission","sustainability","environmental"],
+    "R&D":                 ["research","r&d","technology","innovation","sic","silicon carbide","product development"],
+    "Revenue":             ["revenue","customer concentration","end market","automotive","industrial","pricing"],
+    "Gross Margin":        ["gross margin","margin","pricing pressure","average selling price","asp","competition"],
+    "CapEx":               ["capital expenditure","capex","capacity","fab","manufacturing","facility"],
 }
 
 # ── Grading functions ─────────────────────────────────────────────────────────

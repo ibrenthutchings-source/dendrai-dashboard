@@ -330,12 +330,39 @@ window.RSS_ENGINE = (function () {
     }
   }
 
+  // ── Backend config loader ─────────────────────────────────
+  // Loads FEEDS, DOMAIN_VOCAB, SEVERITY_WORDS and DOMAIN_RISK_CATS from the
+  // Python backend on startup. Falls back to hardcoded values if unavailable.
+  // ingestAll() awaits this so the first run always uses backend data.
+  let _initDone = false;
+  const _initPromise = (async () => {
+    try {
+      const [feedsRes, cfgRes] = await Promise.all([
+        fetch('/api/mcp/rss/feeds',      { signal: AbortSignal.timeout(5000) }).catch(() => null),
+        fetch('/api/mcp/scoring/config', { signal: AbortSignal.timeout(5000) }).catch(() => null),
+      ]);
+      if (feedsRes?.ok) {
+        const data = await feedsRes.json();
+        if (data.feeds?.length) FEEDS.splice(0, FEEDS.length, ...data.feeds);
+      }
+      if (cfgRes?.ok) {
+        const cfg = await cfgRes.json();
+        if (cfg.domain_vocab)     Object.assign(DOMAIN_VOCAB,     cfg.domain_vocab);
+        if (cfg.severity_words)   Object.assign(SEVERITY_WORDS,   cfg.severity_words);
+        if (cfg.domain_risk_cats) Object.assign(DOMAIN_RISK_CATS, cfg.domain_risk_cats);
+      }
+    } finally {
+      _initDone = true;
+    }
+  })();
+
   // ── Main ingestion run ────────────────────────────────────
   // opts.enabledFeedIds — array of feed IDs to include; defaults to all
   // opts.ticker         — active ticker; used to resolve EDGAR peer feeds
   // opts.risks          — live risk register; enables dynamic domain→risk assignment
   // opts.onProgress(msg, feedId, done) — called per feed
   async function ingestAll(opts = {}) {
+    if (!_initDone) await _initPromise;
     const { onProgress, enabledFeedIds, ticker, risks = [], companyName = "" } = opts;
     const feeds = enabledFeedIds
       ? FEEDS.filter(f => enabledFeedIds.includes(f.id))

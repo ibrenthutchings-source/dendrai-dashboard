@@ -134,25 +134,15 @@ window.MCP = (function () {
 
   // ── Signal mapping ──────────────────────────────────────────────────────────
 
-  // Domain vocabulary → risk category fragments used to find affected risks
-  const _DOMAIN_CATS = {
-    'Financial Reporting': ['Financial', 'Revenue', 'Reporting'],
-    'Cybersecurity':       ['Cybersecurity', 'IT'],
-    'Trade Compliance':    ['Compliance', 'Trade', 'Legal'],
-    'Supply Chain':        ['Supply', 'Operations'],
-    'Macro':               ['Macro', 'Operational'],
-    'Regulatory':          ['Compliance', 'Legal', 'ESG'],
-    'Environmental':       ['ESG'],
-    'Competitive':         ['Operational'],
-  };
-
   function _domainsToRiskIds(domains, risks) {
+    // Use the backend-loaded DOMAIN_RISK_CATS from RSS_ENGINE (single source of truth).
+    const mapping = window.RSS_ENGINE?.DOMAIN_RISK_CATS || {};
     const affected = [];
     for (const domain of (domains || [])) {
-      const fragments = _DOMAIN_CATS[domain] || [];
+      const fragments = mapping[domain] || [];
       for (const r of risks) {
-        const cat = r.category || '';
-        if (fragments.some(f => cat.includes(f)) && !affected.includes(r.id)) {
+        const searchable = ((r.category || '') + ' ' + (r.name || '')).toLowerCase();
+        if (fragments.some(f => searchable.includes(f)) && !affected.includes(r.id)) {
           affected.push(r.id);
         }
       }
@@ -245,7 +235,8 @@ window.MCP = (function () {
   // ── Item 1A enrichment ──────────────────────────────────────────────────────
 
   // Category keywords used to match filing paragraphs to risk register entries.
-  const _RISK_KW = {
+  // Loaded from /api/mcp/scoring/config on startup; hardcoded object is the fallback.
+  const _RISK_KW_DEFAULT = {
     'Financial Reporting': ['revenue recognition','accrual','restatement','gaap','icfr','material weakness','audit','financial statement'],
     'Supply Chain':        ['supply chain','supplier','component','inventory','procurement','lead time','single source'],
     'Cybersecurity':       ['cyber','information security','data breach','ransomware','it system','unauthorized access'],
@@ -259,6 +250,12 @@ window.MCP = (function () {
     'Gross Margin':        ['gross margin','margin','pricing pressure','average selling price','asp','competition'],
     'CapEx':               ['capital expenditure','capex','capacity','fab','manufacturing','facility'],
   };
+  let _RISK_KW = null;
+  fetch('/api/mcp/scoring/config', { signal: AbortSignal.timeout(5000) })
+    .then(r => r.ok ? r.json() : null)
+    .then(cfg => { if (cfg?.risk_kw) _RISK_KW = cfg.risk_kw; })
+    .catch(() => {});
+  function _getRiskKw() { return _RISK_KW || _RISK_KW_DEFAULT; }
 
   /**
    * Match Item 1A filing paragraphs to template risks and attach the most
@@ -282,7 +279,7 @@ window.MCP = (function () {
       // Build keyword list from risk category + name
       const cat = (r.category || '').toLowerCase();
       const name = (r.name || '').toLowerCase();
-      const kwSets = Object.entries(_RISK_KW).filter(([k]) => {
+      const kwSets = Object.entries(_getRiskKw()).filter(([k]) => {
         const kl = k.toLowerCase();
         return cat.includes(kl) || name.includes(kl) ||
                kl.split(/\s+/).some(w => cat.includes(w) || name.includes(w));
