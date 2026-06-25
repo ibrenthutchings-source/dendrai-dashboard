@@ -209,6 +209,75 @@ def extract_quarterly_series(xbrl: dict, metric: str) -> list[dict]:
     return [{"quarter_end": p["end"], "value": p["val"], "start": p.get("start")} for p in pts_sorted]
 
 
+def compute_analyst_series(xbrl: dict, rev_q_series: list) -> dict:
+    """
+    Compute analyst KPI quarterly time series from XBRL:
+      eps, op_income, op_margin, net_income, fcf, ebitda
+    Each entry: [{quarter_end, value}, ...]
+    Forecast keys (eps_forecast, eps_backtest) added when ≥8 quarters available.
+    """
+    result: dict = {}
+    rev_map = {p["quarter_end"]: p["value"] for p in (rev_q_series or [])}
+
+    # EPS (diluted preferred, fall back to basic)
+    for eps_key in ("EPS_Diluted", "EPS_Basic"):
+        eps_q = extract_quarterly_series(xbrl, eps_key)
+        if eps_q:
+            result["eps"] = eps_q
+            vals = [p["value"] for p in eps_q]
+            if len(vals) >= 8:
+                try:
+                    bt  = walk_forward_backtest(vals)
+                    fc  = compute_ensemble_forecast(vals, horizon=4, weights=bt.get("calibrated_weights"))
+                    result["eps_forecast"] = fc
+                    result["eps_backtest"] = bt
+                except Exception:
+                    pass
+            break
+
+    # Operating Income → Operating Margin %
+    oi_q = extract_quarterly_series(xbrl, "OperatingIncome")
+    if oi_q:
+        result["op_income"] = oi_q
+        op_margin = []
+        for p in oi_q:
+            rv = rev_map.get(p["quarter_end"])
+            if rv and rv > 0:
+                op_margin.append({"quarter_end": p["quarter_end"], "value": round(p["value"] / rv * 100, 2)})
+        if op_margin:
+            result["op_margin"] = op_margin
+
+    # Net Income
+    ni_q = extract_quarterly_series(xbrl, "NetIncome")
+    if ni_q:
+        result["net_income"] = ni_q
+
+    # FCF = CFO − |CapEx|  (match by quarter_end)
+    cfo_q   = extract_quarterly_series(xbrl, "OperatingCashFlow")
+    capex_q = extract_quarterly_series(xbrl, "CapEx")
+    if cfo_q and capex_q:
+        cfo_map = {p["quarter_end"]: p["value"] for p in cfo_q}
+        fcf = [
+            {"quarter_end": p["quarter_end"], "value": cfo_map[p["quarter_end"]] - abs(p["value"])}
+            for p in capex_q if p["quarter_end"] in cfo_map
+        ]
+        if len(fcf) >= 4:
+            result["fcf"] = sorted(fcf, key=lambda x: x["quarter_end"])
+
+    # EBITDA = Operating Income + D&A
+    dep_q = extract_quarterly_series(xbrl, "Depreciation")
+    if oi_q and dep_q:
+        dep_map = {p["quarter_end"]: p["value"] for p in dep_q}
+        ebitda = [
+            {"quarter_end": p["quarter_end"], "value": p["value"] + dep_map[p["quarter_end"]]}
+            for p in oi_q if p["quarter_end"] in dep_map
+        ]
+        if len(ebitda) >= 4:
+            result["ebitda"] = ebitda
+
+    return result
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 2 — BENEISH M-SCORE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1767,5 +1836,8 @@ def run_full_analysis(
         result["qoq_momentum"] = compute_qoq_momentum(rev_q)
     else:
         result["qoq_momentum"] = {"note": "No quarterly Revenue data available"}
+
+    # ── 11. Analyst KPI Series (EPS, OpMargin, NetIncome, FCF, EBITDA) ───────
+    result["analyst_series"] = compute_analyst_series(xbrl, q_series or [])
 
     return result

@@ -517,6 +517,27 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
 
         // Use Number.isFinite — ?? passes NaN through, which breaks .toFixed()
         const safeV = (v, fallback) => Number.isFinite(v) ? v : fallback;
+
+        // EPS — run ensemble if ≥8 quarters available
+        let epsOut = null;
+        const epsSeries = data.eps?.history?.length >= 8 ? data.eps.history.map(x => x.v) : null;
+        if (epsSeries) {
+          const epsBT    = BACKTESTING.backtestAll(epsSeries);
+          const epsMapes = [epsBT.results.arima?.mape, epsBT.results.prophet?.mape, epsBT.results.rf?.mape];
+          const epsFcAll = BACKTESTING.forecastAll(epsSeries, null, 4, epsMapes);
+          const epsEns   = epsFcAll.ensemble;
+          epsOut = {
+            history:  data.eps.history,
+            forecast: data.eps.forecast.map((f, i) => ({
+              q:    f.q,
+              base: safeV(epsEns?.base[i], f.base),
+              lo:   safeV(epsEns?.lo[i],   f.lo),
+              hi:   safeV(epsEns?.hi[i],   f.hi),
+            })),
+            all:     epsFcAll,
+            backtest:epsBT,
+          };
+        }
         setModelOutput({
           revenue: {
             history: data.revenue.history,
@@ -542,6 +563,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
             backtest: mgBT,
             source: mgSource,
           },
+          eps: epsOut,
         });
       } catch (e) {
         console.error("Forecasting engine error:", e);
@@ -557,6 +579,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
 
   const rev  = modelOutput?.revenue  ?? data.revenue;
   const mg   = modelOutput?.margin   ?? data.margin;
+  const eps  = modelOutput?.eps      ?? data.eps;
 
   const lastHistRev = rev.history[rev.history.length - 1].v;
   const lastFcRev   = rev.forecast[rev.forecast.length - 1].base;
@@ -565,6 +588,12 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
   const lastHistMg = mg.history[mg.history.length - 1].v;
   const lastFcMg   = mg.forecast[mg.forecast.length - 1].base;
   const mgDelta    = (lastFcMg - lastHistMg) * 100;
+
+  const lastFcEPS  = eps?.forecast?.[eps.forecast.length - 1]?.base;
+  const lastHistEPS= eps?.history?.[eps.history.length - 1]?.v;
+  const epsDeltaPct= (lastFcEPS != null && lastHistEPS) ? ((lastFcEPS - lastHistEPS) / Math.abs(lastHistEPS)) * 100 : null;
+
+  const lastFcFCF  = data.fcf?.forecast?.[data.fcf.forecast.length - 1]?.base;
 
   const hasEngines = typeof FORECASTING !== "undefined" && typeof BACKTESTING !== "undefined";
 
@@ -610,8 +639,20 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
           <div className={`bb-ticker-val${data.mscore.m > -1.78 ? " red" : data.mscore.m > -2.22 ? " amber" : " green"}`}>{data.mscore.m.toFixed(2)}</div>
         </div>
         <div className="bb-ticker-item">
-          <div className="bb-ticker-label">MACRO SIGNAL</div>
-          <div className="bb-ticker-val red" style={{fontSize:12,letterSpacing:"0.04em"}}>CONTRACTION</div>
+          <div className="bb-ticker-label">EPS FCST</div>
+          <div className={`bb-ticker-val${epsDeltaPct != null ? (epsDeltaPct >= 0 ? " green" : " red") : ""}`}>
+            {lastFcEPS != null ? `$${lastFcEPS.toFixed(2)}` : "—"}
+          </div>
+        </div>
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">EPS Δ</div>
+          <div className={`bb-ticker-val${epsDeltaPct != null ? (epsDeltaPct >= 0 ? " green" : " red") : ""}`}>
+            {epsDeltaPct != null ? `${epsDeltaPct >= 0 ? "▲" : "▼"}${Math.abs(epsDeltaPct).toFixed(1)}%` : "—"}
+          </div>
+        </div>
+        <div className="bb-ticker-item">
+          <div className="bb-ticker-label">FCF FCST</div>
+          <div className="bb-ticker-val">{lastFcFCF != null ? `$${lastFcFCF.toFixed(0)}M` : "—"}</div>
         </div>
         <div className="bb-ticker-item">
           <div className="bb-ticker-label">SENTIMENT</div>
@@ -663,6 +704,152 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
           )}
         </div>
       </div>
+
+      {/* ── Analyst KPI row 1: EPS + EBITDA ─────────────────────────────────── */}
+      {(eps || data.ebitda) && (
+        <div className="fcst-row">
+          {eps && (() => {
+            const lastH = eps.history[eps.history.length - 1]?.v;
+            const lastF = eps.forecast[eps.forecast.length - 1]?.base;
+            const d = lastH != null && lastH !== 0 ? ((lastF - lastH) / Math.abs(lastH)) * 100 : null;
+            return (
+              <div className="fcst-card">
+                <div className="head">
+                  <div>
+                    <div className="ttl">EPS · Diluted</div>
+                    <div className="sub">{modelOutput?.eps ? "EDGAR XBRL · ensemble" : "Quarterly $/share · 8 history + 4 forecast"}</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div className="big-num">{lastF != null ? `$${lastF.toFixed(2)}` : "—"}</div>
+                    {d != null && <div className={`delta ${d >= 0 ? "up" : "dn"}`}>{d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(1)}% vs latest</div>}
+                  </div>
+                </div>
+                <ForecastChart history={eps.history.slice(-8)} forecast={eps.forecast} unit="$" color="var(--acc)"/>
+                {modelOutput?.eps?.all && (
+                  <ComponentForecastTable fcAll={modelOutput.eps.all} labels={data.eps.forecast.map(f => f.q)} unit="$" />
+                )}
+              </div>
+            );
+          })()}
+          {data.ebitda && (() => {
+            const lastH = data.ebitda.history[data.ebitda.history.length - 1]?.v;
+            const lastF = data.ebitda.forecast[data.ebitda.forecast.length - 1]?.base;
+            const d = lastH ? ((lastF - lastH) / lastH) * 100 : null;
+            return (
+              <div className="fcst-card">
+                <div className="head">
+                  <div>
+                    <div className="ttl">EBITDA</div>
+                    <div className="sub">Operating Income + D&amp;A · quarterly $M</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div className="big-num">${lastF != null ? lastF.toFixed(0) : "—"}M</div>
+                    {d != null && <div className={`delta ${d >= 0 ? "up" : "dn"}`}>{d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(1)}%</div>}
+                  </div>
+                </div>
+                <ForecastChart history={data.ebitda.history.slice(-8)} forecast={data.ebitda.forecast} unit="$M" color="var(--violet)"/>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ── Analyst KPI row 2: Net Income + FCF ─────────────────────────────── */}
+      {(data.netIncome || data.fcf) && (
+        <div className="fcst-row">
+          {data.netIncome && (() => {
+            const lastH = data.netIncome.history[data.netIncome.history.length - 1]?.v;
+            const lastF = data.netIncome.forecast[data.netIncome.forecast.length - 1]?.base;
+            const d = lastH ? ((lastF - lastH) / Math.abs(lastH)) * 100 : null;
+            return (
+              <div className="fcst-card">
+                <div className="head">
+                  <div>
+                    <div className="ttl">Net Income</div>
+                    <div className="sub">GAAP · quarterly $M</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div className="big-num">${lastF != null ? lastF.toFixed(0) : "—"}M</div>
+                    {d != null && <div className={`delta ${d >= 0 ? "up" : "dn"}`}>{d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(1)}%</div>}
+                  </div>
+                </div>
+                <ForecastChart history={data.netIncome.history.slice(-8)} forecast={data.netIncome.forecast} unit="$M" color="var(--acc)"/>
+              </div>
+            );
+          })()}
+          {data.fcf && (() => {
+            const lastH = data.fcf.history[data.fcf.history.length - 1]?.v;
+            const lastF = data.fcf.forecast[data.fcf.forecast.length - 1]?.base;
+            const d = lastH ? ((lastF - lastH) / Math.abs(lastH)) * 100 : null;
+            return (
+              <div className="fcst-card">
+                <div className="head">
+                  <div>
+                    <div className="ttl">Free Cash Flow</div>
+                    <div className="sub">CFO − CapEx · quarterly $M</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div className="big-num">${lastF != null ? lastF.toFixed(0) : "—"}M</div>
+                    {d != null && <div className={`delta ${d >= 0 ? "up" : "dn"}`}>{d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(1)}%</div>}
+                  </div>
+                </div>
+                <ForecastChart history={data.fcf.history.slice(-8)} forecast={data.fcf.forecast} unit="$M" color="#4aad52"/>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ── Analyst KPI row 3: Operating Margin ─────────────────────────────── */}
+      {data.opMargin && (() => {
+        const lastH = data.opMargin.history[data.opMargin.history.length - 1]?.v;
+        const lastF = data.opMargin.forecast[data.opMargin.forecast.length - 1]?.base;
+        const mgH   = mg.history[mg.history.length - 1]?.v;
+        const spread = mgH != null && lastH != null ? +(mgH - lastH).toFixed(1) : null;
+        return (
+          <div className="fcst-row">
+            <div className="fcst-card">
+              <div className="head">
+                <div>
+                  <div className="ttl">Operating Margin</div>
+                  <div className="sub">EBIT ÷ Revenue · quarterly %</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div className="big-num">{lastF != null ? `${lastF.toFixed(1)}%` : "—"}</div>
+                  {spread != null && <div className="sub" style={{marginTop:2}}>Gross−Op spread: {spread.toFixed(1)} pp</div>}
+                </div>
+              </div>
+              <ForecastChart history={data.opMargin.history.slice(-8)} forecast={data.opMargin.forecast} unit="%" color="#e8a838"/>
+            </div>
+            <div className="fcst-card">
+              <div className="head">
+                <div>
+                  <div className="ttl">Margin Comparison</div>
+                  <div className="sub">Latest quarter · Gross vs Operating vs Net</div>
+                </div>
+              </div>
+              <div style={{padding:"12px 0"}}>
+                {[
+                  { label: "Gross Margin",     v: mg.history[mg.history.length-1]?.v,              unit: "%", color: "var(--violet)" },
+                  { label: "Operating Margin", v: data.opMargin.history[data.opMargin.history.length-1]?.v, unit: "%", color: "#e8a838" },
+                  { label: "Net Margin",       v: data.netIncome && data.revenue
+                      ? +(data.netIncome.history.slice(-1)[0]?.v / data.revenue.history.slice(-1)[0]?.v * 100).toFixed(1)
+                      : null,                                                                        unit: "%", color: "var(--acc)" },
+                ].map(({ label, v, unit, color }) => v != null && (
+                  <div key={label} style={{display:"flex", alignItems:"center", gap:8, marginBottom:10}}>
+                    <div style={{width:3, height:28, background:color, borderRadius:2, flexShrink:0}}/>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:10.5, color:"var(--ink-3)", letterSpacing:"0.05em", textTransform:"uppercase"}}>{label}</div>
+                      <div style={{fontSize:15, fontWeight:500, fontVariantNumeric:"tabular-nums"}}>{v.toFixed(1)}{unit}</div>
+                    </div>
+                    <div style={{width:`${Math.min(v, 100)}%`, maxWidth:120, height:4, background:color, opacity:0.35, borderRadius:2}}/>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {modelOutput && (
         <ModelDiagnosticsCard revenue={modelOutput.revenue} margin={modelOutput.margin} />
@@ -885,7 +1072,7 @@ function RssSentimentCard({ signals }) {
 // ---- Per-model forecast numbers table ----
 function ComponentForecastTable({ fcAll, labels, unit }) {
   const models = ["arima","prophet","rf","ensemble"];
-  const fmt = (v, u) => v == null ? "—" : u === "$M" ? `$${v.toFixed(0)}M` : `${v.toFixed(1)}%`;
+  const fmt = (v, u) => v == null ? "—" : u === "$M" ? `$${v.toFixed(0)}M` : u === "$" ? `$${v.toFixed(2)}` : `${v.toFixed(1)}%`;
   return (
     <div style={{marginTop: 10, overflowX: "auto"}}>
       <table style={{width:"100%", borderCollapse:"collapse", fontSize:10.5}}>

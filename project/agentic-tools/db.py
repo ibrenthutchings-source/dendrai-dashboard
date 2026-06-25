@@ -564,6 +564,17 @@ CREATE TABLE IF NOT EXISTS risks_as_code_artifacts (
     UNIQUE (run_id, framework)
 );
 CREATE INDEX IF NOT EXISTS idx_rac_artifacts_ticker ON risks_as_code_artifacts (ticker, framework, generated_at DESC);
+
+-- ── Analyst KPI quarterly time series (EPS, OpMargin, NetIncome, FCF, EBITDA) ─
+CREATE TABLE IF NOT EXISTS analyst_kpi_series (
+    id          SERIAL PRIMARY KEY,
+    run_id      INT         NOT NULL REFERENCES risk_loop_runs(id),
+    metric_name VARCHAR(64) NOT NULL,
+    quarter_end DATE        NOT NULL,
+    value       NUMERIC,
+    UNIQUE (run_id, metric_name, quarter_end)
+);
+CREATE INDEX IF NOT EXISTS idx_analyst_kpi ON analyst_kpi_series (run_id, metric_name);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -1170,6 +1181,36 @@ def save_forecasts(run_id: int, metric: str, forecast_data: dict) -> None:
                          point_forecast, ci_lower, ci_upper, sigma)
                     VALUES %s
                     ON CONFLICT (run_id, metric, model, horizon_quarter) DO NOTHING
+                    """,
+                    rows,
+                )
+    _run(_do)
+
+
+def save_analyst_kpi_series(run_id: int, analyst_series: dict) -> None:
+    """Persist raw quarterly series for analyst KPIs (EPS, OpMargin, NetIncome, FCF, EBITDA)."""
+    if not analyst_series:
+        return
+    rows = []
+    for metric_name, series in analyst_series.items():
+        if not isinstance(series, list):
+            continue
+        for p in series:
+            qe  = p.get("quarter_end")
+            val = p.get("value")
+            if qe and val is not None:
+                rows.append((run_id, metric_name, qe, val))
+    if not rows:
+        return
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO analyst_kpi_series (run_id, metric_name, quarter_end, value)
+                    VALUES %s
+                    ON CONFLICT (run_id, metric_name, quarter_end) DO NOTHING
                     """,
                     rows,
                 )

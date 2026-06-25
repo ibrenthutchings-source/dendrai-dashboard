@@ -620,6 +620,52 @@ function App() {
           }
         }
 
+        // Override synthetic analyst KPI series with real EDGAR data from MCP
+        const _as = mcpResult.analyst_series;
+        if (_as) {
+          const { fcLabels: fcL } = RISK_ENGINE.quarterBoundaries();
+          const _toQL2 = (d) => { if (!d) return null; const [y,m] = d.slice(0,7).split('-').map(Number); return `Q${Math.ceil(m/3)}-${String(y).slice(-2)}`; };
+          const _mapQ  = (series, scale, digits) =>
+            (series || []).slice(-12).map(p => ({ q: _toQL2(p.quarter_end) || p.quarter_end, v: +(p.value / scale).toFixed(digits) }));
+          const _linFc = (hist, labels, digits) => {
+            if (!hist?.length) return null;
+            const last = hist[hist.length - 1].v;
+            const step = hist.length >= 2 ? (last - hist[hist.length - 2].v) * 0.5 : 0;
+            return labels.map((q, i) => {
+              const b = +(last + step * (i + 1)).toFixed(digits);
+              return { q, base: b, lo: +(b - Math.abs(last) * 0.10).toFixed(digits), hi: +(b + Math.abs(last) * 0.10).toFixed(digits) };
+            });
+          };
+
+          if (_as.eps?.length >= 4) {
+            const h = _mapQ(_as.eps, 1, 2);
+            templateProfile.forecasts.eps.history  = h;
+            templateProfile.forecasts.eps.forecast = _as.eps_forecast?.forecasts?.length
+              ? _as.eps_forecast.forecasts.map((f, i) => ({ q: fcL[i] || `H${i+1}`, base: +f.point.toFixed(2), lo: +f.ci_lower.toFixed(2), hi: +f.ci_upper.toFixed(2) }))
+              : _linFc(h, fcL, 2) ?? templateProfile.forecasts.eps.forecast;
+          }
+          if (_as.op_margin?.length >= 4) {
+            const h = _mapQ(_as.op_margin, 1, 1);
+            templateProfile.forecasts.opMargin.history  = h;
+            templateProfile.forecasts.opMargin.forecast = _linFc(h, fcL, 1) ?? templateProfile.forecasts.opMargin.forecast;
+          }
+          if (_as.net_income?.length >= 4) {
+            const h = _mapQ(_as.net_income, 1e6, 0);
+            templateProfile.forecasts.netIncome.history  = h;
+            templateProfile.forecasts.netIncome.forecast = _linFc(h, fcL, 0) ?? templateProfile.forecasts.netIncome.forecast;
+          }
+          if (_as.fcf?.length >= 4) {
+            const h = _mapQ(_as.fcf, 1e6, 0);
+            templateProfile.forecasts.fcf.history  = h;
+            templateProfile.forecasts.fcf.forecast = _linFc(h, fcL, 0) ?? templateProfile.forecasts.fcf.forecast;
+          }
+          if (_as.ebitda?.length >= 4) {
+            const h = _mapQ(_as.ebitda, 1e6, 0);
+            templateProfile.forecasts.ebitda.history  = h;
+            templateProfile.forecasts.ebitda.forecast = _linFc(h, fcL, 0) ?? templateProfile.forecasts.ebitda.forecast;
+          }
+        }
+
         // Overlay MCP-computed scores onto template risks
         const mergedRisks = MCP.mergeRiskScores(templateProfile.risks, mcpResult.risk_scores);
 
