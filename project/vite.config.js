@@ -90,6 +90,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
       },
+      // Risks-as-Code: OSCAL + COSO ERM generation + SSE live stream
+      '/api/risks-as-code': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
+      },
     },
   },
   // vite preview (port 4173) needs its own proxy block — server.proxy is dev-only
@@ -117,6 +123,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
+      },
+      '/api/risks-as-code': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
       },
     },
   },
