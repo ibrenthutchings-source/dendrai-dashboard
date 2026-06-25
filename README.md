@@ -21,6 +21,7 @@ project/
   nav.jsx             — left navigation (Configuration · Execution · Governance Intelligence)
   report.jsx          — Loop Report modal + Override modal
   scenarios.jsx       — Grey Swan Scenarios panel
+  ai-chat-panel.jsx   — slide-out AI chat panel (Claude / Gemini)
   styles-modules.css  — all component CSS
 ```
 
@@ -31,11 +32,25 @@ project/
 - **Global components**: Each component file registers itself on `window` (e.g. `window.ForecastChart`, `window.RiskFlowSankey`, `window.ScenariosPanel`) so pipeline sub-panels can poll and mount them lazily.
 - **Live mode**: When enabled, fetches EDGAR companyfacts from `data.sec.gov` and FRED macro data from bundled snapshot. Disabled = mock dataset.
 
+## AI Chat panel
+
+A slide-out conversational interface accessible from the **"Ask Claude" / "Ask Gemini" button** in the top-right header. Click the button to open; click again (or press ✕) to close.
+
+- **Claude mode** — full agentic tool-use loop: Claude can call EDGAR, FRED, RSS, and the quant analytics suite to answer questions with live data. Requires `ANTHROPIC_API_KEY` in `.env` and `api_server.py` running.
+- **Gemini mode** — conversational streaming with the current dashboard context (entity, risk register) injected as system context. Requires a Gemini API key entered in Setup.
+- **Suggestions** — the empty state shows three context-aware prompts based on the current ticker.
+- **Tool trace** — while Claude fetches data you see each tool call appear live before the response streams in.
+
+**Configuration** (Setup → AI Chat Assistant):
+- Provider: Claude or Gemini
+- Button label: free-form text (default "Ask Claude" / "Ask Gemini")
+- Gemini API key: stored in browser `localStorage`; get one at [aistudio.google.com](https://aistudio.google.com)
+
 ## Screens (left navigation)
 
 | Nav item | Description |
 |---|---|
-| Setup | Configuration — ticker, industry, audit focus, signal sources |
+| Setup | Configuration — ticker, industry, audit focus, signal sources, AI chat provider |
 | Pipeline | Six-stage loop execution with HITL gates |
 | Controls Monitor | KRI / control-effectiveness tracker |
 | MAPs | Management Action Plans dashboard |
@@ -88,6 +103,8 @@ The Python backend (`project/agentic-tools/`) exposes all data and analytics as 
 cd project/agentic-tools
 pip install fastapi uvicorn pydantic python-dotenv requests anthropic \
             feedparser httpx psycopg2-binary mcp pyyaml
+# Optional: Gemini support for the AI chat panel
+pip install google-generativeai
 cp .env.example .env   # fill in API keys
 python api_server.py   # → http://localhost:8001/docs
 ```
@@ -101,7 +118,7 @@ python api_server.py   # → http://localhost:8001/docs
 | RSS | Industry news + five compliance feeds (BIS, CISA, SEC, Fed, EPA) | None (public) |
 | Predictive Analytics | Ten risk models: M-Score, forecasting, scenarios, grey swan | None |
 | Risks-as-Code | OSCAL + COSO ERM YAML artifacts from live risk register | None |
-| AI endpoints | HITL gate recommendations, narrative analysis, persona briefs | `ANTHROPIC_API_KEY` |
+| AI endpoints | HITL gate recommendations, narrative analysis, persona briefs, **AI chat** | `ANTHROPIC_API_KEY` |
 | **Oracle Fusion** | **Control library, test results, deficiencies, SOD violations, audit trail** | **See below** |
 
 ### Oracle Fusion controls integration

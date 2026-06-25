@@ -5,26 +5,32 @@
 
 const NAV_SECTIONS = [
   {
-    label: "Configuration",
-    items: [
-      { id: "config", icon: "gear", l: "Setup" },
-    ],
-  },
-  {
-    label: "Execution",
+    label: "Risk Intelligence",
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
-      { id: "pipeline", icon: "flow",      l: "Pipeline" },
+      { id: "pipeline", icon: "flow",      l: "Assess Risk" },
+      { id: "riskcode",   icon: "spark",     l: "Risk-as-Code" },
+      { id: "frameworks", icon: "code",     l: "Risks as Code (Frameworks)" },
+      { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
       { id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
-      { id: "riskcode",   icon: "spark",     l: "Risk-as-Code" },
-      { id: "frameworks", icon: "code",     l: "Risks as Code (Frameworks)" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
-      { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
-      { id: "sox",        icon: "grid",    l: "SOX Scope" },
+      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment },
+    ],
+  },
+  {
+    label: "Audit & Compliance Tracking",
+    items: [
+      // Risk Register, Risk Flow, and Forecasts now live in the
+      // right-hand Live Register rail on the Pipeline screen (post-run).
+      { id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
+      { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
+      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
+      { id: "scope",    icon: "grid",      l: "Audit Scope" },
+      { id: "policycode", icon: "shield",  l: "Policy-as-Code" }
     ],
   },
   {
@@ -37,6 +43,12 @@ const NAV_SECTIONS = [
       { id: "gov", govTab: "peers",     icon: "table",   l: "Peer Benchmarking" },
     ],
   },
+  {
+    label: "Configuration",
+    items: [
+      { id: "config", icon: "gear", l: "Setup" },
+    ],
+  }
 ];
 
 // Mini gear icon (not in the shared Icon set) — falls back gracefully.
