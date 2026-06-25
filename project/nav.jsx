@@ -18,7 +18,7 @@ const NAV_SECTIONS = [
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
-      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment },
+      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"}
     ],
   },
   {
