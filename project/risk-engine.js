@@ -972,10 +972,57 @@ window.RISK_ENGINE = (function () {
     const hedgePrev  = sentQuarterly[sentQuarterly.length - 3]?.hedge ?? hedgeLast;
     const hedgeTrend = hedgeLast < hedgePrev ? `↓ to ${(hedgeLast * 100).toFixed(0)}%` : `↑ to ${(hedgeLast * 100).toFixed(0)}%`;
 
+    // ── Synthetic analyst KPI series (overridden in app.jsx with MCP real data) ─
+    const annualM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 1000;
+    const qRevM   = annualM / 4;
+    const labels8 = syntheticQuarters(lastY, lastQ);
+
+    const _synth = (base8fn, trend8 = 0, digits = 0) => {
+      const hist = labels8.map((q, i) => ({ q, v: +base8fn(i).toFixed(digits) }));
+      const lastV8 = hist[hist.length - 1].v;
+      return {
+        history:  hist,
+        forecast: fcLabels.map((q, i) => {
+          const base = +(lastV8 + trend8 * (i + 1)).toFixed(digits);
+          const pad  = Math.abs(lastV8) * 0.1 || 0.1;
+          return { q, base, lo: +(base - pad).toFixed(digits), hi: +(base + pad).toFixed(digits) };
+        }),
+      };
+    };
+
+    // Net Income: 12% net margin, slight ramp
+    const niBase = i => qRevM * 0.12 * (0.88 + i * 0.03);
+    const niTrend = qRevM * 0.12 * 0.03;
+    const synthNI = _synth(niBase, niTrend, 0);
+
+    // EPS: NI ($M) / ~435M shares = $/share
+    const epsBase = i => niBase(i) / 435;
+    const synthEPS = _synth(epsBase, niTrend / 435, 2);
+
+    // FCF: 16% FCF margin
+    const fcfBase = i => qRevM * 0.16 * (0.85 + i * 0.025);
+    const synthFCF = _synth(fcfBase, qRevM * 0.16 * 0.025, 0);
+
+    // EBITDA: 28% EBITDA margin
+    const ebitdaBase = i => qRevM * 0.28 * (0.90 + i * 0.02);
+    const synthEBITDA = _synth(ebitdaBase, qRevM * 0.28 * 0.02, 0);
+
+    // Operating Margin: 15%
+    const omLast = 15.0;
+    const synthOM = {
+      history: labels8.map((q, i) => ({ q, v: +(omLast * (0.88 + i * 0.018)).toFixed(1) })),
+      forecast: fcLabels.map((q, i) => ({ q, base: +(omLast + 0.1 * (i + 1)).toFixed(1), lo: +(omLast - 2).toFixed(1), hi: +(omLast + 2.5).toFixed(1) })),
+    };
+
     const fred = FRED_BY_INDUSTRY[industry] || FRED_BY_INDUSTRY['Generic'];
     return {
-      revenue: { history: histQuarters, forecast: fcastQ },
-      margin:  { history: histMargins,  forecast: fcastGM },
+      revenue:   { history: histQuarters, forecast: fcastQ },
+      margin:    { history: histMargins,  forecast: fcastGM },
+      eps:       synthEPS,
+      netIncome: synthNI,
+      fcf:       synthFCF,
+      ebitda:    synthEBITDA,
+      opMargin:  synthOM,
       fred,
       sentiment: {
         score: latestSent,

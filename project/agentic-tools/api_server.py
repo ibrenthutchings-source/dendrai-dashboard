@@ -222,6 +222,10 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
         db.save_qoq_momentum(run_id, result["qoq_momentum"])
     if result.get("rss_signals"):
         db.save_rss_signals(run_id, result["rss_signals"])
+    if result.get("analyst_series"):
+        db.save_analyst_kpi_series(run_id, result["analyst_series"])
+        if result["analyst_series"].get("eps_forecast"):
+            db.save_forecasts(run_id, "EPS_Diluted", result["analyst_series"]["eps_forecast"])
 
     db.complete_risk_loop_run(run_id)
 
