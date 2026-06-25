@@ -6,6 +6,7 @@ import cors from 'cors'
 import rateLimit from 'express-rate-limit'
 import { clerkMiddleware } from '@clerk/express'
 import reportsRouter from './routes/reports.js'
+import risksAsCodeRouter from './routes/risks-as-code.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -45,6 +46,7 @@ app.get('/health', (req, res) => {
 })
 
 app.use('/api/reports', reportsRouter)
+app.use('/api/risks-as-code', risksAsCodeRouter)
 
 app.post('/api/gemini', async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY
