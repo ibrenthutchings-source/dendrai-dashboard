@@ -35,6 +35,7 @@ window.RSS_ENGINE = (function () {
       risks: ["R-04"],
       weight: 1.3,
       icon: "wifi",
+      companyGated: true,  // Only surface advisories that mention the company or its products
     },
     {
       id: "sec",
@@ -202,14 +203,24 @@ window.RSS_ENGINE = (function () {
     return Math.round(Math.max(0, Math.min(5, raw)));
   }
 
-  function gradeArticle(article, feed, risks = []) {
+  function gradeArticle(article, feed, risks = [], companyName = "") {
     const text = `${article.title || ""} ${article.description || article.summary || ""}`;
     const relevance = scoreRelevance(text, feed.domains);
     const severity  = article.severity_hint != null
       ? Math.min(1, article.severity_hint / 3)
       : scoreSeverity(text);
-    const velocity  = velocityFromScores(relevance, severity, feed.weight);
-    const rag       = velocity >= 3 ? "R" : velocity >= 2 ? "A" : "G";
+    let velocity    = velocityFromScores(relevance, severity, feed.weight);
+
+    // Company-gated feeds: suppress articles that don't mention the company.
+    // CISA ICS advisories cover all vendors — only surface ones relevant to this company.
+    if (feed.companyGated && companyName) {
+      const t = tokenize(text);
+      const STOP = new Set(['corp', 'inc', 'ltd', 'llc', 'group', 'holdings']);
+      const terms = companyName.toLowerCase().split(/\W+/).filter(w => w.length >= 4 && !STOP.has(w));
+      if (terms.length && !terms.some(term => t.includes(term))) velocity = 0;
+    }
+
+    const rag = velocity >= 3 ? "R" : velocity >= 2 ? "A" : "G";
 
     // Prefer dynamic domain→risk matching when the live register is available.
     // Fall back to the hardcoded per-feed risk IDs so older call sites still work.
@@ -325,7 +336,7 @@ window.RSS_ENGINE = (function () {
   // opts.risks          — live risk register; enables dynamic domain→risk assignment
   // opts.onProgress(msg, feedId, done) — called per feed
   async function ingestAll(opts = {}) {
-    const { onProgress, enabledFeedIds, ticker, risks = [] } = opts;
+    const { onProgress, enabledFeedIds, ticker, risks = [], companyName = "" } = opts;
     const feeds = enabledFeedIds
       ? FEEDS.filter(f => enabledFeedIds.includes(f.id))
       : FEEDS;
@@ -342,7 +353,7 @@ window.RSS_ENGINE = (function () {
         rawArticles = await fetchFeed(feed);
       }
       const fetchStatus = rawArticles ? "ok" : "failed";
-      const graded = (rawArticles || []).map(a => gradeArticle(a, feed, risks));
+      const graded = (rawArticles || []).map(a => gradeArticle(a, feed, risks, companyName));
       results.push({ feed, articles: graded, fetchStatus });
       onProgress?.(`${feed.name} fetched`, feed.id, true);
     }

@@ -1405,7 +1405,8 @@ function App() {
                 }}
                 flowMeta={profile.riskFlow}
                 onOpenMainFlow={() => setActiveScreen("flow")}
-                risks={output.s2?.risks || profile?.risks || []} />
+                risks={output.s2?.risks || profile?.risks || []}
+                companyName={profile?.entity?.name || ""} />
             )}
           </div>
           )}
