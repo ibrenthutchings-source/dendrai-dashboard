@@ -97,7 +97,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
             {/* ── Stage-linked panels (always visible when stage is done) ── */}
             {isDone && s.id === "s1" && window.RSSPanel && (
               <PipelinePanel label="RSS Signals">
-                <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks}/>
+                <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""}/>
               </PipelinePanel>
             )}
             {isDone && s.id === "s2" && forecasts && (
