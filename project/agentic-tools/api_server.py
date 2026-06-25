@@ -64,6 +64,7 @@ from rss_ingest_service import ingest_feeds, get_feed_status, FEEDS as RSS_INGES
 import db
 
 import ai_endpoints
+import chat_endpoint
 import claude_client
 import peer_intel
 import risks_as_code
@@ -107,6 +108,9 @@ app.add_middleware(
 # AI-augmented endpoints (recommendations #1–#4). Active only when ANTHROPIC_API_KEY
 # is set; otherwise each route returns 503 and the deterministic pipeline is unaffected.
 app.include_router(ai_endpoints.router)
+
+# AI Chat: streaming conversational interface with MCP tool access.
+app.include_router(chat_endpoint.router)
 
 # Risks-as-Code: OSCAL + COSO ERM translators + SSE live stream.
 app.include_router(risks_as_code.router)
