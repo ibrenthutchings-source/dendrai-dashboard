@@ -32,7 +32,12 @@ function ReportModal({ open, onClose, payload }) {
       );
       setAiReport({ loading: false, error: null, markdown: res?.markdown || "" });
     } catch (e) {
-      setAiReport({ loading: false, error: e.message || "AI unavailable", markdown: null });
+      const raw = e.message || "";
+      const isBilling = raw.includes("402") || raw.includes("credit") || raw.includes("Credits");
+      const friendly = isBilling
+        ? "BILLING: Anthropic API credits exhausted — add credits at console.anthropic.com/settings/billing"
+        : raw || "AI unavailable";
+      setAiReport({ loading: false, error: friendly, markdown: null });
     }
   }
 
@@ -51,11 +56,27 @@ function ReportModal({ open, onClose, payload }) {
           <div className="rep-h1-sub">{cfg.industry} · {(Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus]).join(" · ")} · {new Date(ts).toLocaleDateString()}</div>
 
           {/* ── AI Narrative (#4) ────────────────────────────── */}
-          {aiReport.error && (
-            <div className="mono" style={{fontSize: 11, color: "var(--red-ink)", margin: "8px 0"}}>
-              AI narrative unavailable: {aiReport.error}
-            </div>
-          )}
+          {aiReport.error && (() => {
+            const isBilling = aiReport.error.startsWith("BILLING:");
+            const msg = isBilling ? aiReport.error.slice("BILLING: ".length) : aiReport.error;
+            return (
+              <div style={{
+                margin: "10px 0", padding: "10px 14px", borderRadius: 6,
+                background: isBilling ? "var(--amber-soft, #fff8e6)" : "var(--red-soft, #fff0f0)",
+                border: `1px solid ${isBilling ? "var(--amber, #e8a838)" : "var(--red, #e05252)"}`,
+                display: "flex", alignItems: "flex-start", gap: 10,
+              }}>
+                <span style={{fontSize: 16, lineHeight: 1}}>{isBilling ? "⚠" : "✕"}</span>
+                <div>
+                  <div style={{fontSize: 11.5, fontWeight: 600,
+                    color: isBilling ? "var(--amber-ink, #92600a)" : "var(--red-ink, #b93333)"}}>
+                    {isBilling ? "API Credits Required" : "AI Report Unavailable"}
+                  </div>
+                  <div style={{fontSize: 11, color: "var(--ink-2)", marginTop: 3}}>{msg}</div>
+                </div>
+              </div>
+            );
+          })()}
           {aiReport.markdown && (
             <div className="rep-section">
               <h3>AI Narrative Report <span className="mono" style={{fontSize: 10, color: "var(--acc-ink)", fontWeight: 400}}>· Claude-generated</span></h3>
