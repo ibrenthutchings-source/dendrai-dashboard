@@ -34,12 +34,11 @@ function ScenariosPanel({ scenarios, greySwan }) {
             </div>
 
             <div className="scen-section">
-              <div className="lbl">Macro assumptions</div>
+              <div className="lbl">Scenario assumptions</div>
               <div className="scen-pills">
-                <span className="scen-pill">China {sc.assumptions.china_revenue_delta}</span>
-                <span className="scen-pill">Cap util {sc.assumptions.capacity_util}</span>
-                <span className="scen-pill">USD {sc.assumptions.usd_dxy}</span>
-                <span className="scen-pill">PMI {sc.assumptions.pmi}</span>
+                {Object.entries(sc.assumptions || {}).map(([label, val]) => (
+                  <span key={label} className="scen-pill">{label} {String(val)}</span>
+                ))}
               </div>
             </div>
 
@@ -120,14 +119,18 @@ function GreySwanCard({ data }) {
         <div className="gs-head-r">
           <div className="gs-arc">
             <div className="gs-arc-side">
-              <span className="rag-chip" style={{background: ragSoft.G, color: ragInk.G}}>GREEN</span>
+              <span className="rag-chip" style={{background: ragSoft[data.starting_rag], color: ragInk[data.starting_rag]}}>
+                {data.starting_rag === 'R' ? 'HIGH' : data.starting_rag === 'A' ? 'MEDIUM' : 'LOW'}
+              </span>
               <div className="gs-arc-val mono">{data.starting_score.toFixed(1)}</div>
               <div className="gs-arc-lab">T0 · today</div>
             </div>
             <Icon name="chev-r" size={20} className="muted"/>
             <div className="gs-arc-side">
-              <span className="rag-chip" style={{background: ragSoft.R, color: ragInk.R}}>RED</span>
-              <div className="gs-arc-val mono" style={{color: "var(--red-ink)"}}>{data.ending_score.toFixed(1)}</div>
+              <span className="rag-chip" style={{background: ragSoft[data.ending_rag], color: ragInk[data.ending_rag]}}>
+                {data.ending_rag === 'R' ? 'HIGH' : data.ending_rag === 'A' ? 'MEDIUM' : 'LOW'}
+              </span>
+              <div className="gs-arc-val mono" style={{color: ragInk[data.ending_rag]}}>{data.ending_score.toFixed(1)}</div>
               <div className="gs-arc-lab">T+90 · projected</div>
             </div>
           </div>

@@ -685,7 +685,7 @@ window.RISK_ENGINE = (function () {
         runway_qtrs:4, liquidity:'CONSTRAINED', kris_red: topRed.slice(0,3),
         recovery:'PROLONGED_5Q_PLUS', audit_focus:['Reserve/accrual adequacy','Covenant compliance','Going-concern disclosure'],
         vs_peers:`${ticker} most exposed relative to sector on ${risks[0]?.name?.split('—')[0] || 'primary risk category'}.`,
-        assumptions:{ rev_delta:'-18%', gm_delta:'-380bps', macro:'contractionary' } },
+        assumptions:{ 'Rev Δ':'-18%', 'Margin Δ':'-380bps', 'Macro':'contractionary', 'Liquidity':'constrained' } },
       { id:'base', name:`Base — Managed risk profile; key controls hold`,
         description: `Risk scores stabilise with current controls effective. Revenue growth ${revStr}, gross margin near ${gmStr}. Primary risks remain elevated but within appetite. MAP implementation proceeds on schedule.`,
         probability:'HIGH', revenue_impact_pct: ratios.revGrowth!=null?Math.round(ratios.revGrowth*100):-3,
@@ -693,7 +693,7 @@ window.RISK_ENGINE = (function () {
         runway_qtrs:10, liquidity:'SUFFICIENT', kris_red: topRed.slice(0,1),
         recovery:'MODERATE_3_4Q', audit_focus:['Top-3 risk remediation','MAP completion vs. due dates','Velocity trend monitoring'],
         vs_peers:`${ticker} in line with sector; focused execution on P1 MAPs required.`,
-        assumptions:{ rev_delta: revStr, gm_delta:'−50bps', controls_hold:true } },
+        assumptions:{ 'Rev Δ': revStr, 'Margin Δ':'−50bps', 'Controls':'hold', 'MAP':'on-track' } },
       { id:'bull', name:`Bull — Risk reduction + favourable macro`,
         description: `MAP implementation ahead of schedule; primary risks step down one RAG level. Revenue recovers ${ratios.revGrowth!=null&&ratios.revGrowth<0?'to flat/modest growth':'accelerates'}, gross margin expands. All covenant ratios comfortable.`,
         probability:'LOW', revenue_impact_pct: ratios.revGrowth!=null?Math.round((ratios.revGrowth+0.08)*100):5,
@@ -701,7 +701,7 @@ window.RISK_ENGINE = (function () {
         runway_qtrs:14, liquidity:'COMFORTABLE', kris_red:[],
         recovery:'NONE', audit_focus:['Control effectiveness validation','Revenue recognition on accelerated bookings'],
         vs_peers:`${ticker} outperforms sector on risk-adjusted basis if MAP programme executes.`,
-        assumptions:{ rev_delta:'+5–8% above base', map_completion:'ahead of schedule', macro:'neutral to expansionary' } },
+        assumptions:{ 'Rev Δ':'+5–8% above base', 'MAP':'ahead of schedule', 'Macro':'expansionary', 'Liquidity':'comfortable' } },
     ];
   }
 
