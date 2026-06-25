@@ -884,6 +884,9 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
         <IndustryKPISection industry={industry} data={data} livefacts={livefacts} ticker={ticker || 'X'} />
       )}
       {industry && (
+        <GeoSegmentKPISection industry={industry} ticker={ticker || 'X'} data={data} livefacts={livefacts} />
+      )}
+      {industry && (
         <AnalystConsensusSection industry={industry} ticker={ticker || 'X'} data={data} />
       )}
 
@@ -1284,6 +1287,189 @@ function LiveFREDList({ series }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── Geographic & segment KPI defaults ─────────────────────────────────────────
+// Tuples: [name, pct-of-total, gm_delta_pp, om_delta_pp]
+// Used when DB has no segment data for the ticker.
+const _GEO_DEFAULTS = {
+  'Semiconductors':           [['Americas',35,2,4],['EMEA',18,-1,-2],['China',20,-5,-6],['APAC ex-China',20,1,1],['Japan',7,3,3]],
+  'Software & Cloud':         [['Americas',58,3,5],['EMEA',28,-2,-3],['APAC',14,-4,-5]],
+  'Automotive OEM':           [['North America',30,1,2],['EMEA',35,-1,-1],['China',20,-4,-5],['Rest of World',15,-2,-2]],
+  'Healthcare & Pharma':      [['North America',55,3,4],['EMEA',30,-1,-2],['APAC',15,-3,-3]],
+  'Financial Services':       [['Domestic',70,2,3],['International',30,-2,-3]],
+  'Retail & Consumer':        [['North America',62,2,3],['EMEA',22,-1,-1],['APAC',16,-3,-3]],
+  'Energy & Resources':       [['North America',55,1,2],['International',45,-1,-2]],
+  'Utilities':                [['Regulated',80,2,3],['Unregulated',20,-4,-5]],
+  'Industrial & Manufacturing':[['Americas',40,1,2],['EMEA',30,-1,-1],['APAC',20,-2,-2],['Rest',10,-3,-3]],
+  'Generic':                  [['Domestic',65,2,3],['International',35,-3,-4]],
+};
+const _SEG_DEFAULTS = {
+  'Semiconductors':           [['Power Solutions',40,3,5],['Intelligent Sensing',30,-1,-2],['Advanced Logic',30,2,3]],
+  'Software & Cloud':         [['Cloud / Subscription',65,4,6],['On-Premise / License',20,-3,-4],['Professional Services',15,-8,-6]],
+  'Automotive OEM':           [['Electric Vehicles',25,-6,-10],['ICE & Hybrid Vehicles',60,3,4],['Aftermarket / Parts',15,6,8]],
+  'Healthcare & Pharma':      [['Innovative Medicine',55,4,5],['MedTech',30,-1,-1],['Consumer Health',15,-2,-3]],
+  'Financial Services':       [['Retail Banking',45,1,2],['Institutional / Markets',35,-1,2],['Wealth Management',20,3,5]],
+  'Retail & Consumer':        [['Core Retail',60,1,2],['E-Commerce',28,4,3],['Private Label',12,-3,-2]],
+  'Energy & Resources':       [['Upstream E&P',50,2,5],['Midstream',30,1,1],['Downstream',20,-2,-2]],
+  'Utilities':                [['Electric Distribution',60,2,2],['Natural Gas',25,-1,-1],['Renewables',15,-5,-3]],
+  'Industrial & Manufacturing':[['Equipment & Systems',50,2,3],['Aftermarket Services',30,6,8],['Components',20,-2,-1]],
+  'Generic':                  [['Core Business',70,2,3],['Adjacent & Other',30,-4,-4]],
+};
+
+// ── Geographic & Segment KPI breakdown ────────────────────────────────────────
+function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
+  const [dbSegments, setDbSegments] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!ticker) return;
+    const year = new Date().getFullYear();
+    const base = window.MCP_API_BASE || 'http://127.0.0.1:8001';
+    setLoading(true);
+    fetch(`${base}/sox/segments/${encodeURIComponent(ticker)}/FY${year}`, { signal: AbortSignal.timeout(4000) })
+      .then(r => r.ok ? r.json() : null)
+      .then(rows => { if (rows?.length) setDbSegments(rows); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [ticker]);
+
+  const ind = industry || 'Generic';
+
+  // Consolidated base values
+  const consRevAnnualM = (data?.revenue?.history?.slice(-1)[0]?.v ?? 0) * 4;
+  const consGM  = data?.margin?.history?.slice(-1)[0]?.v ?? 40;
+  const consOM  = data?.opMargin?.history?.slice(-1)[0]?.v
+    ?? (livefacts?.operatingIncome?.latestAnnual && livefacts?.revenue?.latestAnnual
+        ? (livefacts.operatingIncome.latestAnnual.val / livefacts.revenue.latestAnnual.val * 100)
+        : consGM * 0.55);
+  const consNI  = data?.netIncome && data?.revenue
+    ? (data.netIncome.history.slice(-1)[0]?.v / data.revenue.history.slice(-1)[0]?.v * 100)
+    : null;
+  const consGrowth = computeRevGrowthYoY(data);
+
+  function buildRows(segType, defaultMap) {
+    const dbRows = dbSegments?.filter(r => r.segment_type === segType);
+    if (dbRows?.length) {
+      return dbRows.map(s => ({
+        name: s.segment_name,
+        revM: s.revenue != null ? s.revenue / 1e6 : null,
+        revPct: s.revenue_pct,
+        gmPct: s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : null,
+        omPct: s.operating_income != null && s.revenue ? (s.operating_income / s.revenue * 100) : null,
+        niPct: null,
+        revGrowth: null,
+        fromDB: true,
+      }));
+    }
+    const defs = defaultMap[ind] || defaultMap['Generic'];
+    return defs.map(([name, pct, gmD, omD]) => {
+      const sv = id => seededVal(ticker || 'X', `gs-${name}-${id}`, -1, 1);
+      return {
+        name,
+        revM: consRevAnnualM * (pct / 100) * (1 + sv('r') * 0.06),
+        revPct: pct,
+        gmPct: Math.max(0, consGM + gmD + sv('gm') * 2.5),
+        omPct: consOM + omD + sv('om') * 1.5,
+        niPct: consNI != null ? consNI + omD * 0.6 + sv('ni') * 1.5 : null,
+        revGrowth: consGrowth != null ? consGrowth + sv('g') * 4 : null,
+        fromDB: false,
+      };
+    });
+  }
+
+  const geoRows = buildRows('geography', _GEO_DEFAULTS);
+  const bizRows = buildRows('segment',   _SEG_DEFAULTS);
+  const isDB = !!dbSegments?.length;
+
+  const conRow = { name:'Consolidated', revM:consRevAnnualM, revPct:100, gmPct:consGM, omPct:consOM, niPct:consNI, revGrowth:consGrowth, isConsolidated:true };
+
+  const ragInk = { G:'var(--green-ink)', A:'var(--amber-ink)', R:'var(--red-ink)' };
+  const gmDef  = (INDUSTRY_KPI_DEFS[ind] || INDUSTRY_KPI_DEFS['Generic']).find(d => d.id === 'gm');
+
+  function KpiTable({ rows, title }) {
+    return (
+      <div style={{marginTop:16}}>
+        <div style={{fontSize:11, fontWeight:600, color:'var(--ink-2)', marginBottom:8, display:'flex', alignItems:'center', gap:8}}>
+          {title}
+          <span className="mono" style={{fontSize:9, color:'var(--ink-4)', fontWeight:400, letterSpacing:'0.06em'}}>
+            {isDB ? 'ACTUAL · DB' : 'ESTIMATED · INDUSTRY TYPICAL'}
+          </span>
+        </div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%', borderCollapse:'collapse', fontSize:11}}>
+            <thead>
+              <tr style={{borderBottom:'2px solid var(--line)'}}>
+                {['Geography / Segment','Revenue $M','Rev %','Rev Growth YoY','Gross Margin','Op. Margin','Net Margin'].map(h => (
+                  <th key={h} style={{textAlign: h==='Geography / Segment'?'left':'right', padding:'4px 10px 5px 0', color:'var(--ink-4)', fontWeight:400, fontFamily:'Geist Mono, monospace', fontSize:9.5, whiteSpace:'nowrap'}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => {
+                const isCon = !!row.isConsolidated;
+                const gmRag = row.gmPct != null && gmDef ? gmDef.rag(row.gmPct) : 'A';
+                const omRag = row.omPct == null ? 'A' : row.omPct >= 15 ? 'G' : row.omPct >= 5 ? 'A' : 'R';
+                const growInk = row.revGrowth == null ? 'var(--ink-4)' : row.revGrowth >= 5 ? 'var(--green-ink)' : row.revGrowth >= 0 ? 'var(--amber-ink)' : 'var(--red-ink)';
+                return (
+                  <tr key={i} style={{borderBottom:'1px solid var(--line)', fontWeight: isCon ? 600 : 400, background: isCon ? 'var(--surface-2)' : undefined}}>
+                    <td style={{padding:'6px 10px 6px 0', display:'flex', alignItems:'center', gap:6}}>
+                      <span style={{width:8, height:8, borderRadius: isCon?2:'50%', background: isCon?'var(--acc)':'var(--line-strong)', display:'inline-block', flexShrink:0}}/>
+                      <span style={{fontSize:11.5, color: isCon?'var(--ink)':'var(--ink-2)'}}>{row.name}</span>
+                      {!row.fromDB && !isCon && <span className="mono" style={{fontSize:8.5, color:'var(--ink-4)'}}>est.</span>}
+                    </td>
+                    <td style={{textAlign:'right', padding:'6px 10px 6px 0', fontFamily:'Geist Mono, monospace'}}>
+                      {row.revM != null ? (row.revM >= 1000 ? `$${(row.revM/1000).toFixed(2)}B` : `$${row.revM.toFixed(0)}M`) : '—'}
+                    </td>
+                    <td style={{textAlign:'right', padding:'6px 10px 6px 0', fontFamily:'Geist Mono, monospace', color:'var(--ink-3)'}}>
+                      {row.revPct != null ? `${Number(row.revPct).toFixed(0)}%` : '—'}
+                    </td>
+                    <td style={{textAlign:'right', padding:'6px 10px 6px 0', fontFamily:'Geist Mono, monospace', color:growInk}}>
+                      {row.revGrowth != null ? `${row.revGrowth>=0?'+':''}${row.revGrowth.toFixed(1)}%` : '—'}
+                    </td>
+                    <td style={{textAlign:'right', padding:'6px 10px 6px 0', fontFamily:'Geist Mono, monospace', color: ragInk[gmRag]}}>
+                      {row.gmPct != null ? `${row.gmPct.toFixed(1)}%` : '—'}
+                    </td>
+                    <td style={{textAlign:'right', padding:'6px 10px 6px 0', fontFamily:'Geist Mono, monospace', color: ragInk[omRag]}}>
+                      {row.omPct != null ? `${row.omPct.toFixed(1)}%` : '—'}
+                    </td>
+                    <td style={{textAlign:'right', padding:'6px 10px 6px 0', fontFamily:'Geist Mono, monospace', color:'var(--ink-3)'}}>
+                      {row.niPct != null ? `${row.niPct.toFixed(1)}%` : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fcst-card" style={{marginTop:14}}>
+      <div className="head">
+        <div>
+          <div className="ttl">KPI Breakdown · Geography &amp; Segment</div>
+          <div className="sub">
+            Consolidated vs. geographic and business-segment view ·
+            {isDB ? ' actual reported data from DB' : ' industry-typical estimates anchored to consolidated KPIs'}
+          </div>
+        </div>
+        {loading && <span className="mono" style={{fontSize:10, color:'var(--ink-4)'}}>Loading segments…</span>}
+      </div>
+
+      <KpiTable rows={[conRow, ...geoRows]} title="By Geography"/>
+      <KpiTable rows={[conRow, ...bizRows]} title="By Business Segment"/>
+
+      {!isDB && (
+        <div style={{marginTop:10, padding:'8px 12px', background:'var(--surface-2)', borderRadius:6, fontSize:10, color:'var(--ink-4)', lineHeight:1.55}}>
+          Estimates are industry-typical splits anchored to the consolidated figures — not company-reported segment data.
+          Upload actual segment financials via <b style={{fontWeight:500}}>SOX → Geography</b> tab to replace with reported values.
+        </div>
+      )}
     </div>
   );
 }

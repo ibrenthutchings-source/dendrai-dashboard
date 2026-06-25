@@ -397,31 +397,142 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
 }
 
 
-// ── Segment coverage ──────────────────────────────────────────────────────────
+// ── Segment coverage + SOX materiality scoring ────────────────────────────────
 
-function SegmentCoverage({ segments }) {
+function SegmentCoverage({ segments, scope }) {
   if (!segments?.length) return null;
+
+  const geoSegs = segments.filter(s => s.segment_type === "geography");
+  const bizSegs = segments.filter(s => s.segment_type !== "geography");
+
+  // Materiality rates from consolidated scope
+  const fyRev   = scope?.revenue_forecast_fy;
+  const pm      = scope?.planning_materiality;
+  const pem     = scope?.performance_materiality;
+  const matRate = fyRev && pm ? pm / fyRev : 0.05;
+  const perfRate = pm && pem ? pem / pm : 0.75;
+
+  function SegSection({ rows, title }) {
+    if (!rows.length) return null;
+    return (
+      <div style={{marginTop: 16}}>
+        <div style={{display: "flex", alignItems: "center", gap: 8, marginBottom: 8}}>
+          <span className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em"}}>{title}</span>
+          <span style={{height: 1, flex: 1, background: "var(--line)"}}/>
+          <span className="mono" style={{fontSize: 8.5, color: "var(--ink-4)"}}>
+            {rows.filter(r => r.in_scope).length}/{rows.length} IN SCOPE
+          </span>
+        </div>
+        <div style={{overflowX: "auto"}}>
+          <table style={{width: "100%", borderCollapse: "collapse", fontSize: 11}}>
+            <thead>
+              <tr style={{borderBottom: "2px solid var(--line)"}}>
+                {["Segment","Revenue","Rev %","Planning Mat.","Perf. Mat.","SOX Priority","Decision","Rationale"].map(h => (
+                  <th key={h} style={{
+                    textAlign: (h === "Segment" || h === "Rationale") ? "left" : "right",
+                    padding: "4px 10px 5px 0",
+                    color: "var(--ink-4)", fontWeight: 400,
+                    fontFamily: "Geist Mono, monospace", fontSize: 9, whiteSpace: "nowrap",
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((seg, i) => {
+                const segPM    = seg.revenue != null ? seg.revenue * matRate : null;
+                const segPerfM = segPM != null ? segPM * perfRate : null;
+                const pct      = seg.revenue_pct;
+                const pri      = pct >= 15 ? "P1" : pct >= 5 ? "P2" : "Out";
+                const priClr   = {P1: COV_COLORS.P1, P2: COV_COLORS.P2, Out: COV_COLORS.Out}[pri];
+                const decClr   = DECISION_COLORS[seg.in_scope ? "in_scope" : "out"];
+                return (
+                  <tr key={i} style={{borderBottom: "1px solid var(--line)", opacity: seg.in_scope ? 1 : 0.6}}>
+                    <td style={{padding: "7px 10px 7px 0"}}>
+                      <div style={{display: "flex", alignItems: "center", gap: 6}}>
+                        <span style={{width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                          background: seg.in_scope ? "var(--green-ink)" : "var(--ink-4)"}}/>
+                        <span style={{fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{seg.segment_name}</span>
+                      </div>
+                    </td>
+                    <td style={{textAlign: "right", padding: "7px 10px 7px 0", fontFamily: "Geist Mono, monospace"}}>
+                      {fmtM(seg.revenue)}
+                    </td>
+                    <td style={{textAlign: "right", padding: "7px 10px 7px 0", fontFamily: "Geist Mono, monospace", color: "var(--ink-3)"}}>
+                      {pct != null ? `${pct.toFixed(1)}%` : "—"}
+                    </td>
+                    <td style={{textAlign: "right", padding: "7px 10px 7px 0", fontFamily: "Geist Mono, monospace"}}>
+                      {segPM != null ? fmtM(segPM) : "—"}
+                    </td>
+                    <td style={{textAlign: "right", padding: "7px 10px 7px 0", fontFamily: "Geist Mono, monospace", color: "var(--amber-ink)"}}>
+                      {segPerfM != null ? fmtM(segPerfM) : "—"}
+                    </td>
+                    <td style={{textAlign: "right", padding: "7px 10px 7px 0"}}>
+                      <Pill label={priClr.label} ink={priClr.ink} soft={priClr.soft} size={9}/>
+                    </td>
+                    <td style={{textAlign: "right", padding: "7px 10px 7px 0"}}>
+                      <Pill label={decClr.label} ink={decClr.ink} soft={decClr.soft} size={9}/>
+                    </td>
+                    <td style={{padding: "7px 0 7px 0", maxWidth: 260, fontSize: 10, color: "var(--ink-3)", lineHeight: 1.4}}>
+                      {seg.rationale || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "12px 16px", marginBottom: 12}}>
-      <SectionHead title="GEOGRAPHY / SEGMENT COVERAGE" count={`${segments.filter(s => s.in_scope).length} in scope`} countColor="var(--green-soft)"/>
-      {segments.map((seg, i) => (
-        <div key={i} style={{display: "flex", alignItems: "center", gap: 8, padding: "6px 0",
-          borderBottom: "1px solid var(--line)", opacity: seg.in_scope ? 1 : 0.55}}>
-          <span style={{width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
-            background: seg.in_scope ? "var(--green-ink)" : "var(--ink-4)"}}/>
-          <span style={{flex: 1, fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{seg.segment_name}</span>
-          <span className="mono" style={{fontSize: 9.5, color: "var(--ink-4)"}}>{seg.segment_type}</span>
-          {seg.revenue && <span className="mono" style={{fontSize: 10, color: "var(--ink-2)"}}>{fmtM(seg.revenue)}</span>}
-          {seg.revenue_pct != null && (
-            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{seg.revenue_pct.toFixed(1)}%</span>
+      <SectionHead
+        title="SOX MATERIALITY BY SEGMENT"
+        count={`${segments.filter(s => s.in_scope).length} of ${segments.length} in scope`}
+        countColor="var(--green-soft)"
+      />
+
+      {/* Consolidated header */}
+      {(pm || fyRev) && (
+        <div style={{display: "flex", gap: 20, padding: "10px 0 12px", borderBottom: "2px solid var(--line)", flexWrap: "wrap"}}>
+          {fyRev && (
+            <div>
+              <div className="mono" style={{fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 2}}>CONSOLIDATED REVENUE</div>
+              <div style={{fontSize: 14, fontWeight: 700, color: "var(--ink)", fontFamily: "var(--mono)"}}>{fmtM(fyRev)}</div>
+            </div>
           )}
-          <Pill
-            label={seg.in_scope ? "IN SCOPE" : "OUT"}
-            ink={seg.in_scope ? "var(--green-ink)" : "var(--ink-4)"}
-            soft={seg.in_scope ? "var(--green-soft)" : "var(--surface-2, var(--surface))"}
-          />
+          {pm && (
+            <div>
+              <div className="mono" style={{fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 2}}>PLANNING MATERIALITY</div>
+              <div style={{fontSize: 14, fontWeight: 700, color: "var(--ink)", fontFamily: "var(--mono)"}}>{fmtM(pm)}</div>
+              <div style={{fontSize: 9.5, color: "var(--ink-4)"}}>≈{(matRate * 100).toFixed(1)}% of revenue</div>
+            </div>
+          )}
+          {pem && (
+            <div>
+              <div className="mono" style={{fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 2}}>PERFORMANCE MATERIALITY</div>
+              <div style={{fontSize: 14, fontWeight: 700, color: "var(--amber-ink)", fontFamily: "var(--mono)"}}>{fmtM(pem)}</div>
+              <div style={{fontSize: 9.5, color: "var(--ink-4)"}}>≈{(perfRate * 100).toFixed(0)}% of planning</div>
+            </div>
+          )}
         </div>
-      ))}
+      )}
+
+      <SegSection rows={geoSegs.length ? geoSegs : segments} title="GEOGRAPHY"/>
+      {bizSegs.length > 0 && geoSegs.length > 0 && (
+        <SegSection rows={bizSegs} title="BUSINESS SEGMENT"/>
+      )}
+      {geoSegs.length === 0 && bizSegs.length > 0 && (
+        <SegSection rows={bizSegs} title="BUSINESS SEGMENT"/>
+      )}
+
+      <div style={{marginTop: 12, padding: "8px 10px", background: "var(--surface-2)", borderRadius: 6, fontSize: 10, color: "var(--ink-4)", lineHeight: 1.6}}>
+        <b style={{fontWeight: 500}}>P1</b> = ≥15% of total revenue (AS2201 threshold — automatic in-scope) ·
+        <b style={{fontWeight: 500}}> P2</b> = 5–15% (monitor; qualitative factors may trigger) ·
+        <b style={{fontWeight: 500}}> Out</b> = &lt;5%.
+        Segment planning materiality applies the consolidated rate of {(matRate * 100).toFixed(1)}%.
+      </div>
     </div>
   );
 }
@@ -620,7 +731,7 @@ function SoxScopePanel({
                 onRemove={id => setLocalSystems(prev => prev.filter(s => s.system_id !== id && s.id !== id))}
               />
             )}
-            {activeTab === "segments"  && <SegmentCoverage segments={displayScope.segments_coverage || []}/>}
+            {activeTab === "segments"  && <SegmentCoverage segments={displayScope.segments_coverage || []} scope={displayScope}/>}
           </div>
         </>
       )}
