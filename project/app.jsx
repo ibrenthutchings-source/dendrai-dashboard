@@ -1404,7 +1404,8 @@ function App() {
                   log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
                 }}
                 flowMeta={profile.riskFlow}
-                onOpenMainFlow={() => setActiveScreen("flow")} />
+                onOpenMainFlow={() => setActiveScreen("flow")}
+                risks={output.s2?.risks || profile?.risks || []} />
             )}
           </div>
           )}

@@ -138,6 +138,38 @@ window.RSS_ENGINE = (function () {
     ],
   };
 
+  // ── Domain → risk category matching ──────────────────────
+  // Maps RSS feed domain labels to substrings searched in risk.category + risk.name.
+  // When the live risk register is passed to ingestAll(), this replaces the hardcoded
+  // per-feed risk IDs so assignment reflects the actual company's risk template.
+  const DOMAIN_RISK_CATS = {
+    'Financial Reporting': ['financial', 'revenue', 'reporting', 'accounting'],
+    'Cybersecurity':       ['cybersecurity', 'it ', 'technology', 'digital', 'information'],
+    'Trade Compliance':    ['compliance', 'trade', 'legal', 'regulatory'],
+    'Supply Chain':        ['supply', 'operations', 'procurement', 'sourcing'],
+    'Macro':               ['macro', 'economic', 'market', 'operational'],
+    'Regulatory':          ['compliance', 'legal', 'regulatory', 'esg'],
+    'Environmental':       ['esg', 'environmental', 'climate', 'sustainability'],
+    'ESG':                 ['esg', 'environmental', 'climate', 'sustainability'],
+    'Competitive':         ['competitive', 'market', 'commercial', 'operational'],
+    'Operational':         ['operational', 'operations'],
+  };
+
+  function resolveDomainRisks(domains, risks) {
+    if (!risks?.length) return [];
+    const matched = [];
+    for (const domain of (domains || [])) {
+      const fragments = DOMAIN_RISK_CATS[domain] || [];
+      for (const r of risks) {
+        const searchable = ((r.category || '') + ' ' + (r.name || '')).toLowerCase();
+        if (fragments.some(f => searchable.includes(f)) && !matched.includes(r.id)) {
+          matched.push(r.id);
+        }
+      }
+    }
+    return matched.slice(0, 3);
+  }
+
   // ── Core grading functions ────────────────────────────────
 
   function tokenize(text) {
@@ -170,7 +202,7 @@ window.RSS_ENGINE = (function () {
     return Math.round(Math.max(0, Math.min(5, raw)));
   }
 
-  function gradeArticle(article, feed) {
+  function gradeArticle(article, feed, risks = []) {
     const text = `${article.title || ""} ${article.description || article.summary || ""}`;
     const relevance = scoreRelevance(text, feed.domains);
     const severity  = article.severity_hint != null
@@ -179,24 +211,28 @@ window.RSS_ENGINE = (function () {
     const velocity  = velocityFromScores(relevance, severity, feed.weight);
     const rag       = velocity >= 3 ? "R" : velocity >= 2 ? "A" : "G";
 
+    // Prefer dynamic domain→risk matching when the live register is available.
+    // Fall back to the hardcoded per-feed risk IDs so older call sites still work.
+    const dynamicRisks = risks.length ? resolveDomainRisks(feed.domains, risks) : null;
+
     return {
-      id:         `${feed.id}-${Math.random().toString(36).slice(2,8)}`,
-      feedId:     feed.id,
-      feedName:   feed.name,
-      title:      article.title || "(No title)",
-      url:        article.link || article.url || null,
-      pubDate:    article.pubDate || article.published || new Date().toISOString(),
-      relevance:  parseFloat(relevance.toFixed(2)),
-      severity:   parseFloat(severity.toFixed(2)),
+      id:            `${feed.id}-${Math.random().toString(36).slice(2,8)}`,
+      feedId:        feed.id,
+      feedName:      feed.name,
+      title:         article.title || "(No title)",
+      url:           article.link || article.url || null,
+      pubDate:       article.pubDate || article.published || new Date().toISOString(),
+      relevance:     parseFloat(relevance.toFixed(2)),
+      severity:      parseFloat(severity.toFixed(2)),
       velocity,
       rag,
-      affectedRisks: article.risks || feed.risks,
-      domains:    feed.domains,
-      src:        "Industry RSS",
-      delta:      `v=${velocity >= 0 ? "+" : ""}${velocity}`,
-      label:      article.title || "(No title)",
-      cat:        "RSS",
-      gradedAt:   new Date().toISOString(),
+      affectedRisks: dynamicRisks?.length ? dynamicRisks : (article.risks || feed.risks),
+      domains:       feed.domains,
+      src:           "Industry RSS",
+      delta:         `v=${velocity >= 0 ? "+" : ""}${velocity}`,
+      label:         article.title || "(No title)",
+      cat:           "RSS",
+      gradedAt:      new Date().toISOString(),
     };
   }
 
@@ -286,9 +322,10 @@ window.RSS_ENGINE = (function () {
   // ── Main ingestion run ────────────────────────────────────
   // opts.enabledFeedIds — array of feed IDs to include; defaults to all
   // opts.ticker         — active ticker; used to resolve EDGAR peer feeds
+  // opts.risks          — live risk register; enables dynamic domain→risk assignment
   // opts.onProgress(msg, feedId, done) — called per feed
   async function ingestAll(opts = {}) {
-    const { onProgress, enabledFeedIds, ticker } = opts;
+    const { onProgress, enabledFeedIds, ticker, risks = [] } = opts;
     const feeds = enabledFeedIds
       ? FEEDS.filter(f => enabledFeedIds.includes(f.id))
       : FEEDS;
@@ -305,7 +342,7 @@ window.RSS_ENGINE = (function () {
         rawArticles = await fetchFeed(feed);
       }
       const fetchStatus = rawArticles ? "ok" : "failed";
-      const graded = (rawArticles || []).map(a => gradeArticle(a, feed));
+      const graded = (rawArticles || []).map(a => gradeArticle(a, feed, risks));
       results.push({ feed, articles: graded, fetchStatus });
       onProgress?.(`${feed.name} fetched`, feed.id, true);
     }
@@ -324,7 +361,9 @@ window.RSS_ENGINE = (function () {
   return {
     FEEDS,
     DOMAIN_VOCAB,
+    DOMAIN_RISK_CATS,
     gradeArticle,
+    resolveDomainRisks,
     scoreRelevance,
     scoreSeverity,
     velocityFromScores,
