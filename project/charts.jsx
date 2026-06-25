@@ -140,7 +140,7 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
 }
 
 // ---------- LINE + FORECAST CHART ----------
-function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", decimals }) {
+function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", decimals, chartMetrics }) {
   const [tooltip, setTooltip] = useState(null);
 
   if (!history?.length || !forecast?.length) return null;
@@ -199,7 +199,11 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
     );
   };
 
+  const fmtMt = (v, p = 2) => (v == null || !Number.isFinite(v)) ? '—' : v.toFixed(p);
+  const mapeColor = v => v == null ? 'var(--ink-3)' : v < 5 ? 'var(--green-ink)' : v < 15 ? 'var(--amber-ink)' : 'var(--red-ink)';
+
   return (
+    <>
     <svg viewBox={`0 0 ${W} ${H}`} style={{width: "100%", display: "block"}} xmlns="http://www.w3.org/2000/svg"
       onMouseLeave={() => setTooltip(null)}>
       {/* Y gridlines */}
@@ -262,6 +266,19 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
 
       {renderTooltip()}
     </svg>
+    {chartMetrics && (
+      <div className="mono" style={{
+        fontSize: 9.5, color: 'var(--ink-3)', padding: '5px 2px 0',
+        display: 'flex', gap: 16, flexWrap: 'wrap', lineHeight: 1.6, borderTop: '1px solid var(--line)', marginTop: 2
+      }}>
+        <span>RMSE <span style={{color:'var(--ink-2)'}}>{fmtMt(chartMetrics.rmse)}</span></span>
+        <span>MAPE <span style={{color: mapeColor(chartMetrics.mape)}}>{fmtMt(chartMetrics.mape)}%</span></span>
+        <span>R² <span style={{color:'var(--ink-2)'}}>{fmtMt(chartMetrics.r2, 3)}</span></span>
+        <span>MAE <span style={{color:'var(--ink-2)'}}>{fmtMt(chartMetrics.mae)}</span></span>
+        <span>TME <span style={{color:'var(--ink-2)'}}>{chartMetrics.tme != null && Number.isFinite(chartMetrics.tme) ? (chartMetrics.tme >= 0 ? '+' : '') + chartMetrics.tme.toFixed(2) : '—'}</span></span>
+      </div>
+    )}
+    </>
   );
 }
 
