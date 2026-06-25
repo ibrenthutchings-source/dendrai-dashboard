@@ -9,7 +9,7 @@
 const RSS_RAG = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
 const RSS_RAG_SOFT = { R: "var(--red-soft)", A: "var(--amber-soft)", G: "var(--green-soft)" };
 
-function RSSPanel({ onSignalsReady, enabledFeedIds, risks, ticker }) {
+function RSSPanel({ onSignalsReady, enabledFeedIds, risks, ticker, companyName }) {
   const [ingestState, setIngestState] = useState("idle"); // idle | running | done | error
   const [progress, setProgress]       = useState("");
   const [feedResults, setFeedResults] = useState([]);
@@ -38,6 +38,7 @@ function RSSPanel({ onSignalsReady, enabledFeedIds, risks, ticker }) {
       const results = await RSS_ENGINE.ingestAll({
         enabledFeedIds,
         ticker: ticker || "",
+        companyName: companyName || "",
         risks: risks || [],
         onProgress: (msg) => setProgress(msg),
       });
