@@ -19,6 +19,9 @@ function RSSPanel({ onSignalsReady, enabledFeedIds }) {
     ? RSS_ENGINE.FEEDS.filter(f => enabledFeedIds.includes(f.id))
     : RSS_ENGINE.FEEDS;
 
+  // Auto-start ingestion when the panel mounts
+  useEffect(() => { runIngestion(); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
   const allArticles = feedResults.flatMap(r => r.articles);
   const highVel = allArticles.filter(a => a.velocity >= 3).length;
   const medVel  = allArticles.filter(a => a.velocity === 2).length;
