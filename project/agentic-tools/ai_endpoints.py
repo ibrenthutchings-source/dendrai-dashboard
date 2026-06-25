@@ -50,6 +50,22 @@ def _require_ai():
         )
 
 
+def _ai_exc(exc: Exception) -> HTTPException:
+    """Convert an Anthropic SDK exception into an appropriate HTTPException.
+
+    Billing / credit errors come back as HTTP 400 from the Anthropic API and
+    contain the phrase 'credit balance is too low'.  Return a 402 so the UI
+    can display a targeted, actionable message instead of the raw SDK dump.
+    """
+    msg = str(exc)
+    if "credit balance is too low" in msg or "insufficient_quota" in msg:
+        return HTTPException(
+            status_code=402,
+            detail="Anthropic API credits exhausted. Add credits at console.anthropic.com/settings/billing, then retry.",
+        )
+    return HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Request models
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +194,7 @@ def gate1_recommend(req: Gate1Request):
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+        raise _ai_exc(exc)
 
     db.save_ai_analysis(
         "gate1_recommendation", result,
@@ -263,7 +279,7 @@ def gate2_recommend(req: Gate2Request):
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+        raise _ai_exc(exc)
 
     db.save_ai_analysis(
         "gate2_recommendation", result,
@@ -366,7 +382,7 @@ def narrative_analysis(req: NarrativeRequest):
             model=_MODEL_STRUCTURED, effort="high", max_tokens=6000,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+        raise _ai_exc(exc)
 
     db.save_ai_analysis(
         "narrative_analysis", result,
@@ -435,7 +451,7 @@ def persona_brief(req: PersonaRequest):
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+        raise _ai_exc(exc)
 
     db.save_ai_analysis(
         "persona_brief", result,
@@ -479,7 +495,7 @@ def audit_report(req: ReportRequest):
             model=_MODEL_STRUCTURED, effort="high", max_tokens=10_000,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+        raise _ai_exc(exc)
 
     db.save_ai_analysis(
         "audit_report", {"markdown": markdown},
@@ -658,7 +674,7 @@ def loop_calibrate(req: CalibrateRequest):
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI call failed: {exc}")
+        raise _ai_exc(exc)
 
     db.save_ai_analysis(
         "loop_calibration", result,
