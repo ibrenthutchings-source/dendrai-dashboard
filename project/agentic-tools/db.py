@@ -480,23 +480,67 @@ CREATE TABLE IF NOT EXISTS sox_scoping_configs (
     UNIQUE (company_id, fiscal_year)
 );
 
--- Optional geography / business-segment financial breakdowns
+-- Optional geography / business-segment financial breakdowns (historical actuals)
 CREATE TABLE IF NOT EXISTS sox_financial_segments (
-    id               SERIAL PRIMARY KEY,
-    company_id       INT NOT NULL REFERENCES companies(id),
-    run_id           INT REFERENCES risk_loop_runs(id),
-    fiscal_year      VARCHAR(8),
-    segment_type     VARCHAR(16) NOT NULL,
-    segment_name     VARCHAR(128) NOT NULL,
-    revenue          NUMERIC,
-    revenue_pct      NUMERIC(5,2),
-    gross_profit     NUMERIC,
-    operating_income NUMERIC,
-    assets           NUMERIC,
-    source           VARCHAR(64),
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    id                 SERIAL PRIMARY KEY,
+    company_id         INT NOT NULL REFERENCES companies(id),
+    run_id             INT REFERENCES risk_loop_runs(id),
+    fiscal_year        VARCHAR(8),
+    segment_type       VARCHAR(16)  NOT NULL,
+    segment_name       VARCHAR(128) NOT NULL,
+    revenue            NUMERIC,
+    revenue_pct        NUMERIC(5,2),
+    gross_profit       NUMERIC,
+    operating_income   NUMERIC,
+    assets             NUMERIC,
+    rev_growth_yoy_pct NUMERIC(7,3),
+    net_income         NUMERIC,
+    gross_margin_pct   NUMERIC(7,3),
+    op_margin_pct      NUMERIC(7,3),
+    net_margin_pct     NUMERIC(7,3),
+    source             VARCHAR(64),
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (company_id, fiscal_year, segment_type, segment_name)
 );
+
+-- Per-run segment / geography forecast KPIs (target company, forward-looking)
+CREATE TABLE IF NOT EXISTS segment_forecasts (
+    id             SERIAL PRIMARY KEY,
+    run_id         INT          NOT NULL REFERENCES risk_loop_runs(id),
+    segment_type   VARCHAR(16)  NOT NULL,   -- 'geography' | 'business_segment'
+    segment_name   VARCHAR(128) NOT NULL,
+    fiscal_year    VARCHAR(8),
+    revenue_m      NUMERIC,                  -- annualised revenue $M
+    revenue_pct    NUMERIC(5,2),             -- % of consolidated total
+    rev_growth_yoy NUMERIC(7,3),             -- YoY growth %
+    gross_margin   NUMERIC(7,3),             -- GM %
+    op_margin      NUMERIC(7,3),             -- OM %
+    net_margin     NUMERIC(7,3),             -- NM %
+    source         VARCHAR(32),              -- 'db' | 'seeded' | 'estimated'
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, segment_type, segment_name)
+);
+CREATE INDEX IF NOT EXISTS idx_seg_forecasts_run ON segment_forecasts (run_id, segment_type);
+
+-- Peer company segment / geography breakdowns for benchmarking
+CREATE TABLE IF NOT EXISTS peer_segment_financials (
+    id           SERIAL PRIMARY KEY,
+    company_id   INT          NOT NULL REFERENCES companies(id),
+    peer_ticker  VARCHAR(16)  NOT NULL,
+    peer_name    VARCHAR(255),
+    fiscal_year  VARCHAR(8),
+    segment_type VARCHAR(16)  NOT NULL,   -- 'geography' | 'business_segment'
+    segment_name VARCHAR(128) NOT NULL,
+    revenue_m    NUMERIC,
+    revenue_pct  NUMERIC(5,2),
+    gross_margin NUMERIC(7,3),
+    op_margin    NUMERIC(7,3),
+    net_margin   NUMERIC(7,3),
+    source       VARCHAR(32),             -- 'edgar' | 'manual' | 'estimated'
+    fetched_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, peer_ticker, fiscal_year, segment_type, segment_name)
+);
+CREATE INDEX IF NOT EXISTS idx_peer_seg_co ON peer_segment_financials (company_id, peer_ticker, fiscal_year);
 
 -- Extensible system registry: ERP, consolidation, reporting, sub-ledgers, etc.
 CREATE TABLE IF NOT EXISTS sox_systems (
@@ -588,6 +632,11 @@ ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS persona        VARCHAR(64);
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS signal_set     TEXT[];
 ALTER TABLE sox_systems     ADD COLUMN IF NOT EXISTS version        VARCHAR(32);
 ALTER TABLE sox_systems     ADD COLUMN IF NOT EXISTS notes          TEXT;
+ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS rev_growth_yoy_pct NUMERIC(7,3);
+ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_income         NUMERIC;
+ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS gross_margin_pct   NUMERIC(7,3);
+ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS op_margin_pct      NUMERIC(7,3);
+ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     NUMERIC(7,3);
 """
 
 
@@ -2199,16 +2248,23 @@ def upsert_sox_segment(company_id: int, run_id: Optional[int], segment: dict) ->
                     """
                     INSERT INTO sox_financial_segments
                         (company_id, run_id, fiscal_year, segment_type, segment_name,
-                         revenue, revenue_pct, gross_profit, operating_income, assets, source)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         revenue, revenue_pct, gross_profit, operating_income, assets,
+                         rev_growth_yoy_pct, net_income, gross_margin_pct, op_margin_pct,
+                         net_margin_pct, source)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (company_id, fiscal_year, segment_type, segment_name) DO UPDATE SET
-                        run_id           = COALESCE(EXCLUDED.run_id, sox_financial_segments.run_id),
-                        revenue          = EXCLUDED.revenue,
-                        revenue_pct      = EXCLUDED.revenue_pct,
-                        gross_profit     = EXCLUDED.gross_profit,
-                        operating_income = EXCLUDED.operating_income,
-                        assets           = EXCLUDED.assets,
-                        source           = EXCLUDED.source
+                        run_id             = COALESCE(EXCLUDED.run_id, sox_financial_segments.run_id),
+                        revenue            = EXCLUDED.revenue,
+                        revenue_pct        = EXCLUDED.revenue_pct,
+                        gross_profit       = EXCLUDED.gross_profit,
+                        operating_income   = EXCLUDED.operating_income,
+                        assets             = EXCLUDED.assets,
+                        rev_growth_yoy_pct = EXCLUDED.rev_growth_yoy_pct,
+                        net_income         = EXCLUDED.net_income,
+                        gross_margin_pct   = EXCLUDED.gross_margin_pct,
+                        op_margin_pct      = EXCLUDED.op_margin_pct,
+                        net_margin_pct     = EXCLUDED.net_margin_pct,
+                        source             = EXCLUDED.source
                     """,
                     (
                         company_id, run_id,
@@ -2220,6 +2276,11 @@ def upsert_sox_segment(company_id: int, run_id: Optional[int], segment: dict) ->
                         segment.get("gross_profit"),
                         segment.get("operating_income"),
                         segment.get("assets"),
+                        segment.get("rev_growth_yoy_pct"),
+                        segment.get("net_income"),
+                        segment.get("gross_margin_pct"),
+                        segment.get("op_margin_pct"),
+                        segment.get("net_margin_pct"),
                         segment.get("source", "manual"),
                     ),
                 )
@@ -2232,7 +2293,8 @@ def get_sox_segments(company_id: int, fiscal_year: str) -> list:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, segment_type, segment_name, revenue, revenue_pct, "
-                    "gross_profit, operating_income, assets, source "
+                    "gross_profit, operating_income, assets, "
+                    "rev_growth_yoy_pct, net_income, gross_margin_pct, op_margin_pct, net_margin_pct, source "
                     "FROM sox_financial_segments "
                     "WHERE company_id = %s AND fiscal_year = %s "
                     "ORDER BY segment_type, revenue DESC NULLS LAST",
@@ -2246,7 +2308,186 @@ def get_sox_segments(company_id: int, fiscal_year: str) -> list:
                         "gross_profit": float(r[5]) if r[5] is not None else None,
                         "operating_income": float(r[6]) if r[6] is not None else None,
                         "assets": float(r[7]) if r[7] is not None else None,
-                        "source": r[8],
+                        "rev_growth_yoy_pct": float(r[8]) if r[8] is not None else None,
+                        "net_income": float(r[9]) if r[9] is not None else None,
+                        "gross_margin_pct": float(r[10]) if r[10] is not None else None,
+                        "op_margin_pct": float(r[11]) if r[11] is not None else None,
+                        "net_margin_pct": float(r[12]) if r[12] is not None else None,
+                        "source": r[13],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def save_segment_forecasts(run_id: int, rows: list) -> None:
+    """Persist per-segment forecast KPIs for a pipeline run.
+
+    Each dict in rows must contain: segment_type, segment_name, and any of
+    fiscal_year, revenue_m, revenue_pct, rev_growth_yoy, gross_margin,
+    op_margin, net_margin, source.
+    """
+    if not rows:
+        return
+    def _do():
+        data = [
+            (
+                run_id,
+                r.get("segment_type", "geography"),
+                r.get("segment_name", ""),
+                r.get("fiscal_year"),
+                r.get("revenue_m"),
+                r.get("revenue_pct"),
+                r.get("rev_growth_yoy"),
+                r.get("gross_margin"),
+                r.get("op_margin"),
+                r.get("net_margin"),
+                r.get("source", "seeded"),
+            )
+            for r in rows
+        ]
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO segment_forecasts
+                        (run_id, segment_type, segment_name, fiscal_year,
+                         revenue_m, revenue_pct, rev_growth_yoy,
+                         gross_margin, op_margin, net_margin, source)
+                    VALUES %s
+                    ON CONFLICT (run_id, segment_type, segment_name) DO UPDATE SET
+                        fiscal_year    = EXCLUDED.fiscal_year,
+                        revenue_m      = EXCLUDED.revenue_m,
+                        revenue_pct    = EXCLUDED.revenue_pct,
+                        rev_growth_yoy = EXCLUDED.rev_growth_yoy,
+                        gross_margin   = EXCLUDED.gross_margin,
+                        op_margin      = EXCLUDED.op_margin,
+                        net_margin     = EXCLUDED.net_margin,
+                        source         = EXCLUDED.source
+                    """,
+                    data,
+                )
+    _run(_do)
+
+
+def get_segment_forecasts(run_id: int) -> list:
+    """Return all segment / geography forecast KPIs for a pipeline run."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT segment_type, segment_name, fiscal_year, revenue_m, revenue_pct, "
+                    "rev_growth_yoy, gross_margin, op_margin, net_margin, source "
+                    "FROM segment_forecasts WHERE run_id = %s "
+                    "ORDER BY segment_type, revenue_pct DESC NULLS LAST",
+                    (run_id,),
+                )
+                return [
+                    {
+                        "segment_type": r[0], "segment_name": r[1], "fiscal_year": r[2],
+                        "revenue_m": float(r[3]) if r[3] is not None else None,
+                        "revenue_pct": float(r[4]) if r[4] is not None else None,
+                        "rev_growth_yoy": float(r[5]) if r[5] is not None else None,
+                        "gross_margin": float(r[6]) if r[6] is not None else None,
+                        "op_margin": float(r[7]) if r[7] is not None else None,
+                        "net_margin": float(r[8]) if r[8] is not None else None,
+                        "source": r[9],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def upsert_peer_segment(
+    company_id: int,
+    peer_ticker: str,
+    peer_name: str,
+    rows: list,
+) -> int:
+    """Upsert peer company segment / geography financial data. Returns rows saved."""
+    if not rows:
+        return 0
+    count = 0
+    def _do():
+        nonlocal count
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                for r in rows:
+                    cur.execute(
+                        """
+                        INSERT INTO peer_segment_financials
+                            (company_id, peer_ticker, peer_name, fiscal_year,
+                             segment_type, segment_name, revenue_m, revenue_pct,
+                             gross_margin, op_margin, net_margin, source)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (company_id, peer_ticker, fiscal_year, segment_type, segment_name)
+                        DO UPDATE SET
+                            peer_name    = EXCLUDED.peer_name,
+                            revenue_m    = EXCLUDED.revenue_m,
+                            revenue_pct  = EXCLUDED.revenue_pct,
+                            gross_margin = EXCLUDED.gross_margin,
+                            op_margin    = EXCLUDED.op_margin,
+                            net_margin   = EXCLUDED.net_margin,
+                            source       = EXCLUDED.source,
+                            fetched_at   = NOW()
+                        """,
+                        (
+                            company_id, peer_ticker.upper(),
+                            peer_name or peer_ticker.upper(),
+                            r.get("fiscal_year"),
+                            r.get("segment_type", "geography"),
+                            r.get("segment_name", ""),
+                            r.get("revenue_m"),
+                            r.get("revenue_pct"),
+                            r.get("gross_margin"),
+                            r.get("op_margin"),
+                            r.get("net_margin"),
+                            r.get("source", "manual"),
+                        ),
+                    )
+                    count += 1
+    _run(_do)
+    return count
+
+
+def get_peer_segments(
+    company_id: int,
+    peer_ticker: Optional[str] = None,
+    fiscal_year: Optional[str] = None,
+) -> list:
+    """Return peer segment / geography breakdowns for comparison.
+
+    Omit peer_ticker to return all peers; omit fiscal_year to return all years.
+    """
+    def _do():
+        clauses = ["company_id = %s"]
+        params: list = [company_id]
+        if peer_ticker:
+            clauses.append("peer_ticker = %s")
+            params.append(peer_ticker.upper())
+        if fiscal_year:
+            clauses.append("fiscal_year = %s")
+            params.append(fiscal_year)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT peer_ticker, peer_name, fiscal_year, segment_type, segment_name, "
+                    "revenue_m, revenue_pct, gross_margin, op_margin, net_margin, source "
+                    "FROM peer_segment_financials WHERE " + " AND ".join(clauses) +
+                    " ORDER BY peer_ticker, segment_type, revenue_pct DESC NULLS LAST",
+                    params,
+                )
+                return [
+                    {
+                        "peer_ticker": r[0], "peer_name": r[1], "fiscal_year": r[2],
+                        "segment_type": r[3], "segment_name": r[4],
+                        "revenue_m": float(r[5]) if r[5] is not None else None,
+                        "revenue_pct": float(r[6]) if r[6] is not None else None,
+                        "gross_margin": float(r[7]) if r[7] is not None else None,
+                        "op_margin": float(r[8]) if r[8] is not None else None,
+                        "net_margin": float(r[9]) if r[9] is not None else None,
+                        "source": r[10],
                     }
                     for r in cur.fetchall()
                 ]

@@ -5,17 +5,20 @@ SOX Scope — FastAPI router
 Mounted in api_server.py with prefix /sox.
 
 Endpoints:
-    POST /sox/scope                  Run or re-run SOX scoping for a pipeline run
-    GET  /sox/scope/{run_id}         Retrieve saved scope for a run
-    GET  /sox/scope/latest/{ticker}  Most recent scope for a ticker
-    POST /sox/config/{ticker}        Create/update materiality config for a company
-    GET  /sox/config/{ticker}/{fy}   Retrieve config for a company + fiscal year
-    GET  /sox/systems/{ticker}       List all systems in the registry for a ticker
-    POST /sox/systems/{ticker}       Add or update a system in the registry
-    DELETE /sox/systems/{ticker}/{id} Deactivate a system
-    POST /sox/segments/{ticker}      Add/update geographic or segment financials
-    GET  /sox/segments/{ticker}/{fy} Retrieve segments for a company + fiscal year
-    GET  /sox/rescoping/check/{run_id} Check if inputs changed vs. last scope
+    POST /sox/scope                           Run or re-run SOX scoping for a pipeline run
+    GET  /sox/scope/{run_id}                  Retrieve saved scope for a run
+    GET  /sox/scope/latest/{ticker}           Most recent scope for a ticker
+    POST /sox/config/{ticker}                 Create/update materiality config for a company
+    GET  /sox/config/{ticker}/{fy}            Retrieve config for a company + fiscal year
+    GET  /sox/systems/{ticker}                List all systems in the registry for a ticker
+    POST /sox/systems/{ticker}                Add or update a system in the registry
+    DELETE /sox/systems/{ticker}/{id}         Deactivate a system
+    POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
+    GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
+    GET  /sox/segments/{ticker}/forecasts/{run_id}  Retrieve computed segment forecast KPIs for a run
+    POST /sox/segments/{ticker}/peers         Add/update peer company segment breakdowns
+    GET  /sox/segments/{ticker}/peers/{fy}    Retrieve peer segment data for a company + fiscal year
+    GET  /sox/rescoping/check/{run_id}        Check if inputs changed vs. last scope
 """
 
 from __future__ import annotations
@@ -71,6 +74,13 @@ class SoxSystemRequest(BaseModel):
 class SoxSegmentRequest(BaseModel):
     segments: List[Dict[str, Any]]
     fiscal_year: str
+
+
+class PeerSegmentRequest(BaseModel):
+    peer_ticker: str
+    peer_name: Optional[str] = None
+    fiscal_year: str
+    segments: List[Dict[str, Any]]
 
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
@@ -285,6 +295,76 @@ def get_sox_segments(ticker: str, fiscal_year: str):
         "fiscal_year": fiscal_year,
         "count": len(segments),
         "segments": segments,
+    }
+
+
+@router.get("/segments/{ticker}/forecasts/{run_id}")
+def get_segment_forecasts(ticker: str, run_id: int):
+    """
+    Retrieve computed segment / geography forecast KPIs for a pipeline run.
+
+    Returns the rows saved by the pipeline (or manually via the backend) for
+    forward-looking KPI estimates broken down by geography and business segment.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    rows = db.get_segment_forecasts(run_id)
+    geo = [r for r in rows if r["segment_type"] == "geography"]
+    seg = [r for r in rows if r["segment_type"] == "business_segment"]
+    return {
+        "ticker": ticker.upper(),
+        "run_id": run_id,
+        "geography": geo,
+        "business_segment": seg,
+    }
+
+
+@router.post("/segments/{ticker}/peers")
+def upsert_peer_segments(ticker: str, req: PeerSegmentRequest):
+    """
+    Add or update peer company segment / geography financial data for benchmarking.
+
+    segment_type: 'geography' | 'business_segment'
+    Each segment dict may include: segment_name, revenue_m, revenue_pct,
+    gross_margin, op_margin, net_margin, source.
+    """
+    company_id = _resolve_company_id(ticker)
+    for seg in req.segments:
+        seg.setdefault("fiscal_year", req.fiscal_year)
+    saved = db.upsert_peer_segment(
+        company_id,
+        req.peer_ticker,
+        req.peer_name or req.peer_ticker.upper(),
+        req.segments,
+    )
+    return {
+        "saved": saved,
+        "ticker": ticker.upper(),
+        "peer_ticker": req.peer_ticker.upper(),
+        "fiscal_year": req.fiscal_year,
+    }
+
+
+@router.get("/segments/{ticker}/peers/{fiscal_year}")
+def get_peer_segments(ticker: str, fiscal_year: str, peer: Optional[str] = Query(default=None)):
+    """
+    Retrieve peer company segment / geography breakdowns for a company + fiscal year.
+
+    Optionally filter to a single peer with ?peer=TICK.
+    """
+    company_id = _resolve_company_id(ticker)
+    rows = db.get_peer_segments(company_id, peer_ticker=peer, fiscal_year=fiscal_year)
+    by_peer: Dict[str, list] = {}
+    for r in rows:
+        by_peer.setdefault(r["peer_ticker"], []).append(r)
+    return {
+        "ticker": ticker.upper(),
+        "fiscal_year": fiscal_year,
+        "peer_count": len(by_peer),
+        "peers": [
+            {"peer_ticker": pt, "peer_name": segs[0]["peer_name"], "segments": segs}
+            for pt, segs in by_peer.items()
+        ],
     }
 
 
