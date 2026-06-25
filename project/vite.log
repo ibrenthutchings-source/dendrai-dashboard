@@ -6306,3 +6306,77 @@ React will try to recreate this component tree from scratch using the error boun
 [2m6:49:30 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m
 [2m6:49:35 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m
 [2m6:56:39 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/styles-modules.css?direct[22m
+[2m9:06:39 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/nav.jsx[22m
+[2m9:06:39 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] [0mUnterminated string
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m nav.jsx:21:47 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m21 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249ms[0m[38;5;249mo[0m[38;5;249mx[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mi[0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249mg[0m[38;5;249mr[0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249ml[0m[38;5;249m:[0m[38;5;249m [0m"SOX Risk Assessment },
+ [38;5;240m   │[0m                                               ────────────┬───────────  
+ [38;5;240m   │[0m                                                           ╰───────────── 
+[38;5;246m────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/nav.jsx[39m
+      at transformWithOxc (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3344:19)
+      at TransformPluginContext.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3415:26)
+      at EnvironmentPluginContainer.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:30387:51)
+      at async loadAndTransform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24646:26)
+      at async viteTransformMiddleware (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24440:20)
+[2m9:06:39 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] [0mUnterminated string
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m nav.jsx:21:47 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m21 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249ms[0m[38;5;249mo[0m[38;5;249mx[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mi[0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249mg[0m[38;5;249mr[0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249ml[0m[38;5;249m:[0m[38;5;249m [0m"SOX Risk Assessment },
+ [38;5;240m   │[0m                                               ────────────┬───────────  
+ [38;5;240m   │[0m                                                           ╰───────────── 
+[38;5;246m────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/nav.jsx[39m
+      at transformWithOxc (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3344:19)
+      at TransformPluginContext.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3415:26)
+      at EnvironmentPluginContainer.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:30387:51)
+      at async loadAndTransform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24646:26)
+      at async viteTransformMiddleware (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24440:20)
+[2m9:06:39 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /nav.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
+[2m9:06:39 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /nav.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
+[2m9:07:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/nav.jsx[22m
+[2m9:07:21 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] [0mUnterminated string
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m nav.jsx:21:47 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m21 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249ms[0m[38;5;249mo[0m[38;5;249mx[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mi[0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249mg[0m[38;5;249mr[0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249ml[0m[38;5;249m:[0m[38;5;249m [0m"SOX Risk Assessment },
+ [38;5;240m   │[0m                                               ────────────┬───────────  
+ [38;5;240m   │[0m                                                           ╰───────────── 
+[38;5;246m────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/nav.jsx[39m
+      at transformWithOxc (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3344:19)
+      at TransformPluginContext.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3415:26)
+      at EnvironmentPluginContainer.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:30387:51)
+      at async loadAndTransform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24646:26)
+      at async viteTransformMiddleware (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24440:20)
+[2m9:07:21 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] [0mUnterminated string
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m nav.jsx:21:47 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m21 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249ms[0m[38;5;249mo[0m[38;5;249mx[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mi[0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m:[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249mg[0m[38;5;249mr[0m[38;5;249mi[0m[38;5;249md[0m[38;5;249m"[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249ml[0m[38;5;249m:[0m[38;5;249m [0m"SOX Risk Assessment },
+ [38;5;240m   │[0m                                               ────────────┬───────────  
+ [38;5;240m   │[0m                                                           ╰───────────── 
+[38;5;246m────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/nav.jsx[39m
+      at transformWithOxc (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3344:19)
+      at TransformPluginContext.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:3415:26)
+      at EnvironmentPluginContainer.transform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:30387:51)
+      at async loadAndTransform (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24646:26)
+      at async viteTransformMiddleware (file:///C:/Users/ibhut/OneDrive/Documents/GitHub/dendrai-dashboard/project/node_modules/vite/dist/node/chunks/node.js:24440:20)
+[2m9:07:21 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /nav.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
+[2m9:07:21 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22m[vite] Failed to reload /nav.jsx. This could be due to syntax errors or importing non-existent modules. (see errors above)
