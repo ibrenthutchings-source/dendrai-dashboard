@@ -38,8 +38,11 @@ window.RSS_ENGINE = (function () {
     },
     {
       id: "sec",
-      name: "SEC EDGAR Filings",
+      name: "SEC EDGAR Peer Filings",
+      // URL is resolved dynamically from /edgar/peers for the active ticker.
+      // The fallback URL is used only when no ticker is available.
       url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&dateb=&owner=include&count=8&output=atom",
+      type: "edgar-peers",
       domains: ["Financial Reporting"],
       risks: ["R-01", "R-05"],
       weight: 1.0,
@@ -224,10 +227,9 @@ window.RSS_ENGINE = (function () {
   // ── Fetch feed XML via local dev-server proxy ─────────────
   // Routes through /api/rss-proxy (vite.config.js) so the request is made
   // server-side, bypassing browser CORS restrictions.
-  async function fetchFeed(feed) {
-    if (!feed.url) return null;
+  async function fetchFeedUrl(url) {
     try {
-      const res = await fetch(`/api/rss-proxy?url=${encodeURIComponent(feed.url)}`, {
+      const res = await fetch(`/api/rss-proxy?url=${encodeURIComponent(url)}`, {
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) return null;
@@ -238,11 +240,55 @@ window.RSS_ENGINE = (function () {
     }
   }
 
+  async function fetchFeed(feed) {
+    if (!feed.url) return null;
+    return fetchFeedUrl(feed.url);
+  }
+
+  // ── EDGAR peer filing fetcher ─────────────────────────────
+  // Calls /edgar/peers for the active ticker, then fetches each peer's
+  // EDGAR atom feed so articles reflect real industry competitors.
+  async function fetchEdgarPeerFilings(ticker) {
+    if (!ticker) return null;
+    try {
+      const peersRes = await fetch("/api/mcp/edgar/peers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker }),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!peersRes.ok) return null;
+      const data = await peersRes.json();
+      const peers = (data.peers || []).slice(0, 5);
+      if (!peers.length) return null;
+
+      const allArticles = [];
+      for (const peer of peers) {
+        const cik = peer.cik_plain || (peer.cik || "").replace(/^0+/, "");
+        if (!cik) continue;
+        const feedUrl =
+          `https://www.sec.gov/cgi-bin/browse-edgar` +
+          `?action=getcompany&CIK=${cik}&type=&dateb=&owner=include&count=3&output=atom`;
+        const articles = await fetchFeedUrl(feedUrl);
+        if (articles) {
+          const label = peer.ticker || peer.company_name || "";
+          for (const a of articles) {
+            allArticles.push({ ...a, title: label ? `[${label}] ${a.title}` : a.title });
+          }
+        }
+      }
+      return allArticles.length ? allArticles : null;
+    } catch {
+      return null;
+    }
+  }
+
   // ── Main ingestion run ────────────────────────────────────
   // opts.enabledFeedIds — array of feed IDs to include; defaults to all
+  // opts.ticker         — active ticker; used to resolve EDGAR peer feeds
   // opts.onProgress(msg, feedId, done) — called per feed
   async function ingestAll(opts = {}) {
-    const { onProgress, enabledFeedIds } = opts;
+    const { onProgress, enabledFeedIds, ticker } = opts;
     const feeds = enabledFeedIds
       ? FEEDS.filter(f => enabledFeedIds.includes(f.id))
       : FEEDS;
@@ -250,7 +296,14 @@ window.RSS_ENGINE = (function () {
 
     for (const feed of feeds) {
       onProgress?.(`Fetching ${feed.name}…`, feed.id, false);
-      const rawArticles = await fetchFeed(feed);
+      let rawArticles;
+      if (feed.type === "edgar-peers" && ticker) {
+        rawArticles = await fetchEdgarPeerFilings(ticker);
+        // Fallback to generic EDGAR feed when backend is unavailable
+        if (!rawArticles) rawArticles = await fetchFeed(feed);
+      } else {
+        rawArticles = await fetchFeed(feed);
+      }
       const fetchStatus = rawArticles ? "ok" : "failed";
       const graded = (rawArticles || []).map(a => gradeArticle(a, feed));
       results.push({ feed, articles: graded, fetchStatus });

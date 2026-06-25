@@ -152,6 +152,7 @@ class RssIngestRequest(BaseModel):
     feed_ids: List[str] = []
     force_refresh: bool = False
     ttl_minutes: int = 30
+    ticker: Optional[str] = None
 
 class RiskApprovalsRequest(BaseModel):
     run_id: int
@@ -463,6 +464,7 @@ def rss_ingest(req: RssIngestRequest):
             feed_ids=req.feed_ids or None,
             force_refresh=req.force_refresh,
             ttl_minutes=req.ttl_minutes,
+            ticker=req.ticker,
         )
 
         # Persist graded articles to DB for velocity trending (best-effort)

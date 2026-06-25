@@ -47,8 +47,10 @@ FEEDS: list[dict] = [
     },
     {
         "id": "sec",
-        "name": "SEC EDGAR Filings",
+        "name": "SEC EDGAR Peer Filings",
+        # URL is the fallback used only when no ticker is supplied.
         "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&dateb=&owner=include&count=8&output=atom",
+        "type": "edgar-peers",
         "domains": ["Financial Reporting"],
         "risks": ["R-01", "R-05"],
         "weight": 1.0,
@@ -212,6 +214,70 @@ def _fetch_raw(url: str, timeout: int = 12) -> Optional[bytes]:
         return None
 
 
+def _fetch_peer_ciks(ticker: str) -> list[dict]:
+    """Return up to 5 peer companies for ticker via edgar_tool / peer_intel."""
+    try:
+        from edgar_tool import get_company_info, fetch_sic_peers
+        import peer_intel as _pi
+
+        meta, sub = get_company_info(ticker)
+        sic = meta.get("sic", "")
+
+        peers: list = []
+        try:
+            named = _pi.extract_competitor_names(ticker, meta, sub)
+            if named:
+                peers = _pi.resolve_names_to_edgar(
+                    named, exclude_cik=meta.get("cik_plain", "")
+                )
+        except Exception:
+            pass
+
+        if not peers and sic:
+            peers = fetch_sic_peers(sic, max_peers=10)
+
+        return peers[:5]
+    except Exception:
+        return []
+
+
+def fetch_and_grade_peer_filings(ticker: str, feed: dict) -> dict:
+    """Fetch recent filings for each peer company and grade as a single feed result."""
+    peers = _fetch_peer_ciks(ticker)
+    if not peers:
+        return fetch_and_grade(feed)
+
+    graded = []
+    for peer in peers:
+        cik = (peer.get("cik_plain") or peer.get("cik") or "").lstrip("0")
+        if not cik:
+            continue
+        peer_url = (
+            f"https://www.sec.gov/cgi-bin/browse-edgar"
+            f"?action=getcompany&CIK={cik}&type=&dateb=&owner=include&count=3&output=atom"
+        )
+        raw = _fetch_raw(peer_url)
+        if raw is None:
+            continue
+        parsed = feedparser.parse(raw)
+        label = peer.get("ticker") or peer.get("company_name") or ""
+        for entry in parsed.entries[:3]:
+            title = (getattr(entry, "title", "") or "").strip()
+            article = {
+                "title": f"[{label}] {title}" if label else title,
+                "summary": getattr(entry, "summary", "") or "",
+                "description": getattr(entry, "description", "") or "",
+                "published": _parse_date(entry),
+                "link": getattr(entry, "link", "") or "",
+            }
+            graded.append(grade_article(article, feed))
+
+    if not graded:
+        return fetch_and_grade(feed)
+
+    return {"feed": feed, "articles": graded, "fetchStatus": "ok"}
+
+
 def fetch_and_grade(feed: dict) -> dict:
     """Fetch a single feed via feedparser, grade all entries, return result dict."""
     raw = _fetch_raw(feed["url"])
@@ -276,6 +342,7 @@ def ingest_feeds(
     feed_ids: Optional[list[str]] = None,
     force_refresh: bool = False,
     ttl_minutes: int = 30,
+    ticker: Optional[str] = None,
 ) -> dict:
     """
     Fetch and grade the requested feeds. Returns results shaped identically to
@@ -285,8 +352,10 @@ def ingest_feeds(
         feed_ids:       Feed IDs to process (default: all registered feeds).
         force_refresh:  Bypass cache and re-fetch even within TTL.
         ttl_minutes:    Cache TTL in minutes (default: 30).
+        ticker:         Active ticker; enables peer-aware EDGAR filing fetch.
     """
     ttl_seconds = ttl_minutes * 60
+    ticker_key = ticker.upper() if ticker else ""
 
     feeds = (
         [FEEDS_BY_ID[fid] for fid in feed_ids if fid in FEEDS_BY_ID]
@@ -296,12 +365,17 @@ def ingest_feeds(
 
     results = []
     for feed in feeds:
-        cached = None if force_refresh else _get_cached(feed["id"], ttl_seconds)
+        # Peer-aware feeds are keyed by ticker so each company gets its own cache slot.
+        cache_key = f"{feed['id']}:{ticker_key}" if (feed.get("type") == "edgar-peers" and ticker_key) else feed["id"]
+        cached = None if force_refresh else _get_cached(cache_key, ttl_seconds)
         if cached is not None:
             results.append({**cached, "cached": True})
         else:
-            result = fetch_and_grade(feed)
-            _set_cached(feed["id"], result)
+            if feed.get("type") == "edgar-peers" and ticker:
+                result = fetch_and_grade_peer_filings(ticker, feed)
+            else:
+                result = fetch_and_grade(feed)
+            _set_cached(cache_key, result)
             results.append({**result, "cached": False})
 
     total_articles = sum(len(r["articles"]) for r in results)
