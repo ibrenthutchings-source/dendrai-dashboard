@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — main App
+   Dendrai Intelligenza — main App
    Orchestrates: run-loop animation, HITL gates, CEM, modals,
    data mode (mock/live), tweaks.
    ============================================================ */
@@ -1651,7 +1651,7 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
     <header className="hdr">
       <div className="hdr-brand">
         <div className="hdr-logo">D</div>
-        <div className="hdr-name">Dendrai <span>Risk Loop</span></div>
+        <div className="hdr-name">Dendrai <span>Intelligenza</span></div>
       </div>
       <div className="hdr-sep" />
       <div className="hdr-ctx">
