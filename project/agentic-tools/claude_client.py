@@ -209,6 +209,10 @@ def complete_json(
         try:
             message = _call({"format": {"type": "json_schema", "schema": schema}})
         except Exception as exc:
+            # Re-raise billing / auth errors immediately — retrying wastes a credit call.
+            exc_str = str(exc)
+            if "credit balance" in exc_str or "insufficient_quota" in exc_str or "invalid_api_key" in exc_str:
+                raise
             logger.info("structured-output constraint unavailable (%s); using prompt-guided JSON", exc)
     if message is None:
         guided = dict(base)
