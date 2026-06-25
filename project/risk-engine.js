@@ -669,14 +669,15 @@ window.RISK_ENGINE = (function () {
     const topAmb = risks.filter(r => r.rag === 'A').map(r => r.id).slice(0, 2);
     const revStr  = ratios.revGrowth != null ? `${(ratios.revGrowth * 100).toFixed(1)}%` : 'n/a';
     const gmStr   = ratios.grossMargin != null ? `${(ratios.grossMargin * 100).toFixed(1)}%` : 'n/a';
-    // revenue_at_risk_m: dollar amount at risk in each scenario (millions).
-    // Derived from the scenario's own revenue_impact_pct so values are always consistent.
-    // Only a negative revenue impact (revenue contraction) produces a positive "at risk" figure.
+    // revenue_at_risk_m: revenue not realized vs. prior year if scenario materialises (millions).
+    // Each value is derived from the scenario's own revenue_impact_pct for consistency.
+    // Only a negative impact (contraction) produces a positive at-risk figure; upside returns 0.
     const revM = ratios.rev != null ? ratios.rev / 1e6 : null;
-    const bearRiskM  = revM != null ? Math.round(revM * 0.18)                                                         : null;
-    const baseGrowth = ratios.revGrowth ?? -0.03;
-    const baseRiskM  = revM != null ? Math.max(0, Math.round(revM * -baseGrowth))                                     : null;
-    const bullRiskM  = 0;
+    const bearRiskM  = revM != null ? Math.round(revM * 0.18)                                                          : null;
+    const baseImpact = ratios.revGrowth ?? -0.03;
+    const baseRiskM  = revM != null ? Math.max(0, Math.round(revM * -baseImpact))                                      : null;
+    const bullImpact = ratios.revGrowth != null ? (ratios.revGrowth + 0.08) : 0.05;
+    const bullRiskM  = revM != null ? Math.max(0, Math.round(revM * -bullImpact))                                      : 0;
     return [
       { id:'bear', name:`Bear — Dual risk materialisation: ${risks[0]?.name?.split('—')[0].trim() || 'Primary Risk'} + macro stress`,
         description: `${topRed.length > 0 ? `Red risks ${topRed.join(', ')} materialise simultaneously` : 'Top two amber risks elevate to red'}. Revenue contracts 15–25%, gross margin compressed ${ratios.grossMargin != null ? `from ${gmStr} to below ${(Math.max(0,ratios.grossMargin-0.12)*100).toFixed(1)}%` : 'materially'}. FCF turns negative; covenant headroom at risk.`,
