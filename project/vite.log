@@ -6305,3 +6305,4 @@ React will try to recreate this component tree from scratch using the error boun
 React will try to recreate this component tree from scratch using the error boundary you provided, RootBoundary.
 [2m6:49:30 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m
 [2m6:49:35 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m
+[2m6:56:39 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/styles-modules.css?direct[22m
