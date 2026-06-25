@@ -57,6 +57,9 @@ window.RISK_ENGINE = (function () {
   };
 
   // ── SIC → Industry ─────────────────────────────────────────
+  // Synchronous lookup (required — buildProfile() is called synchronously).
+  // The backend exposes GET /industry/from-sic as the canonical source.
+  // This table must stay in sync with _classify_sic() in api_server.py.
   function sic2industry(sic) {
     const n = parseInt(sic, 10);
     if (!isFinite(n)) return 'Generic';

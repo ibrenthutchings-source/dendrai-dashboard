@@ -25,6 +25,11 @@ Endpoints:
 
     GET  /history/runs/{ticker}              Recent runs for a ticker
     GET  /history/runs/{ticker}/{run_id}     Single run detail
+
+    GET  /rss/feeds                          RSS feed registry (canonical — JS loads from here)
+    GET  /scoring/config                     Domain vocab, severity weights, domain→risk mapping, Item 1A keywords
+    GET  /edgar/8k-items                     All 24 8-K item code → SEC description entries
+    GET  /industry/from-sic                  SIC code → Dendrai industry label
 """
 
 import argparse
@@ -60,7 +65,11 @@ from edgar_tool import (
     annotate_8k,
 )
 from rss_tool import run_rss_analysis
-from rss_ingest_service import ingest_feeds, get_feed_status, FEEDS as RSS_INGEST_FEEDS
+from rss_ingest_service import (
+    ingest_feeds, get_feed_status, FEEDS as RSS_INGEST_FEEDS,
+    DOMAIN_VOCAB, SEVERITY_WORDS, DOMAIN_RISK_CATS, RISK_KW,
+)
+from edgar_tool import _8K_ITEMS as EDGAR_8K_ITEMS
 import db
 
 import ai_endpoints
@@ -301,6 +310,63 @@ def db_status():
         "database_enabled": db.is_available(),
         "note": "" if db.is_available() else "Set DATABASE_URL env var to enable persistence.",
     }
+
+
+# ── Config / reference-data endpoints ────────────────────────────────────────
+# These serve the authoritative copies of data that the JS frontend previously
+# duplicated inline. The frontend fetches on startup and falls back to its
+# hardcoded values if the backend is unavailable.
+
+_SIC_RANGES = [
+    (lambda n: n == 3674 or (3672 <= n <= 3679) or n in (3559, 3577), "Semiconductors"),
+    (lambda n: n in (3711, 3714, 3716, 3519),                          "Automotive OEM"),
+    (lambda n: 7370 <= n <= 7379,                                       "Software & Cloud"),
+    (lambda n: 6020 <= n <= 6199,                                       "Financial Services"),
+    (lambda n: (2830 <= n <= 2836) or (8010 <= n <= 8099),             "Healthcare & Pharma"),
+    (lambda n: 5200 <= n <= 5999,                                       "Retail & Consumer"),
+    (lambda n: (1300 <= n <= 1382) or n == 2911,                       "Energy & Resources"),
+    (lambda n: 4911 <= n <= 4939,                                       "Utilities"),
+    (lambda n: 2000 <= n <= 3999,                                       "Industrial & Manufacturing"),
+]
+
+def _classify_sic(sic: str) -> str:
+    try:
+        n = int(sic)
+    except (ValueError, TypeError):
+        return "Generic"
+    for pred, industry in _SIC_RANGES:
+        if pred(n):
+            return industry
+    return "Generic"
+
+
+@app.get("/rss/feeds")
+def get_rss_feeds():
+    """RSS feed registry — canonical list of compliance/regulatory feeds with weights and domains."""
+    return {"feeds": RSS_INGEST_FEEDS}
+
+
+@app.get("/scoring/config")
+def get_scoring_config():
+    """Scoring vocabulary config: domain keywords, severity weights, domain→risk mappings, Item 1A keywords."""
+    return {
+        "domain_vocab":      DOMAIN_VOCAB,
+        "severity_words":    SEVERITY_WORDS,
+        "domain_risk_cats":  DOMAIN_RISK_CATS,
+        "risk_kw":           RISK_KW,
+    }
+
+
+@app.get("/edgar/8k-items")
+def get_8k_items():
+    """8-K item code → SEC description mapping (all 24 reportable items)."""
+    return {"items": EDGAR_8K_ITEMS}
+
+
+@app.get("/industry/from-sic")
+def industry_from_sic(sic: str = Query(..., description="SIC code as string (e.g. '3674')")):
+    """Classify a SIC code into a Dendrai industry label (mirrors risk-engine.js sic2industry)."""
+    return {"sic": sic, "industry": _classify_sic(sic)}
 
 
 # ── Tool endpoints ─────────────────────────────────────────────────────────────
