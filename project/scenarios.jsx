@@ -86,7 +86,7 @@ function GreySwanCard({ data }) {
   const ragSoft  = { R: "var(--red-soft)",  A: "var(--amber-soft)",  G: "var(--green-soft)" };
 
   const ts = data.timeline;
-  const maxScore = 10;
+  const maxScore = 25; // risk scores are on a 0–25 scale
   const maxLik = Math.max(...ts.map(t => t.likelihood)) * 1.05;
   const maxImp = Math.max(...ts.map(t => t.impact_$m)) * 1.05 || 1;
 
@@ -134,6 +134,13 @@ function GreySwanCard({ data }) {
               <div className="gs-arc-lab">T+90 · projected</div>
             </div>
           </div>
+          {data.peak_impact_m > 0 && (
+            <div style={{marginTop: 12, textAlign: "center", padding: "8px 12px", background: "var(--red-soft)", borderRadius: 6}}>
+              <div style={{fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 2}}>Revenue at risk · T+90</div>
+              <div className="mono" style={{fontSize: 18, fontWeight: 600, color: "var(--red-ink)"}}>~${data.peak_impact_m}M</div>
+              <div style={{fontSize: 10, color: "var(--ink-3)"}}>≈15% of annual revenue</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -148,13 +155,13 @@ function GreySwanCard({ data }) {
             </linearGradient>
           </defs>
           <rect x={padL} y={padT} width={plotW} height={plotH} fill="url(#gs-band)" rx="4"/>
-          {/* RAG bands */}
-          <line x1={padL} y1={yScore(7.5)} x2={W - padR} y2={yScore(7.5)} stroke="var(--red)" strokeWidth="0.6" strokeDasharray="3 3" opacity="0.55"/>
-          <line x1={padL} y1={yScore(5.0)} x2={W - padR} y2={yScore(5.0)} stroke="var(--amber)" strokeWidth="0.6" strokeDasharray="3 3" opacity="0.55"/>
+          {/* RAG bands — thresholds match ragOf(): RED ≥ 15, AMBER ≥ 9 */}
+          <line x1={padL} y1={yScore(15)} x2={W - padR} y2={yScore(15)} stroke="var(--red)" strokeWidth="0.6" strokeDasharray="3 3" opacity="0.55"/>
+          <line x1={padL} y1={yScore(9)}  x2={W - padR} y2={yScore(9)}  stroke="var(--amber)" strokeWidth="0.6" strokeDasharray="3 3" opacity="0.55"/>
           {/* Y axis labels */}
-          <text x={padL - 6} y={yScore(7.5) + 3} textAnchor="end" fontSize="9" fill="var(--red-ink)" fontFamily="Geist Mono, monospace">7.5</text>
-          <text x={padL - 6} y={yScore(5.0) + 3} textAnchor="end" fontSize="9" fill="var(--amber-ink)" fontFamily="Geist Mono, monospace">5.0</text>
-          <text x={padL - 6} y={yScore(0) + 3} textAnchor="end" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">0</text>
+          <text x={padL - 6} y={yScore(15) + 3} textAnchor="end" fontSize="9" fill="var(--red-ink)" fontFamily="Geist Mono, monospace">15</text>
+          <text x={padL - 6} y={yScore(9)  + 3} textAnchor="end" fontSize="9" fill="var(--amber-ink)" fontFamily="Geist Mono, monospace">9</text>
+          <text x={padL - 6} y={yScore(0)  + 3} textAnchor="end" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">0</text>
           {/* Score line */}
           <polyline
             points={ts.map((t, i) => `${xAt(i)},${yScore(t.score)}`).join(" ")}
