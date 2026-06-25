@@ -1,5 +1,5 @@
 """
-Dendrai Risk Loop — Forecasting Engine (Python)
+Dendrai Intelligenza— Forecasting Engine (Python)
 Replaces forecasting.js using statsmodels / scikit-learn / prophet.
 
 Models: ARIMA · Prophet · Random Forest · Ensemble
