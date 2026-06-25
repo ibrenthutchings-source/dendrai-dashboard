@@ -361,7 +361,7 @@ def fetch_xbrl_facts(cik: str) -> dict:
                 "label": concept.get("label", tag),
                 "description": concept.get("description", "")[:300],
                 "unit": "USD" if "USD" in units else ("shares" if "shares" in units else ""),
-                "data_points": filtered[:24],   # up to ~6 years of quarterly data
+                "data_points": filtered[:48],   # enough for 5yr standalone+cumulative mix
             }
             break   # found a working tag for this metric
 
