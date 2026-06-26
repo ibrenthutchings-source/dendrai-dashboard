@@ -20,18 +20,39 @@ import logging
 import os
 from contextlib import contextmanager
 from datetime import date
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-try:
+# TYPE_CHECKING block guarantees Pylance sees these names as always bound.
+# At runtime, the try/except below imports them when the packages are installed.
+if TYPE_CHECKING:
     import psycopg2
     from psycopg2 import pool as pg_pool
     from psycopg2.extras import Json, execute_values
+    from pgvector.psycopg2 import register_vector as _pg_register_vector  # type: ignore[import]
+
+_HAS_PSYCOPG2 = False
+try:
+    import psycopg2  # noqa: F811
+    from psycopg2 import pool as pg_pool  # noqa: F811
+    from psycopg2.extras import Json, execute_values  # noqa: F811
     _HAS_PSYCOPG2 = True
 except ImportError:
-    _HAS_PSYCOPG2 = False
+    pass
+
+_HAS_PGVECTOR = False
+try:
+    from pgvector.psycopg2 import register_vector as _pg_register_vector  # type: ignore[import]  # noqa: F811
+    _HAS_PGVECTOR = True
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 _pool: Optional["pg_pool.ThreadedConnectionPool"] = None
+
+# Embedding dimension — must match the model used to generate vectors.
+# text-embedding-3-small / ada-002 → 1536  |  text-embedding-3-large → 3072
+# Change BEFORE calling init_db() if using a different model.
+EMBEDDING_DIM: int = 1536
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DDL — 28 tables
@@ -639,6 +660,30 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS op_margin_pct      N
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     NUMERIC(7,3);
 """
 
+# pgvector DDL — kept separate so a missing extension never breaks the core schema.
+# Formatted at init time with the module-level EMBEDDING_DIM.
+_PGVECTOR_DDL_TEMPLATE = """
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Central embedding store: one row per (source row × content type × model).
+-- source_table / source_id form a logical FK to any table in this schema.
+CREATE TABLE IF NOT EXISTS embeddings (
+    id           BIGSERIAL    PRIMARY KEY,
+    source_table VARCHAR(64)  NOT NULL,
+    source_id    BIGINT       NOT NULL,
+    content_type VARCHAR(64)  NOT NULL,
+    model        VARCHAR(64)  NOT NULL DEFAULT 'unknown',
+    embedding    vector({dim}),
+    text_snippet TEXT,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (source_table, source_id, content_type, model)
+);
+CREATE INDEX IF NOT EXISTS idx_embeddings_source
+    ON embeddings (source_table, source_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
+    ON embeddings USING hnsw (embedding vector_cosine_ops);
+"""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pool management
@@ -666,11 +711,25 @@ def init_db() -> bool:
         finally:
             _pool.putconn(conn)
         logger.info("PostgreSQL database initialized (tables + migrations applied)")
-        return True
     except Exception as exc:
         logger.error("Database init failed: %s", exc)
         _pool = None
         return False
+
+    # pgvector extension + embeddings table — optional; logged as warning if absent.
+    vec_conn = _pool.getconn()
+    try:
+        with vec_conn.cursor() as cur:
+            cur.execute(_PGVECTOR_DDL_TEMPLATE.format(dim=EMBEDDING_DIM))
+        vec_conn.commit()
+        logger.info("pgvector extension ready (EMBEDDING_DIM=%d)", EMBEDDING_DIM)
+    except Exception as exc:
+        vec_conn.rollback()
+        logger.warning("pgvector not available — embedding features disabled: %s", exc)
+    finally:
+        _pool.putconn(vec_conn)
+
+    return True
 
 
 def is_available() -> bool:
@@ -685,6 +744,8 @@ def _conn():
         raise RuntimeError("Database not initialized")
     conn = _pool.getconn()
     try:
+        if _HAS_PGVECTOR:
+            _pg_register_vector(conn)
         yield conn
         conn.commit()
     except Exception:
@@ -778,7 +839,7 @@ def save_sic_peers(company_id: int, peers: list) -> None:
 # EDGAR
 # ─────────────────────────────────────────────────────────────────────────────
 
-def upsert_xbrl_series(company_id: int, metric_name: str, xbrl_tag: str = None, unit: str = "USD") -> Optional[int]:
+def upsert_xbrl_series(company_id: int, metric_name: str, xbrl_tag: Optional[str] = None, unit: str = "USD") -> Optional[int]:
     """Get or create an xbrl_metric_series row. Returns series_id."""
     def _do():
         with _conn() as conn:
@@ -858,7 +919,7 @@ def save_edgar_risk_factors(
     filing_date: str,
     accession_number: str,
     risk_factors_text: str,
-    edgar_url: str = None,
+    edgar_url: Optional[str] = None,
 ) -> None:
     """Save Item 1A risk factor text from a 10-K filing."""
     def _do():
@@ -911,7 +972,7 @@ def save_edgar_proxy(
 # FRED
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _upsert_fred_series_inline(cur, series_id: str, name: str, category: str = None, units: str = None) -> Optional[int]:
+def _upsert_fred_series_inline(cur, series_id: str, name: str, category: Optional[str] = None, units: Optional[str] = None) -> Optional[int]:
     """Upsert a fred_series row within an existing cursor transaction."""
     cur.execute(
         """
@@ -964,7 +1025,7 @@ def save_fred_series_and_observations(series_map: dict) -> None:
     _run(_do)
 
 
-def save_fred_correlations(company_id: int, correlations: list, run_date: str = None) -> None:
+def save_fred_correlations(company_id: int, correlations: list, run_date: Optional[str] = None) -> None:
     """Save Pearson correlation results linking company financials to FRED series."""
     def _do():
         today = run_date or date.today().isoformat()
@@ -1413,7 +1474,7 @@ def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> 
 # HITL decisions
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _ensure_hitl_session(conn, run_id: int, persona: str = None) -> int:
+def _ensure_hitl_session(conn, run_id: int, persona: Optional[str] = None) -> int:
     """Get or create a hitl_sessions row within an existing connection."""
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM hitl_sessions WHERE run_id = %s", (run_id,))
@@ -1427,7 +1488,7 @@ def _ensure_hitl_session(conn, run_id: int, persona: str = None) -> int:
         return cur.fetchone()[0]
 
 
-def save_risk_approvals(run_id: int, approvals: dict, persona: str = None) -> None:
+def save_risk_approvals(run_id: int, approvals: dict, persona: Optional[str] = None) -> None:
     """Persist Gate 1 per-risk decisions from the frontend."""
     if not approvals:
         return
@@ -1478,7 +1539,7 @@ def save_risk_approvals(run_id: int, approvals: dict, persona: str = None) -> No
     _run(_do)
 
 
-def save_objective_approvals(run_id: int, approvals: dict, persona: str = None) -> None:
+def save_objective_approvals(run_id: int, approvals: dict, persona: Optional[str] = None) -> None:
     """Persist Gate 2 per-objective decisions from the frontend."""
     if not approvals:
         return
@@ -2519,6 +2580,106 @@ def log_sox_rescoping_trigger(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pgvector — embeddings
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_embedding(
+    source_table: str,
+    source_id: int,
+    content_type: str,
+    embedding: list,
+    *,
+    model: Optional[str] = None,
+    text_snippet: Optional[str] = None,
+) -> Optional[int]:
+    """Store a vector embedding for any source row. Returns embedding id (or None).
+
+    source_table : originating table name  (e.g. 'rss_articles', 'ai_analyses')
+    source_id    : PK of the row in that table
+    content_type : semantic label  (e.g. 'risk_factor_text', 'article_summary')
+    embedding    : list[float] from your embedding model — len must equal EMBEDDING_DIM
+    """
+    if not embedding or not _HAS_PGVECTOR:
+        return None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO embeddings
+                        (source_table, source_id, content_type, model, embedding, text_snippet)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source_table, source_id, content_type, model) DO UPDATE
+                        SET embedding    = EXCLUDED.embedding,
+                            text_snippet = EXCLUDED.text_snippet,
+                            created_at   = NOW()
+                    RETURNING id
+                    """,
+                    (source_table, source_id, content_type, model or "unknown",
+                     embedding, text_snippet),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+_DISTANCE_OPS = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
+
+
+def search_similar_embeddings(
+    embedding: list,
+    *,
+    source_table: Optional[str] = None,
+    content_type: Optional[str] = None,
+    limit: int = 10,
+    metric: str = "cosine",
+) -> list:
+    """Return the top-k nearest embeddings via ANN (HNSW index).
+
+    metric: 'cosine' (default) | 'l2' | 'ip'
+    Returns list of dicts: id, source_table, source_id, content_type, model,
+    text_snippet, distance, created_at.
+    """
+    if not embedding or not _HAS_PGVECTOR:
+        return []
+    op = _DISTANCE_OPS.get(metric, "<=>")
+    def _do():
+        clauses: list = []
+        params: list = []
+        if source_table:
+            clauses.append("source_table = %s")
+            params.append(source_table)
+        if content_type:
+            clauses.append("content_type = %s")
+            params.append(content_type)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, source_table, source_id, content_type, model,
+                           text_snippet, embedding {op} %s AS distance, created_at
+                    FROM embeddings
+                    {where}
+                    ORDER BY embedding {op} %s
+                    LIMIT %s
+                    """,
+                    params + [embedding, embedding, limit],
+                )
+                return [
+                    {
+                        "id": r[0], "source_table": r[1], "source_id": r[2],
+                        "content_type": r[3], "model": r[4],
+                        "text_snippet": r[5],
+                        "distance": float(r[6]) if r[6] is not None else None,
+                        "created_at": r[7].isoformat() if r[7] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Backward-compat stubs (deprecated)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2528,7 +2689,7 @@ def save_result(tool_name: str, ticker: str, company_name: str, data: dict) -> O
     return None
 
 
-def get_results(tool_name: str, ticker: str = None, limit: int = 20) -> list:
+def get_results(tool_name: str, ticker: Optional[str] = None, limit: int = 20) -> list:
     """Deprecated stub."""
     return []
 
