@@ -683,7 +683,7 @@ window.RISK_ENGINE = (function () {
         description: `${topRed.length > 0 ? `Red risks ${topRed.join(', ')} materialise simultaneously` : 'Top two amber risks elevate to red'}. Revenue contracts 15–25%, gross margin compressed ${ratios.grossMargin != null ? `from ${gmStr} to below ${(Math.max(0,ratios.grossMargin-0.12)*100).toFixed(1)}%` : 'materially'}. FCF turns negative; covenant headroom at risk.`,
         probability:'MEDIUM', revenue_impact_pct:-18, gross_margin_impact_bps:-380,
         revenue_at_risk_m: bearRiskM,
-        runway_qtrs:4, liquidity:'CONSTRAINED', kris_red: topRed.slice(0,3),
+        runway_days:30, liquidity:'CONSTRAINED', kris_red: topRed.slice(0,3),
         recovery:'PROLONGED_5Q_PLUS', audit_focus:['Reserve/accrual adequacy','Covenant compliance','Going-concern disclosure'],
         vs_peers:`${ticker} most exposed relative to sector on ${risks[0]?.name?.split('—')[0] || 'primary risk category'}.`,
         assumptions:{ 'Rev Δ':'-18%', 'Margin Δ':'-380bps', 'Macro':'contractionary', 'Liquidity':'constrained' } },
@@ -691,7 +691,7 @@ window.RISK_ENGINE = (function () {
         description: `Risk scores stabilise with current controls effective. Revenue growth ${revStr}, gross margin near ${gmStr}. Primary risks remain elevated but within appetite. MAP implementation proceeds on schedule.`,
         probability:'HIGH', revenue_impact_pct: ratios.revGrowth!=null?Math.round(ratios.revGrowth*100):-3,
         gross_margin_impact_bps:-50, revenue_at_risk_m: baseRiskM,
-        runway_qtrs:10, liquidity:'SUFFICIENT', kris_red: topRed.slice(0,1),
+        runway_days:60, liquidity:'SUFFICIENT', kris_red: topRed.slice(0,1),
         recovery:'MODERATE_3_4Q', audit_focus:['Top-3 risk remediation','MAP completion vs. due dates','Velocity trend monitoring'],
         vs_peers:`${ticker} in line with sector; focused execution on P1 MAPs required.`,
         assumptions:{ 'Rev Δ': revStr, 'Margin Δ':'−50bps', 'Controls':'hold', 'MAP':'on-track' } },
@@ -699,7 +699,7 @@ window.RISK_ENGINE = (function () {
         description: `MAP implementation ahead of schedule; primary risks step down one RAG level. Revenue recovers ${ratios.revGrowth!=null&&ratios.revGrowth<0?'to flat/modest growth':'accelerates'}, gross margin expands. All covenant ratios comfortable.`,
         probability:'LOW', revenue_impact_pct: ratios.revGrowth!=null?Math.round((ratios.revGrowth+0.08)*100):5,
         gross_margin_impact_bps:150, revenue_at_risk_m: bullRiskM,
-        runway_qtrs:14, liquidity:'COMFORTABLE', kris_red:[],
+        runway_days:90, liquidity:'COMFORTABLE', kris_red:[],
         recovery:'NONE', audit_focus:['Control effectiveness validation','Revenue recognition on accelerated bookings'],
         vs_peers:`${ticker} outperforms sector on risk-adjusted basis if MAP programme executes.`,
         assumptions:{ 'Rev Δ':'+5–8% above base', 'MAP':'ahead of schedule', 'Macro':'expansionary', 'Liquidity':'comfortable' } },
@@ -712,7 +712,10 @@ window.RISK_ENGINE = (function () {
     // Prefer: highest-velocity AMBER, then highest-score AMBER, then GREEN
     const ambers = risks.filter(r => r.rag === 'A').sort((a, b) => (b.velocity - a.velocity) || (b.score - a.score));
     const greens = risks.filter(r => r.rag === 'G').sort((a, b) => b.score - a.score);
-    const top = ambers[0] || greens[0] || risks.find(r => r.rag !== 'R') || risks[0] || { id:'R-01', name:'Primary Risk', score:5.0, rag:'A', velocity:0 };
+    // If all risks are red, use the lowest-scoring one (closest to amber boundary) as the starting point
+    const top = ambers[0] || greens[0] || risks.find(r => r.rag !== 'R') ||
+                [...risks].sort((a, b) => a.score - b.score)[0] ||
+                { id:'R-01', name:'Primary Risk', score:5.0, rag:'A', velocity:0 };
     // Cascade partner: prefer a red or fast-moving amber that's different from top
     const r2  = risks.find(r => r.id !== top.id && r.rag === 'R') ||
                 risks.find(r => r.id !== top.id && r.rag === 'A' && r.velocity >= 2) ||
@@ -723,9 +726,10 @@ window.RISK_ENGINE = (function () {
     const topVel   = Number.isFinite(top.velocity) ? top.velocity : 0;
     // Derive rag from score using same thresholds as ragOf() — avoids hard-coding step colours
     const ragAt = s => s >= 15 ? 'R' : s >= 9 ? 'A' : 'G';
-    const s30 = Math.min(25, topScore + 2.0);
-    const s60 = Math.min(25, topScore + 3.75);
-    const s90 = Math.min(25, topScore + 5.5);
+    // Grey swan horizon is 0–90 days: T+90 must land in RED (≥15) regardless of starting score
+    const s90 = +Math.max(Math.min(25, topScore + 5.5), 16.0).toFixed(1);
+    const s60 = +(topScore + (s90 - topScore) * 0.65).toFixed(1);
+    const s30 = +(topScore + (s90 - topScore) * 0.30).toFixed(1);
     // Revenue at risk per step: 3% / 8% / 15% of annual revenue (cumulative exposure if cascade fully realises)
     const imp30 = Math.round(annRevM * 0.03);
     const imp60 = Math.round(annRevM * 0.08);
@@ -762,7 +766,7 @@ window.RISK_ENGINE = (function () {
         `Accelerate MAP-01 implementation; escalate to AC if missed by due date`,
         `Commission targeted IA deep-dive if velocity reaches +3`,
         `Engage external specialist if regulatory inquiry received`,
-        `Notify Board if score exceeds ${Math.min(25, topScore + 3.75).toFixed(1)}/25`,
+        `Notify Board if score exceeds ${s60}/25`,
       ],
       timeline: [
         { t:'T+0',  label:'Early signal',    score:topScore, rag:ragAt(topScore), likelihood:0.05, impact_$m:0,      impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`,               signals:[`Score ${topScore.toFixed(1)}/25`,`Velocity ${topVel>0?'+':''}${topVel}`,`MAP in progress`],      action:'IA initiates focused review' },
