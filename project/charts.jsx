@@ -282,6 +282,169 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
   );
 }
 
+// ---------- MULTI-SERIES FORECAST CHART ----------
+// Combines multiple geographies or segments onto one chart, one line per series.
+// series: [{name, color, history:[{q,v}], forecast:[{q,base,lo,hi}]}]
+function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
+  const [hovIdx, setHovIdx] = useState(null);
+
+  if (!series?.length) return null;
+  const first = series[0];
+  if (!first?.history?.length || !first?.forecast?.length) return null;
+
+  const dp      = decimals ?? (unit === "$M" ? 0 : 1);
+  const histLen = first.history.length;
+  const total   = histLen + first.forecast.length;
+
+  const W = 540, PADL = 52, PADR = 14, PADT = 16;
+  const plotW = W - PADL - PADR;
+  const plotH = 172;
+
+  // Bottom padding: 14px x-labels + 8px gap + legend rows + 4px margin
+  const legendCols = Math.min(series.length, 3);
+  const legendRows = Math.ceil(series.length / legendCols);
+  const PADB = 14 + 8 + legendRows * 16 + 4;
+  const H    = PADT + plotH + PADB;
+
+  // Y scale across all series
+  const allVals = series.flatMap(s => [
+    ...s.history.map(d => d.v),
+    ...s.forecast.flatMap(d => [d.base, d.lo, d.hi]),
+  ]).filter(Number.isFinite);
+  if (!allVals.length) return null;
+  const rawMin = Math.min(...allVals);
+  const rawMax = Math.max(...allVals);
+  const yPad   = (rawMax - rawMin) * 0.06 || 1;
+  const yMin   = rawMin - yPad;
+  const yMax   = rawMax + yPad;
+  const yRange = yMax - yMin;
+
+  const step       = plotW / (total - 1);
+  const xy         = (i, v) => [PADL + i * step, PADT + plotH - ((v - yMin) / yRange) * plotH];
+  const divX       = PADL + (histLen - 1) * step;
+  const allPeriods = [...first.history, ...first.forecast];
+  const legendColW = plotW / legendCols;
+  const legendY0   = PADT + plotH + 22;
+
+  const fmtV = v => {
+    if (!Number.isFinite(v)) return '—';
+    if (unit === "$M") return v >= 1000 ? `$${(v / 1000).toFixed(dp)}B` : `$${v.toFixed(dp)}M`;
+    if (unit === "$")  return `$${v.toFixed(dp)}`;
+    return `${v.toFixed(dp)}%`;
+  };
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(t => yMin + yRange * t);
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width: "100%", display: "block"}} xmlns="http://www.w3.org/2000/svg"
+      onMouseLeave={() => setHovIdx(null)}>
+
+      {/* Y gridlines */}
+      {yTicks.map((t, i) => {
+        const y = PADT + plotH - ((t - yMin) / yRange) * plotH;
+        return (
+          <g key={i}>
+            <line x1={PADL} y1={y} x2={W - PADR} y2={y} stroke="var(--line)" strokeWidth="0.5" strokeDasharray={i === 0 ? "" : "2 3"}/>
+            <text x={PADL - 5} y={y + 3.5} textAnchor="end" fontSize="8.5" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">
+              {unit === "$M"
+                ? (t >= 1000 ? `$${(t / 1000).toFixed(dp)}B` : `$${t.toFixed(dp)}M`)
+                : unit === "$" ? `$${t.toFixed(dp)}` : `${t.toFixed(dp)}%`}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* History / forecast divider */}
+      <line x1={divX} y1={PADT} x2={divX} y2={PADT + plotH} stroke="var(--line-strong)" strokeWidth="0.5" strokeDasharray="3 3"/>
+      <text x={divX + 5} y={PADT + 10} fontSize="8.5" fontFamily="Geist Mono, monospace" fill="var(--ink-3)">FORECAST →</text>
+
+      {/* Hover crosshair */}
+      {hovIdx != null && (
+        <line x1={PADL + hovIdx * step} y1={PADT} x2={PADL + hovIdx * step} y2={PADT + plotH}
+          stroke="var(--ink-4)" strokeWidth="0.8" strokeDasharray="2 2" pointerEvents="none"/>
+      )}
+
+      {/* Series lines + points */}
+      {series.map((s, si) => {
+        const hist  = s.history.slice(0, histLen).map((d, i) => xy(i, d.v));
+        const fc    = s.forecast.map((d, j) => xy(histLen + j, d.base));
+        const trans = [hist[hist.length - 1], fc[0]];
+        return (
+          <g key={s.name}>
+            <polyline points={hist.map(p => p.join(",")).join(" ")} fill="none" stroke={s.color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round"/>
+            <line x1={trans[0][0]} y1={trans[0][1]} x2={trans[1][0]} y2={trans[1][1]} stroke={s.color} strokeWidth="1.8" strokeDasharray="5 4" opacity="0.85"/>
+            <polyline points={fc.map(p => p.join(",")).join(" ")} fill="none" stroke={s.color} strokeWidth="1.8" strokeDasharray="5 4" strokeLinejoin="round" strokeLinecap="round" opacity="0.85"/>
+            {hist.map(([x, y], i) => <circle key={"h" + si + i} cx={x} cy={y} r="2" fill={s.color}/>)}
+            {fc.map(([x, y], j) => <circle key={"f" + si + j} cx={x} cy={y} r="2.5" fill="white" stroke={s.color} strokeWidth="1.4"/>)}
+          </g>
+        );
+      })}
+
+      {/* X axis labels every 2 ticks */}
+      {allPeriods.map((d, i) => {
+        if (i % 2 !== 0) return null;
+        return (
+          <text key={"x" + i} x={PADL + i * step} y={PADT + plotH + 13} textAnchor="middle"
+            fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{d.q}</text>
+        );
+      })}
+
+      {/* Invisible hit strips for hover */}
+      {allPeriods.map((_, i) => (
+        <rect key={"hit" + i} x={PADL + i * step - step / 2} y={PADT} width={step} height={plotH}
+          fill="transparent" style={{cursor: "crosshair"}} onMouseEnter={() => setHovIdx(i)}/>
+      ))}
+
+      {/* Hover tooltip: all series values at this x */}
+      {hovIdx != null && (() => {
+        const isFc   = hovIdx >= histLen;
+        const period = allPeriods[hovIdx];
+        const bw = 150, bpad = 8;
+        const bh = 17 + series.length * 15 + 5;
+        const tx = Math.min(Math.max(PADL, PADL + hovIdx * step - bw / 2), W - PADR - bw);
+        const ty = Math.max(PADT, PADT + 2);
+        return (
+          <g pointerEvents="none">
+            <rect x={tx} y={ty} width={bw} height={bh} rx="4"
+              fill="var(--bg)" stroke="var(--line-strong)" strokeWidth="0.8"
+              style={{filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.13))"}}/>
+            <text x={tx + bpad} y={ty + 12} fontSize="8.5" fontFamily="Geist Mono, monospace" fill="var(--ink-3)" fontWeight="500">
+              {period?.q}{isFc ? " · FCST" : ""}
+            </text>
+            {series.map((s, si) => {
+              const v = isFc ? s.forecast[hovIdx - histLen]?.base : s.history[hovIdx]?.v;
+              const label = s.name.length > 15 ? s.name.slice(0, 14) + "…" : s.name;
+              return (
+                <g key={si}>
+                  <circle cx={tx + bpad + 4} cy={ty + 22 + si * 15} r="3.5" fill={s.color}/>
+                  <text x={tx + bpad + 12} y={ty + 26 + si * 15} fontSize="9" fontFamily="Geist Mono, monospace" fill="var(--ink-2)">
+                    {label}  {fmtV(v)}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        );
+      })()}
+
+      {/* Legend */}
+      {series.map((s, si) => {
+        const col = si % legendCols;
+        const row = Math.floor(si / legendCols);
+        const lx  = PADL + col * legendColW;
+        const ly  = legendY0 + row * 16;
+        return (
+          <g key={"leg" + si}>
+            <line x1={lx} y1={ly + 1} x2={lx + 14} y2={ly + 1} stroke={s.color} strokeWidth="2"/>
+            <circle cx={lx + 7} cy={ly + 1} r="2.5" fill={s.color}/>
+            <text x={lx + 18} y={ly + 4.5} fontSize="9.5" fontFamily="Geist Mono, monospace" fill="var(--ink-2)">{s.name}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // ---------- M-Score gauge ----------
 function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
   // Scale: -4 (left/green) → 0 (right/red). Visual mapping: clamp.
@@ -740,4 +903,4 @@ function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reduction
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
-Object.assign(window, { Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+Object.assign(window, { Heatmap, ForecastChart, MultiSeriesForecastChart, MScoreGauge, RiskFlowSankey, truncate });
