@@ -30,7 +30,7 @@ function ScenariosPanel({ scenarios, greySwan }) {
               <ScenM l="Revenue Δ"     v={`${sc.revenue_impact_pct > 0 ? "+" : ""}${sc.revenue_impact_pct}%`}/>
               <ScenM l="Margin Δ"      v={`${sc.gross_margin_impact_bps > 0 ? "+" : ""}${sc.gross_margin_impact_bps} bps`}/>
               <ScenM l="Revenue at risk" v={sc.revenue_at_risk_m == null ? "—" : sc.revenue_at_risk_m >= 0 ? `$${sc.revenue_at_risk_m}M` : `−$${Math.abs(sc.revenue_at_risk_m)}M`}/>
-              <ScenM l="Runway"        v={`${sc.runway_qtrs}Q`}/>
+              <ScenM l="Runway"        v={`${sc.runway_days}d`}/>
             </div>
 
             <div className="scen-section">

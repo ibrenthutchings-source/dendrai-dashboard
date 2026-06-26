@@ -359,7 +359,7 @@ function ReportModal({ open, onClose, payload }) {
                         <div style={{fontWeight: 700, fontSize: 13}}>{s.name}</div>
                         <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.probability} probability · Revenue impact {s.revenue_impact_pct > 0 ? `+${s.revenue_impact_pct}%` : `${s.revenue_impact_pct}%`}</div>
                       </div>
-                      <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.runway_qtrs} quarters runway</div>
+                      <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.runway_days} days runway</div>
                     </div>
                     <div style={{fontSize: 12, color: "var(--ink-2)", marginBottom: 8}}>{s.description}</div>
                     <Row k="Audit focus" v={s.audit_focus?.join(", ") || "—"}/>
