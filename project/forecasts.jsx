@@ -1547,100 +1547,63 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
     );
   }
 
-  // ── Chart grids for segment/geo time series ───────────────────────────────
-  function SegmentRevChartGrid({ fcstRows, label }) {
+  // ── Combined multi-series charts (one chart per metric, all series on it) ────
+  const SEG_COLORS = ['var(--acc)', 'var(--violet)', '#e8a838', '#4aad52', '#e05c5c', '#5bc4c4'];
+
+  function SegmentCharts({ fcstRows, label }) {
     if (!fcstRows?.length) return null;
+
+    const revSeries = fcstRows.map((seg, si) => ({
+      name: seg.name, color: SEG_COLORS[si % SEG_COLORS.length],
+      history: seg.rev.history, forecast: seg.rev.forecast, backtest: seg.rev.backtest,
+    })).filter(s => s.history?.length && s.forecast?.length);
+
+    const gmSeries = fcstRows.map((seg, si) => ({
+      name: seg.name, color: SEG_COLORS[si % SEG_COLORS.length],
+      history: seg.gm.history, forecast: seg.gm.forecast, backtest: seg.gm.backtest,
+    })).filter(s => s.history?.length && s.forecast?.length);
+
+    const fmtMt = (v, p = 2) => (v == null || !Number.isFinite(v)) ? '—' : v.toFixed(p);
+    const mapeCol = v => v == null ? 'var(--ink-3)' : v < 5 ? 'var(--green-ink)' : v < 15 ? 'var(--amber-ink)' : 'var(--red-ink)';
+
+    function BacktestRows({ rows }) {
+      const filtered = rows.filter(r => r.backtest?.results?.ensemble);
+      if (!filtered.length) return null;
+      return (
+        <div className="mono" style={{fontSize:9, color:'var(--ink-3)', borderTop:'1px solid var(--line)', padding:'5px 0 2px', display:'flex', flexDirection:'column', gap:3}}>
+          {filtered.map((s, i) => {
+            const m = s.backtest.results.ensemble;
+            const lbl = s.name.length > 17 ? s.name.slice(0, 16) + '…' : s.name;
+            return (
+              <div key={i} style={{display:'flex', alignItems:'center', gap:14}}>
+                <span style={{display:'flex', alignItems:'center', gap:5, minWidth:130, color:'var(--ink-2)'}}>
+                  <span style={{width:6, height:6, borderRadius:'50%', background:s.color, display:'inline-block', flexShrink:0}}/>
+                  {lbl}
+                </span>
+                <span>MAPE <span style={{color: mapeCol(m.mape)}}>{fmtMt(m.mape)}%</span></span>
+                <span>R² <span style={{color:'var(--ink-2)'}}>{fmtMt(m.r2, 3)}</span></span>
+                <span>MAE <span style={{color:'var(--ink-2)'}}>{fmtMt(m.mae)}</span></span>
+                <span>TME <span style={{color:'var(--ink-2)'}}>{m.tme != null && Number.isFinite(m.tme) ? (m.tme >= 0 ? '+' : '') + m.tme.toFixed(2) : '—'}</span></span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
     return (
       <div style={{marginTop:18}}>
-        <div style={{fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:10}}>
-          {label} · Revenue Forecast · ARIMA / Prophet / RF Ensemble
+        <div style={{fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:8}}>
+          {label} · Revenue · ARIMA / Prophet / RF Ensemble
         </div>
-        <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12}}>
-          {fcstRows.map(seg => {
-            if (!seg?.rev?.history?.length || !seg?.rev?.forecast?.length) return null;
-            const lastH = seg.rev.history[seg.rev.history.length - 1]?.v;
-            const lastF = seg.rev.forecast[seg.rev.forecast.length - 1]?.base;
-            const delta = (lastH && lastF != null) ? ((lastF - lastH) / lastH) * 100 : null;
-            return (
-              <div key={seg.name} style={{border:'1px solid var(--line)', borderRadius:8, padding:'10px 12px'}}>
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:4}}>
-                  <div>
-                    <div style={{fontSize:10.5, fontWeight:600, color:'var(--ink-2)'}}>{seg.name}</div>
-                    <div style={{fontSize:9, color:'var(--ink-4)'}}>{seg.revPct}% of consolidated · $M</div>
-                  </div>
-                  {lastF != null && (
-                    <div style={{textAlign:'right', flexShrink:0}}>
-                      <div style={{fontSize:13, fontWeight:500, fontVariantNumeric:'tabular-nums', fontFamily:'Geist Mono, monospace'}}>
-                        {lastF >= 1000 ? `$${(lastF/1000).toFixed(2)}B` : `$${lastF.toFixed(0)}M`}
-                      </div>
-                      {delta != null && (
-                        <div style={{fontSize:9, color: delta >= 0 ? 'var(--green-ink)' : 'var(--red-ink)'}}>
-                          {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}% vs latest
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <ForecastChart
-                  history={seg.rev.history.slice(-8)}
-                  forecast={seg.rev.forecast}
-                  unit="$M"
-                  color="var(--acc)"
-                  decimals={1}
-                  chartMetrics={seg.rev.backtest?.results?.ensemble}
-                />
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
+        <MultiSeriesForecastChart series={revSeries} unit="$M" decimals={1}/>
+        <BacktestRows rows={revSeries}/>
 
-  function SegmentGMChartGrid({ fcstRows, label }) {
-    if (!fcstRows?.length) return null;
-    return (
-      <div style={{marginTop:14}}>
-        <div style={{fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:10}}>
-          {label} · Gross Margin Forecast
+        <div style={{marginTop:18, fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:8}}>
+          {label} · Gross Margin
         </div>
-        <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12}}>
-          {fcstRows.map(seg => {
-            if (!seg?.gm?.history?.length || !seg?.gm?.forecast?.length) return null;
-            const lastH = seg.gm.history[seg.gm.history.length - 1]?.v;
-            const lastF = seg.gm.forecast[seg.gm.forecast.length - 1]?.base;
-            const bps   = (lastH != null && lastF != null) ? Math.round((lastF - lastH) * 100) : null;
-            return (
-              <div key={seg.name} style={{border:'1px solid var(--line)', borderRadius:8, padding:'10px 12px'}}>
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:4}}>
-                  <div>
-                    <div style={{fontSize:10.5, fontWeight:600, color:'var(--ink-2)'}}>{seg.name}</div>
-                    <div style={{fontSize:9, color:'var(--ink-4)'}}>Gross margin % · quarterly</div>
-                  </div>
-                  {lastF != null && (
-                    <div style={{textAlign:'right', flexShrink:0}}>
-                      <div style={{fontSize:13, fontWeight:500, fontVariantNumeric:'tabular-nums', fontFamily:'Geist Mono, monospace'}}>
-                        {lastF.toFixed(1)}%
-                      </div>
-                      {bps != null && (
-                        <div style={{fontSize:9, color: bps >= 0 ? 'var(--green-ink)' : 'var(--red-ink)'}}>
-                          {bps >= 0 ? '▲' : '▼'} {Math.abs(bps)} bps
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <ForecastChart
-                  history={seg.gm.history.slice(-8)}
-                  forecast={seg.gm.forecast}
-                  unit="%"
-                  color="var(--violet)"
-                  chartMetrics={seg.gm.backtest?.results?.ensemble}
-                />
-              </div>
-            );
-          })}
-        </div>
+        <MultiSeriesForecastChart series={gmSeries} unit="%"/>
+        <BacktestRows rows={gmSeries}/>
       </div>
     );
   }
@@ -1662,12 +1625,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
       </div>
 
       <KpiTable rows={[conRow, ...geoRows]} title="By Geography"/>
-      {segFcst && (
-        <>
-          <SegmentRevChartGrid fcstRows={segFcst.geo} label="By Geography"/>
-          <SegmentGMChartGrid  fcstRows={segFcst.geo} label="By Geography"/>
-        </>
-      )}
+      {segFcst && <SegmentCharts fcstRows={segFcst.geo} label="By Geography"/>}
       {!segFcst && !fcstRunning && typeof BACKTESTING === 'undefined' && (
         <div style={{marginTop:10, fontSize:9.5, color:'var(--ink-4)', fontFamily:'Geist Mono, monospace'}}>
           Load forecasting engines to enable time-series charts per geography.
@@ -1677,12 +1635,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
       <div style={{borderTop:'1px solid var(--line)', marginTop:20, paddingTop:2}}/>
 
       <KpiTable rows={[conRow, ...bizRows]} title="By Business Segment"/>
-      {segFcst && (
-        <>
-          <SegmentRevChartGrid fcstRows={segFcst.biz} label="By Business Segment"/>
-          <SegmentGMChartGrid  fcstRows={segFcst.biz} label="By Business Segment"/>
-        </>
-      )}
+      {segFcst && <SegmentCharts fcstRows={segFcst.biz} label="By Business Segment"/>}
       {!segFcst && !fcstRunning && typeof BACKTESTING === 'undefined' && (
         <div style={{marginTop:10, fontSize:9.5, color:'var(--ink-4)', fontFamily:'Geist Mono, monospace'}}>
           Load forecasting engines to enable time-series charts per segment.
