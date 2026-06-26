@@ -97,6 +97,8 @@ function App() {
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
   const [liveMode, setLiveMode] = useState(false);
   const [mcpMode, setMcpMode] = useState(true);
+  // useDb: when mcpMode=true, use PostgreSQL cache instead of fetching live from EDGAR/FRED
+  const [useDb, setUseDb] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [livefacts, setLivefacts] = useState(null);
   const [fredLive, setFredLive] = useState(null);
@@ -153,7 +155,7 @@ function App() {
       } catch(e) { /* silent */ }
       setRssRefreshing(false);
     };
-    const interval = setInterval(doRefresh, 30000);
+    const interval = setInterval(doRefresh, 6 * 60 * 60 * 1000); // 6 hours
     return () => clearInterval(interval);
   }, [running, liveMode]);
 
@@ -574,6 +576,7 @@ function App() {
           industry:      cfg.industry,
           includeRss:   signalSet.has("industry"),
           includeFred:  signalSet.has("fred"),
+          useDb,
         });
 
         if (mcpResult._db_id) runIdRef.current = mcpResult._db_id;
@@ -1298,6 +1301,7 @@ function App() {
                 hitl={hitl} setHitl={setHitl}
                 liveMode={liveMode} setLiveMode={setLiveMode}
                 mcpMode={mcpMode} setMcpMode={setMcpMode}
+                useDb={useDb} setUseDb={setUseDb}
                 liveStatus={liveStatus}
                 lastSaved={lastSaved}
                 rssEnabledFeeds={rssEnabledFeeds}
@@ -1640,7 +1644,8 @@ function App() {
         buttonLabel={aiChatCfg.buttonLabel || "Ask Claude"}
         ticker={cfg.ticker}
         industry={cfg.industry}
-        output={output} />
+        output={output}
+        useDb={useDb} setUseDb={setUseDb} />
       </ErrorBoundary>
     </div>);
 
