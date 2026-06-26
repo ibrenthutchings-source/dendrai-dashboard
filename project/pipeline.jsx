@@ -58,7 +58,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     onAddAudit,
     onRemoveAudit,
     risks: output.s2?.risks || [],
-  };1
+  };
   const s5Extra = {
     flowMeta,
     risks: output.s2?.risks || [],
@@ -167,12 +167,35 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     onAddObjective={onAddObjective}
                   />
                 ) : (
-                  <HITLGate
-                    num={gateNum}
-                    state={gateState[`g${gateNum}`]}
-                    onApprove={() => onApprove(gateNum)}
-                    onOverride={() => onOverride(gateNum)}
-                  />
+                  <>
+                    <HITLGate
+                      num={gateNum}
+                      state={gateState[`g${gateNum}`]}
+                      onApprove={() => onApprove(gateNum)}
+                      onOverride={() => onOverride(gateNum)}
+                    />
+                    {gateNum === 2 && (gateState.g2 === "approved" || gateState.g2 === "overridden") && window.CoverageGapPanel && (
+                      <PipelinePanel label="Coverage Gap Analysis">
+                        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, gap:12}}>
+                          <span style={{fontSize:11, color:"var(--ink-3)"}}>
+                            Cross-check scope against risk register — address gaps before Stage 4 or revise the audit scope.
+                          </span>
+                          {onRerunFromS3 && (
+                            <button className="btn btn-sm" style={{fontSize:10, padding:"3px 10px", flexShrink:0}} onClick={onRerunFromS3}>
+                              <Icon name="reset" size={10}/> Revise Stage 3 — Audit Scope
+                            </button>
+                          )}
+                        </div>
+                        <CoverageGapPanel
+                          risks={output.s2?.risks || []}
+                          objectives={output.s3?.objectives || []}
+                          rssSignals={liveRssSignals}
+                          industry={industry}
+                          ticker={pipelineTicker}
+                        />
+                      </PipelinePanel>
+                    )}
+                  </>
                 )}
                 {i < STAGES.length - 1 && (
                   <Connector active={gateState[`g${gateNum}`] === "approved"}/>
