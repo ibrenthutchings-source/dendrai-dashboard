@@ -19,7 +19,7 @@ Usage:
 import logging
 import os
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
 # TYPE_CHECKING block guarantees Pylance sees these names as always bound.
@@ -863,6 +863,19 @@ def upsert_company(meta: dict) -> Optional[int]:
                     ),
                 )
                 return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_company_id(ticker: str) -> Optional[int]:
+    """Return companies.id for a ticker, or None if not found."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM companies WHERE ticker = %s", (ticker.upper(),)
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
     return _run(_do)
 
 
@@ -1949,6 +1962,44 @@ def get_prior_investigation(ticker: str) -> Optional[dict]:
                     "content": row[0],
                     "summary": row[1],
                     "created_at": row[2].isoformat() if row[2] else None,
+                }
+    return _run(_do)
+
+
+def get_latest_ai_analysis(
+    ticker: str,
+    kind: str,
+    *,
+    max_age_days: int = 30,
+) -> Optional[dict]:
+    """Return the most recent AI analysis of a given kind for a ticker, if within max_age_days.
+
+    Returns None when no recent result exists. Use this as a cache check before running
+    an expensive LLM call — if a recent result is returned, serve it directly.
+    """
+    def _do():
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, content, summary, model, created_at
+                    FROM ai_analyses
+                    WHERE ticker = %s AND kind = %s AND created_at >= %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (ticker.upper(), kind, cutoff),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0],
+                    "content": row[1],
+                    "summary": row[2],
+                    "model": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
                 }
     return _run(_do)
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -40,6 +41,87 @@ router = APIRouter()
 # Sonnet 4.6 is $3/M input · $15/M output vs Opus 4.8 $5/M · $25/M — roughly 40 % cheaper per call.
 _MODEL_STRUCTURED = "claude-sonnet-4-6"
 _MODEL_AGENT = "claude-opus-4-8"
+
+# ── Embedding helpers ─────────────────────────────────────────────────────────
+# Used by narrative_analysis to chunk and index EDGAR text so that future calls
+# can retrieve relevant snippets from pgvector instead of re-sending entire docs.
+
+_openai_client = None
+
+
+def _get_openai():
+    global _openai_client
+    if _openai_client is not None:
+        return _openai_client
+    try:
+        import openai  # optional dependency; pip install openai
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if key:
+            _openai_client = openai.OpenAI(api_key=key)
+    except ImportError:
+        pass
+    return _openai_client
+
+
+def _embed_text(text: str) -> "Optional[list]":
+    """Return a text-embedding-3-small vector, or None when OpenAI is unavailable."""
+    client = _get_openai()
+    if client is None:
+        return None
+    try:
+        resp = client.embeddings.create(model="text-embedding-3-small", input=text[:8191])
+        return resp.data[0].embedding
+    except Exception as exc:
+        logger.warning("embedding failed: %s", exc)
+        return None
+
+
+def _chunk_text(text: str, chunk_chars: int = 600, overlap: int = 80) -> "list[str]":
+    """Split text into overlapping chunks, breaking at paragraph/sentence boundaries."""
+    if not text:
+        return []
+    chunks: list = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_chars, len(text))
+        if end < len(text):
+            for sep in ("\n\n", "\n", ". ", " "):
+                pos = text.rfind(sep, start + chunk_chars // 2, end)
+                if pos != -1:
+                    end = pos + len(sep)
+                    break
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end - overlap
+    return chunks
+
+
+def _embed_risk_factors(ticker: str, analysis_id: "Optional[int]", rf_texts: list) -> None:
+    """Chunk and embed EDGAR risk factor text. Best-effort — never raises."""
+    if not analysis_id or not db.is_available():
+        return
+    company_id = db.get_company_id(ticker)
+    rows: list = []
+    chunk_idx = 0
+    for rf_text in rf_texts:
+        for chunk in _chunk_text(rf_text):
+            vec = _embed_text(chunk)
+            if vec:
+                rows.append({
+                    "source_table": "ai_analyses",
+                    "source_id": analysis_id,
+                    "content_type": db.EMBT_RISK_FACTOR,
+                    "model": "text-embedding-3-small",
+                    "chunk_index": chunk_idx,
+                    "company_id": company_id,
+                    "embedding": vec,
+                    "text_snippet": chunk[:600],
+                })
+            chunk_idx += 1
+    if rows:
+        saved = db.save_embeddings_bulk(rows)
+        logger.info("saved %d risk factor embeddings for %s", saved, ticker)
 
 
 def _require_ai():
@@ -347,7 +429,20 @@ _NARRATIVE_SCHEMA = {
 @router.post("/ai/narrative-analysis")
 def narrative_analysis(req: NarrativeRequest):
     _require_ai()
-    # Reuse the existing EDGAR fetchers — we already pay to download this text.
+
+    # ── 1. Cache check — serve a recent result without re-fetching EDGAR ────────
+    # Narrative analysis is stable within a filing cycle (10-K is annual).
+    # Re-running within 30 days costs ~50k input tokens for no new information.
+    if db.is_available():
+        cached = db.get_latest_ai_analysis(req.ticker, "narrative_analysis", max_age_days=30)
+        if cached:
+            logger.info("narrative_analysis: returning cached result for %s", req.ticker)
+            result = dict(cached["content"] or {})
+            result["_cached"] = True
+            result["_cached_at"] = cached["created_at"]
+            return result
+
+    # ── 2. Fetch from EDGAR ──────────────────────────────────────────────────────
     from edgar_tool import (
         get_company_info, parse_filings, fetch_filing_text,
         extract_risk_factors, extract_proxy_sections,
@@ -356,9 +451,11 @@ def narrative_analysis(req: NarrativeRequest):
         meta, sub = get_company_info(req.ticker)
         filings = parse_filings(sub, {"10-K"})["10-K"][: max(1, min(req.max_filings, 2))]
         sections = []
+        _raw_rf_texts: list = []  # full text kept for embedding (not truncated)
         for f in filings:
             text = fetch_filing_text(meta["cik"], f)
             rf = extract_risk_factors(text) if text else ""
+            _raw_rf_texts.append(rf or "")
             sections.append({"filing_date": f["date"], "risk_factors": (rf or "")[:24_000]})
         proxy_text = ""
         if req.include_proxy:
@@ -370,6 +467,7 @@ def narrative_analysis(req: NarrativeRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"EDGAR fetch failed: {exc}")
 
+    # ── 3. Run the LLM ───────────────────────────────────────────────────────────
     user = (
         f"Company: {meta.get('company_name')} ({req.ticker})\n\n"
         f"Item 1A Risk Factors by filing:\n{json.dumps(sections, indent=2, default=str)[:48_000]}\n\n"
@@ -384,11 +482,17 @@ def narrative_analysis(req: NarrativeRequest):
     except Exception as exc:
         raise _ai_exc(exc)
 
-    db.save_ai_analysis(
+    analysis_id = db.save_ai_analysis(
         "narrative_analysis", result,
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=result.get("summary", "")[:500],
     )
+
+    # ── 4. Chunk + embed the raw risk factor text (best-effort) ─────────────────
+    # Future calls to get_relevant_context() can then serve per-risk snippets
+    # (~750 tokens) instead of re-sending the full 48k-char document.
+    _embed_risk_factors(req.ticker, analysis_id, _raw_rf_texts)
+
     return result
 
 
