@@ -28,14 +28,18 @@ try:
     from psycopg2.extras import Json, execute_values
     _HAS_PSYCOPG2 = True
 except ImportError:
+    psycopg2 = None          # type: ignore[assignment]
+    pg_pool = None           # type: ignore[assignment]
+    Json = None              # type: ignore[assignment]
+    execute_values = None    # type: ignore[assignment]
     _HAS_PSYCOPG2 = False
 
 try:
-    from pgvector.psycopg2 import register_vector as _pg_register_vector
+    from pgvector.psycopg2 import register_vector as _pg_register_vector  # type: ignore[import]
     _HAS_PGVECTOR = True
 except ImportError:
-    _HAS_PGVECTOR = False
     _pg_register_vector = None  # type: ignore[assignment]
+    _HAS_PGVECTOR = False
 
 logger = logging.getLogger(__name__)
 _pool: Optional["pg_pool.ThreadedConnectionPool"] = None
