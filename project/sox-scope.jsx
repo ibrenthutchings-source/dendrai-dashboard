@@ -640,7 +640,7 @@ function SoxScopePanel({
       };
 
       const body = {
-        run_id: runId || 0,
+        run_id: runId ?? null,
         ticker: ticker || "",
         forecast: fcPayload,
         risk_scores: { risks: risks || [] },

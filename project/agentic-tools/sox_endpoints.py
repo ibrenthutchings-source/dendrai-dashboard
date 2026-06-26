@@ -38,7 +38,7 @@ router = APIRouter(prefix="/sox", tags=["SOX Scoping"])
 # ── Request / Response models ──────────────────────────────────────────────────
 
 class SoxScopeRequest(BaseModel):
-    run_id: int
+    run_id: Optional[int] = None
     ticker: str
     forecast: Dict[str, Any] = {}
     risk_scores: Dict[str, Any] = {}
@@ -158,7 +158,7 @@ def compute_sox_scope(req: SoxScopeRequest):
         trigger_reason=req.trigger_reason,
     )
 
-    if db.is_available():
+    if db.is_available() and req.run_id is not None:
         db.save_sox_scoping_result(req.run_id, company_id, result)
 
     return result
