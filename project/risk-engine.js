@@ -706,73 +706,167 @@ window.RISK_ENGINE = (function () {
     ];
   }
 
+  // ── Grey Swan exogenous event library ──────────────────────
+  // These are EXOGENOUS tail events — plausible but not yet in the risk register.
+  // Each industry gets at least one event. The anchor risk from the register is used
+  // only to provide context for *how* the external event propagates internally.
+  const GREY_SWAN_EVENTS = {
+    'Semiconductors': [
+      { name: 'Taiwan Strait escalation — single-source fab supply cutoff',
+        description: 'A credible military escalation in the Taiwan Strait triggers a halt to TSMC and downstream single-source fab shipments. Initial disruption appears manageable; within 30 days backlog exhaustion and inventory depletion accelerate the cascade to systemic supply failure — well beyond what current R-04 (Supply Chain) models.',
+        catalysts: [
+          'PLA military exercises within 40nm of Taiwan extend beyond scheduled window',
+          'US Department of Commerce issues emergency export restriction on fab equipment',
+          'Lead-time quotes from alternative fabs extend beyond 40 weeks — no viable substitute',
+          'Single-source component registry review confirms >60% of critical BOM at risk',
+        ] },
+      { name: 'Sweeping US–China export controls — revenue cliff beyond current R-07 scope',
+        description: 'Sweeping new BIS export controls targeting both advanced and legacy semiconductors extend far beyond current R-07 (Export Controls & Trade Compliance) scope, rendering a material portion of China-destined revenue unlicensable within 90 days.',
+        catalysts: [
+          'BIS Entity List expanded to include additional Chinese fabs and system integrators',
+          'De minimis threshold for foreign-produced items reduced from 25% to 10%',
+          'Customers preemptively cancel orders pending clarity on new ECCN classifications',
+          'Legal opinion confirms >30% of China-directed revenue requires new EAR licences',
+        ] },
+    ],
+    'Automotive OEM': [
+      { name: 'Rapid EV demand collapse — stranded capacity and impairment cascade',
+        description: 'Consumer EV adoption rates fall sharply below forecast as range anxiety, charging infrastructure gaps, and insurance cost spikes converge. EV-dedicated manufacturing lines face severe under-utilisation within 90 days, triggering impairment charges and stranded asset write-downs not captured in Bear scenario.',
+        catalysts: [
+          'Industry EV SAAR falls >30% below consensus for two consecutive months',
+          'EV lease residual values drop sharply, tightening captive finance underwriting',
+          'Federal EV tax credit eligibility narrowed, reducing effective consumer subsidy',
+          'Peer OEMs announce EV programme deferrals, validating structural demand headwind',
+        ] },
+    ],
+    'Software & Cloud': [
+      { name: 'Hyperscaler outage or emergency AI-product ban — platform concentration shock',
+        description: 'A prolonged multi-region cloud provider outage or an emergency regulatory ban on AI-dependent product features triggers immediate customer churn and SLA breach claims, cascading into reputational and legal escalation that falls entirely outside the current risk register scope.',
+        catalysts: [
+          'Cloud provider SLA breach triggers contractual penalty clauses across enterprise base',
+          'FTC or EU regulator issues emergency order against core AI feature set',
+          'Enterprise customers invoke force-majeure to exit multi-year contracts',
+          'Cyber incident at primary SaaS delivery layer triggers SOC 2 scope restatement',
+        ] },
+    ],
+    'Financial Services': [
+      { name: 'Credit contagion event — correlated portfolio deterioration beyond stress models',
+        description: 'A correlated credit shock (commercial real estate collapse, regional bank contagion, or sovereign downgrade) triggers simultaneous CECL reserve increases, delinquency spikes, and deposit outflows that exceed modelled stress scenarios by a factor the current register does not capture.',
+        catalysts: [
+          'Fed emergency intervention signals systemic stress beyond prior DFAST bounds',
+          'Correlated delinquency spike observed across multiple loan categories simultaneously',
+          'Rating agency places key counterparty on negative credit watch',
+          'Regulatory accelerated examination triggered by systemic early-warning alert',
+        ] },
+    ],
+    'Healthcare & Pharma': [
+      { name: 'FDA enforcement action or clinical hold — pipeline NPV collapse',
+        description: 'An unexpected FDA Complete Response Letter or clinical hold on a lead programme triggers an immediate pipeline NPV collapse, revenue guidance withdrawal, and accelerated patent cliff exposure not yet reflected in any scenario.',
+        catalysts: [
+          'FDA issues CRL for flagship NDA citing manufacturing or clinical data deficiency',
+          'Clinical hold placed on Phase 3 programme due to unexpected safety signal',
+          'Generic manufacturer launches at-risk on anchor product pending appeal',
+          'CMS announces IRA price negotiation for top-revenue product ahead of schedule',
+        ] },
+    ],
+    'Generic': [
+      { name: 'Regulatory enforcement shock — consent decree or criminal referral',
+        description: 'An unexpected regulatory enforcement action (consent decree, cease-and-desist, or criminal referral) requires immediate operational changes, causing revenue disruption and legal cost escalation well beyond modelled compliance risk and outside the current risk register scope.',
+        catalysts: [
+          'Regulatory agency issues public notice of formal investigation',
+          'Board notified of subpoena or document preservation order',
+          'Key customer suspends orders pending regulatory outcome',
+          'External legal counsel escalates matter to potential criminal referral',
+        ] },
+    ],
+  };
+  GREY_SWAN_EVENTS['Industrial & Manufacturing'] = GREY_SWAN_EVENTS['Generic'];
+  GREY_SWAN_EVENTS['Retail & Consumer']           = GREY_SWAN_EVENTS['Generic'];
+  GREY_SWAN_EVENTS['Energy & Resources']          = GREY_SWAN_EVENTS['Generic'];
+  GREY_SWAN_EVENTS['Utilities']                   = GREY_SWAN_EVENTS['Generic'];
+
   // ── Build Grey Swan ─────────────────────────────────────────
   function buildGreySwan(risks, ratios, ticker, industry) {
-    // Grey swan = a plausible-but-underweighted escalation; pick a non-red risk
-    // Prefer: highest-velocity AMBER, then highest-score AMBER, then GREEN
-    const ambers = risks.filter(r => r.rag === 'A').sort((a, b) => (b.velocity - a.velocity) || (b.score - a.score));
-    const greens = risks.filter(r => r.rag === 'G').sort((a, b) => b.score - a.score);
-    // If all risks are red, use the lowest-scoring one (closest to amber boundary) as the starting point
-    const top = ambers[0] || greens[0] || risks.find(r => r.rag !== 'R') ||
-                [...risks].sort((a, b) => a.score - b.score)[0] ||
-                { id:'R-01', name:'Primary Risk', score:5.0, rag:'A', velocity:0 };
-    // Cascade partner: prefer a red or fast-moving amber that's different from top
-    const r2  = risks.find(r => r.id !== top.id && r.rag === 'R') ||
-                risks.find(r => r.id !== top.id && r.rag === 'A' && r.velocity >= 2) ||
-                risks.find(r => r.id !== top.id) || top;
-    // Impact ladder derived from annual revenue; falls back to $2B proxy
+    // Anchor = highest-velocity risk from the register the exogenous event would amplify.
+    // Velocity ≥ 3 risks are the primary auto-escalation candidates per loop recommendations.
+    const byVel = [...risks].sort((a, b) => (b.velocity - a.velocity) || (b.score - a.score));
+    const anchor = byVel.find(r => r.velocity >= 3) || byVel.find(r => r.velocity >= 2) ||
+                   byVel[0] || { id:'R-01', name:'Primary Risk', score:5.0, rag:'A', velocity:0 };
+    // Co-activation partner: a second register risk the grey swan cascade would hit
+    const partner = risks.find(r => r.id !== anchor.id && r.rag === 'R') ||
+                    risks.find(r => r.id !== anchor.id && r.velocity >= 2) ||
+                    risks.find(r => r.id !== anchor.id) || anchor;
+
+    // Select industry-specific exogenous event; rotate by anchor id character to vary between tickers
+    const events = GREY_SWAN_EVENTS[industry] || GREY_SWAN_EVENTS['Generic'];
+    const event  = events[anchor.id.charCodeAt(anchor.id.length - 1) % events.length];
+
+    // Revenue impact: grey swan exceeds Bear scenario (-18%) by design.
+    // T+30: ~10% | T+60: ~22% | T+90: ~35% of annual revenue
     const annRevM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 2000;
-    const topScore = Number.isFinite(top.score) ? top.score : 5.0;
-    const topVel   = Number.isFinite(top.velocity) ? top.velocity : 0;
-    // Derive rag from score using same thresholds as ragOf() — avoids hard-coding step colours
-    const ragAt = s => s >= 15 ? 'R' : s >= 9 ? 'A' : 'G';
-    // Grey swan horizon is 0–90 days: T+90 must land in RED (≥15) regardless of starting score
-    const s90 = +Math.max(Math.min(25, topScore + 5.5), 16.0).toFixed(1);
-    const s60 = +(topScore + (s90 - topScore) * 0.65).toFixed(1);
-    const s30 = +(topScore + (s90 - topScore) * 0.30).toFixed(1);
-    // Revenue at risk per step: 3% / 8% / 15% of annual revenue (cumulative exposure if cascade fully realises)
-    const imp30 = Math.round(annRevM * 0.03);
-    const imp60 = Math.round(annRevM * 0.08);
-    const imp90 = Math.round(annRevM * 0.15);
+    const imp30   = Math.round(annRevM * 0.10);
+    const imp60   = Math.round(annRevM * 0.22);
+    const imp90   = Math.round(annRevM * 0.35);
+    const bearImp = Math.round(annRevM * 0.18); // for "exceeds Bear by $X" messaging
+
+    // Risk score arc: the exogenous event starts GREEN (not in the register = unrecognised).
+    // It MUST reach RED by T+90. Fixed arc keeps the progression consistent regardless of
+    // what the anchor risk's current score happens to be.
+    const ragAt  = s => s >= 15 ? 'R' : s >= 9 ? 'A' : 'G';
+    const gsStart = 4.5;  // unrecognised exogenous event — GREEN
+    const gs30    = 9.5;  // signal detected — crosses into AMBER
+    const gs60    = 13.5; // cascade active — high AMBER
+    const gsEnd   = 18.0; // systemic — solidly RED
+
+    const anchorVelStr = anchor.velocity > 0 ? `+${anchor.velocity}` : `${anchor.velocity}`;
+
     return {
       id: 'grey-swan-gs',
-      name: `Grey Swan — ${top.name?.split('—')[0].trim()} cascade to systemic failure`,
-      risk_id: top.id, risk_name: top.name,
-      starting_rag: top.rag, starting_score: topScore,
-      ending_rag: 'R', ending_score: s90,
+      name: event.name,
+      risk_id: anchor.id, risk_name: anchor.name,
+      starting_rag: 'G', starting_score: gsStart,
+      ending_rag: 'R', ending_score: gsEnd,
       peak_impact_m: imp90,
+      revenue_impact_pct: -35,
       probability: 'LOW · plausible',
-      headline: `${top.name?.split('—')[0].trim()} control failure cascades into ${r2.name?.split('—')[0].trim()} and reputational damage`,
-      description: `Foreseeable but under-weighted: ${top.name?.split('—')[0].trim()} deteriorates beyond current score (${topScore}/25) as primary controls fail. This cascades into ${r2.name?.split('—')[0].trim()} and triggers reputational and regulatory escalation — a sequence that begins with a single control point failure.`,
-      catalysts: [
-        `${top.name?.split('—')[0].trim()} control effectiveness degrades from ADEQUATE to WEAK`,
-        `Related internal control deficiency identified by external auditor`,
-        `Regulatory inquiry triggered by anomalous financial metrics`,
-        `${r2.name?.split('—')[0].trim()} crosses IA escalation threshold simultaneously`,
-      ],
+      headline: `${event.name.split('—')[0].trim()} amplifies ${anchor.name?.split('—')[0].trim()} (score ${anchor.score}/25, velocity ${anchorVelStr}) to systemic disruption`,
+      description: event.description,
+      catalysts: event.catalysts,
       impacts_at_max: [
-        `Primary risk score reaches ${s90.toFixed(1)}/25 — material audit finding`,
-        `Revenue at risk at T+90: ~$${imp90}M (≈15% of annual revenue)`,
-        `Regulatory escalation requires external specialist engagement`,
-        `Management credibility risk with Audit Committee`,
+        `Revenue at risk at T+90: ~$${imp90}M (≈35% of annual revenue — exceeds Bear scenario by ~$${imp90 - bearImp}M)`,
+        `${anchor.name?.split('—')[0].trim()} score amplifies from ${anchor.score}/25 to ~${Math.min(25, anchor.score + 7).toFixed(1)}/25 under exogenous pressure`,
+        `${partner.name?.split('—')[0].trim()} co-activates as cascade propagates — dual-risk crystallisation`,
+        'External crisis management, regulatory engagement, and investor communication required simultaneously',
       ],
       early_warnings: [
-        `${top.name?.split('—')[0].trim()} velocity increases to +3 for two consecutive quarters`,
-        `Related KRI breaches 80% of IA escalation threshold`,
-        `External auditor raises management letter comment on same control area`,
-        `MAP completion falls >30 days behind due date`,
+        `${anchor.name?.split('—')[0].trim()} velocity crosses 2.5 — grey swan auto-escalation threshold triggered`,
+        `External signals for "${event.name.split('—')[0].trim()}" increase in frequency across news and regulatory feeds`,
+        `Related KRI breaches 80% of IA escalation threshold within 21 days`,
+        `MAP completion for linked remediation falls >30 days behind due date`,
       ],
       mitigations: [
-        `Accelerate MAP-01 implementation; escalate to AC if missed by due date`,
-        `Commission targeted IA deep-dive if velocity reaches +3`,
-        `Engage external specialist if regulatory inquiry received`,
-        `Notify Board if score exceeds ${s60}/25`,
+        `Stress-test ${anchor.name?.split('—')[0].trim()} under grey swan bounds (−35% revenue) before next cycle`,
+        `Commission bespoke exogenous scenario build for "${event.name.split('—')[0].trim()}"`,
+        `Set velocity threshold trigger at 2.5 to auto-escalate grey swan candidates to monthly review`,
+        `Engage specialist risk advisor immediately if any catalyst signal is observed`,
       ],
       timeline: [
-        { t:'T+0',  label:'Early signal',    score:topScore, rag:ragAt(topScore), likelihood:0.05, impact_$m:0,      impact:`${top.name?.split('—')[0].trim()} at baseline — monitoring active`,               signals:[`Score ${topScore.toFixed(1)}/25`,`Velocity ${topVel>0?'+':''}${topVel}`,`MAP in progress`],      action:'IA initiates focused review' },
-        { t:'T+30', label:'Stress building', score:s30,      rag:ragAt(s30),      likelihood:0.12, impact_$m:imp30,  impact:'Primary control effectiveness degrades; KRI breach at 80% threshold',             signals:[`Score ${s30.toFixed(1)}/25`,'Control WEAK','Escalation flag'],                                  action:'Emergency controls review; AC notified' },
-        { t:'T+60', label:'Cascade risk',    score:s60,      rag:ragAt(s60),      likelihood:0.20, impact_$m:imp60,  impact:`${r2.name?.split('—')[0].trim()} also elevating; dual-risk scenario active`,      signals:[`Score ${s60.toFixed(1)}/25`,'Dual-risk active','Regulatory monitoring'],                       action:'External specialist engaged; Board briefed' },
-        { t:'T+90', label:'Systemic',        score:s90,      rag:ragAt(s90),      likelihood:0.30, impact_$m:imp90,  impact:'Material control failure; external auditor notified',                            signals:[`Score ${s90.toFixed(1)}/25`,'Material finding','Regulatory escalation'],                        action:'Structured remediation plan; investor communication' },
+        { t:'T+0',  label:'Unrecognised',    score:gsStart, rag:ragAt(gsStart), likelihood:0.05, impact_$m:0,
+          impact:`${event.name.split('—')[0].trim()} — exogenous event not yet in risk register`,
+          signals:[`Score ${gsStart}/25`,'Not modelled in current scenarios',`Anchor ${anchor.id} vel ${anchorVelStr}`],
+          action:'Assign grey swan owner; begin external signal monitoring' },
+        { t:'T+30', label:'Signal detected',  score:gs30,    rag:ragAt(gs30),   likelihood:0.12, impact_$m:imp30,
+          impact:'First catalyst confirmed; revenue at risk reaches $' + imp30 + 'M (~10% of annual); KRI breach at 80% threshold',
+          signals:[`Score ${gs30}/25`,'First catalyst observed','KRI escalation flag raised'],
+          action:'Emergency scenario review; AC notified; MAP acceleration ordered' },
+        { t:'T+60', label:'Cascade active',   score:gs60,    rag:ragAt(gs60),   likelihood:0.22, impact_$m:imp60,
+          impact:`${partner.name?.split('—')[0].trim()} co-activates; $${imp60}M at risk (~22% of annual); dual-risk escalation underway`,
+          signals:[`Score ${gs60}/25`,'Dual-risk active','Revenue guidance under review'],
+          action:'External specialist engaged; Board briefed; crisis protocol activated' },
+        { t:'T+90', label:'Systemic',         score:gsEnd,   rag:ragAt(gsEnd),  likelihood:0.30, impact_$m:imp90,
+          impact:`Full crystallisation — $${imp90}M revenue at risk (35% of annual), exceeding Bear scenario by ~$${imp90 - bearImp}M`,
+          signals:[`Score ${gsEnd}/25`,'Material finding','Crisis management active'],
+          action:'Structured remediation plan; investor communication; regulatory engagement' },
       ],
     };
   }
