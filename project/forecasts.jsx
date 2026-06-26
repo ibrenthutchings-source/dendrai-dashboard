@@ -1323,6 +1323,8 @@ const _SEG_DEFAULTS = {
 function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
   const [dbSegments, setDbSegments] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
+  const [segFcst, setSegFcst] = React.useState(null);
+  const [fcstRunning, setFcstRunning] = React.useState(false);
 
   React.useEffect(() => {
     if (!ticker) return;
@@ -1353,16 +1355,15 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
   function buildRows(segType, defaultMap) {
     const dbRows = dbSegments?.filter(r => r.segment_type === segType);
     if (dbRows?.length) {
-      return dbRows.map(s => ({
-        name: s.segment_name,
-        revM: s.revenue != null ? s.revenue / 1e6 : null,
-        revPct: s.revenue_pct,
-        gmPct: s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : null,
-        omPct: s.operating_income != null && s.revenue ? (s.operating_income / s.revenue * 100) : null,
-        niPct: null,
-        revGrowth: null,
-        fromDB: true,
-      }));
+      return dbRows.map(s => {
+        const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : null;
+        const om = s.operating_income != null && s.revenue ? (s.operating_income / s.revenue * 100) : null;
+        return {
+          name: s.segment_name, revM: s.revenue != null ? s.revenue / 1e6 : null,
+          revPct: s.revenue_pct, gmPct: gm, omPct: om, niPct: null, revGrowth: null,
+          fromDB: true, gmD: gm != null ? gm - consGM : 0, omD: om != null ? om - consOM : 0,
+        };
+      });
     }
     const defs = defaultMap[ind] || defaultMap['Generic'];
     return defs.map(([name, pct, gmD, omD]) => {
@@ -1375,7 +1376,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
         omPct: consOM + omD + sv('om') * 1.5,
         niPct: consNI != null ? consNI + omD * 0.6 + sv('ni') * 1.5 : null,
         revGrowth: consGrowth != null ? consGrowth + sv('g') * 4 : null,
-        fromDB: false,
+        fromDB: false, gmD, omD,
       };
     });
   }
@@ -1383,6 +1384,104 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
   const geoRows = buildRows('geography', _GEO_DEFAULTS);
   const bizRows = buildRows('segment',   _SEG_DEFAULTS);
   const isDB = !!dbSegments?.length;
+
+  // ── Forecast computation: walk-forward backtest + ensemble for each segment ──
+  React.useEffect(() => {
+    const consRevHist = data?.revenue?.history;
+    const consMgHist  = data?.margin?.history;
+    if (!consRevHist || !consMgHist || consRevHist.length < 4 || consMgHist.length < 4) return;
+    if (typeof BACKTESTING === 'undefined') return;
+
+    setFcstRunning(true);
+    const handle = setTimeout(() => {
+      try {
+        const fcstQs = data.revenue.forecast?.map(f => f.q) || ['Q1', 'Q2', 'Q3', 'Q4'];
+        const safeN = (v, fb) => Number.isFinite(v) ? v : fb;
+
+        function applyErrBands(fc, btEns) {
+          const mae = btEns?.mae, tme = btEns?.tme ?? 0;
+          if (!mae) return fc;
+          return fc.map((f, i) => {
+            const adj = Number.isFinite(f.base - tme) ? f.base - tme : f.base;
+            const band = mae * Math.sqrt(i + 1);
+            return { ...f, base: adj, lo: adj - band, hi: adj + band };
+          });
+        }
+
+        // Rebuild minimal rows locally to avoid stale closure issues
+        const ind_l = industry || 'Generic';
+        const consGM_l = consMgHist[consMgHist.length - 1].v;
+
+        function makeDefaultRows(defaultMap) {
+          const defs = defaultMap[ind_l] || defaultMap['Generic'];
+          return defs.map(([name, pct, gmD]) => ({ name, revPct: pct, gmD }));
+        }
+
+        const geoR = dbSegments?.filter(r => r.segment_type === 'geography')?.map(s => {
+          const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
+          return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
+        }) || makeDefaultRows(_GEO_DEFAULTS);
+
+        const bizR = dbSegments?.filter(r => r.segment_type === 'segment')?.map(s => {
+          const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
+          return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
+        }) || makeDefaultRows(_SEG_DEFAULTS);
+
+        function computeForRow(row) {
+          // Revenue history: consolidated quarterly × segment share + per-quarter noise
+          const revHist = consRevHist.map((h, qi) => {
+            const noise = seededVal(ticker || 'X', `fcst-${row.name}-rev-t${qi}`, -0.04, 0.04);
+            return { q: h.q, v: Math.max(0.01, h.v * ((row.revPct || 0) / 100) * (1 + noise)) };
+          });
+          // GM history: consolidated margin + fixed segment delta + per-quarter noise
+          const gmHist = consMgHist.map((h, qi) => {
+            const noise = seededVal(ticker || 'X', `fcst-${row.name}-gm-t${qi}`, -0.6, 0.6);
+            return { q: h.q, v: Math.max(0, h.v + (row.gmD ?? 0) + noise) };
+          });
+
+          const revSeries = revHist.map(h => h.v);
+          const gmSeries  = gmHist.map(h => h.v);
+
+          const revBT = BACKTESTING.backtestAll(revSeries);
+          const gmBT  = BACKTESTING.backtestAll(gmSeries);
+
+          const revFcAll = BACKTESTING.forecastAll(revSeries, null, 4,
+            [revBT.results.arima?.mape, revBT.results.prophet?.mape, revBT.results.rf?.mape]);
+          const gmFcAll  = BACKTESTING.forecastAll(gmSeries,  null, 4,
+            [gmBT.results.arima?.mape,  gmBT.results.prophet?.mape,  gmBT.results.rf?.mape]);
+
+          const lastRev = revHist[revHist.length - 1].v;
+          const lastGm  = gmHist[gmHist.length - 1].v;
+
+          const revFc = fcstQs.map((q, i) => ({
+            q,
+            base: safeN(revFcAll.ensemble?.base[i], lastRev),
+            lo:   safeN(revFcAll.ensemble?.lo[i],   lastRev * 0.85),
+            hi:   safeN(revFcAll.ensemble?.hi[i],   lastRev * 1.15),
+          }));
+          const gmFc = fcstQs.map((q, i) => ({
+            q,
+            base: safeN(gmFcAll.ensemble?.base[i], lastGm),
+            lo:   safeN(gmFcAll.ensemble?.lo[i],   lastGm - 3),
+            hi:   safeN(gmFcAll.ensemble?.hi[i],   lastGm + 3),
+          }));
+
+          return {
+            name: row.name, revPct: row.revPct,
+            rev: { history: revHist, forecast: applyErrBands(revFc, revBT.results.ensemble), backtest: revBT },
+            gm:  { history: gmHist,  forecast: applyErrBands(gmFc,  gmBT.results.ensemble),  backtest: gmBT  },
+          };
+        }
+
+        setSegFcst({ geo: geoR.map(computeForRow), biz: bizR.map(computeForRow) });
+      } catch (e) {
+        console.error("Segment forecast error:", e);
+      }
+      setFcstRunning(false);
+    }, 0);
+
+    return () => clearTimeout(handle);
+  }, [data, ticker, industry, dbSegments]);
 
   const conRow = { name:'Consolidated', revM:consRevAnnualM, revPct:100, gmPct:consGM, omPct:consOM, niPct:consNI, revGrowth:consGrowth, isConsolidated:true };
 
@@ -1448,6 +1547,104 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
     );
   }
 
+  // ── Chart grids for segment/geo time series ───────────────────────────────
+  function SegmentRevChartGrid({ fcstRows, label }) {
+    if (!fcstRows?.length) return null;
+    return (
+      <div style={{marginTop:18}}>
+        <div style={{fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:10}}>
+          {label} · Revenue Forecast · ARIMA / Prophet / RF Ensemble
+        </div>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12}}>
+          {fcstRows.map(seg => {
+            if (!seg?.rev?.history?.length || !seg?.rev?.forecast?.length) return null;
+            const lastH = seg.rev.history[seg.rev.history.length - 1]?.v;
+            const lastF = seg.rev.forecast[seg.rev.forecast.length - 1]?.base;
+            const delta = (lastH && lastF != null) ? ((lastF - lastH) / lastH) * 100 : null;
+            return (
+              <div key={seg.name} style={{border:'1px solid var(--line)', borderRadius:8, padding:'10px 12px'}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:4}}>
+                  <div>
+                    <div style={{fontSize:10.5, fontWeight:600, color:'var(--ink-2)'}}>{seg.name}</div>
+                    <div style={{fontSize:9, color:'var(--ink-4)'}}>{seg.revPct}% of consolidated · $M</div>
+                  </div>
+                  {lastF != null && (
+                    <div style={{textAlign:'right', flexShrink:0}}>
+                      <div style={{fontSize:13, fontWeight:500, fontVariantNumeric:'tabular-nums', fontFamily:'Geist Mono, monospace'}}>
+                        {lastF >= 1000 ? `$${(lastF/1000).toFixed(2)}B` : `$${lastF.toFixed(0)}M`}
+                      </div>
+                      {delta != null && (
+                        <div style={{fontSize:9, color: delta >= 0 ? 'var(--green-ink)' : 'var(--red-ink)'}}>
+                          {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}% vs latest
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <ForecastChart
+                  history={seg.rev.history.slice(-8)}
+                  forecast={seg.rev.forecast}
+                  unit="$M"
+                  color="var(--acc)"
+                  decimals={1}
+                  chartMetrics={seg.rev.backtest?.results?.ensemble}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  function SegmentGMChartGrid({ fcstRows, label }) {
+    if (!fcstRows?.length) return null;
+    return (
+      <div style={{marginTop:14}}>
+        <div style={{fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:10}}>
+          {label} · Gross Margin Forecast
+        </div>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12}}>
+          {fcstRows.map(seg => {
+            if (!seg?.gm?.history?.length || !seg?.gm?.forecast?.length) return null;
+            const lastH = seg.gm.history[seg.gm.history.length - 1]?.v;
+            const lastF = seg.gm.forecast[seg.gm.forecast.length - 1]?.base;
+            const bps   = (lastH != null && lastF != null) ? Math.round((lastF - lastH) * 100) : null;
+            return (
+              <div key={seg.name} style={{border:'1px solid var(--line)', borderRadius:8, padding:'10px 12px'}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:4}}>
+                  <div>
+                    <div style={{fontSize:10.5, fontWeight:600, color:'var(--ink-2)'}}>{seg.name}</div>
+                    <div style={{fontSize:9, color:'var(--ink-4)'}}>Gross margin % · quarterly</div>
+                  </div>
+                  {lastF != null && (
+                    <div style={{textAlign:'right', flexShrink:0}}>
+                      <div style={{fontSize:13, fontWeight:500, fontVariantNumeric:'tabular-nums', fontFamily:'Geist Mono, monospace'}}>
+                        {lastF.toFixed(1)}%
+                      </div>
+                      {bps != null && (
+                        <div style={{fontSize:9, color: bps >= 0 ? 'var(--green-ink)' : 'var(--red-ink)'}}>
+                          {bps >= 0 ? '▲' : '▼'} {Math.abs(bps)} bps
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <ForecastChart
+                  history={seg.gm.history.slice(-8)}
+                  forecast={seg.gm.forecast}
+                  unit="%"
+                  color="var(--violet)"
+                  chartMetrics={seg.gm.backtest?.results?.ensemble}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fcst-card" style={{marginTop:14}}>
       <div className="head">
@@ -1458,14 +1655,42 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
             {isDB ? ' actual reported data from DB' : ' industry-typical estimates anchored to consolidated KPIs'}
           </div>
         </div>
-        {loading && <span className="mono" style={{fontSize:10, color:'var(--ink-4)'}}>Loading segments…</span>}
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          {loading    && <span className="mono" style={{fontSize:10, color:'var(--ink-4)'}}>Loading segments…</span>}
+          {fcstRunning && <span className="mono" style={{fontSize:10, color:'var(--ink-4)'}}>Forecasting…</span>}
+        </div>
       </div>
 
       <KpiTable rows={[conRow, ...geoRows]} title="By Geography"/>
+      {segFcst && (
+        <>
+          <SegmentRevChartGrid fcstRows={segFcst.geo} label="By Geography"/>
+          <SegmentGMChartGrid  fcstRows={segFcst.geo} label="By Geography"/>
+        </>
+      )}
+      {!segFcst && !fcstRunning && typeof BACKTESTING === 'undefined' && (
+        <div style={{marginTop:10, fontSize:9.5, color:'var(--ink-4)', fontFamily:'Geist Mono, monospace'}}>
+          Load forecasting engines to enable time-series charts per geography.
+        </div>
+      )}
+
+      <div style={{borderTop:'1px solid var(--line)', marginTop:20, paddingTop:2}}/>
+
       <KpiTable rows={[conRow, ...bizRows]} title="By Business Segment"/>
+      {segFcst && (
+        <>
+          <SegmentRevChartGrid fcstRows={segFcst.biz} label="By Business Segment"/>
+          <SegmentGMChartGrid  fcstRows={segFcst.biz} label="By Business Segment"/>
+        </>
+      )}
+      {!segFcst && !fcstRunning && typeof BACKTESTING === 'undefined' && (
+        <div style={{marginTop:10, fontSize:9.5, color:'var(--ink-4)', fontFamily:'Geist Mono, monospace'}}>
+          Load forecasting engines to enable time-series charts per segment.
+        </div>
+      )}
 
       {!isDB && (
-        <div style={{marginTop:10, padding:'8px 12px', background:'var(--surface-2)', borderRadius:6, fontSize:10, color:'var(--ink-4)', lineHeight:1.55}}>
+        <div style={{marginTop:12, padding:'8px 12px', background:'var(--surface-2)', borderRadius:6, fontSize:10, color:'var(--ink-4)', lineHeight:1.55}}>
           Estimates are industry-typical splits anchored to the consolidated figures — not company-reported segment data.
           Upload actual segment financials via <b style={{fontWeight:500}}>SOX → Geography</b> tab to replace with reported values.
         </div>
