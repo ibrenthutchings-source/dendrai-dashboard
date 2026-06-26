@@ -125,7 +125,7 @@ function AiChatConfigCard({ aiChatCfg, setAiChatCfg }) {
 function ConfigScreen({
   cfg, setCfg, signalSet, setSignalSet,
   velocity, setVelocity, hitl, setHitl,
-  liveMode, setLiveMode, mcpMode, setMcpMode, liveStatus,
+  liveMode, setLiveMode, mcpMode, setMcpMode, useDb, setUseDb, liveStatus,
   lastSaved, rssEnabledFeeds, setRssEnabledFeeds,
   aiChatCfg, setAiChatCfg,
 }) {
@@ -349,8 +349,28 @@ function ConfigScreen({
               onClick={() => { setMcpMode(true); setLiveMode(false); }} title="Use Python MCP servers (api_server.py must be running)">
               <Icon name="gear" size={11}/> MCP</button>
           </div>
+          {mcpMode && (
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:10, color:"var(--ink-4)", marginBottom:4}}>Data source when MCP is active</div>
+              <div style={{display:"flex", gap:6}}>
+                <button className={`btn btn-sm ${!useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                  onClick={() => setUseDb(false)}
+                  title="Fetch fresh data from EDGAR / FRED / APIs">
+                  <Icon name="wifi" size={11}/> Live
+                </button>
+                <button className={`btn btn-sm ${useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                  onClick={() => setUseDb(true)}
+                  title="Use data already cached in PostgreSQL — faster, no external calls">
+                  <Icon name="database" size={11}/> DB Cache
+                </button>
+              </div>
+            </div>
+          )}
           <div style={{marginTop:8, fontSize:10.5, color:"var(--ink-3)", lineHeight:1.5}}>
-            {mcpMode ? (liveStatus || "Python MCP servers · start api_server.py")
+            {mcpMode
+              ? (useDb
+                  ? "Using PostgreSQL cache — no external API calls."
+                  : (liveStatus || "Fetching live from EDGAR / FRED via MCP servers."))
               : liveMode ? (liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled")
               : "Mock dataset — no external calls."}
           </div>

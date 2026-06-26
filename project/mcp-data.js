@@ -72,6 +72,7 @@ window.MCP = (function () {
       forecast_metric:  opts.forecastMetric  || 'Revenue',
       include_rss:      opts.includeRss      !== false,
       include_fred:     opts.includeFred     !== false,
+      use_db:           opts.useDb           || false,
     });
   }
 

@@ -88,6 +88,7 @@ function Sidebar({
   running, hasRun, onRun, onReset, onOpenReport, onOpenPersona, onOpenConfig,
   liveMode, setLiveMode,
   mcpMode, setMcpMode,
+  useDb, setUseDb,
   liveStatus,
 }) {
   const SIGNAL_OPTS = [
@@ -256,10 +257,24 @@ function Sidebar({
             <Icon name="gear" size={11}/> MCP
           </button>
         </div>
+        {mcpMode && (
+          <div style={{marginTop:6}}>
+            <div style={{display:"flex", gap:5}}>
+              <button className={`btn btn-sm ${!useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                onClick={() => setUseDb?.(false)} title="Fetch fresh data from EDGAR / FRED">
+                <Icon name="wifi" size={10}/> Live
+              </button>
+              <button className={`btn btn-sm ${useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                onClick={() => setUseDb?.(true)} title="Use data cached in PostgreSQL">
+                <Icon name="database" size={10}/> DB Cache
+              </button>
+            </div>
+          </div>
+        )}
         {(liveMode || mcpMode) && (
-          <div style={{marginTop: 8, fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
+          <div style={{marginTop: 6, fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
             {mcpMode
-              ? (liveStatus || "Python MCP servers · start api_server.py")
+              ? (useDb ? "PostgreSQL cache · no external calls" : (liveStatus || "Python MCP servers · api_server.py"))
               : (liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled")}
           </div>
         )}
