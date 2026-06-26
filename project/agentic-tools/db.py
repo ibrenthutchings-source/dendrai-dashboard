@@ -755,6 +755,35 @@ def _conn():
         _pool.putconn(conn)
 
 
+def ping() -> dict:
+    """Check the database connection and report pgvector availability.
+
+    Returns a dict with keys: connected, pgvector, pg_version, vector_version, error.
+    Never raises — safe to call at startup or in a health-check endpoint.
+    """
+    if _pool is None:
+        return {"connected": False, "pgvector": False, "error": "pool not initialised"}
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version()")
+                pg_version: str = (cur.fetchone() or ("",))[0]
+                cur.execute(
+                    "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+                )
+                row = cur.fetchone()
+                vector_version: Optional[str] = row[0] if row else None
+        return {
+            "connected": True,
+            "pgvector": vector_version is not None,
+            "pg_version": pg_version,
+            "vector_version": vector_version,
+            "error": None,
+        }
+    except Exception as exc:
+        return {"connected": False, "pgvector": False, "error": str(exc)}
+
+
 def _run(fn, default=None):
     """Call fn(), return default on any failure. Never raises."""
     if _pool is None:
