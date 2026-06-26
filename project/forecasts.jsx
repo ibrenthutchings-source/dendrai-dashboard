@@ -473,18 +473,20 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
 
     const handle = setTimeout(() => {
       try {
-        // Build revenue series — prefer EDGAR XBRL quarterly data (same filter as risk-engine.js buildForecasts)
+        // Build revenue series — standalone quarters only to exclude YTD cumulative XBRL periods
+        // (H1, 9M, etc. tagged on 10-Qs inflate the series the same way they do for COGS/grossProfit)
+        const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
         let revSeries = null, revSource = "mock";
         if (livefacts?.revenue?.series) {
-          // Primary: standalone quarterly 10-Q periods (≥4 quarters)
+          // Primary: standalone quarterly 10-Q periods only (≥4 quarters)
           const qtrs = livefacts.revenue.series
-            .filter(x => x.form === "10-Q" && x.fp !== "FY")
+            .filter(x => x.form === "10-Q" && isStandaloneQ(x))
             .sort((a, b) => (a.end < b.end ? -1 : 1));
           if (qtrs.length >= 4) {
             revSeries = qtrs.map(x => x.val / 1e6);
             revSource = "edgar";
           } else {
-            // Fallback: annual 10-K FY data (lowered threshold from 6 to 4)
+            // Fallback: annual 10-K FY data
             const annual = livefacts.revenue.series
               .filter(x => x.form === "10-K" && x.fp === "FY")
               .sort((a, b) => (a.end < b.end ? -1 : 1));
@@ -494,7 +496,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
             }
           }
         }
-        // data.revenue.history is already built from EDGAR quarterly data by risk-engine.js when available
+        // data.revenue.history is already built from EDGAR standalone-quarterly data by risk-engine.js
         if (!revSeries) revSeries = data.revenue.history.map(x => x.v);
 
         // margin history already uses EDGAR quarterly COGS/grossProfit when livefacts was present
@@ -1354,7 +1356,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
 
   function buildRows(segType, defaultMap) {
     const dbRows = dbSegments?.filter(r => r.segment_type === segType);
-    if (dbRows?.length) {
+    if (dbRows?.length >= 2) {
       return dbRows.map(s => {
         const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : null;
         const om = s.operating_income != null && s.revenue ? (s.operating_income / s.revenue * 100) : null;
@@ -1417,15 +1419,21 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
           return defs.map(([name, pct, gmD]) => ({ name, revPct: pct, gmD }));
         }
 
-        const geoR = dbSegments?.filter(r => r.segment_type === 'geography')?.map(s => {
-          const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
-          return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
-        }) || makeDefaultRows(_GEO_DEFAULTS);
+        const dbGeoRows = dbSegments?.filter(r => r.segment_type === 'geography') ?? [];
+        const geoR = dbGeoRows.length >= 2
+          ? dbGeoRows.map(s => {
+              const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
+              return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
+            })
+          : makeDefaultRows(_GEO_DEFAULTS);
 
-        const bizR = dbSegments?.filter(r => r.segment_type === 'segment')?.map(s => {
-          const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
-          return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
-        }) || makeDefaultRows(_SEG_DEFAULTS);
+        const dbBizRows = dbSegments?.filter(r => r.segment_type === 'segment') ?? [];
+        const bizR = dbBizRows.length >= 2
+          ? dbBizRows.map(s => {
+              const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
+              return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
+            })
+          : makeDefaultRows(_SEG_DEFAULTS);
 
         function computeForRow(row) {
           // Revenue history: consolidated quarterly × segment share + per-quarter noise
