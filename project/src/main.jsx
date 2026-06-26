@@ -31,6 +31,7 @@ import '../ai-chat-panel.jsx'
 import '../audit-scope.jsx'
 import '../code-screens.jsx'
 import '../sox-scope.jsx'
+import '../coverage-gap.jsx'
 import '../tweaks.jsx'
 
 import App from '../app.jsx'

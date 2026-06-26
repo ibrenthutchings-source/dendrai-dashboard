@@ -1486,6 +1486,19 @@ function App() {
           </div>
           )}
 
+          {/* ---- Coverage Gap Analysis ---- */}
+          {activeScreen === "coverage" && (
+          <div className="panel active" style={{overflow:"auto"}}>
+            <CoverageGapPanel
+              risks={output.s2?.risks || (hasRun ? profile.risks : [])}
+              objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
+              rssSignals={rssSignals}
+              ratios={profile.ratios || {}}
+              industry={hasRun ? profile.entity?.industry : cfg.industry}
+              ticker={cfg.ticker} />
+          </div>
+          )}
+
           {/* ---- Risk-as-Code ---- */}
           {activeScreen === "riskcode" && (
           <div className="panel active">
