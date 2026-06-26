@@ -14,7 +14,8 @@ const NAV_SECTIONS = [
       { id: "frameworks", icon: "code",     l: "Risks as Code (Frameworks)" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
-      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"}
+      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"},
+      { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" }
     ],
   },
   {
