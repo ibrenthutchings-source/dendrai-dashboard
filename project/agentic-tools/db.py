@@ -54,6 +54,16 @@ _pool: Optional["pg_pool.ThreadedConnectionPool"] = None
 # Change BEFORE calling init_db() if using a different model.
 EMBEDDING_DIM: int = 1536
 
+# Canonical content_type values for save_embedding / get_relevant_context.
+# Using these constants avoids string typos and makes cross-tool searches reliable.
+EMBT_RISK_FACTOR   = "risk_factor_text"     # EDGAR 10-K Item 1A chunks
+EMBT_ARTICLE       = "article_summary"      # RSS article title + summary
+EMBT_AI_SUMMARY    = "ai_analysis_summary"  # LLM-generated analysis summaries
+EMBT_SCENARIO      = "scenario_narrative"   # Scenario analysis narrative text
+EMBT_CEM_RC        = "cem_root_cause"       # CEM root-cause narratives
+EMBT_PROXY         = "proxy_governance"     # DEF 14A governance section chunks
+EMBT_RAC           = "risks_as_code"        # Risks-as-Code YAML content
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DDL — 28 tables
 # ─────────────────────────────────────────────────────────────────────────────
@@ -662,26 +672,41 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     N
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
 # Formatted at init time with the module-level EMBEDDING_DIM.
+# chunk_index allows long documents (risk factors, proxy filings) to be split into
+# multiple chunks so each gets its own vector — critical for accurate retrieval.
+# company_id enables fast per-company filtering without joining source tables.
 _PGVECTOR_DDL_TEMPLATE = """
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Central embedding store: one row per (source row × content type × model).
--- source_table / source_id form a logical FK to any table in this schema.
 CREATE TABLE IF NOT EXISTS embeddings (
     id           BIGSERIAL    PRIMARY KEY,
     source_table VARCHAR(64)  NOT NULL,
     source_id    BIGINT       NOT NULL,
     content_type VARCHAR(64)  NOT NULL,
     model        VARCHAR(64)  NOT NULL DEFAULT 'unknown',
+    chunk_index  SMALLINT     NOT NULL DEFAULT 0,
+    company_id   INT          REFERENCES companies(id),
     embedding    vector({dim}),
     text_snippet TEXT,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    UNIQUE (source_table, source_id, content_type, model)
+    CONSTRAINT uq_embeddings UNIQUE (source_table, source_id, content_type, model, chunk_index)
 );
-CREATE INDEX IF NOT EXISTS idx_embeddings_source
-    ON embeddings (source_table, source_id);
-CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
-    ON embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_embeddings_source  ON embeddings (source_table, source_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHERE company_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw    ON embeddings USING hnsw (embedding vector_cosine_ops);
+"""
+
+# Column / constraint migrations for databases created before these columns existed.
+_PGVECTOR_MIGRATIONS = """
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS chunk_index SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS company_id  INT REFERENCES companies(id);
+ALTER TABLE embeddings DROP CONSTRAINT IF EXISTS embeddings_source_table_source_id_content_type_model_key;
+DO $$ BEGIN
+    ALTER TABLE embeddings ADD CONSTRAINT uq_embeddings
+        UNIQUE (source_table, source_id, content_type, model, chunk_index);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHERE company_id IS NOT NULL;
 """
 
 
@@ -721,6 +746,7 @@ def init_db() -> bool:
     try:
         with vec_conn.cursor() as cur:
             cur.execute(_PGVECTOR_DDL_TEMPLATE.format(dim=EMBEDDING_DIM))
+            cur.execute(_PGVECTOR_MIGRATIONS)
         vec_conn.commit()
         logger.info("pgvector extension ready (EMBEDDING_DIM=%d)", EMBEDDING_DIM)
     except Exception as exc:
@@ -2620,13 +2646,17 @@ def save_embedding(
     *,
     model: Optional[str] = None,
     text_snippet: Optional[str] = None,
+    chunk_index: int = 0,
+    company_id: Optional[int] = None,
 ) -> Optional[int]:
     """Store a vector embedding for any source row. Returns embedding id (or None).
 
     source_table : originating table name  (e.g. 'rss_articles', 'ai_analyses')
     source_id    : PK of the row in that table
-    content_type : semantic label  (e.g. 'risk_factor_text', 'article_summary')
+    content_type : use an EMBT_* constant (e.g. EMBT_RISK_FACTOR, EMBT_ARTICLE)
     embedding    : list[float] from your embedding model — len must equal EMBEDDING_DIM
+    chunk_index  : 0-based chunk position for long documents split before embedding
+    company_id   : companies.id — enables fast per-company filtering in searches
     """
     if not embedding or not _HAS_PGVECTOR:
         return None
@@ -2636,16 +2666,18 @@ def save_embedding(
                 cur.execute(
                     """
                     INSERT INTO embeddings
-                        (source_table, source_id, content_type, model, embedding, text_snippet)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (source_table, source_id, content_type, model) DO UPDATE
+                        (source_table, source_id, content_type, model,
+                         chunk_index, company_id, embedding, text_snippet)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT ON CONSTRAINT uq_embeddings DO UPDATE
                         SET embedding    = EXCLUDED.embedding,
+                            company_id   = COALESCE(EXCLUDED.company_id, embeddings.company_id),
                             text_snippet = EXCLUDED.text_snippet,
                             created_at   = NOW()
                     RETURNING id
                     """,
                     (source_table, source_id, content_type, model or "unknown",
-                     embedding, text_snippet),
+                     chunk_index, company_id, embedding, text_snippet),
                 )
                 row = cur.fetchone()
                 return row[0] if row else None
@@ -2660,6 +2692,7 @@ def search_similar_embeddings(
     *,
     source_table: Optional[str] = None,
     content_type: Optional[str] = None,
+    company_id: Optional[int] = None,
     limit: int = 10,
     metric: str = "cosine",
 ) -> list:
@@ -2667,7 +2700,7 @@ def search_similar_embeddings(
 
     metric: 'cosine' (default) | 'l2' | 'ip'
     Returns list of dicts: id, source_table, source_id, content_type, model,
-    text_snippet, distance, created_at.
+    chunk_index, text_snippet, distance, created_at.
     """
     if not embedding or not _HAS_PGVECTOR:
         return []
@@ -2681,13 +2714,17 @@ def search_similar_embeddings(
         if content_type:
             clauses.append("content_type = %s")
             params.append(content_type)
+        if company_id:
+            clauses.append("company_id = %s")
+            params.append(company_id)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
                     SELECT id, source_table, source_id, content_type, model,
-                           text_snippet, embedding {op} %s AS distance, created_at
+                           chunk_index, text_snippet,
+                           embedding {op} %s AS distance, created_at
                     FROM embeddings
                     {where}
                     ORDER BY embedding {op} %s
@@ -2699,12 +2736,137 @@ def search_similar_embeddings(
                     {
                         "id": r[0], "source_table": r[1], "source_id": r[2],
                         "content_type": r[3], "model": r[4],
-                        "text_snippet": r[5],
-                        "distance": float(r[6]) if r[6] is not None else None,
-                        "created_at": r[7].isoformat() if r[7] else None,
+                        "chunk_index": r[5], "text_snippet": r[6],
+                        "distance": float(r[7]) if r[7] is not None else None,
+                        "created_at": r[8].isoformat() if r[8] else None,
                     }
                     for r in cur.fetchall()
                 ]
+    return _run(_do) or []
+
+
+def save_embeddings_bulk(rows: list) -> int:
+    """Batch-upsert embeddings in a single transaction. Preferred over calling
+    save_embedding() in a loop when chunking long documents.
+
+    Each item in rows must be a dict with:
+        source_table, source_id, content_type, embedding
+    Optional keys: model, text_snippet, chunk_index (default 0), company_id
+
+    Returns the number of rows processed (0 when pgvector is unavailable).
+    """
+    if not rows or not _HAS_PGVECTOR:
+        return 0
+    def _do():
+        data = [
+            (
+                r["source_table"], r["source_id"], r["content_type"],
+                r.get("model") or "unknown",
+                r.get("chunk_index", 0),
+                r.get("company_id"),
+                r["embedding"],
+                r.get("text_snippet"),
+            )
+            for r in rows
+            if r.get("embedding")
+        ]
+        if not data:
+            return 0
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO embeddings
+                        (source_table, source_id, content_type, model,
+                         chunk_index, company_id, embedding, text_snippet)
+                    VALUES %s
+                    ON CONFLICT ON CONSTRAINT uq_embeddings DO UPDATE
+                        SET embedding    = EXCLUDED.embedding,
+                            company_id   = COALESCE(EXCLUDED.company_id, embeddings.company_id),
+                            text_snippet = EXCLUDED.text_snippet,
+                            created_at   = NOW()
+                    """,
+                    data,
+                )
+        return len(data)
+    return _run(_do, default=0) or 0
+
+
+def get_relevant_context(
+    query_embedding: list,
+    *,
+    company_id: Optional[int] = None,
+    content_types: Optional[list] = None,
+    source_tables: Optional[list] = None,
+    limit: int = 5,
+    max_distance: float = 1.0,
+    metric: str = "cosine",
+) -> list:
+    """Return the top-k semantically relevant stored text snippets.
+
+    This is the primary token-cost reduction API.  Instead of sending entire
+    documents to the LLM, embed the question once and retrieve only the most
+    relevant stored chunks.  Typical savings vs. full-document context: 10–100×
+    fewer input tokens.
+
+    Args:
+        query_embedding : embed(question) — must use the same model as stored embeddings
+        company_id      : restrict to a single company's embeddings (strongly recommended)
+        content_types   : list of EMBT_* constants, e.g. [EMBT_RISK_FACTOR, EMBT_ARTICLE]
+        source_tables   : e.g. ['edgar_risk_factor_filings', 'rss_articles']
+        limit           : max snippets returned — keep small (3–8) for lean prompts
+        max_distance    : cosine upper-bound; 0 = identical, 2 = opposite (default 1.0)
+        metric          : 'cosine' | 'l2' | 'ip'
+
+    Returns list of dicts: source_table, source_id, content_type, model,
+        chunk_index, text_snippet, distance, created_at.
+    Sorted by ascending distance (most relevant first).
+    """
+    if not query_embedding or not _HAS_PGVECTOR:
+        return []
+    op = _DISTANCE_OPS.get(metric, "<=>")
+    def _do():
+        clauses: list = []
+        params: list = []
+        if company_id:
+            clauses.append("company_id = %s")
+            params.append(company_id)
+        if content_types:
+            clauses.append("content_type = ANY(%s)")
+            params.append(content_types)
+        if source_tables:
+            clauses.append("source_table = ANY(%s)")
+            params.append(source_tables)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        # Over-fetch so distance threshold doesn't leave us with fewer than limit.
+        fetch_limit = limit * 3
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT source_table, source_id, content_type, model,
+                           chunk_index, text_snippet,
+                           embedding {op} %s AS distance, created_at
+                    FROM embeddings
+                    {where}
+                    ORDER BY embedding {op} %s
+                    LIMIT %s
+                    """,
+                    params + [query_embedding, query_embedding, fetch_limit],
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "source_table": r[0], "source_id": r[1],
+                "content_type": r[2], "model": r[3],
+                "chunk_index": r[4], "text_snippet": r[5],
+                "distance": float(r[6]) if r[6] is not None else None,
+                "created_at": r[7].isoformat() if r[7] else None,
+            }
+            for r in rows
+            if r[6] is not None and float(r[6]) <= max_distance
+        ][:limit]
     return _run(_do) or []
 
 
