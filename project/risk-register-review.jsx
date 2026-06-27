@@ -474,11 +474,16 @@ function RiskRegisterReviewScreen({ risks, runId }) {
   const [activeTab, setActiveTab] = useState("internal");
 
   // ── Internal register state ──────────────────────────────────────────────
+  // refreshedRisks: DB-fetched copy after a successful convert; overrides the prop
+  const [refreshedRisks, setRefreshedRisks] = useState(null);
+  const effectiveRisks = refreshedRisks || risks;
+
   const [riskStates, setRiskStates]     = useState(() => initRiskStates(risks));
   const [ctrlStates, setCtrlStates]     = useState(() => initControlStates(risks));
   const [collapsedGroups, setCollapsed] = useState({});
   const [expandedCtrl, setExpandedCtrl] = useState(new Set());
-  const [aiRecsLoading, setAiRecsLoading] = useState(null); // riskKey | null
+  const [aiRecsLoading, setAiRecsLoading] = useState(null);
+  const [savedAt, setSavedAt]           = useState(null); // timestamp of last DB save
 
   // ── Discovery state ──────────────────────────────────────────────────────
   const [fwSearch, setFwSearch]           = useState("");
@@ -490,16 +495,28 @@ function RiskRegisterReviewScreen({ risks, runId }) {
   const [discCollapsed, setDiscCollapsed] = useState({});
   const [discExpandedCtrl, setDiscExpandedCtrl] = useState(new Set());
 
+  // ── Upload Register state ─────────────────────────────────────────────
+  const [uploadedRisks, setUploaded]           = useState([]);
+  const [uploadRiskStates, setUploadStates]    = useState({});
+  const [uploadCtrlStates, setUploadCtrlStates] = useState({});
+  const [uploadCollapsed, setUploadCollapsed]  = useState({});
+  const [uploadExpandedCtrl, setUploadExpandedCtrl] = useState(new Set());
+  const [uploadLoading, setUploadLoading]      = useState(false);
+  const [uploadErr, setUploadErr]              = useState(null);
+  const [uploadFilename, setUploadFilename]    = useState(null);
+
   // ── Output ───────────────────────────────────────────────────────────────
   const [outputYaml, setOutputYaml] = useState(null);
   const [converting, setConverting] = useState(false);
   const [convertErr, setConvertErr] = useState(null);
   const [validationMsg, setValidationMsg] = useState(null);
 
-  // Sync internal risk list when parent risks change
+  // Sync internal risk list when parent prop changes (new pipeline run)
   useEffect(() => {
+    setRefreshedRisks(null);
     setRiskStates(initRiskStates(risks));
     setCtrlStates(initControlStates(risks));
+    setSavedAt(null);
   }, [risks?.length]);
 
   // ── Validation helpers ────────────────────────────────────────────────────
@@ -558,12 +575,16 @@ function RiskRegisterReviewScreen({ risks, runId }) {
     };
   }
 
-  const intCtrl  = makeCtrlHandlers(setCtrlStates);
-  const discCtrl = makeCtrlHandlers(setDiscCtrlStates);
+  const intCtrl    = makeCtrlHandlers(setCtrlStates);
+  const discCtrl   = makeCtrlHandlers(setDiscCtrlStates);
+  const uploadCtrl = makeCtrlHandlers(setUploadCtrlStates);
+
+  const uploadHandlers = makeStateHandlers(setUploadStates);
 
   // ── AI control recommendations ────────────────────────────────────────────
 
-  async function getAiRecs(riskKey, riskName, riskCategory, isDisc) {
+  // tab: "internal" | "external" | "upload"
+  async function getAiRecs(riskKey, riskName, riskCategory, tab) {
     setAiRecsLoading(riskKey);
     try {
       const res = await fetch("/api/risk-register/controls/recommend", {
@@ -574,7 +595,7 @@ function RiskRegisterReviewScreen({ risks, runId }) {
       if (res.ok) {
         const data = await res.json();
         const refs = (data.controls || []).map(c => c.ref || c).filter(Boolean);
-        const setter = isDisc ? setDiscCtrlStates : setCtrlStates;
+        const setter = tab === "external" ? setDiscCtrlStates : tab === "upload" ? setUploadCtrlStates : setCtrlStates;
         setter(prev => {
           const s = prev[riskKey] || { autoMapped:[], manual:[], generateCode:new Set() };
           const merged = [...new Set([...s.autoMapped, ...refs])].slice(0, 6);
@@ -583,6 +604,33 @@ function RiskRegisterReviewScreen({ risks, runId }) {
       }
     } catch {}
     setAiRecsLoading(null);
+  }
+
+  // ── File upload ────────────────────────────────────────────────────────────
+
+  async function handleFileUpload(file) {
+    if (!file) return;
+    setUploadLoading(true);
+    setUploadErr(null);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch("/api/risk-register/upload", { method: "POST", body: fd });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const found = data.risks || [];
+      setUploaded(found);
+      setUploadStates(initRiskStates(found));
+      setUploadCtrlStates(initControlStates(found));
+      setUploadCollapsed({});
+      setUploadFilename(file.name);
+    } catch (err) {
+      setUploadErr(err.message || "Upload failed");
+    }
+    setUploadLoading(false);
   }
 
   // ── Framework discovery ───────────────────────────────────────────────────
@@ -657,10 +705,18 @@ function RiskRegisterReviewScreen({ risks, runId }) {
     });
   }
 
-  async function handleConvert(isDiscovery) {
-    const sourceRisks = isDiscovery ? discoveredRisks : (risks || []);
-    const states      = isDiscovery ? discRiskStates   : riskStates;
-    const ctrl        = isDiscovery ? discCtrlStates   : ctrlStates;
+  // tab: "internal" | "external" | "upload"
+  async function handleConvert(tab) {
+    const isInternal  = tab === "internal";
+    const isExternal  = tab === "external";
+    const isUpload    = tab === "upload";
+    const sourceRisks = isUpload ? uploadedRisks : isExternal ? discoveredRisks : (effectiveRisks || []);
+    const states      = isUpload ? uploadRiskStates : isExternal ? discRiskStates : riskStates;
+    const ctrl        = isUpload ? uploadCtrlStates : isExternal ? discCtrlStates : ctrlStates;
+    const framework   = isInternal
+      ? "Internal Risk Register"
+      : isUpload ? (uploadFilename || "Uploaded Register")
+      : (selectedFws[0] || fwSearch || "External");
 
     const missing = validateStates(states);
     if (missing.length) {
@@ -671,17 +727,17 @@ function RiskRegisterReviewScreen({ risks, runId }) {
     setConverting(true);
     setConvertErr(null);
 
-    const payload = buildConvertPayload(sourceRisks, states, ctrl, isDiscovery);
+    const payload = buildConvertPayload(sourceRisks, states, ctrl, !isInternal);
 
-    // Persist review session to DB before generating output
+    // 1. Save review session (all tabs)
     try {
       await fetch("/api/risk-register/reviews", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
           run_id: runId || null,
-          review_type: isDiscovery ? "external" : "internal",
-          framework: isDiscovery ? (selectedFws[0] || fwSearch || "External") : "Internal Risk Register",
+          review_type: isInternal ? "internal" : "external",
+          framework,
           risk_states: payload.map(r => ({
             risk_ref: r.id || r.risk_ref || "",
             original_wording: r.name || "",
@@ -694,14 +750,49 @@ function RiskRegisterReviewScreen({ risks, runId }) {
       });
     } catch {}
 
+    // 2. For internal runs with a known runId: write wording back to risk_scores,
+    //    then re-fetch the updated list so the UI reflects the DB state.
+    if (isInternal && runId) {
+      try {
+        await fetch("/api/risk-register/apply-wording", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            run_id: runId,
+            risks: payload.map(r => ({
+              risk_ref: r.id || r.risk_ref || "",
+              current_wording: r.current_wording || r.name || "",
+            })),
+          }),
+        });
+        const refreshRes = await fetch(`/api/risk-register/risks/${runId}`);
+        if (refreshRes.ok) {
+          const refreshData = await refreshRes.json();
+          const updated = refreshData.risks || [];
+          if (updated.length) {
+            setRefreshedRisks(updated);
+            setRiskStates(prev => {
+              const next = { ...prev };
+              for (const r of updated) {
+                const key = r.id || r.risk_ref;
+                if (next[key]) next[key] = { ...next[key], originalWording: next[key].wording };
+              }
+              return next;
+            });
+            setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
+          }
+        }
+      } catch {}
+    }
+
     try {
       const res = await fetch("/api/risk-register/convert-to-code", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           risks: payload,
-          review_type: isDiscovery ? "external" : "internal",
-          framework: isDiscovery ? (selectedFws[0] || fwSearch || "External") : "Internal Risk Register",
+          review_type: isInternal ? "internal" : "external",
+          framework,
           include_controls: true,
         }),
       });
@@ -709,8 +800,7 @@ function RiskRegisterReviewScreen({ risks, runId }) {
       const data = await res.json();
       setOutputYaml(data.yaml || "");
     } catch (err) {
-      // Fallback: generate YAML client-side
-      const yaml = buildLocalYaml(payload, isDiscovery ? (selectedFws[0]||fwSearch||"External") : "Internal");
+      const yaml = buildLocalYaml(payload, framework);
       setOutputYaml(yaml);
     }
     setConverting(false);
@@ -772,7 +862,7 @@ function RiskRegisterReviewScreen({ risks, runId }) {
 
   // ── Render helpers ────────────────────────────────────────────────────────
 
-  function renderRiskList(sourceRisks, states, ctrl, collapsedG, setCollapsedG, expandedC, setExpandedC, handlers, ctrlHandlers, isDisc) {
+  function renderRiskList(sourceRisks, states, ctrl, collapsedG, setCollapsedG, expandedC, setExpandedC, handlers, ctrlHandlers, tab) {
     if (!sourceRisks?.length) return null;
     const groups = groupRisks(sourceRisks);
 
@@ -803,7 +893,7 @@ function RiskRegisterReviewScreen({ risks, runId }) {
                 onAddManualControl={ctrlHandlers.addManual}
                 onRemoveControl={ctrlHandlers.remove}
                 onToggleGenerateControl={ctrlHandlers.toggleGen}
-                onGetAiRecs={(k, n, c) => getAiRecs(k, n, c, isDisc)}
+                onGetAiRecs={(k, n, c) => getAiRecs(k, n, c, tab)}
                 aiRecsLoading={aiRecsLoading === key}
                 expanded={expandedC.has(key)}
                 onToggleExpand={(k) => setExpandedC(prev => {
@@ -819,8 +909,10 @@ function RiskRegisterReviewScreen({ risks, runId }) {
     });
   }
 
-  function renderActionBar(sourceRisks, states, isDisc) {
+  // tab: "internal" | "external" | "upload"
+  function renderActionBar(sourceRisks, states, tab) {
     if (!sourceRisks?.length) return null;
+    const isInternal = tab === "internal";
     const missing = validateStates(states);
     const total = sourceRisks.length;
     const excluded = Object.values(states).filter(s => !s.included).length;
@@ -849,11 +941,17 @@ function RiskRegisterReviewScreen({ risks, runId }) {
           <div style={{ fontSize:10, color:"var(--red,#e53)" }}>{validationMsg}</div>
         )}
 
+        {isInternal && savedAt && (
+          <div style={{ fontSize:10, color:"var(--green,#2a7)", display:"flex", alignItems:"center", gap:3 }}>
+            <span>✓</span> Saved to register at {savedAt}
+          </div>
+        )}
+
         <div style={{ marginLeft:"auto" }}>
           <button
             className={"btn btn-sm btn-acc" + (converting?" loading":"")}
             disabled={missing.length > 0 || converting}
-            onClick={() => handleConvert(isDisc)}
+            onClick={() => handleConvert(tab)}
             title={missing.length > 0 ? `Add reasons for ${missing.length} item(s) first` : "Generate Risk-as-Code YAML"}
           >
             <Icon name="spark" size={11}/>
@@ -922,7 +1020,7 @@ function RiskRegisterReviewScreen({ risks, runId }) {
         >
           <span className="rac-tab-badge">INT</span>
           Internal Register
-          {risks?.length > 0 && <span className="rac-tab-dot"/>}
+          {effectiveRisks?.length > 0 && <span className="rac-tab-dot"/>}
         </button>
         <button
           className={"rac-tab" + (activeTab === "discovery" ? " active" : "")}
@@ -932,6 +1030,14 @@ function RiskRegisterReviewScreen({ risks, runId }) {
           Framework Discovery
           {discoveredRisks.length > 0 && <span className="rac-tab-dot"/>}
         </button>
+        <button
+          className={"rac-tab" + (activeTab === "upload" ? " active" : "")}
+          onClick={() => setActiveTab("upload")}
+        >
+          <span className="rac-tab-badge">UPL</span>
+          Upload Register
+          {uploadedRisks.length > 0 && <span className="rac-tab-dot"/>}
+        </button>
       </div>
 
       {/* Tab content — scrollable, no bottom padding needed since action bar is outside */}
@@ -940,14 +1046,14 @@ function RiskRegisterReviewScreen({ risks, runId }) {
         {/* ── Internal Register tab ── */}
         {activeTab === "internal" && (
           <div>
-            {!risks?.length ? (
+            {!effectiveRisks?.length ? (
               <Empty style={{ padding:48 }}>
                 Run the pipeline to Stage 2 to load the internal risk register, then return here to review and curate before converting to code.
               </Empty>
             ) : (
               <>
-                {renderSummaryBanner(risks, riskStates)}
-                {renderRiskList(risks, riskStates, ctrlStates, collapsedGroups, setCollapsed, expandedCtrl, setExpandedCtrl, intHandlers, intCtrl, false)}
+                {renderSummaryBanner(effectiveRisks, riskStates)}
+                {renderRiskList(effectiveRisks, riskStates, ctrlStates, collapsedGroups, setCollapsed, expandedCtrl, setExpandedCtrl, intHandlers, intCtrl, "internal")}
               </>
             )}
           </div>
@@ -1035,7 +1141,90 @@ function RiskRegisterReviewScreen({ risks, runId }) {
                   discoveredRisks, discRiskStates, discCtrlStates,
                   discCollapsed, setDiscCollapsed,
                   discExpandedCtrl, setDiscExpandedCtrl,
-                  discHandlers, discCtrl, true
+                  discHandlers, discCtrl, "external"
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Upload Register tab ── */}
+        {activeTab === "upload" && (
+          <div>
+            {/* Drop zone */}
+            <div style={{ padding:"12px 0 16px", borderBottom:"1px solid var(--line,#eee)", marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:"var(--ink,#111)", marginBottom:8 }}>
+                Import a risk register from Excel or CSV
+              </div>
+              <label
+                htmlFor="risk-upload-input"
+                onDragOver={e => { e.preventDefault(); e.currentTarget.style.background = "var(--acc-bg,#e8f0fe)"; }}
+                onDragLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                onDrop={e => {
+                  e.preventDefault();
+                  e.currentTarget.style.background = "transparent";
+                  const f = e.dataTransfer.files?.[0];
+                  if (f) handleFileUpload(f);
+                }}
+                style={{
+                  display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+                  gap:8, padding:"28px 20px", borderRadius:8, cursor:"pointer",
+                  border:"2px dashed var(--line,#ddd)", background:"transparent",
+                  transition:"background 0.15s",
+                }}
+              >
+                <span style={{ fontSize:22, color:"var(--ink-3,#aaa)" }}>↑</span>
+                <span style={{ fontSize:11, color:"var(--ink-2,#555)", textAlign:"center" }}>
+                  Drop an Excel or CSV file here, or{" "}
+                  <span style={{ color:"var(--acc,#2563eb)", textDecoration:"underline" }}>browse</span>
+                </span>
+                <span style={{ fontSize:10, color:"var(--ink-3,#888)" }}>
+                  Supports .xlsx, .xls, .csv · Columns: ID, Name, Category, Score, RAG, Framework
+                </span>
+                <input
+                  id="risk-upload-input"
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  style={{ display:"none" }}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f); e.target.value = ""; }}
+                />
+              </label>
+
+              {uploadLoading && (
+                <div style={{ marginTop:10, fontSize:11, color:"var(--ink-3,#888)", textAlign:"center" }}>
+                  Parsing file…
+                </div>
+              )}
+              {uploadErr && (
+                <div style={{ marginTop:10, fontSize:11, color:"var(--red,#e53)", padding:"6px 10px", background:"rgba(229,85,51,0.08)", borderRadius:4 }}>
+                  ⚠ {uploadErr}
+                </div>
+              )}
+              {uploadFilename && uploadedRisks.length > 0 && (
+                <div style={{ marginTop:10, fontSize:10, color:"var(--green,#2a7)", display:"flex", alignItems:"center", gap:4 }}>
+                  <span>✓</span> Loaded {uploadedRisks.length} risk{uploadedRisks.length !== 1 ? "s" : ""} from{" "}
+                  <span className="mono">{uploadFilename}</span>
+                  <button
+                    onClick={() => { setUploaded([]); setUploadFilename(null); setUploadErr(null); }}
+                    style={{ marginLeft:4, fontSize:10, padding:"0 5px", borderRadius:3, border:"1px solid var(--line,#ddd)", background:"transparent", color:"var(--ink-3,#888)", cursor:"pointer" }}
+                  >✕ Clear</button>
+                </div>
+              )}
+            </div>
+
+            {!uploadLoading && uploadedRisks.length === 0 && (
+              <Empty style={{ padding:32 }}>
+                Upload an Excel or CSV file above to import risks into the review and convert-to-code workflow.
+              </Empty>
+            )}
+            {!uploadLoading && uploadedRisks.length > 0 && (
+              <>
+                {renderSummaryBanner(uploadedRisks, uploadRiskStates)}
+                {renderRiskList(
+                  uploadedRisks, uploadRiskStates, uploadCtrlStates,
+                  uploadCollapsed, setUploadCollapsed,
+                  uploadExpandedCtrl, setUploadExpandedCtrl,
+                  uploadHandlers, uploadCtrl, "upload"
                 )}
               </>
             )}
@@ -1044,8 +1233,9 @@ function RiskRegisterReviewScreen({ risks, runId }) {
       </div>
 
       {/* Action bar — outside scroll area so it never overlaps list content */}
-      {activeTab === "internal"  && renderActionBar(risks, riskStates, false)}
-      {activeTab === "discovery" && renderActionBar(discoveredRisks, discRiskStates, true)}
+      {activeTab === "internal"  && renderActionBar(effectiveRisks, riskStates, "internal")}
+      {activeTab === "discovery" && renderActionBar(discoveredRisks, discRiskStates, "external")}
+      {activeTab === "upload"    && renderActionBar(uploadedRisks, uploadRiskStates, "upload")}
 
       {/* Output panel */}
       {outputYaml && (

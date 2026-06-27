@@ -90,6 +90,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
       },
+      // Risk Register Review API (reviews, framework search, convert-to-code, upload)
+      '/api/risk-register': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/risk-register/, '/risk-register'),
+      },
       // Risks-as-Code: OSCAL + COSO ERM generation + SSE live stream
       '/api/risks-as-code': {
         target: 'http://127.0.0.1:8001',
@@ -123,6 +129,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
+      },
+      '/api/risk-register': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/risk-register/, '/risk-register'),
       },
       '/api/risks-as-code': {
         target: 'http://127.0.0.1:8001',

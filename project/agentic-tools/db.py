@@ -3186,6 +3186,74 @@ def list_risk_register_reviews(run_id: Optional[int] = None, limit: int = 20) ->
     return _run(_do) or []
 
 
+def apply_review_wording(run_id: int, updates: list) -> None:
+    """Persist reviewed risk wording back into risk_scores for a run.
+
+    Writes current_wording into narrative (TEXT, uncapped).
+    Also updates risk_name when the wording fits within 128 chars.
+    """
+    if not updates:
+        return
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                for u in updates:
+                    risk_ref = u.get("risk_ref") or u.get("id", "")
+                    wording  = (u.get("current_wording") or u.get("wording") or "").strip()
+                    if not risk_ref or not wording:
+                        continue
+                    cur.execute(
+                        """
+                        UPDATE risk_scores
+                           SET narrative  = %s,
+                               risk_name  = CASE WHEN length(%s) <= 128 THEN %s ELSE risk_name END
+                         WHERE run_id = %s AND risk_ref = %s
+                        """,
+                        (wording, wording, wording, run_id, risk_ref),
+                    )
+    _run(_do)
+
+
+def get_risk_scores_for_run(run_id: int) -> list:
+    """Return all risk_scores for a run, preferring narrative wording when present."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT risk_ref, risk_name, narrative, category,
+                           score, rag_status, source_framework,
+                           base_score, delta, velocity, control_env, peer_benchmark
+                      FROM risk_scores
+                     WHERE run_id = %s
+                     ORDER BY score DESC NULLS LAST
+                    """,
+                    (run_id,),
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id":             r[0],
+                        "risk_ref":       r[0],
+                        "name":           r[2] or r[1],   # narrative preferred, else risk_name
+                        "risk_name":      r[1],
+                        "narrative":      r[2],
+                        "category":       r[3],
+                        "score":          float(r[4])  if r[4]  is not None else None,
+                        "rag":            r[5],
+                        "rag_status":     r[5],
+                        "source_framework": r[6],
+                        "base_score":     float(r[7])  if r[7]  is not None else None,
+                        "delta":          float(r[8])  if r[8]  is not None else None,
+                        "velocity":       r[9],
+                        "control_env":    r[10],
+                        "peer_benchmark": r[11],
+                    }
+                    for r in rows
+                ]
+    return _run(_do) or []
+
+
 def get_results(tool_name: str, ticker: Optional[str] = None, limit: int = 20) -> list:
     """Deprecated stub."""
     return []

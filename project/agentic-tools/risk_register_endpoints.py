@@ -16,12 +16,13 @@ Routes:
     POST /risk-register/convert-to-code        Convert reviewed risks to YAML
 """
 
+import io
 import logging
 import os
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 import db
@@ -190,6 +191,11 @@ class ConvertToCodeRequest(BaseModel):
     review_type: str = "internal"
     framework: Optional[str] = None
     include_controls: bool = True
+
+
+class ApplyWordingRequest(BaseModel):
+    run_id: int
+    risks: List[Dict[str, Any]] = []  # [{risk_ref, current_wording}, ...]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -387,6 +393,115 @@ async def complete_review(review_id: int):
     """Mark a review session as completed."""
     db.complete_risk_register_review(review_id)
     return {"completed": True}
+
+
+@router.post("/apply-wording")
+async def apply_wording(req: ApplyWordingRequest):
+    """Persist reviewed risk wording back to risk_scores for a pipeline run."""
+    db.apply_review_wording(req.run_id, req.risks)
+    return {"applied": True, "count": len(req.risks)}
+
+
+@router.get("/risks/{run_id}")
+async def get_risks_for_run(run_id: int):
+    """Return current risk_scores for a run, with narrative wording applied."""
+    risks = db.get_risk_scores_for_run(run_id)
+    return {"risks": risks, "count": len(risks)}
+
+
+@router.post("/upload")
+async def upload_risk_register(file: UploadFile = File(...)):
+    """Parse an uploaded Excel (.xlsx/.xls) or CSV risk register and return normalized risks for review.
+
+    Expected columns (case-insensitive, flexible naming):
+      ID / Risk ID / Ref, Name / Risk Name / Description, Category / Type / Domain,
+      Score / Risk Score, RAG / Status / Rating, Framework / Source Framework
+    """
+    suffix = (file.filename or "upload").rsplit(".", 1)[-1].lower()
+    if suffix not in ("xlsx", "xls", "csv"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '.{suffix}' — upload a .xlsx, .xls, or .csv file",
+        )
+    try:
+        import pandas as pd
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="pandas not installed — run: pip install pandas openpyxl",
+        )
+
+    content = await file.read()
+    try:
+        if suffix in ("xlsx", "xls"):
+            df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
+        else:
+            df = pd.read_csv(io.StringIO(content.decode("utf-8-sig")))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    # Normalise column names for flexible header matching
+    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+
+    def _col(*candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    id_col    = _col("id", "risk_id", "risk_ref", "ref", "risk_no", "no")
+    name_col  = _col("name", "risk_name", "risk_statement", "description", "risk", "title")
+    cat_col   = _col("category", "risk_category", "type", "domain", "risk_type")
+    score_col = _col("score", "risk_score", "total_score", "residual_score")
+    rag_col   = _col("rag", "status", "rating", "rag_status", "color")
+    fw_col    = _col("framework", "source_framework", "source", "standard")
+
+    if not name_col:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Could not find a name column. Expected one of: "
+                "Name, Risk Name, Risk Statement, Description, Risk."
+            ),
+        )
+
+    risks: List[Dict[str, Any]] = []
+    for i, row in df.iterrows():
+        name = str(row[name_col]).strip() if name_col else ""
+        if not name or name.lower() in ("nan", "none", ""):
+            continue
+
+        def _safe(col):
+            if col is None:
+                return None
+            v = row.get(col)
+            if v is None:
+                return None
+            s = str(v).strip()
+            return None if s.lower() in ("nan", "none", "") else s
+
+        risk_id  = _safe(id_col) or f"UPL-{i + 1:03d}"
+        category = _safe(cat_col) or "General"
+        rag      = _safe(rag_col)
+        fw       = _safe(fw_col) or "Uploaded Register"
+        score: Optional[float] = None
+        if score_col:
+            try:
+                score = float(row[score_col])
+            except (ValueError, TypeError):
+                pass
+
+        risks.append({
+            "id": risk_id,
+            "name": name,
+            "category": category,
+            "score": score,
+            "rag": rag,
+            "source_framework": fw,
+            "auto_controls": _auto_map_controls(name, category),
+        })
+
+    return {"risks": risks, "count": len(risks), "filename": file.filename or "upload"}
 
 
 @router.post("/convert-to-code")
