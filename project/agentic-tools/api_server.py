@@ -30,6 +30,10 @@ Endpoints:
     GET  /scoring/config                     Domain vocab, severity weights, domain→risk mapping, Item 1A keywords
     GET  /edgar/8k-items                     All 24 8-K item code → SEC description entries
     GET  /industry/from-sic                  SIC code → Dendrai industry label
+
+    POST /rac/from-loop   Risk-as-Code from JSON risk array (loop output)
+    POST /rac/from-db     Risk-as-Code from PostgreSQL risk_scores table
+    POST /rac/from-excel  Risk-as-Code from uploaded .xlsx / .xls / .csv file
 """
 
 import argparse
@@ -47,7 +51,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -886,6 +890,143 @@ def history_run_detail(ticker: str, run_id: int):
     if detail.get("ticker", "").upper() != ticker.upper():
         raise HTTPException(status_code=404, detail=f"Run {run_id} does not belong to ticker {ticker.upper()}")
     return detail
+
+
+# ── Risk-as-Code: multi-source bridge ─────────────────────────────────────────
+#
+#  These three endpoints complement /risks-as-code/generate (JSON-only) by adding:
+#    POST /rac/from-loop   — same as /risks-as-code/generate but with extra fields
+#    POST /rac/from-db     — pull risks directly from the DB, no frontend payload needed
+#    POST /rac/from-excel  — multipart file upload (.xlsx / .xls / .csv)
+#
+#  All three call risk_as_code_mcp_server tools so that Claude can also invoke
+#  them directly as MCP tools without going through the HTTP bridge.
+
+import risk_as_code_mcp_server as _rac_mcp
+
+
+class RacFromLoopRequest(BaseModel):
+    risks: List[Dict[str, Any]]
+    ticker: str
+    period: str = ""
+    framework: str = "both"
+    industry: str = ""
+    ratios: Dict[str, Any] = {}
+    objectives: List[Dict[str, Any]] = []
+    maps: List[Dict[str, Any]] = []
+    signals: List[Dict[str, Any]] = []
+    run_id: Optional[int] = None
+    save_to_db: bool = False
+
+
+class RacFromDbRequest(BaseModel):
+    ticker: str
+    run_id: Optional[int] = None
+    framework: str = "both"
+
+
+@app.post("/rac/from-loop")
+def rac_from_loop(req: RacFromLoopRequest):
+    """Generate Risk-as-Code YAML from a risk array supplied in the request body.
+
+    Accepts the same risk objects that the Dendrai pipeline stores in output.s2.risks.
+    Also accepts optional objectives, MAPs, signals, and financial ratios for richer output.
+    """
+    import json
+    raw = _rac_mcp.rac_from_loop_output(
+        risks_json      = json.dumps(req.risks),
+        ticker          = req.ticker,
+        period          = req.period,
+        framework       = req.framework,
+        industry        = req.industry,
+        ratios_json     = json.dumps(req.ratios)     if req.ratios     else "",
+        objectives_json = json.dumps(req.objectives) if req.objectives else "",
+        maps_json       = json.dumps(req.maps)       if req.maps       else "",
+        signals_json    = json.dumps(req.signals)    if req.signals    else "",
+        run_id          = req.run_id,
+        save_to_db      = req.save_to_db,
+    )
+    result = json.loads(raw)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.post("/rac/from-db")
+def rac_from_db(req: RacFromDbRequest):
+    """Fetch risks from the PostgreSQL risk_scores table and return Risk-as-Code YAML.
+
+    If run_id is omitted the most recent completed run for the ticker is used.
+    Returns 503 when DATABASE_URL is not configured.
+    """
+    import json
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
+    raw = _rac_mcp.rac_from_database(
+        ticker=req.ticker, run_id=req.run_id, framework=req.framework,
+    )
+    result = json.loads(raw)
+    if "error" in result:
+        status = 404 if "not found" in result["error"].lower() else 400
+        raise HTTPException(status_code=status, detail=result["error"])
+    return result
+
+
+@app.post("/rac/from-excel")
+async def rac_from_excel(
+    file:       UploadFile  = File(...),
+    ticker:     str         = Form(...),
+    period:     str         = Form(""),
+    industry:   str         = Form(""),
+    framework:  str         = Form("both"),
+    sheet_name: str         = Form("0"),
+    save_to_db: bool        = Form(False),
+):
+    """Upload a risk register spreadsheet (.xlsx, .xls, or .csv) and convert to Risk-as-Code YAML.
+
+    Multipart form fields:
+      file        — the spreadsheet file (required)
+      ticker      — company ticker, e.g. "ON"
+      period      — audit period label, e.g. "Q4 2025"
+      industry    — industry label, e.g. "Semiconductors"
+      framework   — "oscal" | "coso_erm" | "both"  (default: "both")
+      sheet_name  — sheet name or zero-based index  (default: "0" = first sheet)
+      save_to_db  — persist to DB as a new run      (default: false)
+
+    Expected column headers (case-insensitive, flexible naming):
+      ID / Risk ID, Name / Risk Name, Category, Score, Base Score,
+      RAG / Status / Rating, Velocity / Trend, CE / Control Effectiveness,
+      Peer / Benchmark, Narrative / Description, Impact, Likelihood
+    """
+    import json
+    suffix = Path(file.filename or "upload").suffix.lower()
+    if suffix not in (".xlsx", ".xls", ".csv"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix}' — upload a .xlsx, .xls, or .csv file",
+        )
+
+    # Write to a temp file so the MCP tool can read it via file path
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        raw = _rac_mcp.rac_from_excel(
+            file_path=tmp_path, ticker=ticker, period=period,
+            industry=industry, framework=framework,
+            sheet_name=sheet_name, save_to_db=save_to_db,
+        )
+        result = json.loads(raw)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
