@@ -1,0 +1,1034 @@
+/* ============================================================
+   Risk Register Review — Phases 2, 3, 4
+   Internal register management + external framework ingestion +
+   unified risk-to-control mapping, all in one screen.
+   ============================================================ */
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Static data: control library + framework catalogs
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MASTER_CONTROLS = [
+  { ref:"FC-01", framework:"Internal",       name:"Revenue Recognition Controls",     category:"Financial",      domain:"Finance",    desc:"Controls over revenue recognition timing to prevent misstatement" },
+  { ref:"FC-02", framework:"Internal",       name:"Financial Close Reconciliation",    category:"Financial",      domain:"Finance",    desc:"Period-end reconciliation procedures for material accounts" },
+  { ref:"FC-03", framework:"SOC 2",          name:"Segregation of Financial Duties",   category:"Financial",      domain:"Finance",    desc:"Segregation of duties for payment and approval workflows" },
+  { ref:"FC-04", framework:"Internal",       name:"Fraud Risk Assessment",             category:"Financial",      domain:"Finance",    desc:"Annual fraud risk assessment aligned to Beneish M-Score indicators" },
+  { ref:"AC-01", framework:"Internal",       name:"Access Control Policy",             category:"Access Control", domain:"IT",         desc:"Documented access control policy reviewed annually" },
+  { ref:"AC-02", framework:"NIST SP 800-53", name:"Account Management",                category:"Access Control", domain:"IT",         desc:"Lifecycle management of user accounts including provisioning" },
+  { ref:"AC-03", framework:"NIST SP 800-53", name:"Access Enforcement",                category:"Access Control", domain:"IT",         desc:"Enforce approved authorisations for logical access" },
+  { ref:"AC-04", framework:"CIS Controls",   name:"Privileged Access Management",      category:"Access Control", domain:"IT",         desc:"Inventory and control of privileged accounts with MFA enforcement" },
+  { ref:"AC-05", framework:"SOC 2",          name:"Logical Access Review",             category:"Access Control", domain:"IT",         desc:"Quarterly review of logical access rights for in-scope systems" },
+  { ref:"SC-01", framework:"ISO/IEC 27001",  name:"Information Security Policy",       category:"Security",       domain:"IT",         desc:"Board-approved information security policy with annual review cycle" },
+  { ref:"SC-02", framework:"CIS Controls",   name:"Data Protection & Encryption",      category:"Security",       domain:"IT",         desc:"Encryption of data at rest and in transit for sensitive information" },
+  { ref:"SC-03", framework:"NIST SP 800-53", name:"Incident Response Plan",            category:"Security",       domain:"IT",         desc:"Documented and tested incident response procedures" },
+  { ref:"SC-04", framework:"ISO/IEC 27001",  name:"Vulnerability Management",          category:"Security",       domain:"IT",         desc:"Regular vulnerability scanning and patch management program" },
+  { ref:"SC-05", framework:"SOC 2",          name:"Change Management Controls",        category:"Security",       domain:"IT",         desc:"Formal change management process for production systems" },
+  { ref:"RM-01", framework:"Internal",       name:"Risk Assessment Process",           category:"Risk Mgmt",      domain:"Operational",desc:"Documented enterprise risk identification and assessment process" },
+  { ref:"RM-02", framework:"ISO/IEC 27001",  name:"Risk Treatment Plan",               category:"Risk Mgmt",      domain:"Operational",desc:"Documented risk treatment decisions with assigned owners and deadlines" },
+  { ref:"RM-03", framework:"Internal",       name:"Risk Appetite Framework",           category:"Risk Mgmt",      domain:"Operational",desc:"Board-approved risk appetite statement with quantitative thresholds" },
+  { ref:"RM-04", framework:"COSO ERM",       name:"Emerging Risk Monitoring",          category:"Risk Mgmt",      domain:"Operational",desc:"Quarterly horizon-scanning process for emerging and macro risks" },
+  { ref:"OP-01", framework:"Internal",       name:"Business Continuity Plan",          category:"Operational",    domain:"Operational",desc:"Tested business continuity and disaster recovery procedures" },
+  { ref:"OP-02", framework:"ISO/IEC 27001",  name:"Supplier Risk Management",          category:"Operational",    domain:"Operational",desc:"Third-party risk assessment and ongoing monitoring program" },
+  { ref:"OP-03", framework:"Internal",       name:"Key Person Dependencies",           category:"Operational",    domain:"HR",         desc:"Identification and mitigation of key person dependency risks" },
+  { ref:"CM-01", framework:"SOC 2",          name:"Compliance Monitoring Program",     category:"Compliance",     domain:"Legal",      desc:"Ongoing monitoring of regulatory requirements and compliance status" },
+  { ref:"CM-02", framework:"Internal",       name:"Regulatory Change Management",      category:"Compliance",     domain:"Legal",      desc:"Process for tracking and responding to regulatory changes" },
+  { ref:"CM-03", framework:"SOC 2",          name:"Privacy Controls",                  category:"Compliance",     domain:"Legal",      desc:"Data privacy controls aligned to applicable regulations (GDPR, CCPA)" },
+  { ref:"VM-01", framework:"CIS Controls",   name:"Vendor Security Assessment",        category:"Vendor",         domain:"Operational",desc:"Security assessments for critical and high-risk vendors" },
+  { ref:"VM-02", framework:"Internal",       name:"Supply Chain Resilience",           category:"Vendor",         domain:"Operational",desc:"Supplier diversification and concentration risk monitoring" },
+  { ref:"HR-01", framework:"Internal",       name:"Security Awareness Training",       category:"HR",             domain:"HR",         desc:"Annual mandatory security awareness training for all employees" },
+  { ref:"HR-02", framework:"Internal",       name:"Background Screening",              category:"HR",             domain:"HR",         desc:"Pre-employment background screening for sensitive roles" },
+];
+const CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
+
+const PRESET_FRAMEWORKS = [
+  "NIST SP 800-53",
+  "ISO/IEC 27001",
+  "CIS Controls",
+  "SOC 2",
+];
+
+const FW_MOCK_RISKS = {
+  "NIST SP 800-53": [
+    { id:"NIST-AC-2",  name:"Inadequate account lifecycle management exposes systems to unauthorised access",   category:"Access Control",   source_framework:"NIST SP 800-53", control_family:"AC" },
+    { id:"NIST-CM-6",  name:"Misconfigured system settings create exploitable security gaps",                   category:"Configuration",    source_framework:"NIST SP 800-53", control_family:"CM" },
+    { id:"NIST-IR-4",  name:"Insufficient incident handling capability delays breach containment",              category:"Incident Response",source_framework:"NIST SP 800-53", control_family:"IR" },
+    { id:"NIST-RA-3",  name:"Ad-hoc risk assessments miss systemic vulnerabilities in critical systems",        category:"Risk Assessment",  source_framework:"NIST SP 800-53", control_family:"RA" },
+    { id:"NIST-SI-7",  name:"Lack of software integrity verification enables supply-chain compromise",          category:"System Integrity", source_framework:"NIST SP 800-53", control_family:"SI" },
+    { id:"NIST-AU-9",  name:"Audit log tampering risk undermines forensic investigation capability",            category:"Audit",            source_framework:"NIST SP 800-53", control_family:"AU" },
+  ],
+  "ISO/IEC 27001": [
+    { id:"ISO-A.9.1",  name:"Poorly defined access control policies allow privilege escalation",                category:"Access Control",   source_framework:"ISO/IEC 27001", control_family:"A.9" },
+    { id:"ISO-A.12.1", name:"Unmanaged operational change increases risk of service disruption",                category:"Operations",       source_framework:"ISO/IEC 27001", control_family:"A.12" },
+    { id:"ISO-A.15.1", name:"Unvetted supplier relationships introduce unmanaged third-party risk",            category:"Supplier",         source_framework:"ISO/IEC 27001", control_family:"A.15" },
+    { id:"ISO-A.16.1", name:"Slow information security incident response amplifies regulatory exposure",        category:"Incident",         source_framework:"ISO/IEC 27001", control_family:"A.16" },
+    { id:"ISO-A.17.1", name:"Untested continuity plans fail during actual disruption events",                  category:"Continuity",       source_framework:"ISO/IEC 27001", control_family:"A.17" },
+    { id:"ISO-A.18.1", name:"Regulatory compliance gaps create penalty and reputational risk",                 category:"Compliance",       source_framework:"ISO/IEC 27001", control_family:"A.18" },
+  ],
+  "CIS Controls": [
+    { id:"CIS-1.1",    name:"Unmanaged hardware assets create invisible attack surface",                        category:"Asset Management", source_framework:"CIS Controls", control_family:"CIS 1" },
+    { id:"CIS-5.1",    name:"Uncontrolled administrative accounts expose critical infrastructure",              category:"Access Control",   source_framework:"CIS Controls", control_family:"CIS 5" },
+    { id:"CIS-6.1",    name:"Insufficient access control management enables lateral movement post-breach",      category:"Access Control",   source_framework:"CIS Controls", control_family:"CIS 6" },
+    { id:"CIS-13.1",   name:"Inadequate network monitoring delays detection of anomalous activity",             category:"Monitoring",       source_framework:"CIS Controls", control_family:"CIS 13" },
+    { id:"CIS-16.1",   name:"Insecure application development practices introduce exploitable vulnerabilities", category:"AppSec",           source_framework:"CIS Controls", control_family:"CIS 16" },
+  ],
+  "SOC 2": [
+    { id:"SOC-CC1.1",  name:"Weak control environment culture enables management override",                     category:"Governance",       source_framework:"SOC 2", control_family:"CC1" },
+    { id:"SOC-CC6.1",  name:"Insufficient logical access controls expose sensitive customer data",              category:"Access Control",   source_framework:"SOC 2", control_family:"CC6" },
+    { id:"SOC-CC7.1",  name:"Undetected system operations anomalies lead to prolonged service failure",        category:"Operations",       source_framework:"SOC 2", control_family:"CC7" },
+    { id:"SOC-CC8.1",  name:"Uncontrolled software changes introduce defects into production systems",         category:"Change Management",source_framework:"SOC 2", control_family:"CC8" },
+    { id:"SOC-CC9.1",  name:"Unmitigated vendor concentration risk triggers availability commitments breach",   category:"Vendor",           source_framework:"SOC 2", control_family:"CC9" },
+  ],
+};
+
+const AUTO_MAP_RULES = [
+  { kws:["revenue","recognition","accounting","financial","margin","fraud","restat"],           refs:["FC-01","FC-02","FC-03","FC-04"] },
+  { kws:["cyber","security","breach","data","unauthori","hack","phishing"],                    refs:["SC-01","SC-02","SC-03","SC-04","AC-02","AC-05"] },
+  { kws:["access","identity","privilege","authentication","authoris","logical"],               refs:["AC-01","AC-02","AC-03","AC-04","AC-05"] },
+  { kws:["operational","process","continuity","disaster","recovery","bcp"],                    refs:["RM-01","OP-01"] },
+  { kws:["compliance","regulatory","legal","penalty","gdpr","ccpa","sox"],                     refs:["CM-01","CM-02","CM-03"] },
+  { kws:["vendor","supplier","third","supply","outsourc"],                                     refs:["VM-01","VM-02","OP-02"] },
+  { kws:["talent","people","key","retention","staff","hiring"],                                refs:["HR-01","HR-02","OP-03"] },
+  { kws:["macro","market","interest","credit","inflation","rate","currency"],                   refs:["RM-02","RM-03","RM-04"] },
+  { kws:["change","configuration","deployment","release","patch"],                             refs:["SC-05","CM-02"] },
+  { kws:["incident","response","detection","monitoring","log"],                                refs:["SC-03","SC-04"] },
+];
+
+function autoMapControls(name, category) {
+  const text = (name + " " + (category || "")).toLowerCase();
+  const refs = [];
+  for (const rule of AUTO_MAP_RULES) {
+    if (rule.kws.some(kw => text.includes(kw))) {
+      for (const r of rule.refs) { if (!refs.includes(r)) refs.push(r); }
+    }
+  }
+  if (!refs.length) refs.push("RM-01");
+  return refs.slice(0, 5);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State initialisation helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function initRiskStates(risks) {
+  const states = {};
+  for (const r of (risks || [])) {
+    const key = r.id || r.risk_ref;
+    states[key] = {
+      included: true,
+      wording: r.name || "",
+      originalWording: r.name || "",
+      reason: "",
+    };
+  }
+  return states;
+}
+
+function initControlStates(risks) {
+  const states = {};
+  for (const r of (risks || [])) {
+    const key = r.id || r.risk_ref;
+    const autoRefs = autoMapControls(r.name, r.category);
+    states[key] = { autoMapped: autoRefs, manual: [], generateCode: new Set() };
+  }
+  return states;
+}
+
+// Group risks by source_framework, then by category for internal ones
+function groupRisks(risks) {
+  const groups = {};
+  for (const r of (risks || [])) {
+    const fw = r.source_framework || r.category || "Internal Risk Register";
+    if (!groups[fw]) groups[fw] = [];
+    groups[fw].push(r);
+  }
+  return groups;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-components
+// ─────────────────────────────────────────────────────────────────────────────
+
+function RagDot({ rag }) {
+  if (!rag) return null;
+  return <span className={"rag-dot " + rag} />;
+}
+
+function ScoreBadge({ score }) {
+  if (score == null) return null;
+  const val = Number(score);
+  const color = val >= 15 ? "var(--red,#e53)" : val >= 9 ? "var(--amber,#f80)" : "var(--green,#2a7)";
+  return (
+    <span className="mono" style={{ fontSize: 10, fontWeight: 700, color, minWidth: 28, textAlign: "right" }}>
+      {val.toFixed(1)}
+    </span>
+  );
+}
+
+function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto }) {
+  const ctrl = CTRL_BY_REF[ctrlRef];
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:4, padding:"2px 6px", borderRadius:4, background:"var(--surface-2,#f5f5f5)", border:"1px solid var(--line,#e0e0e0)", fontSize:10 }}>
+      <span className="mono" style={{ fontWeight:600, color:"var(--ink-2,#555)" }}>{ctrlRef}</span>
+      {ctrl && <span style={{ color:"var(--ink-3,#888)" }}>{ctrl.name}</span>}
+      {isAuto && <span style={{ fontSize:9, color:"var(--ink-3,#888)", fontStyle:"italic" }}>auto</span>}
+      <button
+        title={generateCode ? "Remove from code generation" : "Include in code generation"}
+        onClick={() => onToggleGenerate(ctrlRef)}
+        style={{ marginLeft:2, fontSize:9, padding:"0 3px", borderRadius:3, border:"1px solid var(--line,#e0e0e0)", background: generateCode ? "var(--acc,#2563eb)" : "transparent", color: generateCode ? "#fff" : "var(--ink-3,#888)", cursor:"pointer", lineHeight:"14px" }}
+      >{generateCode ? "</>" : "</>"}
+      </button>
+      <button
+        title="Remove control"
+        onClick={() => onRemove(ctrlRef)}
+        style={{ marginLeft:1, fontSize:10, padding:"0 3px", borderRadius:3, border:"none", background:"transparent", color:"var(--ink-3,#888)", cursor:"pointer", lineHeight:"14px" }}
+      >×</button>
+    </div>
+  );
+}
+
+function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual, onRemove, onToggleGenerate, onGetAiRecs, aiRecsLoading }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+
+  const allAssigned = [...(ctrlState.autoMapped || []), ...(ctrlState.manual || [])];
+  const filteredLibrary = MASTER_CONTROLS.filter(c =>
+    !allAssigned.includes(c.ref) &&
+    (pickerSearch === "" || c.name.toLowerCase().includes(pickerSearch.toLowerCase()) || c.ref.toLowerCase().includes(pickerSearch.toLowerCase()) || c.category.toLowerCase().includes(pickerSearch.toLowerCase()))
+  );
+
+  return (
+    <div style={{ marginTop:8, padding:"10px 12px", background:"var(--surface-2,#f8f9fa)", borderRadius:6, border:"1px solid var(--line,#eee)" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
+        <span style={{ fontSize:10, fontWeight:600, color:"var(--ink-2,#555)", textTransform:"uppercase", letterSpacing:"0.06em" }}>Controls</span>
+        <span style={{ fontSize:9, color:"var(--ink-3,#888)" }}>{allAssigned.length} assigned</span>
+        <div style={{ marginLeft:"auto", display:"flex", gap:4 }}>
+          <button
+            className="btn btn-sm"
+            onClick={() => onGetAiRecs(riskKey, riskName, riskCategory)}
+            disabled={aiRecsLoading}
+            style={{ fontSize:9, padding:"2px 7px" }}
+          >
+            <Icon name="spark" size={9}/> {aiRecsLoading ? "…" : "AI Recs"}
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => setPickerOpen(p => !p)}
+            style={{ fontSize:9, padding:"2px 7px" }}
+          >
+            + Add
+          </button>
+        </div>
+      </div>
+
+      {/* Assigned control pills */}
+      {allAssigned.length > 0 ? (
+        <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+          {(ctrlState.autoMapped || []).map(ref => (
+            <ControlPill
+              key={ref} ctrlRef={ref} isAuto
+              generateCode={ctrlState.generateCode.has(ref)}
+              onToggleGenerate={r => onToggleGenerate(riskKey, r)}
+              onRemove={r => onRemove(riskKey, r, true)}
+            />
+          ))}
+          {(ctrlState.manual || []).map(ref => (
+            <ControlPill
+              key={ref} ctrlRef={ref}
+              generateCode={ctrlState.generateCode.has(ref)}
+              onToggleGenerate={r => onToggleGenerate(riskKey, r)}
+              onRemove={r => onRemove(riskKey, r, false)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize:10, color:"var(--ink-3,#888)", fontStyle:"italic" }}>No controls assigned — click AI Recs or Add.</div>
+      )}
+
+      {/* Control library picker */}
+      {pickerOpen && (
+        <div style={{ marginTop:8, padding:8, background:"var(--surface,#fff)", border:"1px solid var(--line,#ddd)", borderRadius:6, maxHeight:180, overflow:"hidden", display:"flex", flexDirection:"column", gap:6 }}>
+          <input
+            className="dendrai-input"
+            placeholder="Search controls…"
+            value={pickerSearch}
+            onChange={e => setPickerSearch(e.target.value)}
+            style={{ fontSize:10, padding:"3px 7px" }}
+            autoFocus
+          />
+          <div style={{ overflowY:"auto", display:"flex", flexDirection:"column", gap:2 }}>
+            {filteredLibrary.slice(0,20).map(c => (
+              <button
+                key={c.ref}
+                style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 6px", borderRadius:4, border:"none", background:"transparent", cursor:"pointer", textAlign:"left", fontSize:10 }}
+                onClick={() => { onAddManual(riskKey, c.ref); setPickerOpen(false); setPickerSearch(""); }}
+                onMouseEnter={e => e.currentTarget.style.background="var(--surface-2,#f5f5f5)"}
+                onMouseLeave={e => e.currentTarget.style.background="transparent"}
+              >
+                <span className="mono" style={{ fontWeight:600, minWidth:46, color:"var(--acc,#2563eb)" }}>{c.ref}</span>
+                <span style={{ color:"var(--ink,#111)" }}>{c.name}</span>
+                <span style={{ marginLeft:"auto", fontSize:9, color:"var(--ink-3,#888)" }}>{c.category}</span>
+              </button>
+            ))}
+            {filteredLibrary.length === 0 && <div style={{ fontSize:10, color:"var(--ink-3,#888)", padding:4 }}>No matches</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Code generation legend */}
+      {allAssigned.length > 0 && (
+        <div style={{ marginTop:6, fontSize:9, color:"var(--ink-3,#888)" }}>
+          Toggle <span className="mono" style={{ background:"var(--acc,#2563eb)", color:"#fff", borderRadius:2, padding:"0 3px" }}>&lt;/&gt;</span> to flag a control for Control-as-Code generation alongside the Risk-as-Code output.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RiskReviewRow({
+  risk, riskState, ctrlState,
+  onToggleInclude, onWordingChange, onReasonChange,
+  onAddManualControl, onRemoveControl, onToggleGenerateControl,
+  onGetAiRecs, aiRecsLoading,
+  expanded, onToggleExpand,
+}) {
+  const key = risk.id || risk.risk_ref;
+  const wordingChanged = riskState.wording !== riskState.originalWording;
+  const needsReason = (!riskState.included || wordingChanged) && !riskState.reason.trim();
+  const showReasonField = !riskState.included || wordingChanged;
+
+  return (
+    <div
+      style={{
+        borderBottom:"1px solid var(--line,#eee)",
+        padding:"10px 0",
+        opacity: riskState.included ? 1 : 0.55,
+      }}
+    >
+      <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
+        {/* Include toggle */}
+        <input
+          type="checkbox"
+          checked={riskState.included}
+          onChange={() => onToggleInclude(key)}
+          style={{ marginTop:3, cursor:"pointer", accentColor:"var(--acc,#2563eb)", flexShrink:0 }}
+          title={riskState.included ? "Exclude this risk" : "Include this risk"}
+        />
+
+        {/* Risk ID badge */}
+        <span className="mono" style={{ fontSize:9, fontWeight:700, color:"var(--ink-3,#888)", minWidth:42, paddingTop:2, flexShrink:0 }}>
+          {key}
+        </span>
+
+        {/* Editable wording */}
+        <div style={{ flex:1, display:"flex", flexDirection:"column", gap:4, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <textarea
+              value={riskState.wording}
+              onChange={e => onWordingChange(key, e.target.value)}
+              rows={2}
+              className="dendrai-input"
+              style={{
+                flex:1, fontSize:11, lineHeight:1.5, resize:"vertical", padding:"4px 7px",
+                border: wordingChanged ? "1px solid var(--amber,#f80)" : "1px solid var(--line,#ddd)",
+                borderRadius:4, background:"var(--surface,#fff)", fontFamily:"inherit",
+              }}
+              disabled={!riskState.included}
+            />
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:3, flexShrink:0 }}>
+              <RagDot rag={risk.rag} />
+              <ScoreBadge score={risk.score} />
+              {risk.category && (
+                <span style={{ fontSize:9, color:"var(--ink-3,#888)", maxWidth:70, textAlign:"right", lineHeight:1.2 }}>
+                  {risk.category}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Wording changed indicator */}
+          {wordingChanged && (
+            <div style={{ fontSize:9, color:"var(--amber,#c65)", display:"flex", alignItems:"center", gap:3 }}>
+              <span>&#9679;</span> Wording modified from original
+            </div>
+          )}
+
+          {/* Conditional reason field */}
+          {showReasonField && (
+            <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+              <label style={{ fontSize:9, fontWeight:600, color: needsReason ? "var(--red,#e53)" : "var(--ink-2,#555)", display:"flex", alignItems:"center", gap:4 }}>
+                {needsReason && <span title="Required before converting to code">⚠</span>}
+                {riskState.included ? "Reason for wording change" : "Reason for exclusion"}
+                <span style={{ fontWeight:400, color:"var(--ink-3,#888)" }}>(required)</span>
+              </label>
+              <textarea
+                value={riskState.reason}
+                onChange={e => onReasonChange(key, e.target.value)}
+                rows={2}
+                placeholder={riskState.included ? "Describe why the wording was changed…" : "Describe why this risk is being excluded…"}
+                className="dendrai-input"
+                style={{
+                  fontSize:10, resize:"vertical", padding:"4px 7px",
+                  border: needsReason ? "1px solid var(--red,#e53)" : "1px solid var(--line,#ddd)",
+                  borderRadius:4, background:"var(--surface,#fff)", fontFamily:"inherit",
+                  boxShadow: needsReason ? "0 0 0 2px rgba(229,85,51,0.12)" : "none",
+                }}
+              />
+            </div>
+          )}
+
+          {/* Controls toggle */}
+          <button
+            onClick={() => onToggleExpand(key)}
+            style={{
+              alignSelf:"flex-start", fontSize:9, padding:"2px 7px", borderRadius:4,
+              border:"1px solid var(--line,#ddd)", background:"transparent",
+              color:"var(--ink-2,#555)", cursor:"pointer", display:"flex", alignItems:"center", gap:3,
+            }}
+          >
+            <Icon name="check" size={9}/> Controls ({[...(ctrlState.autoMapped||[]),...(ctrlState.manual||[])].length})
+            <span style={{ fontSize:8 }}>{expanded ? "▲" : "▼"}</span>
+          </button>
+
+          {expanded && (
+            <ControlsPanel
+              riskKey={key}
+              riskName={riskState.wording}
+              riskCategory={risk.category}
+              ctrlState={ctrlState}
+              onAddManual={onAddManualControl}
+              onRemove={onRemoveControl}
+              onToggleGenerate={onToggleGenerateControl}
+              onGetAiRecs={onGetAiRecs}
+              aiRecsLoading={aiRecsLoading}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FrameworkGroupHeader({ framework, risks, riskStates, collapsed, onToggle }) {
+  const total = risks.length;
+  const excluded = risks.filter(r => riskStates[(r.id||r.risk_ref)]?.included === false).length;
+  const changed  = risks.filter(r => {
+    const s = riskStates[r.id||r.risk_ref];
+    return s && s.wording !== s.originalWording;
+  }).length;
+  return (
+    <div
+      onClick={onToggle}
+      style={{
+        display:"flex", alignItems:"center", gap:8, padding:"8px 0",
+        cursor:"pointer", userSelect:"none", borderBottom: collapsed ? "1px solid var(--line,#eee)" : "none",
+      }}
+    >
+      <span style={{ fontSize:10, color:"var(--ink-3,#888)" }}>{collapsed ? "▶" : "▼"}</span>
+      <span style={{ fontWeight:600, fontSize:12, color:"var(--ink,#111)" }}>{framework}</span>
+      <span style={{ fontSize:10, color:"var(--ink-3,#888)", fontWeight:400 }}>{total} risk{total !== 1 ? "s" : ""}</span>
+      {excluded > 0 && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:3, background:"rgba(229,85,51,0.1)", color:"var(--red,#e53)", fontWeight:600 }}>{excluded} excluded</span>}
+      {changed  > 0 && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:3, background:"rgba(248,128,0,0.1)", color:"var(--amber,#c65)", fontWeight:600 }}>{changed} modified</span>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Output panel (Convert to Code result)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function OutputPanel({ yaml, onClose, onDownload }) {
+  return (
+    <div style={{
+      position:"fixed", top:0, right:0, bottom:0, width:"min(600px,50vw)",
+      background:"var(--surface,#fff)", borderLeft:"1px solid var(--line,#e0e0e0)",
+      display:"flex", flexDirection:"column", zIndex:200, boxShadow:"-4px 0 24px rgba(0,0,0,0.08)",
+    }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"12px 16px", borderBottom:"1px solid var(--line,#eee)", flexShrink:0 }}>
+        <span style={{ fontWeight:600, fontSize:12 }}>Risk Register Review — Code Output</span>
+        <div style={{ marginLeft:"auto", display:"flex", gap:6 }}>
+          <button className="btn btn-sm" onClick={onDownload}><Icon name="download" size={11}/> Download</button>
+          <button className="btn btn-sm" onClick={onClose}>✕ Close</button>
+        </div>
+      </div>
+      <div style={{ padding:"8px 12px", borderBottom:"1px solid var(--line,#eee)", flexShrink:0 }}>
+        <span className="mono" style={{ fontSize:9, color:"var(--ink-3,#888)" }}>
+          risk-register-review.yaml · {yaml.split("\n").length} lines · {(new Blob([yaml]).size/1024).toFixed(1)} KB
+        </span>
+      </div>
+      <textarea
+        className="code-editor mono"
+        readOnly
+        value={yaml}
+        spellCheck={false}
+        style={{ flex:1, resize:"none", padding:12, fontSize:10.5, lineHeight:1.6 }}
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main screen
+// ─────────────────────────────────────────────────────────────────────────────
+
+function RiskRegisterReviewScreen({ risks, runId }) {
+  const [activeTab, setActiveTab] = useState("internal");
+
+  // ── Internal register state ──────────────────────────────────────────────
+  const [riskStates, setRiskStates]     = useState(() => initRiskStates(risks));
+  const [ctrlStates, setCtrlStates]     = useState(() => initControlStates(risks));
+  const [collapsedGroups, setCollapsed] = useState({});
+  const [expandedCtrl, setExpandedCtrl] = useState(new Set());
+  const [aiRecsLoading, setAiRecsLoading] = useState(null); // riskKey | null
+
+  // ── Discovery state ──────────────────────────────────────────────────────
+  const [fwSearch, setFwSearch]           = useState("");
+  const [selectedFws, setSelectedFws]     = useState([]);
+  const [searching, setSearching]         = useState(false);
+  const [discoveredRisks, setDiscovered]  = useState([]);
+  const [discRiskStates, setDiscStates]   = useState({});
+  const [discCtrlStates, setDiscCtrlStates] = useState({});
+  const [discCollapsed, setDiscCollapsed] = useState({});
+  const [discExpandedCtrl, setDiscExpandedCtrl] = useState(new Set());
+
+  // ── Output ───────────────────────────────────────────────────────────────
+  const [outputYaml, setOutputYaml] = useState(null);
+  const [converting, setConverting] = useState(false);
+  const [convertErr, setConvertErr] = useState(null);
+  const [validationMsg, setValidationMsg] = useState(null);
+
+  // Sync internal risk list when parent risks change
+  useEffect(() => {
+    setRiskStates(initRiskStates(risks));
+    setCtrlStates(initControlStates(risks));
+  }, [risks?.length]);
+
+  // ── Validation helpers ────────────────────────────────────────────────────
+
+  function validateStates(states) {
+    const missingReasons = [];
+    for (const [key, s] of Object.entries(states)) {
+      const wordingChanged = s.wording !== s.originalWording;
+      if ((!s.included || wordingChanged) && !s.reason.trim()) {
+        missingReasons.push(key);
+      }
+    }
+    return missingReasons;
+  }
+
+  // ── Risk state mutation helpers ────────────────────────────────────────────
+
+  function makeStateHandlers(setStates) {
+    return {
+      toggleInclude: (key) => setStates(prev => ({ ...prev, [key]: { ...prev[key], included: !prev[key].included } })),
+      wordingChange: (key, val) => setStates(prev => ({ ...prev, [key]: { ...prev[key], wording: val } })),
+      reasonChange:  (key, val) => setStates(prev => ({ ...prev, [key]: { ...prev[key], reason: val } })),
+    };
+  }
+
+  const intHandlers = makeStateHandlers(setRiskStates);
+  const discHandlers = makeStateHandlers(setDiscStates);
+
+  // ── Control state mutation helpers ────────────────────────────────────────
+
+  function makeCtrlHandlers(setCtrl) {
+    return {
+      addManual: (riskKey, ctrlRef) => setCtrl(prev => {
+        const s = prev[riskKey] || { autoMapped:[], manual:[], generateCode:new Set() };
+        if (s.autoMapped.includes(ctrlRef) || s.manual.includes(ctrlRef)) return prev;
+        return { ...prev, [riskKey]: { ...s, manual:[...s.manual, ctrlRef] } };
+      }),
+      remove: (riskKey, ctrlRef, isAuto) => setCtrl(prev => {
+        const s = prev[riskKey];
+        if (!s) return prev;
+        const next = { ...s };
+        if (isAuto) next.autoMapped = next.autoMapped.filter(r => r !== ctrlRef);
+        else        next.manual     = next.manual.filter(r => r !== ctrlRef);
+        const gen = new Set(next.generateCode);
+        gen.delete(ctrlRef);
+        next.generateCode = gen;
+        return { ...prev, [riskKey]: next };
+      }),
+      toggleGen: (riskKey, ctrlRef) => setCtrl(prev => {
+        const s = prev[riskKey];
+        if (!s) return prev;
+        const gen = new Set(s.generateCode);
+        gen.has(ctrlRef) ? gen.delete(ctrlRef) : gen.add(ctrlRef);
+        return { ...prev, [riskKey]: { ...s, generateCode: gen } };
+      }),
+    };
+  }
+
+  const intCtrl  = makeCtrlHandlers(setCtrlStates);
+  const discCtrl = makeCtrlHandlers(setDiscCtrlStates);
+
+  // ── AI control recommendations ────────────────────────────────────────────
+
+  async function getAiRecs(riskKey, riskName, riskCategory, isDisc) {
+    setAiRecsLoading(riskKey);
+    try {
+      const res = await fetch("/api/risk-register/controls/recommend", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ risk_wording: riskName, risk_category: riskCategory, risk_ref: riskKey }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const refs = (data.controls || []).map(c => c.ref || c).filter(Boolean);
+        const setter = isDisc ? setDiscCtrlStates : setCtrlStates;
+        setter(prev => {
+          const s = prev[riskKey] || { autoMapped:[], manual:[], generateCode:new Set() };
+          const merged = [...new Set([...s.autoMapped, ...refs])].slice(0, 6);
+          return { ...prev, [riskKey]: { ...s, autoMapped: merged } };
+        });
+      }
+    } catch {}
+    setAiRecsLoading(null);
+  }
+
+  // ── Framework discovery ───────────────────────────────────────────────────
+
+  function toggleFwSelection(fw) {
+    setSelectedFws(prev => prev.includes(fw) ? prev.filter(f => f !== fw) : [...prev, fw]);
+  }
+
+  async function handleSearch() {
+    const fwsToSearch = selectedFws.length ? selectedFws : (fwSearch.trim() ? [] : PRESET_FRAMEWORKS);
+    setSearching(true);
+    setDiscovered([]);
+    try {
+      const res = await fetch("/api/risk-register/framework-search", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ query: fwSearch.trim() || null, frameworks: fwsToSearch }),
+      });
+      let found = [];
+      if (res.ok) {
+        const data = await res.json();
+        found = data.risks || [];
+      } else {
+        // Fallback: use local mock data
+        for (const fw of fwsToSearch) {
+          if (FW_MOCK_RISKS[fw]) found.push(...FW_MOCK_RISKS[fw]);
+        }
+        if (fwSearch.trim() && !found.length) {
+          for (const [fw, risks] of Object.entries(FW_MOCK_RISKS)) {
+            if (fw.toLowerCase().includes(fwSearch.toLowerCase())) found.push(...risks);
+          }
+        }
+      }
+      setDiscovered(found);
+      setDiscStates(initRiskStates(found));
+      setDiscCtrlStates(initControlStates(found));
+      setDiscCollapsed({});
+    } catch {
+      // Fallback to local mock
+      const found = [];
+      for (const fw of fwsToSearch) {
+        if (FW_MOCK_RISKS[fw]) found.push(...FW_MOCK_RISKS[fw]);
+      }
+      setDiscovered(found);
+      setDiscStates(initRiskStates(found));
+      setDiscCtrlStates(initControlStates(found));
+    }
+    setSearching(false);
+  }
+
+  // ── Convert to Code ────────────────────────────────────────────────────────
+
+  function buildConvertPayload(sourceRisks, states, ctrlStates, isDiscovery) {
+    return (sourceRisks || []).map(r => {
+      const key = r.id || r.risk_ref;
+      const s = states[key] || { included:true, wording:r.name||"", reason:"" };
+      const cs = ctrlStates[key] || { autoMapped:[], manual:[], generateCode:new Set() };
+      const allCtrlRefs = [...(cs.autoMapped||[]), ...(cs.manual||[])];
+      return {
+        ...r,
+        included: s.included,
+        current_wording: s.wording,
+        reason_for_change: s.reason || null,
+        controls_assigned: allCtrlRefs.map(ref => ({
+          ref,
+          generate_code: cs.generateCode.has(ref),
+        })),
+      };
+    });
+  }
+
+  async function handleConvert(isDiscovery) {
+    const sourceRisks = isDiscovery ? discoveredRisks : (risks || []);
+    const states      = isDiscovery ? discRiskStates   : riskStates;
+    const ctrl        = isDiscovery ? discCtrlStates   : ctrlStates;
+
+    const missing = validateStates(states);
+    if (missing.length) {
+      setValidationMsg(`${missing.length} risk${missing.length>1?"s":""} need a reason before converting: ${missing.join(", ")}`);
+      return;
+    }
+    setValidationMsg(null);
+    setConverting(true);
+    setConvertErr(null);
+
+    const payload = buildConvertPayload(sourceRisks, states, ctrl, isDiscovery);
+    try {
+      const res = await fetch("/api/risk-register/convert-to-code", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          risks: payload,
+          review_type: isDiscovery ? "external" : "internal",
+          framework: isDiscovery ? (selectedFws[0] || fwSearch || "External") : "Internal Risk Register",
+          include_controls: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setOutputYaml(data.yaml || "");
+    } catch (err) {
+      // Fallback: generate YAML client-side
+      const yaml = buildLocalYaml(payload, isDiscovery ? (selectedFws[0]||fwSearch||"External") : "Internal");
+      setOutputYaml(yaml);
+    }
+    setConverting(false);
+  }
+
+  function buildLocalYaml(risks, framework) {
+    const now = new Date().toISOString().split("T")[0];
+    const included = risks.filter(r => r.included !== false);
+    const excluded = risks.filter(r => r.included === false);
+    const lines = [
+      "# Risk Register Review — Risk-as-Code Output",
+      `# Generated: ${now}  ·  ${included.length} included  ·  ${excluded.length} excluded`,
+      `# Source: ${framework}`,
+      "",
+      "risks:",
+    ];
+    for (const r of included) {
+      const wording = (r.current_wording||r.name||"").replace(/"/g,'\\"');
+      lines.push(`  - id:               ${r.id||"—"}`);
+      lines.push(`    name:             "${wording}"`);
+      lines.push(`    category:         ${r.category||"—"}`);
+      lines.push(`    source_framework: ${r.source_framework||framework}`);
+      lines.push(`    rag:              ${r.rag||"—"}`);
+      if (r.score != null) lines.push(`    score:            ${Number(r.score).toFixed(1)}`);
+      if (r.reason_for_change) lines.push(`    change_reason:    "${r.reason_for_change.replace(/"/g,'\\"')}"`);
+      if ((r.controls_assigned||[]).length) {
+        lines.push("    controls:");
+        for (const c of r.controls_assigned) {
+          const ctrl = CTRL_BY_REF[c.ref];
+          lines.push(`      - ref: ${c.ref}`);
+          if (ctrl) lines.push(`        name: "${ctrl.name}"`);
+          if (c.generate_code) lines.push(`        generate_control_as_code: true`);
+        }
+      }
+      lines.push("");
+    }
+    if (excluded.length) {
+      lines.push("excluded_risks:");
+      for (const r of excluded) {
+        lines.push(`  - id:     ${r.id||"—"}`);
+        lines.push(`    name:   "${(r.current_wording||r.name||"").replace(/"/g,'\\"')}"`);
+        lines.push(`    reason: "${(r.reason_for_change||"No reason provided").replace(/"/g,'\\"')}"`);
+        lines.push("");
+      }
+    }
+    return lines.join("\n").trimEnd();
+  }
+
+  function handleDownload() {
+    if (!outputYaml) return;
+    const blob = new Blob([outputYaml], { type:"application/x-yaml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dendrai_risk-register-review_${new Date().toISOString().split("T")[0]}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Render helpers ────────────────────────────────────────────────────────
+
+  function renderRiskList(sourceRisks, states, ctrl, collapsedG, setCollapsedG, expandedC, setExpandedC, handlers, ctrlHandlers, isDisc) {
+    if (!sourceRisks?.length) return null;
+    const groups = groupRisks(sourceRisks);
+
+    return Object.entries(groups).map(([fw, fwRisks]) => {
+      const isCollapsed = !!collapsedG[fw];
+      return (
+        <div key={fw} style={{ marginBottom:4 }}>
+          <FrameworkGroupHeader
+            framework={fw}
+            risks={fwRisks}
+            riskStates={states}
+            collapsed={isCollapsed}
+            onToggle={() => setCollapsedG(prev => ({ ...prev, [fw]: !isCollapsed }))}
+          />
+          {!isCollapsed && fwRisks.map(r => {
+            const key = r.id || r.risk_ref;
+            const s = states[key] || { included:true, wording:r.name||"", originalWording:r.name||"", reason:"" };
+            const cs = ctrl[key] || { autoMapped:autoMapControls(r.name,r.category), manual:[], generateCode:new Set() };
+            return (
+              <RiskReviewRow
+                key={key}
+                risk={r}
+                riskState={s}
+                ctrlState={cs}
+                onToggleInclude={handlers.toggleInclude}
+                onWordingChange={handlers.wordingChange}
+                onReasonChange={handlers.reasonChange}
+                onAddManualControl={ctrlHandlers.addManual}
+                onRemoveControl={ctrlHandlers.remove}
+                onToggleGenerateControl={ctrlHandlers.toggleGen}
+                onGetAiRecs={(k, n, c) => getAiRecs(k, n, c, isDisc)}
+                aiRecsLoading={aiRecsLoading === key}
+                expanded={expandedC.has(key)}
+                onToggleExpand={(k) => setExpandedC(prev => {
+                  const next = new Set(prev);
+                  next.has(k) ? next.delete(k) : next.add(k);
+                  return next;
+                })}
+              />
+            );
+          })}
+        </div>
+      );
+    });
+  }
+
+  function renderActionBar(sourceRisks, states, isDisc) {
+    if (!sourceRisks?.length) return null;
+    const missing = validateStates(states);
+    const total = sourceRisks.length;
+    const excluded = Object.values(states).filter(s => !s.included).length;
+    const modified = Object.values(states).filter(s => s.wording !== s.originalWording).length;
+
+    return (
+      <div style={{
+        position:"sticky", bottom:0,
+        background:"var(--surface,#fff)", borderTop:"1px solid var(--line,#e0e0e0)",
+        padding:"12px 0", display:"flex", alignItems:"center", gap:12,
+        marginTop:16,
+      }}>
+        <div style={{ display:"flex", gap:10, fontSize:11, color:"var(--ink-2,#555)" }}>
+          <span><b>{total - excluded}</b> / {total} included</span>
+          {modified > 0 && <span style={{ color:"var(--amber,#c65)" }}><b>{modified}</b> wording change{modified>1?"s":""}</span>}
+          {excluded > 0 && <span style={{ color:"var(--red,#e53)" }}><b>{excluded}</b> excluded</span>}
+        </div>
+
+        {missing.length > 0 && (
+          <div style={{ fontSize:10, color:"var(--red,#e53)", display:"flex", alignItems:"center", gap:4 }}>
+            <span>⚠</span>
+            <span>{missing.length} item{missing.length>1?"s":""} missing a reason</span>
+          </div>
+        )}
+
+        {validationMsg && (
+          <div style={{ fontSize:10, color:"var(--red,#e53)" }}>{validationMsg}</div>
+        )}
+
+        <div style={{ marginLeft:"auto" }}>
+          <button
+            className={"btn btn-sm btn-acc" + (converting?" loading":"")}
+            disabled={missing.length > 0 || converting}
+            onClick={() => handleConvert(isDisc)}
+            title={missing.length > 0 ? `Add reasons for ${missing.length} item(s) first` : "Generate Risk-as-Code YAML"}
+          >
+            <Icon name="spark" size={11}/>
+            {converting ? " Converting…" : " Convert to Code"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Summary banner ────────────────────────────────────────────────────────
+
+  function renderSummaryBanner(sourceRisks, states) {
+    if (!sourceRisks?.length) return null;
+    const groups = groupRisks(sourceRisks);
+    const fwCount = Object.keys(groups).length;
+    const total = sourceRisks.length;
+    const excluded = Object.values(states).filter(s => !s.included).length;
+    const missing = validateStates(states).length;
+    return (
+      <div style={{
+        display:"flex", gap:16, padding:"8px 0 12px", fontSize:11,
+        color:"var(--ink-2,#555)", borderBottom:"1px solid var(--line,#eee)", marginBottom:8,
+        flexWrap:"wrap",
+      }}>
+        <span><b>{total}</b> risks across <b>{fwCount}</b> group{fwCount !== 1 ? "s" : ""}</span>
+        {excluded > 0 && <span style={{ color:"var(--red,#e53)" }}><b>{excluded}</b> excluded</span>}
+        {missing > 0 && (
+          <span style={{ color:"var(--red,#e53)", fontWeight:600 }}>
+            ⚠ {missing} reason{missing>1?"s":""} required before converting
+          </span>
+        )}
+        {missing === 0 && total > 0 && (
+          <span style={{ color:"var(--green,#2a7)", fontWeight:600 }}>✓ Ready to convert</span>
+        )}
+      </div>
+    );
+  }
+
+  // ── Main render ───────────────────────────────────────────────────────────
+
+  return (
+    <div className="code-screen" data-screen-label="Risk Register Review" style={{ position:"relative" }}>
+      {/* Header */}
+      <div className="panel-head">
+        <div>
+          <div className="kicker">Execution · Risk Register Review</div>
+          <div className="panel-title mt-8">Risk Register Review</div>
+          <div className="panel-sub">
+            Validate and curate risks before converting to Risk-as-Code.
+            Edit wording, include/exclude items, assign controls, and generate output.
+          </div>
+        </div>
+        <div className="code-actions">
+          {outputYaml && (
+            <button className="btn btn-sm" onClick={() => setOutputYaml(null)}>Hide Output</button>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="rac-tabs">
+        <button
+          className={"rac-tab" + (activeTab === "internal" ? " active" : "")}
+          onClick={() => setActiveTab("internal")}
+        >
+          <span className="rac-tab-badge">INT</span>
+          Internal Register
+          {risks?.length > 0 && <span className="rac-tab-dot"/>}
+        </button>
+        <button
+          className={"rac-tab" + (activeTab === "discovery" ? " active" : "")}
+          onClick={() => setActiveTab("discovery")}
+        >
+          <span className="rac-tab-badge">EXT</span>
+          Framework Discovery
+          {discoveredRisks.length > 0 && <span className="rac-tab-dot"/>}
+        </button>
+      </div>
+
+      {/* Tab content */}
+      <div style={{ flex:1, overflowY:"auto", padding:"0 0 80px" }}>
+
+        {/* ── Internal Register tab ── */}
+        {activeTab === "internal" && (
+          <div>
+            {!risks?.length ? (
+              <Empty style={{ padding:48 }}>
+                Run the pipeline to Stage 2 to load the internal risk register, then return here to review and curate before converting to code.
+              </Empty>
+            ) : (
+              <>
+                {renderSummaryBanner(risks, riskStates)}
+                {renderRiskList(risks, riskStates, ctrlStates, collapsedGroups, setCollapsed, expandedCtrl, setExpandedCtrl, intHandlers, intCtrl, false)}
+                {renderActionBar(risks, riskStates, false)}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Framework Discovery tab ── */}
+        {activeTab === "discovery" && (
+          <div>
+            {/* Search inputs */}
+            <div style={{ padding:"12px 0 16px", borderBottom:"1px solid var(--line,#eee)", marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:"var(--ink,#111)", marginBottom:8 }}>
+                Ingest an external framework's risk catalog
+              </div>
+
+              {/* Preset framework chips */}
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
+                {PRESET_FRAMEWORKS.map(fw => {
+                  const sel = selectedFws.includes(fw);
+                  return (
+                    <button
+                      key={fw}
+                      onClick={() => toggleFwSelection(fw)}
+                      style={{
+                        fontSize:10, padding:"3px 10px", borderRadius:12,
+                        border: sel ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line,#ddd)",
+                        background: sel ? "var(--acc,#2563eb)" : "var(--surface,#fff)",
+                        color: sel ? "#fff" : "var(--ink-2,#555)",
+                        cursor:"pointer", fontWeight: sel ? 600 : 400,
+                        transition:"all 0.1s",
+                      }}
+                    >
+                      {fw}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Free-text field */}
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <input
+                  className="dendrai-input"
+                  placeholder="Or enter a custom framework name…"
+                  value={fwSearch}
+                  onChange={e => setFwSearch(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handleSearch()}
+                  style={{ flex:1, fontSize:11 }}
+                />
+                <button
+                  className={"btn btn-sm btn-acc" + (searching ? " loading" : "")}
+                  onClick={handleSearch}
+                  disabled={searching}
+                >
+                  <Icon name="spark" size={11}/>
+                  {searching ? " Searching…" : " Search"}
+                </button>
+              </div>
+
+              {selectedFws.length === 0 && !fwSearch.trim() && (
+                <div style={{ marginTop:6, fontSize:10, color:"var(--ink-3,#888)" }}>
+                  Select frameworks above or enter a custom name, then click Search to fetch the risk catalog.
+                  When no selection is made, all preset frameworks are searched.
+                </div>
+              )}
+            </div>
+
+            {/* Discovery results */}
+            {searching && (
+              <div style={{ padding:24, textAlign:"center", color:"var(--ink-3,#888)", fontSize:11 }}>
+                Fetching framework risk catalog…
+              </div>
+            )}
+
+            {!searching && discoveredRisks.length === 0 && (
+              <Empty style={{ padding:32 }}>
+                Search results will appear here. Select one or more frameworks above and click Search.
+              </Empty>
+            )}
+
+            {!searching && discoveredRisks.length > 0 && (
+              <>
+                {renderSummaryBanner(discoveredRisks, discRiskStates)}
+                {renderRiskList(
+                  discoveredRisks, discRiskStates, discCtrlStates,
+                  discCollapsed, setDiscCollapsed,
+                  discExpandedCtrl, setDiscExpandedCtrl,
+                  discHandlers, discCtrl, true
+                )}
+                {renderActionBar(discoveredRisks, discRiskStates, true)}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Output panel */}
+      {outputYaml && (
+        <OutputPanel
+          yaml={outputYaml}
+          onClose={() => setOutputYaml(null)}
+          onDownload={handleDownload}
+        />
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { RiskRegisterReviewScreen });

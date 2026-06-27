@@ -11,6 +11,7 @@ const NAV_SECTIONS = [
       // right-hand Live Register rail on the Pipeline screen (post-run).
       { id: "pipeline", icon: "flow",      l: "Assess Risk" },
       { id: "riskcode",   icon: "spark",     l: "Risk-as-Code" },
+      { id: "rrreview",   icon: "list",     l: "Risk Register Review" },
       { id: "frameworks", icon: "code",     l: "Risks as Code (Frameworks)" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },

@@ -1508,6 +1508,15 @@ function App() {
           </div>
           )}
 
+          {/* ---- Risk Register Review (Phases 2-4) ---- */}
+          {activeScreen === "rrreview" && (
+          <div className="panel active">
+            <RiskRegisterReviewScreen
+              risks={output.s2?.risks || (hasRun ? profile.risks : null)}
+              runId={runIdRef.current} />
+          </div>
+          )}
+
           {/* ---- Risks as Code (Industry Frameworks) ---- */}
           {activeScreen === "frameworks" && (
           <div className="panel active">
