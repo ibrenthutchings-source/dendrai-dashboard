@@ -294,14 +294,14 @@ function ForecastChartsInline({ forecasts, livefacts }) {
       {rev?.history?.length > 0 && (
         <div>
           <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue · TTM ($M)</div>
+            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue · Quarterly ($M)</div>
             {revDelta != null && (
               <div style={{fontSize:10, fontFamily:"var(--mono)", color: revDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
                 {revDelta >= 0 ? "▲" : "▼"}{Math.abs(revDelta).toFixed(1)}% · 4Q forecast ${fcRev?.toFixed(0)}M
               </div>
             )}
           </div>
-          <FCWithMetrics history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={2}/>
+          <FCWithMetrics history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={0}/>
         </div>
       )}
       {mg?.history?.length > 0 && (
@@ -1033,7 +1033,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
             </div>
-            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
+            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={0}/>
           </div>
         );
       })()}
@@ -1518,7 +1518,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Revenue trajectory from Stage 1 (EDGAR). Declining QoQ momentum or trend reversal raises the velocity delta on financial-reporting and supply-chain risks in this stage.
             </div>
-            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
+            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={0}/>
           </div>
         );
       })()}
