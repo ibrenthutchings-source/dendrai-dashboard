@@ -25,7 +25,7 @@ import claude_client
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_MODEL_CHAT = "claude-sonnet-4-6"
+_MODEL_CHAT = "claude-haiku-4-5-20251001"
 
 
 # ── Request model ──────────────────────────────────────────────────────────────

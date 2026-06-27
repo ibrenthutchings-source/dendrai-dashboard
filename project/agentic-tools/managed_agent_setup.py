@@ -40,7 +40,7 @@ try:
 except ImportError:
     sys.exit("anthropic SDK not installed. Run: pip install -U anthropic")
 
-MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-opus-4-8")
+MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 AGENT_NAME = "Dendrai Risk Loop Agent"
 ENV_NAME = "dendrai-risk-loop-env"
 
