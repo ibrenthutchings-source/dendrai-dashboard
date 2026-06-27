@@ -86,6 +86,7 @@ import peer_intel
 import risks_as_code
 import oracle_fusion_endpoints
 import sox_endpoints
+import risk_register_endpoints
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -136,6 +137,9 @@ app.include_router(oracle_fusion_endpoints.router)
 
 # SOX Scope: materiality, accounts, processes, systems, segment coverage.
 app.include_router(sox_endpoints.router)
+
+# Risk Register Review: internal register management, framework ingestion, control mapping.
+app.include_router(risk_register_endpoints.router)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────

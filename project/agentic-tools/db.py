@@ -658,6 +658,67 @@ CREATE TABLE IF NOT EXISTS analyst_kpi_series (
     UNIQUE (run_id, metric_name, quarter_end)
 );
 CREATE INDEX IF NOT EXISTS idx_analyst_kpi ON analyst_kpi_series (run_id, metric_name);
+
+-- ── Risk Register Review ─────────────────────────────────────────────────────
+-- Tracks interactive review sessions for internal pipeline risks and
+-- externally ingested framework risk catalogs.
+
+CREATE TABLE IF NOT EXISTS risk_register_reviews (
+    id           SERIAL PRIMARY KEY,
+    run_id       INT          REFERENCES risk_loop_runs(id) ON DELETE SET NULL,
+    review_type  VARCHAR(16)  NOT NULL DEFAULT 'internal',
+    framework    VARCHAR(128),
+    status       VARCHAR(16)  NOT NULL DEFAULT 'in_progress',
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_rrr_run ON risk_register_reviews (run_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS review_risk_states (
+    id                BIGSERIAL    PRIMARY KEY,
+    review_id         INT          NOT NULL REFERENCES risk_register_reviews(id) ON DELETE CASCADE,
+    risk_ref          VARCHAR(32)  NOT NULL,
+    original_wording  TEXT,
+    current_wording   TEXT,
+    included          BOOLEAN      NOT NULL DEFAULT TRUE,
+    reason_for_change TEXT,
+    controls_assigned JSONB        NOT NULL DEFAULT '[]',
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (review_id, risk_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_rrs_review ON review_risk_states (review_id);
+
+CREATE TABLE IF NOT EXISTS controls_library (
+    id           SERIAL PRIMARY KEY,
+    control_ref  VARCHAR(32)  NOT NULL UNIQUE,
+    framework    VARCHAR(64),
+    name         VARCHAR(255) NOT NULL,
+    description  TEXT,
+    category     VARCHAR(64),
+    domain       VARCHAR(64),
+    tags         TEXT[]
+);
+
+CREATE TABLE IF NOT EXISTS risk_control_mappings (
+    id             SERIAL PRIMARY KEY,
+    review_id      INT         NOT NULL REFERENCES risk_register_reviews(id) ON DELETE CASCADE,
+    risk_ref       VARCHAR(32) NOT NULL,
+    control_ref    VARCHAR(32) NOT NULL,
+    mapping_type   VARCHAR(16) NOT NULL DEFAULT 'auto',
+    generate_code  BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (review_id, risk_ref, control_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_rcm_review ON risk_control_mappings (review_id, risk_ref);
+
+CREATE TABLE IF NOT EXISTS framework_risk_catalogs (
+    id             SERIAL PRIMARY KEY,
+    framework_name VARCHAR(128) NOT NULL,
+    framework_ver  VARCHAR(32),
+    risks_json     JSONB        NOT NULL,
+    fetched_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (framework_name, framework_ver)
+);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -676,6 +737,8 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_income         N
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS gross_margin_pct   NUMERIC(7,3);
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS op_margin_pct      NUMERIC(7,3);
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     NUMERIC(7,3);
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework VARCHAR(128);
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative         TEXT;
 """
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
@@ -2980,6 +3043,147 @@ def save_result(tool_name: str, ticker: str, company_name: str, data: dict) -> O
     """Deprecated — use typed save functions."""
     logger.warning("db.save_result() is deprecated; use typed save functions (tool: %s)", tool_name)
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Risk Register Review
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_risk_register_review(
+    run_id: Optional[int],
+    review_type: str = "internal",
+    framework: Optional[str] = None,
+) -> Optional[int]:
+    """Create a risk_register_reviews record. Returns review_id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO risk_register_reviews (run_id, review_type, framework)
+                    VALUES (%s, %s, %s)
+                    RETURNING id
+                    """,
+                    (run_id, review_type, framework),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def save_review_risk_states(review_id: int, states: list) -> None:
+    """Upsert per-risk state rows for a review session."""
+    if not states:
+        return
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                for s in states:
+                    cur.execute(
+                        """
+                        INSERT INTO review_risk_states
+                            (review_id, risk_ref, original_wording, current_wording,
+                             included, reason_for_change, controls_assigned)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (review_id, risk_ref) DO UPDATE SET
+                            current_wording   = EXCLUDED.current_wording,
+                            included          = EXCLUDED.included,
+                            reason_for_change = EXCLUDED.reason_for_change,
+                            controls_assigned = EXCLUDED.controls_assigned,
+                            updated_at        = NOW()
+                        """,
+                        (
+                            review_id,
+                            s.get("risk_ref"),
+                            s.get("original_wording"),
+                            s.get("current_wording"),
+                            s.get("included", True),
+                            s.get("reason_for_change"),
+                            Json(s.get("controls_assigned") or []),
+                        ),
+                    )
+    _run(_do)
+
+
+def get_review_risk_states(review_id: int) -> list:
+    """Return all risk state rows for a review session."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT risk_ref, original_wording, current_wording,
+                           included, reason_for_change, controls_assigned, updated_at
+                    FROM review_risk_states
+                    WHERE review_id = %s
+                    ORDER BY risk_ref
+                    """,
+                    (review_id,),
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "risk_ref": r[0],
+                        "original_wording": r[1],
+                        "current_wording": r[2],
+                        "included": r[3],
+                        "reason_for_change": r[4],
+                        "controls_assigned": r[5] or [],
+                        "updated_at": r[6].isoformat() if r[6] else None,
+                    }
+                    for r in rows
+                ]
+    return _run(_do) or []
+
+
+def complete_risk_register_review(review_id: int) -> None:
+    """Mark a review session as completed."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE risk_register_reviews SET status = 'completed', completed_at = NOW() WHERE id = %s",
+                    (review_id,),
+                )
+    _run(_do)
+
+
+def list_risk_register_reviews(run_id: Optional[int] = None, limit: int = 20) -> list:
+    """List recent review sessions, optionally filtered by run_id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if run_id:
+                    cur.execute(
+                        """
+                        SELECT id, run_id, review_type, framework, status, created_at, completed_at
+                        FROM risk_register_reviews
+                        WHERE run_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (run_id, limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, run_id, review_type, framework, status, created_at, completed_at
+                        FROM risk_register_reviews
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id": r[0], "run_id": r[1], "review_type": r[2],
+                        "framework": r[3], "status": r[4],
+                        "created_at": r[5].isoformat() if r[5] else None,
+                        "completed_at": r[6].isoformat() if r[6] else None,
+                    }
+                    for r in rows
+                ]
+    return _run(_do) or []
 
 
 def get_results(tool_name: str, ticker: Optional[str] = None, limit: int = 20) -> list:
