@@ -13,8 +13,9 @@ Activation:
     Without it, is_available() returns False and callers degrade gracefully.
 
 Model policy:
-    Defaults to claude-opus-4-8 with adaptive thinking — audit reasoning is
-    multi-step and correctness-sensitive. Override per call via `model`/`effort`.
+    Defaults to claude-haiku-4-5-20251001 (fastest, cheapest). Escalate to
+    sonnet for tasks needing stronger reasoning; opus only when truly necessary.
+    Override per call via `model`/`effort`.
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_SDK = False
 
-# Audit reasoning is correctness-sensitive: default to the most capable Opus tier.
-MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-opus-4-8")
+# Default to Haiku (fastest/cheapest); escalate to Sonnet or Opus per call as needed.
+MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 _client: Optional["anthropic.Anthropic"] = None
 _checked = False

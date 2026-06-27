@@ -37,10 +37,10 @@ import db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Model routing: Sonnet for structured output tasks, Opus for the open-ended investigation agent.
-# Sonnet 4.6 is $3/M input · $15/M output vs Opus 4.8 $5/M · $25/M — roughly 40 % cheaper per call.
-_MODEL_STRUCTURED = "claude-sonnet-4-6"
-_MODEL_AGENT = "claude-opus-4-8"
+# Model routing: Haiku for structured/extraction tasks, Sonnet for the investigation agent.
+# Haiku 4.5 is $1/M · $5/M; Sonnet 4.6 is $3/M · $15/M; Opus reserved for absolute necessity.
+_MODEL_STRUCTURED = "claude-haiku-4-5-20251001"
+_MODEL_AGENT = "claude-sonnet-4-6"
 
 # ── Embedding helpers ─────────────────────────────────────────────────────────
 # Used by narrative_analysis to chunk and index EDGAR text so that future calls
