@@ -672,6 +672,28 @@ function RiskRegisterReviewScreen({ risks, runId }) {
     setConvertErr(null);
 
     const payload = buildConvertPayload(sourceRisks, states, ctrl, isDiscovery);
+
+    // Persist review session to DB before generating output
+    try {
+      await fetch("/api/risk-register/reviews", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          run_id: runId || null,
+          review_type: isDiscovery ? "external" : "internal",
+          framework: isDiscovery ? (selectedFws[0] || fwSearch || "External") : "Internal Risk Register",
+          risk_states: payload.map(r => ({
+            risk_ref: r.id || r.risk_ref || "",
+            original_wording: r.name || "",
+            current_wording: r.current_wording || r.name || "",
+            included: r.included !== false,
+            reason_for_change: r.reason_for_change || null,
+            controls_assigned: r.controls_assigned || [],
+          })),
+        }),
+      });
+    } catch {}
+
     try {
       const res = await fetch("/api/risk-register/convert-to-code", {
         method:"POST",
@@ -806,10 +828,9 @@ function RiskRegisterReviewScreen({ risks, runId }) {
 
     return (
       <div style={{
-        position:"sticky", bottom:0,
+        flexShrink:0,
         background:"var(--surface,#fff)", borderTop:"1px solid var(--line,#e0e0e0)",
         padding:"12px 0", display:"flex", alignItems:"center", gap:12,
-        marginTop:16,
       }}>
         <div style={{ display:"flex", gap:10, fontSize:11, color:"var(--ink-2,#555)" }}>
           <span><b>{total - excluded}</b> / {total} included</span>
@@ -913,8 +934,8 @@ function RiskRegisterReviewScreen({ risks, runId }) {
         </button>
       </div>
 
-      {/* Tab content */}
-      <div style={{ flex:1, overflowY:"auto", padding:"0 0 80px" }}>
+      {/* Tab content — scrollable, no bottom padding needed since action bar is outside */}
+      <div style={{ flex:1, overflowY:"auto" }}>
 
         {/* ── Internal Register tab ── */}
         {activeTab === "internal" && (
@@ -927,7 +948,6 @@ function RiskRegisterReviewScreen({ risks, runId }) {
               <>
                 {renderSummaryBanner(risks, riskStates)}
                 {renderRiskList(risks, riskStates, ctrlStates, collapsedGroups, setCollapsed, expandedCtrl, setExpandedCtrl, intHandlers, intCtrl, false)}
-                {renderActionBar(risks, riskStates, false)}
               </>
             )}
           </div>
@@ -1017,12 +1037,15 @@ function RiskRegisterReviewScreen({ risks, runId }) {
                   discExpandedCtrl, setDiscExpandedCtrl,
                   discHandlers, discCtrl, true
                 )}
-                {renderActionBar(discoveredRisks, discRiskStates, true)}
               </>
             )}
           </div>
         )}
       </div>
+
+      {/* Action bar — outside scroll area so it never overlaps list content */}
+      {activeTab === "internal"  && renderActionBar(risks, riskStates, false)}
+      {activeTab === "discovery" && renderActionBar(discoveredRisks, discRiskStates, true)}
 
       {/* Output panel */}
       {outputYaml && (
