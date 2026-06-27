@@ -1006,16 +1006,30 @@ window.RISK_ENGINE = (function () {
   // ── Build Forecasts from EDGAR quarterly series ─────────────
   function buildForecasts(ratios, ticker, industry, fin) {
     const { lastY, lastQ, fcLabels, defaultLatestQ } = _quarterBoundaries();
+    // Shared helper — keeps only standalone quarterly periods (Q1/Q2/Q3/Q4),
+    // excluding YTD cumulative entries (H1, 9M, etc.) that some companies tag
+    // with fp values outside the Q1-Q4 set in EDGAR XBRL.
+    const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
+
     const histQuarters = [];
     if (fin?.revenue?.series) {
-      const qtrs = fin.revenue.series
-        .filter(x => x.form === '10-Q' && x.fp !== 'FY')
+      // Deduplicate by end date before sorting: for any two entries with the same
+      // period-end (standalone Q vs YTD), prefer the more recently filed one.
+      const revByEnd = {};
+      fin.revenue.series
+        .filter(x => x.form === '10-Q' && isStandaloneQ(x))
+        .forEach(x => {
+          if (!x.end) return;
+          if (!(x.end in revByEnd) || (x.filed || '') > (revByEnd[x.end].filed || ''))
+            revByEnd[x.end] = x;
+        });
+      Object.values(revByEnd)
         .sort((a, b) => a.end > b.end ? 1 : -1)
-        .slice(-12);
-      qtrs.forEach(q => {
-        const label = edgarDateToQLabel(q.end) || q.fp;
-        histQuarters.push({ q: label, v: +(q.val / 1e6).toFixed(0) });
-      });
+        .slice(-12)
+        .forEach(q => {
+          const label = edgarDateToQLabel(q.end) || q.fp;
+          histQuarters.push({ q: label, v: +(q.val / 1e6).toFixed(0) });
+        });
     }
     // If EDGAR gave fewer than 4 quarters, clear partials and synthesise a full 8-quarter series
     if (histQuarters.length < 4) {
@@ -1039,9 +1053,6 @@ window.RISK_ENGINE = (function () {
 
     const histMargins = [];
     if (fin?.cogs?.series && fin?.revenue?.series) {
-      // Only use standalone quarterly periods (fp='Q1'/'Q2'/'Q3') to avoid mixing
-      // cumulative H1/9M COGS with standalone quarterly revenue or vice-versa
-      const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
       const revMap = {};
       fin.revenue.series
         .filter(x => x.form === '10-Q' && isStandaloneQ(x))
@@ -1060,7 +1071,6 @@ window.RISK_ENGINE = (function () {
     // Fallback: use GrossProfit series directly if COGS-based matching gave < 4 quarters
     if (histMargins.length < 4 && fin?.grossProfit?.series && fin?.revenue?.series) {
       histMargins.length = 0;
-      const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
       const revMap2 = {};
       fin.revenue.series
         .filter(x => x.form === '10-Q' && isStandaloneQ(x))

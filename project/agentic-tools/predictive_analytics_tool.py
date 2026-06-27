@@ -67,13 +67,24 @@ def _annual_pts(metric_data: dict) -> list:
     ]
 
 def _quarterly_pts(metric_data: dict) -> list:
-    """Return only standalone quarterly entries (≈90-day periods, not YTD cumulative H1/9M)."""
+    """Return only standalone quarterly entries (Q1/Q2/Q3/Q4), not YTD cumulative (H1, 9M, etc.).
+
+    EDGAR companyfacts entries do not include a 'start' field, so period-length filtering
+    is not reliable. Use the 'fp' field as the primary discriminator: only Q1/Q2/Q3/Q4
+    are standalone quarters. When 'start' IS present (some concept-level APIs), also
+    apply a 60-110 day period-length guard as a secondary check.
+    """
     result = []
     for p in metric_data.get("data_points", []):
         if p.get("form") not in {"10-Q", "10-Q/A"}:
             continue
         if p.get("val") is None:
             continue
+        # Primary filter: fp must be a standalone quarter designation
+        fp = p.get("fp", "")
+        if fp and fp not in {"Q1", "Q2", "Q3", "Q4"}:
+            continue
+        # Secondary filter: period-length check when start date is available
         start, end = p.get("start"), p.get("end")
         if start and end:
             try:
