@@ -591,18 +591,8 @@ function RiskRegisterReviewScreen({ risks, runId }) {
     setSelectedFws(prev => prev.includes(fw) ? prev.filter(f => f !== fw) : [...prev, fw]);
   }
 
-  function generateSyntheticRisks(framework) {
-    const safe = framework.replace(/"/g, '\\"');
-    return [
-      { id:`${framework.replace(/\s+/g,"-").toUpperCase()}-01`, name:`Inadequate ${safe} control environment undermines compliance posture`,      category:"Governance", source_framework:framework, control_family:framework },
-      { id:`${framework.replace(/\s+/g,"-").toUpperCase()}-02`, name:`Insufficient documentation of ${safe} requirements creates audit exposure`, category:"Compliance", source_framework:framework, control_family:framework },
-      { id:`${framework.replace(/\s+/g,"-").toUpperCase()}-03`, name:`Lack of ongoing monitoring for ${safe} obligations delays remediation`,     category:"Monitoring",  source_framework:framework, control_family:framework },
-      { id:`${framework.replace(/\s+/g,"-").toUpperCase()}-04`, name:`Ad-hoc ${safe} risk assessments fail to identify systemic control gaps`,    category:"Risk Mgmt",  source_framework:framework, control_family:framework },
-      { id:`${framework.replace(/\s+/g,"-").toUpperCase()}-05`, name:`Uncontrolled changes to ${safe}-scoped systems create compliance drift`,    category:"Operations", source_framework:framework, control_family:framework },
-    ];
-  }
-
-  function localFallback(fws, query) {
+  function localFallback(fws) {
+    // Only serves known preset frameworks; unknown frameworks require the backend AI call.
     const found = [];
     for (const fw of fws) {
       if (FW_MOCK_RISKS[fw]) {
@@ -614,45 +604,35 @@ function RiskRegisterReviewScreen({ risks, runId }) {
         if (partialKey) found.push(...FW_MOCK_RISKS[partialKey]);
       }
     }
-    if (!found.length && query) {
-      found.push(...generateSyntheticRisks(query));
-    }
     return found;
   }
 
   async function handleSearch() {
     const query = fwSearch.trim();
-    // When custom text is entered with no presets selected, treat the text as the
-    // framework name to search. When presets are selected, use them.
-    // When nothing is set, search all presets.
     const fwsToSearch = selectedFws.length ? selectedFws : query ? [query] : PRESET_FRAMEWORKS;
     setSearching(true);
     setDiscovered([]);
+    setConvertErr(null);
+    let found = [];
     try {
       const res = await fetch("/api/risk-register/framework-search", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ query: query || null, frameworks: fwsToSearch }),
       });
-      let found = [];
       if (res.ok) {
         const data = await res.json();
         found = data.risks || [];
       } else {
-        found = localFallback(fwsToSearch, query);
+        found = localFallback(fwsToSearch);
       }
-      // If the API returned nothing (unknown framework), fall back locally
-      if (!found.length) found = localFallback(fwsToSearch, query);
-      setDiscovered(found);
-      setDiscStates(initRiskStates(found));
-      setDiscCtrlStates(initControlStates(found));
-      setDiscCollapsed({});
     } catch {
-      const found = localFallback(fwsToSearch, query);
-      setDiscovered(found);
-      setDiscStates(initRiskStates(found));
-      setDiscCtrlStates(initControlStates(found));
+      found = localFallback(fwsToSearch);
     }
+    setDiscovered(found);
+    setDiscStates(initRiskStates(found));
+    setDiscCtrlStates(initControlStates(found));
+    setDiscCollapsed({});
     setSearching(false);
   }
 
@@ -1022,7 +1002,9 @@ function RiskRegisterReviewScreen({ risks, runId }) {
 
             {!searching && discoveredRisks.length === 0 && (
               <Empty style={{ padding:32 }}>
-                Search results will appear here. Select one or more frameworks above and click Search.
+                {(selectedFws.length > 0 || fwSearch.trim())
+                  ? "No risks returned. The backend may need an ANTHROPIC_API_KEY to generate catalogs for custom frameworks."
+                  : "Select one or more frameworks above or enter a custom name, then click Search."}
               </Empty>
             )}
 
