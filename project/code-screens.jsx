@@ -274,7 +274,13 @@ function RiskAsCodeScreen({ risks, baseRisks }) {
       </div>
 
       <div className="code-split">
-        {/* Pane 1 — RaC YAML editor */}
+        {/* Pane 1 — Evaluation */}
+        <div className="code-pane">
+          <div className="code-pane-head mono">Evaluation · current run</div>
+          <div className="code-eval">{renderEval()}</div>
+        </div>
+
+        {/* Pane 2 — RaC YAML editor */}
         <div className="code-pane">
           <div className="code-pane-head mono"
             style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -295,12 +301,6 @@ function RiskAsCodeScreen({ risks, baseRisks }) {
             value={code}
             onChange={e => setCode(e.target.value)}
           />
-        </div>
-
-        {/* Pane 2 — Evaluation */}
-        <div className="code-pane">
-          <div className="code-pane-head mono">Evaluation · current run</div>
-          <div className="code-eval">{renderEval()}</div>
         </div>
       </div>
     </div>
