@@ -640,6 +640,14 @@ CREATE TABLE IF NOT EXISTS risks_as_code_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_rac_artifacts_ticker ON risks_as_code_artifacts (ticker, framework, generated_at DESC);
 
+-- Code editor configs: Risk-as-Code and Policy-as-Code YAML rule sets (global, keyed by storageKey)
+CREATE TABLE IF NOT EXISTS code_editor_configs (
+    id          BIGSERIAL    PRIMARY KEY,
+    storage_key VARCHAR(64)  NOT NULL UNIQUE,  -- mirrors localStorage key, e.g. 'dendrai.riskcode'
+    content     TEXT         NOT NULL,
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 -- ── Analyst KPI quarterly time series (EPS, OpMargin, NetIncome, FCF, EBITDA) ─
 CREATE TABLE IF NOT EXISTS analyst_kpi_series (
     id          SERIAL PRIMARY KEY,
@@ -2919,6 +2927,49 @@ def get_relevant_context(
             if r[6] is not None and float(r[6]) <= max_distance
         ][:limit]
     return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Code editor configs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_code_editor_config(storage_key: str, content: str) -> bool:
+    """Upsert a code editor config (Risk-as-Code or Policy-as-Code YAML rules). Returns True on success."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO code_editor_configs (storage_key, content)
+                    VALUES (%s, %s)
+                    ON CONFLICT (storage_key) DO UPDATE SET
+                        content    = EXCLUDED.content,
+                        updated_at = NOW()
+                    """,
+                    (storage_key, content),
+                )
+        return True
+    return _run(_do, default=False) or False
+
+
+def get_code_editor_config(storage_key: str) -> Optional[dict]:
+    """Return saved editor content for a key, or None if not found."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT content, updated_at FROM code_editor_configs WHERE storage_key = %s",
+                    (storage_key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "storage_key": storage_key,
+                    "content": row[0],
+                    "updated_at": row[1].isoformat() if row[1] else None,
+                }
+    return _run(_do)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
