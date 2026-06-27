@@ -117,7 +117,107 @@ control_effectiveness:
   strong: 1.5
 `;
 
+function risksToRaC(risks) {
+  const now   = new Date().toISOString().split("T")[0];
+  const red   = risks.filter(r => r.rag === "R").length;
+  const amber = risks.filter(r => r.rag === "A").length;
+  const green = risks.filter(r => r.rag === "G").length;
+
+  const lines = [
+    `# Risk Register — Risk-as-Code`,
+    `# Generated: ${now}  ·  ${risks.length} risks  (${red} red · ${amber} amber · ${green} green)`,
+    ``,
+    `thresholds:`,
+    `  red:   15.0`,
+    `  amber:  9.0`,
+    ``,
+    `scoring:`,
+    `  scale: 25    # impact (0-5) × likelihood (0-5)`,
+    ``,
+    `risks:`,
+  ];
+
+  const sorted = [...risks].sort((a, b) => b.score - a.score);
+  for (const r of sorted) {
+    const vel = r.velocity >= 0 ? `+${r.velocity}` : `${r.velocity}`;
+    const name = (r.name || "").replace(/"/g, '\\"');
+    lines.push(`  - id:                    ${r.id}`);
+    lines.push(`    name:                  "${name}"`);
+    lines.push(`    category:              ${r.category || "—"}`);
+    lines.push(`    rag:                   ${r.rag}`);
+    lines.push(`    score:                 ${Number(r.score).toFixed(1)}   # out of 25`);
+    lines.push(`    likelihood:            ${Number(r.likelihood).toFixed(1)}`);
+    lines.push(`    impact:                ${Number(r.impact).toFixed(1)}`);
+    lines.push(`    velocity:              ${vel}`);
+    lines.push(`    control_effectiveness: ${r.ce || "—"}`);
+    lines.push(`    inherent_score:        ${Number(r.inherent ?? r.score).toFixed(1)}`);
+    lines.push(`    residual_score:        ${Number(r.residual ?? r.score).toFixed(1)}`);
+    lines.push(`    peer_vs_industry:      ${r.peer || "—"}`);
+    lines.push(``);
+  }
+
+  return lines.join("\n").trimEnd();
+}
+
 function RiskAsCodeScreen({ risks, baseRisks }) {
+  const STORAGE_KEY = "dendrai.riskcode";
+
+  const [code, setCode] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY) || RISK_CODE_DEFAULT; } catch { return RISK_CODE_DEFAULT; }
+  });
+  const [savedCode, setSavedCode] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY) || ""; } catch { return ""; }
+  });
+  const [status, setStatus] = useState(null);
+  const [dbSaved, setDbSaved] = useState(false);
+  const dirty = code !== savedCode;
+
+  useEffect(() => {
+    fetch(`/api/config/code-editor/${encodeURIComponent(STORAGE_KEY)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.content) {
+          setCode(data.content);
+          setSavedCode(data.content);
+          try { localStorage.setItem(STORAGE_KEY, data.content); } catch {}
+          setDbSaved(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  function validate() {
+    const lines = code.split("\n").filter(l => l.trim());
+    if (!lines.length) { setStatus({ kind: "err", msg: "Document is empty." }); return false; }
+    if (code.includes("\t")) { setStatus({ kind: "err", msg: "Use spaces, not tabs, for indentation." }); return false; }
+    setStatus({ kind: "ok", msg: `Valid · ${lines.length} line(s) parsed.` });
+    return true;
+  }
+
+  async function save() {
+    if (!validate()) return;
+    try { localStorage.setItem(STORAGE_KEY, code); } catch {}
+    setSavedCode(code);
+    try {
+      const r = await fetch(`/api/config/code-editor/${encodeURIComponent(STORAGE_KEY)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: code }),
+      });
+      const data = r.ok ? await r.json() : null;
+      setDbSaved(!!data?.saved);
+      setStatus({ kind: "ok", msg: data?.saved ? "Saved to DB." : "Saved locally." });
+    } catch {
+      setStatus({ kind: "ok", msg: "Saved locally." });
+    }
+  }
+
+  function loadFromRegister() {
+    if (!risks?.length) return;
+    setCode(risksToRaC(risks));
+    setStatus({ kind: "ok", msg: `Loaded ${risks.length} risks from the live register.` });
+  }
+
   const renderEval = () => {
     if (!risks?.length) return <Empty>Run the loop to evaluate rules against the live register.</Empty>;
     const baseById = Object.fromEntries((baseRisks || []).map(r => [r.id, r]));
@@ -153,15 +253,57 @@ function RiskAsCodeScreen({ risks, baseRisks }) {
   };
 
   return (
-    <CodeEditorScreen
-      kicker="Execution · Risk-as-Code"
-      title="Risk-as-Code"
-      sub="Express the risk-scoring model as versioned rules. Edits preview against the live register before save."
-      storageKey="dendrai.riskcode"
-      fileLabel="risk-rules.yaml"
-      defaultCode={RISK_CODE_DEFAULT}
-      renderEval={renderEval}
-    />
+    <div className="code-screen" data-screen-label="Risk-as-Code">
+      <div className="panel-head">
+        <div>
+          <div className="kicker">Execution · Risk-as-Code</div>
+          <div className="panel-title mt-8">Risk-as-Code</div>
+          <div className="panel-sub">
+            Load the live register as RaC or edit rules manually. Validate and save —
+            evaluation previews scoring against the live register.
+          </div>
+        </div>
+        <div className="code-actions">
+          {dbSaved && !dirty && (
+            <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>DB ✓</span>
+          )}
+          {status && <span className={"code-status " + status.kind}>{status.msg}</span>}
+          <button className="btn btn-sm" onClick={validate}><Icon name="check" size={11}/> Validate</button>
+          <button className="btn btn-sm btn-acc" onClick={save} disabled={!dirty}><Icon name="download" size={11}/> Save</button>
+        </div>
+      </div>
+
+      <div className="code-split">
+        {/* Pane 1 — RaC YAML editor */}
+        <div className="code-pane">
+          <div className="code-pane-head mono"
+            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <span>risk-rules.yaml{dirty ? " ●" : ""}</span>
+            <button
+              className="btn btn-sm"
+              onClick={loadFromRegister}
+              disabled={!risks?.length}
+              title={!risks?.length ? "Run the loop first" : `Load all ${risks?.length} risks as RaC YAML`}
+              style={{ padding: "2px 8px", fontSize: 10, flexShrink: 0 }}
+            >
+              <Icon name="spark" size={10}/> Load from Register
+            </button>
+          </div>
+          <textarea
+            className="code-editor mono"
+            spellCheck={false}
+            value={code}
+            onChange={e => setCode(e.target.value)}
+          />
+        </div>
+
+        {/* Pane 2 — Evaluation */}
+        <div className="code-pane">
+          <div className="code-pane-head mono">Evaluation · current run</div>
+          <div className="code-eval">{renderEval()}</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
