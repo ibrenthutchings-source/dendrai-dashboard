@@ -6679,3 +6679,8 @@ React will try to recreate this component tree from scratch using the error boun
 [2m1:04:48 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/nav.jsx[22m
 [2m1:04:57 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/app.jsx[22m
 [2m1:05:03 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/main.jsx[22m
+[2m3:14:33 PM[22m [36m[1m[vite][22m[39m [32mvite.config.js changed, restarting server...[39m
+[2m3:14:34 PM[22m [36m[1m[vite][22m[39m server restarted.
+[2m3:14:35 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [optimizer] scanning dependencies...
+[2m3:14:40 PM[22m [36m[1m[vite][22m[39m [32mvite.config.js changed, restarting server...[39m
+[2m3:14:40 PM[22m [36m[1m[vite][22m[39m server restarted.

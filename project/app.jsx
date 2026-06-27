@@ -118,6 +118,9 @@ function App() {
   const loopLogRef = useRef([]);
   const manualAuditsRef = useRef([]);
 
+  // Auto-generated Risk-as-Code YAML after each loop completion
+  const [autoCodeYaml, setAutoCodeYaml] = useState(null);
+
   // ---- Tabs ----
   const [activeScreen, setActiveScreen] = useState("pipeline"); // config|pipeline|register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
   const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss (forecasts/scenarios moved to the rail)
@@ -1017,6 +1020,38 @@ function App() {
 
     log("Loop complete");
 
+    // Auto-convert pipeline risks to Risk-as-Code on every loop completion.
+    // Baselines wording in DB when runId is available (MCP mode), then generates YAML.
+    if (mcpMode) {
+      const _autoPayload = adjustedRisks.map(r => ({
+        ...r,
+        included: true,
+        current_wording: r.name,
+      }));
+      if (runIdRef.current) {
+        fetch('/api/risk-register/apply-wording', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            run_id: runIdRef.current,
+            risks: _autoPayload.map(r => ({ risk_ref: r.id || r.risk_ref || '', current_wording: r.name || '' })),
+          }),
+        }).catch(() => {});
+      }
+      fetch('/api/risk-register/convert-to-code', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          risks: _autoPayload,
+          review_type: 'internal',
+          framework: 'Internal Risk Register',
+          include_controls: true,
+        }),
+      }).then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.yaml) setAutoCodeYaml(d.yaml); })
+        .catch(() => {});
+    }
+
     if (mcpMode && runIdRef.current) {
       fetch('/api/mcp/loop/persist', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1091,7 +1126,19 @@ function App() {
     setGovPeerData(null);
     setGovLoading(false);
     setGovFetchError(null);
+    setAutoCodeYaml(null);
     try { localStorage.removeItem("dendrai.lastLoop"); } catch {}
+  }
+
+  function downloadAutoYaml() {
+    if (!autoCodeYaml) return;
+    const blob = new Blob([autoCodeYaml], { type: 'application/x-yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dendrai_risk-as-code_${cfg.ticker || 'run'}_${new Date().toISOString().split('T')[0]}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   // ---- CEM event firing ----
@@ -1321,6 +1368,11 @@ function App() {
               </button>
               <button className="btn" disabled={!hasRun} onClick={() => setReportOpen(true)}><Icon name="doc" size={11}/> Loop Report</button>
               <button className="btn" disabled={!hasRun} onClick={() => setPersonaOpen(true)}><Icon name="user" size={11}/> Persona</button>
+              {autoCodeYaml && (
+                <button className="btn btn-acc" onClick={downloadAutoYaml} title="Download auto-generated Risk-as-Code YAML">
+                  <Icon name="download" size={11}/> Risk-as-Code
+                </button>
+              )}
               <div style={{flex:1}} />
               {hasRun && <button className="btn btn-ghost" onClick={resetAll}><Icon name="reset" size={11}/> Reset</button>}
             </div>
