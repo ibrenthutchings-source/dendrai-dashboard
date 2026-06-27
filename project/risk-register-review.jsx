@@ -729,9 +729,9 @@ function RiskRegisterReviewScreen({ risks, runId }) {
 
     const payload = buildConvertPayload(sourceRisks, states, ctrl, !isInternal);
 
-    // 1. Save review session (all tabs)
+    // 1. Save review session (all tabs) — records wording changes, include/exclude, controls
     try {
-      await fetch("/api/risk-register/reviews", {
+      const reviewRes = await fetch("/api/risk-register/reviews", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
@@ -748,13 +748,19 @@ function RiskRegisterReviewScreen({ risks, runId }) {
           })),
         }),
       });
-    } catch {}
+      if (!reviewRes.ok) {
+        const e = await reviewRes.json().catch(() => ({}));
+        setConvertErr(`Review session not saved: ${e.detail || `HTTP ${reviewRes.status}`}`);
+      }
+    } catch (err) {
+      setConvertErr(`Review session not saved: ${err.message || "network error"}`);
+    }
 
     // 2. For internal runs with a known runId: write wording back to risk_scores,
     //    then re-fetch the updated list so the UI reflects the DB state.
     if (isInternal && runId) {
       try {
-        await fetch("/api/risk-register/apply-wording", {
+        const applyRes = await fetch("/api/risk-register/apply-wording", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
@@ -765,24 +771,33 @@ function RiskRegisterReviewScreen({ risks, runId }) {
             })),
           }),
         });
-        const refreshRes = await fetch(`/api/risk-register/risks/${runId}`);
-        if (refreshRes.ok) {
-          const refreshData = await refreshRes.json();
-          const updated = refreshData.risks || [];
-          if (updated.length) {
-            setRefreshedRisks(updated);
-            setRiskStates(prev => {
-              const next = { ...prev };
-              for (const r of updated) {
-                const key = r.id || r.risk_ref;
-                if (next[key]) next[key] = { ...next[key], originalWording: next[key].wording };
-              }
-              return next;
-            });
-            setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
+        if (!applyRes.ok) {
+          const e = await applyRes.json().catch(() => ({}));
+          setConvertErr(`Wording not saved to register: ${e.detail || `HTTP ${applyRes.status}`}`);
+        } else {
+          const refreshRes = await fetch(`/api/risk-register/risks/${runId}`);
+          if (refreshRes.ok) {
+            const refreshData = await refreshRes.json();
+            const updated = refreshData.risks || [];
+            if (updated.length) {
+              setRefreshedRisks(updated);
+              setRiskStates(prev => {
+                const next = { ...prev };
+                for (const r of updated) {
+                  const key = r.id || r.risk_ref;
+                  if (next[key]) next[key] = { ...next[key], originalWording: next[key].wording };
+                }
+                return next;
+              });
+              setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
+            }
           }
         }
-      } catch {}
+      } catch (err) {
+        setConvertErr(`Wording not saved to register: ${err.message || "network error"}`);
+      }
+    } else if (isInternal && !runId) {
+      setConvertErr("No active pipeline run — wording changes were not saved to the risk register. Run the pipeline in MCP mode first.");
     }
 
     try {
@@ -941,7 +956,14 @@ function RiskRegisterReviewScreen({ risks, runId }) {
           <div style={{ fontSize:10, color:"var(--red,#e53)" }}>{validationMsg}</div>
         )}
 
-        {isInternal && savedAt && (
+        {convertErr && (
+          <div style={{ fontSize:10, color:"var(--red,#e53)", display:"flex", alignItems:"center", gap:4 }}>
+            <span>⚠</span>
+            <span>{convertErr}</span>
+          </div>
+        )}
+
+        {isInternal && savedAt && !convertErr && (
           <div style={{ fontSize:10, color:"var(--green,#2a7)", display:"flex", alignItems:"center", gap:3 }}>
             <span>✓</span> Saved to register at {savedAt}
           </div>

@@ -361,6 +361,8 @@ async def list_reviews(run_id: Optional[int] = None):
 @router.post("/reviews")
 async def create_review(req: ReviewCreateRequest):
     """Create a new review session, optionally seeding initial risk states."""
+    if not db.is_available():
+        return {"review_id": None, "saved": False, "detail": "Database not connected"}
     review_id = db.create_risk_register_review(
         run_id=req.run_id,
         review_type=req.review_type,
@@ -398,8 +400,10 @@ async def complete_review(review_id: int):
 @router.post("/apply-wording")
 async def apply_wording(req: ApplyWordingRequest):
     """Persist reviewed risk wording back to risk_scores for a pipeline run."""
-    db.apply_review_wording(req.run_id, req.risks)
-    return {"applied": True, "count": len(req.risks)}
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not connected — set DATABASE_URL to persist wording changes")
+    rows_updated = db.apply_review_wording(req.run_id, req.risks)
+    return {"applied": True, "count": len(req.risks), "rows_updated": rows_updated}
 
 
 @router.get("/risks/{run_id}")
