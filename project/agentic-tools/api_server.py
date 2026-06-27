@@ -34,6 +34,9 @@ Endpoints:
     POST /rac/from-loop   Risk-as-Code from JSON risk array (loop output)
     POST /rac/from-db     Risk-as-Code from PostgreSQL risk_scores table
     POST /rac/from-excel  Risk-as-Code from uploaded .xlsx / .xls / .csv file
+
+    GET  /config/code-editor/{storage_key}   Retrieve saved YAML editor content
+    PUT  /config/code-editor/{storage_key}   Persist YAML editor content to DB
 """
 
 import argparse
@@ -1027,6 +1030,39 @@ async def rac_from_excel(
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+# ── Code editor config endpoints ──────────────────────────────────────────────
+
+class CodeEditorSaveRequest(BaseModel):
+    content: str
+
+
+@app.get("/config/code-editor/{storage_key}")
+def get_code_editor(storage_key: str):
+    """Return the saved YAML content for a code editor key (e.g. 'dendrai.riskcode').
+
+    Returns 503 when DATABASE_URL is not configured; 404 when no content has been saved yet.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
+    row = db.get_code_editor_config(storage_key)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No saved config for key '{storage_key}'")
+    return row
+
+
+@app.put("/config/code-editor/{storage_key}")
+def save_code_editor(storage_key: str, req: CodeEditorSaveRequest):
+    """Persist Risk-as-Code or Policy-as-Code YAML editor content to the database.
+
+    Falls back gracefully (saved: false) when DATABASE_URL is not configured so
+    the frontend can still save to localStorage.
+    """
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+    ok = db.save_code_editor_config(storage_key, req.content)
+    return {"saved": ok, "storage_key": storage_key}
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

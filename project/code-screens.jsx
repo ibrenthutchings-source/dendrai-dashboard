@@ -12,7 +12,23 @@ function CodeEditorScreen({ kicker, title, sub, storageKey, defaultCode, fileLab
     try { return localStorage.getItem(storageKey) || ""; } catch { return ""; }
   });
   const [status, setStatus] = useState(null);   // { kind, msg }
+  const [dbSaved, setDbSaved] = useState(false);
   const dirty = code !== savedCode;
+
+  // Load from DB on mount — DB is authoritative; overwrites stale localStorage copy
+  useEffect(() => {
+    fetch(`/api/config/code-editor/${encodeURIComponent(storageKey)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.content) {
+          setCode(data.content);
+          setSavedCode(data.content);
+          try { localStorage.setItem(storageKey, data.content); } catch {}
+          setDbSaved(true);
+        }
+      })
+      .catch(() => {});
+  }, [storageKey]);
 
   function validate() {
     // Lightweight structural check — non-empty, balanced-ish indentation.
@@ -24,11 +40,26 @@ function CodeEditorScreen({ kicker, title, sub, storageKey, defaultCode, fileLab
     return true;
   }
 
-  function save() {
+  async function save() {
     if (!validate()) return;
     try { localStorage.setItem(storageKey, code); } catch {}
     setSavedCode(code);
-    setStatus({ kind: "ok", msg: "Saved." });
+    try {
+      const r = await fetch(`/api/config/code-editor/${encodeURIComponent(storageKey)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: code }),
+      });
+      const data = r.ok ? await r.json() : null;
+      if (data?.saved) {
+        setDbSaved(true);
+        setStatus({ kind: "ok", msg: "Saved to DB." });
+      } else {
+        setStatus({ kind: "ok", msg: "Saved locally." });
+      }
+    } catch {
+      setStatus({ kind: "ok", msg: "Saved locally." });
+    }
   }
 
   return (
@@ -40,6 +71,9 @@ function CodeEditorScreen({ kicker, title, sub, storageKey, defaultCode, fileLab
           <div className="panel-sub">{sub}</div>
         </div>
         <div className="code-actions">
+          {dbSaved && !dirty && (
+            <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>DB ✓</span>
+          )}
           {status && <span className={"code-status " + status.kind}>{status.msg}</span>}
           <button className="btn btn-sm" onClick={validate}><Icon name="check" size={11}/> Validate</button>
           <button className="btn btn-sm btn-acc" onClick={save} disabled={!dirty}><Icon name="download" size={11}/> Save</button>
