@@ -8,7 +8,9 @@ function CodeEditorScreen({ kicker, title, sub, storageKey, defaultCode, fileLab
   const [code, setCode] = useState(() => {
     try { return localStorage.getItem(storageKey) || defaultCode; } catch { return defaultCode; }
   });
-  const [savedCode, setSavedCode] = useState(code);
+  const [savedCode, setSavedCode] = useState(() => {
+    try { return localStorage.getItem(storageKey) || ""; } catch { return ""; }
+  });
   const [status, setStatus] = useState(null);   // { kind, msg }
   const dirty = code !== savedCode;
 
