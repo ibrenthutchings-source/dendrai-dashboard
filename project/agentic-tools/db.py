@@ -3186,19 +3186,22 @@ def list_risk_register_reviews(run_id: Optional[int] = None, limit: int = 20) ->
     return _run(_do) or []
 
 
-def apply_review_wording(run_id: int, updates: list) -> None:
+def apply_review_wording(run_id: int, updates: list) -> int:
     """Persist reviewed risk wording back into risk_scores for a run.
 
     Writes current_wording into narrative (TEXT, uncapped).
     Also updates risk_name when the wording fits within 128 chars.
+    Returns the number of rows actually updated.
     """
     if not updates:
-        return
+        return 0
+    rows_updated = 0
     def _do():
+        nonlocal rows_updated
         with _conn() as conn:
             with conn.cursor() as cur:
                 for u in updates:
-                    risk_ref = u.get("risk_ref") or u.get("id", "")
+                    risk_ref = u.get("risk_ref") or u.get("id") or ""
                     wording  = (u.get("current_wording") or u.get("wording") or "").strip()
                     if not risk_ref or not wording:
                         continue
@@ -3211,7 +3214,9 @@ def apply_review_wording(run_id: int, updates: list) -> None:
                         """,
                         (wording, wording, wording, run_id, risk_ref),
                     )
+                    rows_updated += cur.rowcount
     _run(_do)
+    return rows_updated
 
 
 def get_risk_scores_for_run(run_id: int) -> list:
