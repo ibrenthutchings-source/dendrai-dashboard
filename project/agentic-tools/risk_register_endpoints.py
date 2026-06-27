@@ -256,20 +256,75 @@ async def recommend_controls(req: ControlRecommendRequest):
     }
 
 
+async def _generate_framework_risks_ai(framework: str) -> List[Dict[str, Any]]:
+    """Call Claude to generate a realistic risk catalog for an arbitrary framework name."""
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return []
+        import anthropic
+        import json
+        import re
+        client = anthropic.Anthropic(api_key=api_key)
+        prompt = (
+            f'You are a GRC expert. Generate a realistic risk catalog for the "{framework}" framework or standard.\n\n'
+            "Return a JSON array of 6 to 8 risks. Each risk must have these exact keys:\n"
+            '  "id"            — short reference code unique within this framework (e.g. "SOX-404-01")\n'
+            '  "name"          — concise risk statement: one sentence under 120 chars, written as\n'
+            '                    "Inadequate X [causes / enables / leads to] Y" or similar causal form\n'
+            '  "category"      — the risk domain relevant to this framework (e.g. "Financial Reporting")\n'
+            '  "control_family"— the specific control area or section reference within the framework\n\n'
+            "Return ONLY valid JSON — no markdown fences, no commentary.\n"
+            'Example: [{"id":"FW-01","name":"Inadequate controls over X allow Y","category":"Z","control_family":"Section 1"}]'
+        )
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        match = re.search(r'\[.*?\]', raw, re.DOTALL)
+        if not match:
+            return []
+        risks = json.loads(match.group())
+        return [
+            {
+                "id": r.get("id", f"{framework[:6].upper().replace(' ','-')}-{i+1:02d}"),
+                "name": r.get("name", ""),
+                "category": r.get("category", "General"),
+                "source_framework": framework,
+                "control_family": r.get("control_family", framework),
+                "score": None,
+                "rag": None,
+            }
+            for i, r in enumerate(risks)
+            if r.get("name")
+        ]
+    except Exception as exc:
+        logger.warning("AI framework catalog generation failed for '%s': %s", framework, exc)
+        return []
+
+
 @router.post("/framework-search")
 async def search_frameworks(req: FrameworkSearchRequest):
     """
-    Search external framework risk catalogs. Returns mock risk data for
-    preset frameworks; free-text query filters by name match.
+    Search external framework risk catalogs.
+    - Preset frameworks (NIST, ISO, CIS, SOC 2) are served from the local catalog.
+    - Unknown framework names are sent to Claude to generate a realistic risk catalog.
+    - Free-text query with no framework list searches across all preset catalogs.
     """
     results: List[Dict[str, Any]] = []
 
     for fw_name in req.frameworks:
-        catalog = _FRAMEWORK_CATALOGS.get(fw_name, [])
-        results.extend(catalog)
+        catalog = _FRAMEWORK_CATALOGS.get(fw_name)
+        if catalog:
+            results.extend(catalog)
+        else:
+            # Unknown framework — ask Claude to generate a realistic catalog
+            ai_risks = await _generate_framework_risks_ai(fw_name)
+            results.extend(ai_risks)
 
-    # Free-text query: search across all catalogs if no specific frameworks requested,
-    # or additionally filter returned results by query text.
+    # Free-text query with no explicit frameworks: search preset catalogs by name/content
     if req.query and not req.frameworks:
         q = req.query.lower()
         for fw_name, catalog in _FRAMEWORK_CATALOGS.items():
@@ -284,7 +339,6 @@ async def search_frameworks(req: FrameworkSearchRequest):
     for r in results:
         if r["id"] not in seen:
             seen.add(r["id"])
-            # Attach auto-mapped controls
             r = dict(r)
             r["auto_controls"] = _auto_map_controls(r["name"], r.get("category", ""))
             unique.append(r)
