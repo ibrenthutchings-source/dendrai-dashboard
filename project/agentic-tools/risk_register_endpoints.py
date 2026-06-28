@@ -78,6 +78,32 @@ CONTROLS_LIBRARY: List[Dict[str, Any]] = [
 # Map control refs to quick-lookup dict
 _CONTROL_MAP = {c["ref"]: c for c in CONTROLS_LIBRARY}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Cached system prompts for direct AI calls
+# Built once at import time so the stable content qualifies for prompt caching.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CONTROLS_SYSTEM = (
+    "You are a GRC expert. For the risk provided by the user, recommend the 3-5 most "
+    "relevant controls from the library below. Return ONLY a JSON array of control refs "
+    "(e.g. [\"AC-02\",\"SC-01\"]).\n\n"
+    "Available controls:\n"
+    + "\n".join(f"{c['ref']}: {c['name']}" for c in CONTROLS_LIBRARY)
+)
+
+_FRAMEWORK_SYSTEM = (
+    "You are a GRC expert. Generate a realistic risk catalog for the framework or standard "
+    "specified in the user message.\n\n"
+    "Return a JSON array of 6 to 8 risks. Each risk must have these exact keys:\n"
+    '  "id"            — short reference code unique within this framework (e.g. "SOX-404-01")\n'
+    '  "name"          — concise risk statement: one sentence under 120 chars, written as\n'
+    '                    "Inadequate X [causes / enables / leads to] Y" or similar causal form\n'
+    '  "category"      — the risk domain relevant to this framework (e.g. "Financial Reporting")\n'
+    '  "control_family"— the specific control area or section reference within the framework\n\n'
+    "Return ONLY valid JSON — no markdown fences, no commentary.\n"
+    'Example: [{"id":"FW-01","name":"Inadequate controls over X allow Y","category":"Z","control_family":"Section 1"}]'
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Mock external framework risk catalogs
@@ -224,18 +250,11 @@ async def recommend_controls(req: ControlRecommendRequest):
         if api_key:
             import anthropic
             client = anthropic.Anthropic(api_key=api_key)
-            prompt = (
-                f"You are a GRC expert. For the following risk, recommend the 3-5 most relevant "
-                f"controls from this library. Return ONLY a JSON array of control refs (e.g. [\"AC-02\",\"SC-01\"]).\n\n"
-                f"Risk: {req.risk_wording}\n"
-                f"Category: {req.risk_category or 'Unknown'}\n\n"
-                f"Available controls:\n"
-                + "\n".join(f"{c['ref']}: {c['name']}" for c in CONTROLS_LIBRARY)
-            )
             msg = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=256,
-                messages=[{"role": "user", "content": prompt}],
+                system=[{"type": "text", "text": _CONTROLS_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": f"Risk: {req.risk_wording}\nCategory: {req.risk_category or 'Unknown'}"}],
             )
             import json, re
             raw = msg.content[0].text.strip()
@@ -272,21 +291,11 @@ async def _generate_framework_risks_ai(framework: str) -> List[Dict[str, Any]]:
         import json
         import re
         client = anthropic.Anthropic(api_key=api_key)
-        prompt = (
-            f'You are a GRC expert. Generate a realistic risk catalog for the "{framework}" framework or standard.\n\n'
-            "Return a JSON array of 6 to 8 risks. Each risk must have these exact keys:\n"
-            '  "id"            — short reference code unique within this framework (e.g. "SOX-404-01")\n'
-            '  "name"          — concise risk statement: one sentence under 120 chars, written as\n'
-            '                    "Inadequate X [causes / enables / leads to] Y" or similar causal form\n'
-            '  "category"      — the risk domain relevant to this framework (e.g. "Financial Reporting")\n'
-            '  "control_family"— the specific control area or section reference within the framework\n\n'
-            "Return ONLY valid JSON — no markdown fences, no commentary.\n"
-            'Example: [{"id":"FW-01","name":"Inadequate controls over X allow Y","category":"Z","control_family":"Section 1"}]'
-        )
         msg = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
+            system=[{"type": "text", "text": _FRAMEWORK_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": f'Framework: "{framework}"'}],
         )
         raw = msg.content[0].text.strip()
         match = re.search(r'\[.*?\]', raw, re.DOTALL)

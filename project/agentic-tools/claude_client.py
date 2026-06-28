@@ -341,6 +341,10 @@ def run_tool_loop(
                 "content": json.dumps(output, default=str)[:60_000],
                 "is_error": is_error,
             })
+        # Cache the conversation history up to this point so the next iteration
+        # does not re-pay for the full transcript prefix.
+        if results:
+            results[-1] = {**results[-1], "cache_control": {"type": "ephemeral"}}
         messages.append({"role": "user", "content": results})
 
     # Recover the final assistant text from the transcript.
@@ -452,6 +456,10 @@ def run_tool_loop_streaming(
                 "content": _json.dumps(output, default=str)[:60_000],
                 "is_error": is_error,
             })
+        # Cache the conversation history up to this point so the next iteration
+        # does not re-pay for the full transcript prefix.
+        if results:
+            results[-1] = {**results[-1], "cache_control": {"type": "ephemeral"}}
         messages.append({"role": "user", "content": results})
 
     # Recover final text
