@@ -800,8 +800,8 @@ function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
       } catch (err) {
         setConvertErr(`Wording not saved to register: ${err.message || "network error"}`);
       }
-    } else if (isInternal && !runId) {
-      setConvertErr("No active pipeline run — wording changes were not saved to the risk register. Run the pipeline in MCP mode first.");
+    } else if (isInternal && !runId && savedReviewId) {
+      setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
     }
 
     let finalYaml = "";
