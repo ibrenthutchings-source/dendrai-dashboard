@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Dendrai MCP API Server  v2.0.0
+Dendrai MCP API Server  v2.1.0
 
-HTTP bridge exposing Python MCP tool functions as REST endpoints.
+HTTP bridge exposing Python MCP tool functions as REST endpoints,
+plus MCP Streamable-HTTP endpoints for claude.ai integration.
 
 Endpoints:
     GET  /health
@@ -37,6 +38,17 @@ Endpoints:
 
     GET  /config/code-editor/{storage_key}   Retrieve saved YAML editor content
     PUT  /config/code-editor/{storage_key}   Persist YAML editor content to DB
+
+MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
+    /mcp/edgar          SEC EDGAR filings, financials, risk factors, 8-K events
+    /mcp/fred           Federal Reserve macro economic indicators
+    /mcp/rss            Industry & compliance RSS news feeds
+    /mcp/token-cost     Anthropic API token cost tracking
+    /mcp/predictive     Risk scoring, forecasting, predictive analytics
+    /mcp/risk-as-code   Risk-as-Code OSCAL/COSO YAML generation
+    /mcp/oracle         Oracle Fusion ERP data (requires ORACLE_FUSION_* env vars)
+
+    GET  /mcp           Discovery — lists all mounted MCP servers and their URLs
 """
 
 import argparse
@@ -95,6 +107,23 @@ try:
 except ImportError:
     _HAS_FRED = False
 
+# ── MCP server imports (FastMCP instances for HTTP mounting) ───────────────────
+# Each server guards mcp.run() behind __main__, so importing is safe.
+
+from edgar_mcp_server import mcp as _edgar_mcp
+from fred_mcp_server import mcp as _fred_mcp
+from rss_mcp_server import mcp as _rss_mcp
+from token_cost_mcp_server import mcp as _token_cost_mcp
+from predictive_analytics_mcp_server import mcp as _predictive_mcp
+from risk_as_code_mcp_server import mcp as _rac_mcp
+
+try:
+    from oracle_fusion_mcp_server import mcp as _oracle_mcp
+    _HAS_ORACLE_MCP = True
+except Exception:
+    _oracle_mcp = None
+    _HAS_ORACLE_MCP = False
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -140,6 +169,31 @@ app.include_router(sox_endpoints.router)
 
 # Risk Register Review: internal register management, framework ingestion, control mapping.
 app.include_router(risk_register_endpoints.router)
+
+# ── MCP Streamable-HTTP mounts ─────────────────────────────────────────────────
+# Each FastMCP instance is mounted as an ASGI sub-app so claude.ai can connect
+# directly to this server without a separate process.
+# Add URLs to claude.ai → Settings → Integrations as: https://<host>/mcp/<name>
+
+_MCP_MOUNTS: list[tuple[str, str]] = []
+
+def _mount_mcp(path: str, label: str, mcp_instance) -> None:
+    if mcp_instance is None:
+        return
+    try:
+        app.mount(path, mcp_instance.streamable_http_app())
+        _MCP_MOUNTS.append((path, label))
+        logger.info("MCP HTTP mounted: %s", path)
+    except Exception as exc:
+        logger.warning("Failed to mount MCP server at %s: %s", path, exc)
+
+_mount_mcp("/mcp/edgar",       "EDGAR filings & financials",              _edgar_mcp)
+_mount_mcp("/mcp/fred",        "FRED macro indicators",                   _fred_mcp)
+_mount_mcp("/mcp/rss",         "RSS news & compliance feeds",             _rss_mcp)
+_mount_mcp("/mcp/token-cost",  "Anthropic API token cost tracking",       _token_cost_mcp)
+_mount_mcp("/mcp/predictive",  "Risk scoring & predictive analytics",     _predictive_mcp)
+_mount_mcp("/mcp/risk-as-code","Risk-as-Code OSCAL/COSO YAML generation", _rac_mcp)
+_mount_mcp("/mcp/oracle",      "Oracle Fusion ERP data",                  _oracle_mcp)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
@@ -304,12 +358,26 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
 
 # ── Infrastructure endpoints ───────────────────────────────────────────────────
 
+@app.get("/mcp", tags=["mcp"])
+def mcp_discovery(request_url: str = ""):
+    """List all mounted MCP servers. Add each URL to claude.ai → Settings → Integrations."""
+    import os
+    base = os.environ.get("PUBLIC_URL", "").rstrip("/")
+    return {
+        "servers": [
+            {"name": label, "url": f"{base}{path}"}
+            for path, label in _MCP_MOUNTS
+        ],
+        "note": "Set PUBLIC_URL env var to get absolute URLs (e.g. https://your-railway-app.up.railway.app)",
+    }
+
+
 @app.get("/health")
 def health():
     return {
         "status": "ok",
         "service": "dendrai-mcp-api",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "ai_enabled": claude_client.is_available(),
         "ai_model": claude_client.MODEL if claude_client.is_available() else None,
     }
