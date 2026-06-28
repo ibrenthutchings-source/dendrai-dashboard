@@ -217,6 +217,7 @@ class ConvertToCodeRequest(BaseModel):
     review_type: str = "internal"
     framework: Optional[str] = None
     include_controls: bool = True
+    review_id: Optional[int] = None
 
 
 class ApplyWordingRequest(BaseModel):
@@ -587,6 +588,10 @@ async def convert_to_code(req: ConvertToCodeRequest):
             lines.append("")
 
     yaml_str = "\n".join(lines).rstrip()
+
+    if req.review_id and db.is_available():
+        db.save_rac_yaml(req.review_id, yaml_str)
+
     return {
         "yaml": yaml_str,
         "included_count": len(included),
