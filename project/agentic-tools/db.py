@@ -3186,6 +3186,31 @@ def list_risk_register_reviews(run_id: Optional[int] = None, limit: int = 20) ->
     return _run(_do) or []
 
 
+def get_risk_register_review(review_id: int) -> Optional[dict]:
+    """Return a single risk_register_reviews record by ID."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, run_id, review_type, framework, status, created_at, completed_at
+                    FROM risk_register_reviews
+                    WHERE id = %s
+                    """,
+                    (review_id,),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return None
+                return {
+                    "id": r[0], "run_id": r[1], "review_type": r[2],
+                    "framework": r[3], "status": r[4],
+                    "created_at": r[5].isoformat() if r[5] else None,
+                    "completed_at": r[6].isoformat() if r[6] else None,
+                }
+    return _run(_do)
+
+
 def apply_review_wording(run_id: int, updates: list) -> int:
     """Persist reviewed risk wording back into risk_scores for a run.
 

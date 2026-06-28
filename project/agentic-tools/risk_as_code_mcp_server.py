@@ -39,8 +39,10 @@ Claude Code — add to .claude/settings.json:
     rac_from_loop_output   Convert loop JSON risks → OSCAL / COSO ERM YAML
     rac_from_database      Fetch risks from PostgreSQL → OSCAL / COSO ERM YAML
     rac_from_excel         Parse Excel/CSV risk register → OSCAL / COSO ERM YAML
+    rac_from_review        Convert a Risk Register Review session → YAML
     rac_validate           Validate structural integrity of a Risk-as-Code YAML
     rac_list_runs          List DB runs with existing artifacts for a ticker
+    rac_list_reviews       List Risk Register Review sessions saved from the UI
 
 ── Excel column names (case-insensitive, flexible) ──────────────────────────────
     ID / Risk ID / Ref
@@ -602,6 +604,267 @@ def rac_list_runs(ticker: str, limit: int = 10) -> str:
         for r in history
     ]
     return json.dumps({"ticker": ticker_u, "runs": runs})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Review-screen tools
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CTRL_MAP_LOCAL = {c["ref"]: c for c in [
+    {"ref": "FC-01", "name": "Revenue Recognition Controls"},
+    {"ref": "FC-02", "name": "Financial Close Reconciliation"},
+    {"ref": "FC-03", "name": "Segregation of Financial Duties"},
+    {"ref": "FC-04", "name": "Fraud Risk Assessment"},
+    {"ref": "AC-01", "name": "Access Control Policy"},
+    {"ref": "AC-02", "name": "Account Management"},
+    {"ref": "AC-03", "name": "Access Enforcement"},
+    {"ref": "AC-04", "name": "Privileged Access Management"},
+    {"ref": "AC-05", "name": "Logical Access Review"},
+    {"ref": "SC-01", "name": "Information Security Policy"},
+    {"ref": "SC-02", "name": "Data Protection & Encryption"},
+    {"ref": "SC-03", "name": "Incident Response Plan"},
+    {"ref": "SC-04", "name": "Vulnerability Management"},
+    {"ref": "SC-05", "name": "Change Management Controls"},
+    {"ref": "RM-01", "name": "Risk Assessment Process"},
+    {"ref": "RM-02", "name": "Risk Treatment Plan"},
+    {"ref": "RM-03", "name": "Risk Appetite Framework"},
+    {"ref": "RM-04", "name": "Emerging Risk Monitoring"},
+    {"ref": "OP-01", "name": "Business Continuity Plan"},
+    {"ref": "OP-02", "name": "Supplier Risk Management"},
+    {"ref": "OP-03", "name": "Key Person Dependencies"},
+    {"ref": "CM-01", "name": "Compliance Monitoring Program"},
+    {"ref": "CM-02", "name": "Regulatory Change Management"},
+    {"ref": "CM-03", "name": "Privacy Controls"},
+    {"ref": "VM-01", "name": "Vendor Security Assessment"},
+    {"ref": "VM-02", "name": "Supply Chain Resilience"},
+    {"ref": "HR-01", "name": "Security Awareness Training"},
+    {"ref": "HR-02", "name": "Background Screening"},
+]}
+
+
+@mcp.tool()
+def rac_list_reviews(run_id: Optional[int] = None, limit: int = 10) -> str:
+    """List Risk Register Review sessions saved from the Dendrai Review screen.
+
+    Each session captures a curator's decisions: which risks were included or
+    excluded, wording changes, and controls assigned. Use the returned `id`
+    with rac_from_review to generate Risk-as-Code YAML from a session.
+
+    Args:
+        run_id: Filter to reviews linked to a specific pipeline run (optional)
+        limit:  Maximum number of sessions to return (default 10)
+
+    Returns:
+        JSON: {"reviews": [{id, run_id, review_type, framework, status,
+               created_at, completed_at}, ...], "count": N}
+    """
+    if not db.is_available():
+        return json.dumps({"error": "Database not configured — set DATABASE_URL environment variable"})
+
+    reviews = db.list_risk_register_reviews(run_id=run_id, limit=limit)
+    return json.dumps({"reviews": reviews, "count": len(reviews)}, default=str)
+
+
+@mcp.tool()
+def rac_from_review(
+    review_id: int,
+    ticker: str = "",
+    period: str = "",
+    industry: str = "",
+    framework: str = "review",
+    save_to_db: bool = False,
+) -> str:
+    """Generate Risk-as-Code YAML from a completed Risk Register Review session.
+
+    Reads the curated risk states saved by the Review screen — wording edits,
+    include/exclude decisions, and control assignments — and converts them to YAML.
+
+    Args:
+        review_id: ID of the review session (use rac_list_reviews to find it)
+        ticker:    Company ticker symbol; required when framework is oscal/coso_erm/both/all
+        period:    Audit period label, e.g. "Q4 2025" (optional)
+        industry:  Industry label, e.g. "Technology" (optional)
+        framework: Output format:
+                     "review"   – flat YAML matching the Review screen output (default)
+                     "oscal"    – NIST OSCAL assessment-results document
+                     "coso_erm" – COSO ERM 2017 / ISO 31000:2018 YAML
+                     "both"     – oscal + coso_erm
+                     "all"      – review + oscal + coso_erm
+        save_to_db: Persist generated OSCAL/COSO artifacts to risks_as_code_artifacts table
+
+    Returns:
+        JSON: {"review": "...", "oscal": "...", "coso_erm": "...", "summary": {...}}
+        Keys present depend on the requested framework.
+    """
+    import datetime
+
+    if not db.is_available():
+        return json.dumps({"error": "Database not configured — set DATABASE_URL environment variable"})
+
+    # 1. Review metadata
+    review = db.get_risk_register_review(review_id)
+    if not review:
+        return json.dumps({"error": f"Review session {review_id} not found — use rac_list_reviews to see available sessions"})
+
+    # 2. Risk states saved by the Review screen
+    states = db.get_review_risk_states(review_id)
+    if not states:
+        return json.dumps({
+            "error": f"No risk states for review {review_id}. The review may be empty or was created without saving states.",
+            "review": review,
+        })
+
+    # 3. Enrich with pipeline risk_scores when the review is linked to a run
+    scores_by_ref: dict = {}
+    if review.get("run_id"):
+        raw_scores = db.get_risk_scores_for_run(review["run_id"])
+        scores_by_ref = {r["risk_ref"]: r for r in raw_scores}
+
+    today = datetime.date.today().isoformat()
+    fw_label = review.get("framework") or "Internal Risk Register"
+    review_type = review.get("review_type") or "internal"
+
+    included = [s for s in states if s.get("included", True)]
+    excluded = [s for s in states if not s.get("included", True)]
+
+    def _ctrl_name(ref: str) -> str:
+        return _CTRL_MAP_LOCAL.get(ref, {}).get("name", "")
+
+    # ── "review" flat YAML format ────────────────────────────────────────────
+
+    def _build_review_yaml() -> str:
+        lines = [
+            "# Risk Register Review — Risk-as-Code Output",
+            f"# Generated: {today}  ·  review_id: {review_id}  ·  status: {review.get('status', 'draft')}",
+            f"# Source: {fw_label}  ·  type: {review_type}",
+            f"# Risks included: {len(included)}  ·  excluded: {len(excluded)}",
+            "",
+            "thresholds:",
+            "  red:   15.0",
+            "  amber:  9.0",
+            "",
+            "scoring:",
+            "  scale: 25    # impact (0-5) × likelihood (0-5)",
+            "",
+        ]
+
+        if included:
+            lines.append("risks:")
+            for s in included:
+                ref = s["risk_ref"]
+                base = scores_by_ref.get(ref, {})
+                wording = (s.get("current_wording") or s.get("original_wording") or "").replace('"', '\\"')
+                category = base.get("category") or "—"
+                score = base.get("score")
+                rag = base.get("rag") or base.get("rag_status") or "—"
+                source_fw = base.get("source_framework") or fw_label
+                reason = s.get("reason_for_change") or ""
+                controls = s.get("controls_assigned") or []
+
+                lines.append(f"  - id:               {ref}")
+                lines.append(f'    name:             "{wording}"')
+                lines.append(f"    category:         {category}")
+                lines.append(f"    source_framework: {source_fw}")
+                lines.append(f"    rag:              {rag}")
+                if score is not None:
+                    lines.append(f"    score:            {float(score):.1f}   # out of 25")
+                if reason:
+                    lines.append(f'    change_reason:    "{reason}"')
+                if controls:
+                    lines.append("    controls:")
+                    for ctrl in controls:
+                        ctrl_ref = ctrl.get("ref", "") if isinstance(ctrl, dict) else str(ctrl)
+                        cname = _ctrl_name(ctrl_ref)
+                        lines.append(f"      - ref: {ctrl_ref}")
+                        if cname:
+                            lines.append(f'        name: "{cname}"')
+                        if isinstance(ctrl, dict) and ctrl.get("generate_code"):
+                            lines.append("        generate_control_as_code: true")
+                lines.append("")
+
+        if excluded:
+            lines.append("excluded_risks:")
+            for s in excluded:
+                ref = s["risk_ref"]
+                wording = (s.get("current_wording") or s.get("original_wording") or "").replace('"', '\\"')
+                reason = (s.get("reason_for_change") or "No reason provided").replace('"', '\\"')
+                lines.append(f"  - id:     {ref}")
+                lines.append(f'    name:   "{wording}"')
+                lines.append(f'    reason: "{reason}"')
+                lines.append("")
+
+        return "\n".join(lines).rstrip()
+
+    # ── Assemble result ──────────────────────────────────────────────────────
+
+    result: dict = {}
+
+    if framework in ("review", "all"):
+        result["review"] = _build_review_yaml()
+
+    if framework in ("oscal", "coso_erm", "both", "all"):
+        if not ticker:
+            result["warning"] = (
+                "ticker is required for oscal / coso_erm output. "
+                "Pass ticker=<SYMBOL> and re-run, or use framework='review' for the flat format."
+            )
+        else:
+            risks_for_fw = [
+                {
+                    "id":        s["risk_ref"],
+                    "name":      s.get("current_wording") or s.get("original_wording") or "",
+                    "category":  scores_by_ref.get(s["risk_ref"], {}).get("category") or "General",
+                    "score":     float(scores_by_ref.get(s["risk_ref"], {}).get("score") or 0),
+                    "base":      float(scores_by_ref.get(s["risk_ref"], {}).get("score") or 0),
+                    "rag":       scores_by_ref.get(s["risk_ref"], {}).get("rag") or
+                                 scores_by_ref.get(s["risk_ref"], {}).get("rag_status") or "A",
+                    "velocity":  int(scores_by_ref.get(s["risk_ref"], {}).get("velocity") or 0),
+                    "ce":        scores_by_ref.get(s["risk_ref"], {}).get("control_env") or "ADEQUATE",
+                    "peer":      scores_by_ref.get(s["risk_ref"], {}).get("peer_benchmark") or "in-line",
+                    "narrative": s.get("current_wording") or "",
+                }
+                for s in included
+            ]
+            fw_param = "both" if framework == "all" else framework
+            artifacts = _build_artifacts(
+                fw_param, ticker.upper(), risks_for_fw,
+                period, industry, {}, [], [], [],
+                review.get("run_id"),
+            )
+            result.update(artifacts)
+
+            if save_to_db and review.get("run_id") and db.is_available():
+                for fw_key, content in artifacts.items():
+                    db.save_risks_as_code_artifact(review["run_id"], ticker.upper(), fw_key, content)
+
+    changed = [
+        s for s in states
+        if s.get("current_wording") and s.get("original_wording")
+        and s["current_wording"] != s["original_wording"]
+    ]
+    controls_total = sum(len(s.get("controls_assigned") or []) for s in states)
+
+    result["summary"] = {
+        "review_id":        review_id,
+        "run_id":           review.get("run_id"),
+        "review_type":      review_type,
+        "framework_label":  fw_label,
+        "status":           review.get("status"),
+        "created_at":       review.get("created_at"),
+        "completed_at":     review.get("completed_at"),
+        "ticker":           ticker.upper() if ticker else None,
+        "period":           period,
+        "industry":         industry,
+        "risks_total":      len(states),
+        "risks_included":   len(included),
+        "risks_excluded":   len(excluded),
+        "wording_changed":  len(changed),
+        "controls_assigned": controls_total,
+        "output_framework": framework,
+        "saved_to_db":      save_to_db and bool(review.get("run_id")) and db.is_available(),
+    }
+
+    return json.dumps(result, default=str)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
