@@ -233,7 +233,7 @@ async def recommend_controls(req: ControlRecommendRequest):
                 + "\n".join(f"{c['ref']}: {c['name']}" for c in CONTROLS_LIBRARY)
             )
             msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-sonnet-4-6",
                 max_tokens=256,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -284,7 +284,7 @@ async def _generate_framework_risks_ai(framework: str) -> List[Dict[str, Any]]:
             'Example: [{"id":"FW-01","name":"Inadequate controls over X allow Y","category":"Z","control_family":"Section 1"}]'
         )
         msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-6",
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
