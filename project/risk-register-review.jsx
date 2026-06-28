@@ -470,7 +470,7 @@ function OutputPanel({ yaml, onClose, onDownload }) {
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RiskRegisterReviewScreen({ risks, runId }) {
+function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
   const [activeTab, setActiveTab] = useState("internal");
 
   // ── Internal register state ──────────────────────────────────────────────
@@ -730,6 +730,7 @@ function RiskRegisterReviewScreen({ risks, runId }) {
     const payload = buildConvertPayload(sourceRisks, states, ctrl, !isInternal);
 
     // 1. Save review session (all tabs) — records wording changes, include/exclude, controls
+    let savedReviewId = null;
     try {
       const reviewRes = await fetch("/api/risk-register/reviews", {
         method: "POST",
@@ -751,6 +752,9 @@ function RiskRegisterReviewScreen({ risks, runId }) {
       if (!reviewRes.ok) {
         const e = await reviewRes.json().catch(() => ({}));
         setConvertErr(`Review session not saved: ${e.detail || `HTTP ${reviewRes.status}`}`);
+      } else {
+        const reviewData = await reviewRes.json();
+        savedReviewId = reviewData.review_id || null;
       }
     } catch (err) {
       setConvertErr(`Review session not saved: ${err.message || "network error"}`);
@@ -800,6 +804,7 @@ function RiskRegisterReviewScreen({ risks, runId }) {
       setConvertErr("No active pipeline run — wording changes were not saved to the risk register. Run the pipeline in MCP mode first.");
     }
 
+    let finalYaml = "";
     try {
       const res = await fetch("/api/risk-register/convert-to-code", {
         method:"POST",
@@ -809,15 +814,30 @@ function RiskRegisterReviewScreen({ risks, runId }) {
           review_type: isInternal ? "internal" : "external",
           framework,
           include_controls: true,
+          review_id: savedReviewId,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setOutputYaml(data.yaml || "");
+      finalYaml = data.yaml || "";
     } catch (err) {
-      const yaml = buildLocalYaml(payload, framework);
-      setOutputYaml(yaml);
+      finalYaml = buildLocalYaml(payload, framework);
     }
+    setOutputYaml(finalYaml);
+
+    // Refresh the main screen with the latest DB state for this run
+    if (isInternal && runId && onConverted) {
+      try {
+        const refreshRes = await fetch(`/api/risk-register/risks/${runId}`);
+        if (refreshRes.ok) {
+          const refreshData = await refreshRes.json();
+          onConverted(refreshData.risks || []);
+        }
+      } catch (_) {
+        // non-fatal — main screen will still show prior data
+      }
+    }
+
     setConverting(false);
   }
 

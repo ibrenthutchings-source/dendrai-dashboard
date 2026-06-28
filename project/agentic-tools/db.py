@@ -669,6 +669,7 @@ CREATE TABLE IF NOT EXISTS risk_register_reviews (
     review_type  VARCHAR(16)  NOT NULL DEFAULT 'internal',
     framework    VARCHAR(128),
     status       VARCHAR(16)  NOT NULL DEFAULT 'in_progress',
+    rac_yaml     TEXT,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMPTZ
 );
@@ -739,6 +740,7 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS op_margin_pct      N
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     NUMERIC(7,3);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework VARCHAR(128);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative         TEXT;
+ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
 """
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
@@ -3133,6 +3135,22 @@ def get_review_risk_states(review_id: int) -> list:
                     for r in rows
                 ]
     return _run(_do) or []
+
+
+def save_rac_yaml(review_id: int, yaml_str: str) -> None:
+    """Persist generated Risk-as-Code YAML to the review record and mark it completed."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE risk_register_reviews
+                    SET rac_yaml = %s, status = 'completed', completed_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (yaml_str, review_id),
+                )
+    _run(_do)
 
 
 def complete_risk_register_review(review_id: int) -> None:

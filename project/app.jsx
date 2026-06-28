@@ -1565,7 +1565,15 @@ function App() {
           <div className="panel active">
             <RiskRegisterReviewScreen
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
-              runId={runIdRef.current} />
+              runId={runIdRef.current}
+              onConverted={(updatedRisks) => {
+                if (updatedRisks?.length) {
+                  setOutput(prev => ({
+                    ...prev,
+                    s2: { ...(prev.s2 || {}), risks: updatedRisks },
+                  }));
+                }
+              }} />
           </div>
           )}
 
