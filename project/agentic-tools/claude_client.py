@@ -86,6 +86,17 @@ def _system_blocks(system: str) -> list:
     return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
 
+def _thinking_kwargs(model: str, effort: str) -> dict:
+    """Return thinking/output_config kwargs only for models that support adaptive thinking.
+
+    Haiku (4.5 and earlier) does not support thinking — passing it returns a 400.
+    Sonnet (4.x), Opus (4.x), and Fable (5) do support it.
+    """
+    if any(name in model for name in ("sonnet", "opus", "fable")):
+        return {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}}
+    return {}
+
+
 def _text_of(message: Any) -> str:
     """Concatenate text blocks from a Messages response."""
     out = []
@@ -192,8 +203,7 @@ def complete_json(
     base = dict(
         model=model,
         max_tokens=max_tokens,
-        thinking={"type": "adaptive"},
-        output_config={"effort": effort},
+        **_thinking_kwargs(model, effort),
         system=_system_blocks(system),
         messages=[{"role": "user", "content": user}],
     )
@@ -244,8 +254,7 @@ def complete_text(
     message = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        thinking={"type": "adaptive"},
-        output_config={"effort": effort},
+        **_thinking_kwargs(model, effort),
         system=_system_blocks(system),
         messages=[{"role": "user", "content": user}],
     )
@@ -296,8 +305,7 @@ def run_tool_loop(
         message = client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            thinking={"type": "adaptive"},
-            output_config={"effort": effort},
+            **_thinking_kwargs(model, effort),
             system=_system_blocks(system),
             tools=cached_tools,
             messages=messages,
@@ -401,8 +409,7 @@ def run_tool_loop_streaming(
             message = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                thinking={"type": "adaptive"},
-                output_config={"effort": effort},
+                **_thinking_kwargs(model, effort),
                 system=_system_blocks(system),
                 tools=cached_tools,
                 messages=messages,
