@@ -37,9 +37,8 @@ import db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Model routing: Haiku for structured/extraction tasks, Sonnet for the investigation agent.
-# Haiku 4.5 is $1/M · $5/M; Sonnet 4.6 is $3/M · $15/M; Opus reserved for absolute necessity.
-_MODEL_STRUCTURED = "claude-haiku-4-5-20251001"
+# Model routing: Sonnet for all tasks; Opus reserved for absolute necessity.
+_MODEL_STRUCTURED = "claude-sonnet-4-6"
 _MODEL_AGENT = "claude-sonnet-4-6"
 
 # ── Embedding helpers ─────────────────────────────────────────────────────────

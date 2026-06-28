@@ -13,8 +13,7 @@ Activation:
     Without it, is_available() returns False and callers degrade gracefully.
 
 Model policy:
-    Defaults to claude-haiku-4-5-20251001 (fastest, cheapest). Escalate to
-    sonnet for tasks needing stronger reasoning; opus only when truly necessary.
+    Defaults to claude-sonnet-4-6. Escalate to opus only when truly necessary.
     Override per call via `model`/`effort`.
 """
 
@@ -35,7 +34,7 @@ except ImportError:  # pragma: no cover
     _HAS_SDK = False
 
 # Default to Haiku (fastest/cheapest); escalate to Sonnet or Opus per call as needed.
-MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-sonnet-4-6")
 
 _client: Optional["anthropic.Anthropic"] = None
 _checked = False
