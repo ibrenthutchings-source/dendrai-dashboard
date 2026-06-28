@@ -40,15 +40,15 @@ Endpoints:
     PUT  /config/code-editor/{storage_key}   Persist YAML editor content to DB
 
 MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
-    /mcp/edgar          SEC EDGAR filings, financials, risk factors, 8-K events
-    /mcp/fred           Federal Reserve macro economic indicators
-    /mcp/rss            Industry & compliance RSS news feeds
-    /mcp/token-cost     Anthropic API token cost tracking
-    /mcp/predictive     Risk scoring, forecasting, predictive analytics
-    /mcp/risk-as-code   Risk-as-Code OSCAL/COSO YAML generation
-    /mcp/oracle         Oracle Fusion ERP data (requires ORACLE_FUSION_* env vars)
+    /mcp/edgar/mcp          SEC EDGAR filings, financials, risk factors, 8-K events
+    /mcp/fred/mcp           Federal Reserve macro economic indicators
+    /mcp/rss/mcp            Industry & compliance RSS news feeds
+    /mcp/token-cost/mcp     Anthropic API token cost tracking
+    /mcp/predictive/mcp     Risk scoring, forecasting, predictive analytics
+    /mcp/risk-as-code/mcp   Risk-as-Code OSCAL/COSO YAML generation
+    /mcp/oracle/mcp         Oracle Fusion ERP data (requires ORACLE_FUSION_* env vars)
 
-    GET  /mcp           Discovery — lists all mounted MCP servers and their URLs
+    GET  /mcp               Discovery — lists all mounted MCP servers and their URLs
 """
 
 import argparse
@@ -359,13 +359,12 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
 # ── Infrastructure endpoints ───────────────────────────────────────────────────
 
 @app.get("/mcp", tags=["mcp"])
-def mcp_discovery(request_url: str = ""):
+def mcp_discovery():
     """List all mounted MCP servers. Add each URL to claude.ai → Settings → Integrations."""
-    import os
     base = os.environ.get("PUBLIC_URL", "").rstrip("/")
     return {
         "servers": [
-            {"name": label, "url": f"{base}{path}"}
+            {"name": label, "url": f"{base}{path}/mcp"}
             for path, label in _MCP_MOUNTS
         ],
         "note": "Set PUBLIC_URL env var to get absolute URLs (e.g. https://your-railway-app.up.railway.app)",
