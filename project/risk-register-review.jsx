@@ -631,7 +631,9 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
     })();
   }, [risks?.length]);
 
-  // Determine which external frameworks have any controls assigned across all risks
+  // Determine which external frameworks to show as columns:
+  // 1. Any framework referenced by an assigned control
+  // 2. Any source_framework on a risk that isn't the internal register
   const usedFws = new Set();
   for (const cs of Object.values(ctrlStates)) {
     for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
@@ -639,7 +641,16 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
       if (fw && fw !== "Internal") usedFws.add(fw);
     }
   }
-  const fwCols = MATRIX_FRAMEWORKS.filter(fw => usedFws.has(fw));
+  for (const r of (risks || [])) {
+    const fw = r.source_framework;
+    if (fw && fw !== "Internal Risk Register" && fw !== "Internal") usedFws.add(fw);
+  }
+  // Preserve standard order for known frameworks; append any extras alphabetically
+  const _internalFws = new Set(["Internal", "Internal Risk Register"]);
+  const fwCols = [
+    ...MATRIX_FRAMEWORKS.filter(fw => usedFws.has(fw)),
+    ...[...usedFws].filter(fw => !MATRIX_FRAMEWORKS.includes(fw) && !_internalFws.has(fw)).sort(),
+  ];
 
   // ── Wording row helpers ──────────────────────────────────────────────────
 
@@ -1079,6 +1090,31 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setSavedAt(null);
     setEffectiveRunId(runId);
   }, [risks?.length]);
+
+  // On mount: load previously-saved framework catalogs from the database so that
+  // framework columns appear in the matrix without needing a fresh Discovery search.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/risk-register/framework-catalogs");
+        if (!res.ok) return;
+        const data = await res.json();
+        const catalogs = data.catalogs || [];
+        if (!catalogs.length) return;
+        const allRisks = catalogs.flatMap(cat =>
+          (cat.risks || []).map(r => ({
+            ...r,
+            source_framework: r.source_framework || cat.framework,
+          }))
+        );
+        if (allRisks.length) {
+          setDiscovered(allRisks);
+          setDiscStates(initRiskStates(allRisks));
+          setDiscCtrlStates(initControlStates(allRisks));
+        }
+      } catch (_) {}
+    })();
+  }, []);
 
   // On mount: if no in-memory risks were passed in, load from the database so the
   // Internal tab works without a pipeline having been run in this session.
