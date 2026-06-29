@@ -3298,7 +3298,8 @@ def get_latest_risks_for_ticker(ticker: str) -> dict:
                            rs.delta,
                            rs.velocity,
                            rs.control_env,
-                           rs.peer_benchmark
+                           rs.peer_benchmark,
+                           rrs.current_wording
                     FROM risk_scores rs
                     LEFT JOIN LATERAL (
                         SELECT rrs2.current_wording
@@ -3332,6 +3333,7 @@ def get_latest_risks_for_ticker(ticker: str) -> dict:
                         "velocity":       r[10],
                         "control_env":    r[11],
                         "peer_benchmark": r[12],
+                        "current_wording": r[13],
                     }
                     for r in rows
                 ]
@@ -3363,6 +3365,7 @@ def get_risk_scores_for_run(run_id: int) -> list:
                         "name":           r[2] or r[1],   # narrative preferred, else risk_name
                         "risk_name":      r[1],
                         "narrative":      r[2],
+                        "current_wording": r[2],          # narrative = last applied reviewed wording
                         "category":       r[3],
                         "score":          float(r[4])  if r[4]  is not None else None,
                         "rag":            r[5],
