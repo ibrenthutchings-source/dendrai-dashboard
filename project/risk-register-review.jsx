@@ -586,6 +586,50 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
   const [savingCells, setSavingCells]     = useState(new Set());
   const [fwPicker, setFwPicker]       = useState(null); // { key, fw }
   const [ctrlSearch, setCtrlSearch]   = useState("");
+  const [domainNames, setDomainNames] = useState({});
+  const [domainsLoading, setDomainsLoading] = useState(false);
+
+  function inferDomain(risk) {
+    const text = ((risk.name || risk.current_wording || "") + " " + (risk.category || "")).toLowerCase();
+    if (/\baccess\b|identity|privilege|authentication|authoris|account/.test(text)) return "Identity & Access Management";
+    if (/revenue|financial|accounting|fraud|margin|restat/.test(text))              return "Financial Reporting & Controls";
+    if (/cyber|security|breach|hack|phishing|encrypt|vulnerab|incident/.test(text)) return "Cyber Security & Data Protection";
+    if (/vendor|supplier|third.party|supply.chain|outsourc/.test(text))             return "Third-Party & Vendor Risk";
+    if (/continuity|disaster|recovery|\bbcp\b|resilience|availability/.test(text))  return "Operational Resilience";
+    if (/compliance|regulatory|legal|penalty|gdpr|ccpa|\bsox\b|privacy/.test(text)) return "Regulatory & Compliance";
+    if (/change|configuration|deployment|release|patch|software|technolog/.test(text)) return "Technology & Change Management";
+    if (/people|talent|staff|retention|key.person|\bhr\b|hiring|workforce/.test(text)) return "People & Organisational Risk";
+    if (/market|macro|interest|credit|inflation|\brate\b|currency|economic/.test(text)) return "Market & Economic Risk";
+    return risk.category || "Enterprise Risk";
+  }
+
+  useEffect(() => {
+    if (!risks?.length) return;
+    const baseline = {};
+    for (const r of risks) { baseline[r.id || r.risk_ref] = inferDomain(r); }
+    setDomainNames(baseline);
+    (async () => {
+      setDomainsLoading(true);
+      try {
+        const res = await fetch("/api/risk-register/categorize-domains", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            risks: risks.map(r => ({
+              ref: r.id || r.risk_ref,
+              name: r.name || r.current_wording || "",
+              category: r.category || "",
+            })),
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.domains) setDomainNames(prev => ({ ...prev, ...data.domains }));
+        }
+      } catch (_) {}
+      setDomainsLoading(false);
+    })();
+  }, [risks?.length]);
 
   // Determine which external frameworks have any controls assigned across all risks
   const usedFws = new Set();
@@ -677,6 +721,12 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
             <tr>
+              <th style={{ ...thStyle, width: 160, minWidth: 140 }}>
+                Core Domains &amp; Risks
+                {domainsLoading && (
+                  <span style={{ fontSize: 8, fontWeight: 400, color: "var(--ink-3,#aaa)", marginLeft: 5 }}>generating…</span>
+                )}
+              </th>
               <th style={{ ...thStyle, minWidth: 200, width: "26%" }}>Enterprise Risks</th>
               {fwCols.map(fw => (
                 <th key={fw} style={{ ...thStyle, minWidth: 200 }}>{fw}</th>
@@ -684,16 +734,43 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
             </tr>
           </thead>
           <tbody>
-            {(risks || []).map(r => {
+            {(risks || []).map((r, idx) => {
               const key      = r.id || r.risk_ref;
               const state    = riskStates[key] || { wording: r.current_wording || r.name || "", included: true };
               const cs       = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [], generateCode: new Set() };
               const allRefs  = [...(cs.autoMapped || []), ...(cs.manual || [])];
               const isEditing = editingRows.has(key);
               const isSaving  = savingRows.has(key);
+              const domain    = domainNames[key] || inferDomain(r);
+              const prevRisk  = idx > 0 ? risks[idx - 1] : null;
+              const prevDomain = prevRisk ? (domainNames[prevRisk.id || prevRisk.risk_ref] || inferDomain(prevRisk)) : null;
+              const isGroupStart = domain !== prevDomain;
 
               return (
                 <tr key={key} style={{ opacity: state.included ? 1 : 0.45, background: isEditing ? "rgba(37,99,235,0.025)" : "transparent" }}>
+
+                  {/* Column 0 — Core domain */}
+                  <td style={{
+                    ...tdStyle,
+                    borderTop: isGroupStart && idx > 0 ? "2px solid var(--line,#d8d8d8)" : undefined,
+                    paddingTop: isGroupStart && idx > 0 ? 14 : undefined,
+                    verticalAlign: "top",
+                    minWidth: 140,
+                    maxWidth: 160,
+                  }}>
+                    {isGroupStart ? (
+                      <div style={{ fontWeight: 700, fontSize: 10, color: "var(--acc,#2563eb)", lineHeight: 1.4 }}>
+                        {domain}
+                      </div>
+                    ) : (
+                      <div style={{
+                        fontSize: 10, color: "var(--ink-3,#bbb)", lineHeight: 1.4,
+                        paddingLeft: 8, borderLeft: "2px solid var(--line,#eee)",
+                      }}>
+                        {domain}
+                      </div>
+                    )}
+                  </td>
 
                   {/* Column 1 — Risk domain + wording */}
                   <td style={tdStyle}>

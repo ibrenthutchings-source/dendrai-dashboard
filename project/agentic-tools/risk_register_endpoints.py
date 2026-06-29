@@ -104,6 +104,19 @@ _FRAMEWORK_SYSTEM = (
     'Example: [{"id":"FW-01","name":"Inadequate controls over X allow Y","category":"Z","control_family":"Section 1"}]'
 )
 
+_DOMAIN_SYSTEM = (
+    "You are a GRC expert. For each risk provided, assign it to the most appropriate "
+    "enterprise risk domain using a concise 3-6 word common area name.\n\n"
+    "Preferred domain names (use these where they fit, create a new one only if none applies):\n"
+    "  'Identity & Access Management', 'Financial Reporting & Controls',\n"
+    "  'Cyber Security & Data Protection', 'Third-Party & Vendor Risk',\n"
+    "  'Operational Resilience', 'Regulatory & Compliance',\n"
+    "  'Technology & Change Management', 'People & Organisational Risk',\n"
+    "  'Market & Economic Risk'.\n\n"
+    "Return ONLY a JSON object mapping ref → domain name. No markdown, no commentary.\n"
+    'Example: {"RISK-01": "Identity & Access Management", "RISK-02": "Financial Reporting & Controls"}'
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Mock external framework risk catalogs
@@ -223,6 +236,10 @@ class ConvertToCodeRequest(BaseModel):
 class ApplyWordingRequest(BaseModel):
     run_id: int
     risks: List[Dict[str, Any]] = []  # [{risk_ref, current_wording}, ...]
+
+
+class CategorizeDomainRequest(BaseModel):
+    risks: List[Dict[str, Any]] = []  # [{ref, name, category}, ...]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -414,6 +431,67 @@ async def apply_wording(req: ApplyWordingRequest):
         raise HTTPException(status_code=503, detail="Database not connected — set DATABASE_URL to persist wording changes")
     rows_updated = db.apply_review_wording(req.run_id, req.risks)
     return {"applied": True, "count": len(req.risks), "rows_updated": rows_updated}
+
+
+@router.post("/categorize-domains")
+async def categorize_domains(req: CategorizeDomainRequest):
+    """
+    Assign each risk to a common enterprise risk domain name.
+    Uses Claude when ANTHROPIC_API_KEY is available; falls back to keyword heuristics.
+    """
+    def _keyword_domain(name: str, category: str) -> str:
+        text = (name + " " + (category or "")).lower()
+        if any(w in text for w in ["access", "identity", "privilege", "authentication", "authoris", "account", "logical"]):
+            return "Identity & Access Management"
+        if any(w in text for w in ["revenue", "financial", "accounting", "fraud", "margin", "restat"]):
+            return "Financial Reporting & Controls"
+        if any(w in text for w in ["cyber", "security", "breach", "hack", "phishing", "encrypt", "vulnerab", "incident"]):
+            return "Cyber Security & Data Protection"
+        if any(w in text for w in ["vendor", "supplier", "third-party", "supply", "outsourc"]):
+            return "Third-Party & Vendor Risk"
+        if any(w in text for w in ["continuity", "disaster", "recovery", "bcp", "resilience", "availability"]):
+            return "Operational Resilience"
+        if any(w in text for w in ["compliance", "regulatory", "legal", "penalty", "gdpr", "ccpa", "sox", "privacy"]):
+            return "Regulatory & Compliance"
+        if any(w in text for w in ["change", "configuration", "deployment", "release", "patch", "software", "technolog"]):
+            return "Technology & Change Management"
+        if any(w in text for w in ["people", "talent", "staff", "retention", "key person", "hiring", "workforce"]):
+            return "People & Organisational Risk"
+        if any(w in text for w in ["market", "macro", "interest", "credit", "inflation", "currency", "economic"]):
+            return "Market & Economic Risk"
+        return category or "Enterprise Risk"
+
+    domains = {
+        r.get("ref", ""): _keyword_domain(r.get("name", ""), r.get("category", ""))
+        for r in req.risks
+        if r.get("ref")
+    }
+
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key and req.risks:
+            import anthropic
+            import json
+            import re
+            client = anthropic.Anthropic(api_key=api_key)
+            risk_lines = "\n".join(
+                f'{r.get("ref", "")}: {r.get("name", "")} (category: {r.get("category", "")})'
+                for r in req.risks
+            )
+            msg = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=[{"type": "text", "text": _DOMAIN_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": f"Risks:\n{risk_lines}"}],
+            )
+            raw = msg.content[0].text.strip()
+            match = re.search(r'\{.*?\}', raw, re.DOTALL)
+            if match:
+                domains.update(json.loads(match.group()))
+    except Exception as exc:
+        logger.warning("AI domain categorization failed, using keyword fallback: %s", exc)
+
+    return {"domains": domains}
 
 
 @router.get("/risks/latest/{ticker}")
