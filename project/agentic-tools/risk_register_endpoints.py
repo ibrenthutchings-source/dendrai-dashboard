@@ -416,6 +416,20 @@ async def apply_wording(req: ApplyWordingRequest):
     return {"applied": True, "count": len(req.risks), "rows_updated": rows_updated}
 
 
+@router.get("/risks/latest/{ticker}")
+async def get_latest_risks(ticker: str):
+    """Return risks from the most recent run for a ticker, with latest review wording applied."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not connected")
+    result = db.get_latest_risks_for_ticker(ticker)
+    return {
+        "risks": result["risks"],
+        "count": len(result["risks"]),
+        "run_id": result["run_id"],
+        "ticker": ticker.upper(),
+    }
+
+
 @router.get("/risks/{run_id}")
 async def get_risks_for_run(run_id: int):
     """Return current risk_scores for a run, with narrative wording applied."""

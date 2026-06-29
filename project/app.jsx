@@ -1566,6 +1566,7 @@ function App() {
             <RiskRegisterReviewScreen
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
               runId={runIdRef.current}
+              ticker={cfg.ticker}
               onConverted={(updatedRisks) => {
                 if (updatedRisks?.length) {
                   setOutput(prev => ({

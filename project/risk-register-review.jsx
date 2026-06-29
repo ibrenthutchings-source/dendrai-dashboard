@@ -470,13 +470,17 @@ function OutputPanel({ yaml, onClose, onDownload }) {
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
+function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [activeTab, setActiveTab] = useState("internal");
 
   // ── Internal register state ──────────────────────────────────────────────
-  // refreshedRisks: DB-fetched copy after a successful convert; overrides the prop
+  // refreshedRisks: DB-fetched copy; overrides the prop (set on mount or after convert)
   const [refreshedRisks, setRefreshedRisks] = useState(null);
   const effectiveRisks = refreshedRisks || risks;
+
+  // effectiveRunId: resolved from the prop OR from the DB fetch so that
+  // apply-wording and onConverted work even when no in-session pipeline ran.
+  const [effectiveRunId, setEffectiveRunId] = useState(runId);
 
   const [riskStates, setRiskStates]     = useState(() => initRiskStates(risks));
   const [ctrlStates, setCtrlStates]     = useState(() => initControlStates(risks));
@@ -511,13 +515,31 @@ function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
   const [convertErr, setConvertErr] = useState(null);
   const [validationMsg, setValidationMsg] = useState(null);
 
-  // Sync internal risk list when parent prop changes (new pipeline run)
+  // When the parent passes fresh pipeline risks, reset local state to track them.
   useEffect(() => {
+    if (!risks?.length) return;
     setRefreshedRisks(null);
     setRiskStates(initRiskStates(risks));
     setCtrlStates(initControlStates(risks));
     setSavedAt(null);
+    setEffectiveRunId(runId);
   }, [risks?.length]);
+
+  // On mount: if no in-memory risks were passed in, load from the database so the
+  // Internal tab works without a pipeline having been run in this session.
+  useEffect(() => {
+    if (risks?.length || !ticker) return;
+    fetch(`/api/risk-register/risks/latest/${encodeURIComponent(ticker)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data?.risks?.length) return;
+        setRefreshedRisks(data.risks);
+        setRiskStates(initRiskStates(data.risks));
+        setCtrlStates(initControlStates(data.risks));
+        if (data.run_id) setEffectiveRunId(data.run_id);
+      })
+      .catch(() => {});
+  }, []);
 
   // ── Validation helpers ────────────────────────────────────────────────────
 
@@ -736,7 +758,7 @@ function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
-          run_id: runId || null,
+          run_id: effectiveRunId || null,
           review_type: isInternal ? "internal" : "external",
           framework,
           risk_states: payload.map(r => ({
@@ -760,15 +782,15 @@ function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
       setConvertErr(`Review session not saved: ${err.message || "network error"}`);
     }
 
-    // 2. For internal runs with a known runId: write wording back to risk_scores,
+    // 2. For internal runs with a known run: write wording back to risk_scores,
     //    then re-fetch the updated list so the UI reflects the DB state.
-    if (isInternal && runId) {
+    if (isInternal && effectiveRunId) {
       try {
         const applyRes = await fetch("/api/risk-register/apply-wording", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
-            run_id: runId,
+            run_id: effectiveRunId,
             risks: payload.map(r => ({
               risk_ref: r.id || r.risk_ref || "",
               current_wording: r.current_wording || r.name || "",
@@ -779,7 +801,7 @@ function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
           const e = await applyRes.json().catch(() => ({}));
           setConvertErr(`Wording not saved to register: ${e.detail || `HTTP ${applyRes.status}`}`);
         } else {
-          const refreshRes = await fetch(`/api/risk-register/risks/${runId}`);
+          const refreshRes = await fetch(`/api/risk-register/risks/${effectiveRunId}`);
           if (refreshRes.ok) {
             const refreshData = await refreshRes.json();
             const updated = refreshData.risks || [];
@@ -800,7 +822,7 @@ function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
       } catch (err) {
         setConvertErr(`Wording not saved to register: ${err.message || "network error"}`);
       }
-    } else if (isInternal && !runId && savedReviewId) {
+    } else if (isInternal && !effectiveRunId && savedReviewId) {
       setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
     }
 
@@ -826,9 +848,9 @@ function RiskRegisterReviewScreen({ risks, runId, onConverted }) {
     setOutputYaml(finalYaml);
 
     // Refresh the main screen with the latest DB state for this run
-    if (isInternal && runId && onConverted) {
+    if (isInternal && effectiveRunId && onConverted) {
       try {
-        const refreshRes = await fetch(`/api/risk-register/risks/${runId}`);
+        const refreshRes = await fetch(`/api/risk-register/risks/${effectiveRunId}`);
         if (refreshRes.ok) {
           const refreshData = await refreshRes.json();
           onConverted(refreshData.risks || []);
