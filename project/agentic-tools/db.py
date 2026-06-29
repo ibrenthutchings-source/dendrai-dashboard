@@ -3262,6 +3262,83 @@ def apply_review_wording(run_id: int, updates: list) -> int:
     return rows_updated
 
 
+def get_latest_risks_for_ticker(ticker: str) -> dict:
+    """Return risks from the most recent run for a ticker.
+
+    Overlays current_wording from the most recent review session so the
+    Internal tab always shows the latest reviewed names, not just the raw
+    pipeline output.  Returns {"run_id": int|None, "risks": list}.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id FROM risk_loop_runs
+                    WHERE ticker = %s
+                    ORDER BY run_at DESC LIMIT 1
+                    """,
+                    (ticker.upper(),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return {"run_id": None, "risks": []}
+                run_id = row[0]
+                cur.execute(
+                    """
+                    SELECT rs.risk_ref,
+                           COALESCE(rrs.current_wording, rs.narrative, rs.risk_name) AS name,
+                           rs.risk_name,
+                           rs.narrative,
+                           rs.category,
+                           rs.score,
+                           rs.rag_status,
+                           rs.source_framework,
+                           rs.base_score,
+                           rs.delta,
+                           rs.velocity,
+                           rs.control_env,
+                           rs.peer_benchmark
+                    FROM risk_scores rs
+                    LEFT JOIN LATERAL (
+                        SELECT rrs2.current_wording
+                        FROM review_risk_states rrs2
+                        JOIN risk_register_reviews rrr ON rrr.id = rrs2.review_id
+                        WHERE rrr.run_id = rs.run_id
+                          AND rrs2.risk_ref = rs.risk_ref
+                        ORDER BY rrr.created_at DESC
+                        LIMIT 1
+                    ) rrs ON true
+                    WHERE rs.run_id = %s
+                    ORDER BY rs.score DESC NULLS LAST
+                    """,
+                    (run_id,),
+                )
+                rows = cur.fetchall()
+                risks = [
+                    {
+                        "id":             r[0],
+                        "risk_ref":       r[0],
+                        "name":           r[1],
+                        "risk_name":      r[2],
+                        "narrative":      r[3],
+                        "category":       r[4],
+                        "score":          float(r[5])  if r[5]  is not None else None,
+                        "rag":            r[6],
+                        "rag_status":     r[6],
+                        "source_framework": r[7],
+                        "base_score":     float(r[8])  if r[8]  is not None else None,
+                        "delta":          float(r[9])  if r[9]  is not None else None,
+                        "velocity":       r[10],
+                        "control_env":    r[11],
+                        "peer_benchmark": r[12],
+                    }
+                    for r in rows
+                ]
+                return {"run_id": run_id, "risks": risks}
+    return _run(_do) or {"run_id": None, "risks": []}
+
+
 def get_risk_scores_for_run(run_id: int) -> list:
     """Return all risk_scores for a run, preferring narrative wording when present."""
     def _do():
