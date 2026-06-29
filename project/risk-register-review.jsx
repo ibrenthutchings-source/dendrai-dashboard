@@ -777,6 +777,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // ── Matrix view ───────────────────────────────────────────────────────────
   const [matrixView, setMatrixView]   = useState(false);
   const [savingRows, setSavingRows]   = useState(new Set());
+  const [refreshing, setRefreshing]   = useState(false);
 
   // ── Output ───────────────────────────────────────────────────────────────
   const [outputYaml, setOutputYaml] = useState(null);
@@ -977,6 +978,32 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setDiscCtrlStates(initControlStates(found));
     setDiscCollapsed({});
     setSearching(false);
+  }
+
+  // ── Refresh ───────────────────────────────────────────────────────────────
+
+  async function handleRefresh() {
+    setActiveTab("internal");
+    const url = effectiveRunId
+      ? `/api/risk-register/risks/${effectiveRunId}`
+      : ticker ? `/api/risk-register/risks/latest/${encodeURIComponent(ticker)}` : null;
+    if (!url) return;
+    setRefreshing(true);
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const fresh = data.risks || [];
+        if (fresh.length) {
+          setRefreshedRisks(fresh);
+          setRiskStates(initRiskStates(fresh));
+          setCtrlStates(initControlStates(fresh));
+          if (data.run_id) setEffectiveRunId(data.run_id);
+          setSavedAt(null);
+        }
+      }
+    } catch (_) {}
+    setRefreshing(false);
   }
 
   // ── Matrix inline save ────────────────────────────────────────────────────
@@ -1437,6 +1464,14 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           </div>
         </div>
         <div className="code-actions">
+          <button
+            className={"btn btn-sm" + (refreshing ? " loading" : "")}
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Refresh internal register from database and return to Internal Register tab"
+          >
+            {refreshing ? "Refreshing…" : "↺ Refresh"}
+          </button>
           {outputYaml && (
             <button className="btn btn-sm" onClick={() => setOutputYaml(null)}>Hide Output</button>
           )}
