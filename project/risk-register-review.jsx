@@ -47,6 +47,8 @@ const PRESET_FRAMEWORKS = [
   "SOC 2",
 ];
 
+const MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "SOC 2", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
+
 const FW_MOCK_RISKS = {
   "NIST SP 800-53": [
     { id:"NIST-AC-2",  name:"Inadequate account lifecycle management exposes systems to unauthorised access",   category:"Access Control",   source_framework:"NIST SP 800-53", control_family:"AC" },
@@ -113,10 +115,11 @@ function initRiskStates(risks) {
   const states = {};
   for (const r of (risks || [])) {
     const key = r.id || r.risk_ref;
+    const wording = r.current_wording || r.name || "";
     states[key] = {
       included: true,
-      wording: r.name || "",
-      originalWording: r.name || "",
+      wording,
+      originalWording: wording,
       reason: "",
     };
   }
@@ -467,6 +470,268 @@ function OutputPanel({ yaml, onClose, onDownload }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Framework Matrix view
+// ─────────────────────────────────────────────────────────────────────────────
+
+function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, savingRows, savedAt }) {
+  const [editingRows, setEditingRows] = useState(new Set());
+  const [rowDrafts, setRowDrafts]     = useState({});
+  const [fwPicker, setFwPicker]       = useState(null); // { key, fw }
+  const [ctrlSearch, setCtrlSearch]   = useState("");
+
+  // Determine which external frameworks have any controls assigned across all risks
+  const usedFws = new Set();
+  for (const cs of Object.values(ctrlStates)) {
+    for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
+      const fw = CTRL_BY_REF[ref]?.framework;
+      if (fw && fw !== "Internal") usedFws.add(fw);
+    }
+  }
+  const fwCols = MATRIX_FRAMEWORKS.filter(fw => usedFws.has(fw));
+
+  function startEdit(key) {
+    const state = riskStates[key] || {};
+    const cs    = ctrlStates[key] || { autoMapped: [], manual: [] };
+    setRowDrafts(prev => ({
+      ...prev,
+      [key]: { wording: state.wording || "", autoMapped: [...(cs.autoMapped || [])], manual: [...(cs.manual || [])] },
+    }));
+    setEditingRows(prev => new Set([...prev, key]));
+    setFwPicker(null);
+  }
+
+  function cancelEdit(key) {
+    const draft = rowDrafts[key];
+    if (draft) {
+      onWordingChange(key, draft.wording);
+      onResetCtrl(key, draft.autoMapped, draft.manual);
+    }
+    setEditingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
+    if (fwPicker?.key === key) setFwPicker(null);
+  }
+
+  async function saveRow(key) {
+    const state = riskStates[key] || {};
+    const cs    = ctrlStates[key] || { autoMapped: [], manual: [] };
+    const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
+    await onSaveRow(key, state, allRefs);
+    setEditingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
+    setFwPicker(null);
+  }
+
+  const thStyle = {
+    padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 700,
+    color: "var(--ink-2,#555)", background: "var(--surface-2,#f8f9fa)",
+    borderBottom: "2px solid var(--line,#e0e0e0)", borderRight: "1px solid var(--line,#eee)",
+    textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap",
+  };
+  const tdStyle = {
+    padding: "10px 10px", verticalAlign: "top",
+    borderBottom: "1px solid var(--line,#eee)", borderRight: "1px solid var(--line,#f0f0f0)",
+  };
+
+  return (
+    <div>
+      {savedAt && (
+        <div style={{ fontSize: 10, color: "var(--green,#2a7)", padding: "4px 0 10px", display: "flex", alignItems: "center", gap: 4 }}>
+          <span>✓</span> Saved at {savedAt}
+        </div>
+      )}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr>
+              <th style={{ ...thStyle, minWidth: 200, width: "26%" }}>Core Domain &amp; Risk</th>
+              {fwCols.map(fw => (
+                <th key={fw} style={{ ...thStyle, minWidth: 170 }}>{fw}</th>
+              ))}
+              <th style={{ ...thStyle, width: 80, textAlign: "center" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(risks || []).map(r => {
+              const key      = r.id || r.risk_ref;
+              const state    = riskStates[key] || { wording: r.current_wording || r.name || "", included: true };
+              const cs       = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [], generateCode: new Set() };
+              const allRefs  = [...(cs.autoMapped || []), ...(cs.manual || [])];
+              const isEditing = editingRows.has(key);
+              const isSaving  = savingRows.has(key);
+
+              return (
+                <tr key={key} style={{ opacity: state.included ? 1 : 0.45, background: isEditing ? "rgba(37,99,235,0.025)" : "transparent" }}>
+
+                  {/* Column 1 — Risk domain + wording */}
+                  <td style={tdStyle}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 5 }}>
+                      <span style={{ fontWeight: 700, fontSize: 11, color: "var(--ink,#111)" }}>
+                        {r.category || "Risk"}
+                      </span>
+                      {r.score != null && <ScoreBadge score={r.score} />}
+                      {(r.rag_status || r.rag) && <RagDot rag={r.rag_status || r.rag} />}
+                    </div>
+                    {isEditing ? (
+                      <textarea
+                        value={state.wording}
+                        onChange={e => onWordingChange(key, e.target.value)}
+                        rows={3}
+                        className="dendrai-input"
+                        style={{
+                          width: "100%", fontSize: 10, lineHeight: 1.5, resize: "vertical",
+                          padding: "4px 7px", boxSizing: "border-box",
+                          border: "1px solid var(--acc,#2563eb)",
+                          borderRadius: 4, background: "var(--surface,#fff)", fontFamily: "inherit",
+                        }}
+                        autoFocus
+                      />
+                    ) : (
+                      <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.5, fontStyle: "italic" }}>
+                        {state.wording || <span style={{ color: "var(--ink-3,#aaa)" }}>No wording</span>}
+                      </div>
+                    )}
+                  </td>
+
+                  {/* Framework columns */}
+                  {fwCols.map(fw => {
+                    const fwRefs = allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
+                    const pickerOpen = fwPicker?.key === key && fwPicker?.fw === fw;
+                    const addable = MASTER_CONTROLS.filter(c =>
+                      c.framework === fw &&
+                      !allRefs.includes(c.ref) &&
+                      (ctrlSearch === "" || c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) || c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()))
+                    );
+
+                    return (
+                      <td key={fw} style={tdStyle}>
+                        {fwRefs.length === 0 && !isEditing ? (
+                          <span style={{ color: "var(--ink-3,#ccc)", fontSize: 10 }}>—</span>
+                        ) : (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {fwRefs.map(ref => {
+                              const ctrl = CTRL_BY_REF[ref];
+                              return (
+                                <div key={ref} style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontWeight: 600, fontSize: 10, color: "var(--acc,#2563eb)" }}>
+                                      {ref}: {ctrl?.name}
+                                    </div>
+                                    {!isEditing && ctrl?.desc && (
+                                      <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.4, marginTop: 1 }}>
+                                        {ctrl.desc}
+                                      </div>
+                                    )}
+                                  </div>
+                                  {isEditing && (
+                                    <button
+                                      title="Remove control"
+                                      onClick={() => onRemoveControl(key, ref, cs.autoMapped.includes(ref))}
+                                      style={{ flexShrink: 0, fontSize: 11, padding: "0 4px", border: "none", background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer", lineHeight: "16px" }}
+                                    >×</button>
+                                  )}
+                                </div>
+                              );
+                            })}
+
+                            {/* Add control picker (edit mode only) */}
+                            {isEditing && (
+                              <div style={{ marginTop: fwRefs.length ? 4 : 0 }}>
+                                <button
+                                  onClick={() => { setFwPicker(pickerOpen ? null : { key, fw }); setCtrlSearch(""); }}
+                                  style={{
+                                    fontSize: 9, padding: "1px 7px", borderRadius: 3, cursor: "pointer",
+                                    border: "1px dashed var(--line,#ccc)", background: "transparent",
+                                    color: "var(--acc,#2563eb)", display: "flex", alignItems: "center", gap: 3,
+                                  }}
+                                >+ Add</button>
+
+                                {pickerOpen && (
+                                  <div style={{
+                                    marginTop: 4, padding: 6, background: "var(--surface,#fff)",
+                                    border: "1px solid var(--line,#ddd)", borderRadius: 6,
+                                    boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+                                    maxHeight: 160, overflow: "hidden", display: "flex", flexDirection: "column", gap: 4,
+                                    position: "relative", zIndex: 10,
+                                  }}>
+                                    <input
+                                      className="dendrai-input"
+                                      placeholder="Search controls…"
+                                      value={ctrlSearch}
+                                      onChange={e => setCtrlSearch(e.target.value)}
+                                      style={{ fontSize: 9, padding: "2px 6px" }}
+                                      autoFocus
+                                    />
+                                    <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 }}>
+                                      {addable.slice(0, 12).map(c => (
+                                        <button
+                                          key={c.ref}
+                                          onClick={() => { onAddManualControl(key, c.ref); setFwPicker(null); setCtrlSearch(""); }}
+                                          style={{
+                                            display: "flex", gap: 5, padding: "3px 4px", border: "none",
+                                            background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 9, borderRadius: 3,
+                                          }}
+                                          onMouseEnter={e => e.currentTarget.style.background = "var(--surface-2,#f5f5f5)"}
+                                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                                        >
+                                          <span className="mono" style={{ fontWeight: 600, color: "var(--acc,#2563eb)", minWidth: 40 }}>{c.ref}</span>
+                                          <span style={{ color: "var(--ink,#111)" }}>{c.name}</span>
+                                        </button>
+                                      ))}
+                                      {addable.length === 0 && (
+                                        <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>No more controls in this framework</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    );
+                  })}
+
+                  {/* Actions column */}
+                  <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap" }}>
+                    {isEditing ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "center" }}>
+                        <button
+                          className="btn btn-sm btn-acc"
+                          onClick={() => saveRow(key)}
+                          disabled={isSaving}
+                          style={{ fontSize: 9, padding: "2px 9px", width: "100%" }}
+                        >
+                          {isSaving ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          className="btn btn-sm"
+                          onClick={() => cancelEdit(key)}
+                          disabled={isSaving}
+                          style={{ fontSize: 9, padding: "2px 9px", width: "100%" }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => startEdit(key)}
+                        style={{ fontSize: 9, padding: "2px 9px" }}
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -508,6 +773,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [uploadLoading, setUploadLoading]      = useState(false);
   const [uploadErr, setUploadErr]              = useState(null);
   const [uploadFilename, setUploadFilename]    = useState(null);
+
+  // ── Matrix view ───────────────────────────────────────────────────────────
+  const [matrixView, setMatrixView]   = useState(false);
+  const [savingRows, setSavingRows]   = useState(new Set());
 
   // ── Output ───────────────────────────────────────────────────────────────
   const [outputYaml, setOutputYaml] = useState(null);
@@ -594,6 +863,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         gen.has(ctrlRef) ? gen.delete(ctrlRef) : gen.add(ctrlRef);
         return { ...prev, [riskKey]: { ...s, generateCode: gen } };
       }),
+      reset: (riskKey, autoMapped, manual) => setCtrl(prev => ({
+        ...prev,
+        [riskKey]: { ...(prev[riskKey] || { generateCode: new Set() }), autoMapped, manual },
+      })),
     };
   }
 
@@ -704,6 +977,100 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setDiscCtrlStates(initControlStates(found));
     setDiscCollapsed({});
     setSearching(false);
+  }
+
+  // ── Matrix inline save ────────────────────────────────────────────────────
+
+  async function handleSaveRowWording(riskKey, state, ctrlRefs = []) {
+    setSavingRows(prev => new Set([...prev, riskKey]));
+    try {
+      await fetch("/api/risk-register/reviews", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          run_id: effectiveRunId || null,
+          review_type: "internal",
+          framework: "Internal Risk Register",
+          risk_states: [{
+            risk_ref: riskKey,
+            original_wording: state.originalWording || state.wording,
+            current_wording: state.wording,
+            included: state.included !== false,
+            reason_for_change: state.reason || null,
+            controls_assigned: ctrlRefs.map(ref => ({ ref, generate_code: false })),
+          }],
+        }),
+      });
+      if (effectiveRunId) {
+        await fetch("/api/risk-register/apply-wording", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            run_id: effectiveRunId,
+            risks: [{ risk_ref: riskKey, current_wording: state.wording }],
+          }),
+        });
+      }
+      setRiskStates(prev => ({ ...prev, [riskKey]: { ...prev[riskKey], originalWording: state.wording } }));
+      setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
+      const url = effectiveRunId
+        ? `/api/risk-register/risks/${effectiveRunId}`
+        : ticker ? `/api/risk-register/risks/latest/${encodeURIComponent(ticker)}` : null;
+      if (url) {
+        const res = await fetch(url);
+        if (res.ok) { const d = await res.json(); if (d.risks?.length) setRefreshedRisks(d.risks); }
+      }
+    } catch (_) {}
+    setSavingRows(prev => { const next = new Set(prev); next.delete(riskKey); return next; });
+  }
+
+  async function handleSaveAllWording() {
+    const modified = Object.entries(riskStates).filter(([, s]) => s.wording !== s.originalWording);
+    if (!modified.length) return;
+    setSavingRows(new Set(modified.map(([k]) => k)));
+    try {
+      await fetch("/api/risk-register/reviews", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          run_id: effectiveRunId || null,
+          review_type: "internal",
+          framework: "Internal Risk Register",
+          risk_states: modified.map(([key, s]) => ({
+            risk_ref: key,
+            original_wording: s.originalWording || s.wording,
+            current_wording: s.wording,
+            included: s.included !== false,
+            reason_for_change: s.reason || null,
+            controls_assigned: [],
+          })),
+        }),
+      });
+      if (effectiveRunId) {
+        await fetch("/api/risk-register/apply-wording", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            run_id: effectiveRunId,
+            risks: modified.map(([key, s]) => ({ risk_ref: key, current_wording: s.wording })),
+          }),
+        });
+      }
+      setRiskStates(prev => {
+        const next = { ...prev };
+        for (const [key, s] of modified) next[key] = { ...next[key], originalWording: s.wording };
+        return next;
+      });
+      setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
+      const url = effectiveRunId
+        ? `/api/risk-register/risks/${effectiveRunId}`
+        : ticker ? `/api/risk-register/risks/latest/${encodeURIComponent(ticker)}` : null;
+      if (url) {
+        const res = await fetch(url);
+        if (res.ok) { const d = await res.json(); if (d.risks?.length) setRefreshedRisks(d.risks); }
+      }
+    } catch (_) {}
+    setSavingRows(new Set());
   }
 
   // ── Convert to Code ────────────────────────────────────────────────────────
@@ -1117,7 +1484,42 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
             ) : (
               <>
                 {renderSummaryBanner(effectiveRisks, riskStates)}
-                {renderRiskList(effectiveRisks, riskStates, ctrlStates, collapsedGroups, setCollapsed, expandedCtrl, setExpandedCtrl, intHandlers, intCtrl, "internal")}
+
+                {/* View toggle */}
+                <div style={{ display:"flex", gap:6, marginBottom:12, paddingBottom:10, borderBottom:"1px solid var(--line,#eee)" }}>
+                  {[["detail","Detail"],["matrix","Framework Matrix"]].map(([v, label]) => {
+                    const active = matrixView ? v === "matrix" : v === "detail";
+                    return (
+                      <button
+                        key={v}
+                        onClick={() => setMatrixView(v === "matrix")}
+                        style={{
+                          fontSize:10, padding:"3px 10px", borderRadius:4, cursor:"pointer",
+                          border: active ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line,#ddd)",
+                          background: active ? "var(--acc,#2563eb)" : "transparent",
+                          color: active ? "#fff" : "var(--ink-2,#555)", fontWeight: active ? 600 : 400,
+                        }}
+                      >{label}</button>
+                    );
+                  })}
+                </div>
+
+                {matrixView ? (
+                  <RiskFrameworkMatrix
+                    risks={effectiveRisks}
+                    riskStates={riskStates}
+                    ctrlStates={ctrlStates}
+                    onWordingChange={intHandlers.wordingChange}
+                    onAddManualControl={intCtrl.addManual}
+                    onRemoveControl={intCtrl.remove}
+                    onResetCtrl={intCtrl.reset}
+                    onSaveRow={handleSaveRowWording}
+                    savingRows={savingRows}
+                    savedAt={savedAt}
+                  />
+                ) : (
+                  renderRiskList(effectiveRisks, riskStates, ctrlStates, collapsedGroups, setCollapsed, expandedCtrl, setExpandedCtrl, intHandlers, intCtrl, "internal")
+                )}
               </>
             )}
           </div>
