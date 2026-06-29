@@ -376,7 +376,23 @@ async def search_frameworks(req: FrameworkSearchRequest):
             r["auto_controls"] = _auto_map_controls(r["name"], r.get("category", ""))
             unique.append(r)
 
+    # Persist each framework's risks to the catalog table for cross-session recall
+    if unique and db.is_available():
+        fw_groups: Dict[str, List] = {}
+        for r in unique:
+            fw = r.get("source_framework", "")
+            if fw:
+                fw_groups.setdefault(fw, []).append(r)
+        for fw_name, fw_risks in fw_groups.items():
+            db.save_framework_catalog(fw_name, fw_risks)
+
     return {"risks": unique, "count": len(unique)}
+
+
+@router.get("/framework-catalogs")
+async def get_framework_catalogs():
+    """Return all framework risk catalogs previously saved to the database."""
+    return {"catalogs": db.list_framework_catalogs()}
 
 
 @router.get("/reviews")

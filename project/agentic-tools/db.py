@@ -3204,6 +3204,49 @@ def list_risk_register_reviews(run_id: Optional[int] = None, limit: int = 20) ->
     return _run(_do) or []
 
 
+def save_framework_catalog(framework_name: str, risks_json: list) -> None:
+    """Upsert a framework risk catalog (keyed by name, version='latest')."""
+    if not framework_name or not risks_json:
+        return
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO framework_risk_catalogs (framework_name, framework_ver, risks_json)
+                    VALUES (%s, 'latest', %s)
+                    ON CONFLICT (framework_name, framework_ver) DO UPDATE SET
+                        risks_json = EXCLUDED.risks_json,
+                        fetched_at = NOW()
+                    """,
+                    (framework_name, Json(risks_json)),
+                )
+    _run(_do)
+
+
+def list_framework_catalogs() -> list:
+    """Return all saved framework risk catalogs."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT framework_name, risks_json, fetched_at
+                    FROM framework_risk_catalogs
+                    ORDER BY framework_name
+                    """
+                )
+                return [
+                    {
+                        "framework": r[0],
+                        "risks": r[1] or [],
+                        "fetched_at": r[2].isoformat() if r[2] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 def get_risk_register_review(review_id: int) -> Optional[dict]:
     """Return a single risk_register_reviews record by ID."""
     def _do():
