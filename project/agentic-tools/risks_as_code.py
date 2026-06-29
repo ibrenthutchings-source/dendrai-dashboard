@@ -561,7 +561,7 @@ def to_coso_erm(
 def _generate_all(data: dict) -> Dict[str, str]:
     """Return {framework_name: yaml_str} for every supported framework."""
     common = dict(
-        ticker     = data.get("ticker", ""),
+        ticker     = str(data.get("ticker") or ""),
         risks      = data.get("risks", []),
         objectives = data.get("objectives", []),
         maps       = data.get("maps", []),
