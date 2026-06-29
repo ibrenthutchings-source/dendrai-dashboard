@@ -130,7 +130,16 @@ function initControlStates(risks) {
   const states = {};
   for (const r of (risks || [])) {
     const key = r.id || r.risk_ref;
-    const autoRefs = autoMapControls(r.name, r.category);
+    // Use backend-provided auto_controls when present (framework-discovery risks carry these)
+    const kwRefs = (r.auto_controls && r.auto_controls.length)
+      ? r.auto_controls.filter(ref => CTRL_BY_REF[ref])
+      : autoMapControls(r.name, r.category);
+    // For framework-specific risks, also include every MASTER_CONTROLS entry for that framework
+    const fw = r.source_framework;
+    const fwRefs = (fw && fw !== "Internal Risk Register")
+      ? MASTER_CONTROLS.filter(c => c.framework === fw).map(c => c.ref)
+      : [];
+    const autoRefs = [...new Set([...kwRefs, ...fwRefs])].slice(0, 6);
     states[key] = { autoMapped: autoRefs, manual: [], generateCode: new Set() };
   }
   return states;
@@ -474,8 +483,12 @@ function OutputPanel({ yaml, onClose, onDownload }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, savingRows, savedAt }) {
+  // Row-level wording edit state
   const [editingRows, setEditingRows] = useState(new Set());
   const [rowDrafts, setRowDrafts]     = useState({});
+  // Per-cell expand state: "riskKey:fw"
+  const [expandedCells, setExpandedCells] = useState(new Set());
+  const [savingCells, setSavingCells]     = useState(new Set());
   const [fwPicker, setFwPicker]       = useState(null); // { key, fw }
   const [ctrlSearch, setCtrlSearch]   = useState("");
 
@@ -489,6 +502,8 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
   }
   const fwCols = MATRIX_FRAMEWORKS.filter(fw => usedFws.has(fw));
 
+  // ── Wording row helpers ──────────────────────────────────────────────────
+
   function startEdit(key) {
     const state = riskStates[key] || {};
     const cs    = ctrlStates[key] || { autoMapped: [], manual: [] };
@@ -497,7 +512,6 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
       [key]: { wording: state.wording || "", autoMapped: [...(cs.autoMapped || [])], manual: [...(cs.manual || [])] },
     }));
     setEditingRows(prev => new Set([...prev, key]));
-    setFwPicker(null);
   }
 
   function cancelEdit(key) {
@@ -507,17 +521,43 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
       onResetCtrl(key, draft.autoMapped, draft.manual);
     }
     setEditingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
-    if (fwPicker?.key === key) setFwPicker(null);
   }
 
   async function saveRow(key) {
-    const state = riskStates[key] || {};
-    const cs    = ctrlStates[key] || { autoMapped: [], manual: [] };
+    const state   = riskStates[key] || {};
+    const cs      = ctrlStates[key] || { autoMapped: [], manual: [] };
     const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
     await onSaveRow(key, state, allRefs);
     setEditingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
-    setFwPicker(null);
   }
+
+  // ── Cell expand helpers ──────────────────────────────────────────────────
+
+  function toggleCell(key, fw) {
+    const id = `${key}:${fw}`;
+    setExpandedCells(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+    // Close any open picker when collapsing or switching
+    if (fwPicker && !(fwPicker.key === key && fwPicker.fw === fw)) {
+      setFwPicker(null);
+      setCtrlSearch("");
+    }
+  }
+
+  async function saveCellControls(key, fw) {
+    const cellId  = `${key}:${fw}`;
+    setSavingCells(prev => new Set([...prev, cellId]));
+    const state   = riskStates[key] || {};
+    const cs      = ctrlStates[key] || { autoMapped: [], manual: [] };
+    const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
+    await onSaveRow(key, state, allRefs);
+    setSavingCells(prev => { const next = new Set(prev); next.delete(cellId); return next; });
+  }
+
+  // ── Styles ───────────────────────────────────────────────────────────────
 
   const thStyle = {
     padding: "8px 10px", textAlign: "left", fontSize: 10, fontWeight: 700,
@@ -544,9 +584,9 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
             <tr>
               <th style={{ ...thStyle, minWidth: 200, width: "26%" }}>Core Domain &amp; Risk</th>
               {fwCols.map(fw => (
-                <th key={fw} style={{ ...thStyle, minWidth: 170 }}>{fw}</th>
+                <th key={fw} style={{ ...thStyle, minWidth: 200 }}>{fw}</th>
               ))}
-              <th style={{ ...thStyle, width: 80, textAlign: "center" }}></th>
+              <th style={{ ...thStyle, width: 90, textAlign: "center" }}>Wording</th>
             </tr>
           </thead>
           <tbody>
@@ -591,106 +631,159 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
                     )}
                   </td>
 
-                  {/* Framework columns */}
+                  {/* Framework columns — independently expandable */}
                   {fwCols.map(fw => {
-                    const fwRefs = allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
+                    const fwRefs     = allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
+                    const cellId     = `${key}:${fw}`;
+                    const isExpanded = expandedCells.has(cellId);
+                    const isSavingCell = savingCells.has(cellId);
                     const pickerOpen = fwPicker?.key === key && fwPicker?.fw === fw;
-                    const addable = MASTER_CONTROLS.filter(c =>
+                    const addable    = MASTER_CONTROLS.filter(c =>
                       c.framework === fw &&
                       !allRefs.includes(c.ref) &&
-                      (ctrlSearch === "" || c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) || c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()))
+                      (ctrlSearch === "" ||
+                        c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
+                        c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()))
                     );
 
                     return (
-                      <td key={fw} style={tdStyle}>
-                        {fwRefs.length === 0 && !isEditing ? (
-                          <span style={{ color: "var(--ink-3,#ccc)", fontSize: 10 }}>—</span>
-                        ) : (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                            {fwRefs.map(ref => {
-                              const ctrl = CTRL_BY_REF[ref];
-                              return (
-                                <div key={ref} style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
-                                  <div style={{ flex: 1 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 10, color: "var(--acc,#2563eb)" }}>
-                                      {ref}: {ctrl?.name}
-                                    </div>
-                                    {!isEditing && ctrl?.desc && (
-                                      <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.4, marginTop: 1 }}>
-                                        {ctrl.desc}
-                                      </div>
-                                    )}
-                                  </div>
-                                  {isEditing && (
-                                    <button
-                                      title="Remove control"
-                                      onClick={() => onRemoveControl(key, ref, cs.autoMapped.includes(ref))}
-                                      style={{ flexShrink: 0, fontSize: 11, padding: "0 4px", border: "none", background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer", lineHeight: "16px" }}
-                                    >×</button>
-                                  )}
-                                </div>
-                              );
-                            })}
-
-                            {/* Add control picker (edit mode only) */}
-                            {isEditing && (
-                              <div style={{ marginTop: fwRefs.length ? 4 : 0 }}>
-                                <button
-                                  onClick={() => { setFwPicker(pickerOpen ? null : { key, fw }); setCtrlSearch(""); }}
-                                  style={{
-                                    fontSize: 9, padding: "1px 7px", borderRadius: 3, cursor: "pointer",
-                                    border: "1px dashed var(--line,#ccc)", background: "transparent",
-                                    color: "var(--acc,#2563eb)", display: "flex", alignItems: "center", gap: 3,
-                                  }}
-                                >+ Add</button>
-
-                                {pickerOpen && (
-                                  <div style={{
-                                    marginTop: 4, padding: 6, background: "var(--surface,#fff)",
-                                    border: "1px solid var(--line,#ddd)", borderRadius: 6,
-                                    boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
-                                    maxHeight: 160, overflow: "hidden", display: "flex", flexDirection: "column", gap: 4,
-                                    position: "relative", zIndex: 10,
-                                  }}>
-                                    <input
-                                      className="dendrai-input"
-                                      placeholder="Search controls…"
-                                      value={ctrlSearch}
-                                      onChange={e => setCtrlSearch(e.target.value)}
-                                      style={{ fontSize: 9, padding: "2px 6px" }}
-                                      autoFocus
-                                    />
-                                    <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 }}>
-                                      {addable.slice(0, 12).map(c => (
-                                        <button
-                                          key={c.ref}
-                                          onClick={() => { onAddManualControl(key, c.ref); setFwPicker(null); setCtrlSearch(""); }}
-                                          style={{
-                                            display: "flex", gap: 5, padding: "3px 4px", border: "none",
-                                            background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 9, borderRadius: 3,
-                                          }}
-                                          onMouseEnter={e => e.currentTarget.style.background = "var(--surface-2,#f5f5f5)"}
-                                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                                        >
-                                          <span className="mono" style={{ fontWeight: 600, color: "var(--acc,#2563eb)", minWidth: 40 }}>{c.ref}</span>
-                                          <span style={{ color: "var(--ink,#111)" }}>{c.name}</span>
-                                        </button>
-                                      ))}
-                                      {addable.length === 0 && (
-                                        <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>No more controls in this framework</span>
-                                      )}
-                                    </div>
-                                  </div>
+                      <td key={fw} style={{ ...tdStyle, padding: 0 }}>
+                        {/* Compact header — always visible, click to expand */}
+                        <button
+                          onClick={() => toggleCell(key, fw)}
+                          style={{
+                            width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                            padding: "10px 10px", border: "none", cursor: "pointer", textAlign: "left",
+                            background: isExpanded ? "var(--acc-bg,#eff6ff)" : "transparent",
+                            borderBottom: isExpanded ? "1px solid var(--line,#dce8fd)" : "none",
+                            transition: "background 0.1s",
+                          }}
+                        >
+                          <span style={{ fontSize: 10, flex: 1, minWidth: 0 }}>
+                            {fwRefs.length > 0 ? (
+                              <>
+                                <span style={{ fontWeight: 600, color: "var(--acc,#2563eb)" }}>
+                                  {fwRefs.slice(0, 2).join(", ")}
+                                </span>
+                                {fwRefs.length > 2 && (
+                                  <span style={{ color: "var(--ink-3,#888)" }}> +{fwRefs.length - 2} more</span>
                                 )}
+                              </>
+                            ) : (
+                              <span style={{ color: "var(--ink-3,#bbb)" }}>No controls</span>
+                            )}
+                          </span>
+                          <span style={{ fontSize: 9, color: "var(--acc,#2563eb)", flexShrink: 0, marginLeft: 6, fontWeight: 600 }}>
+                            {isExpanded ? "▲" : "▼"}
+                          </span>
+                        </button>
+
+                        {/* Expanded panel */}
+                        {isExpanded && (
+                          <div style={{ padding: "10px 10px 12px" }}>
+                            {/* Control list */}
+                            {fwRefs.length > 0 ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                                {fwRefs.map(ref => {
+                                  const ctrl = CTRL_BY_REF[ref];
+                                  return (
+                                    <div key={ref} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ fontWeight: 700, fontSize: 10, color: "var(--acc,#2563eb)", marginBottom: 2 }}>
+                                          {ref}: {ctrl?.name}
+                                        </div>
+                                        {ctrl?.desc && (
+                                          <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.45 }}>
+                                            {ctrl.desc}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <button
+                                        title="Remove control"
+                                        onClick={() => onRemoveControl(key, ref, cs.autoMapped.includes(ref))}
+                                        style={{
+                                          flexShrink: 0, fontSize: 13, padding: "0 5px", border: "none",
+                                          background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer",
+                                          lineHeight: "18px", borderRadius: 3,
+                                        }}
+                                        onMouseEnter={e => { e.currentTarget.style.color = "var(--red,#e53)"; e.currentTarget.style.background = "rgba(229,85,51,0.08)"; }}
+                                        onMouseLeave={e => { e.currentTarget.style.color = "var(--ink-3,#aaa)"; e.currentTarget.style.background = "transparent"; }}
+                                      >×</button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 10, color: "var(--ink-3,#888)", fontStyle: "italic", marginBottom: 10 }}>
+                                No controls assigned for this framework.
                               </div>
                             )}
+
+                            {/* Add picker */}
+                            <button
+                              onClick={() => { setFwPicker(pickerOpen ? null : { key, fw }); setCtrlSearch(""); }}
+                              style={{
+                                fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer",
+                                border: "1px dashed var(--acc,#2563eb)", background: "transparent",
+                                color: "var(--acc,#2563eb)", marginBottom: 4,
+                              }}
+                            >+ Add control</button>
+
+                            {pickerOpen && (
+                              <div style={{
+                                marginBottom: 6, padding: 6, background: "var(--surface,#fff)",
+                                border: "1px solid var(--line,#ddd)", borderRadius: 6,
+                                boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+                                maxHeight: 180, overflow: "hidden", display: "flex", flexDirection: "column", gap: 4,
+                                position: "relative", zIndex: 10,
+                              }}>
+                                <input
+                                  className="dendrai-input"
+                                  placeholder="Search controls…"
+                                  value={ctrlSearch}
+                                  onChange={e => setCtrlSearch(e.target.value)}
+                                  style={{ fontSize: 9, padding: "2px 6px" }}
+                                  autoFocus
+                                />
+                                <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 }}>
+                                  {addable.slice(0, 12).map(c => (
+                                    <button
+                                      key={c.ref}
+                                      onClick={() => { onAddManualControl(key, c.ref); setFwPicker(null); setCtrlSearch(""); }}
+                                      style={{
+                                        display: "flex", gap: 5, padding: "4px 4px", border: "none",
+                                        background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 9, borderRadius: 3,
+                                      }}
+                                      onMouseEnter={e => e.currentTarget.style.background = "var(--surface-2,#f5f5f5)"}
+                                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                                    >
+                                      <span className="mono" style={{ fontWeight: 600, color: "var(--acc,#2563eb)", minWidth: 40 }}>{c.ref}</span>
+                                      <span style={{ color: "var(--ink,#111)" }}>{c.name}</span>
+                                    </button>
+                                  ))}
+                                  {addable.length === 0 && (
+                                    <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>No more controls in this framework</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Per-cell save */}
+                            <button
+                              className="btn btn-sm btn-acc"
+                              onClick={() => saveCellControls(key, fw)}
+                              disabled={isSavingCell}
+                              style={{ fontSize: 9, padding: "2px 10px", width: "100%", marginTop: 2 }}
+                            >
+                              {isSavingCell ? "Saving…" : "Save"}
+                            </button>
                           </div>
                         )}
                       </td>
                     );
                   })}
 
-                  {/* Actions column */}
+                  {/* Actions column — wording edit only */}
                   <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap" }}>
                     {isEditing ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "center" }}>
@@ -716,6 +809,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
                         className="btn btn-sm"
                         onClick={() => startEdit(key)}
                         style={{ fontSize: 9, padding: "2px 9px" }}
+                        title="Edit risk wording"
                       >
                         Edit
                       </button>
@@ -729,6 +823,42 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
       </div>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Load the most-recent review session for a run and overlay its controls_assigned
+// onto an existing ctrlStates map. Returns merged map, or null on failure/miss.
+async function fetchSavedControls(runId, baseCtrlStates) {
+  try {
+    const revRes = await fetch(`/api/risk-register/reviews?run_id=${runId}`);
+    if (!revRes.ok) return null;
+    const revData = await revRes.json();
+    const reviews = revData.reviews || [];
+    if (!reviews.length) return null;
+    const statesRes = await fetch(`/api/risk-register/reviews/${reviews[0].id}`);
+    if (!statesRes.ok) return null;
+    const saved = (await statesRes.json()).risk_states || [];
+    if (!saved.length) return null;
+    const merged = { ...baseCtrlStates };
+    for (const rs of saved) {
+      const assigned = rs.controls_assigned || [];
+      if (!assigned.length) continue;
+      const refs = assigned
+        .map(c => (typeof c === "string" ? c : c.ref))
+        .filter(ref => ref && CTRL_BY_REF[ref]);
+      if (!refs.length) continue;
+      const genSet = new Set(
+        assigned.filter(c => typeof c === "object" && c.generate_code).map(c => c.ref)
+      );
+      merged[rs.risk_ref] = { autoMapped: refs, manual: [], generateCode: genSet };
+    }
+    return merged;
+  } catch (_) {
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -799,16 +929,23 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // Internal tab works without a pipeline having been run in this session.
   useEffect(() => {
     if (risks?.length || !ticker) return;
-    fetch(`/api/risk-register/risks/latest/${encodeURIComponent(ticker)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
+    (async () => {
+      try {
+        const res = await fetch(`/api/risk-register/risks/latest/${encodeURIComponent(ticker)}`);
+        if (!res.ok) return;
+        const data = await res.json();
         if (!data?.risks?.length) return;
         setRefreshedRisks(data.risks);
         setRiskStates(initRiskStates(data.risks));
-        setCtrlStates(initControlStates(data.risks));
-        if (data.run_id) setEffectiveRunId(data.run_id);
-      })
-      .catch(() => {});
+        let cs = initControlStates(data.risks);
+        if (data.run_id) {
+          const saved = await fetchSavedControls(data.run_id, cs);
+          if (saved) cs = saved;
+          setEffectiveRunId(data.run_id);
+        }
+        setCtrlStates(cs);
+      } catch (_) {}
+    })();
   }, []);
 
   // ── Validation helpers ────────────────────────────────────────────────────
@@ -994,10 +1131,16 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       if (res.ok) {
         const data = await res.json();
         const fresh = data.risks || [];
+        const runId = effectiveRunId || data.run_id;
         if (fresh.length) {
           setRefreshedRisks(fresh);
           setRiskStates(initRiskStates(fresh));
-          setCtrlStates(initControlStates(fresh));
+          let cs = initControlStates(fresh);
+          if (runId) {
+            const saved = await fetchSavedControls(runId, cs);
+            if (saved) cs = saved;
+          }
+          setCtrlStates(cs);
           if (data.run_id) setEffectiveRunId(data.run_id);
           setSavedAt(null);
         }
