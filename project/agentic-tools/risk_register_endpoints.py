@@ -73,6 +73,13 @@ CONTROLS_LIBRARY: List[Dict[str, Any]] = [
     # HR
     {"ref": "HR-01", "framework": "Internal",       "name": "Security Awareness Training",  "category": "HR",              "domain": "HR",         "description": "Annual mandatory security awareness training for all employees"},
     {"ref": "HR-02", "framework": "Internal",       "name": "Background Screening",         "category": "HR",              "domain": "HR",         "description": "Pre-employment background screening for sensitive roles"},
+    # ISO/IEC 42001 AI management system
+    {"ref": "AI-01", "framework": "ISO/IEC 42001", "name": "AI System Impact Assessment",       "category": "AI Governance",   "domain": "Technology", "description": "Structured assessment of AI system impacts on people, processes, and society"},
+    {"ref": "AI-02", "framework": "ISO/IEC 42001", "name": "AI Lifecycle Management",           "category": "AI Governance",   "domain": "Technology", "description": "Governance controls across the full AI system development and deployment lifecycle"},
+    {"ref": "AI-03", "framework": "ISO/IEC 42001", "name": "AI Training Data Governance",       "category": "AI Governance",   "domain": "Technology", "description": "Controls ensuring training data quality, provenance, and bias mitigation"},
+    {"ref": "AI-04", "framework": "ISO/IEC 42001", "name": "AI Transparency & Explainability",  "category": "AI Governance",   "domain": "Technology", "description": "Mechanisms to explain AI outputs and decisions to relevant stakeholders"},
+    {"ref": "AI-05", "framework": "ISO/IEC 42001", "name": "Third-Party AI Tool Assessment",    "category": "AI Governance",   "domain": "Technology", "description": "Due diligence and ongoing monitoring for externally-sourced AI services"},
+    {"ref": "AI-06", "framework": "ISO/IEC 42001", "name": "Human Oversight of AI Systems",     "category": "AI Governance",   "domain": "Technology", "description": "Defined human review points and override mechanisms for AI-assisted decisions"},
 ]
 
 # Map control refs to quick-lookup dict
@@ -153,6 +160,14 @@ _FRAMEWORK_CATALOGS: Dict[str, List[Dict[str, Any]]] = {
         {"id": "SOC-CC8.1", "name": "Uncontrolled software changes introduce defects into production systems",       "category": "Change Management","source_framework": "SOC 2", "control_family": "CC8", "score": None, "rag": None},
         {"id": "SOC-CC9.1", "name": "Unmitigated vendor concentration risk triggers availability commitments breach","category": "Vendor",           "source_framework": "SOC 2", "control_family": "CC9", "score": None, "rag": None},
     ],
+    "ISO/IEC 42001": [
+        {"id": "AI42-A.5.1",  "name": "Unassessed AI system impacts create unforeseen ethical and operational harms",         "category": "AI Impact Assessment", "source_framework": "ISO/IEC 42001", "control_family": "A.5",  "score": None, "rag": None},
+        {"id": "AI42-A.6.1",  "name": "Unmanaged AI lifecycle changes introduce regressions in model safety and performance", "category": "AI Lifecycle",          "source_framework": "ISO/IEC 42001", "control_family": "A.6",  "score": None, "rag": None},
+        {"id": "AI42-A.7.1",  "name": "Poor training data quality produces biased or inaccurate AI outputs at scale",        "category": "AI Data Governance",    "source_framework": "ISO/IEC 42001", "control_family": "A.7",  "score": None, "rag": None},
+        {"id": "AI42-A.8.1",  "name": "Inadequate AI transparency undermines stakeholder trust and regulatory acceptance",    "category": "AI Transparency",       "source_framework": "ISO/IEC 42001", "control_family": "A.8",  "score": None, "rag": None},
+        {"id": "AI42-A.9.1",  "name": "Unvetted third-party AI tools introduce unmanaged model and data supply-chain risk",  "category": "Third-Party AI",        "source_framework": "ISO/IEC 42001", "control_family": "A.9",  "score": None, "rag": None},
+        {"id": "AI42-A.10.1", "name": "Insufficient human oversight enables unchecked AI decision-making in high-stakes contexts", "category": "Human Oversight", "source_framework": "ISO/IEC 42001", "control_family": "A.10", "score": None, "rag": None},
+    ],
 }
 
 # Keyword → control refs for auto-mapping
@@ -177,6 +192,10 @@ _AUTO_MAP_RULES = [
      ["SC-05", "CM-02"]),
     (["incident", "response", "detection", "monitoring", "log"],
      ["SC-03", "SC-04"]),
+    (["artificial intelligence", "machine learning", "llm", "generative", "algorithm", "model bias", "explainab", "oversight of ai", "training data", "ai system", "ai risk"],
+     ["AI-01", "AI-02", "AI-03", "AI-04", "AI-06"]),
+    (["third-party ai", "ai vendor", "ai tool", "ai service", "ai supply"],
+     ["AI-05", "VM-01"]),
 ]
 
 
