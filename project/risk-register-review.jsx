@@ -201,6 +201,31 @@ function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto
 function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual, onRemove, onToggleGenerate, onGetAiRecs, aiRecsLoading }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newCtrl, setNewCtrl] = useState({ ref: "", name: "", framework: "", desc: "" });
+  const [createErr, setCreateErr] = useState("");
+
+  function handleCreateControl() {
+    const ref = newCtrl.ref.trim().toUpperCase();
+    if (!ref) { setCreateErr("Control reference is required."); return; }
+    if (CTRL_BY_REF[ref]) { setCreateErr(`${ref} already exists in the control library.`); return; }
+    if (!/^[A-Za-z]/.test(ref)) { setCreateErr("Reference must start with a letter."); return; }
+    if (!newCtrl.name.trim()) { setCreateErr("Control name is required."); return; }
+    const ctrl = {
+      ref,
+      framework: newCtrl.framework.trim() || "Custom",
+      name: newCtrl.name.trim(),
+      category: "Custom",
+      domain: "Custom",
+      desc: newCtrl.desc.trim(),
+    };
+    MASTER_CONTROLS.push(ctrl);
+    CTRL_BY_REF[ref] = ctrl;
+    onAddManual(riskKey, ref);
+    setCreateOpen(false);
+    setNewCtrl({ ref: "", name: "", framework: "", desc: "" });
+    setCreateErr("");
+  }
 
   const allAssigned = [...(ctrlState.autoMapped || []), ...(ctrlState.manual || [])];
   const filteredLibrary = MASTER_CONTROLS.filter(c =>
@@ -224,10 +249,18 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
           </button>
           <button
             className="btn btn-sm"
-            onClick={() => setPickerOpen(p => !p)}
+            onClick={() => { setPickerOpen(p => !p); setCreateOpen(false); }}
             style={{ fontSize:9, padding:"2px 7px" }}
           >
             + Add
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => { setCreateOpen(p => !p); setPickerOpen(false); setCreateErr(""); }}
+            style={{ fontSize:9, padding:"2px 7px" }}
+            title="Create a brand-new control with a new reference number"
+          >
+            + New
           </button>
         </div>
       </div>
@@ -282,6 +315,68 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
               </button>
             ))}
             {filteredLibrary.length === 0 && <div style={{ fontSize:10, color:"var(--ink-3,#888)", padding:4 }}>No matches</div>}
+          </div>
+        </div>
+      )}
+
+      {/* New control creation form */}
+      {createOpen && (
+        <div style={{ marginTop:8, padding:10, background:"var(--surface,#fff)", border:"1px solid var(--acc,#2563eb)", borderRadius:6, display:"flex", flexDirection:"column", gap:7 }}>
+          <div style={{ fontSize:10, fontWeight:700, color:"var(--ink,#111)" }}>Create new control</div>
+          <div style={{ display:"flex", gap:6 }}>
+            <div style={{ flex:"0 0 86px" }}>
+              <label style={{ fontSize:9, fontWeight:600, color:"var(--ink-2,#555)", display:"block", marginBottom:2 }}>Ref *</label>
+              <input
+                className="dendrai-input"
+                placeholder="e.g. AC-06"
+                value={newCtrl.ref}
+                onChange={e => setNewCtrl(p => ({ ...p, ref: e.target.value }))}
+                style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box" }}
+                autoFocus
+              />
+            </div>
+            <div style={{ flex:1 }}>
+              <label style={{ fontSize:9, fontWeight:600, color:"var(--ink-2,#555)", display:"block", marginBottom:2 }}>Framework</label>
+              <input
+                className="dendrai-input"
+                placeholder="e.g. NIST SP 800-53"
+                value={newCtrl.framework}
+                onChange={e => setNewCtrl(p => ({ ...p, framework: e.target.value }))}
+                style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box" }}
+              />
+            </div>
+          </div>
+          <div>
+            <label style={{ fontSize:9, fontWeight:600, color:"var(--ink-2,#555)", display:"block", marginBottom:2 }}>Name *</label>
+            <input
+              className="dendrai-input"
+              placeholder="Control name…"
+              value={newCtrl.name}
+              onChange={e => setNewCtrl(p => ({ ...p, name: e.target.value }))}
+              style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box" }}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize:9, fontWeight:600, color:"var(--ink-2,#555)", display:"block", marginBottom:2 }}>Description</label>
+            <textarea
+              className="dendrai-input"
+              placeholder="Brief description of what this control does…"
+              value={newCtrl.desc}
+              onChange={e => setNewCtrl(p => ({ ...p, desc: e.target.value }))}
+              rows={2}
+              style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}
+            />
+          </div>
+          {createErr && (
+            <div style={{ fontSize:9, color:"var(--red,#e53)" }}>{createErr}</div>
+          )}
+          <div style={{ display:"flex", gap:4 }}>
+            <button className="btn btn-sm btn-acc" onClick={handleCreateControl} style={{ fontSize:9, padding:"2px 10px" }}>
+              Create &amp; Assign
+            </button>
+            <button className="btn btn-sm" onClick={() => { setCreateOpen(false); setCreateErr(""); }} style={{ fontSize:9, padding:"2px 8px" }}>
+              Cancel
+            </button>
           </div>
         </div>
       )}
