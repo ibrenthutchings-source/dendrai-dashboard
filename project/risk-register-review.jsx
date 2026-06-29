@@ -582,11 +582,10 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
             <tr>
-              <th style={{ ...thStyle, minWidth: 200, width: "26%" }}>Core Domain &amp; Risk</th>
+              <th style={{ ...thStyle, minWidth: 200, width: "26%" }}>Enterprise Risks</th>
               {fwCols.map(fw => (
                 <th key={fw} style={{ ...thStyle, minWidth: 200 }}>{fw}</th>
               ))}
-              <th style={{ ...thStyle, width: 90, textAlign: "center" }}>Wording</th>
             </tr>
           </thead>
           <tbody>
@@ -629,6 +628,22 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
                         {state.wording || <span style={{ color: "var(--ink-3,#aaa)" }}>No wording</span>}
                       </div>
                     )}
+                    <div style={{ marginTop: 6, display: "flex", gap: 4 }}>
+                      {isEditing ? (
+                        <>
+                          <button className="btn btn-sm btn-acc" onClick={() => saveRow(key)} disabled={isSaving} style={{ fontSize: 9, padding: "2px 9px" }}>
+                            {isSaving ? "Saving…" : "Save"}
+                          </button>
+                          <button className="btn btn-sm" onClick={() => cancelEdit(key)} disabled={isSaving} style={{ fontSize: 9, padding: "2px 9px" }}>
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button className="btn btn-sm" onClick={() => startEdit(key)} style={{ fontSize: 9, padding: "2px 7px" }} title="Edit risk wording">
+                          Edit
+                        </button>
+                      )}
+                    </div>
                   </td>
 
                   {/* Framework columns — independently expandable */}
@@ -783,38 +798,6 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
                     );
                   })}
 
-                  {/* Actions column — wording edit only */}
-                  <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap" }}>
-                    {isEditing ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "center" }}>
-                        <button
-                          className="btn btn-sm btn-acc"
-                          onClick={() => saveRow(key)}
-                          disabled={isSaving}
-                          style={{ fontSize: 9, padding: "2px 9px", width: "100%" }}
-                        >
-                          {isSaving ? "Saving…" : "Save"}
-                        </button>
-                        <button
-                          className="btn btn-sm"
-                          onClick={() => cancelEdit(key)}
-                          disabled={isSaving}
-                          style={{ fontSize: 9, padding: "2px 9px", width: "100%" }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        className="btn btn-sm"
-                        onClick={() => startEdit(key)}
-                        style={{ fontSize: 9, padding: "2px 9px" }}
-                        title="Edit risk wording"
-                      >
-                        Edit
-                      </button>
-                    )}
-                  </td>
                 </tr>
               );
             })}
@@ -1594,6 +1577,17 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
   // ── Main render ───────────────────────────────────────────────────────────
 
+  // Merge internal + discovered risks for the Framework Matrix so that imported
+  // external frameworks appear as both rows and columns.
+  const allMatrixRisks       = [...(effectiveRisks || []), ...discoveredRisks];
+  const allMatrixRiskStates  = { ...discRiskStates,  ...riskStates  };
+  const allMatrixCtrlStates  = { ...discCtrlStates,  ...ctrlStates  };
+  const isDiscKey = key => discRiskStates[key] !== undefined && riskStates[key] === undefined;
+  const matrixWordingChange  = (key, val)           => isDiscKey(key) ? discHandlers.wordingChange(key, val) : intHandlers.wordingChange(key, val);
+  const matrixAddManual      = (key, ref)           => isDiscKey(key) ? discCtrl.addManual(key, ref)        : intCtrl.addManual(key, ref);
+  const matrixRemove         = (key, ref, isAuto)   => isDiscKey(key) ? discCtrl.remove(key, ref, isAuto)   : intCtrl.remove(key, ref, isAuto);
+  const matrixReset          = (key, auto, manual)  => isDiscKey(key) ? discCtrl.reset(key, auto, manual)   : intCtrl.reset(key, auto, manual);
+
   return (
     <div className="code-screen" data-screen-label="Risk Register Review" style={{ position:"relative" }}>
       {/* Header */}
@@ -1684,13 +1678,13 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
                 {matrixView ? (
                   <RiskFrameworkMatrix
-                    risks={effectiveRisks}
-                    riskStates={riskStates}
-                    ctrlStates={ctrlStates}
-                    onWordingChange={intHandlers.wordingChange}
-                    onAddManualControl={intCtrl.addManual}
-                    onRemoveControl={intCtrl.remove}
-                    onResetCtrl={intCtrl.reset}
+                    risks={allMatrixRisks}
+                    riskStates={allMatrixRiskStates}
+                    ctrlStates={allMatrixCtrlStates}
+                    onWordingChange={matrixWordingChange}
+                    onAddManualControl={matrixAddManual}
+                    onRemoveControl={matrixRemove}
+                    onResetCtrl={matrixReset}
                     onSaveRow={handleSaveRowWording}
                     savingRows={savingRows}
                     savedAt={savedAt}
