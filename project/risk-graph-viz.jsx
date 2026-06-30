@@ -1,0 +1,615 @@
+import { useEffect, useRef, useState } from "react";
+import * as d3 from "d3";
+
+// ─── Static data (mirrors risk-register-review.jsx) ──────────────────────────
+
+const MASTER_CONTROLS = [
+  { ref:"FC-01", fw:"Internal",       name:"Revenue Recognition Controls",    cat:"Financial",     domain:"Finance" },
+  { ref:"FC-02", fw:"Internal",       name:"Financial Close Reconciliation",   cat:"Financial",     domain:"Finance" },
+  { ref:"FC-03", fw:"SOC 2",          name:"Segregation of Financial Duties",  cat:"Financial",     domain:"Finance" },
+  { ref:"FC-04", fw:"Internal",       name:"Fraud Risk Assessment",            cat:"Financial",     domain:"Finance" },
+  { ref:"AC-01", fw:"Internal",       name:"Access Control Policy",            cat:"Access Control",domain:"IT" },
+  { ref:"AC-02", fw:"NIST SP 800-53", name:"Account Management",               cat:"Access Control",domain:"IT" },
+  { ref:"AC-03", fw:"NIST SP 800-53", name:"Access Enforcement",               cat:"Access Control",domain:"IT" },
+  { ref:"AC-04", fw:"CIS Controls",   name:"Privileged Access Management",     cat:"Access Control",domain:"IT" },
+  { ref:"AC-05", fw:"SOC 2",          name:"Logical Access Review",            cat:"Access Control",domain:"IT" },
+  { ref:"SC-01", fw:"ISO/IEC 27001",  name:"Information Security Policy",      cat:"Security",      domain:"IT" },
+  { ref:"SC-02", fw:"CIS Controls",   name:"Data Protection & Encryption",     cat:"Security",      domain:"IT" },
+  { ref:"SC-03", fw:"NIST SP 800-53", name:"Incident Response Plan",           cat:"Security",      domain:"IT" },
+  { ref:"SC-04", fw:"ISO/IEC 27001",  name:"Vulnerability Management",         cat:"Security",      domain:"IT" },
+  { ref:"SC-05", fw:"SOC 2",          name:"Change Management Controls",       cat:"Security",      domain:"IT" },
+  { ref:"RM-01", fw:"Internal",       name:"Risk Assessment Process",          cat:"Risk Mgmt",     domain:"Operational" },
+  { ref:"RM-02", fw:"ISO/IEC 27001",  name:"Risk Treatment Plan",              cat:"Risk Mgmt",     domain:"Operational" },
+  { ref:"RM-03", fw:"Internal",       name:"Risk Appetite Framework",          cat:"Risk Mgmt",     domain:"Operational" },
+  { ref:"RM-04", fw:"COSO ERM",       name:"Emerging Risk Monitoring",         cat:"Risk Mgmt",     domain:"Operational" },
+  { ref:"OP-01", fw:"Internal",       name:"Business Continuity Plan",         cat:"Operational",   domain:"Operational" },
+  { ref:"OP-02", fw:"ISO/IEC 27001",  name:"Supplier Risk Management",         cat:"Operational",   domain:"Operational" },
+  { ref:"OP-03", fw:"Internal",       name:"Key Person Dependencies",          cat:"Operational",   domain:"HR" },
+  { ref:"CM-01", fw:"SOC 2",          name:"Compliance Monitoring Program",    cat:"Compliance",    domain:"Legal" },
+  { ref:"CM-02", fw:"Internal",       name:"Regulatory Change Management",     cat:"Compliance",    domain:"Legal" },
+  { ref:"CM-03", fw:"SOC 2",          name:"Privacy Controls",                 cat:"Compliance",    domain:"Legal" },
+  { ref:"VM-01", fw:"CIS Controls",   name:"Vendor Security Assessment",       cat:"Vendor",        domain:"Operational" },
+  { ref:"VM-02", fw:"Internal",       name:"Supply Chain Resilience",          cat:"Vendor",        domain:"Operational" },
+  { ref:"HR-01", fw:"Internal",       name:"Security Awareness Training",      cat:"HR",            domain:"HR" },
+  { ref:"HR-02", fw:"Internal",       name:"Background Screening",             cat:"HR",            domain:"HR" },
+  { ref:"AI-01", fw:"ISO/IEC 42001",  name:"AI System Impact Assessment",      cat:"AI Governance", domain:"Technology" },
+  { ref:"AI-02", fw:"ISO/IEC 42001",  name:"AI Lifecycle Management",          cat:"AI Governance", domain:"Technology" },
+  { ref:"AI-03", fw:"ISO/IEC 42001",  name:"AI Training Data Governance",      cat:"AI Governance", domain:"Technology" },
+  { ref:"AI-04", fw:"ISO/IEC 42001",  name:"AI Transparency & Explainability", cat:"AI Governance", domain:"Technology" },
+  { ref:"AI-05", fw:"ISO/IEC 42001",  name:"Third-Party AI Tool Assessment",   cat:"AI Governance", domain:"Technology" },
+  { ref:"AI-06", fw:"ISO/IEC 42001",  name:"Human Oversight of AI Systems",    cat:"AI Governance", domain:"Technology" },
+];
+
+const AUTO_MAP_RULES = [
+  { kws:["revenue","recognition","accounting","financial","margin","fraud","restat"],        refs:["FC-01","FC-02","FC-03","FC-04"] },
+  { kws:["cyber","security","breach","data","unauthori","hack","phishing"],                 refs:["SC-01","SC-02","SC-03","SC-04","AC-02","AC-05"] },
+  { kws:["access","identity","privilege","authentication","authoris","logical"],            refs:["AC-01","AC-02","AC-03","AC-04","AC-05"] },
+  { kws:["operational","process","continuity","disaster","recovery","bcp"],                refs:["RM-01","OP-01"] },
+  { kws:["compliance","regulatory","legal","penalty","gdpr","ccpa","sox"],                 refs:["CM-01","CM-02","CM-03"] },
+  { kws:["vendor","supplier","third","supply","outsourc"],                                 refs:["VM-01","VM-02","OP-02"] },
+  { kws:["talent","people","key","retention","staff","hiring"],                            refs:["HR-01","HR-02","OP-03"] },
+  { kws:["macro","market","interest","credit","inflation","rate","currency"],              refs:["RM-02","RM-03","RM-04"] },
+  { kws:["change","configuration","deployment","release","patch"],                         refs:["SC-05","CM-02"] },
+  { kws:["incident","response","detection","monitoring","log"],                            refs:["SC-03","SC-04"] },
+  { kws:["ai ","artificial intelligence","machine learning","llm","generative","algorithm","model bias","explainab","oversight of ai","training data"], refs:["AI-01","AI-02","AI-03","AI-04","AI-06"] },
+  { kws:["third.party ai","ai vendor","ai tool","ai service","ai supply"],                refs:["AI-05","VM-01"] },
+];
+
+function autoMapControls(name, category) {
+  const text = ((name || "") + " " + (category || "")).toLowerCase();
+  const refs = [];
+  for (const rule of AUTO_MAP_RULES) {
+    if (rule.kws.some(kw => text.includes(kw))) {
+      for (const r of rule.refs) { if (!refs.includes(r)) refs.push(r); }
+    }
+  }
+  if (!refs.length) refs.push("RM-01");
+  return refs.slice(0, 5);
+}
+
+// ─── Visual config ────────────────────────────────────────────────────────────
+
+const INTERNAL_FWS = new Set(["Internal", "Internal Risk Register", ""]);
+
+const FW_COLOR = {
+  "NIST SP 800-53": "#3b82f6",
+  "ISO/IEC 27001":  "#22c55e",
+  "CIS Controls":   "#f59e0b",
+  "SOC 2":          "#a855f7",
+  "ISO/IEC 42001":  "#ec4899",
+  "Enterprise":     "#94a3b8",
+};
+
+const FW_SHORT = {
+  "NIST SP 800-53": "NIST",
+  "ISO/IEC 27001":  "ISO 27001",
+  "CIS Controls":   "CIS",
+  "SOC 2":          "SOC 2",
+  "ISO/IEC 42001":  "ISO 42001",
+  "Enterprise":     "Enterprise",
+};
+
+const CAT_COLOR = {
+  "Access Control":       "#60a5fa",
+  "Security":             "#f87171",
+  "Operations":           "#34d399",
+  "Incident":             "#fbbf24",
+  "Continuity":           "#818cf8",
+  "Compliance":           "#fb923c",
+  "Vendor":               "#e879f9",
+  "Change Management":    "#2dd4bf",
+  "Supplier":             "#e879f9",
+  "Governance":           "#94a3b8",
+  "Risk Assessment":      "#60a5fa",
+  "System Integrity":     "#f87171",
+  "Audit":                "#fbbf24",
+  "Configuration":        "#34d399",
+  "AI Impact Assessment": "#f472b6",
+  "AI Lifecycle":         "#c084fc",
+  "AI Data Governance":   "#67e8f9",
+  "AI Transparency":      "#a3e635",
+  "Third-Party AI":       "#fb7185",
+  "Human Oversight":      "#fcd34d",
+  "AppSec":               "#4ade80",
+  "Monitoring":           "#38bdf8",
+};
+
+function fwColor(fw) { return FW_COLOR[fw] || "#6b7280"; }
+function catColor(cat) { return CAT_COLOR[cat] || "#fbbf24"; }
+function safeId(s) { return (s || "").replace(/[^a-zA-Z0-9]/g, "_"); }
+
+// ─── Build graph ──────────────────────────────────────────────────────────────
+
+function buildGraph(risks) {
+  const allRisks = (risks || [])
+    .filter(r => r.id || r.risk_ref)
+    .map(r => ({
+      ...r,
+      _fw: (r.source_framework && !INTERNAL_FWS.has(r.source_framework))
+        ? r.source_framework : "Enterprise",
+    }));
+
+  const frameworks = [...new Set(allRisks.map(r => r._fw))];
+  const nodes = [];
+  const links = [];
+  const seenNodes = new Set();
+  const seenEdges = new Set();
+
+  function addNode(n) {
+    if (!seenNodes.has(n.id)) { seenNodes.add(n.id); nodes.push(n); }
+  }
+  function addLink(l) {
+    if (!seenEdges.has(l.id)) { seenEdges.add(l.id); links.push(l); }
+  }
+
+  // Framework hub nodes
+  frameworks.forEach(fw => {
+    addNode({ id: `fw::${fw}`, type: "framework", label: FW_SHORT[fw] || fw, fw, fullLabel: fw });
+  });
+
+  // Risk nodes + membership edges
+  allRisks.forEach(r => {
+    const rid = r.id || r.risk_ref;
+    addNode({
+      id: rid, type: "risk",
+      label: r.name || r.current_wording || rid,
+      category: r.category || "",
+      fw: r._fw,
+      score: r.score ?? null,
+      rag: r.rag || r.rag_status || null,
+    });
+    addLink({ id: `m:${rid}`, source: `fw::${r._fw}`, target: rid, type: "membership", fw: r._fw });
+  });
+
+  // Cross-framework edges: same category, different framework
+  const byCat = {};
+  allRisks.forEach(r => {
+    if (!r.category) return;
+    (byCat[r.category] = byCat[r.category] || []).push(r);
+  });
+  Object.entries(byCat).forEach(([cat, rs]) => {
+    for (let i = 0; i < rs.length; i++) {
+      for (let j = i + 1; j < rs.length; j++) {
+        if (rs[i]._fw === rs[j]._fw) continue;
+        const s = rs[i].id || rs[i].risk_ref;
+        const t = rs[j].id || rs[j].risk_ref;
+        const key = [s, t].sort().join(":::");
+        addLink({ id: `x:${key}`, source: s, target: t, type: "cross", category: cat });
+      }
+    }
+  });
+
+  // Control nodes
+  MASTER_CONTROLS.forEach(c => {
+    addNode({ id: `ctrl::${c.ref}`, type: "control", label: c.name, ref: c.ref, category: c.cat, fw: c.fw, domain: c.domain });
+  });
+
+  // Control → Risk edges via autoMapControls
+  allRisks.forEach(r => {
+    const rid = r.id || r.risk_ref;
+    autoMapControls(r.name || r.current_wording || "", r.category).forEach(ref => {
+      addLink({ id: `c:${ref}:${rid}`, source: `ctrl::${ref}`, target: rid, type: "control" });
+    });
+  });
+
+  return { nodes, links };
+}
+
+// ─── Tooltip ──────────────────────────────────────────────────────────────────
+
+function Tooltip({ node, pos }) {
+  if (!node || !pos) return null;
+  const color = node.type === "control" ? "#22d3ee" : fwColor(node.fw);
+  const ragColor = node.rag === "red" ? "#ef4444" : node.rag === "amber" ? "#f59e0b" : "#22c55e";
+  return (
+    <div style={{
+      position: "fixed", left: pos.x + 16, top: pos.y - 8,
+      background: "rgba(10,14,20,0.97)",
+      border: `1px solid ${color}44`,
+      borderLeft: `3px solid ${color}`,
+      borderRadius: 7, padding: "9px 13px",
+      maxWidth: 300, zIndex: 9999,
+      pointerEvents: "none",
+      boxShadow: `0 4px 32px ${color}22, 0 0 0 1px #ffffff08`,
+      fontFamily: "system-ui, sans-serif",
+    }}>
+      <div style={{ fontSize: 9, color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
+        {node.type === "framework" ? "Framework Hub" : node.type === "control" ? `Control · ${node.ref || ""}` : "Risk"}
+      </div>
+      <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.45, marginBottom: node.category || node.score != null ? 6 : 0 }}>
+        {node.type === "framework" ? node.fullLabel : node.label}
+      </div>
+      {node.category && (
+        <div style={{ fontSize: 10, color: "#64748b" }}>
+          Category <span style={{ color: catColor(node.category), fontWeight: 600 }}>{node.category}</span>
+        </div>
+      )}
+      {node.type === "risk" && node.fw && node.fw !== "Enterprise" && (
+        <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+          Framework <span style={{ color: fwColor(node.fw), fontWeight: 600 }}>{node.fw}</span>
+        </div>
+      )}
+      {node.score != null && (
+        <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+          Score <span style={{ color: ragColor, fontWeight: 700 }}>{node.score}</span>
+          <span style={{ color: ragColor, marginLeft: 4, textTransform: "uppercase", fontSize: 9 }}>({node.rag})</span>
+        </div>
+      )}
+      {node.type === "control" && node.domain && (
+        <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+          Domain <span style={{ color: "#94a3b8", fontWeight: 600 }}>{node.domain}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Legend ───────────────────────────────────────────────────────────────────
+
+function Legend() {
+  return (
+    <div style={{
+      position: "absolute", bottom: 12, left: 12, zIndex: 10,
+      background: "rgba(10,14,20,0.85)", border: "1px solid #1e293b",
+      borderRadius: 8, padding: "10px 13px",
+      fontFamily: "system-ui, sans-serif",
+      backdropFilter: "blur(6px)",
+    }}>
+      <div style={{ fontSize: 8, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 7 }}>Legend</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+        {[
+          { el: <div style={{ width: 16, height: 16, borderRadius: "50%", border: "2px solid #6366f1", background: "#6366f122", flexShrink: 0 }} />, label: "Framework" },
+          { el: <div style={{ width: 11, height: 11, borderRadius: "50%", background: "#3b82f6", flexShrink: 0 }} />, label: "Risk" },
+          { el: <div style={{ width: 9, height: 9, background: "#22d3ee", transform: "rotate(45deg)", borderRadius: 1, flexShrink: 0, opacity: 0.8 }} />, label: "Control" },
+        ].map(({ el, label }) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            {el}
+            <span style={{ fontSize: 9, color: "#94a3b8" }}>{label}</span>
+          </div>
+        ))}
+        <div style={{ borderTop: "1px solid #1e293b", marginTop: 4, paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+          {[
+            { color: "#4f46e5", dash: null,   label: "Membership" },
+            { color: "#fbbf24", dash: null,   label: "Cross-Framework" },
+            { color: "#22d3ee", dash: "3,2",  label: "Control → Risk" },
+          ].map(({ color, dash, label }) => (
+            <div key={label} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <svg width="22" height="8" style={{ flexShrink: 0 }}>
+                <line x1="0" y1="4" x2="22" y2="4" stroke={color} strokeWidth="1.5" strokeDasharray={dash || "none"} />
+              </svg>
+              <span style={{ fontSize: 9, color: "#64748b" }}>{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Framework palette sidebar ────────────────────────────────────────────────
+
+function FwPalette() {
+  return (
+    <div style={{
+      position: "absolute", bottom: 12, right: 12, zIndex: 10,
+      background: "rgba(10,14,20,0.85)", border: "1px solid #1e293b",
+      borderRadius: 8, padding: "10px 13px",
+      fontFamily: "system-ui, sans-serif",
+      backdropFilter: "blur(6px)",
+    }}>
+      <div style={{ fontSize: 8, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 7 }}>Frameworks</div>
+      {Object.entries(FW_COLOR).map(([fw, color]) => (
+        <div key={fw} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: color, flexShrink: 0, boxShadow: `0 0 6px ${color}88` }} />
+          <span style={{ fontSize: 9, color: "#94a3b8" }}>{FW_SHORT[fw] || fw}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+export function RiskGraphViz({ risks }) {
+  const svgRef       = useRef(null);
+  const simRef       = useRef(null);
+  const [tooltip,    setTooltip]    = useState(null);
+  const [showMember, setShowMember] = useState(true);
+  const [showCross,  setShowCross]  = useState(true);
+  const [showCtrl,   setShowCtrl]   = useState(true);
+
+  useEffect(() => {
+    if (!svgRef.current) return;
+    simRef.current?.stop();
+
+    const svgEl = svgRef.current;
+    const svg   = d3.select(svgEl);
+    svg.selectAll("*").remove();
+
+    const W = svgEl.clientWidth  || 900;
+    const H = svgEl.clientHeight || 580;
+
+    // ── Defs ─────────────────────────────────────────────────────────────────
+    const defs = svg.append("defs");
+
+    // Per-framework glow filters
+    Object.entries(FW_COLOR).forEach(([fw, color]) => {
+      const id = `glow-${safeId(fw)}`;
+      const f  = defs.append("filter").attr("id", id).attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%");
+      f.append("feGaussianBlur").attr("in", "SourceGraphic").attr("stdDeviation", "5").attr("result", "blur");
+      const m = f.append("feMerge");
+      m.append("feMergeNode").attr("in", "blur");
+      m.append("feMergeNode").attr("in", "SourceGraphic");
+    });
+
+    // Soft glow for risk nodes
+    const rGlow = defs.append("filter").attr("id", "risk-glow").attr("x", "-50%").attr("y", "-50%").attr("width", "200%").attr("height", "200%");
+    rGlow.append("feGaussianBlur").attr("in", "SourceGraphic").attr("stdDeviation", "2").attr("result", "b");
+    const rm = rGlow.append("feMerge");
+    rm.append("feMergeNode").attr("in", "b");
+    rm.append("feMergeNode").attr("in", "SourceGraphic");
+
+    // Arrow marker for control edges
+    defs.append("marker")
+      .attr("id", "arr-ctrl").attr("markerWidth", 5).attr("markerHeight", 5)
+      .attr("refX", 14).attr("refY", 2.5).attr("orient", "auto")
+      .append("path").attr("d", "M0,0 L0,5 L5,2.5 Z")
+      .attr("fill", "#22d3ee").attr("opacity", 0.6);
+
+    // Dot-grid background pattern
+    const pat = defs.append("pattern").attr("id", "dotgrid")
+      .attr("patternUnits", "userSpaceOnUse").attr("width", 28).attr("height", 28);
+    pat.append("circle").attr("cx", 14).attr("cy", 14).attr("r", 0.9).attr("fill", "#ffffff09");
+
+    // ── Background ────────────────────────────────────────────────────────────
+    svg.append("rect").attr("width", "100%").attr("height", "100%").attr("fill", "#090d14");
+    svg.append("rect").attr("width", "100%").attr("height", "100%").attr("fill", "url(#dotgrid)");
+
+    // ── Build & filter graph ──────────────────────────────────────────────────
+    const { nodes, links } = buildGraph(risks);
+
+    const filteredLinks = links.filter(l =>
+      (l.type !== "membership" || showMember) &&
+      (l.type !== "cross"      || showCross)  &&
+      (l.type !== "control"    || showCtrl)
+    );
+
+    const activeNodeIds = new Set();
+    nodes.forEach(n => { if (n.type !== "control" || showCtrl) activeNodeIds.add(n.id); });
+    filteredLinks.forEach(l => { activeNodeIds.add(typeof l.source === "object" ? l.source.id : l.source); activeNodeIds.add(typeof l.target === "object" ? l.target.id : l.target); });
+    const activeNodes = nodes.filter(n => activeNodeIds.has(n.id));
+
+    // ── Simulation ────────────────────────────────────────────────────────────
+    const sim = d3.forceSimulation(activeNodes)
+      .force("link", d3.forceLink(filteredLinks).id(d => d.id)
+        .distance(d => d.type === "membership" ? 72 : d.type === "cross" ? 150 : 58)
+        .strength(d => d.type === "membership" ? 0.55 : d.type === "cross" ? 0.04 : 0.22))
+      .force("charge", d3.forceManyBody().strength(d =>
+        d.type === "framework" ? -650 : d.type === "risk" ? -110 : -55))
+      .force("center", d3.forceCenter(W / 2, H / 2).strength(0.06))
+      .force("collide", d3.forceCollide()
+        .radius(d => d.type === "framework" ? 46 : d.type === "risk" ? 18 : 13)
+        .strength(0.8))
+      .alphaDecay(0.018);
+
+    simRef.current = sim;
+
+    // ── Root group (zoomed) ───────────────────────────────────────────────────
+    const g = svg.append("g");
+    svg.call(d3.zoom().scaleExtent([0.15, 5]).on("zoom", e => g.attr("transform", e.transform)));
+
+    // ── Edges ─────────────────────────────────────────────────────────────────
+    const gEdges = g.append("g").attr("class", "edges");
+
+    const memberLines = gEdges.append("g").selectAll("line")
+      .data(filteredLinks.filter(l => l.type === "membership")).join("line")
+      .attr("stroke",         d => fwColor(d.fw))
+      .attr("stroke-width",   0.9)
+      .attr("stroke-opacity", 0.22);
+
+    const ctrlLines = gEdges.append("g").selectAll("line")
+      .data(filteredLinks.filter(l => l.type === "control")).join("line")
+      .attr("stroke",         "#22d3ee")
+      .attr("stroke-width",   0.7)
+      .attr("stroke-opacity", 0.18)
+      .attr("stroke-dasharray", "3,3")
+      .attr("marker-end",     "url(#arr-ctrl)");
+
+    const crossPaths = gEdges.append("g").selectAll("path")
+      .data(filteredLinks.filter(l => l.type === "cross")).join("path")
+      .attr("fill",           "none")
+      .attr("stroke",         d => catColor(d.category))
+      .attr("stroke-width",   1.4)
+      .attr("stroke-opacity", 0.45);
+
+    // ── Nodes ─────────────────────────────────────────────────────────────────
+    const gNodes = g.append("g").attr("class", "nodes");
+
+    const nodeG = gNodes.selectAll("g")
+      .data(activeNodes).join("g")
+      .attr("cursor", "pointer");
+
+    // Framework: dual-ring circles with glow
+    const fwG = nodeG.filter(d => d.type === "framework");
+    fwG.append("circle").attr("r", 34)
+      .attr("fill", d => fwColor(d.fw) + "10")
+      .attr("stroke", d => fwColor(d.fw) + "44")
+      .attr("stroke-width", 1)
+      .attr("filter", d => `url(#glow-${safeId(d.fw)})`);
+    fwG.append("circle").attr("r", 24)
+      .attr("fill", d => fwColor(d.fw) + "20")
+      .attr("stroke", d => fwColor(d.fw))
+      .attr("stroke-width", 1.5)
+      .attr("filter", d => `url(#glow-${safeId(d.fw)})`);
+    fwG.append("text")
+      .text(d => d.label)
+      .attr("text-anchor", "middle").attr("dy", "0.35em")
+      .attr("fill", "#e2e8f0").attr("font-size", 8).attr("font-weight", "700")
+      .attr("letter-spacing", "0.04em").attr("pointer-events", "none");
+
+    // Risk: filled circles with RAG dot overlay
+    const riskG = nodeG.filter(d => d.type === "risk");
+    riskG.append("circle").attr("r", 9)
+      .attr("class", "risk-circle")
+      .attr("fill",         d => fwColor(d.fw))
+      .attr("fill-opacity", 0.82)
+      .attr("stroke",       "#0d1117")
+      .attr("stroke-width", 1.2)
+      .attr("filter",       "url(#risk-glow)");
+
+    riskG.filter(d => d.score != null)
+      .append("circle").attr("r", 3.2).attr("cx", 6.5).attr("cy", -6.5)
+      .attr("fill", d => d.rag === "red" ? "#ef4444" : d.rag === "amber" ? "#f59e0b" : "#22c55e")
+      .attr("stroke", "#090d14").attr("stroke-width", 1);
+
+    // Control: diamond (rotated rect)
+    const ctrlG = nodeG.filter(d => d.type === "control");
+    ctrlG.append("rect")
+      .attr("width", 10).attr("height", 10)
+      .attr("x", -5).attr("y", -5)
+      .attr("rx", 1)
+      .attr("transform", "rotate(45)")
+      .attr("fill",         "#22d3ee")
+      .attr("fill-opacity", 0.6)
+      .attr("stroke",       "#0891b2")
+      .attr("stroke-width", 0.8);
+
+    // ── Neighbor map for highlight ────────────────────────────────────────────
+    const nbMap = {};
+    activeNodes.forEach(n => { nbMap[n.id] = new Set(); });
+
+    function linkEndId(l, side) {
+      const v = l[side];
+      return typeof v === "object" ? v.id : v;
+    }
+    filteredLinks.forEach(l => {
+      const s = linkEndId(l, "source"), t = linkEndId(l, "target");
+      nbMap[s]?.add(t);
+      nbMap[t]?.add(s);
+    });
+
+    let pinId = null;
+
+    function highlight(id) {
+      const nb = nbMap[id] || new Set();
+      nodeG.style("opacity", d => d.id === id || nb.has(d.id) ? 1 : 0.07);
+      memberLines.style("opacity", d => linkEndId(d,"source")===id||linkEndId(d,"target")===id ? 0.9 : 0.02);
+      ctrlLines.style("opacity",   d => linkEndId(d,"source")===id||linkEndId(d,"target")===id ? 0.85: 0.02);
+      crossPaths.style("opacity",  d => linkEndId(d,"source")===id||linkEndId(d,"target")===id ? 1   : 0.02);
+    }
+
+    function resetHighlight() {
+      nodeG.style("opacity", 1);
+      memberLines.style("opacity", 0.22);
+      ctrlLines.style("opacity",   0.18);
+      crossPaths.style("opacity",  0.45);
+    }
+
+    // ── Interaction ───────────────────────────────────────────────────────────
+    nodeG
+      .on("mouseover", (evt, d) => {
+        if (!pinId) highlight(d.id);
+        if (d.type === "risk") {
+          d3.select(evt.currentTarget).select(".risk-circle")
+            .transition().duration(120).attr("r", 13);
+        }
+        setTooltip({ pos: { x: evt.clientX, y: evt.clientY }, node: d });
+      })
+      .on("mousemove", evt => {
+        setTooltip(p => p ? { ...p, pos: { x: evt.clientX, y: evt.clientY } } : null);
+      })
+      .on("mouseout", (evt, d) => {
+        if (!pinId) resetHighlight();
+        if (d.type === "risk") {
+          d3.select(evt.currentTarget).select(".risk-circle")
+            .transition().duration(120).attr("r", 9);
+        }
+        setTooltip(null);
+      })
+      .on("click", (evt, d) => {
+        evt.stopPropagation();
+        if (pinId === d.id) { pinId = null; resetHighlight(); }
+        else                 { pinId  = d.id; highlight(d.id); }
+      });
+
+    svg.on("click", () => { if (pinId) { pinId = null; resetHighlight(); } });
+
+    // Drag
+    nodeG.call(
+      d3.drag()
+        .on("start", (evt, d) => { if (!evt.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on("drag",  (evt, d) => { d.fx = evt.x; d.fy = evt.y; })
+        .on("end",   (evt, d) => { if (!evt.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+    // ── Tick ─────────────────────────────────────────────────────────────────
+    sim.on("tick", () => {
+      memberLines
+        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+
+      ctrlLines
+        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => {
+          const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+          const len = Math.sqrt(dx*dx + dy*dy) || 1;
+          const r = d.target.type === "framework" ? 24 : 11;
+          return d.target.x - (dx/len)*(r+2);
+        })
+        .attr("y2", d => {
+          const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+          const len = Math.sqrt(dx*dx + dy*dy) || 1;
+          const r = d.target.type === "framework" ? 24 : 11;
+          return d.target.y - (dy/len)*(r+2);
+        });
+
+      crossPaths.attr("d", d => {
+        const x1 = d.source.x, y1 = d.source.y, x2 = d.target.x, y2 = d.target.y;
+        const mx = (x1+x2)/2, my = (y1+y2)/2;
+        const dx = x2-x1, dy = y2-y1;
+        const len = Math.sqrt(dx*dx+dy*dy) || 1;
+        const ox = (-dy/len)*35, oy = (dx/len)*35;
+        return `M${x1},${y1} Q${mx+ox},${my+oy} ${x2},${y2}`;
+      });
+
+      nodeG.attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
+    });
+
+    return () => sim.stop();
+  }, [risks, showMember, showCross, showCtrl]);
+
+  // ── Toggle button style ───────────────────────────────────────────────────
+  const togStyle = (on, color) => ({
+    fontSize: 10, padding: "3px 11px", borderRadius: 20, cursor: "pointer",
+    border:      `1px solid ${on ? color : "#1e293b"}`,
+    background:  on ? color + "22" : "transparent",
+    color:       on ? color : "#475569",
+    fontWeight:  on ? 600 : 400,
+    fontFamily:  "system-ui, sans-serif",
+    transition:  "all 0.15s",
+  });
+
+  return (
+    <div style={{ position: "relative", width: "100%", height: 580, borderRadius: 8, overflow: "hidden", border: "1px solid #1e293b" }}>
+      {/* Filter toolbar */}
+      <div style={{ position: "absolute", top: 10, left: 10, zIndex: 10, display: "flex", gap: 6, alignItems: "center" }}>
+        <span style={{ fontSize: 9, color: "#334155", fontWeight: 700, letterSpacing: "0.07em", fontFamily: "system-ui, sans-serif" }}>SHOW</span>
+        <button style={togStyle(showMember, "#6366f1")} onClick={() => setShowMember(v => !v)}>Membership</button>
+        <button style={togStyle(showCross,  "#fbbf24")} onClick={() => setShowCross(v => !v)}>Cross-Framework</button>
+        <button style={togStyle(showCtrl,   "#22d3ee")} onClick={() => setShowCtrl(v => !v)}>Controls</button>
+      </div>
+
+      {/* Hint */}
+      <div style={{ position: "absolute", top: 10, right: 12, zIndex: 10, fontSize: 9, color: "#1e293b", fontFamily: "system-ui, sans-serif" }}>
+        Hover · Click to pin · Drag · Scroll to zoom
+      </div>
+
+      <Legend />
+      <FwPalette />
+
+      <svg ref={svgRef} style={{ width: "100%", height: "100%", display: "block" }} />
+
+      {tooltip && <Tooltip node={tooltip.node} pos={tooltip.pos} />}
+    </div>
+  );
+}
