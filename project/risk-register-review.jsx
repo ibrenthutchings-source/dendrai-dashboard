@@ -418,7 +418,7 @@ function RiskReviewRow({
 }) {
   const key = risk.id || risk.risk_ref;
   const wordingChanged = riskState.wording !== riskState.originalWording;
-  const needsReason = (!riskState.included || wordingChanged) && !riskState.reason.trim();
+  const needsReason = (!riskState.included || wordingChanged) && !(riskState.reason || "").trim();
   const showReasonField = !riskState.included || wordingChanged;
 
   return (
@@ -606,7 +606,17 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
   const [domainNames, setDomainNames] = useState({});
   const [domainsLoading, setDomainsLoading] = useState(false);
 
+  const _INTERNAL_FWS = new Set(["Internal", "Internal Risk Register", ""]);
+
   function inferDomain(risk) {
+    // Framework catalog risks use their own category as the domain so they aren't
+    // conflated with enterprise risk domains (e.g. CIS "Asset Management" should not
+    // land in "Cyber Security & Data Protection").
+    const fw = risk.source_framework || "";
+    if (fw && !_INTERNAL_FWS.has(fw)) {
+      return risk.category || fw;
+    }
+
     const text = ((risk.name || risk.current_wording || "") + " " + (risk.category || "")).toLowerCase();
     if (/\baccess\b|identity|privilege|authentication|authoris|account/.test(text)) return "Identity & Access Management";
     if (/revenue|financial|accounting|fraud|margin|restat/.test(text))              return "Financial Reporting & Controls";
@@ -641,7 +651,21 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.domains) setDomainNames(prev => ({ ...prev, ...data.domains }));
+          if (data.domains) {
+            // Only apply AI domain overrides to enterprise (internal) risks — framework
+            // catalog risks keep their category-based domain from inferDomain.
+            const enterpriseRefs = new Set(
+              risks.filter(r => !r.source_framework || _INTERNAL_FWS.has(r.source_framework))
+                   .map(r => r.id || r.risk_ref)
+            );
+            setDomainNames(prev => {
+              const next = { ...prev };
+              for (const [ref, domain] of Object.entries(data.domains)) {
+                if (enterpriseRefs.has(ref)) next[ref] = domain;
+              }
+              return next;
+            });
+          }
         }
       } catch (_) {}
       setDomainsLoading(false);
@@ -1059,14 +1083,24 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
   // On mount: load previously-saved framework catalogs from the database so that
   // framework columns appear in the matrix without needing a fresh Discovery search.
+  // Falls back to the built-in FW_MOCK_RISKS if the DB is unavailable or empty,
+  // so the Assess All button always has preset framework risks to score.
   useEffect(() => {
+    function seedFromPresets() {
+      const localRisks = Object.values(FW_MOCK_RISKS).flat();
+      if (localRisks.length) {
+        setDiscovered(localRisks);
+        setDiscStates(initRiskStates(localRisks));
+        setDiscCtrlStates(initControlStates(localRisks));
+      }
+    }
     (async () => {
       try {
         const res = await fetch("/api/risk-register/framework-catalogs");
-        if (!res.ok) return;
+        if (!res.ok) { seedFromPresets(); return; }
         const data = await res.json();
         const catalogs = data.catalogs || [];
-        if (!catalogs.length) return;
+        if (!catalogs.length) { seedFromPresets(); return; }
         const allRisks = catalogs.flatMap(cat =>
           (cat.risks || []).map(r => ({
             ...r,
@@ -1077,8 +1111,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           setDiscovered(allRisks);
           setDiscStates(initRiskStates(allRisks));
           setDiscCtrlStates(initControlStates(allRisks));
+        } else {
+          seedFromPresets();
         }
-      } catch (_) {}
+      } catch (_) { seedFromPresets(); }
     })();
   }, []);
 
@@ -1111,7 +1147,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     const missingReasons = [];
     for (const [key, s] of Object.entries(states)) {
       const wordingChanged = s.wording !== s.originalWording;
-      if ((!s.included || wordingChanged) && !s.reason.trim()) {
+      if ((!s.included || wordingChanged) && !(s.reason || "").trim()) {
         missingReasons.push(key);
       }
     }
@@ -1765,7 +1801,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
   // ── Summary banner ────────────────────────────────────────────────────────
 
-  function renderSummaryBanner(sourceRisks, states) {
+  function renderSummaryBanner(sourceRisks, states, hideValidation = false) {
     if (!sourceRisks?.length) return null;
     const groups = groupRisks(sourceRisks);
     const fwCount = Object.keys(groups).length;
@@ -1780,12 +1816,12 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       }}>
         <span><b>{total}</b> risks across <b>{fwCount}</b> group{fwCount !== 1 ? "s" : ""}</span>
         {excluded > 0 && <span style={{ color:"var(--red,#e53)" }}><b>{excluded}</b> excluded</span>}
-        {missing > 0 && (
+        {!hideValidation && missing > 0 && (
           <span style={{ color:"var(--red,#e53)", fontWeight:600 }}>
             ⚠ {missing} reason{missing>1?"s":""} required before converting
           </span>
         )}
-        {missing === 0 && total > 0 && (
+        {!hideValidation && missing === 0 && total > 0 && (
           <span style={{ color:"var(--green,#2a7)", fontWeight:600 }}>✓ Ready to convert</span>
         )}
       </div>
@@ -1797,6 +1833,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // Merge internal + discovered risks for the Framework Matrix so that imported
   // external frameworks appear as both rows and columns.
   const allMatrixRisks       = [...(effectiveRisks || []), ...discoveredRisks];
+  const unratedCount         = allMatrixRisks.filter(r => r.score == null).length;
   const allMatrixRiskStates  = { ...discRiskStates,  ...riskStates  };
   const allMatrixCtrlStates  = { ...discCtrlStates,  ...ctrlStates  };
   const isDiscKey = key => discRiskStates[key] !== undefined && riskStates[key] === undefined;
@@ -1826,21 +1863,17 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           >
             {refreshing ? "Refreshing…" : "↺ Refresh"}
           </button>
-          {(() => {
-            const allRisks = [...(effectiveRisks || []), ...discoveredRisks];
-            const unratedCount = allRisks.filter(r => r.score == null).length;
-            return unratedCount > 0 ? (
-              <button
-                className={"btn btn-sm" + (assessingAll ? " loading" : "")}
-                onClick={handleAssessAll}
-                disabled={assessingAll}
-                title={`Score ${unratedCount} unrated risk${unratedCount !== 1 ? "s" : ""} using AI risk matrix (5×5, 1–25 scale)`}
-              >
-                <Icon name="spark" size={11}/>
-                {assessingAll ? " Assessing…" : ` Assess All (${unratedCount})`}
-              </button>
-            ) : null;
-          })()}
+          <button
+            className={"btn btn-sm" + (assessingAll ? " loading" : "")}
+            onClick={handleAssessAll}
+            disabled={assessingAll || unratedCount === 0}
+            title={unratedCount > 0
+              ? `Score ${unratedCount} unrated risk${unratedCount !== 1 ? "s" : ""} using AI risk matrix (5×5, 1–25 scale)`
+              : "All risks are already rated"}
+          >
+            <Icon name="spark" size={11}/>
+            {assessingAll ? " Assessing…" : unratedCount > 0 ? ` Assess All (${unratedCount})` : " Assess All"}
+          </button>
           {outputYaml && (
             <button className="btn btn-sm" onClick={() => setOutputYaml(null)}>Hide Output</button>
           )}
@@ -1887,7 +1920,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
               </Empty>
             ) : (
               <>
-                {renderSummaryBanner(effectiveRisks, riskStates)}
+                {renderSummaryBanner(effectiveRisks, riskStates, matrixView)}
 
                 {/* View toggle */}
                 <div style={{ display:"flex", gap:6, marginBottom:12, paddingBottom:10, borderBottom:"1px solid var(--line,#eee)" }}>
@@ -2103,7 +2136,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       </div>
 
       {/* Action bar — outside scroll area so it never overlaps list content */}
-      {activeTab === "internal"  && renderActionBar(effectiveRisks, riskStates, "internal")}
+      {activeTab === "internal" && !matrixView && renderActionBar(effectiveRisks, riskStates, "internal")}
       {activeTab === "discovery" && renderActionBar(discoveredRisks, discRiskStates, "external")}
       {activeTab === "upload"    && renderActionBar(uploadedRisks, uploadRiskStates, "upload")}
 
