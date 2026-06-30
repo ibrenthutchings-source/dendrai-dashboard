@@ -475,13 +475,16 @@ async def score_framework_risks(req: ScoreFrameworkRisksRequest):
         except Exception as exc:
             logger.warning("AI risk scoring failed, using heuristic: %s", exc)
 
-    if not ai_ok:
-        _HIGH_KW = {"cyber", "breach", "security", "access", "compliance", "incident",
-                    "fraud", "oversight", "supply chain", "vendor", "ai ", "artificial intelligence"}
-        for r in req.risks:
-            text = ((r.get("category") or "") + " " + (r.get("name") or "")).lower()
-            sc   = 12.0 if any(k in text for k in _HIGH_KW) else 9.0
-            scores[r["id"]] = {"score": sc, "rag": "amber"}
+    # Fill any gaps (AI missed some risks, or AI was unavailable) with a keyword heuristic.
+    _HIGH_KW = {"cyber", "breach", "security", "access", "compliance", "incident",
+                "fraud", "oversight", "supply chain", "vendor", "ai ", "artificial intelligence"}
+    for r in req.risks:
+        rid = r.get("id")
+        if not rid or rid in scores:   # skip if already scored by AI
+            continue
+        text = ((r.get("category") or "") + " " + (r.get("name") or "")).lower()
+        sc   = 12.0 if any(k in text for k in _HIGH_KW) else 9.0
+        scores[rid] = {"score": sc, "rag": "amber"}
 
     # Persist: merge new scores into existing catalogs and re-save each framework
     if scores and db.is_available():
