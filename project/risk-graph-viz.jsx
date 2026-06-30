@@ -313,6 +313,7 @@ function FwPalette() {
 export function RiskGraphViz({ risks }) {
   const svgRef       = useRef(null);
   const simRef       = useRef(null);
+  const zoomRef      = useRef(null);
   const [tooltip,    setTooltip]    = useState(null);
   const [showMember, setShowMember] = useState(true);
   const [showCross,  setShowCross]  = useState(true);
@@ -396,7 +397,9 @@ export function RiskGraphViz({ risks }) {
 
     // ── Root group (zoomed) ───────────────────────────────────────────────────
     const g = svg.append("g");
-    svg.call(d3.zoom().scaleExtent([0.15, 5]).on("zoom", e => g.attr("transform", e.transform)));
+    const zoomBehavior = d3.zoom().scaleExtent([0.15, 5]).on("zoom", e => g.attr("transform", e.transform));
+    svg.call(zoomBehavior);
+    zoomRef.current = zoomBehavior;
 
     // ── Edges ─────────────────────────────────────────────────────────────────
     const gEdges = g.append("g").attr("class", "edges");
@@ -599,8 +602,37 @@ export function RiskGraphViz({ risks }) {
         <button style={togStyle(showCtrl,   "#22d3ee")} onClick={() => setShowCtrl(v => !v)}>Controls</button>
       </div>
 
+      {/* Zoom controls */}
+      <div style={{ position: "absolute", top: 10, right: 12, zIndex: 10, display: "flex", gap: 4 }}>
+        {[
+          { label: "+", factor: 1.4, title: "Zoom in" },
+          { label: "−", factor: 1/1.4, title: "Zoom out" },
+          { label: "⊙", factor: null, title: "Reset zoom" },
+        ].map(({ label, factor, title }) => (
+          <button
+            key={label}
+            title={title}
+            onClick={() => {
+              const svg = d3.select(svgRef.current);
+              if (factor === null) {
+                svg.transition().duration(400).call(zoomRef.current.transform, d3.zoomIdentity);
+              } else {
+                svg.transition().duration(250).call(zoomRef.current.scaleBy, factor);
+              }
+            }}
+            style={{
+              width: 24, height: 24, borderRadius: 5, cursor: "pointer",
+              background: "#0f172a", border: "1px solid #1e293b",
+              color: "#94a3b8", fontSize: label === "⊙" ? 13 : 15,
+              lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >{label}</button>
+        ))}
+      </div>
+
       {/* Hint */}
-      <div style={{ position: "absolute", top: 10, right: 12, zIndex: 10, fontSize: 9, color: "#1e293b", fontFamily: "system-ui, sans-serif" }}>
+      <div style={{ position: "absolute", top: 42, right: 12, zIndex: 10, fontSize: 9, color: "#1e293b", fontFamily: "system-ui, sans-serif" }}>
         Hover · Click to pin · Drag · Scroll to zoom
       </div>
 
