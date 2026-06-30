@@ -2,74 +2,110 @@ import { useEffect, useRef, useState } from "react";
 import { sankey, sankeyLinkHorizontal } from "d3-sankey";
 import * as d3 from "d3";
 
-// ─── Static graph data (derived from MASTER_CONTROLS) ─────────────────────────
-// Three-column layout: Domain → Control Category → Framework
+// ─── Colors ────────────────────────────────────────────────────────────────────
 
-const GRAPH_DATA = {
-  nodes: [
-    // Domains (depth 0) — ordered by control count desc
-    { id: "dom:IT",          label: "IT",          type: "domain",    color: "#3b82f6" },
-    { id: "dom:Operational", label: "Operational", type: "domain",    color: "#f59e0b" },
-    { id: "dom:Technology",  label: "Technology",  type: "domain",    color: "#22d3ee" },
-    { id: "dom:Finance",     label: "Finance",     type: "domain",    color: "#22c55e" },
-    { id: "dom:Legal",       label: "Legal",       type: "domain",    color: "#a855f7" },
-    { id: "dom:HR",          label: "HR",          type: "domain",    color: "#ec4899" },
-    // Categories (depth 1)
-    { id: "cat:Access Control", label: "Access Control", type: "category", color: "#60a5fa" },
-    { id: "cat:Security",       label: "Security",       type: "category", color: "#f87171" },
-    { id: "cat:AI Governance",  label: "AI Governance",  type: "category", color: "#22d3ee" },
-    { id: "cat:Risk Mgmt",      label: "Risk Mgmt",      type: "category", color: "#fbbf24" },
-    { id: "cat:Financial",      label: "Financial",      type: "category", color: "#34d399" },
-    { id: "cat:Operational",    label: "Operational Ctrls", type: "category", color: "#fb923c" },
-    { id: "cat:Compliance",     label: "Compliance",     type: "category", color: "#c084fc" },
-    { id: "cat:Vendor",         label: "Vendor",         type: "category", color: "#e879f9" },
-    { id: "cat:HR",             label: "HR Ctrls",       type: "category", color: "#f472b6" },
-    // Frameworks (depth 2) — ordered by control count desc
-    { id: "fw:Internal",       label: "Internal",       type: "framework", color: "#94a3b8" },
-    { id: "fw:ISO/IEC 42001",  label: "ISO/IEC 42001",  type: "framework", color: "#ec4899" },
-    { id: "fw:SOC 2",          label: "SOC 2",          type: "framework", color: "#a855f7" },
-    { id: "fw:ISO/IEC 27001",  label: "ISO/IEC 27001",  type: "framework", color: "#22c55e" },
-    { id: "fw:NIST SP 800-53", label: "NIST SP 800-53", type: "framework", color: "#3b82f6" },
-    { id: "fw:CIS Controls",   label: "CIS Controls",   type: "framework", color: "#f59e0b" },
-    { id: "fw:COSO ERM",       label: "COSO ERM",       type: "framework", color: "#f97316" },
-  ],
-  links: [
-    // Domain → Category
-    { source: "dom:IT",          target: "cat:Access Control", value: 5 },
-    { source: "dom:IT",          target: "cat:Security",       value: 5 },
-    { source: "dom:Operational", target: "cat:Risk Mgmt",      value: 4 },
-    { source: "dom:Operational", target: "cat:Operational",    value: 3 },
-    { source: "dom:Operational", target: "cat:Vendor",         value: 2 },
-    { source: "dom:Technology",  target: "cat:AI Governance",  value: 6 },
-    { source: "dom:Finance",     target: "cat:Financial",      value: 4 },
-    { source: "dom:Legal",       target: "cat:Compliance",     value: 3 },
-    { source: "dom:HR",          target: "cat:HR",             value: 2 },
-    // Category → Framework
-    { source: "cat:Access Control", target: "fw:Internal",        value: 1 },
-    { source: "cat:Access Control", target: "fw:NIST SP 800-53",  value: 2 },
-    { source: "cat:Access Control", target: "fw:CIS Controls",    value: 1 },
-    { source: "cat:Access Control", target: "fw:SOC 2",           value: 1 },
-    { source: "cat:Security",       target: "fw:ISO/IEC 27001",   value: 2 },
-    { source: "cat:Security",       target: "fw:CIS Controls",    value: 1 },
-    { source: "cat:Security",       target: "fw:NIST SP 800-53",  value: 1 },
-    { source: "cat:Security",       target: "fw:SOC 2",           value: 1 },
-    { source: "cat:AI Governance",  target: "fw:ISO/IEC 42001",   value: 6 },
-    { source: "cat:Risk Mgmt",      target: "fw:Internal",        value: 2 },
-    { source: "cat:Risk Mgmt",      target: "fw:ISO/IEC 27001",   value: 1 },
-    { source: "cat:Risk Mgmt",      target: "fw:COSO ERM",        value: 1 },
-    { source: "cat:Financial",      target: "fw:Internal",        value: 3 },
-    { source: "cat:Financial",      target: "fw:SOC 2",           value: 1 },
-    { source: "cat:Operational",    target: "fw:Internal",        value: 2 },
-    { source: "cat:Operational",    target: "fw:ISO/IEC 27001",   value: 1 },
-    { source: "cat:Compliance",     target: "fw:Internal",        value: 1 },
-    { source: "cat:Compliance",     target: "fw:SOC 2",           value: 2 },
-    { source: "cat:Vendor",         target: "fw:Internal",        value: 1 },
-    { source: "cat:Vendor",         target: "fw:CIS Controls",    value: 1 },
-    { source: "cat:HR",             target: "fw:Internal",        value: 2 },
-  ],
+const DOMAIN_COLOR = {
+  "Finance":     "#22c55e",
+  "IT":          "#3b82f6",
+  "Operational": "#f59e0b",
+  "HR":          "#ec4899",
+  "Legal":       "#a855f7",
+  "Technology":  "#22d3ee",
 };
 
-// ─── Tooltip ──────────────────────────────────────────────────────────────────
+const FW_COLOR = {
+  "Internal":       "#94a3b8",
+  "ISO/IEC 42001":  "#ec4899",
+  "SOC 2":          "#a855f7",
+  "ISO/IEC 27001":  "#22c55e",
+  "NIST SP 800-53": "#3b82f6",
+  "CIS Controls":   "#f59e0b",
+  "COSO ERM":       "#f97316",
+};
+
+// ─── Controls (sorted by framework, then domain within framework — minimizes link crossings) ──
+
+const CONTROLS = [
+  // Internal (12)
+  { ref:"FC-01", fw:"Internal", name:"Revenue Recognition Controls",     cat:"Financial",      dom:"Finance"     },
+  { ref:"FC-02", fw:"Internal", name:"Financial Close Reconciliation",   cat:"Financial",      dom:"Finance"     },
+  { ref:"FC-04", fw:"Internal", name:"Fraud Risk Assessment",            cat:"Financial",      dom:"Finance"     },
+  { ref:"AC-01", fw:"Internal", name:"Access Control Policy",            cat:"Access Control", dom:"IT"          },
+  { ref:"OP-01", fw:"Internal", name:"Business Continuity Plan",         cat:"Operational",    dom:"Operational" },
+  { ref:"RM-01", fw:"Internal", name:"Risk Assessment Process",          cat:"Risk Mgmt",      dom:"Operational" },
+  { ref:"RM-03", fw:"Internal", name:"Risk Appetite Framework",          cat:"Risk Mgmt",      dom:"Operational" },
+  { ref:"VM-02", fw:"Internal", name:"Supply Chain Resilience",          cat:"Vendor",         dom:"Operational" },
+  { ref:"HR-01", fw:"Internal", name:"Security Awareness Training",      cat:"HR",             dom:"HR"          },
+  { ref:"HR-02", fw:"Internal", name:"Background Screening",             cat:"HR",             dom:"HR"          },
+  { ref:"OP-03", fw:"Internal", name:"Key Person Dependencies",          cat:"Operational",    dom:"HR"          },
+  { ref:"CM-02", fw:"Internal", name:"Regulatory Change Management",     cat:"Compliance",     dom:"Legal"       },
+  // ISO/IEC 42001 (6)
+  { ref:"AI-01", fw:"ISO/IEC 42001", name:"AI System Impact Assessment",      cat:"AI Governance", dom:"Technology" },
+  { ref:"AI-02", fw:"ISO/IEC 42001", name:"AI Lifecycle Management",          cat:"AI Governance", dom:"Technology" },
+  { ref:"AI-03", fw:"ISO/IEC 42001", name:"AI Training Data Governance",      cat:"AI Governance", dom:"Technology" },
+  { ref:"AI-04", fw:"ISO/IEC 42001", name:"AI Transparency & Explainability", cat:"AI Governance", dom:"Technology" },
+  { ref:"AI-05", fw:"ISO/IEC 42001", name:"Third-Party AI Tool Assessment",   cat:"AI Governance", dom:"Technology" },
+  { ref:"AI-06", fw:"ISO/IEC 42001", name:"Human Oversight of AI Systems",    cat:"AI Governance", dom:"Technology" },
+  // SOC 2 (5)
+  { ref:"FC-03", fw:"SOC 2", name:"Segregation of Financial Duties", cat:"Financial",      dom:"Finance" },
+  { ref:"AC-05", fw:"SOC 2", name:"Logical Access Review",           cat:"Access Control", dom:"IT"      },
+  { ref:"SC-05", fw:"SOC 2", name:"Change Management Controls",      cat:"Security",       dom:"IT"      },
+  { ref:"CM-01", fw:"SOC 2", name:"Compliance Monitoring Program",   cat:"Compliance",     dom:"Legal"   },
+  { ref:"CM-03", fw:"SOC 2", name:"Privacy Controls",                cat:"Compliance",     dom:"Legal"   },
+  // ISO/IEC 27001 (4)
+  { ref:"SC-01", fw:"ISO/IEC 27001", name:"Information Security Policy", cat:"Security",       dom:"IT"          },
+  { ref:"SC-04", fw:"ISO/IEC 27001", name:"Vulnerability Management",    cat:"Security",       dom:"IT"          },
+  { ref:"RM-02", fw:"ISO/IEC 27001", name:"Risk Treatment Plan",         cat:"Risk Mgmt",      dom:"Operational" },
+  { ref:"OP-02", fw:"ISO/IEC 27001", name:"Supplier Risk Management",    cat:"Operational",    dom:"Operational" },
+  // NIST SP 800-53 (3)
+  { ref:"AC-02", fw:"NIST SP 800-53", name:"Account Management",     cat:"Access Control", dom:"IT" },
+  { ref:"AC-03", fw:"NIST SP 800-53", name:"Access Enforcement",     cat:"Access Control", dom:"IT" },
+  { ref:"SC-03", fw:"NIST SP 800-53", name:"Incident Response Plan", cat:"Security",       dom:"IT" },
+  // CIS Controls (3)
+  { ref:"AC-04", fw:"CIS Controls", name:"Privileged Access Management", cat:"Access Control", dom:"IT"          },
+  { ref:"SC-02", fw:"CIS Controls", name:"Data Protection & Encryption", cat:"Security",       dom:"IT"          },
+  { ref:"VM-01", fw:"CIS Controls", name:"Vendor Security Assessment",   cat:"Vendor",         dom:"Operational" },
+  // COSO ERM (1)
+  { ref:"RM-04", fw:"COSO ERM", name:"Emerging Risk Monitoring", cat:"Risk Mgmt", dom:"Operational" },
+];
+
+const FW_ORDER  = ["Internal", "ISO/IEC 42001", "SOC 2", "ISO/IEC 27001", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
+const DOM_ORDER = ["Finance", "IT", "Operational", "HR", "Legal", "Technology"];
+
+function buildGraphData() {
+  const nodes = [
+    ...CONTROLS.map(c => ({
+      id: `ctrl:${c.ref}`, label: c.ref, fullName: c.name,
+      type: "control", color: DOMAIN_COLOR[c.dom], fw: c.fw, dom: c.dom, cat: c.cat,
+    })),
+    ...FW_ORDER.map(fw => ({
+      id: `fw:${fw}`, label: fw, type: "framework", color: FW_COLOR[fw],
+    })),
+    ...DOM_ORDER.map(dom => ({
+      id: `dom:${dom}`, label: dom, type: "domain", color: DOMAIN_COLOR[dom],
+    })),
+  ];
+
+  const ctrlFwLinks = CONTROLS.map(c => ({
+    source: `ctrl:${c.ref}`, target: `fw:${c.fw}`, value: 1,
+  }));
+
+  const fwDomAgg = {};
+  CONTROLS.forEach(c => {
+    const key = `fw:${c.fw}|||dom:${c.dom}`;
+    fwDomAgg[key] = (fwDomAgg[key] || 0) + 1;
+  });
+  const fwDomLinks = Object.entries(fwDomAgg).map(([key, value]) => {
+    const [source, target] = key.split("|||");
+    return { source, target, value };
+  });
+
+  return { nodes, links: [...ctrlFwLinks, ...fwDomLinks] };
+}
+
+const GRAPH_DATA = buildGraphData();
+
+// ─── Tooltip ───────────────────────────────────────────────────────────────────
 
 function Tooltip({ data, pos }) {
   if (!data || !pos) return null;
@@ -82,29 +118,56 @@ function Tooltip({ data, pos }) {
       background: "rgba(8,12,20,0.97)",
       border:     `1px solid ${accent}`,
       borderLeft: `3px solid ${isLink ? "#ffffff66" : accent}`,
-      borderRadius: 7, padding: "9px 13px", maxWidth: 240,
+      borderRadius: 7, padding: "9px 13px", maxWidth: 260,
       zIndex: 9999, pointerEvents: "none",
-      boxShadow: `0 6px 32px rgba(0,0,0,0.6)`,
+      boxShadow: "0 6px 32px rgba(0,0,0,0.6)",
       fontFamily: "system-ui, sans-serif",
     }}>
       {isLink ? (
+        data._type === "ctrl-fw" ? (
+          <>
+            <div style={{ fontSize: 9, color: "#475569", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
+              Control → Framework
+            </div>
+            <div style={{ fontFamily: "monospace", fontSize: 10, color: data.sourceColor, marginBottom: 2 }}>{data.sourceRef}</div>
+            <div style={{ fontSize: 11, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.4, marginBottom: 5 }}>{data.sourceName}</div>
+            <div style={{ fontSize: 11, color: "#94a3b8" }}>
+              maps to <span style={{ color: data.targetColor, fontWeight: 600 }}>{data.targetName}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 9, color: "#475569", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
+              Framework → Domain
+            </div>
+            <div style={{ fontSize: 11, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.5 }}>
+              <span style={{ color: data.sourceColor }}>{data.sourceName}</span>
+              <span style={{ color: "#334155", margin: "0 6px" }}>→</span>
+              <span style={{ color: data.targetColor }}>{data.targetName}</span>
+            </div>
+            <div style={{ marginTop: 5, fontSize: 10, color: "#94a3b8" }}>
+              <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{data.value}</span> control{data.value !== 1 ? "s" : ""}
+            </div>
+          </>
+        )
+      ) : data.type === "control" ? (
         <>
-          <div style={{ fontSize: 9, color: "#475569", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
-            Control Flow
+          <div style={{ fontSize: 9, color: data.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
+            Control · {data.cat}
           </div>
-          <div style={{ fontSize: 11, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.5 }}>
-            <span style={{ color: data.sourceColor }}>{data.sourceName}</span>
-            <span style={{ color: "#334155", margin: "0 6px" }}>→</span>
-            <span style={{ color: data.targetColor }}>{data.targetName}</span>
+          <div style={{ fontFamily: "monospace", fontSize: 11, color: "#94a3b8", marginBottom: 3 }}>{data.label}</div>
+          <div style={{ fontSize: 11, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.4, marginBottom: 6 }}>{data.fullName}</div>
+          <div style={{ fontSize: 10, color: "#64748b" }}>
+            Framework: <span style={{ color: FW_COLOR[data.fw] || "#94a3b8", fontWeight: 600 }}>{data.fw}</span>
           </div>
-          <div style={{ marginTop: 5, fontSize: 10, color: "#94a3b8" }}>
-            <span style={{ color: "#e2e8f0", fontWeight: 700 }}>{data.value}</span> control{data.value !== 1 ? "s" : ""}
+          <div style={{ fontSize: 10, color: "#64748b" }}>
+            Domain: <span style={{ color: data.color, fontWeight: 600 }}>{data.dom}</span>
           </div>
         </>
       ) : (
         <>
           <div style={{ fontSize: 9, color: data.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
-            {data.type === "domain" ? "Domain" : data.type === "category" ? "Control Category" : "Framework"}
+            {data.type === "framework" ? "Framework" : "Domain"}
           </div>
           <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, marginBottom: 5 }}>
             {data.label}
@@ -118,7 +181,7 @@ function Tooltip({ data, pos }) {
   );
 }
 
-// ─── Column header component ──────────────────────────────────────────────────
+// ─── Column header component ───────────────────────────────────────────────────
 
 function ColHeader({ label, x, y }) {
   return (
@@ -135,10 +198,10 @@ function ColHeader({ label, x, y }) {
   );
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Main component ────────────────────────────────────────────────────────────
 
 export function RiskSankey() {
-  const svgRef   = useRef(null);
+  const svgRef  = useRef(null);
   const [tooltip, setTooltip]  = useState(null);
   const [colHdrs, setColHdrs]  = useState([]);   // column header positions resolved after layout
 
@@ -150,8 +213,8 @@ export function RiskSankey() {
     svg.selectAll("*").remove();
 
     const W   = svgEl.clientWidth  || 960;
-    const H   = svgEl.clientHeight || 640;
-    const PAD = { top: 48, bottom: 20, left: 148, right: 168 };
+    const H   = svgEl.clientHeight || 860;
+    const PAD = { top: 48, bottom: 20, left: 84, right: 142 };
 
     // ── Background ────────────────────────────────────────────────────────────
     const defs = svg.append("defs");
@@ -166,8 +229,8 @@ export function RiskSankey() {
     // ── Sankey layout ─────────────────────────────────────────────────────────
     const layout = sankey()
       .nodeId(d => d.id)
-      .nodeWidth(20)
-      .nodePadding(12)
+      .nodeWidth(14)
+      .nodePadding(4)
       .nodeSort(null)
       .extent([[PAD.left, PAD.top], [W - PAD.right, H - PAD.bottom]]);
 
@@ -181,9 +244,9 @@ export function RiskSankey() {
     const depthX = {};
     nodes.forEach(n => { if (!(n.depth in depthX)) depthX[n.depth] = (n.x0 + n.x1) / 2; });
     setColHdrs([
-      { label: "DOMAIN",   x: depthX[0] ?? PAD.left,         y: PAD.top },
-      { label: "CATEGORY", x: depthX[1] ?? W / 2,            y: PAD.top },
-      { label: "FRAMEWORK",x: depthX[2] ?? W - PAD.right,    y: PAD.top },
+      { label: "CONTROLS",   x: depthX[0] ?? PAD.left,       y: PAD.top },
+      { label: "FRAMEWORKS", x: depthX[1] ?? W / 2,          y: PAD.top },
+      { label: "DOMAINS",    x: depthX[2] ?? W - PAD.right,  y: PAD.top },
     ]);
 
     // ── Link gradients ────────────────────────────────────────────────────────
@@ -197,8 +260,8 @@ export function RiskSankey() {
         .attr("y1", (l.source.y0 + l.source.y1) / 2)
         .attr("x2", l.target.x0)
         .attr("y2", (l.target.y0 + l.target.y1) / 2);
-      g.append("stop").attr("offset", "0%")  .attr("stop-color", srcColor).attr("stop-opacity", 0.6);
-      g.append("stop").attr("offset", "100%").attr("stop-color", tgtColor).attr("stop-opacity", 0.6);
+      g.append("stop").attr("offset", "0%")  .attr("stop-color", srcColor).attr("stop-opacity", 0.55);
+      g.append("stop").attr("offset", "100%").attr("stop-color", tgtColor).attr("stop-opacity", 0.55);
     });
 
     // ── Links ─────────────────────────────────────────────────────────────────
@@ -210,7 +273,7 @@ export function RiskSankey() {
       .attr("d",              linkGen)
       .attr("fill",           "none")
       .attr("stroke",         (_, i) => `url(#sk-g-${i})`)
-      .attr("stroke-width",   d => Math.max(1.5, d.width))
+      .attr("stroke-width",   d => Math.max(1, d.width))
       .attr("stroke-opacity", 0.38)
       .attr("cursor",         "pointer");
 
@@ -245,7 +308,7 @@ export function RiskSankey() {
       .attr("y",      d => d.y0 - 4)
       .attr("width",  d => (d.x1 - d.x0) + 8)
       .attr("height", d => Math.max(1, d.y1 - d.y0) + 8)
-      .attr("rx",     5)
+      .attr("rx",     4)
       .attr("fill",   d => d.color || "#6b7280")
       .attr("fill-opacity", 0);
 
@@ -255,15 +318,15 @@ export function RiskSankey() {
       .attr("y",      d => d.y0)
       .attr("width",  d => d.x1 - d.x0)
       .attr("height", d => Math.max(2, d.y1 - d.y0))
-      .attr("rx",     3)
+      .attr("rx",     2)
       .attr("fill",         d => d.color || "#6b7280")
-      .attr("fill-opacity", 0.88)
+      .attr("fill-opacity", 0.85)
       .attr("stroke",       d => d.color || "#6b7280")
       .attr("stroke-width", 0.4)
       .attr("stroke-opacity", 0.4);
 
-    // Count badge — shown on all nodes tall enough (> 16px)
-    nodeGrp.filter(d => (d.y1 - d.y0) >= 16)
+    // Count badge — frameworks & domains only, when tall enough
+    nodeGrp.filter(d => d.type !== "control" && (d.y1 - d.y0) >= 14)
       .append("text")
       .attr("x", d => (d.x0 + d.x1) / 2)
       .attr("y", d => (d.y0 + d.y1) / 2)
@@ -274,17 +337,17 @@ export function RiskSankey() {
       .attr("pointer-events", "none")
       .text(d => d.value);
 
-    // Labels — left for domains, right for categories & frameworks
+    // Labels — controls on the left, frameworks & domains on the right
     nodeGrp.append("text")
-      .attr("x",           d => d.depth === 0 ? d.x0 - 9 : d.x1 + 9)
-      .attr("y",           d => (d.y0 + d.y1) / 2)
-      .attr("dy",          "0.35em")
-      .attr("text-anchor", d => d.depth === 0 ? "end" : "start")
-      .attr("fill",        d => d.color || "#94a3b8")
-      .attr("fill-opacity", 0.9)
-      .attr("font-size",   10)
-      .attr("font-weight", 600)
-      .attr("font-family", "system-ui, sans-serif")
+      .attr("x",           d => d.depth === 0 ? d.x0 - 7 : d.x1 + 7)
+      .attr("y",            d => (d.y0 + d.y1) / 2)
+      .attr("dy",           "0.35em")
+      .attr("text-anchor",  d => d.depth === 0 ? "end" : "start")
+      .attr("fill",         d => d.color || "#94a3b8")
+      .attr("fill-opacity", 0.88)
+      .attr("font-size",    d => d.type === "control" ? 8 : 10)
+      .attr("font-weight",  d => d.type === "control" ? 500 : 600)
+      .attr("font-family",  d => d.type === "control" ? "monospace" : "system-ui, sans-serif")
       .attr("pointer-events", "none")
       .text(d => d.label);
 
@@ -296,12 +359,12 @@ export function RiskSankey() {
 
     function applyNodeHighlight(nodeId) {
       linkPaths
-        .attr("stroke-opacity", l => linkConnects(l, nodeId) ? 0.82 : 0.05);
+        .attr("stroke-opacity", l => linkConnects(l, nodeId) ? 0.82 : 0.04);
       marchPaths
         .attr("stroke-opacity", l => linkConnects(l, nodeId) ? 0.35 : 0);
       nodeGrp
         .style("opacity", d => d.id === nodeId
-          || links.some(l => linkConnects(l, nodeId) && linkConnects(l, d.id)) ? 1 : 0.2);
+          || links.some(l => linkConnects(l, nodeId) && linkConnects(l, d.id)) ? 1 : 0.15);
     }
 
     function clearHighlight() {
@@ -325,7 +388,7 @@ export function RiskSankey() {
       .on("mousemove", evt => {
         setTooltip(p => p ? { ...p, pos: { x: evt.clientX, y: evt.clientY } } : null);
       })
-      .on("mouseout", evt => {
+      .on("mouseout", () => {
         if (!pinId) {
           clearHighlight();
         }
@@ -346,18 +409,21 @@ export function RiskSankey() {
 
     // Link interaction
     linkPaths
-      .on("mouseover", (evt, d, i) => {
+      .on("mouseover", (evt, d) => {
         if (!pinId) {
-          linkPaths.attr("stroke-opacity", (l, j) => l === d ? 0.85 : 0.05);
-          marchPaths.attr("stroke-opacity", (l) => l === d ? 0.4 : 0);
+          linkPaths.attr("stroke-opacity", l => l === d ? 0.85 : 0.04);
+          marchPaths.attr("stroke-opacity", l => l === d ? 0.4 : 0);
           nodeGrp.style("opacity", n =>
-            n.id === d.source.id || n.id === d.target.id ? 1 : 0.15);
+            n.id === d.source.id || n.id === d.target.id ? 1 : 0.12);
         }
+        const isCtrlFw = d.source.type === "control";
         setTooltip({
           pos: { x: evt.clientX, y: evt.clientY },
           data: {
             _isLink:     true,
-            sourceName:  d.source.label,
+            _type:       isCtrlFw ? "ctrl-fw" : "fw-dom",
+            sourceRef:   d.source.label,
+            sourceName:  isCtrlFw ? (d.source.fullName || d.source.label) : d.source.label,
             sourceColor: d.source.color,
             targetName:  d.target.label,
             targetColor: d.target.color,
@@ -381,7 +447,7 @@ export function RiskSankey() {
 
   return (
     <div style={{
-      position: "relative", width: "100%", height: 640,
+      position: "relative", width: "100%", height: 860,
       borderRadius: 8, overflow: "hidden",
       border: "1px solid #1e293b", background: "#080c14",
     }}>
@@ -402,29 +468,26 @@ export function RiskSankey() {
         Hover to highlight · Click to pin
       </div>
 
-      {/* Legend strip */}
+      {/* Legend strip — domain colors (shared between controls and domain column) */}
       <div style={{
         position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)",
-        display: "flex", gap: 16, zIndex: 10,
+        display: "flex", gap: 12, zIndex: 10,
         background: "rgba(8,12,20,0.8)", border: "1px solid #1e293b",
         borderRadius: 6, padding: "5px 14px",
         fontFamily: "system-ui, sans-serif",
         backdropFilter: "blur(4px)",
+        flexWrap: "wrap", maxWidth: "90%", justifyContent: "center",
       }}>
-        {[
-          { color: "#3b82f6", label: "Domain" },
-          { color: "#f87171", label: "Category" },
-          { color: "#ec4899", label: "Framework" },
-        ].map(({ color, label }) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <div style={{ width: 10, height: 10, borderRadius: 2, background: color, opacity: 0.85 }} />
-            <span style={{ fontSize: 9, color: "#64748b" }}>{label}</span>
+        {Object.entries(DOMAIN_COLOR).map(([dom, color]) => (
+          <div key={dom} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <div style={{ width: 8, height: 8, borderRadius: 2, background: color, opacity: 0.85 }} />
+            <span style={{ fontSize: 9, color: "#64748b" }}>{dom}</span>
           </div>
         ))}
         <div style={{ width: 1, background: "#1e293b" }} />
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <div style={{ width: 22, height: 3, background: "linear-gradient(90deg,#3b82f6,#a855f7)", borderRadius: 2, opacity: 0.7 }} />
-          <span style={{ fontSize: 9, color: "#64748b" }}>Control flow (width = count)</span>
+          <span style={{ fontSize: 9, color: "#64748b" }}>flow width = control count</span>
         </div>
       </div>
 
