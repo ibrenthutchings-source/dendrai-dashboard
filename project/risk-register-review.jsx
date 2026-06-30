@@ -1365,20 +1365,39 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       if (res.ok) {
         const data = await res.json();
         const scoreMap = data.scores || {};
-        setDiscovered(prev => prev.map(r => {
+
+        // Apply scores immediately to in-memory state so the UI responds at once.
+        const applyScores = r => {
           const sid = r.id || r.risk_ref;
           const s = scoreMap[sid];
           return s ? { ...r, score: s.score, rag: s.rag } : r;
-        }));
-        setRefreshedRisks(prev => {
-          const base = prev || effectiveRisks || [];
-          if (!base.length) return prev;
-          return base.map(r => {
-            const sid = r.id || r.risk_ref;
-            const s = scoreMap[sid];
-            return s ? { ...r, score: s.score, rag: s.rag } : r;
-          });
-        });
+        };
+        setDiscovered(discoveredRisks.map(applyScores));
+        const base = refreshedRisks || effectiveRisks || [];
+        if (base.length) setRefreshedRisks(base.map(applyScores));
+
+        // Re-fetch framework catalogs from DB (backend just persisted the scores).
+        // Only overwrite discoveredRisks if the DB copy has scored risks so a
+        // failed persist doesn't wipe out the in-memory scores applied above.
+        try {
+          const catRes = await fetch("/api/risk-register/framework-catalogs");
+          if (catRes.ok) {
+            const catData = await catRes.json();
+            const catalogs = catData.catalogs || [];
+            const dbRisks = catalogs.flatMap(cat =>
+              (cat.risks || []).map(r => ({
+                ...r,
+                source_framework: r.source_framework || cat.framework,
+              }))
+            );
+            if (dbRisks.some(r => r.score != null)) {
+              setDiscovered(dbRisks);
+              setDiscStates(initRiskStates(dbRisks));
+              setDiscCtrlStates(initControlStates(dbRisks));
+            }
+          }
+        } catch (_) {}
+
         setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
       }
     } catch (_) {}
