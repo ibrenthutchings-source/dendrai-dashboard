@@ -352,11 +352,20 @@ export function RiskSankey() {
       .text(d => d.label);
 
     // ── Highlight helpers ─────────────────────────────────────────────────────
+    function linkId(l, end) {
+      const v = l[end];
+      return typeof v === "object" ? v.id : v;
+    }
     function linkConnects(l, nodeId) {
-      return (typeof l.source === "object" ? l.source.id : l.source) === nodeId
-          || (typeof l.target === "object" ? l.target.id : l.target) === nodeId;
+      return linkId(l, "source") === nodeId || linkId(l, "target") === nodeId;
     }
 
+    function setGlow(ids) {
+      const op = ids.length > 1 ? 0.16 : 0.2;
+      nodeGrp.selectAll(".nk-glow").attr("fill-opacity", n => ids.includes(n.id) ? op : 0);
+    }
+
+    // Hovering a framework/domain node: highlight every link directly touching it
     function applyNodeHighlight(nodeId) {
       linkPaths
         .attr("stroke-opacity", l => linkConnects(l, nodeId) ? 0.82 : 0.04);
@@ -365,13 +374,33 @@ export function RiskSankey() {
       nodeGrp
         .style("opacity", d => d.id === nodeId
           || links.some(l => linkConnects(l, nodeId) && linkConnects(l, d.id)) ? 1 : 0.15);
+      setGlow([nodeId]);
+    }
+
+    // Hovering a control node: highlight its full path — control → framework → domain
+    function applyPathHighlight(d) {
+      const fwId  = `fw:${d.fw}`;
+      const domId = `dom:${d.dom}`;
+      function inPath(l) {
+        const s = linkId(l, "source"), t = linkId(l, "target");
+        return (s === d.id && t === fwId) || (s === fwId && t === domId);
+      }
+      linkPaths.attr("stroke-opacity", l => inPath(l) ? 0.88 : 0.04);
+      marchPaths.attr("stroke-opacity", l => inPath(l) ? 0.4 : 0);
+      nodeGrp.style("opacity", n => (n.id === d.id || n.id === fwId || n.id === domId) ? 1 : 0.15);
+      setGlow([d.id, fwId, domId]);
+    }
+
+    function applyHighlight(d) {
+      if (d.type === "control") applyPathHighlight(d);
+      else applyNodeHighlight(d.id);
     }
 
     function clearHighlight() {
       linkPaths.attr("stroke-opacity", 0.38);
       marchPaths.attr("stroke-opacity", 0);
       nodeGrp.style("opacity", 1);
-      nodeGrp.selectAll(".nk-glow").attr("fill-opacity", 0);
+      setGlow([]);
     }
 
     let pinId = null;
@@ -379,10 +408,7 @@ export function RiskSankey() {
     // Node interaction
     nodeGrp
       .on("mouseover", (evt, d) => {
-        if (!pinId) {
-          applyNodeHighlight(d.id);
-          d3.select(evt.currentTarget).select(".nk-glow").attr("fill-opacity", 0.18);
-        }
+        if (!pinId) applyHighlight(d);
         setTooltip({ pos: { x: evt.clientX, y: evt.clientY }, data: d });
       })
       .on("mousemove", evt => {
@@ -401,9 +427,7 @@ export function RiskSankey() {
           clearHighlight();
         } else {
           pinId = d.id;
-          applyNodeHighlight(d.id);
-          nodeGrp.selectAll(".nk-glow").attr("fill-opacity", 0);
-          d3.select(evt.currentTarget).select(".nk-glow").attr("fill-opacity", 0.22);
+          applyHighlight(d);
         }
       });
 
