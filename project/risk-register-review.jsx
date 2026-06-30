@@ -569,7 +569,7 @@ function OutputPanel({ yaml, onClose, onDownload }) {
       display:"flex", flexDirection:"column", zIndex:200, boxShadow:"-4px 0 24px rgba(0,0,0,0.08)",
     }}>
       <div style={{ display:"flex", alignItems:"center", gap:8, padding:"12px 16px", borderBottom:"1px solid var(--line,#eee)", flexShrink:0 }}>
-        <span style={{ fontWeight:600, fontSize:12 }}>Risk Register Review — Code Output</span>
+        <span style={{ fontWeight:600, fontSize:12 }}>Risk and Controls Register — Code Output</span>
         <div style={{ marginLeft:"auto", display:"flex", gap:6 }}>
           <button className="btn btn-sm" onClick={onDownload}><Icon name="download" size={11}/> Download</button>
           <button className="btn btn-sm" onClick={onClose}>✕ Close</button>
@@ -648,26 +648,21 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
     })();
   }, [risks?.length]);
 
-  // Determine which external frameworks to show as columns:
-  // 1. Any framework referenced by an assigned control
-  // 2. Any source_framework on a risk that isn't the internal register
-  const usedFws = new Set();
+  // All MATRIX_FRAMEWORKS always appear as columns; append any extra frameworks
+  // from discovered risks or assigned controls alphabetically after them.
+  const _internalFws = new Set(["Internal", "Internal Risk Register"]);
+  const extraFws = new Set();
   for (const cs of Object.values(ctrlStates)) {
     for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
       const fw = CTRL_BY_REF[ref]?.framework;
-      if (fw && fw !== "Internal") usedFws.add(fw);
+      if (fw && !_internalFws.has(fw) && !MATRIX_FRAMEWORKS.includes(fw)) extraFws.add(fw);
     }
   }
   for (const r of (risks || [])) {
     const fw = r.source_framework;
-    if (fw && fw !== "Internal Risk Register" && fw !== "Internal") usedFws.add(fw);
+    if (fw && !_internalFws.has(fw) && !MATRIX_FRAMEWORKS.includes(fw)) extraFws.add(fw);
   }
-  // Preserve standard order for known frameworks; append any extras alphabetically
-  const _internalFws = new Set(["Internal", "Internal Risk Register"]);
-  const fwCols = [
-    ...MATRIX_FRAMEWORKS.filter(fw => usedFws.has(fw)),
-    ...[...usedFws].filter(fw => !MATRIX_FRAMEWORKS.includes(fw) && !_internalFws.has(fw)).sort(),
-  ];
+  const fwCols = [...MATRIX_FRAMEWORKS, ...[...extraFws].sort()];
 
   // ── Wording row helpers ──────────────────────────────────────────────────
 
@@ -1041,9 +1036,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [uploadFilename, setUploadFilename]    = useState(null);
 
   // ── Matrix view ───────────────────────────────────────────────────────────
-  const [matrixView, setMatrixView]   = useState(false);
+  const [matrixView, setMatrixView]   = useState(true);
   const [savingRows, setSavingRows]   = useState(new Set());
   const [refreshing, setRefreshing]   = useState(false);
+  const [assessingAll, setAssessingAll] = useState(false);
 
   // ── Output ───────────────────────────────────────────────────────────────
   const [outputYaml, setOutputYaml] = useState(null);
@@ -1308,6 +1304,49 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       }
     } catch (_) {}
     setRefreshing(false);
+  }
+
+  // ── Assess all unrated framework risks ───────────────────────────────────
+
+  async function handleAssessAll() {
+    const allRisks = [...(effectiveRisks || []), ...discoveredRisks];
+    const unrated  = allRisks.filter(r => r.score == null);
+    if (!unrated.length) return;
+    setAssessingAll(true);
+    try {
+      const res = await fetch("/api/risk-register/score-framework-risks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          risks: unrated.map(r => ({
+            id: r.id || r.risk_ref,
+            name: r.name || r.current_wording || "",
+            category: r.category || "",
+            source_framework: r.source_framework || "",
+          })),
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const scoreMap = data.scores || {};
+        setDiscovered(prev => prev.map(r => {
+          const sid = r.id || r.risk_ref;
+          const s = scoreMap[sid];
+          return s ? { ...r, score: s.score, rag: s.rag } : r;
+        }));
+        setRefreshedRisks(prev => {
+          const base = prev || effectiveRisks || [];
+          if (!base.length) return prev;
+          return base.map(r => {
+            const sid = r.id || r.risk_ref;
+            const s = scoreMap[sid];
+            return s ? { ...r, score: s.score, rag: s.rag } : r;
+          });
+        });
+        setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
+      }
+    } catch (_) {}
+    setAssessingAll(false);
   }
 
   // ── Matrix inline save ────────────────────────────────────────────────────
@@ -1767,12 +1806,12 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const matrixReset          = (key, auto, manual)  => isDiscKey(key) ? discCtrl.reset(key, auto, manual)   : intCtrl.reset(key, auto, manual);
 
   return (
-    <div className="code-screen" data-screen-label="Risk Register Review" style={{ position:"relative" }}>
+    <div className="code-screen" data-screen-label="Risk and Controls Register" style={{ position:"relative" }}>
       {/* Header */}
       <div className="panel-head">
         <div>
-          <div className="kicker">Execution · Risk Register Review</div>
-          <div className="panel-title mt-8">Risk Register Review</div>
+          <div className="kicker">Execution · Risk and Controls Register</div>
+          <div className="panel-title mt-8">Risk and Controls Register</div>
           <div className="panel-sub">
             Validate and curate risks before converting to Risk-as-Code.
             Edit wording, include/exclude items, assign controls, and generate output.
@@ -1787,6 +1826,21 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           >
             {refreshing ? "Refreshing…" : "↺ Refresh"}
           </button>
+          {(() => {
+            const allRisks = [...(effectiveRisks || []), ...discoveredRisks];
+            const unratedCount = allRisks.filter(r => r.score == null).length;
+            return unratedCount > 0 ? (
+              <button
+                className={"btn btn-sm" + (assessingAll ? " loading" : "")}
+                onClick={handleAssessAll}
+                disabled={assessingAll}
+                title={`Score ${unratedCount} unrated risk${unratedCount !== 1 ? "s" : ""} using AI risk matrix (5×5, 1–25 scale)`}
+              >
+                <Icon name="spark" size={11}/>
+                {assessingAll ? " Assessing…" : ` Assess All (${unratedCount})`}
+              </button>
+            ) : null;
+          })()}
           {outputYaml && (
             <button className="btn btn-sm" onClick={() => setOutputYaml(null)}>Hide Output</button>
           )}
