@@ -124,6 +124,17 @@ _DOMAIN_SYSTEM = (
     'Example: {"RISK-01": "Identity & Access Management", "RISK-02": "Financial Reporting & Controls"}'
 )
 
+_SCORE_SYSTEM = (
+    "You are a risk quantification expert using a 5×5 risk matrix (likelihood 1–5 × impact 1–5). "
+    "Score each risk on a residual basis (1–25 scale). "
+    "Bands: score ≥ 15 = red, 9–14 = amber, < 9 = green.\n\n"
+    "Return ONLY a JSON array. Each element must have exactly:\n"
+    '  "id"    — the risk id exactly as given\n'
+    '  "score" — numeric float, e.g. 12.0\n'
+    '  "rag"   — one of "red", "amber", "green"\n\n'
+    "Return ONLY valid JSON — no markdown fences, no commentary."
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Mock external framework risk catalogs
@@ -259,6 +270,10 @@ class ApplyWordingRequest(BaseModel):
 
 class CategorizeDomainRequest(BaseModel):
     risks: List[Dict[str, Any]] = []  # [{ref, name, category}, ...]
+
+
+class ScoreFrameworkRisksRequest(BaseModel):
+    risks: List[Dict[str, Any]] = []  # [{id, name, category, source_framework}]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -412,6 +427,87 @@ async def search_frameworks(req: FrameworkSearchRequest):
 async def get_framework_catalogs():
     """Return all framework risk catalogs previously saved to the database."""
     return {"catalogs": db.list_framework_catalogs()}
+
+
+@router.post("/score-framework-risks")
+async def score_framework_risks(req: ScoreFrameworkRisksRequest):
+    """
+    Score unrated framework risks via AI (5×5 risk matrix, 1–25 scale).
+    Falls back to a keyword heuristic if no API key is configured.
+    Persists updated scores back into framework_risk_catalogs for cross-session recall.
+    """
+    if not req.risks:
+        return {"scores": {}}
+
+    scores: Dict[str, Dict[str, Any]] = {}
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    ai_ok = False
+    if api_key:
+        try:
+            import anthropic
+            import json
+            import re
+            client = anthropic.Anthropic(api_key=api_key)
+            risk_list = "\n".join(
+                f'{i+1}. id="{r["id"]}" | {r.get("source_framework", "")} — {r.get("name", "")} [{r.get("category", "")}]'
+                for i, r in enumerate(req.risks)
+            )
+            msg = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=[{"type": "text", "text": _SCORE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": f"Score these risks:\n{risk_list}"}],
+            )
+            raw = msg.content[0].text.strip()
+            match = re.search(r'\[.*?\]', raw, re.DOTALL)
+            if match:
+                for item in json.loads(match.group()):
+                    rid = item.get("id")
+                    sc  = item.get("score")
+                    rag = str(item.get("rag", "")).lower()
+                    if rid and sc is not None:
+                        sc = float(sc)
+                        if rag not in ("red", "amber", "green"):
+                            rag = "red" if sc >= 15 else "amber" if sc >= 9 else "green"
+                        scores[rid] = {"score": round(sc, 1), "rag": rag}
+                ai_ok = bool(scores)
+        except Exception as exc:
+            logger.warning("AI risk scoring failed, using heuristic: %s", exc)
+
+    if not ai_ok:
+        _HIGH_KW = {"cyber", "breach", "security", "access", "compliance", "incident",
+                    "fraud", "oversight", "supply chain", "vendor", "ai ", "artificial intelligence"}
+        for r in req.risks:
+            text = ((r.get("category") or "") + " " + (r.get("name") or "")).lower()
+            sc   = 12.0 if any(k in text for k in _HIGH_KW) else 9.0
+            scores[r["id"]] = {"score": sc, "rag": "amber"}
+
+    # Persist: merge new scores into existing catalogs and re-save each framework
+    if scores and db.is_available():
+        existing_cats = db.list_framework_catalogs()
+        existing_map  = {cat["framework"]: list(cat.get("risks") or []) for cat in existing_cats}
+        fw_groups: Dict[str, List] = {}
+        for r in req.risks:
+            fw = r.get("source_framework", "")
+            if fw:
+                fw_groups.setdefault(fw, []).append(r)
+        for fw_name, batch in fw_groups.items():
+            score_patch = {r["id"]: scores.get(r["id"]) for r in batch}
+            existing    = existing_map.get(fw_name, [])
+            merged      = []
+            seen_ids: set = set()
+            for er in existing:
+                eid = er["id"]
+                seen_ids.add(eid)
+                patch = score_patch.get(eid)
+                merged.append({**er, **patch} if patch else er)
+            for r in batch:
+                if r["id"] not in seen_ids:
+                    merged.append({**r, **(scores.get(r["id"]) or {})})
+            db.save_framework_catalog(fw_name, merged)
+
+    return {"scores": scores}
 
 
 @router.get("/reviews")
