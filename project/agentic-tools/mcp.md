@@ -1,0 +1,223 @@
+# Dendrai MCP Servers
+
+All servers live in `project/agentic-tools/`. They can be used two ways:
+
+- **Local / Claude Code** — run as stdio processes, registered in `settings.json`
+- **Remote / claude.ai** — mounted as Streamable-HTTP endpoints by `api_server.py`, accessible over the network (Railway, Docker, etc.)
+
+---
+
+## Remote access via Railway (or any deployment)
+
+`api_server.py` mounts every MCP server as a FastMCP Streamable-HTTP sub-app. When the stack is deployed (Railway, Docker Compose, etc.) each server is reachable at:
+
+```
+https://<your-host>/mcp/edgar/mcp
+https://<your-host>/mcp/fred/mcp
+https://<your-host>/mcp/rss/mcp
+https://<your-host>/mcp/token-cost/mcp
+https://<your-host>/mcp/predictive/mcp
+https://<your-host>/mcp/risk-as-code/mcp
+https://<your-host>/mcp/oracle/mcp
+```
+
+A discovery endpoint lists all mounted servers and their URLs:
+
+```
+GET https://<your-host>/mcp
+```
+
+Set `PUBLIC_URL=https://your-railway-app.up.railway.app` in the Railway environment so the discovery endpoint returns absolute URLs.
+
+### Connect to claude.ai
+
+1. Go to **claude.ai → Settings → Integrations**
+2. Add each URL above as a remote MCP server
+3. Claude will have access to all tools immediately — no local process needed
+
+### nginx proxy
+
+The `project/nginx.conf` proxies `/mcp/` to `api_server.py` on port 8001 with `proxy_buffering off` (required for MCP's SSE transport).
+
+---
+
+## Local setup (Claude Code / Claude Desktop)
+
+### Install dependencies
+
+
+```bash
+pip install mcp python-dotenv
+# predictive analytics extras
+pip install -r requirements.txt
+```
+
+### Register with Claude Code
+
+Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project-scoped). Replace the path prefix with your local clone location.
+
+```json
+{
+  "mcpServers": {
+    "edgar":                { "command": "python", "args": ["<path>/edgar_mcp_server.py"] },
+    "fred-macro":           { "command": "python", "args": ["<path>/fred_mcp_server.py"] },
+    "rss-news":             { "command": "python", "args": ["<path>/rss_mcp_server.py"] },
+    "predictive-analytics": { "command": "python", "args": ["<path>/predictive_analytics_mcp_server.py"] },
+    "token-cost":           { "command": "python", "args": ["<path>/token_cost_mcp_server.py"] },
+    "oracle-fusion":        { "command": "python", "args": ["<path>/oracle_fusion_mcp_server.py"] }
+  }
+}
+```
+
+Restart Claude Code after editing. Each server's tools become available immediately on next startup.
+
+### Environment variables
+
+Create a `.env` file in `project/agentic-tools/` (loaded automatically by servers that need it):
+
+```env
+FRED_API_KEY=your_key_here              # fred-macro, predictive-analytics
+ANTHROPIC_API_KEY=sk-ant-...            # token-cost (optional — falls back to approximation)
+ORACLE_FUSION_HOST=https://company.fa.us6.oraclecloud.com
+ORACLE_FUSION_USERNAME=svc_dendrai
+ORACLE_FUSION_PASSWORD=...
+# Oracle OAuth (recommended for production)
+ORACLE_FUSION_CLIENT_ID=...
+ORACLE_FUSION_CLIENT_SECRET=...
+```
+
+---
+
+## edgar
+
+**File:** `edgar_mcp_server.py`  
+**Dependency:** `edgar_tool.py` must be in the same directory.
+
+Fetches public company data directly from SEC EDGAR. No API key required.
+
+| Tool | Description |
+|---|---|
+| `edgar_company_info` | CIK, SIC code, entity type, state, fiscal year end, exchanges, address |
+| `edgar_financial_metrics` | XBRL time-series for 20+ metrics (Revenue, NetIncome, EPS, Cash, etc.) — 5 years |
+| `edgar_risk_factors` | Item 1A Risk Factors from 10-K filings (`max_filings` default 2) |
+| `edgar_proxy_data` | DEF 14A: exec comp, board composition, say-on-pay, shareholder proposals |
+| `edgar_filings_index` | Full 5-year index of 10-K / 10-Q / 8-K / DEF 14A with human-readable 8-K item labels |
+| `edgar_sic_peers` | Companies sharing the target's SIC code (`max_peers` default 20) |
+| `edgar_peer_financials` | Latest annual financials for SIC-matched peers (`max_peers` default 10) |
+
+**Example:**
+```
+edgar_company_info("NVDA")
+edgar_financial_metrics("AAPL")
+edgar_risk_factors("MSFT", max_filings=3)
+```
+
+---
+
+## fred-macro
+
+**File:** `fred_mcp_server.py`  
+**Requires:** `FRED_API_KEY` — free key at https://fred.stlouisfed.org/docs/api/api_key.html
+
+Identifies leading macro-economic indicators (from the St. Louis Fed FRED database) most correlated with a company's quarterly financials.
+
+| Tool | Description |
+|---|---|
+| `fred_macro_correlations` | Pearson correlation analysis across 30 FRED series vs. 9 company financial metrics. Tests 1–3 quarter leading lags. Saves to `fred_macro_indicators.json`. |
+| `fred_list_series` | Lists all 30 FRED series in the catalog grouped by category (GDP, CPI, unemployment, VIX, yield curve, etc.) |
+| `fred_load_analysis` | Loads and summarizes a previously saved `fred_macro_indicators.json` without re-fetching |
+
+**Parameters for `fred_macro_correlations`:**
+
+| Param | Default | Notes |
+|---|---|---|
+| `ticker` | — | NYSE/NASDAQ symbol |
+| `min_correlation` | `0.85` | Lower to `0.70`–`0.75` for volatile companies |
+| `lags` | `"1,2,3"` | Comma-separated quarters |
+| `output_file` | `fred_macro_indicators.json` | Output path |
+| `fred_api_key` | env var | Falls back to `FRED_API_KEY` |
+
+---
+
+## rss-news
+
+**File:** `rss_mcp_server.py`  
+**Requires:** Nothing — no API key needed.
+
+Fetches industry-relevant RSS news for a company based on its EDGAR SIC code. Covers 25+ industry categories.
+
+| Tool | Description |
+|---|---|
+| `rss_industry_news` | Finds the top 3 RSS feeds for the company's SIC industry and downloads articles from the past 12 months. Saves to `rss_industry.json`. |
+| `rss_load_results` | Loads and summarizes a previously saved `rss_industry.json` with sample headlines |
+| `rss_list_feeds` | Lists every feed in the curated catalog grouped by industry category |
+
+Note: RSS feeds typically retain 20–100 articles. Full 12-month coverage depends on each feed's own retention.
+
+---
+
+## predictive-analytics
+
+**File:** `predictive_analytics_mcp_server.py`  
+**Requires:** `edgar_tool.py` in same directory. `FRED_API_KEY` optional (falls back to pre-computed benchmarks).
+
+10 predictive analytics models built on the Dendrai Risk Loop. All pull live data from EDGAR.
+
+| Tool | Description |
+|---|---|
+| `predictive_financial_ratios` | Revenue growth, gross/net margins, FCF margin, DSRI, TATA, SGI, GMI, asset growth |
+| `predictive_beneish_mscore` | Beneish M-Score earnings manipulation detection. Red >−1.78, Amber >−2.22, Green ≤−2.22 |
+| `predictive_industry_risks` | 8 industry-specific risks scored Red/Amber/Green with velocity (−1 to +3). Auto-detects industry from SIC. |
+| `predictive_scenario_analysis` | Bear / Base / Bull scenarios with revenue change %, gross margin impact (bps), and projected net income |
+| `predictive_grey_swan` | 4-stage T+0→T+90 day escalation cascade from highest-velocity Amber risk |
+| `predictive_macro_indicators` | Leading FRED macro indicators (live with API key, pre-computed benchmarks without) |
+| `predictive_forecast` | ARIMA / Prophet / RF / Ensemble forecast with 95% CI for any XBRL metric |
+| `predictive_backtest` | Walk-forward MAPE, RMSE, R², directional F1 across all 3 base models |
+| `predictive_rss_signals` | Grades live RSS signals by relevance × severity across 8 domain vocabularies |
+| `predictive_qoq_momentum` | 8-quarter rolling QoQ revenue momentum with IMPROVING / STABLE / DETERIORATING classification |
+| `predictive_full_analysis` | All 10 models in one call. Takes 30–90 seconds due to EDGAR rate limits. |
+| `predictive_list_industries` | Lists supported industry templates and the 8 risks scored within each |
+
+**Supported industries:** Semiconductors, Automotive OEM, Software & Cloud, Financial Services, Healthcare & Pharma, Energy & Utilities, Retail & Consumer, Generic
+
+---
+
+## token-cost
+
+**File:** `token_cost_mcp_server.py`  
+**Requires:** `ANTHROPIC_API_KEY` optional — falls back to character-based approximation (±20–30%).
+
+Estimates and tracks Claude API token costs.
+
+| Tool | Description |
+|---|---|
+| `cost_estimate` | Estimate input + output tokens and USD cost before making an API call |
+| `cost_count_tokens` | Count tokens in text (exact via API or approximate locally) |
+| `cost_track` | Record actual usage from an API response; accumulates per session |
+| `cost_session_summary` | Show accumulated cost and last 10 calls for a session |
+| `cost_reset_session` | Clear a session's accumulated data |
+| `cost_list_models` | All supported Claude models with per-MTok pricing and context windows |
+| `cost_list_sessions` | List all sessions tracked in `token_costs.json` |
+
+**Model aliases:** `opus` → claude-opus-4-8, `sonnet` → claude-sonnet-4-6, `haiku` → claude-haiku-4-5, `fable` → claude-fable-5
+
+---
+
+## oracle-fusion
+
+**File:** `oracle_fusion_mcp_server.py`  
+**Requires:** `ORACLE_FUSION_HOST`, `ORACLE_FUSION_USERNAME`, `ORACLE_FUSION_PASSWORD` (or OAuth client credentials).
+
+Pulls control data from Oracle Fusion Cloud (Risk Management Cloud + FSCM).
+
+| Tool | Description |
+|---|---|
+| `fusion_control_summary` | Aggregated control health dashboard — RAG status, 0–25 risk score, Dendrai-compatible risk signals. **Recommended first call.** |
+| `fusion_control_library` | All controls from RMCS: type, frequency, owner, effectiveness, last test date |
+| `fusion_control_results` | Operating effectiveness test results and evidence |
+| `fusion_control_issues` | Open deficiencies and remediation plans with severity and due dates |
+| `fusion_user_roles` | User-to-role assignments via SCIM 2.0 — filter by username or role |
+| `fusion_sod_violations` | Segregation-of-duties policy violations with conflicting role pairs |
+| `fusion_audit_events` | Transaction audit trail from FSCM modules (AP, AR, GL, FA, PRC, HCM) |
+
+**Module codes for `fusion_audit_events`:** `FIN_AP`, `FIN_AR`, `FIN_GL`, `FIN_FA`, `PRC`, `HCM`

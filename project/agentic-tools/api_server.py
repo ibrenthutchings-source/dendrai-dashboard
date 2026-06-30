@@ -57,7 +57,7 @@ import logging
 import os
 import sys
 import tempfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -134,7 +134,17 @@ logger = logging.getLogger(__name__)
 async def lifespan(application: FastAPI):
     db_ready = db.init_db()
     logger.info("Database persistence: %s", "ENABLED" if db_ready else "DISABLED (set DATABASE_URL to enable)")
-    yield
+    # FastMCP Streamable-HTTP requires each server's session_manager task group to be
+    # initialized during app lifespan. Starlette does not automatically propagate
+    # lifespan events to mounted sub-apps, so we initialize them here explicitly.
+    async with AsyncExitStack() as stack:
+        for inst in _mcp_instances:
+            try:
+                await stack.enter_async_context(inst.session_manager.run())
+                logger.info("MCP session manager initialized: %s", inst.name)
+            except Exception as exc:
+                logger.warning("MCP session manager init failed for %s: %s", getattr(inst, 'name', inst), exc)
+        yield
 
 
 app = FastAPI(
@@ -176,13 +186,19 @@ app.include_router(risk_register_endpoints.router)
 # Add URLs to claude.ai → Settings → Integrations as: https://<host>/mcp/<name>
 
 _MCP_MOUNTS: list[tuple[str, str]] = []
+_mcp_instances: list = []  # FastMCP instances captured at mount time for lifespan init
 
 def _mount_mcp(path: str, label: str, mcp_instance) -> None:
     if mcp_instance is None:
         return
     try:
+        # Disable FastMCP's built-in DNS-rebinding protection — host validation is
+        # handled upstream by nginx and Railway's ingress, so allowing all hosts here
+        # is safe and required for the Railway hostname to pass the 421 check.
+        mcp_instance.settings.transport_security.enable_dns_rebinding_protection = False
         app.mount(path, mcp_instance.streamable_http_app())
         _MCP_MOUNTS.append((path, label))
+        _mcp_instances.append(mcp_instance)
         logger.info("MCP HTTP mounted: %s", path)
     except Exception as exc:
         logger.warning("Failed to mount MCP server at %s: %s", path, exc)
