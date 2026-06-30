@@ -600,7 +600,6 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
   const [editingRows, setEditingRows] = useState(new Set());
   const [rowDrafts, setRowDrafts]     = useState({});
   // Per-cell expand state: "riskKey:fw"
-  const [expandedCells, setExpandedCells] = useState(new Set());
   const [savingCells, setSavingCells]     = useState(new Set());
   const [fwPicker, setFwPicker]       = useState(null); // { key, fw }
   const [ctrlSearch, setCtrlSearch]   = useState("");
@@ -701,20 +700,6 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
 
   // ── Cell expand helpers ──────────────────────────────────────────────────
 
-  function toggleCell(key, fw) {
-    const id = `${key}:${fw}`;
-    setExpandedCells(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-    // Close any open picker when collapsing or switching
-    if (fwPicker && !(fwPicker.key === key && fwPicker.fw === fw)) {
-      setFwPicker(null);
-      setCtrlSearch("");
-    }
-  }
-
   async function saveCellControls(key, fw) {
     const cellId  = `${key}:${fw}`;
     setSavingCells(prev => new Set([...prev, cellId]));
@@ -763,7 +748,11 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
             </tr>
           </thead>
           <tbody>
-            {(risks || []).map((r, idx) => {
+            {[...(risks || [])].sort((a, b) => {
+              const da = domainNames[a.id || a.risk_ref] || inferDomain(a);
+              const db_ = domainNames[b.id || b.risk_ref] || inferDomain(b);
+              return da.localeCompare(db_);
+            }).map((r, idx, arr) => {
               const key      = r.id || r.risk_ref;
               const state    = riskStates[key] || { wording: r.current_wording || r.name || "", included: true };
               const cs       = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [], generateCode: new Set() };
@@ -771,7 +760,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
               const isEditing = editingRows.has(key);
               const isSaving  = savingRows.has(key);
               const domain    = domainNames[key] || inferDomain(r);
-              const prevRisk  = idx > 0 ? risks[idx - 1] : null;
+              const prevRisk  = idx > 0 ? arr[idx - 1] : null;
               const prevDomain = prevRisk ? (domainNames[prevRisk.id || prevRisk.risk_ref] || inferDomain(prevRisk)) : null;
               const isGroupStart = domain !== prevDomain;
 
@@ -847,14 +836,13 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
                     </div>
                   </td>
 
-                  {/* Framework columns — independently expandable */}
+                  {/* Framework columns — same format as Enterprise Risks */}
                   {fwCols.map(fw => {
-                    const fwRefs     = allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
-                    const cellId     = `${key}:${fw}`;
-                    const isExpanded = expandedCells.has(cellId);
+                    const fwRefs       = allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
+                    const cellId       = `${key}:${fw}`;
                     const isSavingCell = savingCells.has(cellId);
-                    const pickerOpen = fwPicker?.key === key && fwPicker?.fw === fw;
-                    const addable    = MASTER_CONTROLS.filter(c =>
+                    const pickerOpen   = fwPicker?.key === key && fwPicker?.fw === fw;
+                    const addable      = MASTER_CONTROLS.filter(c =>
                       c.framework === fw &&
                       !allRefs.includes(c.ref) &&
                       (ctrlSearch === "" ||
@@ -863,136 +851,100 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
                     );
 
                     return (
-                      <td key={fw} style={{ ...tdStyle, padding: 0 }}>
-                        {/* Compact header — always visible, click to expand */}
-                        <button
-                          onClick={() => toggleCell(key, fw)}
-                          style={{
-                            width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                            padding: "10px 10px", border: "none", cursor: "pointer", textAlign: "left",
-                            background: isExpanded ? "var(--acc-bg,#eff6ff)" : "transparent",
-                            borderBottom: isExpanded ? "1px solid var(--line,#dce8fd)" : "none",
-                            transition: "background 0.1s",
-                          }}
-                        >
-                          <span style={{ fontSize: 10, flex: 1, minWidth: 0 }}>
-                            {fwRefs.length > 0 ? (
-                              <>
-                                <span style={{ fontWeight: 600, color: "var(--acc,#2563eb)" }}>
-                                  {fwRefs.slice(0, 2).join(", ")}
-                                </span>
-                                {fwRefs.length > 2 && (
-                                  <span style={{ color: "var(--ink-3,#888)" }}> +{fwRefs.length - 2} more</span>
-                                )}
-                              </>
-                            ) : (
-                              <span style={{ color: "var(--ink-3,#bbb)" }}>No controls</span>
-                            )}
-                          </span>
-                          <span style={{ fontSize: 9, color: "var(--acc,#2563eb)", flexShrink: 0, marginLeft: 6, fontWeight: 600 }}>
-                            {isExpanded ? "▲" : "▼"}
-                          </span>
-                        </button>
-
-                        {/* Expanded panel */}
-                        {isExpanded && (
-                          <div style={{ padding: "10px 10px 12px" }}>
-                            {/* Control list */}
-                            {fwRefs.length > 0 ? (
-                              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
-                                {fwRefs.map(ref => {
-                                  const ctrl = CTRL_BY_REF[ref];
-                                  return (
-                                    <div key={ref} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
-                                      <div style={{ flex: 1 }}>
-                                        <div style={{ fontWeight: 700, fontSize: 10, color: "var(--acc,#2563eb)", marginBottom: 2 }}>
-                                          {ref}: {ctrl?.name}
-                                        </div>
-                                        {ctrl?.desc && (
-                                          <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.45 }}>
-                                            {ctrl.desc}
-                                          </div>
-                                        )}
-                                      </div>
-                                      <button
-                                        title="Remove control"
-                                        onClick={() => onRemoveControl(key, ref, cs.autoMapped.includes(ref))}
-                                        style={{
-                                          flexShrink: 0, fontSize: 13, padding: "0 5px", border: "none",
-                                          background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer",
-                                          lineHeight: "18px", borderRadius: 3,
-                                        }}
-                                        onMouseEnter={e => { e.currentTarget.style.color = "var(--red,#e53)"; e.currentTarget.style.background = "rgba(229,85,51,0.08)"; }}
-                                        onMouseLeave={e => { e.currentTarget.style.color = "var(--ink-3,#aaa)"; e.currentTarget.style.background = "transparent"; }}
-                                      >×</button>
+                      <td key={fw} style={tdStyle}>
+                        {/* Control list */}
+                        {fwRefs.length > 0 ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 6 }}>
+                            {fwRefs.map(ref => {
+                              const ctrl = CTRL_BY_REF[ref];
+                              return (
+                                <div key={ref} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontWeight: 700, fontSize: 11, color: "var(--ink,#111)", marginBottom: 2 }}>
+                                      {ctrl?.name || ref}
                                     </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <div style={{ fontSize: 10, color: "var(--ink-3,#888)", fontStyle: "italic", marginBottom: 10 }}>
-                                No controls assigned for this framework.
-                              </div>
-                            )}
-
-                            {/* Add picker */}
-                            <button
-                              onClick={() => { setFwPicker(pickerOpen ? null : { key, fw }); setCtrlSearch(""); }}
-                              style={{
-                                fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer",
-                                border: "1px dashed var(--acc,#2563eb)", background: "transparent",
-                                color: "var(--acc,#2563eb)", marginBottom: 4,
-                              }}
-                            >+ Add control</button>
-
-                            {pickerOpen && (
-                              <div style={{
-                                marginBottom: 6, padding: 6, background: "var(--surface,#fff)",
-                                border: "1px solid var(--line,#ddd)", borderRadius: 6,
-                                boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
-                                maxHeight: 180, overflow: "hidden", display: "flex", flexDirection: "column", gap: 4,
-                                position: "relative", zIndex: 10,
-                              }}>
-                                <input
-                                  className="dendrai-input"
-                                  placeholder="Search controls…"
-                                  value={ctrlSearch}
-                                  onChange={e => setCtrlSearch(e.target.value)}
-                                  style={{ fontSize: 9, padding: "2px 6px" }}
-                                  autoFocus
-                                />
-                                <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 }}>
-                                  {addable.slice(0, 12).map(c => (
-                                    <button
-                                      key={c.ref}
-                                      onClick={() => { onAddManualControl(key, c.ref); setFwPicker(null); setCtrlSearch(""); }}
-                                      style={{
-                                        display: "flex", gap: 5, padding: "4px 4px", border: "none",
-                                        background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 9, borderRadius: 3,
-                                      }}
-                                      onMouseEnter={e => e.currentTarget.style.background = "var(--surface-2,#f5f5f5)"}
-                                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                                    >
-                                      <span className="mono" style={{ fontWeight: 600, color: "var(--acc,#2563eb)", minWidth: 40 }}>{c.ref}</span>
-                                      <span style={{ color: "var(--ink,#111)" }}>{c.name}</span>
-                                    </button>
-                                  ))}
-                                  {addable.length === 0 && (
-                                    <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>No more controls in this framework</span>
-                                  )}
+                                    {ctrl?.desc && (
+                                      <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.5, fontStyle: "italic" }}>
+                                        {ctrl.desc}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    title="Remove control"
+                                    onClick={() => onRemoveControl(key, ref, cs.autoMapped.includes(ref))}
+                                    style={{
+                                      flexShrink: 0, fontSize: 13, padding: "0 5px", border: "none",
+                                      background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer",
+                                      lineHeight: "18px", borderRadius: 3,
+                                    }}
+                                    onMouseEnter={e => { e.currentTarget.style.color = "var(--red,#e53)"; e.currentTarget.style.background = "rgba(229,85,51,0.08)"; }}
+                                    onMouseLeave={e => { e.currentTarget.style.color = "var(--ink-3,#aaa)"; e.currentTarget.style.background = "transparent"; }}
+                                  >×</button>
                                 </div>
-                              </div>
-                            )}
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 10, color: "var(--ink-3,#aaa)", fontStyle: "italic", marginBottom: 6 }}>
+                            No controls assigned
+                          </div>
+                        )}
 
-                            {/* Per-cell save */}
-                            <button
-                              className="btn btn-sm btn-acc"
-                              onClick={() => saveCellControls(key, fw)}
-                              disabled={isSavingCell}
-                              style={{ fontSize: 9, padding: "2px 10px", width: "100%", marginTop: 2 }}
-                            >
-                              {isSavingCell ? "Saving…" : "Save"}
-                            </button>
+                        {/* Actions */}
+                        <div style={{ marginTop: 6, display: "flex", gap: 4 }}>
+                          <button
+                            onClick={() => { setFwPicker(pickerOpen ? null : { key, fw }); setCtrlSearch(""); }}
+                            style={{
+                              fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer",
+                              border: "1px dashed var(--acc,#2563eb)", background: "transparent",
+                              color: "var(--acc,#2563eb)",
+                            }}
+                          >+ Add</button>
+                          <button
+                            className="btn btn-sm btn-acc"
+                            onClick={() => saveCellControls(key, fw)}
+                            disabled={isSavingCell}
+                            style={{ fontSize: 9, padding: "2px 9px" }}
+                          >{isSavingCell ? "Saving…" : "Save"}</button>
+                        </div>
+
+                        {/* Control picker */}
+                        {pickerOpen && (
+                          <div style={{
+                            marginTop: 6, padding: 6, background: "var(--surface,#fff)",
+                            border: "1px solid var(--line,#ddd)", borderRadius: 6,
+                            boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+                            maxHeight: 180, overflow: "hidden", display: "flex", flexDirection: "column", gap: 4,
+                            position: "relative", zIndex: 10,
+                          }}>
+                            <input
+                              className="dendrai-input"
+                              placeholder="Search controls…"
+                              value={ctrlSearch}
+                              onChange={e => setCtrlSearch(e.target.value)}
+                              style={{ fontSize: 9, padding: "2px 6px" }}
+                              autoFocus
+                            />
+                            <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 }}>
+                              {addable.slice(0, 12).map(c => (
+                                <button
+                                  key={c.ref}
+                                  onClick={() => { onAddManualControl(key, c.ref); setFwPicker(null); setCtrlSearch(""); }}
+                                  style={{
+                                    display: "flex", gap: 5, padding: "4px 4px", border: "none",
+                                    background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 9, borderRadius: 3,
+                                  }}
+                                  onMouseEnter={e => e.currentTarget.style.background = "var(--surface-2,#f5f5f5)"}
+                                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                                >
+                                  <span className="mono" style={{ fontWeight: 600, color: "var(--acc,#2563eb)", minWidth: 40 }}>{c.ref}</span>
+                                  <span style={{ color: "var(--ink,#111)" }}>{c.name}</span>
+                                </button>
+                              ))}
+                              {addable.length === 0 && (
+                                <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>No more controls in this framework</span>
+                              )}
+                            </div>
                           </div>
                         )}
                       </td>
@@ -1885,7 +1837,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
                 {/* View toggle */}
                 <div style={{ display:"flex", gap:6, marginBottom:12, paddingBottom:10, borderBottom:"1px solid var(--line,#eee)" }}>
-                  {[["detail","Detail"],["matrix","Framework Matrix"]].map(([v, label]) => {
+                  {[["matrix","Framework Matrix"],["detail","Detail"]].map(([v, label]) => {
                     const active = matrixView ? v === "matrix" : v === "detail";
                     return (
                       <button
