@@ -2195,7 +2195,12 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       </div>
 
       {/* Action bar — outside scroll area so it never overlaps list content */}
-      {activeTab === "internal" && !matrixView && detailFw === "Enterprise Risks" && renderActionBar(effectiveRisks, riskStates, "internal")}
+      {activeTab === "internal" && !matrixView && (() => {
+        const detailRisks  = detailFw === "Enterprise Risks" ? effectiveRisks : discoveredRisks.filter(r => r.source_framework === detailFw);
+        const detailStates = detailFw === "Enterprise Risks" ? riskStates : discRiskStates;
+        const detailTab    = detailFw === "Enterprise Risks" ? "internal" : "external";
+        return renderActionBar(detailRisks, detailStates, detailTab);
+      })()}
       {activeTab === "discovery" && renderActionBar(discoveredRisks, discRiskStates, "external")}
       {activeTab === "upload"    && renderActionBar(uploadedRisks, uploadRiskStates, "upload")}
 
