@@ -4,6 +4,7 @@
    unified risk-to-control mapping, all in one screen.
    ============================================================ */
 import { RiskGraphViz } from "./risk-graph-viz.jsx";
+import { RiskSankey }   from "./risk-sankey.jsx";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Static data: control library + framework catalogs
@@ -1063,6 +1064,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // ── Matrix / Detail / Graph view ─────────────────────────────────────────
   const [matrixView, setMatrixView]   = useState(true);
   const [graphView,  setGraphView]    = useState(false);
+  const [sankeyView, setSankeyView]   = useState(false);
   const [detailFw, setDetailFw]       = useState("Enterprise Risks");
   const [savingRows, setSavingRows]   = useState(new Set());
   const [refreshing, setRefreshing]   = useState(false);
@@ -1942,18 +1944,21 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
               </Empty>
             ) : (
               <>
-                {renderSummaryBanner(effectiveRisks, riskStates, matrixView || graphView)}
+                {renderSummaryBanner(effectiveRisks, riskStates, matrixView || graphView || sankeyView)}
 
                 {/* View toggle */}
                 <div style={{ display:"flex", gap:6, marginBottom:12, paddingBottom:10, borderBottom:"1px solid var(--line,#eee)" }}>
-                  {[["matrix","Framework Matrix"],["detail","Detail"],["graph","Risk Graph"]].map(([v, label]) => {
-                    const active = v === "graph" ? graphView : !graphView && (v === "matrix" ? matrixView : !matrixView);
+                  {[["matrix","Framework Matrix"],["detail","Detail"],["graph","Risk Graph"],["sankey","Control Sankey"]].map(([v, label]) => {
+                    const active = v === "graph"   ? graphView
+                                 : v === "sankey"  ? sankeyView
+                                 : !graphView && !sankeyView && (v === "matrix" ? matrixView : !matrixView);
                     return (
                       <button
                         key={v}
                         onClick={() => {
-                          if (v === "graph") { setGraphView(true); }
-                          else { setGraphView(false); setMatrixView(v === "matrix"); }
+                          if (v === "graph")  { setGraphView(true);  setSankeyView(false); }
+                          else if (v === "sankey") { setSankeyView(true); setGraphView(false); }
+                          else { setGraphView(false); setSankeyView(false); setMatrixView(v === "matrix"); }
                         }}
                         style={{
                           fontSize:10, padding:"3px 10px", borderRadius:4, cursor:"pointer",
@@ -1966,7 +1971,9 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                   })}
                 </div>
 
-                {graphView ? (
+                {sankeyView ? (
+                  <RiskSankey />
+                ) : graphView ? (
                   <RiskGraphViz risks={allMatrixRisks} />
                 ) : matrixView ? (
                   <RiskFrameworkMatrix
@@ -2202,7 +2209,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       </div>
 
       {/* Action bar — outside scroll area so it never overlaps list content */}
-      {activeTab === "internal" && !matrixView && !graphView && (() => {
+      {activeTab === "internal" && !matrixView && !graphView && !sankeyView && (() => {
         const detailRisks  = detailFw === "Enterprise Risks" ? effectiveRisks : discoveredRisks.filter(r => r.source_framework === detailFw);
         const detailStates = detailFw === "Enterprise Risks" ? riskStates : discRiskStates;
         const detailTab    = detailFw === "Enterprise Risks" ? "internal" : "external";
