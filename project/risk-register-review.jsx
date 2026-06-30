@@ -1059,8 +1059,9 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [uploadErr, setUploadErr]              = useState(null);
   const [uploadFilename, setUploadFilename]    = useState(null);
 
-  // ── Matrix view ───────────────────────────────────────────────────────────
+  // ── Matrix / Detail view ─────────────────────────────────────────────────
   const [matrixView, setMatrixView]   = useState(true);
+  const [detailFw, setDetailFw]       = useState("Enterprise Risks");
   const [savingRows, setSavingRows]   = useState(new Set());
   const [refreshing, setRefreshing]   = useState(false);
   const [assessingAll, setAssessingAll] = useState(false);
@@ -1974,7 +1975,46 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                     savedAt={savedAt}
                   />
                 ) : (
-                  renderRiskList(effectiveRisks, riskStates, ctrlStates, collapsedGroups, setCollapsed, expandedCtrl, setExpandedCtrl, intHandlers, intCtrl, "internal")
+                  (() => {
+                    const fwOptions = ["Enterprise Risks",
+                      ...Array.from(new Set(discoveredRisks.map(r => r.source_framework).filter(Boolean))).sort()
+                    ];
+                    const detailRisks = detailFw === "Enterprise Risks"
+                      ? effectiveRisks
+                      : discoveredRisks.filter(r => r.source_framework === detailFw);
+                    const detailStates   = detailFw === "Enterprise Risks" ? riskStates    : discRiskStates;
+                    const detailCtrl     = detailFw === "Enterprise Risks" ? ctrlStates    : discCtrlStates;
+                    const detailCollapsed= detailFw === "Enterprise Risks" ? collapsedGroups : discCollapsed;
+                    const setDetailCollapsed = detailFw === "Enterprise Risks" ? setCollapsed : setDiscCollapsed;
+                    const detailExpanded = detailFw === "Enterprise Risks" ? expandedCtrl  : discExpandedCtrl;
+                    const setDetailExpanded  = detailFw === "Enterprise Risks" ? setExpandedCtrl : setDiscExpandedCtrl;
+                    const detailHandlers = detailFw === "Enterprise Risks" ? intHandlers   : discHandlers;
+                    const detailCtrlH    = detailFw === "Enterprise Risks" ? intCtrl       : discCtrl;
+                    const detailTab      = detailFw === "Enterprise Risks" ? "internal"    : "external";
+                    return (
+                      <>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                          <label style={{ fontSize:10, fontWeight:600, color:"var(--ink-2,#555)", whiteSpace:"nowrap" }}>
+                            Framework
+                          </label>
+                          <select
+                            value={detailFw}
+                            onChange={e => setDetailFw(e.target.value)}
+                            style={{
+                              fontSize:11, padding:"4px 8px", borderRadius:4,
+                              border:"1px solid var(--line,#ddd)", background:"var(--surface,#fff)",
+                              color:"var(--ink,#111)", cursor:"pointer", flex:1,
+                            }}
+                          >
+                            {fwOptions.map(fw => (
+                              <option key={fw} value={fw}>{fw}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {renderRiskList(detailRisks, detailStates, detailCtrl, detailCollapsed, setDetailCollapsed, detailExpanded, setDetailExpanded, detailHandlers, detailCtrlH, detailTab)}
+                      </>
+                    );
+                  })()
                 )}
               </>
             )}
@@ -2155,7 +2195,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       </div>
 
       {/* Action bar — outside scroll area so it never overlaps list content */}
-      {activeTab === "internal" && !matrixView && renderActionBar(effectiveRisks, riskStates, "internal")}
+      {activeTab === "internal" && !matrixView && detailFw === "Enterprise Risks" && renderActionBar(effectiveRisks, riskStates, "internal")}
       {activeTab === "discovery" && renderActionBar(discoveredRisks, discRiskStates, "external")}
       {activeTab === "upload"    && renderActionBar(uploadedRisks, uploadRiskStates, "upload")}
 
