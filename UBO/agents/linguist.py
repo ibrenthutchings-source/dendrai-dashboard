@@ -28,26 +28,26 @@ from .base import BaseAgent
 
 # Words that appear in legitimate change narratives but are high-risk in context
 _OBFUSCATION_PATTERNS = re.compile(
-    r"\b(misc(ellaneous)?|various|other|general|routine|regular|per request"
-    r"|as discussed|see email|n/?a|tbd|todo|test|temp(orary)?|quick.?fix"
+    r"\b(?:misc(?:ellaneous)?|various|other|general|routine|regular|per request"
+    r"|as discussed|see email|n/?a|tbd|todo|test|temp(?:orary)?|quick.?fix"
     r"|urgent|emergency|bypass|exception|override|manual|special)\b",
     re.IGNORECASE,
 )
 
 # Generic boilerplate that indicates copy-paste or automation without human review
 _BOILERPLATE_PATTERNS = re.compile(
-    r"\b(auto.?generated|system.?generated|automated|script|bot|pipeline)\b",
+    r"\b(?:auto.?generated|system.?generated|automated|script|bot|pipeline)\b",
     re.IGNORECASE,
 )
 
 _URGENCY_ESCALATORS = re.compile(
-    r"\b(immediately|asap|critical|must.?have|no.?time|deadline|ceo|cfo|board|audit)\b",
+    r"\b(?:immediately|asap|critical|must.?have|no.?time|deadline|ceo|cfo|board|audit)\b",
     re.IGNORECASE,
 )
 
 # GitHub commit message signals
 _COMMIT_SUPPRESSION = re.compile(
-    r"\b(skip.?ci|no.?verify|force|wip|fixup|squash|revert|hotfix|emergency)\b",
+    r"\b(?:skip.?ci|no.?verify|force|wip|fixup|squash|revert|hotfix|emergency)\b",
     re.IGNORECASE,
 )
 
