@@ -59,9 +59,13 @@ import json
 import os
 import sys
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+load_dotenv()
+
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import audit_log, check_rate_limit, validate_enum
 from oracle_fusion_tool import (
     OracleFusionClient,
     get_audit_events,
@@ -102,6 +106,8 @@ def fusion_control_summary() -> str:
     if not is_configured():
         return _NOT_CONFIGURED
     try:
+        check_rate_limit("fusion_control_summary")
+        audit_log("fusion_control_summary")
         return json.dumps(get_control_summary(), indent=2)
     except Exception as exc:
         return f"Error fetching control summary: {exc}"
@@ -127,6 +133,10 @@ def fusion_control_library(
     if not is_configured():
         return _NOT_CONFIGURED
     try:
+        check_rate_limit("fusion_control_library")
+        control_type = validate_enum(control_type, {"Preventive", "Detective", "Corrective"}, "control_type", default="")
+        status = validate_enum(status, {"Active", "Inactive", "All"}, "status", default="Active")
+        audit_log("fusion_control_library", control_type=control_type, status=status)
         return json.dumps(
             get_control_library(control_type=control_type, category=category, status=status),
             indent=2,
@@ -157,6 +167,9 @@ def fusion_control_results(
     if not is_configured():
         return _NOT_CONFIGURED
     try:
+        check_rate_limit("fusion_control_results")
+        effectiveness = validate_enum(effectiveness, {"Effective", "Partially Effective", "Ineffective"}, "effectiveness", default="")
+        audit_log("fusion_control_results", date_from=date_from, date_to=date_to, effectiveness=effectiveness)
         return json.dumps(
             get_control_results(date_from=date_from, date_to=date_to, effectiveness=effectiveness),
             indent=2,
@@ -185,6 +198,10 @@ def fusion_control_issues(
     if not is_configured():
         return _NOT_CONFIGURED
     try:
+        check_rate_limit("fusion_control_issues")
+        status = validate_enum(status, {"Open", "Closed", "All"}, "status", default="Open")
+        severity = validate_enum(severity, {"Critical", "High", "Medium", "Low"}, "severity", default="")
+        audit_log("fusion_control_issues", status=status, severity=severity)
         return json.dumps(
             get_control_issues(status=status, severity=severity, date_from=date_from),
             indent=2,
@@ -217,6 +234,8 @@ def fusion_user_roles(
     if not is_configured():
         return _NOT_CONFIGURED
     try:
+        check_rate_limit("fusion_user_roles")
+        audit_log("fusion_user_roles", username=username or "(all)", role_name=role_name or "(all)")
         return json.dumps(
             get_user_roles(username=username, role_name=role_name),
             indent=2,
@@ -243,6 +262,10 @@ def fusion_sod_violations(
     if not is_configured():
         return _NOT_CONFIGURED
     try:
+        check_rate_limit("fusion_sod_violations")
+        status = validate_enum(status, {"Open", "Resolved", "All"}, "status", default="Open")
+        risk_level = validate_enum(risk_level, {"High", "Medium", "Low"}, "risk_level", default="")
+        audit_log("fusion_sod_violations", status=status, risk_level=risk_level)
         return json.dumps(
             get_sod_violations(status=status, risk_level=risk_level),
             indent=2,
@@ -280,6 +303,13 @@ def fusion_audit_events(
     if not is_configured():
         return _NOT_CONFIGURED
     try:
+        check_rate_limit("fusion_audit_events")
+        module = validate_enum(module, {"FIN_AP", "FIN_AR", "FIN_GL", "FIN_FA", "PRC", "HCM"}, "module", default="")
+        event_type = validate_enum(event_type, {"Create", "Update", "Delete"}, "event_type", default="")
+        import re as _re
+        if username and not _re.match(r'^[\w@.\-]{1,128}$', username):
+            return "Error: username contains invalid characters"
+        audit_log("fusion_audit_events", module=module, event_type=event_type, username=username or "(all)")
         return json.dumps(
             get_audit_events(
                 module=module,

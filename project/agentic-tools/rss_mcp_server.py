@@ -40,9 +40,13 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+load_dotenv()
+
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import audit_log, check_rate_limit, check_read_only, confine_path, validate_ticker
 from rss_tool import RSS_CATALOG, get_industry_feeds, get_sic_category, run_rss_analysis
 
 mcp = FastMCP("rss-news")
@@ -75,7 +79,12 @@ def rss_industry_news(
         output_file: Path for the output JSON file (default "rss_industry.json")
     """
     try:
-        result = run_rss_analysis(ticker=ticker, output_path=Path(output_file))
+        check_rate_limit("rss_industry_news", max_per_minute=10)
+        check_read_only("RSS article download and file save")
+        ticker = validate_ticker(ticker)
+        safe_out = confine_path(output_file)
+        audit_log("rss_industry_news", ticker=ticker, output_file=safe_out.name)
+        result = run_rss_analysis(ticker=ticker, output_path=safe_out)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -131,7 +140,12 @@ def rss_load_results(file_path: str = "rss_industry.json") -> str:
     Args:
         file_path: Path to the saved JSON file (default "rss_industry.json")
     """
-    p = Path(file_path)
+    try:
+        check_rate_limit("rss_load_results")
+        p = confine_path(file_path)
+        audit_log("rss_load_results", file=p.name)
+    except ValueError as e:
+        return f"Error: {e}"
     if not p.exists():
         return (
             f"File not found: {file_path}\n\n"
@@ -198,6 +212,11 @@ def rss_list_feeds() -> str:
     Use this to explore which industries are covered and which specific sources
     are used before running rss_industry_news on a ticker.
     """
+    try:
+        check_rate_limit("rss_list_feeds")
+        audit_log("rss_list_feeds")
+    except ValueError as e:
+        return f"Error: {e}"
     total = sum(len(v) for v in RSS_CATALOG.values())
     lines = [
         f"RSS Feed Catalog  ({total} feeds across {len(RSS_CATALOG)} industry categories)",
