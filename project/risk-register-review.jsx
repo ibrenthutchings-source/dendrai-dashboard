@@ -887,19 +887,18 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 
                   {/* Framework columns — same format as Enterprise Risks */}
                   {fwCols.map(fw => {
-                    // Own-framework column shows ALL assigned controls (cross-framework assignments included)
-                    const fwRefs       = r.source_framework === fw
-                      ? allRefs.filter(ref => CTRL_BY_REF[ref])
-                      : allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
+                    // Show ALL assigned controls in every column so cross-framework assignments
+                    // are always visible. A framework tag badge on each pill indicates origin.
+                    const fwRefs       = allRefs.filter(ref => CTRL_BY_REF[ref]);
                     const cellId       = `${key}:${fw}`;
                     const isSavingCell = savingCells.has(cellId);
                     const pickerOpen   = fwPicker?.key === key && fwPicker?.fw === fw;
                     const addable      = MASTER_CONTROLS.filter(c =>
-                      c.framework === fw &&
                       !allRefs.includes(c.ref) &&
                       (ctrlSearch === "" ||
                         c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
-                        c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()))
+                        c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
+                        (c.framework || "").toLowerCase().includes(ctrlSearch.toLowerCase()))
                     );
 
                     return (
@@ -914,11 +913,19 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 6 }}>
                             {fwRefs.map(ref => {
                               const ctrl = CTRL_BY_REF[ref];
+                              const isNativeFw = ctrl?.framework === fw;
                               return (
                                 <div key={ref} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                                   <div style={{ flex: 1 }}>
-                                    <div style={{ fontWeight: 700, fontSize: 11, color: "var(--ink,#111)", marginBottom: 2 }}>
-                                      {ctrl?.name || ref}
+                                    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginBottom: 2 }}>
+                                      <span style={{ fontWeight: 700, fontSize: 11, color: "var(--ink,#111)" }}>
+                                        {ctrl?.name || ref}
+                                      </span>
+                                      {!isNativeFw && ctrl?.framework && (
+                                        <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--surface-2,#f0f0f0)", color: "var(--ink-3,#888)", border: "1px solid var(--line,#e0e0e0)", whiteSpace: "nowrap" }}>
+                                          {ctrl.framework}
+                                        </span>
+                                      )}
                                     </div>
                                     {ctrl?.desc && (
                                       <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.5, fontStyle: "italic" }}>
@@ -989,11 +996,14 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                                 >
                                   <span className="mono" style={{ fontWeight: 600, color: "var(--acc,#2563eb)", minWidth: 40 }}>{c.ref}</span>
-                                  <span style={{ color: "var(--ink,#111)" }}>{c.name}</span>
+                                  <span style={{ color: "var(--ink,#111)", flex: 1 }}>{c.name}</span>
+                                  {c.framework && c.framework !== fw && (
+                                    <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--surface-2,#f0f0f0)", color: "var(--ink-3,#888)", border: "1px solid var(--line,#e0e0e0)", whiteSpace: "nowrap", flexShrink: 0 }}>{c.framework}</span>
+                                  )}
                                 </button>
                               ))}
                               {addable.length === 0 && (
-                                <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>No more controls in this framework</span>
+                                <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>All controls already assigned</span>
                               )}
                             </div>
                           </div>

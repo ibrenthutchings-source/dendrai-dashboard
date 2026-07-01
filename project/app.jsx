@@ -32,7 +32,7 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
   "runSpeed": 1.0,
   "autoExpand": true,
   "persona": "Internal Audit",
-  "dark": false
+  "colorScheme": "system"
 } /*EDITMODE-END*/;
 
 const APPETITE_THRESHOLDS = { GREEN: 12.0, AMBER: 18.0, RED: 23.0 };
@@ -45,8 +45,17 @@ function App() {
   useEffect(() => {
     document.body.dataset.accent = tweaks.accent;
     document.body.dataset.density = tweaks.density;
-    document.body.dataset.theme = tweaks.dark ? "dark" : "";
-  }, [tweaks.accent, tweaks.density, tweaks.dark]);
+    const scheme = tweaks.colorScheme || (tweaks.dark ? "dark" : "light");
+    if (scheme === "system") {
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      const apply = () => { document.body.dataset.theme = mq.matches ? "dark" : ""; };
+      apply();
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } else {
+      document.body.dataset.theme = scheme === "dark" ? "dark" : "";
+    }
+  }, [tweaks.accent, tweaks.density, tweaks.colorScheme, tweaks.dark]);
 
   // ---- Sidebar config ----
   const [cfg, setCfg] = useState({
@@ -1397,7 +1406,9 @@ function App() {
                 rssEnabledFeeds={rssEnabledFeeds}
                 setRssEnabledFeeds={setRssEnabledFeeds}
                 aiChatCfg={aiChatCfg}
-                setAiChatCfg={setAiChatCfg} />
+                setAiChatCfg={setAiChatCfg}
+                colorScheme={tweaks.colorScheme || "system"}
+                setColorScheme={(v) => setTweak("colorScheme", v)} />
             </div>
           )}
 
@@ -1515,13 +1526,14 @@ function App() {
 
           {/* ---- Controls Monitor ---- */}
           {activeScreen === "controls" && (
-          <div className="panel active">
+          <div className="panel active" style={{display:"flex",flexDirection:"column",gap:0}}>
             <CEMPanel
               events={events} setEvents={setEvents}
               filter={cemFilter} setFilter={setCemFilter}
               expanded={cemExpanded} setExpanded={setCemExpanded}
               onAckNotif={ackNotif}
               onInject={() => fireSyntheticEvent(1)} />
+            <UBOGovPanel />
           </div>
           )}
 

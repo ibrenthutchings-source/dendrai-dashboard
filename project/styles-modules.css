@@ -747,6 +747,96 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 }
 .notif-row .ack-btn:hover { background: var(--ink); color: var(--surface); border-color: var(--ink); }
 
+/* ---------------- UBO GOVERNANCE BRAIN ---------------- */
+.ubo-tier-badge {
+  font-family: "Geist Mono", monospace;
+  font-size: 9.5px; font-weight: 700;
+  padding: 2px 7px; border-radius: 5px;
+  flex-shrink: 0; letter-spacing: .06em;
+}
+.ubo-verdict-badge {
+  font-family: "Geist Mono", monospace;
+  font-size: 9.5px; font-weight: 600;
+  padding: 2px 7px; border-radius: 5px;
+  flex-shrink: 0; letter-spacing: .04em;
+}
+.ubo-review-flag {
+  font-family: "Geist Mono", monospace;
+  font-size: 9px; font-weight: 700; letter-spacing: .08em;
+  padding: 2px 7px; border-radius: 5px;
+  background: var(--red-soft); color: var(--red-ink);
+  flex-shrink: 0;
+}
+.ubo-ts { font-size: 10.5px; color: var(--ink-3); flex-shrink: 0; }
+.ubo-tool-name { font-size: 12.5px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ubo-review-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px;
+  background: color-mix(in oklch, var(--red) 6%, var(--surface));
+  border: 1px solid color-mix(in oklch, var(--red) 18%, var(--line));
+  border-radius: 8px; margin-bottom: 6px;
+}
+
+.ubo-adj-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  position: relative;
+}
+.ubo-adj-row::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--line-strong);
+}
+.ubo-adj-row.needs-review {
+  border-color: color-mix(in oklch, var(--red) 25%, var(--line));
+}
+.ubo-adj-row.needs-review::before { background: var(--red); }
+
+.ubo-adj-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+.ubo-adj-body {
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.ubo-violations {
+  display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px;
+}
+.ubo-violation-item {
+  font-size: 11px; color: var(--ink-2); line-height: 1.5;
+  padding: 5px 9px;
+  background: var(--amber-soft);
+  border-left: 2px solid var(--amber-ink);
+  border-radius: 0 5px 5px 0;
+}
+
+.ubo-lat-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 11px;
+}
+.ubo-lat-table th {
+  font-family: "Geist Mono", monospace;
+  font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ink-3); text-align: left;
+  padding: 5px 10px; border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.ubo-lat-table td {
+  padding: 6px 10px; border-bottom: 1px solid var(--line-2);
+  color: var(--ink-2);
+}
+.ubo-lat-table tr:last-child td { border-bottom: none; }
+.ubo-lat-table .mono { font-family: "Geist Mono", monospace; }
+.ubo-lat-breach { color: var(--red-ink); font-weight: 600; }
+.ubo-lat-err    { color: var(--red-ink); font-weight: 600; }
+.ubo-lat-warn   { color: var(--amber-ink); }
+
 /* ---------------- FORECASTS ---------------- */
 .fcst-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
 .fcst-card {
