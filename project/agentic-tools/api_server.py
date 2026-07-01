@@ -134,6 +134,12 @@ logger = logging.getLogger(__name__)
 async def lifespan(application: FastAPI):
     db_ready = db.init_db()
     logger.info("Database persistence: %s", "ENABLED" if db_ready else "DISABLED (set DATABASE_URL to enable)")
+    if db_ready:
+        # Seed static reference data into DB on first startup (idempotent)
+        risk_register_endpoints.seed_static_data()
+        _seed_cem_templates()
+        _seed_ticker_cik()
+        logger.info("Static reference data seeded")
     # FastMCP Streamable-HTTP requires each server's session_manager task group to be
     # initialized during app lifespan. Starlette does not automatically propagate
     # lifespan events to mounted sub-apps, so we initialize them here explicitly.
@@ -145,6 +151,52 @@ async def lifespan(application: FastAPI):
             except Exception as exc:
                 logger.warning("MCP session manager init failed for %s: %s", getattr(inst, 'name', inst), exc)
         yield
+
+
+_CEM_TEMPLATES_DEFAULT = [
+    {"control": "Revenue Recognition — Contract Review Gate",   "area": "Revenue",             "risk": "Revenue overstatement",        "severity": "P1", "exposure": "$12–18M",              "category": "Financial Reporting",
+     "rc": "Most likely root cause: distributor attestation workflow regression after Q4 platform release. Containment: block billing on un-attested distributor contracts pending manual review. Systemic fix: re-platform RC-402 on contract lifecycle tool with mandatory gate."},
+    {"control": "Export License Validation — ECCN Check",       "area": "Trade Compliance",    "risk": "Export violation",             "severity": "P1", "exposure": "Regulatory",           "category": "Trade Compliance",
+     "rc": "Likely root cause: self-classified ECCN on new SKU shipped to Greater China without engineering review. Containment: hold shipments to affected end-users; flag for trade-counsel screen. Systemic fix: mandate engineering ECCN sign-off in product launch workflow."},
+    {"control": "Segregation of Duties — AP Approval",          "area": "Accounts Payable",    "risk": "Fraudulent disbursement",      "severity": "P2", "exposure": "$2–5M",                "category": "Fraud Risk",
+     "rc": "Likely root cause: temporary delegation during Q4 close granted both initiate and approve. Containment: revoke delegation; reverse last 30 days of dual-approved entries for review. Systemic fix: SoD matrix enforcement at workflow layer, not via policy alone."},
+    {"control": "Inventory Count Reconciliation",               "area": "Supply Chain",        "risk": "Inventory misstatement",       "severity": "P2", "exposure": "$4–8M",                "category": "Operations",
+     "rc": "Likely root cause: cycle count cadence skipped during line conversion. Containment: full count of WIP; reconcile against ERP. Systemic fix: automated reminders + escalation for skipped counts."},
+    {"control": "Access Provisioning — Privileged Accounts",    "area": "IT General Controls", "risk": "Unauthorized access",          "severity": "P2", "exposure": "Data breach",          "category": "Cybersecurity",
+     "rc": "Likely root cause: org-chart change orphaned 147 user re-certifications. Containment: emergency re-cert via skip-level approvers. Systemic fix: auto-detect org deltas and re-route pending certifications."},
+    {"control": "Management Override Exception Log",            "area": "Financial Reporting", "risk": "Management override",          "severity": "P1", "exposure": "Material misstatement","category": "Financial Reporting",
+     "rc": "Likely root cause: Q4 accrual posted with verbal CFO approval, no documented business case. Containment: require contemporaneous business case for >$1M overrides. Systemic fix: workflow-enforced documentation + AC visibility."},
+    {"control": "Third-Party Vendor SOC 2 Review",              "area": "Vendor Management",   "risk": "Supply chain exposure",        "severity": "P3", "exposure": "Reputational",         "category": "Third-Party Risk",
+     "rc": "Likely root cause: SOC 2 Type II reports not refreshed for tier-1 vendors. Containment: request current attestations. Systemic fix: vendor-portal auto-renewal cadence."},
+    {"control": "Journal Entry Authorization — Month-End",      "area": "Accounting",          "risk": "Unauthorized JE manipulation", "severity": "P2", "exposure": "$1–3M",               "category": "Financial Reporting",
+     "rc": "Likely root cause: JE approver pool included terminated employee for 8 days. Containment: void affected JEs; re-route. Systemic fix: HRIS-to-ERP role-revocation real-time sync."},
+]
+
+_TICKER_CIK_DEFAULT = {
+    "ON":   "0001097864", "TXN":  "0000097476", "STM":  "0001114448", "MCHP": "0000827054",
+    "NXPI": "0001413447", "ADI":  "0000006951", "SWKS": "0000004127", "QRVO": "0001604778",
+    "MPWR": "0001280452", "WOLF": "0000895419", "AVGO": "0001730168", "NVDA": "0001045810",
+    "INTC": "0000050863", "AMD":  "0000002488", "QCOM": "0000804328", "MRVL": "0001058057",
+    "AMAT": "0000003153", "KLAC": "0000319201", "LRCX": "0000707549", "ASML": "0000937966",
+    "AMKR": "0001047127", "ONTO": "0000074260", "TER":  "0000097216", "ENTG": "0001101302",
+    "MU":   "0000723125", "WDC":  "0000106040", "F":    "0000037996",
+}
+
+
+def _seed_cem_templates() -> None:
+    if not db.is_available():
+        return
+    seeded = db.seed_cem_event_templates(_CEM_TEMPLATES_DEFAULT)
+    if seeded:
+        logger.info("Seeded %d CEM event templates", seeded)
+
+
+def _seed_ticker_cik() -> None:
+    if not db.is_available():
+        return
+    seeded = db.seed_ticker_cik_map(_TICKER_CIK_DEFAULT)
+    if seeded:
+        logger.info("Seeded %d ticker→CIK mappings into companies table", seeded)
 
 
 app = FastAPI(
@@ -404,6 +456,42 @@ def db_status():
         "database_enabled": db.is_available(),
         "note": "" if db.is_available() else "Set DATABASE_URL env var to enable persistence.",
     }
+
+
+# ── CEM event templates ───────────────────────────────────────────────────────
+
+@app.get("/cem-templates")
+def get_cem_templates():
+    """Return CEM event templates from DB (falls back to defaults if DB unavailable)."""
+    if db.is_available():
+        templates = db.get_cem_event_templates()
+        if templates:
+            return {"templates": templates, "source": "db"}
+    return {"templates": _CEM_TEMPLATES_DEFAULT, "source": "default"}
+
+
+@app.post("/cem-templates")
+def upsert_cem_template(template: dict):
+    """Add or update a CEM event template."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not connected — set DATABASE_URL")
+    row_id = db.upsert_cem_event_template(template)
+    return {"saved": row_id is not None, "id": row_id}
+
+
+# ── Company / ticker lookup ───────────────────────────────────────────────────
+
+@app.get("/company/cik/{ticker}")
+def get_company_cik(ticker: str):
+    """Return the CIK for a ticker from the companies table (zero-padded to 10 digits)."""
+    cik = db.get_cik_for_ticker(ticker) if db.is_available() else None
+    if cik:
+        return {"ticker": ticker.upper(), "cik": cik, "source": "db"}
+    # Fallback to in-process seed map
+    cik_raw = _TICKER_CIK_DEFAULT.get(ticker.upper())
+    if cik_raw:
+        return {"ticker": ticker.upper(), "cik": cik_raw, "source": "seed"}
+    raise HTTPException(status_code=404, detail=f"CIK not found for ticker '{ticker}'")
 
 
 # ── Config / reference-data endpoints ────────────────────────────────────────
