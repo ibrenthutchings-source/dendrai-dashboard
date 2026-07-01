@@ -138,6 +138,8 @@ except Exception as _gov_exc:
     mcp_governance = None  # type: ignore[assignment]
     _HAS_MCP_GOVERNANCE = False
 
+import github_endpoints
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -267,6 +269,10 @@ app.include_router(risk_register_endpoints.router)
 if _HAS_MCP_GOVERNANCE:
     app.include_router(mcp_governance.router)
     logger.info("MCP governance router registered at /observability")
+
+# GitHub Webhook: receive repo events and run them through the UBO pipeline.
+app.include_router(github_endpoints.router)
+logger.info("GitHub webhook router registered at /github/webhook")
 
 # ── MCP Streamable-HTTP mounts ─────────────────────────────────────────────────
 # Each FastMCP instance is mounted as an ASGI sub-app so claude.ai can connect

@@ -316,3 +316,26 @@ $$;
 
 COMMENT ON FUNCTION observability.purge_telemetry IS
     'Delete telemetry rows older than retain_days (default 90). Returns deleted row count.';
+
+-- =============================================================================
+-- v2 additions — GitHub webhook support
+--
+-- adjudicated_tool_calls was originally designed for MCP telemetry events only.
+-- GitHub webhook events don't have a corresponding mcp_telemetry row, so:
+--   1. telemetry_id is made nullable (NULL for GitHub events)
+--   2. source_system column distinguishes GITHUB from MCP_PROXY events
+-- =============================================================================
+
+ALTER TABLE observability.adjudicated_tool_calls
+    ALTER COLUMN telemetry_id DROP NOT NULL;
+
+ALTER TABLE observability.adjudicated_tool_calls
+    ADD COLUMN IF NOT EXISTS source_system VARCHAR(32) NOT NULL DEFAULT 'MCP_PROXY';
+
+CREATE INDEX IF NOT EXISTS idx_adj_source
+    ON observability.adjudicated_tool_calls (source_system, adjudicated_at DESC);
+
+COMMENT ON COLUMN observability.adjudicated_tool_calls.telemetry_id IS
+    'FK to mcp_telemetry for MCP_PROXY events; NULL for GITHUB and other source systems.';
+COMMENT ON COLUMN observability.adjudicated_tool_calls.source_system IS
+    'Source system that produced the adjudicated event: MCP_PROXY or GITHUB.';
