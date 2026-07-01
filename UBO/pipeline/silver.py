@@ -47,6 +47,7 @@ class SilverConformationLayer(SilverLayerBase):
             SourceSystem.SAP:        self._conform_sap,
             SourceSystem.GITHUB:     self._conform_github,
             SourceSystem.SAILPOINT:  self._conform_sailpoint,
+            SourceSystem.MCP_PROXY:  self._conform_mcp_proxy,
         }
         conformer = conformers.get(uro.source_system, self._conform_generic)
         conformed = conformer(raw, uro)
@@ -166,6 +167,55 @@ class SilverConformationLayer(SilverLayerBase):
                         "exceeds 25-role SoD limit (CRITICAL)"
                     )
 
+        # ── MCP Proxy rules ───────────────────────────────────────────────────
+        elif rule.rule_id == "POL-MCP-001":
+            if uro.source_system == SourceSystem.MCP_PROXY:
+                flags = raw.get("risk_flags") or []
+                if "bypass_keyword" in flags:
+                    tool = raw.get("target_tool", "unknown")
+                    return (
+                        f"MCP tool call to '{tool}' contains bypass keyword — "
+                        "CI/review suppression detected; audit trail may be incomplete"
+                    )
+
+        elif rule.rule_id == "POL-MCP-002":
+            if uro.source_system == SourceSystem.MCP_PROXY:
+                flags = raw.get("risk_flags") or []
+                if "sensitive_tool" in flags:
+                    tool = raw.get("target_tool", "unknown")
+                    return (
+                        f"MCP call to sensitive/destructive tool '{tool}' — "
+                        "requires authorization review before execution"
+                    )
+
+        elif rule.rule_id == "POL-MCP-003":
+            if uro.source_system == SourceSystem.MCP_PROXY:
+                exec_ms = raw.get("execution_time_ms")
+                if exec_ms is not None and int(exec_ms) > 30_000:
+                    tool = raw.get("target_tool", "unknown")
+                    return (
+                        f"MCP tool '{tool}' SLA breach: {exec_ms:,}ms > 30,000ms threshold — "
+                        "potential resource exhaustion or hanging call"
+                    )
+
+        elif rule.rule_id == "POL-MCP-004":
+            if uro.source_system == SourceSystem.MCP_PROXY:
+                if raw.get("status") == "error" and raw.get("error_message"):
+                    tool = raw.get("target_tool", "unknown")
+                    msg  = str(raw.get("error_message", ""))[:200]
+                    return (
+                        f"MCP tool '{tool}' returned error — mandatory investigation: {msg}"
+                    )
+
+        elif rule.rule_id == "POL-MCP-005":
+            if uro.source_system == SourceSystem.MCP_PROXY:
+                flags = raw.get("risk_flags") or []
+                if len(flags) >= 3:
+                    return (
+                        f"Compound MCP governance violation: {len(flags)} risk flags fired "
+                        f"simultaneously ({', '.join(flags)}) — CRITICAL escalation required"
+                    )
+
         return None  # Rule passed
 
     # ── Source-specific conformation ──────────────────────────────────────────
@@ -229,6 +279,36 @@ class SilverConformationLayer(SilverLayerBase):
                 raw.get("requestedBy", {}).get("id", ""),
             ],
             conformation_rules_applied=["SailPoint-IDN-v3-conform"],
+        )
+
+    def _conform_mcp_proxy(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
+        risk_flags: list[str] = raw.get("risk_flags") or []
+        tool = raw.get("target_tool") or raw.get("method") or "unknown"
+        server = raw.get("server_name", "")
+        narrative = (
+            f"MCP tool '{tool}' on server '{server}' flagged: {', '.join(risk_flags)}"
+            if risk_flags
+            else f"MCP tool '{tool}' on server '{server}' returned {raw.get('status', 'unknown')}"
+        )
+        return ConformedPayload(
+            resource_id=tool,
+            resource_type="mcp_tool",
+            action=raw.get("method") or "tools/call",
+            outcome=raw.get("status") or "unknown",
+            risk_indicators={
+                "risk_flags":        risk_flags,
+                "flag_count":        len(risk_flags),
+                "execution_time_ms": raw.get("execution_time_ms"),
+                "server_name":       server,
+                "session_id":        str(raw.get("session_id", "")),
+                "message_id":        raw.get("message_id"),
+                "tool_args_hash":    raw.get("tool_args_hash"),
+                "error_message":     raw.get("error_message"),
+                "payload_hash":      raw.get("payload_hash"),
+                "narrative":         narrative,
+            },
+            affected_entities=[tool, server, str(raw.get("session_id", ""))],
+            conformation_rules_applied=["MCP-Telemetry-v1-conform"],
         )
 
     def _conform_generic(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:

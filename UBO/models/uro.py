@@ -28,6 +28,7 @@ class SourceSystem(str, Enum):
     FRED           = "FRED"
     SEC_EDGAR      = "SEC_EDGAR"
     ORACLE_FUSION  = "ORACLE_FUSION"
+    MCP_PROXY      = "MCP_PROXY"
     INTERNAL       = "INTERNAL"
     UNKNOWN        = "UNKNOWN"
 
@@ -63,6 +64,14 @@ class EventType(str, Enum):
     CASCADING_FAILURE_SIGNAL   = "CASCADING_FAILURE_SIGNAL"
     POLICY_VIOLATION           = "POLICY_VIOLATION"
     ANOMALY                    = "ANOMALY"
+
+    # ── MCP Proxy Governance ──────────────────────────────────
+    MCP_TOOL_BYPASS            = "MCP_TOOL_BYPASS"           # bypass_keyword flag
+    MCP_SENSITIVE_TOOL_CALL    = "MCP_SENSITIVE_TOOL_CALL"   # destructive/high-risk tool
+    MCP_BULK_ARGS              = "MCP_BULK_ARGS"             # > 20 arguments
+    MCP_LARGE_PAYLOAD          = "MCP_LARGE_PAYLOAD"         # payload > 50 KB
+    MCP_TOOL_ERROR             = "MCP_TOOL_ERROR"            # tool returned error status
+    MCP_GOVERNANCE_VIOLATION   = "MCP_GOVERNANCE_VIOLATION"  # 3+ flags simultaneously
 
 
 class PipelineStage(str, Enum):
