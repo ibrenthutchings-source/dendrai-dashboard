@@ -58,6 +58,7 @@ MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
 """
 
 import argparse
+import asyncio
 import concurrent.futures
 import logging
 import os
@@ -130,6 +131,13 @@ except Exception:
     _oracle_mcp = None
     _HAS_ORACLE_MCP = False
 
+try:
+    import mcp_governance
+    _HAS_MCP_GOVERNANCE = True
+except Exception as _gov_exc:
+    mcp_governance = None  # type: ignore[assignment]
+    _HAS_MCP_GOVERNANCE = False
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -156,7 +164,24 @@ async def lifespan(application: FastAPI):
                 logger.info("MCP session manager initialized: %s", inst.name)
             except Exception as exc:
                 logger.warning("MCP session manager init failed for %s: %s", getattr(inst, 'name', inst), exc)
-        yield
+
+        # Start MCP Governance polling (non-blocking background task)
+        _gov_task = None
+        if _HAS_MCP_GOVERNANCE and db.is_available():
+            _gov_task = asyncio.create_task(mcp_governance.start_polling())
+            logger.info("MCP governance polling task started")
+        elif _HAS_MCP_GOVERNANCE:
+            logger.info("MCP governance available but DB not ready — polling not started")
+
+        try:
+            yield
+        finally:
+            if _gov_task is not None:
+                _gov_task.cancel()
+                try:
+                    await _gov_task
+                except asyncio.CancelledError:
+                    pass
 
 
 _CEM_TEMPLATES_DEFAULT = [
@@ -237,6 +262,11 @@ app.include_router(sox_endpoints.router)
 
 # Risk Register Review: internal register management, framework ingestion, control mapping.
 app.include_router(risk_register_endpoints.router)
+
+# MCP Governance: telemetry observability + adjudicated governance events.
+if _HAS_MCP_GOVERNANCE:
+    app.include_router(mcp_governance.router)
+    logger.info("MCP governance router registered at /observability")
 
 # ── MCP Streamable-HTTP mounts ─────────────────────────────────────────────────
 # Each FastMCP instance is mounted as an ASGI sub-app so claude.ai can connect

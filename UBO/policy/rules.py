@@ -159,6 +159,61 @@ SAILPOINT_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── MCP Proxy Governance Rules ────────────────────────────────────────────────
+
+MCP_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-MCP-001",
+        name="MCP Bypass Keyword Detection",
+        description=(
+            "Any MCP tool call payload containing bypass keywords (skip-ci, no-verify, force-push) "
+            "is automatically CRITICAL — these keywords suppress the audit trail."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.MCP_PROXY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-MCP-002",
+        name="Sensitive Tool Call Authorization",
+        description=(
+            "MCP calls to destructive or high-risk tools (delete, drop, exec_sql, shell) "
+            "require authorization review before execution is permitted."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.MCP_PROXY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-MCP-003",
+        name="MCP Tool SLA Breach",
+        description=(
+            "MCP tool calls exceeding 30,000 ms execution time breach the operational SLA "
+            "and indicate potential resource exhaustion or a hanging call."
+        ),
+        severity="MEDIUM",
+        applies_to=[SourceSystem.MCP_PROXY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-MCP-004",
+        name="MCP Tool Error Mandatory Investigation",
+        description=(
+            "MCP tool calls that return an error status with an error message "
+            "must be investigated for systematic failures or misconfiguration."
+        ),
+        severity="MEDIUM",
+        applies_to=[SourceSystem.MCP_PROXY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-MCP-005",
+        name="Compound MCP Governance Violation",
+        description=(
+            "Three or more risk flags firing simultaneously on a single MCP call "
+            "indicates a compound governance failure requiring CRITICAL escalation."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.MCP_PROXY.value],
+    ),
+]
+
 # ── Global Registry ───────────────────────────────────────────────────────────
 
 POLICY_REGISTRY: list[PolicyRule] = [
@@ -166,6 +221,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *SAP_RULES,
     *GITHUB_RULES,
     *SAILPOINT_RULES,
+    *MCP_RULES,
 ]
 
 

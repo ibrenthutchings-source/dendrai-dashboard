@@ -55,6 +55,13 @@ _EVENT_BASE_WEIGHTS: dict[EventType, float] = {
     EventType.CASCADING_FAILURE_SIGNAL:   0.90,
     EventType.POLICY_VIOLATION:           0.60,
     EventType.ANOMALY:                    0.35,
+    # MCP Proxy Governance
+    EventType.MCP_GOVERNANCE_VIOLATION:   0.90,
+    EventType.MCP_TOOL_BYPASS:            0.85,
+    EventType.MCP_SENSITIVE_TOOL_CALL:    0.70,
+    EventType.MCP_BULK_ARGS:              0.45,
+    EventType.MCP_TOOL_ERROR:             0.40,
+    EventType.MCP_LARGE_PAYLOAD:          0.35,
 }
 
 _POLICY_SEVERITY_WEIGHTS: dict[str, float] = {

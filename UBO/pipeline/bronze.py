@@ -186,6 +186,73 @@ class SailPointBronzeHandler(BronzeLayerBase):
         )
 
 
+class McpProxyBronzeHandler(BronzeLayerBase):
+    """
+    Ingests flagged rows from observability.mcp_telemetry.
+
+    Each row represents one JSON-RPC 2.0 message that the telemetry proxy
+    tagged with at least one Risk-as-Code governance flag.  Multiple simultaneous
+    flags produce a compound MCP_GOVERNANCE_VIOLATION event type.
+    """
+
+    source_system = SourceSystem.MCP_PROXY
+
+    # Priority-ordered: most severe flag drives the EventType when only one fires
+    _FLAG_EVENT_MAP: dict[str, EventType] = {
+        "bypass_keyword": EventType.MCP_TOOL_BYPASS,
+        "sensitive_tool": EventType.MCP_SENSITIVE_TOOL_CALL,
+        "bulk_args":      EventType.MCP_BULK_ARGS,
+        "large_payload":  EventType.MCP_LARGE_PAYLOAD,
+    }
+
+    async def ingest(self, raw_event: dict[str, Any]) -> URO:
+        ts = _parse_ts(raw_event.get("ts") or raw_event.get("timestamp"))
+
+        risk_flags: list[str] = raw_event.get("risk_flags") or []
+
+        if len(risk_flags) >= 3:
+            event_type = EventType.MCP_GOVERNANCE_VIOLATION
+        elif risk_flags:
+            # Walk priority map; fall back to error or anomaly
+            event_type = next(
+                (self._FLAG_EVENT_MAP[f] for f in self._FLAG_EVENT_MAP if f in risk_flags),
+                EventType.MCP_TOOL_ERROR,
+            )
+        elif raw_event.get("status") == "error":
+            event_type = EventType.MCP_TOOL_ERROR
+        else:
+            event_type = EventType.ANOMALY
+
+        # actor_id = session UUID — the identity of the client session that made the call
+        actor_id = str(raw_event.get("session_id", "UNKNOWN"))
+
+        env = CloudEnvironment(
+            provider="MCP",
+            tags={
+                "server_name": raw_event.get("server_name", ""),
+                "session_id":  actor_id,
+                "method":      raw_event.get("method", ""),
+            },
+        )
+
+        return URO(
+            timestamp=ts,
+            source_system=SourceSystem.MCP_PROXY,
+            event_type=event_type,
+            actor_id=actor_id,
+            actor_type=ActorType.SERVICE,
+            environment=env,
+            raw_payload=RawPayload(
+                content={
+                    # Normalise UUID fields to strings for JSON-serialisability
+                    **{k: str(v) if hasattr(v, "hex") else v for k, v in raw_event.items()}
+                },
+                schema_version="MCP-Telemetry-v1",
+            ),
+            pipeline_stage=PipelineStage.BRONZE,
+        )
+
+
 # ── Bronze Dispatcher ─────────────────────────────────────────────────────────
 
 class BronzeIngestionLayer:
@@ -202,6 +269,7 @@ class BronzeIngestionLayer:
             SourceSystem.SAP:        SAPBronzeHandler(),
             SourceSystem.GITHUB:     GitHubBronzeHandler(),
             SourceSystem.SAILPOINT:  SailPointBronzeHandler(),
+            SourceSystem.MCP_PROXY:  McpProxyBronzeHandler(),
         }
 
     async def ingest(

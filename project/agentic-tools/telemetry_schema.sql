@@ -204,6 +204,97 @@ COMMENT ON VIEW observability.flagged_calls IS
     'All messages where the Risk-as-Code engine fired at least one governance flag.';
 
 -- =============================================================================
+-- processed_at — stamped when the governance poller picks up the row and
+-- feeds it through the UBO Bronze→Silver→Gold→Council pipeline.
+-- NULL = unprocessed; NOT NULL = adjudicated (see adjudicated_tool_calls).
+-- =============================================================================
+ALTER TABLE observability.mcp_telemetry
+    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
+
+-- Partial index the poller uses: only unprocessed flagged rows, ordered by ts
+CREATE INDEX IF NOT EXISTS idx_tel_unprocessed
+    ON observability.mcp_telemetry (ts ASC)
+    WHERE risk_flags IS NOT NULL AND processed_at IS NULL;
+
+-- =============================================================================
+-- adjudicated_tool_calls — Gold-stage output for every MCP proxy event that
+-- passed through the UBO Bronze→Silver→Gold→Council pipeline.
+-- Linked back to the originating telemetry row via telemetry_id.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS observability.adjudicated_tool_calls (
+    id                    BIGSERIAL    PRIMARY KEY,
+    adjudicated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    -- Link to source telemetry row
+    telemetry_id          BIGINT       NOT NULL
+                              REFERENCES observability.mcp_telemetry (id)
+                              ON DELETE CASCADE,
+    session_id            UUID         NOT NULL,
+
+    -- Tool context (denormalised for fast dashboard queries)
+    target_tool           VARCHAR(128),
+    server_name           VARCHAR(128),
+    risk_flags            TEXT[],
+    execution_time_ms     INTEGER,
+
+    -- UBO Governance Brain output
+    uro_id                VARCHAR(64)  NOT NULL,
+    risk_score            NUMERIC(5,4),
+    risk_tier             VARCHAR(16),
+    final_verdict         VARCHAR(32),
+    ensemble_confidence   NUMERIC(4,3),
+    requires_human_review BOOLEAN      NOT NULL DEFAULT FALSE,
+    conflict_flags        TEXT[],
+    policy_violations     TEXT[],
+
+    -- Reasoning (abbreviated — full reasoning lives in the URO)
+    adjudicator_reasoning TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_adj_session
+    ON observability.adjudicated_tool_calls (session_id, adjudicated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adj_tool
+    ON observability.adjudicated_tool_calls (target_tool, adjudicated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adj_tier
+    ON observability.adjudicated_tool_calls (risk_tier, adjudicated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adj_human_review
+    ON observability.adjudicated_tool_calls (adjudicated_at DESC)
+    WHERE requires_human_review = TRUE;
+
+COMMENT ON TABLE observability.adjudicated_tool_calls IS
+    'UBO Governance Brain output for MCP proxy events — one row per adjudicated URO.';
+COMMENT ON COLUMN observability.adjudicated_tool_calls.telemetry_id IS
+    'FK to the originating mcp_telemetry row (which is stamped processed_at after insert).';
+COMMENT ON COLUMN observability.adjudicated_tool_calls.uro_id IS
+    'UUID of the URO that traversed Bronze→Silver→Gold→Council.';
+
+-- Governance view: human review queue (all adjudicated calls awaiting action)
+CREATE OR REPLACE VIEW observability.human_review_queue AS
+SELECT
+    a.adjudicated_at,
+    a.session_id,
+    a.target_tool,
+    a.server_name,
+    a.risk_flags,
+    a.risk_score,
+    a.risk_tier,
+    a.final_verdict,
+    a.ensemble_confidence,
+    a.conflict_flags,
+    a.policy_violations,
+    a.adjudicator_reasoning,
+    t.ts                    AS telemetry_ts,
+    t.execution_time_ms,
+    t.error_message
+FROM observability.adjudicated_tool_calls a
+JOIN observability.mcp_telemetry          t ON t.id = a.telemetry_id
+WHERE a.requires_human_review = TRUE
+ORDER BY a.risk_score DESC, a.adjudicated_at DESC;
+
+COMMENT ON VIEW observability.human_review_queue IS
+    'All adjudicated MCP calls flagged for human review, ordered by risk score.';
+
+-- =============================================================================
 -- Retention helper: delete rows older than N days
 -- Call periodically from a pg_cron job or Railway cron task:
 --   SELECT observability.purge_telemetry(90);
