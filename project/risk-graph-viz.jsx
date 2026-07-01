@@ -598,7 +598,7 @@ export function RiskGraphViz({ risks }) {
     });
 
     return () => sim.stop();
-  }, [risks, showMember, showCross, showCtrl]);
+  }, [risks, showMember, showCross, showCtrl, controlsRev]);
 
   // ── Toggle button style ───────────────────────────────────────────────────
   const togStyle = (on, color) => ({
