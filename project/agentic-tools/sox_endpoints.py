@@ -85,11 +85,10 @@ class PeerSegmentRequest(BaseModel):
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
 
-def _resolve_company_id(ticker: str) -> int:
-    """Resolve or create company_id for a ticker. Raises 404 if not found and DB unavailable."""
+def _resolve_company_id(ticker: str) -> Optional[int]:
+    """Resolve or create company_id for a ticker. Returns None when DB is unavailable."""
     if not db.is_available():
-        raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
-    # Attempt to find existing company
+        return None
     def _find():
         with db._conn() as conn:
             with conn.cursor() as cur:
@@ -98,10 +97,7 @@ def _resolve_company_id(ticker: str) -> int:
                 return row[0] if row else None
     company_id = db._run(_find)
     if not company_id:
-        # Create a minimal placeholder — full metadata populated by edgar endpoints
         company_id = db.upsert_company({"ticker": ticker, "company_name": ticker.upper()})
-    if not company_id:
-        raise HTTPException(status_code=404, detail=f"Company not found for ticker {ticker.upper()}")
     return company_id
 
 
@@ -124,22 +120,23 @@ def compute_sox_scope(req: SoxScopeRequest):
         )
 
     company_id = _resolve_company_id(req.ticker)
+    db_ok = db.is_available() and company_id is not None
 
     # Load registered systems from DB, merge with any supplied ad-hoc systems
-    db_systems = db.list_sox_systems(company_id) if db.is_available() else []
+    db_systems = db.list_sox_systems(company_id) if db_ok else []
     req_system_names = {s.get("system_name") for s in req.systems}
     merged_systems = req.systems + [s for s in db_systems if s["system_name"] not in req_system_names]
 
     # Load segments from DB for the fiscal year if not supplied
     fiscal_year = req.fiscal_year or f"FY{__import__('datetime').datetime.utcnow().year}"
     segments = req.segments
-    if not segments and db.is_available():
+    if not segments and db_ok:
         segments = db.get_sox_segments(company_id, fiscal_year)
 
     # Load materiality config if available
     mat_pct  = req.materiality_pct
     perf_pct = req.performance_mat_pct
-    if db.is_available():
+    if db_ok:
         cfg = db.get_sox_config(company_id, fiscal_year)
         if cfg:
             mat_pct  = cfg["materiality_pct"]
@@ -158,7 +155,7 @@ def compute_sox_scope(req: SoxScopeRequest):
         trigger_reason=req.trigger_reason,
     )
 
-    if db.is_available() and req.run_id is not None:
+    if db_ok and req.run_id is not None:
         db.save_sox_scoping_result(req.run_id, company_id, result)
 
     return result
@@ -179,6 +176,8 @@ def get_sox_scope(run_id: int):
 def get_latest_sox_scope(ticker: str):
     """Most recent SOX scope for a ticker (across all runs)."""
     company_id = _resolve_company_id(ticker)
+    if not company_id:
+        raise HTTPException(status_code=404, detail=f"No SOX scope found for {ticker.upper()} (database not configured)")
     scope = db.get_latest_sox_scoping_result(company_id)
     if not scope:
         raise HTTPException(status_code=404, detail=f"No SOX scope found for {ticker.upper()}")
@@ -191,6 +190,8 @@ def get_latest_sox_scope(ticker: str):
 def upsert_sox_config(ticker: str, req: SoxConfigRequest):
     """Create or update SOX materiality configuration for a company + fiscal year."""
     company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"saved": False, "reason": "database not configured", "ticker": ticker.upper()}
     cfg_id = db.upsert_sox_config(company_id, req.fiscal_year, req.dict())
     return {
         "saved": True,
@@ -204,6 +205,8 @@ def upsert_sox_config(ticker: str, req: SoxConfigRequest):
 def get_sox_config(ticker: str, fiscal_year: str):
     """Retrieve SOX materiality config for a company + fiscal year."""
     company_id = _resolve_company_id(ticker)
+    if not company_id:
+        raise HTTPException(status_code=404, detail=f"No config for {ticker.upper()} {fiscal_year}")
     cfg = db.get_sox_config(company_id, fiscal_year)
     if not cfg:
         raise HTTPException(status_code=404, detail=f"No config for {ticker.upper()} {fiscal_year}")
@@ -219,7 +222,7 @@ def list_sox_systems(ticker: str, active_only: bool = Query(default=True)):
     Systems are open-ended — add via POST /sox/systems/{ticker}.
     """
     company_id = _resolve_company_id(ticker)
-    systems = db.list_sox_systems(company_id, active_only=active_only)
+    systems = db.list_sox_systems(company_id, active_only=active_only) if company_id else []
     return {
         "ticker": ticker.upper(),
         "count": len(systems),
@@ -242,6 +245,8 @@ def add_sox_system(ticker: str, req: SoxSystemRequest):
          equity_goodwill, segment_reporting)
     """
     company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"saved": False, "reason": "database not configured", "system_name": req.system_name}
     sys_id = db.upsert_sox_system(company_id, req.dict())
     if not sys_id:
         raise HTTPException(status_code=500, detail="Failed to save system")
@@ -257,6 +262,8 @@ def add_sox_system(ticker: str, req: SoxSystemRequest):
 def remove_sox_system(ticker: str, system_id: int):
     """Deactivate a system from the SOX registry (soft delete — preserves audit trail)."""
     company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"deactivated": False, "reason": "database not configured", "system_id": system_id}
     ok = db.deactivate_sox_system(company_id, system_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"System {system_id} not found for {ticker.upper()}")
@@ -277,6 +284,8 @@ def upsert_sox_segments(ticker: str, req: SoxSegmentRequest, run_id: Optional[in
     segment_type: 'geography' | 'business_segment' | 'product_line'
     """
     company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"saved": 0, "reason": "database not configured", "fiscal_year": req.fiscal_year}
     saved = 0
     for seg in req.segments:
         seg["fiscal_year"] = req.fiscal_year
@@ -289,7 +298,7 @@ def upsert_sox_segments(ticker: str, req: SoxSegmentRequest, run_id: Optional[in
 def get_sox_segments(ticker: str, fiscal_year: str):
     """Retrieve segment/geography financial breakdowns for a company + fiscal year."""
     company_id = _resolve_company_id(ticker)
-    segments = db.get_sox_segments(company_id, fiscal_year)
+    segments = db.get_sox_segments(company_id, fiscal_year) if company_id else []
     return {
         "ticker": ticker.upper(),
         "fiscal_year": fiscal_year,
@@ -329,6 +338,8 @@ def upsert_peer_segments(ticker: str, req: PeerSegmentRequest):
     gross_margin, op_margin, net_margin, source.
     """
     company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"saved": 0, "reason": "database not configured", "fiscal_year": req.fiscal_year}
     for seg in req.segments:
         seg.setdefault("fiscal_year", req.fiscal_year)
     saved = db.upsert_peer_segment(
@@ -353,7 +364,7 @@ def get_peer_segments(ticker: str, fiscal_year: str, peer: Optional[str] = Query
     Optionally filter to a single peer with ?peer=TICK.
     """
     company_id = _resolve_company_id(ticker)
-    rows = db.get_peer_segments(company_id, peer_ticker=peer, fiscal_year=fiscal_year)
+    rows = db.get_peer_segments(company_id, peer_ticker=peer, fiscal_year=fiscal_year) if company_id else []
     by_peer: Dict[str, list] = {}
     for r in rows:
         by_peer.setdefault(r["peer_ticker"], []).append(r)
