@@ -7,10 +7,10 @@ import { RiskGraphViz } from "./risk-graph-viz.jsx";
 import { RiskSankey }   from "./risk-sankey.jsx";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Static data: control library + framework catalogs
+// Reference data — seeded from hardcoded defaults, overwritten from DB on mount
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MASTER_CONTROLS = [
+let MASTER_CONTROLS = [
   { ref:"FC-01", framework:"Internal",       name:"Revenue Recognition Controls",     category:"Financial",      domain:"Finance",    desc:"Controls over revenue recognition timing to prevent misstatement" },
   { ref:"FC-02", framework:"Internal",       name:"Financial Close Reconciliation",    category:"Financial",      domain:"Finance",    desc:"Period-end reconciliation procedures for material accounts" },
   { ref:"FC-03", framework:"SOC 2",          name:"Segregation of Financial Duties",   category:"Financial",      domain:"Finance",    desc:"Segregation of duties for payment and approval workflows" },
@@ -47,17 +47,37 @@ const MASTER_CONTROLS = [
   { ref:"AI-05", framework:"ISO/IEC 42001", name:"Third-Party AI Tool Assessment",     category:"AI Governance",  domain:"Technology", desc:"Due diligence and ongoing monitoring for externally-sourced AI services" },
   { ref:"AI-06", framework:"ISO/IEC 42001", name:"Human Oversight of AI Systems",      category:"AI Governance",  domain:"Technology", desc:"Defined human review points and override mechanisms for AI-assisted decisions" },
 ];
-const CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
+let CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
 
-const PRESET_FRAMEWORKS = [
-  "NIST SP 800-53",
-  "ISO/IEC 27001",
-  "ISO/IEC 42001",
-  "CIS Controls",
-  "SOC 2",
-];
+// Defaults used while the DB load is in flight (and as fallback when DB is unavailable)
+const _DEFAULT_PRESET_FRAMEWORKS = ["NIST SP 800-53", "ISO/IEC 27001", "ISO/IEC 42001", "CIS Controls", "SOC 2"];
+const _DEFAULT_MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "ISO/IEC 42001", "SOC 2", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
 
-const MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "ISO/IEC 42001", "SOC 2", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
+// Kept as aliases so module-level utility functions that reference them still work
+// before the async load completes (they read through the let binding).
+let PRESET_FRAMEWORKS  = _DEFAULT_PRESET_FRAMEWORKS;
+let MATRIX_FRAMEWORKS  = _DEFAULT_MATRIX_FRAMEWORKS;
+
+async function _loadControlsFromApi() {
+  try {
+    const res = await fetch("/api/risk-register/controls");
+    if (!res.ok) return;
+    const data = await res.json();
+    const controls = data.controls || [];
+    if (!controls.length) return;
+    MASTER_CONTROLS.length = 0;
+    for (const c of controls) MASTER_CONTROLS.push(c);
+    CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
+  } catch (_) {}
+}
+
+async function _loadMatrixConfigFromApi() {
+  try {
+    const res = await fetch("/api/risk-register/matrix-config");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) { return null; }
+}
 
 const FW_MOCK_RISKS = {
   "NIST SP 800-53": [
@@ -225,7 +245,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
   const [newCtrl, setNewCtrl] = useState({ ref: "", name: "", framework: "", desc: "" });
   const [createErr, setCreateErr] = useState("");
 
-  function handleCreateControl() {
+  async function handleCreateControl() {
     const ref = newCtrl.ref.trim().toUpperCase();
     if (!ref) { setCreateErr("Control reference is required."); return; }
     if (CTRL_BY_REF[ref]) { setCreateErr(`${ref} already exists in the control library.`); return; }
@@ -237,8 +257,18 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
       name: newCtrl.name.trim(),
       category: "Custom",
       domain: "Custom",
+      description: newCtrl.desc.trim(),
       desc: newCtrl.desc.trim(),
     };
+    // Persist to DB
+    try {
+      await fetch("/api/risk-register/controls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ctrl),
+      });
+    } catch (_) {}
+    // Update module-level lookup so other components can use the new control immediately
     MASTER_CONTROLS.push(ctrl);
     CTRL_BY_REF[ref] = ctrl;
     onAddManual(riskKey, ref);
@@ -597,7 +627,7 @@ function OutputPanel({ yaml, onClose, onDownload }) {
 // Framework Matrix view
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, savingRows, savedAt }) {
+function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, savingRows, savedAt }) {
   // Row-level wording edit state
   const [editingRows, setEditingRows] = useState(new Set());
   const [rowDrafts, setRowDrafts]     = useState({});
@@ -674,21 +704,22 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, onWordingChange, o
     })();
   }, [risks?.length]);
 
-  // All MATRIX_FRAMEWORKS always appear as columns; append any extra frameworks
+  // All matrix framework columns always appear; append any extra frameworks
   // from discovered risks or assigned controls alphabetically after them.
+  const _activeMxFws = matrixFrameworks || MATRIX_FRAMEWORKS;
   const _internalFws = new Set(["Internal", "Internal Risk Register"]);
   const extraFws = new Set();
   for (const cs of Object.values(ctrlStates)) {
     for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
       const fw = CTRL_BY_REF[ref]?.framework;
-      if (fw && !_internalFws.has(fw) && !MATRIX_FRAMEWORKS.includes(fw)) extraFws.add(fw);
+      if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw)) extraFws.add(fw);
     }
   }
   for (const r of (risks || [])) {
     const fw = r.source_framework;
-    if (fw && !_internalFws.has(fw) && !MATRIX_FRAMEWORKS.includes(fw)) extraFws.add(fw);
+    if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw)) extraFws.add(fw);
   }
-  const fwCols = [...MATRIX_FRAMEWORKS, ...[...extraFws].sort()];
+  const fwCols = [..._activeMxFws, ...[...extraFws].sort()];
 
   // ── Wording row helpers ──────────────────────────────────────────────────
 
@@ -1040,6 +1071,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [expandedCtrl, setExpandedCtrl] = useState(new Set());
   const [aiRecsLoading, setAiRecsLoading] = useState(null);
   const [savedAt, setSavedAt]           = useState(null); // timestamp of last DB save
+  // matrixCfg: loaded from DB; falls back to module-level defaults while in-flight
+  const [matrixCfg, setMatrixCfg] = useState({ matrix: _DEFAULT_MATRIX_FRAMEWORKS, preset: _DEFAULT_PRESET_FRAMEWORKS });
+  // controlsKey: incremented after DB load to force re-renders that read MASTER_CONTROLS
+  const [controlsKey, setControlsKey] = useState(0);
 
   // ── Discovery state ──────────────────────────────────────────────────────
   const [fwSearch, setFwSearch]           = useState("");
@@ -1075,6 +1110,27 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [converting, setConverting] = useState(false);
   const [convertErr, setConvertErr] = useState(null);
   const [validationMsg, setValidationMsg] = useState(null);
+
+  // On mount: load controls library and matrix config from DB/API
+  useEffect(() => {
+    (async () => {
+      await _loadControlsFromApi();
+      setControlsKey(k => k + 1);
+    })();
+    (async () => {
+      const cfg = await _loadMatrixConfigFromApi();
+      if (cfg?.matrix_frameworks?.length || cfg?.preset_frameworks?.length) {
+        const next = {
+          matrix: cfg.matrix_frameworks || _DEFAULT_MATRIX_FRAMEWORKS,
+          preset: cfg.preset_frameworks  || _DEFAULT_PRESET_FRAMEWORKS,
+        };
+        setMatrixCfg(next);
+        // Keep module-level aliases in sync so utility functions stay consistent
+        MATRIX_FRAMEWORKS = next.matrix;
+        PRESET_FRAMEWORKS = next.preset;
+      }
+    })();
+  }, []);
 
   // When the parent passes fresh pipeline risks, reset local state to track them.
   useEffect(() => {
@@ -1980,6 +2036,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                     risks={allMatrixRisks}
                     riskStates={allMatrixRiskStates}
                     ctrlStates={allMatrixCtrlStates}
+                    matrixFrameworks={matrixCfg.matrix}
                     onWordingChange={matrixWordingChange}
                     onAddManualControl={matrixAddManual}
                     onRemoveControl={matrixRemove}
@@ -2046,7 +2103,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
               {/* Preset framework chips */}
               <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
-                {PRESET_FRAMEWORKS.map(fw => {
+                {matrixCfg.preset.map(fw => {
                   const sel = selectedFws.includes(fw);
                   return (
                     <button

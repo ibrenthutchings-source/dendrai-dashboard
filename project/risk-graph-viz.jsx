@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 
-// ─── Static data (mirrors risk-register-review.jsx) ──────────────────────────
+// ─── Reference data — seeded from defaults, overwritten from DB on mount ─────
 
-const MASTER_CONTROLS = [
+let MASTER_CONTROLS = [
   { ref:"FC-01", fw:"Internal",       name:"Revenue Recognition Controls",    cat:"Financial",     domain:"Finance" },
   { ref:"FC-02", fw:"Internal",       name:"Financial Close Reconciliation",   cat:"Financial",     domain:"Finance" },
   { ref:"FC-03", fw:"SOC 2",          name:"Segregation of Financial Duties",  cat:"Financial",     domain:"Finance" },
@@ -318,6 +318,25 @@ export function RiskGraphViz({ risks }) {
   const [showMember, setShowMember] = useState(true);
   const [showCross,  setShowCross]  = useState(true);
   const [showCtrl,   setShowCtrl]   = useState(true);
+  const [controlsRev, setControlsRev] = useState(0);
+
+  // Load controls from DB on mount; rebuild graph once they arrive
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/risk-register/controls");
+        if (!res.ok) return;
+        const data = await res.json();
+        const controls = data.controls || [];
+        if (!controls.length) return;
+        MASTER_CONTROLS.length = 0;
+        for (const c of controls) {
+          MASTER_CONTROLS.push({ ref: c.ref, fw: c.framework || "", name: c.name, cat: c.category || "", domain: c.domain || "" });
+        }
+        setControlsRev(r => r + 1);
+      } catch (_) {}
+    })();
+  }, []);
 
   useEffect(() => {
     if (!svgRef.current) return;

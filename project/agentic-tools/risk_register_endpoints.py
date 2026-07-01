@@ -33,10 +33,10 @@ router = APIRouter(prefix="/risk-register", tags=["risk-register"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Master control library (canonical reference set — mirrors risk-register-review.jsx)
+# Default control library (seeds controls_library table on first startup)
 # ─────────────────────────────────────────────────────────────────────────────
 
-CONTROLS_LIBRARY: List[Dict[str, Any]] = [
+_DEFAULT_CONTROLS: List[Dict[str, Any]] = [
     # Financial controls
     {"ref": "FC-01", "framework": "Internal", "name": "Revenue Recognition Controls",      "category": "Financial",       "domain": "Finance",    "description": "Controls over revenue recognition timing to prevent misstatement"},
     {"ref": "FC-02", "framework": "Internal", "name": "Financial Close Reconciliation",     "category": "Financial",       "domain": "Finance",    "description": "Period-end reconciliation procedures for material accounts"},
@@ -82,21 +82,38 @@ CONTROLS_LIBRARY: List[Dict[str, Any]] = [
     {"ref": "AI-06", "framework": "ISO/IEC 42001", "name": "Human Oversight of AI Systems",     "category": "AI Governance",   "domain": "Technology", "description": "Defined human review points and override mechanisms for AI-assisted decisions"},
 ]
 
-# Map control refs to quick-lookup dict
-_CONTROL_MAP = {c["ref"]: c for c in CONTROLS_LIBRARY}
+# Map default refs for quick lookup (used in fallback and AI prompts built at import time)
+_CONTROL_MAP = {c["ref"]: c for c in _DEFAULT_CONTROLS}
+
+
+def _get_controls_live() -> List[Dict[str, Any]]:
+    """Return controls from DB if available, otherwise fall back to defaults."""
+    if db.is_available():
+        db_controls = db.get_controls_library()
+        if db_controls:
+            return db_controls
+    return _DEFAULT_CONTROLS
+
+
+def _get_control_map_live() -> Dict[str, Dict[str, Any]]:
+    return {c["ref"]: c for c in _get_controls_live()}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cached system prompts for direct AI calls
 # Built once at import time so the stable content qualifies for prompt caching.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CONTROLS_SYSTEM = (
-    "You are a GRC expert. For the risk provided by the user, recommend the 3-5 most "
-    "relevant controls from the library below. Return ONLY a JSON array of control refs "
-    "(e.g. [\"AC-02\",\"SC-01\"]).\n\n"
-    "Available controls:\n"
-    + "\n".join(f"{c['ref']}: {c['name']}" for c in CONTROLS_LIBRARY)
-)
+def _build_controls_system() -> str:
+    controls = _get_controls_live()
+    return (
+        "You are a GRC expert. For the risk provided by the user, recommend the 3-5 most "
+        "relevant controls from the library below. Return ONLY a JSON array of control refs "
+        "(e.g. [\"AC-02\",\"SC-01\"]).\n\n"
+        "Available controls:\n"
+        + "\n".join(f"{c['ref']}: {c['name']}" for c in controls)
+    )
+
+_CONTROLS_SYSTEM = _build_controls_system()
 
 _FRAMEWORK_SYSTEM = (
     "You are a GRC expert. Generate a realistic risk catalog for the framework or standard "
@@ -137,10 +154,10 @@ _SCORE_SYSTEM = (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mock external framework risk catalogs
+# Default framework risk catalogs (seeds framework_risk_catalogs on first startup)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_FRAMEWORK_CATALOGS: Dict[str, List[Dict[str, Any]]] = {
+_DEFAULT_FRAMEWORK_CATALOGS: Dict[str, List[Dict[str, Any]]] = {
     "NIST SP 800-53": [
         {"id": "NIST-AC-2",  "name": "Inadequate account lifecycle management exposes systems to unauthorised access", "category": "Access Control",  "source_framework": "NIST SP 800-53", "control_family": "AC", "score": None, "rag": None},
         {"id": "NIST-CM-6",  "name": "Misconfigured system settings create exploitable security gaps",                 "category": "Configuration",   "source_framework": "NIST SP 800-53", "control_family": "CM", "score": None, "rag": None},
@@ -180,6 +197,28 @@ _FRAMEWORK_CATALOGS: Dict[str, List[Dict[str, Any]]] = {
         {"id": "AI42-A.10.1", "name": "Insufficient human oversight enables unchecked AI decision-making in high-stakes contexts", "category": "Human Oversight", "source_framework": "ISO/IEC 42001", "control_family": "A.10", "score": None, "rag": None},
     ],
 }
+
+# Default matrix / preset framework config (seeds app_config on first startup)
+_DEFAULT_MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "ISO/IEC 42001", "SOC 2", "NIST SP 800-53", "CIS Controls", "COSO ERM"]
+_DEFAULT_PRESET_FRAMEWORKS  = ["NIST SP 800-53", "ISO/IEC 27001", "ISO/IEC 42001", "CIS Controls", "SOC 2"]
+
+
+def seed_static_data() -> None:
+    """Idempotent: seed controls_library, framework_risk_catalogs, and app_config from defaults."""
+    if not db.is_available():
+        return
+    seeded = db.seed_controls_library(_DEFAULT_CONTROLS)
+    if seeded:
+        logger.info("Seeded %d default controls into controls_library", seeded)
+
+    for fw_name, risks in _DEFAULT_FRAMEWORK_CATALOGS.items():
+        db.save_framework_catalog(fw_name, risks)
+    logger.info("Seeded %d default framework catalogs into framework_risk_catalogs", len(_DEFAULT_FRAMEWORK_CATALOGS))
+
+    if db.get_app_config("matrix_frameworks") is None:
+        db.set_app_config("matrix_frameworks", _DEFAULT_MATRIX_FRAMEWORKS)
+    if db.get_app_config("preset_frameworks") is None:
+        db.set_app_config("preset_frameworks", _DEFAULT_PRESET_FRAMEWORKS)
 
 # Keyword → control refs for auto-mapping
 _AUTO_MAP_RULES = [
@@ -280,10 +319,68 @@ class ScoreFrameworkRisksRequest(BaseModel):
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+class ControlCreateRequest(BaseModel):
+    ref: str
+    name: str
+    framework: str = "Custom"
+    category: str = "Custom"
+    domain: str = "Custom"
+    description: str = ""
+
+
+class MatrixConfigUpdate(BaseModel):
+    matrix_frameworks: Optional[List[str]] = None
+    preset_frameworks: Optional[List[str]] = None
+
+
 @router.get("/controls")
 async def get_controls():
-    """Return the master control library."""
-    return {"controls": CONTROLS_LIBRARY, "count": len(CONTROLS_LIBRARY)}
+    """Return the control library — served from DB when available, defaults otherwise."""
+    controls = _get_controls_live()
+    return {"controls": controls, "count": len(controls)}
+
+
+@router.post("/controls")
+async def create_control(req: ControlCreateRequest):
+    """Add a new control to the library and persist it to DB."""
+    ref = req.ref.strip().upper()
+    live_map = _get_control_map_live()
+    if ref in live_map:
+        from fastapi import status
+        return {"saved": False, "detail": f"{ref} already exists in the control library"}
+    ctrl = {
+        "ref": ref, "framework": req.framework, "name": req.name,
+        "category": req.category, "domain": req.domain, "description": req.description,
+    }
+    if db.is_available():
+        db.upsert_control(ctrl)
+    # Also update the module-level fallback map so AI prompt stays current within this process
+    _CONTROL_MAP[ref] = ctrl
+    _DEFAULT_CONTROLS.append(ctrl)
+    return {"saved": True, "ref": ref, "control": ctrl}
+
+
+@router.get("/matrix-config")
+async def get_matrix_config():
+    """Return MATRIX_FRAMEWORKS and PRESET_FRAMEWORKS (from DB or defaults)."""
+    matrix  = db.get_app_config("matrix_frameworks",  _DEFAULT_MATRIX_FRAMEWORKS)  if db.is_available() else _DEFAULT_MATRIX_FRAMEWORKS
+    preset  = db.get_app_config("preset_frameworks",  _DEFAULT_PRESET_FRAMEWORKS)   if db.is_available() else _DEFAULT_PRESET_FRAMEWORKS
+    return {"matrix_frameworks": matrix, "preset_frameworks": preset}
+
+
+@router.put("/matrix-config")
+async def update_matrix_config(req: MatrixConfigUpdate):
+    """Persist updated MATRIX_FRAMEWORKS or PRESET_FRAMEWORKS to DB."""
+    saved = {}
+    if req.matrix_frameworks is not None:
+        if db.is_available():
+            db.set_app_config("matrix_frameworks", req.matrix_frameworks)
+        saved["matrix_frameworks"] = req.matrix_frameworks
+    if req.preset_frameworks is not None:
+        if db.is_available():
+            db.set_app_config("preset_frameworks", req.preset_frameworks)
+        saved["preset_frameworks"] = req.preset_frameworks
+    return {"saved": True, **saved}
 
 
 @router.post("/controls/recommend")
@@ -292,8 +389,9 @@ async def recommend_controls(req: ControlRecommendRequest):
     Recommend controls for a risk. Attempts Claude API if available,
     falls back to keyword-based auto-mapping.
     """
+    live_map = _get_control_map_live()
     auto_refs = _auto_map_controls(req.risk_wording, req.risk_category or "")
-    auto_controls = [_CONTROL_MAP[r] for r in auto_refs if r in _CONTROL_MAP]
+    auto_controls = [live_map[r] for r in auto_refs if r in live_map]
 
     # Attempt AI-augmented recommendations if ANTHROPIC_API_KEY is set
     ai_summary = None
@@ -302,10 +400,11 @@ async def recommend_controls(req: ControlRecommendRequest):
         if api_key:
             import anthropic
             client = anthropic.Anthropic(api_key=api_key)
+            system_text = _build_controls_system()
             msg = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=256,
-                system=[{"type": "text", "text": _CONTROLS_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": f"Risk: {req.risk_wording}\nCategory: {req.risk_category or 'Unknown'}"}],
             )
             import json, re
@@ -313,7 +412,7 @@ async def recommend_controls(req: ControlRecommendRequest):
             match = re.search(r'\[.*?\]', raw, re.DOTALL)
             if match:
                 ai_refs = json.loads(match.group())
-                ai_controls = [_CONTROL_MAP[r] for r in ai_refs if r in _CONTROL_MAP]
+                ai_controls = [live_map[r] for r in ai_refs if r in live_map]
                 if ai_controls:
                     ai_summary = f"Recommended by Claude based on risk wording analysis"
                     return {
@@ -383,7 +482,7 @@ async def search_frameworks(req: FrameworkSearchRequest):
     results: List[Dict[str, Any]] = []
 
     for fw_name in req.frameworks:
-        catalog = _FRAMEWORK_CATALOGS.get(fw_name)
+        catalog = _DEFAULT_FRAMEWORK_CATALOGS.get(fw_name)
         if catalog:
             results.extend(catalog)
         else:
@@ -394,7 +493,7 @@ async def search_frameworks(req: FrameworkSearchRequest):
     # Free-text query with no explicit frameworks: search preset catalogs by name/content
     if req.query and not req.frameworks:
         q = req.query.lower()
-        for fw_name, catalog in _FRAMEWORK_CATALOGS.items():
+        for fw_name, catalog in _DEFAULT_FRAMEWORK_CATALOGS.items():
             if q in fw_name.lower():
                 results.extend(catalog)
             else:
@@ -793,7 +892,7 @@ async def convert_to_code(req: ConvertToCodeRequest):
                 lines.append("    controls:")
                 for ctrl in controls:
                     ctrl_ref = ctrl if isinstance(ctrl, str) else ctrl.get("ref", "")
-                    ctrl_info = _CONTROL_MAP.get(ctrl_ref)
+                    ctrl_info = _get_control_map_live().get(ctrl_ref)
                     lines.append(f"      - ref: {ctrl_ref}")
                     if ctrl_info:
                         lines.append(f'        name: "{ctrl_info["name"]}"')

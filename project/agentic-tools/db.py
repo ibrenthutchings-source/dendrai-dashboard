@@ -648,6 +648,31 @@ CREATE TABLE IF NOT EXISTS code_editor_configs (
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- CEM event templates: seeded from mock-data.js defaults, editable at runtime
+CREATE TABLE IF NOT EXISTS cem_event_templates (
+    id          SERIAL       PRIMARY KEY,
+    control     VARCHAR(255) NOT NULL,
+    area        VARCHAR(64)  NOT NULL,
+    risk_label  VARCHAR(128) NOT NULL,
+    severity    VARCHAR(4)   NOT NULL DEFAULT 'P2',
+    exposure    VARCHAR(64),
+    category    VARCHAR(64),
+    rc_narrative TEXT,
+    is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+    sort_order  INT          NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (control, area)
+);
+CREATE INDEX IF NOT EXISTS idx_cem_templates_active ON cem_event_templates (is_active, sort_order);
+
+-- Generic key-value app config (stores MATRIX_FRAMEWORKS, PRESET_FRAMEWORKS, etc. as JSON)
+CREATE TABLE IF NOT EXISTS app_config (
+    key        VARCHAR(128) PRIMARY KEY,
+    value_json JSONB        NOT NULL,
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 -- ── Analyst KPI quarterly time series (EPS, OpMargin, NetIncome, FCF, EBITDA) ─
 CREATE TABLE IF NOT EXISTS analyst_kpi_series (
     id          SERIAL PRIMARY KEY,
@@ -3433,3 +3458,286 @@ def get_results(tool_name: str, ticker: Optional[str] = None, limit: int = 20) -
 def list_tickers(tool_name: str) -> list:
     """Deprecated stub."""
     return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# App config (key-value JSON store for MATRIX_FRAMEWORKS, PRESET_FRAMEWORKS, etc.)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_app_config(key: str, default=None):
+    """Return the parsed JSON value for a config key, or default if not set."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value_json FROM app_config WHERE key = %s", (key,))
+                row = cur.fetchone()
+                return row[0] if row else None
+    result = _run(_do)
+    return result if result is not None else default
+
+
+def set_app_config(key: str, value) -> bool:
+    """Upsert a JSON config value. Returns True on success."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO app_config (key, value_json)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value_json = EXCLUDED.value_json,
+                        updated_at = NOW()
+                    """,
+                    (key, Json(value)),
+                )
+        return True
+    return _run(_do, default=False) or False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Controls library (seed + query)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def seed_controls_library(controls: list) -> int:
+    """Insert default controls into controls_library (skips existing refs). Returns rows inserted."""
+    if not controls:
+        return 0
+    def _do():
+        rows = [
+            (
+                c.get("ref") or c.get("control_ref", ""),
+                c.get("framework", ""),
+                c.get("name") or c.get("control_name", ""),
+                c.get("description") or c.get("desc", ""),
+                c.get("category", ""),
+                c.get("domain", ""),
+            )
+            for c in controls
+            if (c.get("ref") or c.get("control_ref")) and (c.get("name") or c.get("control_name"))
+        ]
+        if not rows:
+            return 0
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO controls_library
+                        (control_ref, framework, name, description, category, domain)
+                    VALUES %s
+                    ON CONFLICT (control_ref) DO NOTHING
+                    """,
+                    rows,
+                )
+                return cur.rowcount
+    return _run(_do, default=0) or 0
+
+
+def get_controls_library() -> list:
+    """Return all controls from the controls_library table."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT control_ref, framework, name, description, category, domain, tags "
+                    "FROM controls_library ORDER BY control_ref"
+                )
+                return [
+                    {
+                        "ref":         r[0],
+                        "framework":   r[1] or "",
+                        "name":        r[2],
+                        "description": r[3] or "",
+                        "category":    r[4] or "",
+                        "domain":      r[5] or "",
+                        "tags":        r[6] or [],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def upsert_control(control: dict) -> bool:
+    """Insert or update a single control in the controls_library. Returns True on success."""
+    ref = (control.get("ref") or control.get("control_ref", "")).strip().upper()
+    if not ref:
+        return False
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO controls_library
+                        (control_ref, framework, name, description, category, domain)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (control_ref) DO UPDATE SET
+                        framework   = COALESCE(EXCLUDED.framework,   controls_library.framework),
+                        name        = EXCLUDED.name,
+                        description = COALESCE(EXCLUDED.description, controls_library.description),
+                        category    = COALESCE(EXCLUDED.category,    controls_library.category),
+                        domain      = COALESCE(EXCLUDED.domain,      controls_library.domain)
+                    """,
+                    (
+                        ref,
+                        control.get("framework", "Custom"),
+                        control.get("name", ""),
+                        control.get("description") or control.get("desc", ""),
+                        control.get("category", "Custom"),
+                        control.get("domain", "Custom"),
+                    ),
+                )
+        return True
+    return _run(_do, default=False) or False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CEM event templates
+# ─────────────────────────────────────────────────────────────────────────────
+
+def seed_cem_event_templates(templates: list) -> int:
+    """Insert default CEM event templates (skips duplicates). Returns rows inserted."""
+    if not templates:
+        return 0
+    def _do():
+        rows = [
+            (
+                t.get("control", ""),
+                t.get("area", ""),
+                t.get("risk") or t.get("risk_label", ""),
+                t.get("severity", "P2"),
+                t.get("exposure"),
+                t.get("category"),
+                t.get("rc") or t.get("rc_narrative"),
+                i,
+            )
+            for i, t in enumerate(templates)
+            if t.get("control") and t.get("area")
+        ]
+        if not rows:
+            return 0
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO cem_event_templates
+                        (control, area, risk_label, severity, exposure, category, rc_narrative, sort_order)
+                    VALUES %s
+                    ON CONFLICT (control, area) DO NOTHING
+                    """,
+                    rows,
+                )
+                return cur.rowcount
+    return _run(_do, default=0) or 0
+
+
+def get_cem_event_templates(active_only: bool = True) -> list:
+    """Return CEM event templates, ordered by sort_order."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                q = (
+                    "SELECT id, control, area, risk_label, severity, exposure, category, rc_narrative "
+                    "FROM cem_event_templates"
+                )
+                if active_only:
+                    q += " WHERE is_active = TRUE"
+                q += " ORDER BY sort_order, id"
+                cur.execute(q)
+                return [
+                    {
+                        "id":       r[0],
+                        "control":  r[1],
+                        "area":     r[2],
+                        "risk":     r[3],
+                        "severity": r[4],
+                        "exposure": r[5],
+                        "category": r[6],
+                        "rc":       r[7],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def upsert_cem_event_template(template: dict) -> Optional[int]:
+    """Insert or update a CEM event template. Returns the row id."""
+    if not template.get("control") or not template.get("area"):
+        return None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO cem_event_templates
+                        (control, area, risk_label, severity, exposure, category, rc_narrative, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (control, area) DO UPDATE SET
+                        risk_label   = EXCLUDED.risk_label,
+                        severity     = EXCLUDED.severity,
+                        exposure     = COALESCE(EXCLUDED.exposure,     cem_event_templates.exposure),
+                        category     = COALESCE(EXCLUDED.category,     cem_event_templates.category),
+                        rc_narrative = COALESCE(EXCLUDED.rc_narrative, cem_event_templates.rc_narrative),
+                        updated_at   = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        template["control"],
+                        template["area"],
+                        template.get("risk") or template.get("risk_label", ""),
+                        template.get("severity", "P2"),
+                        template.get("exposure"),
+                        template.get("category"),
+                        template.get("rc") or template.get("rc_narrative"),
+                    ),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ticker → CIK seed (populates companies table from a static map)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def seed_ticker_cik_map(ticker_cik: dict) -> int:
+    """Upsert minimal company rows from a ticker→CIK dict. Returns rows affected."""
+    if not ticker_cik:
+        return 0
+    def _do():
+        rows = [
+            (tick.upper(), cik.lstrip("0") or "0", tick.upper())
+            for tick, cik in ticker_cik.items()
+        ]
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO companies (ticker, cik, company_name)
+                    VALUES %s
+                    ON CONFLICT (ticker) DO UPDATE SET
+                        cik = COALESCE(EXCLUDED.cik, companies.cik),
+                        updated_at = NOW()
+                    """,
+                    rows,
+                )
+                return cur.rowcount
+    return _run(_do, default=0) or 0
+
+
+def get_cik_for_ticker(ticker: str) -> Optional[str]:
+    """Return the CIK (zero-padded to 10 digits) for a ticker, or None if not found."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT cik FROM companies WHERE ticker = %s AND cik IS NOT NULL",
+                    (ticker.upper(),),
+                )
+                row = cur.fetchone()
+                if not row or not row[0]:
+                    return None
+                return str(row[0]).zfill(10)
+    return _run(_do)
