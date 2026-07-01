@@ -252,6 +252,7 @@ function UBOGovPanel() {
   const filtered = adjudicated.filter(r => {
     if (filter === "all")    return true;
     if (filter === "review") return r.requires_human_review;
+    if (filter === "GITHUB" || filter === "MCP_PROXY") return (r.source_system || "MCP_PROXY") === filter;
     return r.risk_tier === filter;
   });
 
@@ -320,6 +321,8 @@ function UBOGovPanel() {
             { id:"MEDIUM",   l:"Medium" },
             { id:"LOW",      l:"Low" },
             { id:"review",   l:"Needs Review" },
+            { id:"GITHUB",   l:"GitHub" },
+            { id:"MCP_PROXY",l:"MCP" },
           ].map(f => (
             <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
               {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
@@ -428,6 +431,9 @@ function UBOAdjRow({ row, expanded, onToggle }) {
       <div className="ubo-adj-head" onClick={onToggle}>
         <span className="ubo-tier-badge"    style={{background:ts.bg, color:ts.ink}}>{tier}</span>
         <span className="ubo-verdict-badge" style={{background:vs.bg, color:vs.ink}}>{verdict}</span>
+        {(row.source_system || "MCP_PROXY") === "GITHUB" && (
+          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:"#1a1a2e",color:"#58a6ff",fontFamily:"Geist Mono,monospace",flexShrink:0,letterSpacing:".06em"}}>GH</span>
+        )}
         <span className="mono ubo-tool-name">{row.target_tool || "unknown"}</span>
         <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>{row.server_name}</span>
         {row.requires_human_review && <span className="ubo-review-flag">⚠ REVIEW</span>}
