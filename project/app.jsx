@@ -1526,13 +1526,14 @@ function App() {
 
           {/* ---- Controls Monitor ---- */}
           {activeScreen === "controls" && (
-          <div className="panel active">
+          <div className="panel active" style={{display:"flex",flexDirection:"column",gap:0}}>
             <CEMPanel
               events={events} setEvents={setEvents}
               filter={cemFilter} setFilter={setCemFilter}
               expanded={cemExpanded} setExpanded={setCemExpanded}
               onAckNotif={ackNotif}
               onInject={() => fireSyntheticEvent(1)} />
+            <UBOGovPanel />
           </div>
           )}
 

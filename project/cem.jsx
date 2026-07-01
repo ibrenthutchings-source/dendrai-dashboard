@@ -175,4 +175,296 @@ function CEMMeta({ l, v }) {
   );
 }
 
-Object.assign(window, { CEMPanel, TIERS, notifMsgFor });
+// ── UBO Governance Brain panel ────────────────────────────────────────────────
+
+const _UBO_TIER_STYLE = {
+  CRITICAL: { bg: "var(--red-soft)",   ink: "var(--red-ink)"   },
+  HIGH:     { bg: "var(--amber-soft)", ink: "var(--amber-ink)" },
+  MEDIUM:   { bg: "var(--blue-soft)",  ink: "var(--blue-ink)"  },
+  LOW:      { bg: "var(--green-soft)", ink: "var(--green-ink)" },
+};
+const _UBO_VERDICT_STYLE = {
+  ESCALATE:          { bg: "var(--red-soft)",    ink: "var(--red-ink)"   },
+  MONITOR:           { bg: "var(--amber-soft)",  ink: "var(--amber-ink)" },
+  CLEAR:             { bg: "var(--green-soft)",  ink: "var(--green-ink)" },
+  INSUFFICIENT_DATA: { bg: "var(--surface-2)",   ink: "var(--ink-3)"     },
+};
+
+function UBOGovPanel() {
+  const [adjudicated, setAdjudicated] = useState([]);
+  const [humanReview, setHumanReview] = useState([]);
+  const [latency,     setLatency]     = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [triggering,  setTriggering]  = useState(false);
+  const [filter,      setFilter]      = useState("all");
+  const [expanded,    setExpanded]    = useState(new Set());
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [fetchErr,    setFetchErr]    = useState(null);
+
+  async function refresh() {
+    const base = window.MCP_API_BASE || "http://127.0.0.1:8001";
+    try {
+      const [adjRes, hrRes, latRes] = await Promise.all([
+        fetch(`${base}/observability/telemetry/adjudicated?limit=100`),
+        fetch(`${base}/observability/telemetry/human-review`),
+        fetch(`${base}/observability/telemetry/summary`),
+      ]);
+      if (adjRes.ok) { const d = await adjRes.json(); setAdjudicated(d.rows || []); }
+      if (hrRes.ok)  { const d = await hrRes.json();  setHumanReview(d.rows || []); }
+      if (latRes.ok) { const d = await latRes.json(); setLatency(d.rows || []); }
+      setFetchErr(null);
+      setLastRefresh(new Date());
+    } catch (e) {
+      setFetchErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function triggerProcess() {
+    setTriggering(true);
+    try {
+      const base = window.MCP_API_BASE || "http://127.0.0.1:8001";
+      await fetch(`${base}/observability/telemetry/process`, { method: "POST" });
+      await refresh();
+    } finally {
+      setTriggering(false);
+    }
+  }
+
+  const counts = adjudicated.reduce(
+    (acc, r) => {
+      if (r.risk_tier === "CRITICAL") acc.critical++;
+      else if (r.risk_tier === "HIGH") acc.high++;
+      if (r.requires_human_review) acc.review++;
+      acc.total++;
+      return acc;
+    },
+    { critical: 0, high: 0, review: 0, total: 0 },
+  );
+
+  const filtered = adjudicated.filter(r => {
+    if (filter === "all")    return true;
+    if (filter === "review") return r.requires_human_review;
+    return r.risk_tier === filter;
+  });
+
+  return (
+    <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{marginTop:0,borderTop:"2px solid var(--line)"}}>
+      <BBTermHeader
+        section="UBO GOVERNANCE BRAIN"
+        title="Medallion Pipeline · MCP Telemetry Adjudication"
+        status={`${counts.total} ADJUDICATED  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
+        actions={
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {lastRefresh && (
+              <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
+                REFRESHED {lastRefresh.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}
+              </span>
+            )}
+            <button className="btn btn-sm" onClick={refresh} disabled={loading}>
+              <Icon name="bolt" size={12}/> REFRESH
+            </button>
+            <button className="btn btn-sm btn-primary" onClick={triggerProcess} disabled={triggering}>
+              {triggering ? <><span className="spin"/> Processing…</> : "▶ PROCESS QUEUE"}
+            </button>
+          </div>
+        }
+      />
+
+      <div className="bb-stat-ticker">
+        <div className="bb-ticker-item"><div className="bb-ticker-label">TOTAL ADJUDICATED</div><div className="bb-ticker-val">{counts.total}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">CRITICAL</div><div className={`bb-ticker-val${counts.critical > 0 ? " red" : ""}`}>{counts.critical}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">HIGH</div><div className={`bb-ticker-val${counts.high > 0 ? " amber" : ""}`}>{counts.high}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">NEEDS REVIEW</div><div className={`bb-ticker-val${counts.review > 0 ? " orange" : ""}`}>{counts.review}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">TOOLS MONITORED</div><div className="bb-ticker-val">{latency.length}</div></div>
+      </div>
+
+      {fetchErr && (
+        <div style={{margin:"8px 18px",padding:"8px 12px",background:"var(--red-soft)",borderRadius:6,fontSize:11,color:"var(--red-ink)"}}>
+          ⚠ API unavailable: {fetchErr} — ensure api_server.py is running
+        </div>
+      )}
+
+      {humanReview.length > 0 && (
+        <>
+          <div className="bb-section-sep">
+            <span style={{color:"var(--red-ink)"}}>⚠ HUMAN REVIEW QUEUE</span>
+            <span>{humanReview.length} REQUIRING ATTENTION</span>
+          </div>
+          <div style={{padding:"0 18px 10px"}}>
+            {humanReview.slice(0, 5).map((r, i) => (
+              <UBOReviewRow key={i} row={r} />
+            ))}
+            {humanReview.length > 5 && (
+              <div style={{fontSize:11,color:"var(--ink-3)",padding:"4px 0"}}>
+                + {humanReview.length - 5} more — set filter to "Needs Review" to see all
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      <div style={{padding:"0 18px"}}>
+        <div className="cem-toolbar">
+          {[
+            { id:"all",      l:"All" },
+            { id:"CRITICAL", l:"Critical" },
+            { id:"HIGH",     l:"High" },
+            { id:"MEDIUM",   l:"Medium" },
+            { id:"LOW",      l:"Low" },
+            { id:"review",   l:"Needs Review" },
+          ].map(f => (
+            <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
+              {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bb-section-sep">
+        <span>ADJUDICATION LOG</span>
+        <span>{filtered.length} EVENTS SHOWN</span>
+      </div>
+
+      {loading ? (
+        <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
+          <span className="spin"/> Loading UBO governance data…
+        </div>
+      ) : filtered.length === 0 ? (
+        <Empty>
+          {counts.total === 0
+            ? "No adjudications yet. Click \"Process Queue\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
+            : "No events match this filter."}
+        </Empty>
+      ) : (
+        <div style={{padding:"0 18px 18px"}}>
+          {filtered.map((r, i) => (
+            <UBOAdjRow
+              key={i}
+              row={r}
+              expanded={expanded.has(i)}
+              onToggle={() => {
+                const next = new Set(expanded);
+                next.has(i) ? next.delete(i) : next.add(i);
+                setExpanded(next);
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {latency.length > 0 && (
+        <>
+          <div className="bb-section-sep">
+            <span>MCP TOOL LATENCY SUMMARY</span>
+            <span>{latency.length} TOOLS</span>
+          </div>
+          <div style={{padding:"0 18px 18px",overflowX:"auto"}}>
+            <table className="ubo-lat-table">
+              <thead>
+                <tr>
+                  <th>Server</th><th>Tool</th><th>Calls</th>
+                  <th>Avg ms</th><th>P50</th><th>P95</th><th>P99</th>
+                  <th>Errors</th><th>Err %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {latency.map((r, i) => (
+                  <tr key={i}>
+                    <td className="mono">{r.server_name || "—"}</td>
+                    <td className="mono">{r.target_tool || "—"}</td>
+                    <td>{r.call_count}</td>
+                    <td>{r.avg_ms != null ? Math.round(r.avg_ms) : "—"}</td>
+                    <td>{r.p50_ms != null ? Math.round(r.p50_ms) : "—"}</td>
+                    <td className={r.p95_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p95_ms != null ? Math.round(r.p95_ms) : "—"}</td>
+                    <td className={r.p99_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p99_ms != null ? Math.round(r.p99_ms) : "—"}</td>
+                    <td className={r.error_count > 0 ? "ubo-lat-err" : ""}>{r.error_count ?? "—"}</td>
+                    <td className={r.error_pct > 0 ? "ubo-lat-warn" : ""}>{r.error_pct != null ? `${r.error_pct.toFixed(1)}%` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function UBOReviewRow({ row }) {
+  const ts = _UBO_TIER_STYLE[row.risk_tier] || _UBO_TIER_STYLE.LOW;
+  return (
+    <div className="ubo-review-row">
+      <span className="ubo-tier-badge" style={{background:ts.bg,color:ts.ink}}>{row.risk_tier || "—"}</span>
+      <span className="mono" style={{fontSize:11,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+        {row.target_tool || "unknown"}
+      </span>
+      <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>{row.server_name}</span>
+      <span className="mono" style={{fontSize:11,color:"var(--red-ink)",fontWeight:600,flexShrink:0}}>
+        {row.risk_score != null ? row.risk_score.toFixed(3) : "—"}
+      </span>
+    </div>
+  );
+}
+
+function UBOAdjRow({ row, expanded, onToggle }) {
+  const tier    = row.risk_tier    || "LOW";
+  const verdict = row.final_verdict || "CLEAR";
+  const ts  = _UBO_TIER_STYLE[tier]       || _UBO_TIER_STYLE.LOW;
+  const vs  = _UBO_VERDICT_STYLE[verdict] || _UBO_VERDICT_STYLE.CLEAR;
+  const violations = row.policy_violations || [];
+  const flags      = row.risk_flags        || [];
+  const conflicts  = row.conflict_flags    || [];
+
+  return (
+    <div className={`ubo-adj-row${row.requires_human_review ? " needs-review" : ""}`}>
+      <div className="ubo-adj-head" onClick={onToggle}>
+        <span className="ubo-tier-badge"    style={{background:ts.bg, color:ts.ink}}>{tier}</span>
+        <span className="ubo-verdict-badge" style={{background:vs.bg, color:vs.ink}}>{verdict}</span>
+        <span className="mono ubo-tool-name">{row.target_tool || "unknown"}</span>
+        <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>{row.server_name}</span>
+        {row.requires_human_review && <span className="ubo-review-flag">⚠ REVIEW</span>}
+        <span className="mono" style={{fontSize:11,fontWeight:600,flexShrink:0}}>
+          {row.risk_score != null ? row.risk_score.toFixed(3) : "—"}
+        </span>
+        <span className="mono ubo-ts">
+          {row.adjudicated_at ? new Date(row.adjudicated_at).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : ""}
+        </span>
+        <Icon name={expanded ? "chev-u" : "chev-d"} size={13} className="muted"/>
+      </div>
+      {expanded && (
+        <div className="ubo-adj-body">
+          <div className="cem-meta">
+            <CEMMeta l="Session ID"    v={row.session_id ? row.session_id.slice(0, 8) + "…" : "—"} />
+            <CEMMeta l="Confidence"    v={row.ensemble_confidence != null ? `${(row.ensemble_confidence * 100).toFixed(0)}%` : "—"} />
+            <CEMMeta l="Risk Flags"    v={flags.length > 0 ? flags.join(", ") : "none"} />
+            <CEMMeta l="Conflict Flags" v={conflicts.length > 0 ? conflicts.join(", ") : "none"} />
+          </div>
+          {violations.length > 0 && (
+            <>
+              <div className="cem-section-lbl">Policy violations ({violations.length})</div>
+              <div className="ubo-violations">
+                {violations.map((v, i) => <div key={i} className="ubo-violation-item">{v}</div>)}
+              </div>
+            </>
+          )}
+          {row.adjudicator_reasoning && (
+            <>
+              <div className="cem-section-lbl">Adjudicator reasoning</div>
+              <div className="rca-box">{row.adjudicator_reasoning}</div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { CEMPanel, UBOGovPanel, TIERS, notifMsgFor });
