@@ -48,9 +48,13 @@ import json
 import os
 import sys
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+load_dotenv()
+
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import audit_log, cap_output, check_rate_limit, validate_enum, validate_int_range, validate_ticker
 from predictive_analytics_tool import (
     compute_financial_ratios,
     compute_beneish_mscore,
@@ -88,6 +92,7 @@ def _get_xbrl(ticker: str):
     err = _edgar_check()
     if err:
         raise RuntimeError(err)
+    ticker = validate_ticker(ticker)
     meta, _ = get_company_info(ticker)
     xbrl    = fetch_xbrl_facts(meta["cik"])
     return meta, xbrl
@@ -110,11 +115,13 @@ def predictive_financial_ratios(ticker: str) -> str:
         ticker: NYSE/NASDAQ ticker symbol (e.g. NVDA, MSFT, AAPL)
     """
     try:
+        check_rate_limit("predictive_financial_ratios", max_per_minute=15)
+        audit_log("predictive_financial_ratios", ticker=ticker)
         meta, xbrl = _get_xbrl(ticker)
         ratios = compute_financial_ratios(xbrl)
         out = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in ratios.items()}
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "sic":          meta.get("sic", ""),
             "ratios":       out,
@@ -140,11 +147,13 @@ def predictive_beneish_mscore(ticker: str) -> str:
         ticker: NYSE/NASDAQ ticker symbol
     """
     try:
+        check_rate_limit("predictive_beneish_mscore", max_per_minute=15)
+        audit_log("predictive_beneish_mscore", ticker=ticker)
         meta, xbrl = _get_xbrl(ticker)
         ratios = compute_financial_ratios(xbrl)
         result = compute_beneish_mscore(ratios)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             **result,
         }, indent=2)
@@ -173,6 +182,8 @@ def predictive_industry_risks(
         industry: Override auto-detected industry (optional)
     """
     try:
+        check_rate_limit("predictive_industry_risks", max_per_minute=15)
+        audit_log("predictive_industry_risks", ticker=ticker, industry=industry)
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
@@ -181,7 +192,7 @@ def predictive_industry_risks(
         ratios = compute_financial_ratios(xbrl)
         result = compute_risk_scores(ratios, ind)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "sic":          sic,
             "detected_industry": ind,
@@ -211,6 +222,8 @@ def predictive_scenario_analysis(
         industry: Override auto-detected industry template (optional)
     """
     try:
+        check_rate_limit("predictive_scenario_analysis", max_per_minute=15)
+        audit_log("predictive_scenario_analysis", ticker=ticker, industry=industry)
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
@@ -220,7 +233,7 @@ def predictive_scenario_analysis(
         risks  = compute_risk_scores(ratios, ind)
         result = compute_scenario_analysis(ratios, risks)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "industry":     ind,
             "scenarios":    result,
@@ -248,6 +261,8 @@ def predictive_grey_swan(
         industry: Override auto-detected industry template (optional)
     """
     try:
+        check_rate_limit("predictive_grey_swan", max_per_minute=15)
+        audit_log("predictive_grey_swan", ticker=ticker, industry=industry)
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
@@ -258,7 +273,7 @@ def predictive_grey_swan(
         q_rev  = (ratios.get("revenue_now") or 0) / 4
         result = compute_grey_swan(risks, q_rev if q_rev > 0 else None)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "industry":     ind,
             **result,
@@ -346,7 +361,8 @@ def predictive_forecast(
         if len(vals) < 8:
             return f"Error: only {len(vals)} quarters of {metric} data; need ≥8"
 
-        model_lc = model.lower()
+        horizon = validate_int_range(horizon, 1, 12, "horizon")
+        model_lc = validate_enum(model, {"arima", "prophet", "rf", "ensemble"}, "model", default="ensemble").lower()
         if model_lc == "arima":
             from predictive_analytics_tool import fit_arima
             result = fit_arima(vals, horizon=horizon)
@@ -439,6 +455,8 @@ def predictive_rss_signals(
         max_articles: Max articles to fetch per feed (default 20)
     """
     try:
+        ticker = validate_ticker(ticker) if ticker else ticker
+        max_articles = validate_int_range(max_articles, 1, 50, "max_articles")
         result = compute_rss_signals(
             ticker=ticker,
             company_name=company_name,
@@ -470,6 +488,7 @@ def predictive_qoq_momentum(
         window: Number of quarters to analyse (default 8)
     """
     try:
+        window = validate_int_range(window, 2, 40, "window")
         meta, xbrl = _get_xbrl(ticker)
         rev_q = extract_quarterly_series(xbrl, "Revenue")
         if not rev_q:

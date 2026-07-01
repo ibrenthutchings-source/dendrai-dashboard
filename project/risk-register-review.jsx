@@ -887,7 +887,10 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 
                   {/* Framework columns — same format as Enterprise Risks */}
                   {fwCols.map(fw => {
-                    const fwRefs       = allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
+                    // Own-framework column shows ALL assigned controls (cross-framework assignments included)
+                    const fwRefs       = r.source_framework === fw
+                      ? allRefs.filter(ref => CTRL_BY_REF[ref])
+                      : allRefs.filter(ref => CTRL_BY_REF[ref]?.framework === fw);
                     const cellId       = `${key}:${fw}`;
                     const isSavingCell = savingCells.has(cellId);
                     const pickerOpen   = fwPicker?.key === key && fwPicker?.fw === fw;

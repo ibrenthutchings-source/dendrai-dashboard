@@ -67,6 +67,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import confine_path, validate_ticker, validate_enum, yaml_escape
 
 from risks_as_code import to_oscal, to_coso_erm
 import db
@@ -237,6 +238,12 @@ def rac_from_loop_output(
         JSON: {"oscal": "...", "coso_erm": "...", "summary": {...}}
     """
     try:
+        ticker = validate_ticker(ticker)
+        framework = validate_enum(framework, {"oscal", "coso_erm", "both"}, "framework", default="both")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    try:
         risks = json.loads(risks_json)
     except json.JSONDecodeError as e:
         return json.dumps({"error": f"Invalid risks_json — {e}"})
@@ -250,16 +257,16 @@ def rac_from_loop_output(
     signals    = json.loads(signals_json)    if signals_json    else []
 
     artifacts = _build_artifacts(
-        framework, ticker.upper(), risks, period, industry, ratios,
+        framework, ticker, risks, period, industry, ratios,
         objectives, maps, signals, run_id,
     )
 
     if save_to_db and run_id and db.is_available():
         for fw, content in artifacts.items():
-            db.save_risks_as_code_artifact(run_id, ticker.upper(), fw, content)
+            db.save_risks_as_code_artifact(run_id, ticker, fw, content)
 
     artifacts["summary"] = {
-        "ticker":     ticker.upper(),
+        "ticker":     ticker,
         "period":     period,
         "industry":   industry,
         "risk_count": len(risks),
@@ -402,7 +409,10 @@ def rac_from_excel(
 
     from pathlib import Path
 
-    fp = Path(file_path)
+    try:
+        fp = confine_path(file_path)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if not fp.exists():
         return json.dumps({"error": f"File not found: {file_path}"})
     if fp.suffix.lower() not in (".xlsx", ".xls", ".csv"):
@@ -501,6 +511,11 @@ def rac_validate(yaml_content: str, framework: str = "oscal") -> str:
     Returns:
         JSON: {"valid": bool, "errors": [...], "warnings": [...], "framework": "..."}
     """
+    try:
+        framework = validate_enum(framework, {"oscal", "coso_erm"}, "framework", default=None)
+    except ValueError as e:
+        return json.dumps({"valid": False, "errors": [str(e)], "warnings": [], "framework": framework})
+
     try:
         import yaml as _yaml
         doc = _yaml.safe_load(yaml_content)
@@ -753,19 +768,19 @@ def rac_from_review(
             for s in included:
                 ref = s["risk_ref"]
                 base = scores_by_ref.get(ref, {})
-                wording = (s.get("current_wording") or s.get("original_wording") or "").replace('"', '\\"')
-                category = base.get("category") or "—"
+                wording = yaml_escape(s.get("current_wording") or s.get("original_wording") or "")
+                category = yaml_escape(base.get("category") or "—")
                 score = base.get("score")
-                rag = base.get("rag") or base.get("rag_status") or "—"
-                source_fw = base.get("source_framework") or fw_label
-                reason = s.get("reason_for_change") or ""
+                rag = yaml_escape(base.get("rag") or base.get("rag_status") or "—")
+                source_fw = yaml_escape(base.get("source_framework") or fw_label)
+                reason = yaml_escape(s.get("reason_for_change") or "")
                 controls = s.get("controls_assigned") or []
 
                 lines.append(f"  - id:               {ref}")
                 lines.append(f'    name:             "{wording}"')
-                lines.append(f"    category:         {category}")
-                lines.append(f"    source_framework: {source_fw}")
-                lines.append(f"    rag:              {rag}")
+                lines.append(f'    category:         "{category}"')
+                lines.append(f'    source_framework: "{source_fw}"')
+                lines.append(f'    rag:              "{rag}"')
                 if score is not None:
                     lines.append(f"    score:            {float(score):.1f}   # out of 25")
                 if reason:
@@ -777,7 +792,7 @@ def rac_from_review(
                         cname = _ctrl_name(ctrl_ref)
                         lines.append(f"      - ref: {ctrl_ref}")
                         if cname:
-                            lines.append(f'        name: "{cname}"')
+                            lines.append(f'        name: "{yaml_escape(cname)}"')
                         if isinstance(ctrl, dict) and ctrl.get("generate_code"):
                             lines.append("        generate_control_as_code: true")
                 lines.append("")
@@ -786,8 +801,8 @@ def rac_from_review(
             lines.append("excluded_risks:")
             for s in excluded:
                 ref = s["risk_ref"]
-                wording = (s.get("current_wording") or s.get("original_wording") or "").replace('"', '\\"')
-                reason = (s.get("reason_for_change") or "No reason provided").replace('"', '\\"')
+                wording = yaml_escape(s.get("current_wording") or s.get("original_wording") or "")
+                reason = yaml_escape(s.get("reason_for_change") or "No reason provided")
                 lines.append(f"  - id:     {ref}")
                 lines.append(f'    name:   "{wording}"')
                 lines.append(f'    reason: "{reason}"')
