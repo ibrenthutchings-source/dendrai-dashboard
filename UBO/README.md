@@ -185,3 +185,4 @@ A single agent with confidence ≥ 0.85 and verdict ESCALATE can veto the ensemb
 | Council agents (Quant, Linguist, Graph Architect) | [docs/agents.md](docs/agents.md) |
 | Council orchestration and Adjudicator | [docs/council.md](docs/council.md) |
 | Policy-as-Code rule registry | [docs/policy.md](docs/policy.md) |
+| GitHub webhook, schema v2, Controls Monitor panel | [docs/integrations.md](docs/integrations.md) |
