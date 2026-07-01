@@ -929,6 +929,9 @@ def _conn():
         _pool.putconn(conn)
 
 
+get_conn = _conn   # public alias used by mcp_governance and github_endpoints
+
+
 def ping() -> dict:
     """Check the database connection and report pgvector availability.
 

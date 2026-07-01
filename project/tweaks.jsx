@@ -25,10 +25,15 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
           ]}
           onChange={(v) => setTweak("density", v)}
         />
-        <TweakToggle
-          label="Dark mode"
-          value={!!tweaks.dark}
-          onChange={(v) => setTweak("dark", v)}
+        <TweakRadio
+          label="Color scheme"
+          value={tweaks.colorScheme || (tweaks.dark ? "dark" : "light")}
+          options={[
+            { label: "Light",  value: "light" },
+            { label: "Dark",   value: "dark" },
+            { label: "System", value: "system" },
+          ]}
+          onChange={(v) => setTweak("colorScheme", v)}
         />
       </TweakSection>
 
