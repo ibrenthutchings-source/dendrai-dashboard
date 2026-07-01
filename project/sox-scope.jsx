@@ -275,8 +275,7 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
     if (!form.system_name.trim()) { setErr("System name required"); return; }
     setSaving(true); setErr(null);
     try {
-      const apiBase = (window.MCP_API_BASE || "http://127.0.0.1:8001");
-      const res = await fetch(`${apiBase}/sox/systems/${encodeURIComponent(ticker)}`, {
+      const res = await fetch(`/api/mcp/sox/systems/${encodeURIComponent(ticker)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
@@ -295,8 +294,7 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
 
   async function handleRemove(sys) {
     if (!confirm(`Remove ${sys.system_name} from SOX registry?`)) return;
-    const apiBase = (window.MCP_API_BASE || "http://127.0.0.1:8001");
-    await fetch(`${apiBase}/sox/systems/${encodeURIComponent(ticker)}/${sys.id}`, { method: "DELETE" });
+    await fetch(`/api/mcp/sox/systems/${encodeURIComponent(ticker)}/${sys.id}`, { method: "DELETE" });
     onRemove && onRemove(sys.id);
   }
 
@@ -607,14 +605,13 @@ function SoxScopePanel({
   const [activeTab, setActiveTab]         = React.useState("accounts");
 
   const displayScope = localScope;
-  const apiBase = window.MCP_API_BASE || "http://127.0.0.1:8001";
 
   // Load from API on mount / when runId changes
   React.useEffect(() => {
     if (!runId) return;
     (async () => {
       try {
-        const r = await fetch(`${apiBase}/sox/scope/${runId}`);
+        const r = await fetch(`/api/mcp/sox/scope/${runId}`);
         if (r.ok) {
           const data = await r.json();
           setLocalScope(data);
@@ -649,7 +646,7 @@ function SoxScopePanel({
         trigger_reason: "manual_rerun",
       };
 
-      const res = await fetch(`${apiBase}/sox/scope`, {
+      const res = await fetch(`/api/mcp/sox/scope`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
