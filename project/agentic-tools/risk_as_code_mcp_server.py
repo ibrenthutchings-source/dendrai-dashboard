@@ -40,6 +40,7 @@ Claude Code — add to .claude/settings.json:
     rac_from_database      Fetch risks from PostgreSQL → OSCAL / COSO ERM YAML
     rac_from_excel         Parse Excel/CSV risk register → OSCAL / COSO ERM YAML
     rac_from_review        Convert a Risk Register Review session → YAML
+    rac_persist_artifacts  Explicitly persist YAML artifacts to DB (write-gated)
     rac_validate           Validate structural integrity of a Risk-as-Code YAML
     rac_list_runs          List DB runs with existing artifacts for a ticker
     rac_list_reviews       List Risk Register Review sessions saved from the UI
@@ -64,10 +65,16 @@ import os
 import sys
 from typing import Optional
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+load_dotenv()
+
 sys.path.insert(0, os.path.dirname(__file__))
-from mcp_guards import confine_path, validate_ticker, validate_enum, yaml_escape
+from mcp_guards import (
+    audit_log, cap_output, check_rate_limit, check_read_only,
+    confine_path, validate_ticker, validate_enum, yaml_escape,
+)
 
 from risks_as_code import to_oscal, to_coso_erm
 import db
@@ -217,9 +224,11 @@ def rac_from_loop_output(
     maps_json: str = "",
     signals_json: str = "",
     run_id: Optional[int] = None,
-    save_to_db: bool = False,
 ) -> str:
     """Convert a JSON risk array from the Dendrai risk loop into Risk-as-Code YAML.
+
+    To persist the generated artifacts to the database, call rac_persist_artifacts
+    after this tool returns the YAML content.
 
     Args:
         risks_json:      JSON string — array of risk objects from output.s2.risks
@@ -231,13 +240,14 @@ def rac_from_loop_output(
         objectives_json: Optional JSON array of audit objectives (output.s3.objectives)
         maps_json:       Optional JSON array of MAPs (output.s4.maps)
         signals_json:    Optional JSON array of signals (output.s1.signals)
-        run_id:          Optional DB run_id to attach to saved artifacts
-        save_to_db:      Persist generated YAML to risks_as_code_artifacts table
+        run_id:          Optional DB run_id to attach to the output metadata
 
     Returns:
         JSON: {"oscal": "...", "coso_erm": "...", "summary": {...}}
     """
     try:
+        check_rate_limit("rac_from_loop_output", max_per_minute=20)
+        audit_log("rac_from_loop_output", ticker=ticker, framework=framework, run_id=run_id)
         ticker = validate_ticker(ticker)
         framework = validate_enum(framework, {"oscal", "coso_erm", "both"}, "framework", default="both")
     except ValueError as e:
@@ -261,10 +271,6 @@ def rac_from_loop_output(
         objectives, maps, signals, run_id,
     )
 
-    if save_to_db and run_id and db.is_available():
-        for fw, content in artifacts.items():
-            db.save_risks_as_code_artifact(run_id, ticker, fw, content)
-
     artifacts["summary"] = {
         "ticker":     ticker,
         "period":     period,
@@ -276,9 +282,9 @@ def rac_from_loop_output(
         "source":     "loop_output",
         "framework":  framework,
         "run_id":     run_id,
-        "saved_to_db": save_to_db and bool(run_id) and db.is_available(),
+        "note":       "Call rac_persist_artifacts to save YAML to database.",
     }
-    return json.dumps(artifacts, default=str)
+    return cap_output(json.dumps(artifacts, default=str))
 
 
 @mcp.tool()
@@ -299,6 +305,12 @@ def rac_from_database(
     Returns:
         JSON: {"oscal": "...", "coso_erm": "...", "summary": {...}, "run_id": N}
     """
+    try:
+        check_rate_limit("rac_from_database")
+        audit_log("rac_from_database", ticker=ticker, run_id=run_id)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
     if not db.is_available():
         return json.dumps({"error": "Database not configured — set DATABASE_URL environment variable"})
 
@@ -366,7 +378,7 @@ def rac_from_database(
         "source":     "database",
         "framework":  framework,
     }
-    return json.dumps(artifacts, default=str)
+    return cap_output(json.dumps(artifacts, default=str))
 
 
 @mcp.tool()
@@ -377,7 +389,6 @@ def rac_from_excel(
     industry: str = "",
     framework: str = "both",
     sheet_name: str = "0",
-    save_to_db: bool = False,
 ) -> str:
     """Parse a risk register Excel or CSV file and convert to Risk-as-Code YAML.
 
@@ -389,6 +400,9 @@ def rac_from_excel(
     When called via the HTTP bridge the frontend uploads the file first;
     the bridge saves it to a temp path and passes that path here.
 
+    To persist the generated artifacts to the database, call rac_persist_artifacts
+    with the returned YAML content.
+
     Args:
         file_path:  Absolute path to .xlsx, .xls, or .csv file on the server
         ticker:     Company ticker symbol
@@ -396,12 +410,17 @@ def rac_from_excel(
         industry:   Industry label, e.g. "Semiconductors"
         framework:  Output format: "oscal" | "coso_erm" | "both"
         sheet_name: Sheet name or zero-based index (default "0" = first sheet)
-        save_to_db: Create a DB run, save risk_scores, and persist YAML artifacts
 
     Returns:
         JSON: {"oscal": "...", "coso_erm": "...", "summary": {...},
                "rows_parsed": N, "warnings": [...]}
     """
+    try:
+        check_rate_limit("rac_from_excel", max_per_minute=10)
+        audit_log("rac_from_excel", ticker=ticker, file_path=file_path, framework=framework)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
     try:
         import pandas as pd
     except ImportError:
@@ -462,39 +481,23 @@ def rac_from_excel(
         framework, ticker_u, risks, period, industry, {}, [], [], [], None,
     )
 
-    # Optionally persist to DB
-    db_run_id: Optional[int] = None
-    if save_to_db and db.is_available():
-        try:
-            db_run_id = db.create_risk_loop_run(
-                None,
-                {"ticker": ticker_u, "industry": industry, "data_mode": "excel"},
-            )
-            if db_run_id:
-                db.save_risk_scores(db_run_id, risks)
-                for fw, content in artifacts.items():
-                    db.save_risks_as_code_artifact(db_run_id, ticker_u, fw, content)
-        except Exception as e:
-            warnings.append(f"DB persist failed: {e}")
-
     artifacts["rows_parsed"] = len(risks)
     artifacts["warnings"]    = warnings
     artifacts["summary"] = {
-        "ticker":      ticker_u,
-        "period":      period,
-        "industry":    industry,
-        "risk_count":  len(risks),
-        "red":         sum(1 for r in risks if r.get("rag") == "R"),
-        "amber":       sum(1 for r in risks if r.get("rag") == "A"),
-        "green":       sum(1 for r in risks if r.get("rag") == "G"),
-        "source":      "excel",
-        "file":        fp.name,
-        "framework":   framework,
-        "run_id":      db_run_id,
-        "saved_to_db": db_run_id is not None,
+        "ticker":         ticker_u,
+        "period":         period,
+        "industry":       industry,
+        "risk_count":     len(risks),
+        "red":            sum(1 for r in risks if r.get("rag") == "R"),
+        "amber":          sum(1 for r in risks if r.get("rag") == "A"),
+        "green":          sum(1 for r in risks if r.get("rag") == "G"),
+        "source":         "excel",
+        "file":           fp.name,
+        "framework":      framework,
         "columns_mapped": list(col_map.keys()),
+        "note":           "Call rac_persist_artifacts to save YAML to database.",
     }
-    return json.dumps(artifacts, default=str)
+    return cap_output(json.dumps(artifacts, default=str))
 
 
 @mcp.tool()
@@ -512,6 +515,8 @@ def rac_validate(yaml_content: str, framework: str = "oscal") -> str:
         JSON: {"valid": bool, "errors": [...], "warnings": [...], "framework": "..."}
     """
     try:
+        check_rate_limit("rac_validate")
+        audit_log("rac_validate", framework=framework)
         framework = validate_enum(framework, {"oscal", "coso_erm"}, "framework", default=None)
     except ValueError as e:
         return json.dumps({"valid": False, "errors": [str(e)], "warnings": [], "framework": framework})
@@ -588,6 +593,12 @@ def rac_list_runs(ticker: str, limit: int = 10) -> str:
         JSON: {"ticker": "...", "runs": [{run_id, run_at, industry, risk_count,
                has_artifacts, frameworks, completed}, ...]}
     """
+    try:
+        check_rate_limit("rac_list_runs")
+        audit_log("rac_list_runs", ticker=ticker)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
     if not db.is_available():
         return json.dumps({"error": "Database not configured — set DATABASE_URL environment variable"})
 
@@ -673,6 +684,12 @@ def rac_list_reviews(run_id: Optional[int] = None, limit: int = 10) -> str:
         JSON: {"reviews": [{id, run_id, review_type, framework, status,
                created_at, completed_at}, ...], "count": N}
     """
+    try:
+        check_rate_limit("rac_list_reviews")
+        audit_log("rac_list_reviews", run_id=run_id)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
     if not db.is_available():
         return json.dumps({"error": "Database not configured — set DATABASE_URL environment variable"})
 
@@ -687,12 +704,14 @@ def rac_from_review(
     period: str = "",
     industry: str = "",
     framework: str = "review",
-    save_to_db: bool = False,
 ) -> str:
     """Generate Risk-as-Code YAML from a completed Risk Register Review session.
 
     Reads the curated risk states saved by the Review screen — wording edits,
     include/exclude decisions, and control assignments — and converts them to YAML.
+
+    To persist the generated artifacts to the database, call rac_persist_artifacts
+    with the returned YAML content.
 
     Args:
         review_id: ID of the review session (use rac_list_reviews to find it)
@@ -705,13 +724,18 @@ def rac_from_review(
                      "coso_erm" – COSO ERM 2017 / ISO 31000:2018 YAML
                      "both"     – oscal + coso_erm
                      "all"      – review + oscal + coso_erm
-        save_to_db: Persist generated OSCAL/COSO artifacts to risks_as_code_artifacts table
 
     Returns:
         JSON: {"review": "...", "oscal": "...", "coso_erm": "...", "summary": {...}}
         Keys present depend on the requested framework.
     """
     import datetime
+
+    try:
+        check_rate_limit("rac_from_review", max_per_minute=20)
+        audit_log("rac_from_review", review_id=review_id, ticker=ticker, framework=framework)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
 
     if not db.is_available():
         return json.dumps({"error": "Database not configured — set DATABASE_URL environment variable"})
@@ -848,10 +872,6 @@ def rac_from_review(
             )
             result.update(artifacts)
 
-            if save_to_db and review.get("run_id") and db.is_available():
-                for fw_key, content in artifacts.items():
-                    db.save_risks_as_code_artifact(review["run_id"], ticker.upper(), fw_key, content)
-
     changed = [
         s for s in states
         if s.get("current_wording") and s.get("original_wording")
@@ -876,10 +896,62 @@ def rac_from_review(
         "wording_changed":  len(changed),
         "controls_assigned": controls_total,
         "output_framework": framework,
-        "saved_to_db":      save_to_db and bool(review.get("run_id")) and db.is_available(),
+        "note":             "Call rac_persist_artifacts to save YAML to database.",
     }
 
-    return json.dumps(result, default=str)
+    return cap_output(json.dumps(result, default=str))
+
+
+@mcp.tool()
+def rac_persist_artifacts(
+    run_id: int,
+    ticker: str,
+    framework: str,
+    yaml_content: str,
+) -> str:
+    """Persist a Risk-as-Code YAML artifact to the database.
+
+    This is the ONLY tool that writes artifacts to the database.
+    It is blocked when MCP_READ_ONLY=true is set in .env.
+
+    Call this after rac_from_loop_output, rac_from_excel, or rac_from_review
+    to explicitly save the generated YAML to risks_as_code_artifacts.
+
+    Args:
+        run_id:       Pipeline run_id to link this artifact to
+        ticker:       Company ticker symbol (e.g. "AAPL")
+        framework:    "oscal" | "coso_erm"
+        yaml_content: The YAML string returned by one of the rac_from_* tools
+
+    Returns:
+        JSON: {"saved": true, "run_id": N, "ticker": "...", "framework": "..."}
+    """
+    try:
+        check_rate_limit("rac_persist_artifacts", max_per_minute=10)
+        check_read_only("DB artifact save")
+        ticker = validate_ticker(ticker)
+        framework = validate_enum(framework, {"oscal", "coso_erm"}, "framework", default=None)
+        audit_log("rac_persist_artifacts", run_id=run_id, ticker=ticker, framework=framework)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    if not db.is_available():
+        return json.dumps({"error": "Database not configured — set DATABASE_URL environment variable"})
+
+    if not yaml_content or not yaml_content.strip():
+        return json.dumps({"error": "yaml_content is empty"})
+
+    try:
+        db.save_risks_as_code_artifact(run_id, ticker, framework, yaml_content)
+        return json.dumps({
+            "saved":     True,
+            "run_id":    run_id,
+            "ticker":    ticker,
+            "framework": framework,
+            "bytes":     len(yaml_content),
+        })
+    except Exception as e:
+        return json.dumps({"error": f"DB save failed: {e}"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

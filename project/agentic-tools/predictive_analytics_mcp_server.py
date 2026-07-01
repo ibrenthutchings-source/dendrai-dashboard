@@ -286,40 +286,42 @@ def predictive_grey_swan(
 def predictive_macro_indicators(
     ticker: str,
     industry: str = "",
-    fred_api_key: str = "",
     min_correlation: float = 0.60,
     lags: str = "1,2,3,4",
 ) -> str:
     """
     Identify leading FRED macro indicators correlated with the company's financials.
 
-    Without a FRED API key, returns pre-computed industry-specific Pearson
-    correlations and lead times for canonical macro series.
+    Without a FRED API key set in .env, returns pre-computed industry-specific
+    Pearson correlations and lead times for canonical macro series.
 
-    With a FRED API key, runs live correlation analysis across 30 FRED series
-    (GDP, unemployment, CPI, VIX, yield curve, credit spreads, and more).
+    With FRED_API_KEY set in .env, runs live correlation analysis across 30 FRED
+    series (GDP, unemployment, CPI, VIX, yield curve, credit spreads, and more).
 
     Get a free FRED API key at: https://fred.stlouisfed.org/docs/api/api_key.html
+    Then add FRED_API_KEY=<your_key> to the .env file in this directory.
 
     Args:
         ticker:          NYSE/NASDAQ ticker symbol
         industry:        Override auto-detected industry (optional)
-        fred_api_key:    FRED API key (falls back to FRED_API_KEY env var)
         min_correlation: Minimum |Pearson r| to include (default 0.60)
         lags:            Comma-separated lags in quarters (default "1,2,3,4")
     """
     try:
+        check_rate_limit("predictive_macro_indicators", max_per_minute=10)
+        audit_log("predictive_macro_indicators", ticker=ticker, industry=industry)
         meta, _ = _get_xbrl(ticker) if _HAS_EDGAR else ({}, {})
         sic = meta.get("sic", "") if meta else ""
         ind = industry.strip() if industry.strip() else detect_industry(sic)
         if ind not in INDUSTRY_TEMPLATES:
             ind = "Generic"
+        fred_api_key = os.environ.get("FRED_API_KEY", "").strip()
         result = get_macro_leading_indicators(
             ticker=ticker, industry=ind, api_key=fred_api_key,
             lags=lags, min_r=min_correlation,
         )
         return json.dumps({
-            "ticker":   ticker.upper(),
+            "ticker":   meta.get("ticker", ticker.upper()) if meta else ticker.upper(),
             "industry": ind,
             **result,
         }, indent=2)
@@ -353,6 +355,8 @@ def predictive_forecast(
         model:   One of arima | prophet | rf | ensemble (default "ensemble")
     """
     try:
+        check_rate_limit("predictive_forecast", max_per_minute=10)
+        audit_log("predictive_forecast", ticker=ticker, metric=metric, model=model)
         meta, xbrl = _get_xbrl(ticker)
         q_series = extract_quarterly_series(xbrl, metric)
         if not q_series:
@@ -410,6 +414,8 @@ def predictive_backtest(
         metric: Financial metric to backtest (default "Revenue")
     """
     try:
+        check_rate_limit("predictive_backtest", max_per_minute=10)
+        audit_log("predictive_backtest", ticker=ticker, metric=metric)
         meta, xbrl = _get_xbrl(ticker)
         q_series = extract_quarterly_series(xbrl, metric)
         if not q_series:
@@ -419,7 +425,7 @@ def predictive_backtest(
             return f"Error: only {len(vals)} quarters; need ≥10 for backtesting"
         result = walk_forward_backtest(vals)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "metric":       metric,
             "n_quarters":   len(vals),
@@ -455,6 +461,8 @@ def predictive_rss_signals(
         max_articles: Max articles to fetch per feed (default 20)
     """
     try:
+        check_rate_limit("predictive_rss_signals", max_per_minute=10)
+        audit_log("predictive_rss_signals", ticker=ticker or "(none)")
         ticker = validate_ticker(ticker) if ticker else ticker
         max_articles = validate_int_range(max_articles, 1, 50, "max_articles")
         result = compute_rss_signals(
@@ -488,6 +496,8 @@ def predictive_qoq_momentum(
         window: Number of quarters to analyse (default 8)
     """
     try:
+        check_rate_limit("predictive_qoq_momentum", max_per_minute=15)
+        audit_log("predictive_qoq_momentum", ticker=ticker, window=window)
         window = validate_int_range(window, 2, 40, "window")
         meta, xbrl = _get_xbrl(ticker)
         rev_q = extract_quarterly_series(xbrl, "Revenue")
@@ -495,7 +505,7 @@ def predictive_qoq_momentum(
             return f"Error: no quarterly Revenue data found for {ticker.upper()}"
         result = compute_qoq_momentum(rev_q, window=window)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             **result,
         }, indent=2)
@@ -507,7 +517,6 @@ def predictive_qoq_momentum(
 def predictive_full_analysis(
     ticker: str,
     industry: str = "",
-    fred_api_key: str = "",
     forecast_horizon: int = 4,
     forecast_metric: str = "Revenue",
     include_rss: bool = True,
@@ -522,7 +531,7 @@ def predictive_full_analysis(
       3.  Industry risk scores (8 risks, RAG per risk, velocity)
       4.  Scenario analysis (Bear / Base / Bull)
       5.  Grey Swan model (T+0→T+90 cascade, impact ladder)
-      6.  FRED macro leading indicators (or industry benchmarks)
+      6.  FRED macro leading indicators (FRED_API_KEY from .env, or industry benchmarks)
       7.  Ensemble time-series forecast (ARIMA + Prophet + RF blend)
       8.  Walk-forward backtest (MAPE, RMSE, R², directional F1)
       9.  RSS signal grading (relevance × severity, per-feed RAG)
@@ -533,13 +542,16 @@ def predictive_full_analysis(
     Args:
         ticker:           NYSE/NASDAQ ticker symbol (e.g. NVDA, AAPL, JPM)
         industry:         Override auto-detected industry (optional)
-        fred_api_key:     FRED API key for live macro correlations (optional)
         forecast_horizon: Quarters ahead to forecast (default 4)
         forecast_metric:  Metric to forecast: Revenue | GrossProfit | NetIncome | etc.
         include_rss:      Fetch and grade live RSS feeds (default True)
         include_fred:     Include macro indicator analysis (default True)
     """
     try:
+        check_rate_limit("predictive_full_analysis", max_per_minute=5)
+        audit_log("predictive_full_analysis", ticker=ticker, industry=industry,
+                  include_rss=include_rss, include_fred=include_fred)
+        fred_api_key = os.environ.get("FRED_API_KEY", "").strip()
         result = run_full_analysis(
             ticker=ticker,
             industry=industry,
@@ -549,7 +561,7 @@ def predictive_full_analysis(
             include_rss=include_rss,
             include_fred=include_fred,
         )
-        return json.dumps(result, indent=2)
+        return cap_output(json.dumps(result, indent=2))
     except Exception as e:
         return f"Error running full analysis: {e}"
 
@@ -562,6 +574,11 @@ def predictive_list_industries() -> str:
     Returns industry names, risk names, categories, and base scores.
     Use these names as the `industry` parameter in other predictive_ tools.
     """
+    try:
+        check_rate_limit("predictive_list_industries")
+        audit_log("predictive_list_industries")
+    except ValueError as e:
+        return f"Error: {e}"
     out = {}
     for ind, risks in INDUSTRY_TEMPLATES.items():
         out[ind] = [
