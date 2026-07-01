@@ -679,6 +679,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
               name: r.name || r.current_wording || "",
               category: r.category || "",
             })),
+            ...(runId ? { run_id: runId } : {}),
           }),
         });
         if (res.ok) {
@@ -2030,7 +2031,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                 {sankeyView ? (
                   <RiskSankey />
                 ) : graphView ? (
-                  <RiskGraphViz risks={allMatrixRisks} />
+                  <RiskGraphViz risks={allMatrixRisks} ticker={ticker} runId={runId} />
                 ) : matrixView ? (
                   <RiskFrameworkMatrix
                     risks={allMatrixRisks}

@@ -120,7 +120,7 @@ function safeId(s) { return (s || "").replace(/[^a-zA-Z0-9]/g, "_"); }
 
 // ─── Build graph ──────────────────────────────────────────────────────────────
 
-function buildGraph(risks) {
+function buildGraph(risks, dbEdges) {
   const allRisks = (risks || [])
     .filter(r => r.id || r.risk_ref)
     .map(r => ({
@@ -157,6 +157,7 @@ function buildGraph(risks) {
       fw: r._fw,
       score: r.score ?? null,
       rag: r.rag || r.rag_status || null,
+      domain: r.domain || r.assigned_domain || null,
     });
     addLink({ id: `m:${rid}`, source: `fw::${r._fw}`, target: rid, type: "membership", fw: r._fw });
   });
@@ -190,6 +191,15 @@ function buildGraph(risks) {
     autoMapControls(r.name || r.current_wording || "", r.category).forEach(ref => {
       addLink({ id: `c:${ref}:${rid}`, source: `ctrl::${ref}`, target: rid, type: "control" });
     });
+  });
+
+  // DB-persisted risk-to-risk relationship edges
+  const riskIds = new Set(allRisks.map(r => r.id || r.risk_ref));
+  (dbEdges || []).forEach(e => {
+    if (!riskIds.has(e.from) || !riskIds.has(e.to)) return;
+    const key = `rel:${e.type}:${[e.from, e.to].sort().join(":::")}`;
+    addLink({ id: key, source: e.from, target: e.to, type: "relationship",
+              relType: e.type, strength: e.strength ?? 0.5 });
   });
 
   return { nodes, links };
@@ -272,6 +282,7 @@ function Legend() {
             { color: "#4f46e5", dash: null,   label: "Membership" },
             { color: "#fbbf24", dash: null,   label: "Cross-Framework" },
             { color: "#22d3ee", dash: "3,2",  label: "Control → Risk" },
+            { color: "#f97316", dash: "5,3",  label: "Risk → Risk" },
           ].map(({ color, dash, label }) => (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: 7 }}>
               <svg width="22" height="8" style={{ flexShrink: 0 }}>
@@ -310,7 +321,7 @@ function FwPalette() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function RiskGraphViz({ risks }) {
+export function RiskGraphViz({ risks, ticker, runId }) {
   const svgRef       = useRef(null);
   const simRef       = useRef(null);
   const zoomRef      = useRef(null);
@@ -318,7 +329,9 @@ export function RiskGraphViz({ risks }) {
   const [showMember, setShowMember] = useState(true);
   const [showCross,  setShowCross]  = useState(true);
   const [showCtrl,   setShowCtrl]   = useState(true);
+  const [showRelations, setShowRelations] = useState(true);
   const [controlsRev, setControlsRev] = useState(0);
+  const [relEdges,   setRelEdges]   = useState([]);
 
   // Load controls from DB on mount; rebuild graph once they arrive
   useEffect(() => {
@@ -337,6 +350,28 @@ export function RiskGraphViz({ risks }) {
       } catch (_) {}
     })();
   }, []);
+
+  // Load persisted risk-to-risk relationship edges from DB graph API
+  useEffect(() => {
+    if (!ticker) return;
+    (async () => {
+      try {
+        const url = runId
+          ? `/api/risk-register/graph/${ticker}/run/${runId}`
+          : `/api/risk-register/graph/${ticker}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        const edges = (data.edges || []).map(e => ({
+          from: e.from,
+          to:   e.to,
+          type: e.type,
+          strength: e.strength ?? 0.5,
+        }));
+        setRelEdges(edges);
+      } catch (_) {}
+    })();
+  }, [ticker, runId]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -376,6 +411,13 @@ export function RiskGraphViz({ risks }) {
       .append("path").attr("d", "M0,0 L0,5 L5,2.5 Z")
       .attr("fill", "#22d3ee").attr("opacity", 0.6);
 
+    // Arrow marker for risk→risk relationship edges
+    defs.append("marker")
+      .attr("id", "arr-rel").attr("markerWidth", 5).attr("markerHeight", 5)
+      .attr("refX", 14).attr("refY", 2.5).attr("orient", "auto")
+      .append("path").attr("d", "M0,0 L0,5 L5,2.5 Z")
+      .attr("fill", "#f97316").attr("opacity", 0.7);
+
     // Dot-grid background pattern
     const pat = defs.append("pattern").attr("id", "dotgrid")
       .attr("patternUnits", "userSpaceOnUse").attr("width", 28).attr("height", 28);
@@ -386,12 +428,13 @@ export function RiskGraphViz({ risks }) {
     svg.append("rect").attr("width", "100%").attr("height", "100%").attr("fill", "url(#dotgrid)");
 
     // ── Build & filter graph ──────────────────────────────────────────────────
-    const { nodes, links } = buildGraph(risks);
+    const { nodes, links } = buildGraph(risks, relEdges);
 
     const filteredLinks = links.filter(l =>
-      (l.type !== "membership" || showMember) &&
-      (l.type !== "cross"      || showCross)  &&
-      (l.type !== "control"    || showCtrl)
+      (l.type !== "membership"   || showMember)    &&
+      (l.type !== "cross"        || showCross)     &&
+      (l.type !== "control"      || showCtrl)      &&
+      (l.type !== "relationship" || showRelations)
     );
 
     const activeNodeIds = new Set();
@@ -443,6 +486,14 @@ export function RiskGraphViz({ risks }) {
       .attr("stroke",         d => catColor(d.category))
       .attr("stroke-width",   1.4)
       .attr("stroke-opacity", 0.45);
+
+    const relLines = gEdges.append("g").selectAll("line")
+      .data(filteredLinks.filter(l => l.type === "relationship")).join("line")
+      .attr("stroke",         "#f97316")
+      .attr("stroke-width",   d => 0.8 + (d.strength ?? 0.5) * 1.2)
+      .attr("stroke-opacity", d => 0.25 + (d.strength ?? 0.5) * 0.35)
+      .attr("stroke-dasharray", d => d.relType === "amplifies" ? null : "4,3")
+      .attr("marker-end",     "url(#arr-rel)");
 
     // ── Nodes ─────────────────────────────────────────────────────────────────
     const gNodes = g.append("g").attr("class", "nodes");
@@ -518,13 +569,15 @@ export function RiskGraphViz({ risks }) {
       memberLines.style("opacity", d => linkEndId(d,"source")===id||linkEndId(d,"target")===id ? 0.9 : 0.02);
       ctrlLines.style("opacity",   d => linkEndId(d,"source")===id||linkEndId(d,"target")===id ? 0.85: 0.02);
       crossPaths.style("opacity",  d => linkEndId(d,"source")===id||linkEndId(d,"target")===id ? 1   : 0.02);
+      relLines.style("opacity",    d => linkEndId(d,"source")===id||linkEndId(d,"target")===id ? 1   : 0.02);
     }
 
     function resetHighlight() {
       nodeG.style("opacity", 1);
-      memberLines.style("opacity", 0.22);
-      ctrlLines.style("opacity",   0.18);
-      crossPaths.style("opacity",  0.45);
+      memberLines.style("opacity", null);
+      ctrlLines.style("opacity",   null);
+      crossPaths.style("opacity",  null);
+      relLines.style("opacity",    null);
     }
 
     // ── Interaction ───────────────────────────────────────────────────────────
@@ -594,11 +647,24 @@ export function RiskGraphViz({ risks }) {
         return `M${x1},${y1} Q${mx+ox},${my+oy} ${x2},${y2}`;
       });
 
+      relLines
+        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => {
+          const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+          const len = Math.sqrt(dx*dx + dy*dy) || 1;
+          return d.target.x - (dx/len)*11;
+        })
+        .attr("y2", d => {
+          const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+          const len = Math.sqrt(dx*dx + dy*dy) || 1;
+          return d.target.y - (dy/len)*11;
+        });
+
       nodeG.attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
     });
 
     return () => sim.stop();
-  }, [risks, showMember, showCross, showCtrl, controlsRev]);
+  }, [risks, showMember, showCross, showCtrl, showRelations, controlsRev, relEdges]);
 
   // ── Toggle button style ───────────────────────────────────────────────────
   const togStyle = (on, color) => ({
@@ -616,9 +682,12 @@ export function RiskGraphViz({ risks }) {
       {/* Filter toolbar */}
       <div style={{ position: "absolute", top: 10, left: 10, zIndex: 10, display: "flex", gap: 6, alignItems: "center" }}>
         <span style={{ fontSize: 9, color: "#334155", fontWeight: 700, letterSpacing: "0.07em", fontFamily: "system-ui, sans-serif" }}>SHOW</span>
-        <button style={togStyle(showMember, "#6366f1")} onClick={() => setShowMember(v => !v)}>Membership</button>
-        <button style={togStyle(showCross,  "#fbbf24")} onClick={() => setShowCross(v => !v)}>Cross-Framework</button>
-        <button style={togStyle(showCtrl,   "#22d3ee")} onClick={() => setShowCtrl(v => !v)}>Controls</button>
+        <button style={togStyle(showMember,    "#6366f1")} onClick={() => setShowMember(v => !v)}>Membership</button>
+        <button style={togStyle(showCross,     "#fbbf24")} onClick={() => setShowCross(v => !v)}>Cross-Framework</button>
+        <button style={togStyle(showCtrl,      "#22d3ee")} onClick={() => setShowCtrl(v => !v)}>Controls</button>
+        {relEdges.length > 0 && (
+          <button style={togStyle(showRelations, "#f97316")} onClick={() => setShowRelations(v => !v)}>Relations</button>
+        )}
       </div>
 
       {/* Zoom controls */}

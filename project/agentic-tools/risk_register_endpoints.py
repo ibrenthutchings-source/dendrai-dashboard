@@ -309,6 +309,7 @@ class ApplyWordingRequest(BaseModel):
 
 class CategorizeDomainRequest(BaseModel):
     risks: List[Dict[str, Any]] = []  # [{ref, name, category}, ...]
+    run_id: Optional[int] = None      # when set, domains are persisted to risk_scores.assigned_domain
 
 
 class ScoreFrameworkRisksRequest(BaseModel):
@@ -724,7 +725,58 @@ async def categorize_domains(req: CategorizeDomainRequest):
     except Exception as exc:
         logger.warning("AI domain categorization failed, using keyword fallback: %s", exc)
 
+    # Persist domain assignments back to risk_scores when a run_id is available
+    if req.run_id and db.is_available():
+        try:
+            db.bulk_save_risk_domains(req.run_id, domains)
+        except Exception as exc:
+            logger.warning("Domain persistence failed (non-fatal): %s", exc)
+
     return {"domains": domains}
+
+
+@router.get("/graph/{ticker}")
+async def get_risk_graph(ticker: str):
+    """Return the risk relationship graph (nodes + edges) for a ticker.
+
+    Nodes are drawn from the most recent risk_scores row per risk_ref.
+    Edges come from the risk_relationships table (computed after each pipeline run).
+    When the DB is unavailable the response is empty rather than an error.
+    """
+    if not db.is_available():
+        return {"nodes": [], "edges": [], "node_count": 0, "edge_count": 0, "ticker": ticker.upper()}
+    company = db._run(lambda: _resolve_company_id_or_none(ticker))
+    if not company:
+        return {"nodes": [], "edges": [], "node_count": 0, "edge_count": 0, "ticker": ticker.upper()}
+    graph = db.get_risk_graph(company)
+    graph["ticker"] = ticker.upper()
+    return graph
+
+
+@router.get("/graph/{ticker}/run/{run_id}")
+async def get_risk_graph_for_run(ticker: str, run_id: int):
+    """Return the risk relationship graph for a specific pipeline run."""
+    if not db.is_available():
+        return {"nodes": [], "edges": [], "node_count": 0, "edge_count": 0}
+    company = db._run(lambda: _resolve_company_id_or_none(ticker))
+    if not company:
+        return {"nodes": [], "edges": [], "node_count": 0, "edge_count": 0}
+    graph = db.get_risk_graph(company, run_id=run_id)
+    graph["ticker"] = ticker.upper()
+    graph["run_id"] = run_id
+    return graph
+
+
+def _resolve_company_id_or_none(ticker: str) -> Optional[int]:
+    """Return company_id for ticker, or None if not found. Never raises."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM companies WHERE ticker = %s", (ticker.upper(),))
+                row = cur.fetchone()
+                return row[0] if row else None
+    except Exception:
+        return None
 
 
 @router.get("/risks/latest/{ticker}")

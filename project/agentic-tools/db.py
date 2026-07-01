@@ -63,6 +63,7 @@ EMBT_SCENARIO      = "scenario_narrative"   # Scenario analysis narrative text
 EMBT_CEM_RC        = "cem_root_cause"       # CEM root-cause narratives
 EMBT_PROXY         = "proxy_governance"     # DEF 14A governance section chunks
 EMBT_RAC           = "risks_as_code"        # Risks-as-Code YAML content
+EMBT_RISK_NARRATIVE = "risk_narrative"      # Risk name + category + narrative for similarity search
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DDL — 28 tables
@@ -745,6 +746,54 @@ CREATE TABLE IF NOT EXISTS framework_risk_catalogs (
     fetched_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     UNIQUE (framework_name, framework_ver)
 );
+
+-- Graph: directed edges between risks for the same company.
+-- relationship_type: 'correlates_with' (same category, bidirectional),
+--   'amplifies' (high-score/velocity risk drives others in category),
+--   'similar_to' (embedding cosine similarity, populated when pgvector available).
+-- strength: 0.000–1.000; higher = stronger relationship.
+-- source: 'computed' (rule-based) | 'embedding' (vector similarity) | 'manual'.
+CREATE TABLE IF NOT EXISTS risk_relationships (
+    id                SERIAL PRIMARY KEY,
+    company_id        INT          NOT NULL REFERENCES companies(id),
+    from_risk_ref     VARCHAR(32)  NOT NULL,
+    to_risk_ref       VARCHAR(32)  NOT NULL,
+    relationship_type VARCHAR(32)  NOT NULL,
+    strength          NUMERIC(4,3),
+    source            VARCHAR(32)  NOT NULL DEFAULT 'computed',
+    run_id            INT          REFERENCES risk_loop_runs(id),
+    computed_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, from_risk_ref, to_risk_ref, relationship_type)
+);
+CREATE INDEX IF NOT EXISTS idx_risk_rel_from ON risk_relationships (company_id, from_risk_ref);
+CREATE INDEX IF NOT EXISTS idx_risk_rel_to   ON risk_relationships (company_id, to_risk_ref);
+
+-- Graph: which risks each scenario amplifies (FK from scenario_analyses → risk_ref).
+-- impact_multiplier: expected score amplification (e.g. 1.5 = risk 50% worse under this scenario).
+CREATE TABLE IF NOT EXISTS scenario_risk_impacts (
+    id                SERIAL PRIMARY KEY,
+    scenario_id       INT         NOT NULL REFERENCES scenario_analyses(id) ON DELETE CASCADE,
+    risk_ref          VARCHAR(32) NOT NULL,
+    impact_multiplier NUMERIC(5,3),
+    impact_narrative  TEXT,
+    UNIQUE (scenario_id, risk_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_sri_scenario ON scenario_risk_impacts (scenario_id);
+CREATE INDEX IF NOT EXISTS idx_sri_risk     ON scenario_risk_impacts (risk_ref);
+
+-- Graph: normalised FK edges from CEM events to the risks and controls they affect.
+-- Resolves cem_events.risk_label (VARCHAR) → structured risk_ref and control_ref.
+-- link_type: 'affected' (risk impacted by event) | 'caused_by_control' (control failure).
+CREATE TABLE IF NOT EXISTS cem_event_risk_links (
+    id           SERIAL PRIMARY KEY,
+    cem_event_id INT         NOT NULL REFERENCES cem_events(id) ON DELETE CASCADE,
+    risk_ref     VARCHAR(32) NOT NULL,
+    control_ref  VARCHAR(32),
+    link_type    VARCHAR(32) NOT NULL DEFAULT 'affected',
+    UNIQUE (cem_event_id, risk_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_cerl_event ON cem_event_risk_links (cem_event_id);
+CREATE INDEX IF NOT EXISTS idx_cerl_risk  ON cem_event_risk_links (risk_ref);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -763,8 +812,9 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_income         N
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS gross_margin_pct   NUMERIC(7,3);
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS op_margin_pct      NUMERIC(7,3);
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     NUMERIC(7,3);
-ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework VARCHAR(128);
-ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative         TEXT;
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework  VARCHAR(128);
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative          TEXT;
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
 ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
 """
 
@@ -3458,6 +3508,350 @@ def get_results(tool_name: str, ticker: Optional[str] = None, limit: int = 20) -
 def list_tickers(tool_name: str) -> list:
     """Deprecated stub."""
     return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Graph relationships — risk-to-risk edges
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_and_save_risk_relationships(company_id: int, run_id: int, risks: list) -> int:
+    """Compute risk-to-risk graph edges from a run's risk set and persist them.
+
+    Relationship types produced:
+    - 'correlates_with': risks sharing the same category (bidirectional, strength 0.60–0.75)
+    - 'amplifies': highest-scoring/velocity risk in a category → lower-ranked peers
+                   (directional, strength proportional to score × velocity factor)
+
+    Returns number of edges upserted.
+    """
+    if not risks or not company_id:
+        return 0
+
+    edges: list = []
+
+    by_category: dict = {}
+    for r in risks:
+        cat = r.get("category") or "Other"
+        by_category.setdefault(cat, []).append(r)
+
+    for cat, cat_risks in by_category.items():
+        if len(cat_risks) < 2:
+            continue
+
+        sorted_risks = sorted(cat_risks, key=lambda r: float(r.get("score") or 0), reverse=True)
+        top = sorted_risks[0]
+        top_ref   = top.get("id") or top.get("risk_ref")
+        top_score = float(top.get("score") or 0)
+        top_vel   = int(top.get("velocity") or 0)
+        top_rag   = (top.get("rag") or top.get("rag_status") or "").lower()
+
+        # correlates_with edges between every pair in the same category
+        for i, ri in enumerate(sorted_risks):
+            ref_i = ri.get("id") or ri.get("risk_ref")
+            s_i   = float(ri.get("score") or 0)
+            for j in range(i + 1, len(sorted_risks)):
+                rj    = sorted_risks[j]
+                ref_j = rj.get("id") or rj.get("risk_ref")
+                s_j   = float(rj.get("score") or 0)
+                strength = round(min(0.75, 0.60 + (s_i + s_j) / 50.0 * 0.15), 3)
+                edges.append((company_id, ref_i, ref_j, "correlates_with", strength, "computed", run_id))
+
+        # amplifies edges: top risk → others when it is red or high-velocity
+        if top_vel >= 2 or top_rag.startswith("r"):
+            amp_base = min(1.0, top_score / 25.0) * (0.50 + top_vel * 0.10)
+            for other in sorted_risks[1:]:
+                other_ref = other.get("id") or other.get("risk_ref")
+                edges.append((company_id, top_ref, other_ref, "amplifies",
+                               round(amp_base, 3), "computed", run_id))
+
+    if not edges:
+        return 0
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO risk_relationships
+                        (company_id, from_risk_ref, to_risk_ref,
+                         relationship_type, strength, source, run_id)
+                    VALUES %s
+                    ON CONFLICT (company_id, from_risk_ref, to_risk_ref, relationship_type)
+                    DO UPDATE SET
+                        strength    = EXCLUDED.strength,
+                        run_id      = EXCLUDED.run_id,
+                        computed_at = NOW()
+                    """,
+                    edges,
+                )
+        return len(edges)
+
+    return _run(_do, default=0)
+
+
+def get_risk_graph(company_id: int, run_id: Optional[int] = None) -> dict:
+    """Return graph nodes (latest risk scores) and edges (risk_relationships) for a company.
+
+    When run_id is supplied only that run's scores and edges are returned;
+    otherwise the most recent score per risk_ref is used (DISTINCT ON).
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if run_id:
+                    cur.execute(
+                        """
+                        SELECT risk_ref, risk_name, category, score, rag_status,
+                               velocity, control_env, assigned_domain, source_framework
+                        FROM risk_scores
+                        WHERE run_id = %s
+                        ORDER BY score DESC NULLS LAST
+                        """,
+                        (run_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT ON (rs.risk_ref)
+                            rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status,
+                            rs.velocity, rs.control_env, rs.assigned_domain, rs.source_framework
+                        FROM risk_scores rs
+                        JOIN risk_loop_runs r ON r.id = rs.run_id
+                        WHERE r.company_id = %s
+                        ORDER BY rs.risk_ref, r.run_at DESC
+                        """,
+                        (company_id,),
+                    )
+                risk_rows = cur.fetchall()
+
+                where_clause = "company_id = %s"
+                params: list = [company_id]
+                if run_id:
+                    where_clause += " AND run_id = %s"
+                    params.append(run_id)
+
+                cur.execute(
+                    f"""
+                    SELECT from_risk_ref, to_risk_ref, relationship_type,
+                           strength, source, computed_at
+                    FROM risk_relationships
+                    WHERE {where_clause}
+                    ORDER BY strength DESC
+                    """,
+                    params,
+                )
+                edge_rows = cur.fetchall()
+
+        nodes = [
+            {
+                "id": r[0], "name": r[1], "category": r[2],
+                "score": float(r[3]) if r[3] is not None else None,
+                "rag": r[4], "velocity": r[5], "ce": r[6],
+                "domain": r[7], "source_framework": r[8],
+            }
+            for r in risk_rows
+        ]
+        edges = [
+            {
+                "from": e[0], "to": e[1], "type": e[2],
+                "strength": float(e[3]) if e[3] is not None else 0,
+                "source": e[4],
+                "computed_at": e[5].isoformat() if e[5] else None,
+            }
+            for e in edge_rows
+        ]
+        return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
+
+    return _run(_do, default={"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Graph relationships — scenario → risk impact edges
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_scenario_risk_impacts(run_id: int, risks: list, scenario_dict: dict) -> int:
+    """Link each scenario_analyses row to the risks it most affects.
+
+    Infers relevance by matching risk name / category keywords against the
+    scenario narrative.  Creates a FK edge with an estimated impact_multiplier:
+    bear scenario → 1.5×, base → 1.25×, bull → 1.10×.
+
+    Returns number of impact links created.
+    """
+    if not risks or not scenario_dict:
+        return 0
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, scenario, narrative FROM scenario_analyses WHERE run_id = %s",
+                    (run_id,),
+                )
+                scenario_rows = cur.fetchall()
+                if not scenario_rows:
+                    return 0
+
+                rows = []
+                for sid, scenario_name, narrative in scenario_rows:
+                    narrative_lower = (narrative or "").lower()
+                    scen_lower = (scenario_name or "").lower()
+                    mult = 1.50 if "bear" in scen_lower else 1.10 if "bull" in scen_lower else 1.25
+
+                    for risk in risks:
+                        risk_ref  = risk.get("id") or risk.get("risk_ref")
+                        risk_name = (risk.get("name") or risk.get("risk_name") or "").lower()
+                        risk_cat  = (risk.get("category") or "").lower()
+
+                        # Match if ≥2 meaningful words from the risk name appear in the narrative
+                        keywords  = [w for w in risk_name.split() if len(w) > 4]
+                        keywords += [risk_cat]
+                        match_count = sum(1 for kw in keywords if kw and kw in narrative_lower)
+
+                        if match_count >= 2 or (risk_cat and risk_cat in narrative_lower):
+                            rows.append((sid, risk_ref, mult,
+                                         f"Scenario '{scenario_name}' references this risk area"))
+
+                if not rows:
+                    return 0
+
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO scenario_risk_impacts
+                        (scenario_id, risk_ref, impact_multiplier, impact_narrative)
+                    VALUES %s
+                    ON CONFLICT (scenario_id, risk_ref) DO NOTHING
+                    """,
+                    rows,
+                )
+                return len(rows)
+
+    return _run(_do, default=0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Graph relationships — CEM event → risk / control FK edges
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_cem_event_risk_links(run_id: int, events: list) -> int:
+    """Resolve CEM event risk_label / control text → structured FK edges.
+
+    For each cem_events row in this run:
+    - Fuzzy-matches risk_label against risk_scores.risk_name to find risk_ref
+    - Fuzzy-matches control text against controls_library.name to find control_ref
+
+    Inserts into cem_event_risk_links for graph traversal.
+    Returns number of link rows created.
+    """
+    if not events:
+        return 0
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, risk_label, control FROM cem_events WHERE run_id = %s",
+                    (run_id,),
+                )
+                cem_rows = cur.fetchall()
+                if not cem_rows:
+                    return 0
+
+                cur.execute(
+                    "SELECT risk_ref, risk_name FROM risk_scores WHERE run_id = %s",
+                    (run_id,),
+                )
+                risk_lookup = {r[0]: r[1].lower() for r in cur.fetchall()}
+
+                cur.execute("SELECT control_ref, name FROM controls_library")
+                ctrl_rows = cur.fetchall()
+                ctrl_name_idx = [(ref, name.lower()) for ref, name in ctrl_rows]
+
+                rows = []
+                for eid, risk_label, ctrl_name in cem_rows:
+                    label_lower = (risk_label or "").lower()
+                    ctrl_lower  = (ctrl_name  or "").lower()
+
+                    # Fuzzy risk match: substring overlap
+                    best_risk_ref = None
+                    for ref, rname in risk_lookup.items():
+                        if label_lower and (label_lower in rname or rname in label_lower):
+                            best_risk_ref = ref
+                            break
+
+                    if not best_risk_ref:
+                        # Word-level fallback
+                        words = [w for w in label_lower.split() if len(w) > 4]
+                        best_ref, best_hits = None, 0
+                        for ref, rname in risk_lookup.items():
+                            hits = sum(1 for w in words if w in rname)
+                            if hits > best_hits:
+                                best_ref, best_hits = ref, hits
+                        if best_hits >= 2:
+                            best_risk_ref = best_ref
+
+                    if not best_risk_ref:
+                        continue
+
+                    # Fuzzy control match
+                    best_ctrl_ref = None
+                    for ref, cname in ctrl_name_idx:
+                        if ctrl_lower and (ctrl_lower in cname or cname in ctrl_lower):
+                            best_ctrl_ref = ref
+                            break
+
+                    rows.append((eid, best_risk_ref, best_ctrl_ref, "affected"))
+
+                if not rows:
+                    return 0
+
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO cem_event_risk_links
+                        (cem_event_id, risk_ref, control_ref, link_type)
+                    VALUES %s
+                    ON CONFLICT (cem_event_id, risk_ref) DO NOTHING
+                    """,
+                    rows,
+                )
+                return len(rows)
+
+    return _run(_do, default=0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Domain persistence
+# ─────────────────────────────────────────────────────────────────────────────
+
+def bulk_save_risk_domains(run_id: int, domain_map: dict) -> int:
+    """Persist domain assignments (risk_ref → domain) to risk_scores.assigned_domain.
+
+    domain_map: {risk_ref: domain_name, ...}
+    Returns number of rows updated.
+    """
+    if not domain_map:
+        return 0
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                updated = 0
+                for risk_ref, domain in domain_map.items():
+                    cur.execute(
+                        """
+                        UPDATE risk_scores
+                        SET assigned_domain = %s
+                        WHERE run_id = %s AND risk_ref = %s
+                        """,
+                        (domain, run_id, risk_ref),
+                    )
+                    updated += cur.rowcount
+                return updated
+
+    return _run(_do, default=0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

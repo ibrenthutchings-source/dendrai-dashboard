@@ -362,10 +362,20 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
     db.save_beneish_mscore(run_id, result.get("beneish_mscore", {}))
 
     risk_data = result.get("risk_scores", {})
-    db.save_risk_scores(run_id, risk_data.get("risks", []))
+    risks_list = risk_data.get("risks", [])
+    db.save_risk_scores(run_id, risks_list)
 
-    db.save_scenario_analyses(run_id, result.get("scenario_analysis", {}))
+    scenario_dict = result.get("scenario_analysis", {})
+    db.save_scenario_analyses(run_id, scenario_dict)
     db.save_grey_swan(run_id, result.get("grey_swan", {}))
+
+    # Compute and persist graph relationships from this run's risk set
+    if company_id and risks_list:
+        try:
+            db.compute_and_save_risk_relationships(company_id, run_id, risks_list)
+            db.save_scenario_risk_impacts(run_id, risks_list, scenario_dict)
+        except Exception as _rel_err:
+            logger.warning("Risk relationship computation failed (non-fatal): %s", _rel_err)
 
     if result.get("forecast"):
         db.save_forecasts(run_id, req.forecast_metric, result["forecast"])
@@ -1020,6 +1030,12 @@ def persist_loop_completion(req: LoopPersistRequest):
     db.save_audit_objectives(req.run_id, req.objectives)
     db.save_cem_events(req.run_id, req.cem_events)
     db.save_manual_audits(req.run_id, req.manual_audits)
+
+    # Resolve CEM events → structured risk/control FK edges (graph layer)
+    try:
+        db.save_cem_event_risk_links(req.run_id, req.cem_events)
+    except Exception as _link_err:
+        logger.warning("CEM event risk link resolution failed (non-fatal): %s", _link_err)
 
     return {
         "saved": True,
