@@ -39,6 +39,12 @@ Endpoints:
     GET  /config/code-editor/{storage_key}   Retrieve saved YAML editor content
     PUT  /config/code-editor/{storage_key}   Persist YAML editor content to DB
 
+    GET  /config/pipeline                    Retrieve saved pipeline configuration (ticker, signals, HITL, etc.)
+    PUT  /config/pipeline                    Persist pipeline configuration to DB
+
+    GET  /loop/last-state                    Retrieve last saved pipeline run state (for page-reload restoration)
+    PUT  /loop/last-state                    Persist full pipeline run state to DB
+
 MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
     /mcp/edgar/mcp          SEC EDGAR filings, financials, risk factors, 8-K events
     /mcp/fred/mcp           Federal Reserve macro economic indicators
@@ -66,7 +72,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -1238,6 +1244,69 @@ def save_code_editor(storage_key: str, req: CodeEditorSaveRequest):
         return {"saved": False, "reason": "database not configured"}
     ok = db.save_code_editor_config(storage_key, req.content)
     return {"saved": ok, "storage_key": storage_key}
+
+
+# ── Pipeline config endpoints ─────────────────────────────────────────────────
+
+@app.get("/config/pipeline")
+def get_pipeline_config():
+    """Return the saved pipeline configuration (ticker, industry, signals, HITL settings, etc.).
+
+    Returns 503 when DATABASE_URL is not configured; 404 when no config has been saved yet.
+    The frontend falls back to localStorage when this returns non-2xx.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
+    config = db.get_app_config("pipeline_config")
+    if config is None:
+        raise HTTPException(status_code=404, detail="No pipeline config saved yet")
+    return config
+
+
+@app.put("/config/pipeline")
+def save_pipeline_config(body: Dict[str, Any] = Body(...)):
+    """Persist the pipeline configuration to the database.
+
+    Accepts the full config blob from app.jsx (cfg, signals, velocity, hitl,
+    rssEnabledFeeds, aiChatCfg, savedAt). Stored as JSONB in app_config table.
+    Returns {saved: false} gracefully when the database is unavailable.
+    """
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+    ok = db.set_app_config("pipeline_config", body)
+    return {"saved": ok}
+
+
+# ── Last loop state endpoints ─────────────────────────────────────────────────
+
+@app.get("/loop/last-state")
+def get_last_loop_state():
+    """Return the last persisted pipeline run state for restoration on page reload.
+
+    Returns 503 when DATABASE_URL is not configured; 404 when no state has been saved yet.
+    The frontend falls back to localStorage when this returns non-2xx.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
+    state = db.get_app_config("last_loop_state")
+    if state is None:
+        raise HTTPException(status_code=404, detail="No saved loop state")
+    return state
+
+
+@app.put("/loop/last-state")
+def save_last_loop_state(body: Dict[str, Any] = Body(...)):
+    """Persist the full pipeline run state to the database for restoration on reload.
+
+    Accepts the complete loop blob from app.jsx (output, stageState, gateState,
+    loopLog, livefacts, perRiskAppetite, riskApprovals, scopeApprovals, manualAudits,
+    narrativeResult, openStages). Stored as JSONB in app_config table.
+    Returns {saved: false} gracefully when the database is unavailable.
+    """
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+    ok = db.set_app_config("last_loop_state", body)
+    return {"saved": ok}
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
