@@ -120,7 +120,7 @@ function safeId(s) { return (s || "").replace(/[^a-zA-Z0-9]/g, "_"); }
 
 // ─── Build graph ──────────────────────────────────────────────────────────────
 
-function buildGraph(risks, dbEdges) {
+function buildGraph(risks, dbEdges, ctrlStates) {
   const allRisks = (risks || [])
     .filter(r => r.id || r.risk_ref)
     .map(r => ({
@@ -185,10 +185,14 @@ function buildGraph(risks, dbEdges) {
     addNode({ id: `ctrl::${c.ref}`, type: "control", label: c.name, ref: c.ref, category: c.cat, fw: c.fw, domain: c.domain });
   });
 
-  // Control → Risk edges via autoMapControls
+  // Control → Risk edges: prefer actual ctrlStates assignments, fallback to keyword auto-map
   allRisks.forEach(r => {
     const rid = r.id || r.risk_ref;
-    autoMapControls(r.name || r.current_wording || "", r.category).forEach(ref => {
+    const cs = ctrlStates?.[rid];
+    const refs = cs
+      ? [...new Set([...(cs.autoMapped || []), ...(cs.manual || [])])]
+      : autoMapControls(r.name || r.current_wording || "", r.category);
+    refs.forEach(ref => {
       addLink({ id: `c:${ref}:${rid}`, source: `ctrl::${ref}`, target: rid, type: "control" });
     });
   });
@@ -321,7 +325,7 @@ function FwPalette() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function RiskGraphViz({ risks, ticker, runId }) {
+export function RiskGraphViz({ risks, ticker, runId, ctrlStates }) {
   const svgRef       = useRef(null);
   const simRef       = useRef(null);
   const zoomRef      = useRef(null);
@@ -428,7 +432,7 @@ export function RiskGraphViz({ risks, ticker, runId }) {
     svg.append("rect").attr("width", "100%").attr("height", "100%").attr("fill", "url(#dotgrid)");
 
     // ── Build & filter graph ──────────────────────────────────────────────────
-    const { nodes, links } = buildGraph(risks, relEdges);
+    const { nodes, links } = buildGraph(risks, relEdges, ctrlStates);
 
     const filteredLinks = links.filter(l =>
       (l.type !== "membership"   || showMember)    &&
@@ -664,7 +668,7 @@ export function RiskGraphViz({ risks, ticker, runId }) {
     });
 
     return () => sim.stop();
-  }, [risks, showMember, showCross, showCtrl, showRelations, controlsRev, relEdges]);
+  }, [risks, showMember, showCross, showCtrl, showRelations, controlsRev, relEdges, ctrlStates]);
 
   // ── Toggle button style ───────────────────────────────────────────────────
   const togStyle = (on, color) => ({

@@ -743,11 +743,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     setEditingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
   }
 
-  async function saveRow(key) {
-    const state   = riskStates[key] || {};
-    const cs      = ctrlStates[key] || { autoMapped: [], manual: [] };
-    const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
-    await onSaveRow(key, state, allRefs);
+  function doneEdit(key) {
     setEditingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
   }
 
@@ -874,10 +870,10 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                     <div style={{ marginTop: 6, display: "flex", gap: 4 }}>
                       {isEditing ? (
                         <>
-                          <button className="btn btn-sm btn-acc" onClick={() => saveRow(key)} disabled={isSaving} style={{ fontSize: 9, padding: "2px 9px" }}>
-                            {isSaving ? "Saving…" : "Save"}
+                          <button className="btn btn-sm btn-acc" onClick={() => doneEdit(key)} style={{ fontSize: 9, padding: "2px 9px" }}>
+                            Done
                           </button>
-                          <button className="btn btn-sm" onClick={() => cancelEdit(key)} disabled={isSaving} style={{ fontSize: 9, padding: "2px 9px" }}>
+                          <button className="btn btn-sm" onClick={() => cancelEdit(key)} style={{ fontSize: 9, padding: "2px 9px" }}>
                             Cancel
                           </button>
                         </>
@@ -905,6 +901,11 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 
                     return (
                       <td key={fw} style={tdStyle}>
+                        {/* Risk wording — mirrors Enterprise Risks column */}
+                        <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.5, fontStyle: "italic", marginBottom: 8, paddingBottom: 6, borderBottom: "1px solid var(--line,#eee)" }}>
+                          {state.wording || <span style={{ color: "var(--ink-3,#aaa)" }}>No wording</span>}
+                        </div>
+
                         {/* Control list */}
                         {fwRefs.length > 0 ? (
                           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 6 }}>
@@ -953,12 +954,6 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                               color: "var(--acc,#2563eb)",
                             }}
                           >+ Add</button>
-                          <button
-                            className="btn btn-sm btn-acc"
-                            onClick={() => saveCellControls(key, fw)}
-                            disabled={isSavingCell}
-                            style={{ fontSize: 9, padding: "2px 9px" }}
-                          >{isSavingCell ? "Saving…" : "Save"}</button>
                         </div>
 
                         {/* Control picker */}
@@ -1010,6 +1005,123 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Control Coverage Matrix
+// Rows = controls, Columns = frameworks, cell = ✓ when control belongs to that fw
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ControlCoverageMatrix({ ctrlStates }) {
+  // Derive the full set of frameworks and controls at render time so we pick up
+  // any DB-loaded controls that were appended to MASTER_CONTROLS.
+  const allFws = [...new Set(MASTER_CONTROLS.map(c => c.framework || "Internal"))].sort((a, b) => {
+    // Pin "Internal" first
+    if (a === "Internal") return -1;
+    if (b === "Internal") return 1;
+    return a.localeCompare(b);
+  });
+
+  // Which control refs are actively assigned to at least one risk?
+  const assignedRefs = new Set();
+  for (const cs of Object.values(ctrlStates || {})) {
+    for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) assignedRefs.add(ref);
+  }
+
+  // Group controls by category for visual separation
+  const byCategory = {};
+  for (const c of MASTER_CONTROLS) {
+    const cat = c.category || "Other";
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(c);
+  }
+  const categories = Object.keys(byCategory).sort();
+
+  const thStyle = {
+    padding: "6px 10px", textAlign: "left", fontSize: 10, fontWeight: 700,
+    color: "var(--ink-2,#555)", background: "var(--surface-2,#f8f9fa)",
+    borderBottom: "2px solid var(--line,#e0e0e0)", borderRight: "1px solid var(--line,#eee)",
+    textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap",
+  };
+  const tdStyle = {
+    padding: "6px 10px", verticalAlign: "middle",
+    borderBottom: "1px solid var(--line,#eee)", borderRight: "1px solid var(--line,#f0f0f0)",
+    fontSize: 11,
+  };
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+        <thead>
+          <tr>
+            <th style={{ ...thStyle, minWidth: 90 }}>Category</th>
+            <th style={{ ...thStyle, minWidth: 70 }}>Ref</th>
+            <th style={{ ...thStyle, minWidth: 220, width: "30%" }}>Control Name</th>
+            {allFws.map(fw => (
+              <th key={fw} style={{ ...thStyle, minWidth: 80, textAlign: "center" }}>{fw}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {categories.flatMap(cat =>
+            byCategory[cat].map((ctrl, idx) => {
+              const isActive = assignedRefs.has(ctrl.ref);
+              const isGroupStart = idx === 0;
+              return (
+                <tr
+                  key={ctrl.ref}
+                  style={{ background: isActive ? "rgba(37,99,235,0.04)" : "transparent" }}
+                >
+                  {/* Category label — shown only on first row of each group */}
+                  {isGroupStart && (
+                    <td
+                      rowSpan={byCategory[cat].length}
+                      style={{
+                        ...tdStyle,
+                        borderTop: "2px solid var(--line,#d8d8d8)",
+                        fontWeight: 700, fontSize: 10,
+                        color: "var(--acc,#2563eb)",
+                        verticalAlign: "top", paddingTop: 10,
+                        minWidth: 80, maxWidth: 100,
+                      }}
+                    >
+                      {cat}
+                    </td>
+                  )}
+                  {/* Ref */}
+                  <td style={{ ...tdStyle, borderTop: isGroupStart ? "2px solid var(--line,#d8d8d8)" : undefined, fontWeight: 700, fontFamily: "monospace", color: "var(--acc,#2563eb)", fontSize: 10 }}>
+                    {ctrl.ref}
+                    {isActive && (
+                      <span title="Actively assigned to a risk" style={{ marginLeft: 4, color: "var(--green,#16a34a)", fontSize: 9 }}>●</span>
+                    )}
+                  </td>
+                  {/* Control name */}
+                  <td style={{ ...tdStyle, borderTop: isGroupStart ? "2px solid var(--line,#d8d8d8)" : undefined }}>
+                    <div style={{ fontWeight: 600, color: "var(--ink,#111)", marginBottom: ctrl.desc ? 2 : 0 }}>
+                      {ctrl.name}
+                    </div>
+                    {ctrl.desc && (
+                      <div style={{ fontSize: 9, color: "var(--ink-2,#666)", lineHeight: 1.4 }}>
+                        {ctrl.desc}
+                      </div>
+                    )}
+                  </td>
+                  {/* Framework checkmarks */}
+                  {allFws.map(fw => (
+                    <td key={fw} style={{ ...tdStyle, borderTop: isGroupStart ? "2px solid var(--line,#d8d8d8)" : undefined, textAlign: "center" }}>
+                      {(ctrl.framework || "Internal") === fw ? (
+                        <span style={{ color: "var(--green,#16a34a)", fontWeight: 700, fontSize: 14 }}>✓</span>
+                      ) : null}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1098,9 +1210,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [uploadFilename, setUploadFilename]    = useState(null);
 
   // ── Matrix / Detail / Graph view ─────────────────────────────────────────
-  const [matrixView, setMatrixView]   = useState(true);
-  const [graphView,  setGraphView]    = useState(false);
-  const [sankeyView, setSankeyView]   = useState(false);
+  const [matrixView, setMatrixView]       = useState(true);
+  const [graphView,  setGraphView]        = useState(false);
+  const [sankeyView, setSankeyView]       = useState(false);
+  const [ctrlMatrixView, setCtrlMatrixView] = useState(false);
   const [detailFw, setDetailFw]       = useState("Enterprise Risks");
   const [savingRows, setSavingRows]   = useState(new Set());
   const [refreshing, setRefreshing]   = useState(false);
@@ -1110,6 +1223,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [outputYaml, setOutputYaml] = useState(null);
   const [converting, setConverting] = useState(false);
   const [convertErr, setConvertErr] = useState(null);
+  const [saving,     setSaving]     = useState(false);
   const [validationMsg, setValidationMsg] = useState(null);
 
   // On mount: load controls library and matrix config from DB/API
@@ -1560,6 +1674,115 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setSavingRows(new Set());
   }
 
+  // ── Save All — upsert every risk/control/framework to DB + generate Risk-as-Code ──
+
+  async function handleSaveAll() {
+    if (!effectiveRisks?.length) return;
+    setSaving(true);
+    setConvertErr(null);
+
+    const allRisks  = [...(effectiveRisks || []), ...discoveredRisks];
+    const allStates = { ...discRiskStates,  ...riskStates  };
+    const allCtrl   = { ...discCtrlStates,  ...ctrlStates  };
+    const framework = "Internal Risk Register";
+
+    const payload = buildConvertPayload(allRisks, allStates, allCtrl, false);
+
+    // 1. Upsert review session — all risks with wording, include/exclude, and control assignments
+    let savedReviewId = null;
+    try {
+      const res = await fetch("/api/risk-register/reviews", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_id: effectiveRunId || null,
+          review_type: "internal",
+          framework,
+          risk_states: payload.map(r => ({
+            risk_ref:         r.id || r.risk_ref || "",
+            original_wording: r.name || "",
+            current_wording:  r.current_wording || r.name || "",
+            included:         r.included !== false,
+            reason_for_change: r.reason_for_change || null,
+            controls_assigned: r.controls_assigned || [],
+          })),
+        }),
+      });
+      if (res.ok) savedReviewId = (await res.json()).review_id || null;
+    } catch (_) {}
+
+    // 2. Write approved wording back to risk_scores
+    if (effectiveRunId) {
+      try {
+        await fetch("/api/risk-register/apply-wording", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            run_id: effectiveRunId,
+            risks: payload.map(r => ({
+              risk_ref:        r.id || r.risk_ref || "",
+              current_wording: r.current_wording || r.name || "",
+            })),
+          }),
+        });
+      } catch (_) {}
+    }
+
+    // 3. Generate Risk-as-Code YAML and persist it alongside the review
+    let yaml = "";
+    try {
+      const res = await fetch("/api/risk-register/convert-to-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          risks: payload,
+          review_type: "internal",
+          framework,
+          include_controls: true,
+          review_id: savedReviewId,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      yaml = (await res.json()).yaml || "";
+    } catch (_) {
+      yaml = buildLocalYaml(payload, framework);
+    }
+    setOutputYaml(yaml);
+
+    // 4. Refresh display from DB so wording changes are reflected
+    try {
+      const url = effectiveRunId
+        ? `/api/risk-register/risks/${effectiveRunId}`
+        : ticker ? `/api/risk-register/risks/latest/${encodeURIComponent(ticker)}` : null;
+      if (url) {
+        const res = await fetch(url);
+        if (res.ok) {
+          const d = await res.json();
+          if (d.risks?.length) {
+            setRefreshedRisks(d.risks);
+            setRiskStates(prev => {
+              const next = { ...prev };
+              for (const r of d.risks) {
+                const key = r.id || r.risk_ref;
+                if (next[key]) next[key] = { ...next[key], originalWording: next[key].wording };
+              }
+              return next;
+            });
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 5. Land on Framework Matrix view
+    setGraphView(false);
+    setSankeyView(false);
+    setCtrlMatrixView(false);
+    setMatrixView(true);
+    setActiveTab("internal");
+    setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    setSaving(false);
+  }
+
   // ── Convert to Code ────────────────────────────────────────────────────────
 
   function buildConvertPayload(sourceRisks, states, ctrlStates, isDiscovery) {
@@ -1955,6 +2178,16 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
             <Icon name="spark" size={11}/>
             {assessingAll ? " Assessing…" : unratedCount > 0 ? ` Assess All (${unratedCount})` : " Assess All"}
           </button>
+          {effectiveRisks?.length > 0 && (
+            <button
+              className={"btn btn-sm btn-acc" + (saving ? " loading" : "")}
+              onClick={handleSaveAll}
+              disabled={saving}
+              title="Upsert all frameworks, risks, and controls to the database and generate Risk-as-Code"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          )}
           {outputYaml && (
             <button className="btn btn-sm" onClick={() => setOutputYaml(null)}>Hide Output</button>
           )}
@@ -2001,21 +2234,23 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
               </Empty>
             ) : (
               <>
-                {renderSummaryBanner(effectiveRisks, riskStates, matrixView || graphView || sankeyView)}
+                {renderSummaryBanner(effectiveRisks, riskStates, matrixView || graphView || sankeyView || ctrlMatrixView)}
 
                 {/* View toggle */}
                 <div style={{ display:"flex", gap:6, marginBottom:12, paddingBottom:10, borderBottom:"1px solid var(--line,#eee)" }}>
-                  {[["matrix","Framework Matrix"],["detail","Detail"],["graph","Risk Graph"],["sankey","Control Sankey"]].map(([v, label]) => {
-                    const active = v === "graph"   ? graphView
-                                 : v === "sankey"  ? sankeyView
-                                 : !graphView && !sankeyView && (v === "matrix" ? matrixView : !matrixView);
+                  {[["matrix","Framework Matrix"],["detail","Detail"],["graph","Risk Graph"],["sankey","Control Sankey"],["controls","Controls"]].map(([v, label]) => {
+                    const active = v === "graph"    ? graphView
+                                 : v === "sankey"   ? sankeyView
+                                 : v === "controls" ? ctrlMatrixView
+                                 : !graphView && !sankeyView && !ctrlMatrixView && (v === "matrix" ? matrixView : !matrixView);
                     return (
                       <button
                         key={v}
                         onClick={() => {
-                          if (v === "graph")  { setGraphView(true);  setSankeyView(false); }
-                          else if (v === "sankey") { setSankeyView(true); setGraphView(false); }
-                          else { setGraphView(false); setSankeyView(false); setMatrixView(v === "matrix"); }
+                          if (v === "graph")       { setGraphView(true); setSankeyView(false); setCtrlMatrixView(false); }
+                          else if (v === "sankey") { setSankeyView(true); setGraphView(false); setCtrlMatrixView(false); }
+                          else if (v === "controls") { setCtrlMatrixView(true); setGraphView(false); setSankeyView(false); }
+                          else { setGraphView(false); setSankeyView(false); setCtrlMatrixView(false); setMatrixView(v === "matrix"); }
                         }}
                         style={{
                           fontSize:10, padding:"3px 10px", borderRadius:4, cursor:"pointer",
@@ -2031,7 +2266,9 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                 {sankeyView ? (
                   <RiskSankey />
                 ) : graphView ? (
-                  <RiskGraphViz risks={allMatrixRisks} ticker={ticker} runId={runId} />
+                  <RiskGraphViz risks={allMatrixRisks} ticker={ticker} runId={runId} ctrlStates={ctrlStates} />
+                ) : ctrlMatrixView ? (
+                  <ControlCoverageMatrix ctrlStates={allMatrixCtrlStates} />
                 ) : matrixView ? (
                   <RiskFrameworkMatrix
                     risks={allMatrixRisks}
@@ -2267,7 +2504,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       </div>
 
       {/* Action bar — outside scroll area so it never overlaps list content */}
-      {activeTab === "internal" && !matrixView && !graphView && !sankeyView && (() => {
+      {activeTab === "internal" && !matrixView && !graphView && !sankeyView && !ctrlMatrixView && (() => {
         const detailRisks  = detailFw === "Enterprise Risks" ? effectiveRisks : discoveredRisks.filter(r => r.source_framework === detailFw);
         const detailStates = detailFw === "Enterprise Risks" ? riskStates : discRiskStates;
         const detailTab    = detailFw === "Enterprise Risks" ? "internal" : "external";
