@@ -128,6 +128,7 @@ function ConfigScreen({
   liveMode, setLiveMode, mcpMode, setMcpMode, useDb, setUseDb, liveStatus,
   lastSaved, rssEnabledFeeds, setRssEnabledFeeds,
   aiChatCfg, setAiChatCfg,
+  colorScheme, setColorScheme,
 }) {
   const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
 
@@ -373,6 +374,33 @@ function ConfigScreen({
                   : (liveStatus || "Fetching live from EDGAR / FRED via MCP servers."))
               : liveMode ? (liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled")
               : "Mock dataset — no external calls."}
+          </div>
+        </ConfigCard>
+
+        {/* ---- Appearance ---- */}
+        <ConfigCard title="Appearance" sub="Color scheme for the dashboard.">
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="field-label">Color scheme</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[
+                { value: "light",  label: "Light" },
+                { value: "dark",   label: "Dark" },
+                { value: "system", label: "System" },
+              ].map(opt => (
+                <button key={opt.value}
+                  className={`btn btn-sm${colorScheme === opt.value ? " btn-primary" : ""}`}
+                  style={{ flex: 1 }}
+                  onClick={() => setColorScheme(opt.value)}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 10, color: "var(--ink-3)" }}>
+              {colorScheme === "system"
+                ? "Follows your OS dark/light setting automatically."
+                : colorScheme === "dark" ? "Always uses dark theme."
+                : "Always uses light theme."}
+            </div>
           </div>
         </ConfigCard>
 
