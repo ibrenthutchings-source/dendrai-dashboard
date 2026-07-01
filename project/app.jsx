@@ -66,32 +66,51 @@ function App() {
   const [aiChatCfg, setAiChatCfg] = useState({ provider: "claude", buttonLabel: "Ask Claude" });
   const [chatOpen, setChatOpen] = useState(false);
 
-  // ---- Config persistence (localStorage in the prototype; AuditConfig table in prod) ----
+  // ---- Config persistence (DB primary, localStorage fallback) ----
   const [lastSaved, setLastSaved] = useState(null);
   const cfgLoadedRef = useRef(false);
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("dendrai.config");
-      if (raw) {
-        const s = JSON.parse(raw);
+    (async () => {
+      const applyConfig = (s) => {
         if (s.cfg) setCfg(c => ({ ...c, ...s.cfg }));
         if (Array.isArray(s.signals)) setSignalSet(new Set(s.signals));
         if (typeof s.velocity === "number") setVelocity(s.velocity);
         if (s.hitl) setHitl(s.hitl);
-        if (Array.isArray(s.rssEnabledFeeds)) setRssEnabledFeeds(s.rssEnabledFeeds);
-        if (s.aiChatCfg) setAiChatCfg(c => ({ ...c, ...s.aiChatCfg }));
-        if (s.savedAt) setLastSaved(s.savedAt);
-      }
-    } catch {}
-    cfgLoadedRef.current = true;
+        const feeds = s.rssEnabledFeeds || s.rss_enabled_feeds;
+        if (Array.isArray(feeds)) setRssEnabledFeeds(feeds);
+        const chatCfg = s.aiChatCfg || s.ai_chat_cfg;
+        if (chatCfg) setAiChatCfg(c => ({ ...c, ...chatCfg }));
+        const ts = s.savedAt || s.saved_at;
+        if (ts) setLastSaved(ts);
+      };
+      try {
+        const res = await fetch("/api/mcp/config/pipeline");
+        if (res.ok) {
+          applyConfig(await res.json());
+          cfgLoadedRef.current = true;
+          return;
+        }
+      } catch {}
+      // Fallback to localStorage when API is unavailable
+      try {
+        const raw = localStorage.getItem("dendrai.config");
+        if (raw) applyConfig(JSON.parse(raw));
+      } catch {}
+      cfgLoadedRef.current = true;
+    })();
   }, []);
   useEffect(() => {
     if (!cfgLoadedRef.current) return;
     const savedAt = Date.now();
-    try {
-      localStorage.setItem("dendrai.config", JSON.stringify({ cfg, signals: [...signalSet], velocity, hitl, rssEnabledFeeds, aiChatCfg, savedAt }));
-      setLastSaved(savedAt);
-    } catch {}
+    const payload = { cfg, signals: [...signalSet], velocity, hitl, rssEnabledFeeds, aiChatCfg, savedAt };
+    // Write-through: localStorage for instant offline access, DB for cross-device persistence
+    try { localStorage.setItem("dendrai.config", JSON.stringify(payload)); } catch {}
+    setLastSaved(savedAt);
+    fetch("/api/mcp/config/pipeline", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
   }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds, aiChatCfg]);
 
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
@@ -193,46 +212,70 @@ function App() {
   const [adjustObjOpen, setAdjustObjOpen] = useState(false);
   const [adjustingObjId, setAdjustingObjId] = useState(null);
 
-  // ---- Last loop persistence — restore completed run on page reload ----
+  // ---- Last loop persistence — DB primary, localStorage fallback ----
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("dendrai.lastLoop");
-      if (raw) {
-        const s = JSON.parse(raw);
-        if (s.output)          setOutput(s.output);
-        if (s.stageState)      setStageState(s.stageState);
-        if (s.gateState)       setGateState(s.gateState);
-        if (s.loopLog)         { setLoopLog(s.loopLog); loopLogRef.current = s.loopLog; }
-        if (s.hasRun)          setHasRun(true);
-        if (s.livefacts)       setLivefacts(s.livefacts);
-        if (s.perRiskAppetite) setPerRiskAppetite(s.perRiskAppetite);
-        if (s.riskApprovals)   setRiskApprovals(s.riskApprovals);
-        if (s.scopeApprovals)  setScopeApprovals(s.scopeApprovals);
-        if (s.manualAudits)    { setManualAudits(s.manualAudits); manualAuditsRef.current = s.manualAudits; }
-        if (s.narrativeResult) setNarrativeResult(s.narrativeResult);
-        if (s.openStages)      setOpenStages(new Set(s.openStages));
-      }
-    } catch {}
+    (async () => {
+      const applyLoop = (s) => {
+        if (s.output)                                    setOutput(s.output);
+        const ss = s.stageState || s.stage_state;
+        if (ss)                                          setStageState(ss);
+        const gs = s.gateState || s.gate_state;
+        if (gs)                                          setGateState(gs);
+        const ll = s.loopLog || s.loop_log;
+        if (ll)                                          { setLoopLog(ll); loopLogRef.current = ll; }
+        if (s.hasRun || s.has_run)                       setHasRun(true);
+        if (s.livefacts)                                 setLivefacts(s.livefacts);
+        const pra = s.perRiskAppetite || s.per_risk_appetite;
+        if (pra)                                         setPerRiskAppetite(pra);
+        const ra = s.riskApprovals || s.risk_approvals;
+        if (ra)                                          setRiskApprovals(ra);
+        const sa = s.scopeApprovals || s.scope_approvals;
+        if (sa)                                          setScopeApprovals(sa);
+        const ma = s.manualAudits || s.manual_audits;
+        if (ma)                                          { setManualAudits(ma); manualAuditsRef.current = ma; }
+        const nr = s.narrativeResult || s.narrative_result;
+        if (nr)                                          setNarrativeResult(nr);
+        const os = s.openStages || s.open_stages;
+        if (os)                                          setOpenStages(new Set(os));
+      };
+      try {
+        const res = await fetch("/api/mcp/loop/last-state");
+        if (res.ok) {
+          applyLoop(await res.json());
+          return;
+        }
+      } catch {}
+      // Fallback to localStorage when API is unavailable
+      try {
+        const raw = localStorage.getItem("dendrai.lastLoop");
+        if (raw) applyLoop(JSON.parse(raw));
+      } catch {}
+    })();
   }, []);
   useEffect(() => {
     if (!hasRun) return;
-    try {
-      localStorage.setItem("dendrai.lastLoop", JSON.stringify({
-        output,
-        stageState,
-        gateState,
-        loopLog,
-        hasRun,
-        livefacts,
-        perRiskAppetite,
-        riskApprovals,
-        scopeApprovals,
-        manualAudits,
-        narrativeResult,
-        openStages: [...openStages],
-        savedAt: Date.now(),
-      }));
-    } catch {}
+    const payload = {
+      output,
+      stageState,
+      gateState,
+      loopLog,
+      hasRun,
+      livefacts,
+      perRiskAppetite,
+      riskApprovals,
+      scopeApprovals,
+      manualAudits,
+      narrativeResult,
+      openStages: [...openStages],
+      savedAt: Date.now(),
+    };
+    // Write-through: localStorage for instant offline access, DB for persistence
+    try { localStorage.setItem("dendrai.lastLoop", JSON.stringify(payload)); } catch {}
+    fetch("/api/mcp/loop/last-state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
   }, [hasRun, output]);
 
   const auditorName = (selectedPersona && selectedPersona !== "Internal Audit") ? selectedPersona : "Internal Audit";
