@@ -24,8 +24,9 @@ const FW_COLOR = {
 };
 
 // ─── Controls (sorted by framework, then domain within framework — minimizes link crossings) ──
+// Mutable so the component can append DB-loaded custom controls after mount.
 
-const CONTROLS = [
+let CONTROLS = [
   // Internal (12)
   { ref:"FC-01", fw:"Internal", name:"Revenue Recognition Controls",     cat:"Financial",      dom:"Finance"     },
   { ref:"FC-02", fw:"Internal", name:"Financial Close Reconciliation",   cat:"Financial",      dom:"Finance"     },
@@ -69,20 +70,30 @@ const CONTROLS = [
   { ref:"RM-04", fw:"COSO ERM", name:"Emerging Risk Monitoring", cat:"Risk Mgmt", dom:"Operational" },
 ];
 
-const FW_ORDER  = ["Internal", "ISO/IEC 42001", "SOC 2", "ISO/IEC 27001", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
-const DOM_ORDER = ["Finance", "IT", "Operational", "HR", "Legal", "Technology"];
+const BASE_FW_ORDER  = ["Internal", "ISO/IEC 42001", "SOC 2", "ISO/IEC 27001", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
+const BASE_DOM_ORDER = ["Finance", "IT", "Operational", "HR", "Legal", "Technology"];
+const FALLBACK_COLOR = "#64748b";
 
 function buildGraphData() {
+  // Derive fw/dom order dynamically so custom controls' frameworks appear
+  const fwOrder  = [...BASE_FW_ORDER];
+  const domOrder = [...BASE_DOM_ORDER];
+  CONTROLS.forEach(c => {
+    if (!fwOrder.includes(c.fw))   fwOrder.push(c.fw);
+    if (!domOrder.includes(c.dom)) domOrder.push(c.dom);
+  });
+
   const nodes = [
     ...CONTROLS.map(c => ({
       id: `ctrl:${c.ref}`, label: c.ref, fullName: c.name,
-      type: "control", color: DOMAIN_COLOR[c.dom], fw: c.fw, dom: c.dom, cat: c.cat,
+      type: "control", color: DOMAIN_COLOR[c.dom] || FALLBACK_COLOR,
+      fw: c.fw, dom: c.dom, cat: c.cat,
     })),
-    ...FW_ORDER.map(fw => ({
-      id: `fw:${fw}`, label: fw, type: "framework", color: FW_COLOR[fw],
+    ...fwOrder.map(fw => ({
+      id: `fw:${fw}`, label: fw, type: "framework", color: FW_COLOR[fw] || FALLBACK_COLOR,
     })),
-    ...DOM_ORDER.map(dom => ({
-      id: `dom:${dom}`, label: dom, type: "domain", color: DOMAIN_COLOR[dom],
+    ...domOrder.map(dom => ({
+      id: `dom:${dom}`, label: dom, type: "domain", color: DOMAIN_COLOR[dom] || FALLBACK_COLOR,
     })),
   ];
 
@@ -102,8 +113,6 @@ function buildGraphData() {
 
   return { nodes, links: [...ctrlFwLinks, ...fwDomLinks] };
 }
-
-const GRAPH_DATA = buildGraphData();
 
 // ─── Tooltip ───────────────────────────────────────────────────────────────────
 
@@ -204,6 +213,32 @@ export function RiskSankey() {
   const svgRef  = useRef(null);
   const [tooltip, setTooltip]  = useState(null);
   const [colHdrs, setColHdrs]  = useState([]);   // column header positions resolved after layout
+  const [controlsRev, setControlsRev] = useState(0);
+
+  // Append any DB-persisted controls not already in the hardcoded list
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/risk-register/controls");
+        if (!res.ok) return;
+        const data = await res.json();
+        const existing = new Set(CONTROLS.map(c => c.ref));
+        let added = 0;
+        for (const c of (data.controls || [])) {
+          if (existing.has(c.ref)) continue;
+          CONTROLS.push({
+            ref: c.ref,
+            fw:  c.framework || "Custom",
+            name: c.name || c.ref,
+            cat: c.category || "Custom",
+            dom: c.domain   || "Custom",
+          });
+          added++;
+        }
+        if (added > 0) setControlsRev(r => r + 1);
+      } catch (_) {}
+    })();
+  }, []);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -234,9 +269,10 @@ export function RiskSankey() {
       .nodeSort(null)
       .extent([[PAD.left, PAD.top], [W - PAD.right, H - PAD.bottom]]);
 
+    const _fresh = buildGraphData();
     const graphData = {
-      nodes: GRAPH_DATA.nodes.map(d => ({ ...d })),
-      links: GRAPH_DATA.links.map(d => ({ ...d })),
+      nodes: _fresh.nodes.map(d => ({ ...d })),
+      links: _fresh.links.map(d => ({ ...d })),
     };
     const { nodes, links } = layout(graphData);
 
@@ -467,7 +503,7 @@ export function RiskSankey() {
       if (pinId) { pinId = null; clearHighlight(); }
     });
 
-  }, []);
+  }, [controlsRev]);
 
   return (
     <div style={{
