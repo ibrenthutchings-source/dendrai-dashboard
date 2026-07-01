@@ -6,7 +6,7 @@
 
 window.MOCK = (function () {
 
-  const eventTemplates = [
+  const _defaultEventTemplates = [
     { control: "Revenue Recognition — Contract Review Gate",   area: "Revenue",            risk: "Revenue overstatement",        severity: "P1", exposure: "$12–18M",            category: "Financial Reporting",
       rc: "Most likely root cause: distributor attestation workflow regression after Q4 platform release. Containment: block billing on un-attested distributor contracts pending manual review. Systemic fix: re-platform RC-402 on contract lifecycle tool with mandatory gate." },
     { control: "Export License Validation — ECCN Check",       area: "Trade Compliance",   risk: "Export violation",             severity: "P1", exposure: "Regulatory",         category: "Trade Compliance",
@@ -25,6 +25,35 @@ window.MOCK = (function () {
       rc: "Likely root cause: JE approver pool included terminated employee for 8 days. Containment: void affected JEs; re-route. Systemic fix: HRIS-to-ERP role-revocation real-time sync." },
   ];
 
-  return { eventTemplates };
+  // Live eventTemplates — starts with defaults, replaced by DB data when available
+  let eventTemplates = _defaultEventTemplates.slice();
+
+  async function load() {
+    try {
+      const res = await fetch("/api/cem-templates");
+      if (!res.ok) return;
+      const data = await res.json();
+      const templates = data.templates || [];
+      if (!templates.length) return;
+      // Map DB shape → UI shape and replace array in-place
+      eventTemplates.length = 0;
+      for (const t of templates) {
+        eventTemplates.push({
+          control:  t.control,
+          area:     t.area,
+          risk:     t.risk_label,
+          severity: t.severity,
+          exposure: t.exposure || "",
+          category: t.category || "",
+          rc:       t.rc_narrative || "",
+        });
+      }
+    } catch (_) {}
+  }
+
+  // Kick off load immediately; consumers that need fresh data should await load()
+  load();
+
+  return { eventTemplates, load };
 
 })();
