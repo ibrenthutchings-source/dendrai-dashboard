@@ -2322,6 +2322,9 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   font-family: "Geist Mono", monospace; font-size: 9px; letter-spacing: 0.06em; border-radius: 2px;
 }
 
+/* CEM / UBO panel: scrollable event list that keeps header/stats/filters fixed */
+.cem-event-list { flex: 1; overflow-y: auto; min-height: 0; }
+
 /* Forecasts panel overrides */
 .bb-panel .fcst-row { gap: 10px; margin-bottom: 10px; }
 .bb-panel .fcst-card { border-radius: 4px; background: var(--surface); padding: 14px 16px; }

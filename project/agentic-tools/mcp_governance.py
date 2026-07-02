@@ -260,57 +260,62 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
     """Read observability.adjudicated_tool_calls for the REST endpoint."""
     if not db.is_available():
         return []
-    try:
-        with db.get_conn() as conn:
-            with conn.cursor() as cur:
-                if tier:
-                    cur.execute(
-                        """
-                        SELECT adjudicated_at, session_id, target_tool, server_name,
-                               risk_flags, risk_score, risk_tier, final_verdict,
-                               ensemble_confidence, requires_human_review,
-                               conflict_flags, policy_violations, adjudicator_reasoning,
-                               source_system, council_votes
-                        FROM observability.adjudicated_tool_calls
-                        WHERE risk_tier = %s
-                        ORDER BY adjudicated_at DESC
-                        LIMIT %s
-                        """,
-                        (tier.upper(), limit),
-                    )
-                else:
-                    cur.execute(
-                        """
-                        SELECT adjudicated_at, session_id, target_tool, server_name,
-                               risk_flags, risk_score, risk_tier, final_verdict,
-                               ensemble_confidence, requires_human_review,
-                               conflict_flags, policy_violations, adjudicator_reasoning,
-                               source_system, council_votes
-                        FROM observability.adjudicated_tool_calls
-                        ORDER BY adjudicated_at DESC
-                        LIMIT %s
-                        """,
-                        (limit,),
-                    )
-                cols = [d[0] for d in cur.description]
-                rows = []
-                for row in cur.fetchall():
-                    d = dict(zip(cols, row))
-                    if d.get("session_id"):
-                        d["session_id"] = str(d["session_id"])
-                    if d.get("adjudicated_at"):
-                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
-                    if d.get("risk_score") is not None:
-                        d["risk_score"] = float(d["risk_score"])
-                    if d.get("ensemble_confidence") is not None:
-                        d["ensemble_confidence"] = float(d["ensemble_confidence"])
-                    if d.get("council_votes") is None:
-                        d["council_votes"] = []
-                    rows.append(d)
-                return rows
-    except Exception as exc:
-        logger.warning("_fetch_adjudicated_rows error: %s", exc)
-        return []
+
+    _BASE_COLS = """
+        SELECT adjudicated_at, session_id, target_tool, server_name,
+               risk_flags, risk_score, risk_tier, final_verdict,
+               ensemble_confidence, requires_human_review,
+               conflict_flags, policy_violations, adjudicator_reasoning,
+               source_system
+    """
+
+    for include_council in (True, False):
+        extra = ", council_votes" if include_council else ""
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    if tier:
+                        cur.execute(
+                            _BASE_COLS + extra + """
+                            FROM observability.adjudicated_tool_calls
+                            WHERE risk_tier = %s
+                            ORDER BY adjudicated_at DESC
+                            LIMIT %s
+                            """,
+                            (tier.upper(), limit),
+                        )
+                    else:
+                        cur.execute(
+                            _BASE_COLS + extra + """
+                            FROM observability.adjudicated_tool_calls
+                            ORDER BY adjudicated_at DESC
+                            LIMIT %s
+                            """,
+                            (limit,),
+                        )
+                    cols = [d[0] for d in cur.description]
+                    rows = []
+                    for row in cur.fetchall():
+                        d = dict(zip(cols, row))
+                        if d.get("session_id"):
+                            d["session_id"] = str(d["session_id"])
+                        if d.get("adjudicated_at"):
+                            d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                        if d.get("risk_score") is not None:
+                            d["risk_score"] = float(d["risk_score"])
+                        if d.get("ensemble_confidence") is not None:
+                            d["ensemble_confidence"] = float(d["ensemble_confidence"])
+                        if d.get("council_votes") is None:
+                            d["council_votes"] = []
+                        rows.append(d)
+                    return rows
+        except Exception as exc:
+            if include_council and "council_votes" in str(exc):
+                logger.debug("council_votes column not yet migrated, retrying without it")
+                continue
+            logger.warning("_fetch_adjudicated_rows error: %s", exc)
+            return []
+    return []
 
 
 # ── Core processing logic ──────────────────────────────────────────────────────
