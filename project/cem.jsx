@@ -257,7 +257,7 @@ function UBOGovPanel() {
   });
 
   return (
-    <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{marginTop:0,borderTop:"2px solid var(--line)"}}>
+    <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{marginTop:0,minHeight:0,borderTop:"2px solid var(--line)"}}>
       <BBTermHeader
         section="UBO GOVERNANCE BRAIN"
         title="Medallion Pipeline · MCP Telemetry Adjudication"
@@ -343,7 +343,7 @@ function UBOGovPanel() {
       ) : filtered.length === 0 ? (
         <Empty>
           {counts.total === 0
-            ? "No adjudications yet. Click \"Process Queue\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
+            ? "No adjudications yet. Click \"▶ PROCESS QUEUE\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
             : "No events match this filter."}
         </Empty>
       ) : (
