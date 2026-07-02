@@ -253,7 +253,8 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                         SELECT adjudicated_at, session_id, target_tool, server_name,
                                risk_flags, risk_score, risk_tier, final_verdict,
                                ensemble_confidence, requires_human_review,
-                               conflict_flags, policy_violations, adjudicator_reasoning
+                               conflict_flags, policy_violations, adjudicator_reasoning,
+                               source_system
                         FROM observability.adjudicated_tool_calls
                         WHERE risk_tier = %s
                         ORDER BY adjudicated_at DESC
@@ -267,7 +268,8 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                         SELECT adjudicated_at, session_id, target_tool, server_name,
                                risk_flags, risk_score, risk_tier, final_verdict,
                                ensemble_confidence, requires_human_review,
-                               conflict_flags, policy_violations, adjudicator_reasoning
+                               conflict_flags, policy_violations, adjudicator_reasoning,
+                               source_system
                         FROM observability.adjudicated_tool_calls
                         ORDER BY adjudicated_at DESC
                         LIMIT %s
