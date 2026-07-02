@@ -1,9 +1,9 @@
 # Build stage — compile React frontend
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY project/package.json project/package-lock.json* ./
 RUN npm install
-COPY . .
+COPY project/ .
 RUN npm run build
 
 # Production stage — Python 3.12 + nginx (Debian slim)
@@ -18,18 +18,19 @@ RUN apt-get update \
 
 # Install Python API dependencies
 WORKDIR /app/agentic-tools
-COPY agentic-tools/requirements.txt .
+COPY project/agentic-tools/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy agentic-tools source
-COPY agentic-tools/ .
+# Copy agentic-tools source and UBO governance package
+COPY project/agentic-tools/ .
+COPY UBO/ /app/UBO/
 
 # Copy built frontend into nginx's document root
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Install nginx config and startup script
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY start.sh /start.sh
+COPY project/nginx.conf /etc/nginx/conf.d/default.conf
+COPY project/start.sh /start.sh
 RUN chmod +x /start.sh
 
 EXPOSE 80

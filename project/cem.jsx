@@ -201,8 +201,9 @@ function UBOGovPanel() {
   const [filter,      setFilter]      = useState("all");
   const [expanded,    setExpanded]    = useState(new Set());
   const [lastRefresh, setLastRefresh] = useState(null);
-  const [fetchErr,    setFetchErr]    = useState(null);
-  const [tab,         setTab]         = useState("adjudications");
+  const [fetchErr,      setFetchErr]      = useState(null);
+  const [tab,           setTab]           = useState("adjudications");
+  const [processStatus, setProcessStatus] = useState(null); // {adjudicated, ubo_available, error}
 
   async function refresh() {
     const base = window.MCP_API_BASE || "http://127.0.0.1:8001";
@@ -232,10 +233,15 @@ function UBOGovPanel() {
 
   async function triggerProcess() {
     setTriggering(true);
+    setProcessStatus(null);
     try {
       const base = window.MCP_API_BASE || "http://127.0.0.1:8001";
-      await fetch(`${base}/observability/telemetry/process`, { method: "POST" });
+      const res = await fetch(`${base}/observability/telemetry/process`, { method: "POST" });
+      const data = res.ok ? await res.json() : { error: `HTTP ${res.status}` };
+      setProcessStatus(data);
       await refresh();
+    } catch (e) {
+      setProcessStatus({ error: e.message });
     } finally {
       setTriggering(false);
     }
@@ -293,6 +299,23 @@ function UBOGovPanel() {
       {fetchErr && (
         <div style={{margin:"8px 18px",padding:"8px 12px",background:"var(--red-soft)",borderRadius:6,fontSize:11,color:"var(--red-ink)"}}>
           ⚠ API unavailable: {fetchErr} — ensure api_server.py is running
+        </div>
+      )}
+
+      {processStatus && (
+        <div style={{
+          margin:"4px 18px 0",padding:"6px 12px",borderRadius:6,fontSize:11,
+          background: processStatus.error ? "var(--red-soft)" : processStatus.adjudicated > 0 ? "var(--green-soft,#e8f5e9)" : "var(--ink-bg-2,#f5f5f0)",
+          color: processStatus.error ? "var(--red-ink)" : "var(--ink-1)",
+          fontFamily:"'Geist Mono',monospace",display:"flex",alignItems:"center",gap:8,
+        }}>
+          {processStatus.error
+            ? `⚠ Process queue error: ${processStatus.error}`
+            : processStatus.adjudicated > 0
+              ? `✓ Adjudicated ${processStatus.adjudicated} row${processStatus.adjudicated !== 1 ? "s" : ""}`
+              : `— Queue empty: no flagged MCP calls pending${processStatus.ubo_available === false ? " · UBO pipeline unavailable" : ""}`
+          }
+          <button style={{marginLeft:"auto",fontSize:10,cursor:"pointer",background:"none",border:"none",color:"inherit",opacity:0.6}} onClick={() => setProcessStatus(null)}>✕</button>
         </div>
       )}
 
