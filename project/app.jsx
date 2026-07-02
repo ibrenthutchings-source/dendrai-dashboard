@@ -551,7 +551,18 @@ function App() {
       const highVelIndustry = allSigs.filter(s => s.src === "Industry RSS" && s.velocity >= 3).length;
       const industryAdj = Math.min(0.5, highVelIndustry * 0.125);
 
-      const adjScore = Math.min(25, parseFloat((r.score + macroAdj + rssAdj + industryAdj).toFixed(1)));
+      // SEC 8-K material events amplify risks in matching categories
+      const eightKLinked = allSigs.filter(s => {
+        if (s.src !== "SEC 8-K") return false;
+        const rCat = (r.category || "").toLowerCase();
+        const sCat = (s.category || "").toLowerCase();
+        return sCat && (rCat.includes(sCat) || sCat.includes(rCat));
+      });
+      const eightKAdj = Math.min(1.5, eightKLinked.reduce(
+        (sum, s) => sum + (s.severity === "P1" ? 0.5 : s.severity === "P2" ? 0.25 : 0.1), 0
+      ));
+
+      const adjScore = Math.min(25, parseFloat((r.score + macroAdj + rssAdj + industryAdj + eightKAdj).toFixed(1)));
       const adjVelocity = rssLinked.length > 0
         ? Math.max(r.velocity, Math.max(...rssLinked.map(s => s.velocity || 0)))
         : r.velocity;
@@ -918,6 +929,7 @@ function App() {
           const eightK = await MCP.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);
           if (cemEvs.length) {
+            _capturedCemEvents = cemEvs;
             setEvents(cemEvs);
             cemEvs.forEach(ev => {
               TIERS.filter(t => t.sevs.includes(ev.severity)).forEach(tier => {
@@ -946,7 +958,17 @@ function App() {
       s.src === "Incident" && signalSet.has("incidents")
     );
     const rssSigsFiltered = signalSet.has("industry") ? currentRssSignals : [];
-    const sigsList = [...mockSigs, ...rssSigsFiltered];
+    const eightKSigs = _capturedCemEvents.map(ev => ({
+      src: "SEC 8-K",
+      label: `${ev.control} (${ev.filingDate || "recent"})`,
+      velocity: ev.severity === "P1" ? 3 : ev.severity === "P2" ? 2 : 1,
+      category: ev.category || "",
+      area: ev.area || "",
+      severity: ev.severity,
+      filingDate: ev.filingDate,
+      delta: "adverse",
+    }));
+    const sigsList = [...mockSigs, ...rssSigsFiltered, ...eightKSigs];
     const stage1Trace = buildTrace({
       assumptions: [
         `Ingest signals from ${signalSet.has("edgar") ? "EDGAR" : "no EDGAR"} / ${signalSet.has("industry") ? "industry RSS" : "no RSS"} / ${signalSet.has("fred") ? "FRED" : "no FRED"} / ${signalSet.has("internal") ? "internal KRIs" : "no internal KRIs"}.`,
@@ -979,6 +1001,9 @@ function App() {
         "FRED contractionary indicators increase macro-category risk scores by +0.08 each.",
         "RSS-linked signals add risk pressure at velocity × 0.08 to directly affected risks.",
         "High-velocity industry RSS adds systemic pressure, capped at +0.20 to all risks.",
+        eightKSigs.length > 0
+          ? `${eightKSigs.length} SEC 8-K filing${eightKSigs.length !== 1 ? "s" : ""} amplify risk scores in matching categories (+0.5 P1 / +0.25 P2 / +0.10 P3, capped +1.5 per risk).`
+          : "SEC 8-K material events amplify risk scores in matching categories when present.",
         "RAG thresholds are RED ≥ 7.5, AMBER ≥ 5.0, GREEN < 5.0.",
       ],
       decisions: [
@@ -1532,7 +1557,8 @@ function App() {
               filter={cemFilter} setFilter={setCemFilter}
               expanded={cemExpanded} setExpanded={setCemExpanded}
               onAckNotif={ackNotif}
-              onInject={() => fireSyntheticEvent(1)} />
+              onInject={() => fireSyntheticEvent(1)}
+              ticker={cfg.ticker} />
           </div>
           )}
 

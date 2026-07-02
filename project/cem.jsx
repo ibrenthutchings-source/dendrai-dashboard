@@ -22,7 +22,48 @@ function notifMsgFor(tier, ev) {
   }
 }
 
-function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded, onAckNotif, onInject }) {
+function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded, onAckNotif, onInject, ticker }) {
+  const seenIdsRef = useRef(null);
+  const [pollState, setPollState] = useState({ checking: false, lastChecked: null });
+
+  // Poll SEC EDGAR for new 8-K filings every 5 minutes
+  useEffect(() => {
+    if (!ticker) return;
+    seenIdsRef.current = new Set(events.map(e => e.id));
+
+    async function poll() {
+      if (!window.MCP?.fetch8kEvents || !window.MCP?.map8kToCemEvents) return;
+      setPollState(s => ({ ...s, checking: true }));
+      try {
+        const result = await window.MCP.fetch8kEvents(ticker);
+        const allMapped = window.MCP.map8kToCemEvents(result);
+        const seen = seenIdsRef.current;
+        const newEvs = allMapped.filter(e => !seen.has(e.id));
+        if (newEvs.length > 0) {
+          newEvs.forEach(e => seen.add(e.id));
+          setEvents(prev => [...newEvs, ...prev]);
+          newEvs.forEach(ev => {
+            TIERS.filter(t => t.sevs.includes(ev.severity)).forEach(tier => {
+              setTimeout(() => {
+                setEvents(prev => prev.map(e => e.id !== ev.id ? e : {
+                  ...e,
+                  notifs: [...(e.notifs || []), { tid: tier.id, tier: tier.label, msg: notifMsgFor(tier, ev), sentAt: Date.now(), status: "pending" }],
+                }));
+              }, tier.delay);
+            });
+          });
+        }
+        setPollState({ checking: false, lastChecked: new Date() });
+      } catch (_) {
+        setPollState(s => ({ ...s, checking: false, lastChecked: new Date() }));
+      }
+    }
+
+    poll();
+    const id = setInterval(poll, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [ticker]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const filtered = filter === "all" ? events : events.filter(e => e.severity === filter);
   const counts = events.reduce((acc, e) => {
     if (e.severity === "P1") acc.p1++; else if (e.severity === "P2") acc.p2++;
@@ -40,7 +81,16 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
         title="Real-time Control Breakdown Detection"
         status={`${events.length} EVENTS  ·  TIERED STAKEHOLDER CASCADE  ·  AI ROOT-CAUSE ANALYSIS`}
         actions={
-          <button className="btn btn-sm" onClick={onInject}><Icon name="bolt" size={12}/> INJECT EVENT</button>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {pollState.lastChecked && (
+              <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
+                {pollState.checking
+                  ? "⟳ CHECKING 8-K…"
+                  : `8-K ${pollState.lastChecked.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}`}
+              </span>
+            )}
+            <button className="btn btn-sm" onClick={onInject}><Icon name="bolt" size={12}/> INJECT EVENT</button>
+          </div>
         }
       />
 

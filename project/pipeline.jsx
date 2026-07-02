@@ -8,7 +8,7 @@ import { RiskApprovalReview } from "./risk-approval.jsx";
 import { ScopeApprovalReview } from "./audit-scope-review.jsx";
 
 const STAGES = [
-  { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · internal KRIs" },
+  { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · SEC 8-K · internal KRIs" },
   { id: "s2", name: "Risk Assessment + Velocity",          desc: "Continuous scoring · velocity delta · RAG matrix" },
   { id: "s3", name: "Audit Scope Generator",               desc: "Risk-linked audit plan · sprint-ready workplan" },
   { id: "s4", name: "Findings → Management Action Plans",  desc: "Root cause · owner · due date · success criteria" },
@@ -471,6 +471,11 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
         label: `Incident log reviewed`,
         detail: `${bySrc["Incident"]} recent incident${bySrc["Incident"] !== 1 ? "s" : ""} evaluated for risk linkage`,
       } : null,
+      bySrc["SEC 8-K"] > 0 ? {
+        label: `SEC 8-K material events ingested`,
+        detail: `${bySrc["SEC 8-K"]} filing${bySrc["SEC 8-K"] !== 1 ? "s" : ""} mapped to risk pipeline — severity amplifiers: P1 +0.5 · P2 +0.25 · P3 +0.10 per category match`,
+        children: signals.filter(s => s.src === "SEC 8-K").slice(0, 6).map(s => `${s.severity || "—"} · ${s.label}`),
+      } : null,
       total > 0 ? {
         label: `${total} signals velocity-graded`,
         detail: `Scored on 1–3 scale: ${high} high · ${med} medium · ${total - high - med} standard`,
@@ -513,6 +518,14 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
         detail: `${rssLinked.length} linked signal${rssLinked.length !== 1 ? "s" : ""} — velocity × 0.08 added to directly affected risks`,
         children: rssLinked.slice(0, 4).map(s => `${s.feedName || "RSS"} · ${(s.title || "").slice(0, 60)} → +${((s.velocity || 0) * 0.08).toFixed(2)}`),
       } : null,
+      (() => {
+        const eightK = allSigs.filter(s => s.src === "SEC 8-K");
+        return eightK.length > 0 ? {
+          label: `SEC 8-K adjustments applied`,
+          detail: `${eightK.length} material filing${eightK.length !== 1 ? "s" : ""} — P1 +0.5 · P2 +0.25 · P3 +0.10 per category-matched risk (capped +1.5)`,
+          children: eightK.slice(0, 5).map(s => `${s.severity} · ${s.label}`),
+        } : null;
+      })(),
       {
         label: "Control effectiveness (CE) scored per risk",
         detail: "STRONG / ADEQUATE / WEAK / NONE ratings applied — residual score adjusted per control environment",
@@ -895,6 +908,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
   rssSigs.forEach(s => { const k = s.feedName || "RSS"; rssByFeed[k] = (rssByFeed[k] || 0) + 1; });
   const fredTotal = bySrc["FRED Macro"] || 0;
   const fredContrS1 = signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+  const eightKSigsS1 = signals.filter(s => s.src === "SEC 8-K");
   const [narrLoading, setNarrLoading] = React.useState(false);
   const [narrError, setNarrError] = React.useState(null);
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiNarrative;
@@ -983,9 +997,21 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
                 </span>
               </div>
             )}
+            {eightKSigsS1.length > 0 && (
+              <div style={{display:"flex", alignItems:"baseline", gap:8, fontSize:11}}>
+                <span className="tag mono" style={{background:"var(--orange-soft,var(--red-soft))", color:"var(--orange-ink,var(--red-ink))", flexShrink:0}}>8-K</span>
+                <span style={{color:"var(--ink-2)", flex:1}}>
+                  {eightKSigsS1.length} SEC 8-K filing{eightKSigsS1.length !== 1 ? "s" : ""}
+                  {" "}→ <span className="mono">+0.5 P1 · +0.25 P2 · +0.10 P3</span> per category-matched risk (cap +1.5)
+                  {" · "}{eightKSigsS1.filter(s => s.severity === "P1").length > 0 && <span style={{color:"var(--red-ink)"}}>{eightKSigsS1.filter(s => s.severity === "P1").length} P1</span>}
+                  {eightKSigsS1.filter(s => s.severity === "P2").length > 0 && <span style={{color:"var(--amber-ink)", marginLeft:4}}>{eightKSigsS1.filter(s => s.severity === "P2").length} P2</span>}
+                  {eightKSigsS1.filter(s => s.severity === "P3").length > 0 && <span style={{color:"var(--ink-3)", marginLeft:4}}>{eightKSigsS1.filter(s => s.severity === "P3").length} P3</span>}
+                </span>
+              </div>
+            )}
             <div style={{marginTop:2, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
               <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Stage 2 residual formula: </span>
-              <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>score = inherent + FRED_adj + RSS_adj + industry_adj − CE_discount</span>
+              <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>score = inherent + FRED_adj + RSS_adj + 8K_adj + industry_adj − CE_discount</span>
             </div>
           </div>
         </div>
@@ -1224,6 +1250,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
   const fredContr = allSignals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary");
   const highVelIndustry = liveRssSignals.filter(s => s.velocity >= 3).length;
   const industryAdj = Math.min(0.2, highVelIndustry * 0.05);
+  const eightKSigsS2 = allSignals.filter(s => s.src === "SEC 8-K");
 
   const toggleSig = (id) => setExpandedSigs(prev => {
     const next = new Set(prev);
@@ -1288,8 +1315,16 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             const isMacro = (r.category || "").toLowerCase().includes("macro");
             const fredAdj = isMacro ? fredContr.length * 0.08 : 0;
             const rssAdj = rssLinked.reduce((sum,s) => sum + (s.velocity||0)*0.08, 0);
-            const totalAdj = rssAdj + fredAdj + (industryAdj > 0 && rssLinked.length === 0 ? industryAdj : 0);
-            const hasSigs = rssLinked.length > 0 || fredAdj > 0 || (highVelIndustry > 0 && industryAdj > 0);
+            const eightKLinked = eightKSigsS2.filter(s => {
+              const rCat = (r.category || "").toLowerCase();
+              const sCat = (s.category || "").toLowerCase();
+              return sCat && (rCat.includes(sCat) || sCat.includes(rCat));
+            });
+            const eightKAdj = Math.min(1.5, eightKLinked.reduce(
+              (sum, s) => sum + (s.severity === "P1" ? 0.5 : s.severity === "P2" ? 0.25 : 0.1), 0
+            ));
+            const totalAdj = rssAdj + fredAdj + eightKAdj + (industryAdj > 0 && rssLinked.length === 0 ? industryAdj : 0);
+            const hasSigs = rssLinked.length > 0 || fredAdj > 0 || eightKAdj > 0 || (highVelIndustry > 0 && industryAdj > 0);
             const sigOpen = expandedSigs.has(r.id);
 
             const controls = (MOCK.riskFlow?.[r.id]?.controls) || [];
@@ -1331,7 +1366,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
                 {hasSigs && (
                   <div className="s2-sig-ev">
                     <button className="s2-sig-ev-toggle" onClick={() => toggleSig(r.id)}>
-                      {sigOpen ? "▲" : "▼"} {rssLinked.length + (fredAdj > 0 ? 1 : 0) + (industryAdj > 0 && rssLinked.length === 0 ? 1 : 0)} signal{(rssLinked.length + (fredAdj > 0 ? 1 : 0)) !== 1 ? "s" : ""} driving score
+                      {sigOpen ? "▲" : "▼"} {rssLinked.length + (fredAdj > 0 ? 1 : 0) + eightKLinked.length + (industryAdj > 0 && rssLinked.length === 0 ? 1 : 0)} signal{(rssLinked.length + (fredAdj > 0 ? 1 : 0) + eightKLinked.length) !== 1 ? "s" : ""} driving score
                       {totalAdj > 0.01 && (
                         <span className="s2-sig-ev-delta">+{totalAdj.toFixed(2)} adjustment</span>
                       )}
@@ -1344,6 +1379,17 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
                             <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{(s.title||"").slice(0,72)}{s.title?.length > 72 ? "…" : ""}</span>
                             <VelocityPill v={s.velocity}/>
                             <span className="s2-sig-ev-adj">+{(s.velocity*0.08).toFixed(2)}</span>
+                          </div>
+                        ))}
+                        {eightKLinked.map((s,i) => (
+                          <div key={`8k-${i}`} className="s2-sig-ev-item">
+                            <span className="s2-sig-ev-src" style={{color:"var(--orange-ink,var(--red-ink))"}}>SEC 8-K</span>
+                            <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{s.label}</span>
+                            <span className="mono" style={{fontSize:9, padding:"1px 5px", borderRadius:3,
+                              background: s.severity === "P1" ? "var(--red-soft)" : s.severity === "P2" ? "var(--amber-soft)" : "var(--surface-2,var(--surface))",
+                              color:      s.severity === "P1" ? "var(--red-ink)"  : s.severity === "P2" ? "var(--amber-ink)"  : "var(--ink-3)",
+                              marginRight: 4}}>{s.severity}</span>
+                            <span className="s2-sig-ev-adj">+{(s.severity === "P1" ? 0.5 : s.severity === "P2" ? 0.25 : 0.1).toFixed(2)}</span>
                           </div>
                         ))}
                         {fredAdj > 0 && (
@@ -1399,8 +1445,12 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11, color:"var(--ink-2)"}}>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Residual score: </span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + signal_adjustments + CE_adj</span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:12}}>CE adj: STRONG −0.7 · ADEQUATE −0.3 · WEAK +0.1 · NONE +0.4</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + FRED_adj + RSS_adj + 8K_adj + industry_adj − CE_discount</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:12}}>8K_adj: P1 +0.5 · P2 +0.25 · P3 +0.10 per category match (cap +1.5)</span>
+          </div>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>CE discount: </span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>STRONG −0.7 · ADEQUATE −0.3 · WEAK +0.1 · NONE +0.4</span>
           </div>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>RAG thresholds: </span>
