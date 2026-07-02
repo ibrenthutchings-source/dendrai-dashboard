@@ -22,6 +22,7 @@ logged but never crash the api_server process.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -134,6 +135,18 @@ def _write_adjudication(
     if not db.is_available():
         return
     adj = uro.adjudication
+    council_votes = json.dumps([
+        {
+            "agent_name":    e.agent_name,
+            "verdict":       e.verdict.value,
+            "confidence":    float(e.confidence),
+            "risk_delta":    float(e.risk_delta),
+            "reasoning":     e.reasoning,
+            "evidence":      dict(e.evidence),
+            "evaluation_ms": e.evaluation_ms,
+        }
+        for e in (adj.evaluations if adj else [])
+    ])
     try:
         with db.get_conn() as conn:
             with conn.cursor() as cur:
@@ -146,10 +159,12 @@ def _write_adjudication(
                         uro_id, risk_score, risk_tier,
                         final_verdict, ensemble_confidence,
                         requires_human_review, conflict_flags,
-                        policy_violations, adjudicator_reasoning
+                        policy_violations, adjudicator_reasoning,
+                        council_votes
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s::jsonb
                     )
                     """,
                     (
@@ -168,6 +183,7 @@ def _write_adjudication(
                         [f.value for f in adj.conflict_flags] if adj else [],
                         list(uro.silver_policy_violations),
                         (adj.conflict_reasoning[:1000] if adj and adj.conflict_reasoning else None),
+                        council_votes,
                     ),
                 )
                 # Stamp source row as processed
@@ -254,7 +270,7 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                                risk_flags, risk_score, risk_tier, final_verdict,
                                ensemble_confidence, requires_human_review,
                                conflict_flags, policy_violations, adjudicator_reasoning,
-                               source_system
+                               source_system, council_votes
                         FROM observability.adjudicated_tool_calls
                         WHERE risk_tier = %s
                         ORDER BY adjudicated_at DESC
@@ -269,7 +285,7 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                                risk_flags, risk_score, risk_tier, final_verdict,
                                ensemble_confidence, requires_human_review,
                                conflict_flags, policy_violations, adjudicator_reasoning,
-                               source_system
+                               source_system, council_votes
                         FROM observability.adjudicated_tool_calls
                         ORDER BY adjudicated_at DESC
                         LIMIT %s
@@ -288,6 +304,8 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                         d["risk_score"] = float(d["risk_score"])
                     if d.get("ensemble_confidence") is not None:
                         d["ensemble_confidence"] = float(d["ensemble_confidence"])
+                    if d.get("council_votes") is None:
+                        d["council_votes"] = []
                     rows.append(d)
                 return rows
     except Exception as exc:

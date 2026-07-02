@@ -200,6 +200,7 @@ function UBOGovPanel() {
   const [expanded,    setExpanded]    = useState(new Set());
   const [lastRefresh, setLastRefresh] = useState(null);
   const [fetchErr,    setFetchErr]    = useState(null);
+  const [tab,         setTab]         = useState("adjudications");
 
   async function refresh() {
     const base = window.MCP_API_BASE || "http://127.0.0.1:8001";
@@ -293,109 +294,123 @@ function UBOGovPanel() {
         </div>
       )}
 
-      {humanReview.length > 0 && (
-        <>
-          <div className="bb-section-sep">
-            <span style={{color:"var(--red-ink)"}}>⚠ HUMAN REVIEW QUEUE</span>
-            <span>{humanReview.length} REQUIRING ATTENTION</span>
-          </div>
-          <div style={{padding:"0 18px 10px"}}>
-            {humanReview.slice(0, 5).map((r, i) => (
-              <UBOReviewRow key={i} row={r} />
-            ))}
-            {humanReview.length > 5 && (
-              <div style={{fontSize:11,color:"var(--ink-3)",padding:"4px 0"}}>
-                + {humanReview.length - 5} more — set filter to "Needs Review" to see all
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
+      {/* ── Tab switcher ─────────────────────────────────────────────────── */}
       <div style={{padding:"0 18px"}}>
         <div className="cem-toolbar">
-          {[
-            { id:"all",      l:"All" },
-            { id:"CRITICAL", l:"Critical" },
-            { id:"HIGH",     l:"High" },
-            { id:"MEDIUM",   l:"Medium" },
-            { id:"LOW",      l:"Low" },
-            { id:"review",   l:"Needs Review" },
-            { id:"GITHUB",   l:"GitHub" },
-            { id:"MCP_PROXY",l:"MCP" },
-          ].map(f => (
-            <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
-              {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
-            </button>
-          ))}
+          <button className={"cem-filter" + (tab === "adjudications" ? " active" : "")} onClick={() => setTab("adjudications")}>Adjudications</button>
+          <button className={"cem-filter" + (tab === "council" ? " active" : "")} onClick={() => setTab("council")}>Council Activity</button>
         </div>
       </div>
 
-      <div className="bb-section-sep">
-        <span>ADJUDICATION LOG</span>
-        <span>{filtered.length} EVENTS SHOWN</span>
-      </div>
+      {tab === "adjudications" && (<>
+        {humanReview.length > 0 && (
+          <>
+            <div className="bb-section-sep">
+              <span style={{color:"var(--red-ink)"}}>⚠ HUMAN REVIEW QUEUE</span>
+              <span>{humanReview.length} REQUIRING ATTENTION</span>
+            </div>
+            <div style={{padding:"0 18px 10px"}}>
+              {humanReview.slice(0, 5).map((r, i) => (
+                <UBOReviewRow key={i} row={r} />
+              ))}
+              {humanReview.length > 5 && (
+                <div style={{fontSize:11,color:"var(--ink-3)",padding:"4px 0"}}>
+                  + {humanReview.length - 5} more — set filter to "Needs Review" to see all
+                </div>
+              )}
+            </div>
+          </>
+        )}
 
-      {loading ? (
-        <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
-          <span className="spin"/> Loading UBO governance data…
-        </div>
-      ) : filtered.length === 0 ? (
-        <Empty>
-          {counts.total === 0
-            ? "No adjudications yet. Click \"▶ PROCESS QUEUE\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
-            : "No events match this filter."}
-        </Empty>
-      ) : (
-        <div style={{padding:"0 18px 18px"}}>
-          {filtered.map((r, i) => (
-            <UBOAdjRow
-              key={i}
-              row={r}
-              expanded={expanded.has(i)}
-              onToggle={() => {
-                const next = new Set(expanded);
-                next.has(i) ? next.delete(i) : next.add(i);
-                setExpanded(next);
-              }}
-            />
-          ))}
-        </div>
-      )}
-
-      {latency.length > 0 && (
-        <>
-          <div className="bb-section-sep">
-            <span>MCP TOOL LATENCY SUMMARY</span>
-            <span>{latency.length} TOOLS</span>
+        <div style={{padding:"0 18px"}}>
+          <div className="cem-toolbar">
+            {[
+              { id:"all",      l:"All" },
+              { id:"CRITICAL", l:"Critical" },
+              { id:"HIGH",     l:"High" },
+              { id:"MEDIUM",   l:"Medium" },
+              { id:"LOW",      l:"Low" },
+              { id:"review",   l:"Needs Review" },
+              { id:"GITHUB",   l:"GitHub" },
+              { id:"MCP_PROXY",l:"MCP" },
+            ].map(f => (
+              <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
+                {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
+              </button>
+            ))}
           </div>
-          <div style={{padding:"0 18px 18px",overflowX:"auto"}}>
-            <table className="ubo-lat-table">
-              <thead>
-                <tr>
-                  <th>Server</th><th>Tool</th><th>Calls</th>
-                  <th>Avg ms</th><th>P50</th><th>P95</th><th>P99</th>
-                  <th>Errors</th><th>Err %</th>
-                </tr>
-              </thead>
-              <tbody>
-                {latency.map((r, i) => (
-                  <tr key={i}>
-                    <td className="mono">{r.server_name || "—"}</td>
-                    <td className="mono">{r.target_tool || "—"}</td>
-                    <td>{r.call_count}</td>
-                    <td>{r.avg_ms != null ? Math.round(r.avg_ms) : "—"}</td>
-                    <td>{r.p50_ms != null ? Math.round(r.p50_ms) : "—"}</td>
-                    <td className={r.p95_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p95_ms != null ? Math.round(r.p95_ms) : "—"}</td>
-                    <td className={r.p99_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p99_ms != null ? Math.round(r.p99_ms) : "—"}</td>
-                    <td className={r.error_count > 0 ? "ubo-lat-err" : ""}>{r.error_count ?? "—"}</td>
-                    <td className={r.error_pct > 0 ? "ubo-lat-warn" : ""}>{r.error_pct != null ? `${r.error_pct.toFixed(1)}%` : "—"}</td>
+        </div>
+
+        <div className="bb-section-sep">
+          <span>ADJUDICATION LOG</span>
+          <span>{filtered.length} EVENTS SHOWN</span>
+        </div>
+
+        {loading ? (
+          <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
+            <span className="spin"/> Loading UBO governance data…
+          </div>
+        ) : filtered.length === 0 ? (
+          <Empty>
+            {counts.total === 0
+              ? "No adjudications yet. Click \"▶ PROCESS QUEUE\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
+              : "No events match this filter."}
+          </Empty>
+        ) : (
+          <div style={{padding:"0 18px 18px"}}>
+            {filtered.map((r, i) => (
+              <UBOAdjRow
+                key={i}
+                row={r}
+                expanded={expanded.has(i)}
+                onToggle={() => {
+                  const next = new Set(expanded);
+                  next.has(i) ? next.delete(i) : next.add(i);
+                  setExpanded(next);
+                }}
+              />
+            ))}
+          </div>
+        )}
+
+        {latency.length > 0 && (
+          <>
+            <div className="bb-section-sep">
+              <span>MCP TOOL LATENCY SUMMARY</span>
+              <span>{latency.length} TOOLS</span>
+            </div>
+            <div style={{padding:"0 18px 18px",overflowX:"auto"}}>
+              <table className="ubo-lat-table">
+                <thead>
+                  <tr>
+                    <th>Server</th><th>Tool</th><th>Calls</th>
+                    <th>Avg ms</th><th>P50</th><th>P95</th><th>P99</th>
+                    <th>Errors</th><th>Err %</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+                </thead>
+                <tbody>
+                  {latency.map((r, i) => (
+                    <tr key={i}>
+                      <td className="mono">{r.server_name || "—"}</td>
+                      <td className="mono">{r.target_tool || "—"}</td>
+                      <td>{r.call_count}</td>
+                      <td>{r.avg_ms != null ? Math.round(r.avg_ms) : "—"}</td>
+                      <td>{r.p50_ms != null ? Math.round(r.p50_ms) : "—"}</td>
+                      <td className={r.p95_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p95_ms != null ? Math.round(r.p95_ms) : "—"}</td>
+                      <td className={r.p99_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p99_ms != null ? Math.round(r.p99_ms) : "—"}</td>
+                      <td className={r.error_count > 0 ? "ubo-lat-err" : ""}>{r.error_count ?? "—"}</td>
+                      <td className={r.error_pct > 0 ? "ubo-lat-warn" : ""}>{r.error_pct != null ? `${r.error_pct.toFixed(1)}%` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </>)}
+
+      {tab === "council" && (
+        <UBOCouncilTab adjudicated={adjudicated} loading={loading} />
       )}
     </div>
   );
@@ -471,6 +486,119 @@ function UBOAdjRow({ row, expanded, onToggle }) {
       )}
     </div>
   );
+}
+
+// ── Council Activity tab ──────────────────────────────────────────────────────
+
+const _AGENT_STYLE = {
+  "The Quant":           { accent: "var(--blue-ink)",   bg: "var(--blue-soft)"   },
+  "The Linguist":        { accent: "var(--amber-ink)",  bg: "var(--amber-soft)"  },
+  "The Graph Architect": { accent: "var(--green-ink)",  bg: "var(--green-soft)"  },
+};
+
+function UBOCouncilRow({ row, expanded, onToggle }) {
+  const tier    = row.risk_tier     || "LOW";
+  const verdict = row.final_verdict || "CLEAR";
+  const ts  = _UBO_TIER_STYLE[tier]       || _UBO_TIER_STYLE.LOW;
+  const vs  = _UBO_VERDICT_STYLE[verdict] || _UBO_VERDICT_STYLE.CLEAR;
+  const votes = row.council_votes || [];
+
+  return (
+    <div className="ubo-adj-row">
+      <div className="ubo-adj-head" onClick={onToggle}>
+        <span className="ubo-tier-badge"    style={{background:ts.bg, color:ts.ink}}>{tier}</span>
+        <span className="ubo-verdict-badge" style={{background:vs.bg, color:vs.ink}}>{verdict}</span>
+        <span className="mono ubo-tool-name">{row.target_tool || "unknown"}</span>
+        <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>{row.server_name}</span>
+        <span className="mono" style={{fontSize:11,fontWeight:600,flexShrink:0}}>
+          {row.risk_score != null ? row.risk_score.toFixed(3) : "—"}
+        </span>
+        <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>
+          {votes.length} agent{votes.length !== 1 ? "s" : ""}
+        </span>
+        <span className="mono ubo-ts">
+          {row.adjudicated_at ? new Date(row.adjudicated_at).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : ""}
+        </span>
+        <Icon name={expanded ? "chev-u" : "chev-d"} size={13} className="muted"/>
+      </div>
+      {expanded && (
+        <div className="ubo-adj-body">
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:12}}>
+            {votes.map((vote, vi) => {
+              const ag  = _AGENT_STYLE[vote.agent_name] || { accent:"var(--ink-2)", bg:"var(--surface-2)" };
+              const vvs = _UBO_VERDICT_STYLE[vote.verdict] || _UBO_VERDICT_STYLE.CLEAR;
+              return (
+                <div key={vi} style={{
+                  background:"var(--surface-1)",
+                  border:"1px solid var(--line)",
+                  borderTop:`3px solid ${ag.accent}`,
+                  borderRadius:6,
+                  padding:"10px 12px",
+                }}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                    <span style={{fontSize:11,fontWeight:700,color:ag.accent,fontFamily:"'Geist Mono',monospace"}}>{vote.agent_name}</span>
+                    <span className="ubo-verdict-badge" style={{background:vvs.bg,color:vvs.ink,fontSize:9,padding:"2px 5px"}}>{vote.verdict}</span>
+                  </div>
+                  <div style={{display:"flex",gap:12,marginBottom:8,fontSize:10,color:"var(--ink-3)"}}>
+                    <span>Conf: <span style={{color:"var(--ink-1)",fontWeight:600}}>{(vote.confidence*100).toFixed(0)}%</span></span>
+                    <span>Δ: <span style={{color:vote.risk_delta>0?"var(--red-ink)":vote.risk_delta<0?"var(--green-ink)":"var(--ink-2)",fontWeight:600}}>{vote.risk_delta>=0?"+":""}{vote.risk_delta.toFixed(3)}</span></span>
+                    <span style={{marginLeft:"auto"}}>{vote.evaluation_ms}ms</span>
+                  </div>
+                  <div style={{fontSize:10,color:"var(--ink-2)",lineHeight:1.5,maxHeight:72,overflow:"hidden"}}>
+                    {vote.reasoning}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {row.adjudicator_reasoning && (<>
+            <div className="cem-section-lbl">Adjudicator synthesis</div>
+            <div className="rca-box">{row.adjudicator_reasoning}</div>
+          </>)}
+          {row.conflict_flags && row.conflict_flags.length > 0 && (
+            <div style={{marginTop:6,fontSize:10,color:"var(--amber-ink)"}}>
+              ⚡ Conflicts: {row.conflict_flags.join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UBOCouncilTab({ adjudicated, loading }) {
+  const [expanded, setExpanded] = useState(new Set());
+  const withVotes = adjudicated.filter(r => (r.council_votes || []).length > 0);
+
+  if (loading) return (
+    <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
+      <span className="spin"/> Loading council data…
+    </div>
+  );
+  if (withVotes.length === 0) return (
+    <Empty>No council deliberation records yet. The full agent swarm — The Quant, The Linguist, and The Graph Architect — runs only for HIGH and CRITICAL tier events. Process the queue to generate records.</Empty>
+  );
+
+  return (<>
+    <div className="bb-section-sep">
+      <span>COUNCIL DELIBERATIONS</span>
+      <span>{withVotes.length} RECORDS</span>
+    </div>
+    <div style={{padding:"0 18px 18px"}}>
+      {withVotes.map((row, i) => (
+        <UBOCouncilRow
+          key={i}
+          row={row}
+          expanded={expanded.has(i)}
+          onToggle={() => {
+            const next = new Set(expanded);
+            next.has(i) ? next.delete(i) : next.add(i);
+            setExpanded(next);
+          }}
+        />
+      ))}
+    </div>
+  </>);
 }
 
 Object.assign(window, { CEMPanel, UBOGovPanel, TIERS, notifMsgFor });
