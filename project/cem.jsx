@@ -34,7 +34,7 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
   const avgMin = ackTimes.length ? Math.round(ackTimes.reduce((a,b) => a+b, 0) / ackTimes.length) : null;
 
   return (
-    <div data-screen-label="Control Event Monitor" className="bb-panel" style={{minHeight:0}}>
+    <div data-screen-label="Control Event Monitor" className="bb-panel">
       <BBTermHeader
         section="CONTROL EVENT MONITOR"
         title="Real-time Control Breakdown Detection"
@@ -257,7 +257,7 @@ function UBOGovPanel() {
   });
 
   return (
-    <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{marginTop:0,minHeight:0,borderTop:"2px solid var(--line)"}}>
+    <div data-screen-label="UBO Governance Brain" className="bb-panel">
       <BBTermHeader
         section="UBO GOVERNANCE BRAIN"
         title="Medallion Pipeline · MCP Telemetry Adjudication"

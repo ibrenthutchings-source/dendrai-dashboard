@@ -1526,13 +1526,19 @@ function App() {
 
           {/* ---- Controls Monitor ---- */}
           {activeScreen === "controls" && (
-          <div className="panel active" style={{display:"flex",flexDirection:"column",gap:0}}>
+          <div className="panel active">
             <CEMPanel
               events={events} setEvents={setEvents}
               filter={cemFilter} setFilter={setCemFilter}
               expanded={cemExpanded} setExpanded={setCemExpanded}
               onAckNotif={ackNotif}
               onInject={() => fireSyntheticEvent(1)} />
+          </div>
+          )}
+
+          {/* ---- UBO Governance Brain ---- */}
+          {activeScreen === "ubogov" && (
+          <div className="panel active">
             <UBOGovPanel />
           </div>
           )}
