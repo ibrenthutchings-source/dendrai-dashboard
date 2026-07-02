@@ -138,6 +138,13 @@ except Exception as _gov_exc:
     mcp_governance = None  # type: ignore[assignment]
     _HAS_MCP_GOVERNANCE = False
 
+try:
+    import mcp_http_telemetry
+    _HAS_HTTP_TELEMETRY = True
+except Exception:
+    mcp_http_telemetry = None  # type: ignore[assignment]
+    _HAS_HTTP_TELEMETRY = False
+
 import github_endpoints
 
 logging.basicConfig(level=logging.INFO)
@@ -245,6 +252,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# MCP HTTP Telemetry: captures tool calls arriving via Streamable-HTTP endpoints.
+# Must be added after CORS so it wraps the full app (processes requests first).
+if _HAS_HTTP_TELEMETRY:
+    app.add_middleware(mcp_http_telemetry.MCPHttpTelemetryMiddleware)
+    logger.info("MCP HTTP telemetry middleware registered")
 
 # AI-augmented endpoints (recommendations #1–#4). Active only when ANTHROPIC_API_KEY
 # is set; otherwise each route returns 503 and the deterministic pipeline is unaffected.
