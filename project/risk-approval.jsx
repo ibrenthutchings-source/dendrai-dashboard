@@ -43,6 +43,7 @@ function RiskApprovalReview({
   onOverrideGate,
 }) {
   if (!risks || risks.length === 0) return null;
+  const [expandedId, setExpandedId] = React.useState(null);
   const total = risks.length;
   const decided = risks.filter(r => {
     const a = approvals[r.id];
@@ -97,6 +98,8 @@ function RiskApprovalReview({
               onApprove={() => onApproveRisk(r.id)}
               onAdjust={() => onOpenAdjust(r.id)}
               onSignoff={(role) => onSignoff(r.id, role)}
+              expanded={expandedId === r.id}
+              onToggle={() => setExpandedId(prev => prev === r.id ? null : r.id)}
             />
           ))}
         </div>
@@ -118,9 +121,8 @@ function RiskApprovalReview({
   );
 }
 
-function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBER", onSetPerRiskLevel, onApprove, onAdjust, onSignoff }) {
+function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBER", onSetPerRiskLevel, onApprove, onAdjust, onSignoff, expanded, onToggle }) {
   const r = risk;
-  const [showControls, setShowControls] = React.useState(false);
   const status = approval.status || "pending";
   const adj = approval.adjustments || null;
   const effRag = adj?.rag ?? risk.rag;
@@ -135,22 +137,21 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
   return (
     <div className={`rar-row rar-row-${status}`}>
-      <div className="rar-td rar-td-name">
+      <div className="rar-td rar-td-name" onClick={onToggle} style={{cursor: "pointer", userSelect: "none"}}>
         <div className="rar-name-head">
           <RAGChip rag={effRag}>{effRag}</RAGChip>
           {isAdjusted && effRag !== risk.rag && (
             <span className="rar-was mono">was <RAGChip rag={risk.rag}>{risk.rag}</RAGChip></span>
           )}
           <div className="rar-rname">{risk.name}</div>
+          <span style={{marginLeft: "auto", fontSize: 10, color: "var(--ink-3)", flexShrink: 0, paddingLeft: 6}}>{expanded ? "▲" : "▼"}</span>
         </div>
         <div className="rar-rmeta mono">
           <span>{risk.id}</span>
           <span>·</span>
           <span>{risk.category}</span>
           {controls.length > 0 && (
-            <button className="rar-ctrl-toggle" onClick={() => setShowControls(!showControls)}>
-              {showControls ? "▲" : "▼"} {controls.length} controls
-            </button>
+            <span style={{color: "var(--ink-3)", fontSize: 10}}>{controls.length} controls</span>
           )}
         </div>
       </div>
@@ -232,64 +233,68 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
         )}
       </div>
 
-      {showControls && controls.length > 0 && (
-        <div className="rar-ctrl-detail-row">
-          <div className="rar-ctrl-detail-head mono">
-            Control tolerance · threshold ≥ {threshold}
-          </div>
-          {controls.map((ctrl, ci) => {
-            const adj = parseFloat((effScore + (RAR_CE_ADJ[ctrl.ce] || 0)).toFixed(1));
-            const withinTol = adj < threshold;
-            return (
-              <div key={ci} className="rar-ctrl-item">
-                <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>
-                <span style={{flex:1, fontSize:11, color:"var(--ink-2)"}}>{ctrl.name}</span>
-                <span className="mono" style={{fontSize:10, color:"var(--ink-3)", marginRight:8}}>{ctrl.ce}</span>
-                <span className="mono" style={{fontSize:10, fontWeight:500, color: withinTol ? "var(--green-ink)" : "var(--red-ink)"}}>
-                  {adj.toFixed(1)} {withinTol ? "OK" : "BREACH"}
-                </span>
+      {expanded && (
+        <>
+          {controls.length > 0 && (
+            <div className="rar-ctrl-detail-row">
+              <div className="rar-ctrl-detail-head mono">
+                Control tolerance · threshold ≥ {threshold}
               </div>
-            );
-          })}
-        </div>
-      )}
-
-      {isAdjusted && (
-        <div className="rar-row-detail">
-          <div className="rar-detail-rationale">
-            <div className="rar-detail-label mono">RATIONALE — {approval.adjustedBy || "Auditor"} · {approval.adjustedAt ? new Date(approval.adjustedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}) : "—"}</div>
-            <div className="rar-detail-text">{approval.rationale}</div>
-          </div>
-          <div className="rar-signoff-chain">
-            {SIGNOFFS.map((s, i) => {
-              const sig = approval.signoffs?.[s.id];
-              const isSigned = !!sig?.signedAt;
-              const prevSigned = i === 0 || approval.signoffs?.[SIGNOFFS[i-1].id]?.signedAt;
-              const canSign = !isSigned && prevSigned;
-              return (
-                <div key={s.id} className={`rar-sig ${isSigned ? "rar-sig-signed" : canSign ? "rar-sig-active" : "rar-sig-blocked"}`}>
-                  <div className="rar-sig-num mono">{i+1}</div>
-                  <div className="rar-sig-body">
-                    <div className="rar-sig-role">{s.role}</div>
-                    <div className="rar-sig-who mono">{isSigned ? sig.who : s.who}</div>
+              {controls.map((ctrl, ci) => {
+                const adj = parseFloat((effScore + (RAR_CE_ADJ[ctrl.ce] || 0)).toFixed(1));
+                const withinTol = adj < threshold;
+                return (
+                  <div key={ci} className="rar-ctrl-item">
+                    <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>
+                    <span style={{flex:1, fontSize:11, color:"var(--ink-2)"}}>{ctrl.name}</span>
+                    <span className="mono" style={{fontSize:10, color:"var(--ink-3)", marginRight:8}}>{ctrl.ce}</span>
+                    <span className="mono" style={{fontSize:10, fontWeight:500, color: withinTol ? "var(--green-ink)" : "var(--red-ink)"}}>
+                      {adj.toFixed(1)} {withinTol ? "OK" : "BREACH"}
+                    </span>
                   </div>
-                  {isSigned ? (
-                    <div className="rar-sig-stamp">
-                      <Icon name="check" size={11}/>
-                      <span className="mono">{new Date(sig.signedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</span>
+                );
+              })}
+            </div>
+          )}
+
+          {isAdjusted && (
+            <div className="rar-row-detail">
+              <div className="rar-detail-rationale">
+                <div className="rar-detail-label mono">RATIONALE — {approval.adjustedBy || "Auditor"} · {approval.adjustedAt ? new Date(approval.adjustedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}) : "—"}</div>
+                <div className="rar-detail-text">{approval.rationale}</div>
+              </div>
+              <div className="rar-signoff-chain">
+                {SIGNOFFS.map((s, i) => {
+                  const sig = approval.signoffs?.[s.id];
+                  const isSigned = !!sig?.signedAt;
+                  const prevSigned = i === 0 || approval.signoffs?.[SIGNOFFS[i-1].id]?.signedAt;
+                  const canSign = !isSigned && prevSigned;
+                  return (
+                    <div key={s.id} className={`rar-sig ${isSigned ? "rar-sig-signed" : canSign ? "rar-sig-active" : "rar-sig-blocked"}`}>
+                      <div className="rar-sig-num mono">{i+1}</div>
+                      <div className="rar-sig-body">
+                        <div className="rar-sig-role">{s.role}</div>
+                        <div className="rar-sig-who mono">{isSigned ? sig.who : s.who}</div>
+                      </div>
+                      {isSigned ? (
+                        <div className="rar-sig-stamp">
+                          <Icon name="check" size={11}/>
+                          <span className="mono">{new Date(sig.signedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</span>
+                        </div>
+                      ) : canSign ? (
+                        <button className="btn btn-sm rar-sig-btn" onClick={() => onSignoff(s.id)}>
+                          Sign as {s.role}
+                        </button>
+                      ) : (
+                        <span className="rar-sig-pending mono">Blocked</span>
+                      )}
                     </div>
-                  ) : canSign ? (
-                    <button className="btn btn-sm rar-sig-btn" onClick={() => onSignoff(s.id)}>
-                      Sign as {s.role}
-                    </button>
-                  ) : (
-                    <span className="rar-sig-pending mono">Blocked</span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
