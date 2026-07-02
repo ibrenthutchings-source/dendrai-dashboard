@@ -839,9 +839,8 @@ CREATE TABLE IF NOT EXISTS embeddings (
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_embeddings UNIQUE (source_table, source_id, content_type, model, chunk_index)
 );
-CREATE INDEX IF NOT EXISTS idx_embeddings_source  ON embeddings (source_table, source_id);
-CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHERE company_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw    ON embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_embeddings_source ON embeddings (source_table, source_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw   ON embeddings USING hnsw (embedding vector_cosine_ops);
 """
 
 # Column / constraint migrations for databases created before these columns existed.

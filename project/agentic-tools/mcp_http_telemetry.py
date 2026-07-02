@@ -44,19 +44,31 @@ _SESSION_REGISTERED = False
 
 # ── Path helpers ────────────────────────────────────────────────────────────────
 
-def _is_mcp_path(path: str) -> bool:
-    """True for any MCP Streamable-HTTP endpoint: /mcp/<name> or /mcp/<name>/mcp."""
-    return path.startswith("/mcp/")
+# REST API prefixes served by api_server.py (nginx strips /api/mcp before forwarding)
+_REST_API_PREFIXES = ("/edgar/", "/fred/", "/rss/", "/predictive/", "/risk-as-code/", "/oracle/")
+
+
+def _is_monitored_path(path: str) -> bool:
+    """True for MCP Streamable-HTTP endpoints AND REST API tool endpoints."""
+    return path.startswith("/mcp/") or any(path.startswith(p) for p in _REST_API_PREFIXES)
 
 
 def _server_name_from_path(path: str) -> str:
-    """Extract the server label from an MCP path.
+    """Extract the server label from an MCP or REST path.
 
-    /mcp/edgar/mcp  → 'edgar'
-    /mcp/fred       → 'fred'
+    /mcp/edgar/mcp      → 'edgar'
+    /edgar/8k-events    → 'edgar'
     """
     parts = [p for p in path.strip("/").split("/") if p]
-    return parts[1] if len(parts) > 1 else "unknown"
+    if path.startswith("/mcp/"):
+        return parts[1] if len(parts) > 1 else "unknown"
+    return parts[0] if parts else "unknown"
+
+
+def _tool_name_from_rest_path(path: str) -> str | None:
+    """Extract tool name from a REST path. /edgar/8k-events → '8k-events'"""
+    parts = [p for p in path.strip("/").split("/") if p]
+    return "/".join(parts[1:]) if len(parts) > 1 else None
 
 
 # ── Risk-as-Code flag detection (mirrors mcp_telemetry_proxy.py) ────────────────
@@ -210,6 +222,38 @@ async def _log_tool_call(
     )
 
 
+async def _log_rest_call(
+    body: bytes,
+    server_name: str,
+    tool_name: str | None,
+    elapsed_ms: int,
+    http_status: int,
+) -> None:
+    """Log a dashboard REST API call (plain JSON, not JSON-RPC) to mcp_telemetry."""
+    raw = body.decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        payload = {}
+
+    args_hash    = hashlib.sha256(raw.encode()).hexdigest() if raw.strip() else None
+    payload_hash = hashlib.sha256(raw.encode()).hexdigest()
+    risk_flags   = _detect_risk_flags({"params": {"name": tool_name or "", "arguments": payload}})
+    status       = "ok" if http_status < 400 else "error"
+
+    await asyncio.to_thread(
+        _db_write_telemetry,
+        server_name=server_name,
+        message_id=str(uuid.uuid4()),
+        tool_name=tool_name,
+        args_hash=args_hash,
+        elapsed_ms=elapsed_ms,
+        status=status,
+        payload_hash=payload_hash,
+        risk_flags=risk_flags,
+    )
+
+
 # ── Pure-ASGI middleware ────────────────────────────────────────────────────────
 
 class MCPHttpTelemetryMiddleware:
@@ -234,7 +278,7 @@ class MCPHttpTelemetryMiddleware:
         path   = scope.get("path", "")
         method = scope.get("method", "")
 
-        if method != "POST" or not _is_mcp_path(path):
+        if method != "POST" or not _is_monitored_path(path):
             await self.app(scope, receive, send)
             return
 
@@ -283,6 +327,15 @@ class MCPHttpTelemetryMiddleware:
         finally:
             elapsed_ms  = (time.monotonic_ns() - start_ns) // 1_000_000
             server_name = _server_name_from_path(path)
-            asyncio.create_task(
-                _log_tool_call(body, server_name, elapsed_ms, response_status[0])
-            )
+            if path.startswith("/mcp/"):
+                asyncio.create_task(
+                    _log_tool_call(body, server_name, elapsed_ms, response_status[0])
+                )
+            else:
+                asyncio.create_task(
+                    _log_rest_call(
+                        body, server_name,
+                        _tool_name_from_rest_path(path),
+                        elapsed_ms, response_status[0],
+                    )
+                )
