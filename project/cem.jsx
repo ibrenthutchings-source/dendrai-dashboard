@@ -34,7 +34,7 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
   const avgMin = ackTimes.length ? Math.round(ackTimes.reduce((a,b) => a+b, 0) / ackTimes.length) : null;
 
   return (
-    <div data-screen-label="Control Event Monitor" className="bb-panel">
+    <div data-screen-label="Control Event Monitor" className="bb-panel" style={{minHeight:0}}>
       <BBTermHeader
         section="CONTROL EVENT MONITOR"
         title="Real-time Control Breakdown Detection"
