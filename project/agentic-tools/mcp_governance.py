@@ -36,12 +36,16 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger("ubo.governance")
 
 # ── UBO pipeline import (optional — degrades to no-op if package not on path) ─
+# Try one level up first (Docker: /app/UBO), then two levels up (local: repo-root/UBO).
 
-_REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..")
-)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+_here = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (
+    os.path.normpath(os.path.join(_here, "..")),        # Docker: /app
+    os.path.normpath(os.path.join(_here, "..", "..")),  # local dev: repo root
+):
+    if os.path.isdir(os.path.join(_candidate, "UBO")) and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+        break
 
 _HAS_UBO = False
 try:
