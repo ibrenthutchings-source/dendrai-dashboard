@@ -339,3 +339,17 @@ COMMENT ON COLUMN observability.adjudicated_tool_calls.telemetry_id IS
     'FK to mcp_telemetry for MCP_PROXY events; NULL for GITHUB and other source systems.';
 COMMENT ON COLUMN observability.adjudicated_tool_calls.source_system IS
     'Source system that produced the adjudicated event: MCP_PROXY or GITHUB.';
+
+-- =============================================================================
+-- v3 additions — Council agent votes
+--
+-- Stores the per-agent AgentEvaluation objects produced by the Council of Agents
+-- (The Quant, The Linguist, The Graph Architect) so the dashboard can display
+-- the full deliberation trace.  Empty array for auto-cleared LOW/MEDIUM events.
+-- =============================================================================
+
+ALTER TABLE observability.adjudicated_tool_calls
+    ADD COLUMN IF NOT EXISTS council_votes JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+COMMENT ON COLUMN observability.adjudicated_tool_calls.council_votes IS
+    'JSON array of per-agent AgentEvaluation objects from the Council deliberation. Empty for auto-cleared events below the Council tier threshold.';
