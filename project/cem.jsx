@@ -34,7 +34,7 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
   const avgMin = ackTimes.length ? Math.round(ackTimes.reduce((a,b) => a+b, 0) / ackTimes.length) : null;
 
   return (
-    <div data-screen-label="Control Event Monitor" className="bb-panel">
+    <div data-screen-label="Control Event Monitor" className="bb-panel" style={{height:"calc(100% + 40px)", overflow:"hidden"}}>
       <BBTermHeader
         section="CONTROL EVENT MONITOR"
         title="Real-time Control Breakdown Detection"
@@ -64,28 +64,30 @@ function CEMPanel({ events, setEvents, filter, setFilter, expanded, setExpanded,
         ))}
       </div>
 
-      <div className="bb-section-sep">
-        <span>EVENT LOG</span>
-        <span>{filtered.length} EVENTS SHOWN</span>
-      </div>
+      <div className="cem-event-list">
+        <div className="bb-section-sep">
+          <span>EVENT LOG</span>
+          <span>{filtered.length} EVENTS SHOWN</span>
+        </div>
 
-      {filtered.length === 0 ? (
-        <Empty>No control events match this filter. Click "Inject event" to fire a synthetic alert, or run in MCP/Live mode to load real 8-K events.</Empty>
-      ) : (
-        filtered.map(ev => (
-          <CEMEvent
-            key={ev.id}
-            ev={ev}
-            expanded={expanded.has(ev.id)}
-            onToggle={() => {
-              const next = new Set(expanded);
-              next.has(ev.id) ? next.delete(ev.id) : next.add(ev.id);
-              setExpanded(next);
-            }}
-            onAckNotif={(tierId) => onAckNotif(ev.id, tierId)}
-          />
-        ))
-      )}
+        {filtered.length === 0 ? (
+          <Empty>No control events match this filter. Click "Inject event" to fire a synthetic alert, or run in MCP/Live mode to load real 8-K events.</Empty>
+        ) : (
+          filtered.map(ev => (
+            <CEMEvent
+              key={ev.id}
+              ev={ev}
+              expanded={expanded.has(ev.id)}
+              onToggle={() => {
+                const next = new Set(expanded);
+                next.has(ev.id) ? next.delete(ev.id) : next.add(ev.id);
+                setExpanded(next);
+              }}
+              onAckNotif={(tierId) => onAckNotif(ev.id, tierId)}
+            />
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -258,7 +260,7 @@ function UBOGovPanel() {
   });
 
   return (
-    <div data-screen-label="UBO Governance Brain" className="bb-panel">
+    <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{height:"calc(100% + 40px)", overflow:"hidden"}}>
       <BBTermHeader
         section="UBO GOVERNANCE BRAIN"
         title="Medallion Pipeline · MCP Telemetry Adjudication"
@@ -302,116 +304,118 @@ function UBOGovPanel() {
         </div>
       </div>
 
-      {tab === "adjudications" && (<>
-        {humanReview.length > 0 && (
-          <>
-            <div className="bb-section-sep">
-              <span style={{color:"var(--red-ink)"}}>⚠ HUMAN REVIEW QUEUE</span>
-              <span>{humanReview.length} REQUIRING ATTENTION</span>
-            </div>
-            <div style={{padding:"0 18px 10px"}}>
-              {humanReview.slice(0, 5).map((r, i) => (
-                <UBOReviewRow key={i} row={r} />
+      <div className="cem-event-list">
+        {tab === "adjudications" && (<>
+          {humanReview.length > 0 && (
+            <>
+              <div className="bb-section-sep">
+                <span style={{color:"var(--red-ink)"}}>⚠ HUMAN REVIEW QUEUE</span>
+                <span>{humanReview.length} REQUIRING ATTENTION</span>
+              </div>
+              <div style={{padding:"0 18px 10px"}}>
+                {humanReview.slice(0, 5).map((r, i) => (
+                  <UBOReviewRow key={i} row={r} />
+                ))}
+                {humanReview.length > 5 && (
+                  <div style={{fontSize:11,color:"var(--ink-3)",padding:"4px 0"}}>
+                    + {humanReview.length - 5} more — set filter to "Needs Review" to see all
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          <div style={{padding:"0 18px"}}>
+            <div className="cem-toolbar">
+              {[
+                { id:"all",      l:"All" },
+                { id:"CRITICAL", l:"Critical" },
+                { id:"HIGH",     l:"High" },
+                { id:"MEDIUM",   l:"Medium" },
+                { id:"LOW",      l:"Low" },
+                { id:"review",   l:"Needs Review" },
+                { id:"GITHUB",   l:"GitHub" },
+                { id:"MCP_PROXY",l:"MCP" },
+              ].map(f => (
+                <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
+                  {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
+                </button>
               ))}
-              {humanReview.length > 5 && (
-                <div style={{fontSize:11,color:"var(--ink-3)",padding:"4px 0"}}>
-                  + {humanReview.length - 5} more — set filter to "Needs Review" to see all
-                </div>
-              )}
             </div>
-          </>
-        )}
-
-        <div style={{padding:"0 18px"}}>
-          <div className="cem-toolbar">
-            {[
-              { id:"all",      l:"All" },
-              { id:"CRITICAL", l:"Critical" },
-              { id:"HIGH",     l:"High" },
-              { id:"MEDIUM",   l:"Medium" },
-              { id:"LOW",      l:"Low" },
-              { id:"review",   l:"Needs Review" },
-              { id:"GITHUB",   l:"GitHub" },
-              { id:"MCP_PROXY",l:"MCP" },
-            ].map(f => (
-              <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
-                {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
-              </button>
-            ))}
           </div>
-        </div>
 
-        <div className="bb-section-sep">
-          <span>ADJUDICATION LOG</span>
-          <span>{filtered.length} EVENTS SHOWN</span>
-        </div>
-
-        {loading ? (
-          <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
-            <span className="spin"/> Loading UBO governance data…
+          <div className="bb-section-sep">
+            <span>ADJUDICATION LOG</span>
+            <span>{filtered.length} EVENTS SHOWN</span>
           </div>
-        ) : filtered.length === 0 ? (
-          <Empty>
-            {counts.total === 0
-              ? "No adjudications yet. Click \"▶ PROCESS QUEUE\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
-              : "No events match this filter."}
-          </Empty>
-        ) : (
-          <div style={{padding:"0 18px 18px"}}>
-            {filtered.map((r, i) => (
-              <UBOAdjRow
-                key={i}
-                row={r}
-                expanded={expanded.has(i)}
-                onToggle={() => {
-                  const next = new Set(expanded);
-                  next.has(i) ? next.delete(i) : next.add(i);
-                  setExpanded(next);
-                }}
-              />
-            ))}
-          </div>
-        )}
 
-        {latency.length > 0 && (
-          <>
-            <div className="bb-section-sep">
-              <span>MCP TOOL LATENCY SUMMARY</span>
-              <span>{latency.length} TOOLS</span>
+          {loading ? (
+            <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
+              <span className="spin"/> Loading UBO governance data…
             </div>
-            <div style={{padding:"0 18px 18px",overflowX:"auto"}}>
-              <table className="ubo-lat-table">
-                <thead>
-                  <tr>
-                    <th>Server</th><th>Tool</th><th>Calls</th>
-                    <th>Avg ms</th><th>P50</th><th>P95</th><th>P99</th>
-                    <th>Errors</th><th>Err %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {latency.map((r, i) => (
-                    <tr key={i}>
-                      <td className="mono">{r.server_name || "—"}</td>
-                      <td className="mono">{r.target_tool || "—"}</td>
-                      <td>{r.call_count}</td>
-                      <td>{r.avg_ms != null ? Math.round(r.avg_ms) : "—"}</td>
-                      <td>{r.p50_ms != null ? Math.round(r.p50_ms) : "—"}</td>
-                      <td className={r.p95_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p95_ms != null ? Math.round(r.p95_ms) : "—"}</td>
-                      <td className={r.p99_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p99_ms != null ? Math.round(r.p99_ms) : "—"}</td>
-                      <td className={r.error_count > 0 ? "ubo-lat-err" : ""}>{r.error_count ?? "—"}</td>
-                      <td className={r.error_pct > 0 ? "ubo-lat-warn" : ""}>{r.error_pct != null ? `${r.error_pct.toFixed(1)}%` : "—"}</td>
+          ) : filtered.length === 0 ? (
+            <Empty>
+              {counts.total === 0
+                ? "No adjudications yet. Click \"▶ PROCESS QUEUE\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
+                : "No events match this filter."}
+            </Empty>
+          ) : (
+            <div style={{padding:"0 18px 18px"}}>
+              {filtered.map((r, i) => (
+                <UBOAdjRow
+                  key={i}
+                  row={r}
+                  expanded={expanded.has(i)}
+                  onToggle={() => {
+                    const next = new Set(expanded);
+                    next.has(i) ? next.delete(i) : next.add(i);
+                    setExpanded(next);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {latency.length > 0 && (
+            <>
+              <div className="bb-section-sep">
+                <span>MCP TOOL LATENCY SUMMARY</span>
+                <span>{latency.length} TOOLS</span>
+              </div>
+              <div style={{padding:"0 18px 18px",overflowX:"auto"}}>
+                <table className="ubo-lat-table">
+                  <thead>
+                    <tr>
+                      <th>Server</th><th>Tool</th><th>Calls</th>
+                      <th>Avg ms</th><th>P50</th><th>P95</th><th>P99</th>
+                      <th>Errors</th><th>Err %</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </>)}
+                  </thead>
+                  <tbody>
+                    {latency.map((r, i) => (
+                      <tr key={i}>
+                        <td className="mono">{r.server_name || "—"}</td>
+                        <td className="mono">{r.target_tool || "—"}</td>
+                        <td>{r.call_count}</td>
+                        <td>{r.avg_ms != null ? Math.round(r.avg_ms) : "—"}</td>
+                        <td>{r.p50_ms != null ? Math.round(r.p50_ms) : "—"}</td>
+                        <td className={r.p95_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p95_ms != null ? Math.round(r.p95_ms) : "—"}</td>
+                        <td className={r.p99_ms > 30000 ? "ubo-lat-breach" : ""}>{r.p99_ms != null ? Math.round(r.p99_ms) : "—"}</td>
+                        <td className={r.error_count > 0 ? "ubo-lat-err" : ""}>{r.error_count ?? "—"}</td>
+                        <td className={r.error_pct > 0 ? "ubo-lat-warn" : ""}>{r.error_pct != null ? `${r.error_pct.toFixed(1)}%` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>)}
 
-      {tab === "council" && (
-        <UBOCouncilTab adjudicated={adjudicated} loading={loading} />
-      )}
+        {tab === "council" && (
+          <UBOCouncilTab adjudicated={adjudicated} loading={loading} />
+        )}
+      </div>
     </div>
   );
 }
