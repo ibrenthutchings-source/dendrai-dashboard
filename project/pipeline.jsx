@@ -310,7 +310,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
             <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Gross Margin (%)</div>
             {mgDelta != null && (
               <div style={{fontSize:10, fontFamily:"var(--mono)", color: mgDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps · 4Q forecast {fcMg?.toFixed(1)}%
+                {mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps · 4Q forecast {fcMg?.toFixed(2)}%
               </div>
             )}
           </div>
@@ -1106,7 +1106,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           <div className="stage-detail">
             <h5>Operating margin forecast · quarterly %</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              EBIT ÷ Revenue. Forecast: {lastF?.toFixed(1)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
+              EBIT ÷ Revenue. Forecast: {lastF?.toFixed(2)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
             </div>
             <FCWithMetrics history={forecasts.opMargin.history.slice(-16)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838"/>
           </div>
