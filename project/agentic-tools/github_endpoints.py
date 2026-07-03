@@ -94,11 +94,11 @@ def _get_pipeline():
 
 def _verify_signature(body: bytes, sig_header: str | None) -> bool:
     if not WEBHOOK_SECRET:
-        logger.warning(
-            "GITHUB_WEBHOOK_SECRET not set — webhook signature not verified. "
-            "Set this in your .env to enable HMAC validation."
+        logger.error(
+            "GITHUB_WEBHOOK_SECRET not set — rejecting webhook. "
+            "Set GITHUB_WEBHOOK_SECRET in your environment to enable webhook delivery."
         )
-        return True
+        return False
     if not sig_header or not sig_header.startswith("sha256="):
         return False
     mac = hmac.new(WEBHOOK_SECRET.encode("utf-8"), body, hashlib.sha256)
