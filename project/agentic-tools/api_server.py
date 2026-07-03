@@ -183,17 +183,20 @@ async def lifespan(application: FastAPI):
             logger.info("MCP governance available but DB not ready — polling not started")
 
         # Background DB reconnect loop — retries every 30 s if startup DB init failed.
+        # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
+        # stalling the event loop (which would cause 502s on all in-flight requests).
         async def _db_reconnect_loop():
             while True:
                 await asyncio.sleep(30)
                 if db.is_available():
                     continue
                 logger.info("DB not available — retrying connection…")
-                if db.init_db():
+                connected = await asyncio.to_thread(db.init_db)
+                if connected:
                     logger.info("DB reconnected successfully")
-                    risk_register_endpoints.seed_static_data()
-                    _seed_cem_templates()
-                    _seed_ticker_cik()
+                    await asyncio.to_thread(risk_register_endpoints.seed_static_data)
+                    await asyncio.to_thread(_seed_cem_templates)
+                    await asyncio.to_thread(_seed_ticker_cik)
                     if _HAS_MCP_GOVERNANCE and _gov_task is None:
                         asyncio.create_task(mcp_governance.start_polling())
                         logger.info("MCP governance polling started after DB reconnect")
