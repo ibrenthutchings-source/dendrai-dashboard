@@ -47,6 +47,7 @@
 
   --violet:       oklch(56% 0.16 295);
   --violet-soft:  oklch(95% 0.05 295);
+  --violet-ink:   oklch(36% 0.14 295);
 
   /* Radii */
   --r-1: 4px;
@@ -88,6 +89,20 @@
   --acc-ink:    oklch(26% 0.020 230);
 }
 
+/* Dark-mode accent overrides — brighter than their light-mode counterparts */
+[data-theme="dark"][data-accent="indigo"] {
+  --acc:        oklch(66% 0.20 268);
+  --acc-2:      oklch(57% 0.20 268);
+  --acc-soft:   oklch(19% 0.08 268);
+  --acc-ink:    oklch(78% 0.21 268);
+}
+[data-theme="dark"][data-accent="slate"] {
+  --acc:        oklch(62% 0.045 230);
+  --acc-2:      oklch(52% 0.040 230);
+  --acc-soft:   oklch(22% 0.020 230);
+  --acc-ink:    oklch(80% 0.048 230);
+}
+
 [data-theme="dark"] {
   color-scheme: dark;
 
@@ -98,10 +113,10 @@
   --surface-3:    oklch(24% 0.010 80);
   --hover:        oklch(26% 0.010 80);
 
-  /* Text */
-  --ink:          oklch(92% 0.006 80);
-  --ink-2:        oklch(74% 0.006 80);
-  --ink-3:        oklch(56% 0.006 80);
+  /* Text — slight chroma bump for warmth */
+  --ink:          oklch(93% 0.012 80);
+  --ink-2:        oklch(76% 0.010 80);
+  --ink-3:        oklch(56% 0.008 80);
   --ink-4:        oklch(40% 0.006 80);
 
   /* Borders */
@@ -113,6 +128,37 @@
   --shadow-sm: 0 1px 0 oklch(0% 0 0 / 0.20);
   --shadow:    0 1px 2px oklch(0% 0 0 / 0.25), 0 4px 12px oklch(0% 0 0 / 0.20);
   --shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.30), 0 12px 32px oklch(0% 0 0 / 0.35);
+
+  /* Accent (emerald default) — brighter on dark bg */
+  --acc:          oklch(66% 0.17 162);
+  --acc-2:        oklch(57% 0.17 162);
+  --acc-soft:     oklch(20% 0.06 162);
+  --acc-ink:      oklch(79% 0.19 162);
+
+  /* Red — vivid coral-red */
+  --red:          oklch(66% 0.22 22);
+  --red-soft:     oklch(21% 0.06 22);
+  --red-ink:      oklch(73% 0.22 22);
+
+  /* Amber — vivid gold */
+  --amber:        oklch(76% 0.17 65);
+  --amber-soft:   oklch(21% 0.05 65);
+  --amber-ink:    oklch(81% 0.17 65);
+
+  /* Green — vivid emerald */
+  --green:        oklch(68% 0.19 155);
+  --green-soft:   oklch(19% 0.06 155);
+  --green-ink:    oklch(75% 0.19 155);
+
+  /* Blue — vivid sky */
+  --blue:         oklch(67% 0.19 235);
+  --blue-soft:    oklch(19% 0.07 235);
+  --blue-ink:     oklch(75% 0.19 235);
+
+  /* Violet — vivid purple */
+  --violet:       oklch(67% 0.20 295);
+  --violet-soft:  oklch(19% 0.07 295);
+  --violet-ink:   oklch(76% 0.20 295);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
