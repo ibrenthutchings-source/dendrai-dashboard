@@ -301,7 +301,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
               </div>
             )}
           </div>
-          <FCWithMetrics history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={0}/>
+          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={0}/>
         </div>
       )}
       {mg?.history?.length > 0 && (
@@ -314,7 +314,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
               </div>
             )}
           </div>
-          <FCWithMetrics history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
+          <FCWithMetrics history={mg.history.slice(-16)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
         </div>
       )}
       {livefacts && (
@@ -1092,7 +1092,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
               Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
               Persistent EPS compression raises financial-reporting and liquidity risk scores.
             </div>
-            <FCWithMetrics history={forecasts.eps.history.slice(-8)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)"/>
+            <FCWithMetrics history={forecasts.eps.history.slice(-16)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)"/>
           </div>
         );
       })()}
@@ -1108,7 +1108,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               EBIT ÷ Revenue. Forecast: {lastF?.toFixed(1)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
             </div>
-            <FCWithMetrics history={forecasts.opMargin.history.slice(-8)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838"/>
+            <FCWithMetrics history={forecasts.opMargin.history.slice(-16)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838"/>
           </div>
         );
       })()}
@@ -1124,7 +1124,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
             </div>
-            <FCWithMetrics history={forecasts.ebitda.history.slice(-8)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)"/>
+            <FCWithMetrics history={forecasts.ebitda.history.slice(-16)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)"/>
           </div>
         );
       })()}
@@ -1140,7 +1140,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
             </div>
-            <FC history={forecasts.netIncome.history.slice(-8)} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)"/>
+            <FC history={forecasts.netIncome.history.slice(-16)} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)"/>
           </div>
         );
       })()}
@@ -1156,7 +1156,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
             </div>
-            <FC history={forecasts.fcf.history.slice(-8)} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52"/>
+            <FC history={forecasts.fcf.history.slice(-16)} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52"/>
           </div>
         );
       })()}

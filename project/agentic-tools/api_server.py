@@ -624,6 +624,37 @@ def get_rss_feeds():
     return {"feeds": RSS_INGEST_FEEDS}
 
 
+@app.get("/rss-proxy")
+def rss_proxy(url: str = Query(..., description="RSS feed URL to fetch server-side")):
+    """
+    Server-side RSS proxy — bypasses browser CORS restrictions.
+    Mirrors the Vite dev-server /api/rss-proxy route for production use.
+    Only http/https URLs are allowed; localhost/private ranges are rejected.
+    """
+    import re as _re
+    from urllib.parse import urlparse as _urlparse
+    parsed = _urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed")
+    host = parsed.hostname or ""
+    if _re.match(r"^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)", host):
+        raise HTTPException(status_code=400, detail="Private/localhost URLs are not allowed")
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; DendraiRSSProxy/1.0)"},
+            timeout=10,
+            allow_redirects=True,
+        )
+        content_type = resp.headers.get("Content-Type", "application/xml")
+        from fastapi.responses import Response as _Response
+        return _Response(content=resp.content, media_type=content_type)
+    except requests.Timeout:
+        raise HTTPException(status_code=504, detail="RSS feed fetch timed out")
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"RSS fetch failed: {exc}")
+
+
 @app.get("/scoring/config")
 def get_scoring_config():
     """Scoring vocabulary config: domain keywords, severity weights, domain→risk mappings, Item 1A keywords."""

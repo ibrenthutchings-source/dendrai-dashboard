@@ -257,6 +257,17 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list) -> dict:
                 op_margin.append({"quarter_end": p["quarter_end"], "value": round(p["value"] / rv * 100, 2)})
         if op_margin:
             result["op_margin"] = op_margin
+            om_vals = [p["value"] for p in op_margin]
+            if len(om_vals) >= 8:
+                try:
+                    om_bt = walk_forward_backtest(om_vals)
+                    result["op_margin_forecast"] = compute_ensemble_forecast(
+                        om_vals, horizon=4,
+                        weights=om_bt.get("calibrated_weights"),
+                    )
+                    result["op_margin_backtest"] = om_bt
+                except Exception:
+                    pass
 
     # Net Income
     ni_q = extract_quarterly_series(xbrl, "NetIncome")
@@ -1819,7 +1830,7 @@ def run_full_analysis(
     else:
         result["forecast"] = {"note": f"No quarterly {forecast_metric} data in XBRL"}
 
-    # Gross margin quarterly history — needed by the JS forecast chart
+    # Gross margin quarterly history + ensemble forecast — needed by the JS forecast chart
     try:
         gp_series = extract_quarterly_series(xbrl, "GrossProfit")
         rev_map   = {p["quarter_end"]: p["value"] for p in q_series} if q_series else {}
@@ -1832,6 +1843,18 @@ def run_full_analysis(
                     gm_history.append({"quarter_end": gp["quarter_end"], "value": round(gm, 2)})
         if gm_history:
             result["forecast"]["margin_history"] = gm_history
+            # Ensemble forecast for gross margin (same models as revenue)
+            gm_vals = [p["value"] for p in gm_history]
+            if len(gm_vals) >= 8:
+                try:
+                    gm_bt = walk_forward_backtest(gm_vals)
+                    result["forecast"]["margin_forecast"] = compute_ensemble_forecast(
+                        gm_vals, horizon=forecast_horizon,
+                        weights=gm_bt.get("calibrated_weights"),
+                    )
+                    result["forecast"]["margin_backtest"] = gm_bt
+                except Exception:
+                    pass
     except Exception:
         pass
 
