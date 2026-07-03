@@ -848,10 +848,16 @@ _PGVECTOR_MIGRATIONS = """
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS chunk_index SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS company_id  INT REFERENCES companies(id);
 ALTER TABLE embeddings DROP CONSTRAINT IF EXISTS embeddings_source_table_source_id_content_type_model_key;
-DO $$ BEGIN
-    ALTER TABLE embeddings ADD CONSTRAINT uq_embeddings
-        UNIQUE (source_table, source_id, content_type, model, chunk_index);
-EXCEPTION WHEN duplicate_object THEN NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_embeddings'
+          AND conrelid = 'embeddings'::regclass
+    ) THEN
+        ALTER TABLE embeddings ADD CONSTRAINT uq_embeddings
+            UNIQUE (source_table, source_id, content_type, model, chunk_index);
+    END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHERE company_id IS NOT NULL;
 """
