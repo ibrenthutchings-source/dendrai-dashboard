@@ -864,6 +864,8 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHE
 def init_db() -> bool:
     """Initialize the thread-safe connection pool and create all tables."""
     global _pool
+    if _pool is not None:
+        return True  # already connected — don't clobber a live pool
     if not _HAS_PSYCOPG2:
         logger.warning("psycopg2 not installed — database persistence disabled. "
                        "Run: pip install psycopg2-binary")
