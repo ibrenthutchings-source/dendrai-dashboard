@@ -181,6 +181,8 @@ window.MCP = (function () {
           id:           `MCP-RSS-${String(idx).padStart(3, '0')}`,
           src:          'Industry RSS',
           title:        sig.title || '',
+          label:        sig.title || '',
+          feedName:     sig.feed_name || sig.feedName || feed.feed || 'RSS',
           snippet:      sig.title || '',
           velocity:     v,
           delta:        _velocityToDelta(v),
@@ -203,11 +205,13 @@ window.MCP = (function () {
     const indicators = mcpResult?.macro_leading_indicators?.indicators || [];
     return indicators.map((ind, i) => {
       const r = ind.pearson_r ?? 0;
+      const title = ind.name || ind.series_id || '';
       return {
         id:      `MCP-FRED-${String(i + 1).padStart(3, '0')}`,
         src:     'FRED Macro',
-        title:   ind.name || ind.series_id || '',
-        snippet: `${ind.name} · ${ind.optimal_lag_quarters}Q lead · r=${r.toFixed(2)}`,
+        title,
+        label:   title,
+        snippet: `${title} · ${ind.optimal_lag_quarters}Q lead · r=${r.toFixed(2)}`,
         velocity: Math.abs(r) > 0.9 ? 3 : 2,
         delta:   r < 0 ? 'contractionary' : 'expansionary',
         affectedRisks: [],

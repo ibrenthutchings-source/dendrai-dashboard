@@ -660,7 +660,7 @@ function App() {
           const _toQL = (d) => { if (!d) return null; const [y,m] = d.slice(0,7).split('-').map(Number); return `Q${Math.ceil(m/3)}-${String(y).slice(-2)}`; };
           const { fcLabels } = RISK_ENGINE.quarterBoundaries();
 
-          const revHist = (_mcpForecast.history || []).slice(-12).map(p => ({
+          const revHist = (_mcpForecast.history || []).slice(-20).map(p => ({
             q: _toQL(p.quarter_end) || p.quarter_end,
             v: +(p.value / 1e6).toFixed(0),
           }));
@@ -677,20 +677,32 @@ function App() {
             }
           }
 
-          const mgHist = (_mcpForecast.margin_history || []).slice(-12).map(p => ({
+          const mgHist = (_mcpForecast.margin_history || []).slice(-20).map(p => ({
             q: _toQL(p.quarter_end) || p.quarter_end,
             v: +p.value.toFixed(1),
           }));
           if (mgHist.length >= 4) {
             templateProfile.forecasts.margin.history = mgHist;
-            // Recompute simple margin forecast from last real data point
-            const lastMG = mgHist[mgHist.length - 1].v;
-            templateProfile.forecasts.margin.forecast = fcLabels.map((q, i) => ({
-              q,
-              base: +(lastMG + i * 0.2).toFixed(1),
-              lo:   +(lastMG + i * 0.2 - 2).toFixed(1),
-              hi:   +(lastMG + i * 0.2 + 2.5).toFixed(1),
-            }));
+            // Use ensemble forecast from Python if available; fall back to trend extrapolation
+            if (_mcpForecast.margin_forecast?.forecasts?.length) {
+              templateProfile.forecasts.margin.forecast = _mcpForecast.margin_forecast.forecasts.map((f, i) => ({
+                q:    fcLabels[i] || `H${i + 1}`,
+                base: +f.point.toFixed(1),
+                lo:   +f.ci_lower.toFixed(1),
+                hi:   +f.ci_upper.toFixed(1),
+              }));
+            } else {
+              // Trend extrapolation: use average of last 4Q change, not a fixed constant
+              const lastMG = mgHist[mgHist.length - 1].v;
+              const n = Math.min(4, mgHist.length - 1);
+              const step = n > 0 ? (lastMG - mgHist[mgHist.length - 1 - n].v) / n * 0.5 : 0;
+              templateProfile.forecasts.margin.forecast = fcLabels.map((q, i) => ({
+                q,
+                base: +(lastMG + step * (i + 1)).toFixed(1),
+                lo:   +(lastMG + step * (i + 1) - 2.5).toFixed(1),
+                hi:   +(lastMG + step * (i + 1) + 2.5).toFixed(1),
+              }));
+            }
           }
         }
 
@@ -700,7 +712,7 @@ function App() {
           const { fcLabels: fcL } = RISK_ENGINE.quarterBoundaries();
           const _toQL2 = (d) => { if (!d) return null; const [y,m] = d.slice(0,7).split('-').map(Number); return `Q${Math.ceil(m/3)}-${String(y).slice(-2)}`; };
           const _mapQ  = (series, scale, digits) =>
-            (series || []).slice(-12).map(p => ({ q: _toQL2(p.quarter_end) || p.quarter_end, v: +(p.value / scale).toFixed(digits) }));
+            (series || []).slice(-20).map(p => ({ q: _toQL2(p.quarter_end) || p.quarter_end, v: +(p.value / scale).toFixed(digits) }));
           const _linFc = (hist, labels, digits) => {
             if (!hist?.length) return null;
             const last = hist[hist.length - 1].v;
@@ -721,7 +733,9 @@ function App() {
           if (_as.op_margin?.length >= 4) {
             const h = _mapQ(_as.op_margin, 1, 1);
             templateProfile.forecasts.opMargin.history  = h;
-            templateProfile.forecasts.opMargin.forecast = _linFc(h, fcL, 1) ?? templateProfile.forecasts.opMargin.forecast;
+            templateProfile.forecasts.opMargin.forecast = _as.op_margin_forecast?.forecasts?.length
+              ? _as.op_margin_forecast.forecasts.map((f, i) => ({ q: fcL[i] || `H${i+1}`, base: +f.point.toFixed(1), lo: +f.ci_lower.toFixed(1), hi: +f.ci_upper.toFixed(1) }))
+              : _linFc(h, fcL, 1) ?? templateProfile.forecasts.opMargin.forecast;
           }
           if (_as.net_income?.length >= 4) {
             const h = _mapQ(_as.net_income, 1e6, 0);
@@ -787,6 +801,7 @@ function App() {
         setLivefacts({
           entity: mcpResult.company_name,
           ticker: mcpResult.ticker,
+          cik:    mcpResult.cik,
           ...mcpResult.financial_ratios,
         });
 

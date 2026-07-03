@@ -819,6 +819,100 @@ ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
 """
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
+# ── Observability schema DDL ──────────────────────────────────────────────────
+# Mirrors telemetry_schema.sql. Applied in init_db() so the schema is
+# self-healing on every container start — no manual psql run required.
+_OBSERVABILITY_DDL = """
+CREATE SCHEMA IF NOT EXISTS observability;
+
+CREATE TABLE IF NOT EXISTS observability.mcp_sessions (
+    session_id      UUID         PRIMARY KEY,
+    started_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    ended_at        TIMESTAMPTZ,
+    server_name     VARCHAR(128),
+    process_id      INTEGER,
+    proxy_version   VARCHAR(16)  NOT NULL DEFAULT '1.0.0'
+);
+
+CREATE TABLE IF NOT EXISTS observability.mcp_telemetry (
+    id                BIGSERIAL    PRIMARY KEY,
+    ts                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    session_id        UUID         NOT NULL
+                          REFERENCES observability.mcp_sessions (session_id)
+                          ON DELETE CASCADE,
+    message_id        TEXT,
+    direction         VARCHAR(8)   NOT NULL
+                          CHECK (direction IN ('request', 'response')),
+    method            VARCHAR(128),
+    target_tool       VARCHAR(128),
+    tool_args_hash    CHAR(64),
+    execution_time_ms INTEGER,
+    status            VARCHAR(16)
+                          CHECK (status IN ('ok', 'error', 'timeout', 'unknown')),
+    error_message     TEXT,
+    payload_hash      CHAR(64)     NOT NULL,
+    server_name       VARCHAR(128),
+    risk_flags        TEXT[]
+);
+
+ALTER TABLE observability.mcp_telemetry
+    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS observability.adjudicated_tool_calls (
+    id                    BIGSERIAL    PRIMARY KEY,
+    adjudicated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    telemetry_id          BIGINT
+                              REFERENCES observability.mcp_telemetry (id)
+                              ON DELETE CASCADE,
+    session_id            UUID         NOT NULL,
+    target_tool           VARCHAR(128),
+    server_name           VARCHAR(128),
+    risk_flags            TEXT[],
+    execution_time_ms     INTEGER,
+    uro_id                VARCHAR(64)  NOT NULL,
+    risk_score            NUMERIC(5,4),
+    risk_tier             VARCHAR(16),
+    final_verdict         VARCHAR(32),
+    ensemble_confidence   NUMERIC(4,3),
+    requires_human_review BOOLEAN      NOT NULL DEFAULT FALSE,
+    conflict_flags        TEXT[],
+    policy_violations     TEXT[],
+    adjudicator_reasoning TEXT,
+    source_system         VARCHAR(32)  NOT NULL DEFAULT 'MCP_PROXY',
+    council_votes         JSONB        NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_tel_session
+    ON observability.mcp_telemetry (session_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tel_tool
+    ON observability.mcp_telemetry (target_tool, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tel_ts
+    ON observability.mcp_telemetry (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tel_unprocessed
+    ON observability.mcp_telemetry (ts ASC)
+    WHERE risk_flags IS NOT NULL AND processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_adj_session
+    ON observability.adjudicated_tool_calls (session_id, adjudicated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adj_source
+    ON observability.adjudicated_tool_calls (source_system, adjudicated_at DESC);
+
+CREATE OR REPLACE VIEW observability.tool_latency_summary AS
+SELECT
+    server_name,
+    target_tool,
+    COUNT(*)                                                            AS call_count,
+    ROUND(AVG(execution_time_ms))                                       AS avg_ms,
+    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY execution_time_ms)    AS p50_ms,
+    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY execution_time_ms)    AS p95_ms,
+    COUNT(*) FILTER (WHERE status = 'error')                           AS error_count,
+    MIN(ts)                                                             AS first_call_at,
+    MAX(ts)                                                             AS last_call_at
+FROM observability.mcp_telemetry
+WHERE direction = 'response'
+  AND target_tool IS NOT NULL
+GROUP BY server_name, target_tool;
+"""
+
 # Formatted at init time with the module-level EMBEDDING_DIM.
 # chunk_index allows long documents (risk factors, proxy filings) to be split into
 # multiple chunks so each gets its own vector — critical for accurate retrieval.
@@ -897,6 +991,20 @@ def init_db() -> bool:
         logger.error("Database init failed: %s", exc)
         _pool = None
         return False
+
+    # Observability schema — telemetry + governance tables.  Optional: non-fatal if Postgres
+    # lacks permissions for CREATE SCHEMA (e.g. restricted managed DB users).
+    obs_conn = _pool.getconn()
+    try:
+        with obs_conn.cursor() as cur:
+            cur.execute(_OBSERVABILITY_DDL)
+        obs_conn.commit()
+        logger.info("Observability schema ready (mcp_sessions, mcp_telemetry, adjudicated_tool_calls)")
+    except Exception as exc:
+        obs_conn.rollback()
+        logger.warning("Observability schema init failed (non-fatal): %s", exc)
+    finally:
+        _pool.putconn(obs_conn)
 
     # pgvector extension + embeddings table — optional; logged as warning if absent.
     vec_conn = _pool.getconn()
