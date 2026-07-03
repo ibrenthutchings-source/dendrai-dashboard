@@ -229,6 +229,9 @@ function CEMMeta({ l, v }) {
 
 // ── UBO Governance Brain panel ────────────────────────────────────────────────
 
+const _CEM_API_KEY = import.meta.env.VITE_API_KEY || "";
+const _cemAuthHdr  = () => _CEM_API_KEY ? { "X-API-Key": _CEM_API_KEY } : {};
+
 const _UBO_TIER_STYLE = {
   CRITICAL: { bg: "var(--red-soft)",   ink: "var(--red-ink)"   },
   HIGH:     { bg: "var(--amber-soft)", ink: "var(--amber-ink)" },
@@ -246,6 +249,7 @@ function UBOGovPanel() {
   const [adjudicated, setAdjudicated] = useState([]);
   const [humanReview, setHumanReview] = useState([]);
   const [latency,     setLatency]     = useState([]);
+  const [rawRows,     setRawRows]     = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [triggering,  setTriggering]  = useState(false);
   const [filter,      setFilter]      = useState("all");
@@ -253,19 +257,37 @@ function UBOGovPanel() {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [fetchErr,      setFetchErr]      = useState(null);
   const [tab,           setTab]           = useState("adjudications");
-  const [processStatus, setProcessStatus] = useState(null); // {adjudicated, ubo_available, error}
+  const [processStatus, setProcessStatus] = useState(null);
+  const [isPaused,      setIsPaused]      = useState(false);
+  const [newIds,        setNewIds]        = useState(new Set());
+
+  const knownIdsRef       = useRef(new Set());
+  const highlightTimerRef = useRef(null);
 
   async function refresh() {
     const base = window.MCP_API_BASE || "/api/mcp";
     try {
-      const [adjRes, hrRes, latRes] = await Promise.all([
+      const [adjRes, hrRes, latRes, rawRes] = await Promise.all([
         fetch(`${base}/observability/telemetry/adjudicated?limit=100`),
         fetch(`${base}/observability/telemetry/human-review`),
         fetch(`${base}/observability/telemetry/summary`),
+        fetch(`${base}/observability/telemetry/raw?limit=200`),
       ]);
-      if (adjRes.ok) { const d = await adjRes.json(); setAdjudicated(d.rows || []); }
+      if (adjRes.ok) {
+        const d = await adjRes.json();
+        const rows = d.rows || [];
+        const freshIds = new Set(rows.filter(r => r.id != null && !knownIdsRef.current.has(r.id)).map(r => r.id));
+        rows.forEach(r => r.id != null && knownIdsRef.current.add(r.id));
+        setAdjudicated(rows);
+        if (freshIds.size > 0) {
+          setNewIds(freshIds);
+          clearTimeout(highlightTimerRef.current);
+          highlightTimerRef.current = setTimeout(() => setNewIds(new Set()), 4000);
+        }
+      }
       if (hrRes.ok)  { const d = await hrRes.json();  setHumanReview(d.rows || []); }
       if (latRes.ok) { const d = await latRes.json(); setLatency(d.rows || []); }
+      if (rawRes.ok) { const d = await rawRes.json(); setRawRows(d.rows || []); }
       setFetchErr(null);
       setLastRefresh(new Date());
     } catch (e) {
@@ -276,10 +298,11 @@ function UBOGovPanel() {
   }
 
   useEffect(() => {
+    if (isPaused) return;
     refresh();
-    const t = setInterval(refresh, 30_000);
+    const t = setInterval(refresh, 5_000);
     return () => clearInterval(t);
-  }, []);
+  }, [isPaused]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function triggerProcess() {
     setTriggering(true);
@@ -295,6 +318,26 @@ function UBOGovPanel() {
     } finally {
       setTriggering(false);
     }
+  }
+
+  async function submitReview(rowId, humanVerdict, notes) {
+    const base = window.MCP_API_BASE || "/api/mcp";
+    const res = await fetch(`${base}/observability/telemetry/adjudicated/${rowId}/review`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ..._cemAuthHdr() },
+      body: JSON.stringify({ human_verdict: humanVerdict, notes }),
+    });
+    if (res.ok) {
+      setAdjudicated(prev => prev.map(r =>
+        r.id === rowId
+          ? { ...r, requires_human_review: false,
+              adjudicator_reasoning: (r.adjudicator_reasoning || "") +
+                `\n\n[HUMAN REVIEW] verdict=${humanVerdict} notes=${notes}` }
+          : r
+      ));
+      setHumanReview(prev => prev.filter(r => r.id !== rowId));
+    }
+    return res.ok;
   }
 
   const counts = adjudicated.reduce(
@@ -323,11 +366,25 @@ function UBOGovPanel() {
         status={`${counts.total} ADJUDICATED  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
         actions={
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            {lastRefresh && (
-              <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
-                REFRESHED {lastRefresh.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}
+            {/* Live / Paused badge */}
+            {isPaused ? (
+              <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",padding:"2px 7px",borderRadius:4,background:"var(--amber-soft,#fff8e1)",color:"var(--amber-ink,#b45309)",fontWeight:700,letterSpacing:".04em"}}>
+                ⏸ PAUSED
+              </span>
+            ) : (
+              <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",padding:"2px 7px",borderRadius:4,background:"var(--green-soft,#e8f5e9)",color:"var(--green-ink,#166534)",fontWeight:700,letterSpacing:".04em",display:"flex",alignItems:"center",gap:4}}>
+                <span style={{width:6,height:6,borderRadius:"50%",background:"var(--green-ink,#166534)",display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
+                LIVE · 5s
               </span>
             )}
+            {lastRefresh && (
+              <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
+                {lastRefresh.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}
+              </span>
+            )}
+            <button className="btn btn-sm" onClick={() => setIsPaused(p => !p)}>
+              {isPaused ? "▶ RESUME" : "⏸ PAUSE"}
+            </button>
             <button className="btn btn-sm" onClick={refresh} disabled={loading}>
               <Icon name="bolt" size={12}/> REFRESH
             </button>
@@ -374,6 +431,9 @@ function UBOGovPanel() {
         <div className="cem-toolbar">
           <button className={"cem-filter" + (tab === "adjudications" ? " active" : "")} onClick={() => setTab("adjudications")}>Adjudications</button>
           <button className={"cem-filter" + (tab === "council" ? " active" : "")} onClick={() => setTab("council")}>Council Activity</button>
+          <button className={"cem-filter" + (tab === "stream" ? " active" : "")} onClick={() => setTab("stream")}>
+            Raw Feed {rawRows.length > 0 && <span style={{marginLeft:4,fontSize:9,opacity:.7}}>{rawRows.length}</span>}
+          </button>
         </div>
       </div>
 
@@ -436,14 +496,17 @@ function UBOGovPanel() {
             <div style={{padding:"0 18px 18px"}}>
               {filtered.map((r, i) => (
                 <UBOAdjRow
-                  key={i}
+                  key={r.id ?? i}
                   row={r}
-                  expanded={expanded.has(i)}
+                  isNew={r.id != null && newIds.has(r.id)}
+                  expanded={expanded.has(r.id ?? i)}
                   onToggle={() => {
+                    const key = r.id ?? i;
                     const next = new Set(expanded);
-                    next.has(i) ? next.delete(i) : next.add(i);
+                    next.has(key) ? next.delete(key) : next.add(key);
                     setExpanded(next);
                   }}
+                  onReview={submitReview}
                 />
               ))}
             </div>
@@ -488,6 +551,10 @@ function UBOGovPanel() {
         {tab === "council" && (
           <UBOCouncilTab adjudicated={adjudicated} loading={loading} />
         )}
+
+        {tab === "stream" && (
+          <RawFeedTab rows={rawRows} loading={loading} isPaused={isPaused} />
+        )}
       </div>
     </div>
   );
@@ -509,8 +576,8 @@ function UBOReviewRow({ row }) {
   );
 }
 
-function UBOAdjRow({ row, expanded, onToggle }) {
-  const tier    = row.risk_tier    || "LOW";
+function UBOAdjRow({ row, expanded, onToggle, isNew, onReview }) {
+  const tier    = row.risk_tier     || "LOW";
   const verdict = row.final_verdict || "CLEAR";
   const ts  = _UBO_TIER_STYLE[tier]       || _UBO_TIER_STYLE.LOW;
   const vs  = _UBO_VERDICT_STYLE[verdict] || _UBO_VERDICT_STYLE.CLEAR;
@@ -518,17 +585,37 @@ function UBOAdjRow({ row, expanded, onToggle }) {
   const flags      = row.risk_flags        || [];
   const conflicts  = row.conflict_flags    || [];
 
+  // Inline review state
+  const [reviewing,     setReviewing]     = useState(false);
+  const [reviewVerdict, setReviewVerdict] = useState("APPROVE");
+  const [reviewNotes,   setReviewNotes]   = useState("");
+  const [reviewBusy,    setReviewBusy]    = useState(false);
+  const [reviewDone,    setReviewDone]    = useState(false);
+
+  async function handleReviewSubmit(e) {
+    e.preventDefault();
+    if (!onReview || !row.id) return;
+    setReviewBusy(true);
+    const ok = await onReview(row.id, reviewVerdict, reviewNotes);
+    setReviewBusy(false);
+    if (ok) { setReviewDone(true); setReviewing(false); }
+  }
+
   return (
-    <div className={`ubo-adj-row${row.requires_human_review ? " needs-review" : ""}`}>
+    <div className={`ubo-adj-row${row.requires_human_review && !reviewDone ? " needs-review" : ""}${isNew ? " ubo-adj-new" : ""}`}>
       <div className="ubo-adj-head" onClick={onToggle}>
         <span className="ubo-tier-badge"    style={{background:ts.bg, color:ts.ink}}>{tier}</span>
         <span className="ubo-verdict-badge" style={{background:vs.bg, color:vs.ink}}>{verdict}</span>
         {(row.source_system || "MCP_PROXY") === "GITHUB" && (
           <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:"#1a1a2e",color:"#58a6ff",fontFamily:"Geist Mono,monospace",flexShrink:0,letterSpacing:".06em"}}>GH</span>
         )}
+        {isNew && (
+          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:"var(--green-soft,#e8f5e9)",color:"var(--green-ink,#166534)",fontFamily:"Geist Mono,monospace",flexShrink:0,letterSpacing:".06em"}}>NEW</span>
+        )}
         <span className="mono ubo-tool-name">{row.target_tool || "unknown"}</span>
         <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>{row.server_name}</span>
-        {row.requires_human_review && <span className="ubo-review-flag">⚠ REVIEW</span>}
+        {row.requires_human_review && !reviewDone && <span className="ubo-review-flag">⚠ REVIEW</span>}
+        {reviewDone && <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:"var(--green-soft)",color:"var(--green-ink)",fontFamily:"Geist Mono,monospace",flexShrink:0}}>✓ REVIEWED</span>}
         <span className="mono" style={{fontSize:11,fontWeight:600,flexShrink:0}}>
           {row.risk_score != null ? row.risk_score.toFixed(3) : "—"}
         </span>
@@ -558,6 +645,53 @@ function UBOAdjRow({ row, expanded, onToggle }) {
               <div className="cem-section-lbl">Adjudicator reasoning</div>
               <div className="rca-box">{row.adjudicator_reasoning}</div>
             </>
+          )}
+
+          {/* ── Human review panel ───────────────────────────────── */}
+          {row.requires_human_review && !reviewDone && row.id != null && (
+            <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,border:"1.5px solid var(--amber-ink,#b45309)",background:"var(--amber-soft,#fff8e1)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <span style={{fontSize:11,fontWeight:700,color:"var(--amber-ink,#b45309)",fontFamily:"'Geist Mono',monospace",letterSpacing:".04em"}}>
+                  ⚠ HUMAN REVIEW REQUIRED
+                </span>
+                <button className="btn btn-sm" onClick={() => setReviewing(r => !r)}>
+                  {reviewing ? "Cancel" : "Open Review"}
+                </button>
+              </div>
+              {reviewing && (
+                <form onSubmit={handleReviewSubmit} style={{display:"flex",flexDirection:"column",gap:8}}>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {["APPROVE","ESCALATE","CLEAR","MONITOR"].map(v => (
+                      <label key={v} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,cursor:"pointer",
+                        padding:"3px 10px",borderRadius:4,border:`1.5px solid ${reviewVerdict===v?"var(--acc)":"var(--line)"}`,
+                        background:reviewVerdict===v?"var(--acc-soft,#eff6ff)":"var(--surface-1)",
+                        color:reviewVerdict===v?"var(--acc)":"var(--ink-2)",fontWeight:reviewVerdict===v?700:400}}>
+                        <input type="radio" name="verdict" value={v} checked={reviewVerdict===v}
+                          onChange={() => setReviewVerdict(v)} style={{display:"none"}}/>
+                        {v === "APPROVE" ? "✓ Approve AI verdict"
+                          : v === "ESCALATE" ? "↑ Escalate"
+                          : v === "CLEAR"    ? "○ Override → CLEAR"
+                          :                   "~ Override → MONITOR"}
+                      </label>
+                    ))}
+                  </div>
+                  <textarea
+                    placeholder="Review notes (optional)…"
+                    value={reviewNotes}
+                    onChange={e => setReviewNotes(e.target.value)}
+                    rows={2}
+                    style={{fontSize:11,padding:"6px 8px",borderRadius:4,border:"1px solid var(--line)",
+                      fontFamily:"'Geist Mono',monospace",resize:"vertical",background:"var(--surface-1)",color:"var(--ink-1)"}}
+                  />
+                  <div style={{display:"flex",gap:6}}>
+                    <button type="submit" className="btn btn-sm btn-primary" disabled={reviewBusy}>
+                      {reviewBusy ? <span><span className="spin"/> Submitting…</span> : "Submit Review"}
+                    </button>
+                    <button type="button" className="btn btn-sm" onClick={() => setReviewing(false)}>Cancel</button>
+                  </div>
+                </form>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -676,6 +810,104 @@ function UBOCouncilTab({ adjudicated, loading }) {
       ))}
     </div>
   </>);
+}
+
+// ── Raw telemetry live-feed tab ───────────────────────────────────────────────
+
+const _FLAG_COLOR = {
+  HIGH_LATENCY:    { bg:"var(--amber-soft)", ink:"var(--amber-ink)" },
+  ELEVATED_RISK:   { bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
+  POLICY_VIOLATION:{ bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
+};
+
+function RawFeedTab({ rows, loading, isPaused }) {
+  if (loading && rows.length === 0) return (
+    <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
+      <span className="spin"/> Loading telemetry…
+    </div>
+  );
+  if (rows.length === 0) return (
+    <Empty>No MCP telemetry rows yet. The proxy writes rows here as tool calls arrive from claude.ai integrations.</Empty>
+  );
+
+  return (
+    <div style={{padding:"0 18px 18px"}}>
+      <div className="bb-section-sep" style={{marginTop:0}}>
+        <span>RAW MCP TELEMETRY</span>
+        <span style={{display:"flex",alignItems:"center",gap:6}}>
+          {isPaused
+            ? <span style={{fontSize:9,fontWeight:700,color:"var(--amber-ink)"}}>⏸ PAUSED</span>
+            : <span style={{fontSize:9,fontWeight:700,color:"var(--green-ink)",display:"flex",alignItems:"center",gap:4}}>
+                <span style={{width:5,height:5,borderRadius:"50%",background:"var(--green-ink)",display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
+                LIVE
+              </span>
+          }
+          {rows.length} ROWS
+        </span>
+      </div>
+      {rows.map((r, i) => {
+        const hasFlags  = (r.risk_flags || []).length > 0;
+        const processed = !!r.processed_at;
+        const ts = r.ts ? new Date(r.ts) : null;
+        return (
+          <div key={r.id ?? i} style={{
+            display:"flex", alignItems:"flex-start", gap:10,
+            padding:"7px 0", borderBottom:"1px solid var(--line)",
+            opacity: processed ? 0.7 : 1,
+          }}>
+            {/* Timestamp */}
+            <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:"var(--ink-3)",flexShrink:0,minWidth:56}}>
+              {ts ? ts.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}) : "—"}
+            </span>
+            {/* Direction */}
+            <span style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:3,flexShrink:0,
+              background: r.direction === "request" ? "var(--blue-soft,#dbeafe)" : "var(--violet-soft,#ede9fe)",
+              color:      r.direction === "request" ? "var(--blue-ink,#1e40af)"  : "var(--violet-ink,#5b21b6)"}}>
+              {(r.direction || "?").toUpperCase()}
+            </span>
+            {/* Tool name */}
+            <span style={{fontSize:11,fontFamily:"'Geist Mono',monospace",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--ink-1)"}}>
+              {r.target_tool || r.method || "—"}
+            </span>
+            {/* Server */}
+            <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0,maxWidth:90,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              {r.server_name || ""}
+            </span>
+            {/* Latency */}
+            {r.execution_time_ms != null && (
+              <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:"var(--ink-3)",flexShrink:0}}>
+                {r.execution_time_ms}ms
+              </span>
+            )}
+            {/* Risk flags */}
+            {hasFlags && (r.risk_flags || []).map((f, fi) => {
+              const fc = _FLAG_COLOR[f] || { bg:"var(--surface-2)", ink:"var(--ink-2)" };
+              return (
+                <span key={fi} style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:3,flexShrink:0,
+                  background:fc.bg, color:fc.ink, fontFamily:"'Geist Mono',monospace", letterSpacing:".03em"}}>
+                  {f}
+                </span>
+              );
+            })}
+            {/* Processing state */}
+            <span style={{fontSize:9,flexShrink:0,fontFamily:"'Geist Mono',monospace",
+              color: processed ? "var(--green-ink)" : hasFlags ? "var(--amber-ink)" : "var(--ink-4)"}}>
+              {processed ? "✓ ADJUDICATED" : hasFlags ? "⟳ PENDING" : "OK"}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Pulse keyframe injected once for the live indicator dot
+if (typeof document !== "undefined" && !document.getElementById("ubo-pulse-style")) {
+  const s = document.createElement("style");
+  s.id = "ubo-pulse-style";
+  s.textContent = `@keyframes ubo-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+    .ubo-adj-new { border-left: 3px solid var(--green-ink,#166534) !important; }`;
+  document.head.appendChild(s);
 }
 
 Object.assign(window, { CEMPanel, UBOGovPanel, TIERS, notifMsgFor });

@@ -30,7 +30,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("ubo.governance")
@@ -266,7 +266,7 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
         return []
 
     _BASE_COLS = """
-        SELECT adjudicated_at, session_id, target_tool, server_name,
+        SELECT id, adjudicated_at, session_id, target_tool, server_name,
                risk_flags, risk_score, risk_tier, final_verdict,
                ensemble_confidence, requires_human_review,
                conflict_flags, policy_violations, adjudicator_reasoning,
@@ -320,6 +320,76 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
             logger.warning("_fetch_adjudicated_rows error: %s", exc)
             return []
     return []
+
+
+def _fetch_raw_telemetry(limit: int) -> list[dict]:
+    """Fetch the most recent mcp_telemetry rows for the live-stream view."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, ts, session_id, direction, method,
+                           target_tool, execution_time_ms, status,
+                           server_name, risk_flags, processed_at
+                    FROM observability.mcp_telemetry
+                    ORDER BY ts DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("session_id"):
+                        d["session_id"] = str(d["session_id"])
+                    for tf in ("ts", "processed_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_raw_telemetry error: %s", exc)
+        return []
+
+
+def _human_review_adjudication(row_id: int, human_verdict: str, notes: str) -> bool:
+    """
+    Mark an adjudicated_tool_calls row as human-reviewed.
+    Clears requires_human_review, optionally overrides final_verdict,
+    and appends the reviewer note to adjudicator_reasoning.
+    """
+    if not db.is_available():
+        return False
+    try:
+        safe_verdict = human_verdict.strip()[:32] if human_verdict else ""
+        safe_notes   = (notes or "").strip()[:2000]
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.adjudicated_tool_calls
+                    SET requires_human_review = FALSE,
+                        final_verdict = CASE WHEN %s <> '' THEN %s ELSE final_verdict END,
+                        adjudicator_reasoning = COALESCE(adjudicator_reasoning, '')
+                            || E'\\n\\n[HUMAN REVIEW ' || to_char(NOW(), 'YYYY-MM-DD HH24:MI') || '] '
+                            || CASE WHEN %s <> '' THEN 'verdict=' || %s || ' ' ELSE '' END
+                            || CASE WHEN %s <> '' THEN 'notes=' || %s ELSE '' END
+                    WHERE id = %s
+                    """,
+                    (safe_verdict, safe_verdict,
+                     safe_verdict, safe_verdict,
+                     safe_notes,  safe_notes,
+                     row_id),
+                )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("_human_review_adjudication error (id=%s): %s", row_id, exc)
+        return False
 
 
 # ── Core processing logic ──────────────────────────────────────────────────────
@@ -454,3 +524,23 @@ async def trigger_process():
     """Manually trigger one batch of MCP governance processing."""
     n = await _process_batch()
     return {"adjudicated": n, "ubo_available": _HAS_UBO}
+
+
+@router.get("/telemetry/raw")
+async def raw_telemetry(limit: int = 100):
+    """Most recent mcp_telemetry rows for the live-stream feed view."""
+    rows = await asyncio.to_thread(_fetch_raw_telemetry, min(limit, 500))
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.put("/telemetry/adjudicated/{row_id}/review")
+async def human_review_adjudication(row_id: int, body: dict = Body(...)):
+    """
+    Mark an adjudicated record as human-reviewed.
+    Body: { human_verdict: "APPROVE|ESCALATE|CLEAR|MONITOR", notes: "..." }
+    Clears the requires_human_review flag and appends reviewer note to reasoning.
+    """
+    human_verdict = str(body.get("human_verdict") or "")
+    notes         = str(body.get("notes") or "")
+    ok = await asyncio.to_thread(_human_review_adjudication, row_id, human_verdict, notes)
+    return {"ok": ok, "id": row_id}
