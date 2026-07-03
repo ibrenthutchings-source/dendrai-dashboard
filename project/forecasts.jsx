@@ -1331,7 +1331,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
   React.useEffect(() => {
     if (!ticker) return;
     const year = new Date().getFullYear();
-    const base = window.MCP_API_BASE || 'http://127.0.0.1:8001';
+    const base = window.MCP_API_BASE || '/api/mcp';
     setLoading(true);
     fetch(`${base}/sox/segments/${encodeURIComponent(ticker)}/FY${year}`, { signal: AbortSignal.timeout(4000) })
       .then(r => r.ok ? r.json() : null)
