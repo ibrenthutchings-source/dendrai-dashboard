@@ -875,7 +875,9 @@ def init_db() -> bool:
         logger.info("DATABASE_URL not set — database persistence disabled")
         return False
     try:
-        _pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=url)
+        # connect_timeout=8 keeps DNS failures fast (vs. OS default ~75 s).
+        dsn = url if "connect_timeout" in url else url + ("&" if "?" in url else "?") + "connect_timeout=8"
+        _pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=dsn)
         conn = _pool.getconn()
         try:
             with conn.cursor() as cur:
