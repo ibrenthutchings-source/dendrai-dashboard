@@ -166,13 +166,22 @@ async def lifespan(application: FastAPI):
     # FastMCP Streamable-HTTP requires each server's session_manager task group to be
     # initialized during app lifespan. Starlette does not automatically propagate
     # lifespan events to mounted sub-apps, so we initialize them here explicitly.
+    # Each init is guarded by a 5-second timeout: if session_manager.run().__aenter__
+    # hangs (e.g. due to a FastMCP / anyio version mismatch), we log a warning and
+    # continue rather than blocking the lifespan forever and keeping uvicorn down.
     async with AsyncExitStack() as stack:
         for inst in _mcp_instances:
+            inst_name = getattr(inst, 'name', repr(inst))
             try:
-                await stack.enter_async_context(inst.session_manager.run())
-                logger.info("MCP session manager initialized: %s", inst.name)
+                await asyncio.wait_for(
+                    stack.enter_async_context(inst.session_manager.run()),
+                    timeout=5.0,
+                )
+                logger.info("MCP session manager initialized: %s", inst_name)
+            except asyncio.TimeoutError:
+                logger.warning("MCP session manager timed out for %s — Streamable-HTTP may not work", inst_name)
             except Exception as exc:
-                logger.warning("MCP session manager init failed for %s: %s", getattr(inst, 'name', inst), exc)
+                logger.warning("MCP session manager init failed for %s: %s", inst_name, exc)
 
         # Start MCP Governance polling (non-blocking background task)
         _gov_task = None
