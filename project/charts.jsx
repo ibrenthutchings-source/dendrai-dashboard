@@ -144,8 +144,8 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
   const [tooltip, setTooltip] = useState(null);
 
   if (!history?.length || !forecast?.length) return null;
-  const dp = decimals ?? (unit === "$M" ? 0 : unit === "$" ? 2 : 1);
-  const W = 540, H = 220, PADL = (unit === "$M" && dp >= 3) ? 56 : 44, PADR = 14, PADT = 16, PADB = 28;
+  const dp = decimals ?? (unit === "$M" ? 0 : 2);
+  const W = 540, H = 220, PADL = (unit === "$M" && dp >= 3) ? 56 : (unit === "%" && dp >= 2) ? 52 : 44, PADR = 14, PADT = 16, PADB = 28;
   const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
   const all = [
     ...history.map(d => d.v),
