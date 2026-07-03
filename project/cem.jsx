@@ -256,7 +256,7 @@ function UBOGovPanel() {
   const [processStatus, setProcessStatus] = useState(null); // {adjudicated, ubo_available, error}
 
   async function refresh() {
-    const base = window.MCP_API_BASE || "http://127.0.0.1:8001";
+    const base = window.MCP_API_BASE || "/api/mcp";
     try {
       const [adjRes, hrRes, latRes] = await Promise.all([
         fetch(`${base}/observability/telemetry/adjudicated?limit=100`),
@@ -285,7 +285,7 @@ function UBOGovPanel() {
     setTriggering(true);
     setProcessStatus(null);
     try {
-      const base = window.MCP_API_BASE || "http://127.0.0.1:8001";
+      const base = window.MCP_API_BASE || "/api/mcp";
       const res = await fetch(`${base}/observability/telemetry/process`, { method: "POST" });
       const data = res.ok ? await res.json() : { error: `HTTP ${res.status}` };
       setProcessStatus(data);
