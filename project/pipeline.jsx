@@ -1525,28 +1525,34 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         </div>
       )}
 
-      {/* Top-risk trajectory chart — shows score over time for the highest-scoring risk */}
+      {/* Top-risk 4-quarter projection — anchored at current score, no synthetic history */}
       {risks.length > 0 && (() => {
         const FC = window.ForecastChart;
         if (!FC) return null;
         const topRisk = [...risks].sort((a, b) => b.score - a.score)[0];
         if (!topRisk) return null;
         const qs = forecastRisk(topRisk, 4);
-        const synthLabels = ["Q1-25","Q2-25","Q3-25","Q4-25"];
-        const hist = synthLabels.map((q, i) => ({
-          q,
-          v: +Math.max(0, topRisk.score - (3 - i) * topRisk.velocity * 0.3).toFixed(1),
-        }));
-        const fcast = ["Q1-26","Q2-26","Q3-26","Q4-26"].map((q, i) => ({
-          q, base: qs[i],
-          lo: +Math.max(0, qs[i] - 1.5).toFixed(1),
-          hi: +Math.min(25, qs[i] + 1.5).toFixed(1),
+        // Dynamic quarter labels from today's date — avoids hardcoded year drift
+        const now = new Date();
+        const curQ = Math.ceil((now.getMonth() + 1) / 3);
+        const curY = now.getFullYear();
+        const qLabel = offset => {
+          const q = ((curQ - 1 + offset) % 4) + 1;
+          const y = curY + Math.floor((curQ - 1 + offset) / 4);
+          return `Q${q}-${String(y).slice(2)}`;
+        };
+        const hist  = [{ q: "Now", v: topRisk.score }];
+        const fcast = [1, 2, 3, 4].map((o, i) => ({
+          q:    qLabel(o),
+          base: qs[i],
+          lo:   +Math.max(0, qs[i] - 1.5).toFixed(1),
+          hi:   +Math.min(25, qs[i] + 1.5).toFixed(1),
         }));
         return (
           <div className="stage-detail">
-            <h5>Top-risk trajectory · {topRisk.name}</h5>
+            <h5>Top-risk 4Q projection · {topRisk.name}</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Velocity-dampened score trajectory for the highest-scoring risk. Dashed line = 4-quarter AI forecast used by Stage 3 to set audit priority. Confidence band ±1.5 pts.
+              Current score {topRisk.score.toFixed(1)} ({topRisk.rag}) with 4-quarter velocity-dampened projection. Dashed line = forecast used by Stage 3 to prioritise audit objectives. Confidence band ±1.5 pts.
             </div>
             <FC
               history={hist}
@@ -1558,17 +1564,62 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         );
       })()}
 
-      {/* Revenue context from Stage 1 — shows how macro/revenue trend feeds risk */}
-      {forecasts?.revenue?.history?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
+      {/* Revenue momentum table — how QoQ revenue change feeds risk velocity */}
+      {forecasts?.revenue?.history?.length > 1 && (() => {
+        const recent = forecasts.revenue.history.slice(-5);
+        const rows = recent.slice(1).map((d, i) => {
+          const prev = recent[i];
+          const qoq = prev.v ? ((d.v - prev.v) / Math.abs(prev.v)) * 100 : null;
+          return { q: d.q, v: d.v, qoq };
+        }).filter(r => r.qoq != null);
+        if (!rows.length) return null;
+        const avgQoQ = rows.reduce((s, r) => s + r.qoq, 0) / rows.length;
+        const trend  = avgQoQ > 1 ? "positive" : avgQoQ < -1 ? "negative" : "flat";
+        const trendColor = trend === "positive" ? "var(--green-ink)" : trend === "negative" ? "var(--red-ink)" : "var(--ink-3)";
         return (
           <div className="stage-detail">
-            <h5>Revenue context · how it feeds risk scores</h5>
+            <h5>Revenue momentum · velocity feed</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Revenue trajectory from Stage 1 (EDGAR). Declining QoQ momentum or trend reversal raises the velocity delta on financial-reporting and supply-chain risks in this stage.
+              QoQ revenue change from Stage 1 EDGAR data. Contraction amplifies velocity on financial-reporting and supply-chain risks; growth suppresses it.
             </div>
-            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={0}/>
+            <table style={{width:"100%", fontSize:10.5, borderCollapse:"collapse"}}>
+              <thead>
+                <tr>
+                  {["QUARTER","REVENUE","QoQ %","VELOCITY FEED"].map((h, hi) => (
+                    <th key={h} className="mono" style={{
+                      textAlign: hi === 0 ? "left" : "right",
+                      color:"var(--ink-3)", fontWeight:500, padding:"2px 4px",
+                      fontSize:9, letterSpacing:"0.05em", whiteSpace:"nowrap",
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => {
+                  const rising = r.qoq > 1, falling = r.qoq < -1;
+                  const c = rising ? "var(--green-ink)" : falling ? "var(--red-ink)" : "var(--ink-3)";
+                  return (
+                    <tr key={r.q} style={{borderTop:"1px solid var(--line)"}}>
+                      <td className="mono" style={{padding:"4px 4px", color:"var(--ink-3)", fontSize:10}}>{r.q}</td>
+                      <td className="mono" style={{textAlign:"right", padding:"4px 4px", color:"var(--ink)", fontSize:10}}>
+                        {r.v >= 1000 ? `$${(r.v / 1000).toFixed(1)}B` : `$${r.v.toFixed(0)}M`}
+                      </td>
+                      <td className="mono" style={{textAlign:"right", padding:"4px 4px", color:c, fontSize:10}}>
+                        {rising ? "▲" : falling ? "▼" : "→"} {Math.abs(r.qoq).toFixed(1)}%
+                      </td>
+                      <td className="mono" style={{textAlign:"right", padding:"4px 4px", fontSize:10, color:c, whiteSpace:"nowrap"}}>
+                        {rising ? "↓ suppresses" : falling ? "↑ amplifies" : "→ neutral"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div style={{marginTop:8, fontSize:10, color:"var(--ink-3)"}}>
+              Avg QoQ <span style={{color:trendColor, fontWeight:500}}>
+                {avgQoQ >= 0 ? "+" : ""}{avgQoQ.toFixed(1)}%
+              </span> — {trend === "positive" ? "velocity suppressed" : trend === "negative" ? "velocity amplified" : "neutral impact"}
+            </div>
           </div>
         );
       })()}
