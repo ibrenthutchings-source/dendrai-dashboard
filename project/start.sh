@@ -1,5 +1,5 @@
 #!/bin/sh
-set -e
+set -ex
 PORT=${PORT:-8080}
 sed -i "s/listen 80;/listen ${PORT};/" /etc/nginx/conf.d/default.conf
 cd /app/agentic-tools
