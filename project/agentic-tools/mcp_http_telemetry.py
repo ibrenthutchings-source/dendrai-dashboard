@@ -111,7 +111,7 @@ def _ensure_session() -> None:
     if _SESSION_REGISTERED or not db.is_available():
         return
     try:
-        with db.get_conn() as conn:
+        with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -122,7 +122,6 @@ def _ensure_session() -> None:
                     """,
                     (uuid.UUID(_HTTP_SESSION_ID), os.getpid()),
                 )
-            conn.commit()
         _SESSION_REGISTERED = True
     except Exception as exc:
         logger.debug("Session registration failed: %s", exc)
@@ -143,7 +142,7 @@ def _db_write_telemetry(
         return
     _ensure_session()
     try:
-        with db.get_conn() as conn:
+        with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -167,7 +166,6 @@ def _db_write_telemetry(
                         risk_flags,
                     ),
                 )
-            conn.commit()
         logger.debug(
             "HTTP telemetry: server=%s tool=%s %dms %s flags=%s",
             server_name, tool_name, elapsed_ms, status, risk_flags,
