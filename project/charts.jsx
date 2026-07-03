@@ -1,9 +1,14 @@
 /* ============================================================
-   Charts — pure SVG, no chart lib
+   Charts
    - Heatmap (impact × likelihood with Q4 projection arrows)
-   - Line/Area chart (revenue/margin history + forecast)
+   - ForecastChart / MultiSeriesForecastChart — Recharts ComposedChart
    - M-Score gauge
+   - Risk Flow Sankey (pure SVG)
    ============================================================ */
+import {
+  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, ReferenceLine, ResponsiveContainer,
+} from 'recharts';
 
 // ---------- HEATMAP ----------
 function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
@@ -139,192 +144,145 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
   );
 }
 
-// ---------- LINE + FORECAST CHART ----------
-function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", decimals, chartMetrics }) {
-  const [tooltip, setTooltip] = useState(null);
-
+// ---------- LINE + FORECAST CHART (Recharts) ----------
+// Props unchanged from the old SVG version so all callers work without edits.
+// Extra optional props: referenceValue / referenceLabel draw a horizontal threshold line.
+function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", decimals, chartMetrics, referenceValue, referenceLabel }) {
   if (!history?.length || !forecast?.length) return null;
+
   const dp = decimals ?? (unit === "$M" ? 0 : 2);
-  const W = 540, H = 220, PADL = (unit === "$M" && dp >= 3) ? 56 : (unit === "%" && dp >= 2) ? 52 : 44, PADR = 14, PADT = 16, PADB = 28;
-  const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
-  const all = [
-    ...history.map(d => d.v),
-    ...forecast.flatMap(d => [d.base, d.lo, d.hi]),
-  ];
-  const min = Math.min(...all) * 0.96;
-  const max = Math.max(...all) * 1.04;
-  const range = max - min || 1;
-  const total = history.length + forecast.length;
-  const step = plotW / (total - 1);
-
-  const xy = (i, v) => [PADL + i * step, PADT + plotH - ((v - min) / range) * plotH];
-  const hist = history.map((d, i) => xy(i, d.v));
-  const fc = forecast.map((d, j) => xy(history.length - 1 + j + 1, d.base));
-  const fcLo = forecast.map((d, j) => xy(history.length - 1 + j + 1, d.lo));
-  const fcHi = forecast.map((d, j) => xy(history.length - 1 + j + 1, d.hi));
-  const transitionLine = [hist[hist.length - 1], fc[0]];
-
-  const lastHist = hist[hist.length - 1];
-  const bandPath = "M" + lastHist[0] + "," + lastHist[1]
-    + " " + fcHi.map(([x,y]) => `L${x},${y}`).join(" ")
-    + " " + [...fcLo].reverse().map(([x,y]) => `L${x},${y}`).join(" ")
-    + " Z";
-
-  const ticks = [0, .25, .5, .75, 1].map(t => min + range * t);
 
   const fmtV = v => {
+    if (v == null || !Number.isFinite(v)) return '—';
     if (unit === "$M") return v >= 1000 ? `$${(v / 1000).toFixed(dp)}B` : `$${v.toFixed(dp)}M`;
     if (unit === "$") return `$${v.toFixed(dp)}`;
-    return `${v.toFixed(dp)}%`;
+    if (unit === "%") return `${v.toFixed(dp)}%`;
+    return v.toFixed(dp); // "score" and custom units
   };
 
-  const renderTooltip = () => {
-    if (!tooltip) return null;
-    const { x, y, label, value, lo, hi, isForecast } = tooltip;
-    const bw = 100, bpad = 8;
-    const bh = isForecast && lo != null ? 56 : 42;
-    const bx = Math.min(Math.max(PADL, x - bw / 2), W - PADR - bw);
-    const by = Math.max(PADT, y - bh - 12);
-    return (
-      <g pointerEvents="none">
-        <rect x={bx} y={by} width={bw} height={bh} rx="5"
-          fill="var(--bg)" stroke="var(--line-strong)" strokeWidth="0.8"
-          style={{filter: "drop-shadow(0 2px 5px rgba(0,0,0,0.12))"}}/>
-        <text x={bx + bpad} y={by + 14} fontSize="9" fontFamily="Geist Mono,monospace" fill="var(--ink-3)">{label}</text>
-        <text x={bx + bpad} y={by + 29} fontSize="12.5" fontWeight="600" fontFamily="Geist Mono,monospace" fill={isForecast ? color : "var(--ink)"}>{fmtV(value)}</text>
-        {isForecast && lo != null && hi != null && (
-          <text x={bx + bpad} y={by + 46} fontSize="8.5" fontFamily="Geist Mono,monospace" fill="var(--ink-3)">{fmtV(lo)} – {fmtV(hi)}</text>
-        )}
-      </g>
-    );
-  };
+  // Build a unified data array. The last history point is also the forecast
+  // anchor so the two lines connect without a gap.
+  const lastH = history[history.length - 1];
+  const splitQ = lastH.q;
+  const data = [
+    ...history.map(d => ({ q: d.q, v: d.v, base: null, lo: null, hiMinusLo: null })),
+    ...forecast.map(d => ({
+      q: d.q,
+      v: null,
+      base: d.base ?? null,
+      lo: d.lo ?? null,
+      hiMinusLo: (d.hi != null && d.lo != null) ? d.hi - d.lo : null,
+    })),
+  ];
+  // Seed forecast start at last history value so lines and band connect cleanly
+  data[history.length - 1] = { ...data[history.length - 1], base: lastH.v, lo: lastH.v, hiMinusLo: 0 };
+
+  const yAxisW = (unit === "%" && dp >= 2) ? 54 : (unit === "$M") ? 50 : 44;
 
   const fmtMt = (v, p = 2) => (v == null || !Number.isFinite(v)) ? '—' : v.toFixed(p);
   const mapeColor = v => v == null ? 'var(--ink-3)' : v < 5 ? 'var(--green-ink)' : v < 15 ? 'var(--amber-ink)' : 'var(--red-ink)';
 
+  function ChartTooltip({ active, payload, label }) {
+    if (!active || !payload?.length) return null;
+    const pt = payload[0]?.payload ?? {};
+    const isFc = pt.v == null && pt.base != null;
+    const val = isFc ? pt.base : pt.v;
+    const hi = (isFc && pt.lo != null && pt.hiMinusLo != null) ? pt.lo + pt.hiMinusLo : null;
+    if (val == null) return null;
+    return (
+      <div style={{
+        background: 'var(--bg)', border: '1px solid var(--line-strong)', borderRadius: 6,
+        padding: '6px 10px', fontSize: 11, fontFamily: 'Geist Mono, monospace',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.12)', pointerEvents: 'none',
+      }}>
+        <div style={{ color: 'var(--ink-3)', fontSize: 9, marginBottom: 2 }}>{label}{isFc ? ' · FORECAST' : ''}</div>
+        <div style={{ color: isFc ? color : 'var(--ink)', fontWeight: 600, fontSize: 13 }}>{fmtV(val)}</div>
+        {isFc && pt.lo != null && hi != null && (
+          <div style={{ color: 'var(--ink-3)', fontSize: 9 }}>{fmtV(pt.lo)} – {fmtV(hi)}</div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <>
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width: "100%", display: "block"}} xmlns="http://www.w3.org/2000/svg"
-      onMouseLeave={() => setTooltip(null)}>
-      {/* Y gridlines */}
-      {ticks.map((t, i) => {
-        const y = PADT + plotH - ((t - min) / range) * plotH;
-        return (
-          <g key={i}>
-            <line x1={PADL} y1={y} x2={W - PADR} y2={y} stroke="var(--line)" strokeWidth="0.5" strokeDasharray={i === 0 ? "" : "2 3"}/>
-            <text x={PADL - 6} y={y + 3} textAnchor="end" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">
-              {unit === "$M"
-                ? (t >= 1000 ? `$${(t / 1000).toFixed(dp)}B` : `$${t.toFixed(dp)}M`)
-                : unit === "$"
-                ? `$${t.toFixed(dp)}`
-                : `${t.toFixed(dp)}%`}
-            </text>
-          </g>
-        );
-      })}
-      {/* Vertical divider between history and forecast */}
-      {(() => {
-        const x = PADL + (history.length - 1) * step;
-        return (
-          <g>
-            <line x1={x} y1={PADT} x2={x} y2={PADT + plotH} stroke="var(--line-strong)" strokeWidth="0.5" strokeDasharray="3 3"/>
-            <text x={x + 6} y={PADT + 10} fontSize="9" fontFamily="Geist Mono, monospace" fill="var(--ink-3)">FORECAST →</text>
-          </g>
-        );
-      })()}
+      <ResponsiveContainer width="100%" height={220}>
+        <ComposedChart data={data} syncId="pipeline-kpi" margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
+          <XAxis
+            dataKey="q"
+            tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
+            tickLine={false}
+            axisLine={{ stroke: 'var(--line)' }}
+            interval={1}
+          />
+          <YAxis
+            tickFormatter={fmtV}
+            tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
+            tickLine={false}
+            axisLine={false}
+            width={yAxisW}
+          />
+          <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'var(--line-strong)', strokeWidth: 1, strokeDasharray: '2 2' }} />
 
-      {/* Confidence band */}
-      <path d={bandPath} fill={color} opacity="0.10"/>
+          {/* Confidence band: stacked areas give us lo→hi without background dependency */}
+          <Area type="monotone" dataKey="lo" stackId="band"
+            fill="transparent" stroke="none" legendType="none" activeDot={false} dot={false} />
+          <Area type="monotone" dataKey="hiMinusLo" stackId="band"
+            fill={color} fillOpacity={0.22} stroke="none" legendType="none" activeDot={false} dot={false} />
 
-      {/* History line */}
-      <polyline points={hist.map(p => p.join(",")).join(" ")} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
-      {/* Forecast (dashed) */}
-      <line x1={transitionLine[0][0]} y1={transitionLine[0][1]} x2={transitionLine[1][0]} y2={transitionLine[1][1]}
-        stroke={color} strokeWidth="2" strokeDasharray="5 4" opacity="0.85"/>
-      <polyline points={fc.map(p => p.join(",")).join(" ")} fill="none" stroke={color} strokeWidth="2" strokeDasharray="5 4" strokeLinejoin="round" strokeLinecap="round" opacity="0.85"/>
+          {/* History line — solid */}
+          <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2}
+            dot={{ r: 2.5, fill: color, strokeWidth: 0 }}
+            activeDot={{ r: 5, fill: color, strokeWidth: 0 }}
+            connectNulls={false} legendType="none" />
 
-      {/* Points */}
-      {hist.map(([x, y], i) => <circle key={"h" + i} cx={x} cy={y} r="2.5" fill={color}/>)}
-      {fc.map(([x, y], i) => <circle key={"f" + i} cx={x} cy={y} r="3" fill="white" stroke={color} strokeWidth="1.6"/>)}
+          {/* Forecast line — dashed */}
+          <Line type="monotone" dataKey="base" stroke={color} strokeWidth={2}
+            strokeDasharray="5 4" opacity={0.85}
+            dot={{ r: 3, fill: 'var(--bg)', stroke: color, strokeWidth: 1.6 }}
+            activeDot={{ r: 5, fill: color, strokeWidth: 0 }}
+            connectNulls={false} legendType="none" />
 
-      {/* X labels (every other tick) */}
-      {[...history, ...forecast].map((d, i) => {
-        if (i % 2 !== 0) return null;
-        const x = PADL + i * step;
-        return <text key={"x" + i} x={x} y={H - 8} textAnchor="middle" fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{d.q}</text>;
-      })}
+          {/* History / forecast divider */}
+          <ReferenceLine x={splitQ} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
+            label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }} />
 
-      {/* Invisible hit areas for hover — rendered last so they're on top */}
-      {hist.map(([x, y], i) => (
-        <circle key={"hit-h" + i} cx={x} cy={y} r="10" fill="transparent" style={{cursor: "crosshair"}}
-          onMouseEnter={() => setTooltip({ x, y, label: history[i].q, value: history[i].v, isForecast: false })}/>
-      ))}
-      {fc.map(([x, y], j) => (
-        <circle key={"hit-f" + j} cx={x} cy={y} r="10" fill="transparent" style={{cursor: "crosshair"}}
-          onMouseEnter={() => setTooltip({ x, y, label: forecast[j].q, value: forecast[j].base, lo: forecast[j].lo, hi: forecast[j].hi, isForecast: true })}/>
-      ))}
+          {/* Optional horizontal threshold / target line */}
+          {referenceValue != null && (
+            <ReferenceLine y={referenceValue} stroke="var(--red)" strokeDasharray="4 3" strokeWidth={1} opacity={0.65}
+              label={{ value: referenceLabel ?? 'Target', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--red-ink)' }} />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
 
-      {renderTooltip()}
-    </svg>
-    {chartMetrics && (
-      <div className="mono" style={{
-        fontSize: 9.5, color: 'var(--ink-3)', padding: '5px 2px 0',
-        display: 'flex', gap: 16, flexWrap: 'wrap', lineHeight: 1.6, borderTop: '1px solid var(--line)', marginTop: 2
-      }}>
-        <span>RMSE <span style={{color:'var(--ink-2)'}}>{fmtMt(chartMetrics.rmse)}</span></span>
-        <span>MAPE <span style={{color: mapeColor(chartMetrics.mape)}}>{fmtMt(chartMetrics.mape)}%</span></span>
-        <span>R² <span style={{color:'var(--ink-2)'}}>{fmtMt(chartMetrics.r2, 3)}</span></span>
-        <span>MAE <span style={{color:'var(--ink-2)'}}>{fmtMt(chartMetrics.mae)}</span></span>
-        <span>TME <span style={{color:'var(--ink-2)'}}>{chartMetrics.tme != null && Number.isFinite(chartMetrics.tme) ? (chartMetrics.tme >= 0 ? '+' : '') + chartMetrics.tme.toFixed(2) : '—'}</span></span>
-      </div>
-    )}
+      {chartMetrics && (
+        <div className="mono" style={{
+          fontSize: 9.5, color: 'var(--ink-3)', padding: '5px 2px 0',
+          display: 'flex', gap: 16, flexWrap: 'wrap', lineHeight: 1.6,
+          borderTop: '1px solid var(--line)', marginTop: 2,
+        }}>
+          <span>RMSE <span style={{ color: 'var(--ink-2)' }}>{fmtMt(chartMetrics.rmse)}</span></span>
+          <span>MAPE <span style={{ color: mapeColor(chartMetrics.mape) }}>{fmtMt(chartMetrics.mape)}%</span></span>
+          <span>R² <span style={{ color: 'var(--ink-2)' }}>{fmtMt(chartMetrics.r2, 3)}</span></span>
+          <span>MAE <span style={{ color: 'var(--ink-2)' }}>{fmtMt(chartMetrics.mae)}</span></span>
+          <span>TME <span style={{ color: 'var(--ink-2)' }}>{chartMetrics.tme != null && Number.isFinite(chartMetrics.tme) ? (chartMetrics.tme >= 0 ? '+' : '') + chartMetrics.tme.toFixed(2) : '—'}</span></span>
+        </div>
+      )}
     </>
   );
 }
 
-// ---------- MULTI-SERIES FORECAST CHART ----------
-// Combines multiple geographies or segments onto one chart, one line per series.
+// ---------- MULTI-SERIES FORECAST CHART (Recharts) ----------
 // series: [{name, color, history:[{q,v}], forecast:[{q,base,lo,hi}]}]
 function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
-  const [hovIdx, setHovIdx] = useState(null);
-
   if (!series?.length) return null;
   const first = series[0];
   if (!first?.history?.length || !first?.forecast?.length) return null;
 
   const dp      = decimals ?? (unit === "$M" ? 0 : 1);
   const histLen = first.history.length;
-  const total   = histLen + first.forecast.length;
-
-  const W = 540, PADL = 52, PADR = 14, PADT = 16;
-  const plotW = W - PADL - PADR;
-  const plotH = 172;
-
-  // Bottom padding: 14px x-labels + 8px gap + legend rows + 4px margin
-  const legendCols = Math.min(series.length, 3);
-  const legendRows = Math.ceil(series.length / legendCols);
-  const PADB = 14 + 8 + legendRows * 16 + 4;
-  const H    = PADT + plotH + PADB;
-
-  // Y scale across all series
-  const allVals = series.flatMap(s => [
-    ...s.history.map(d => d.v),
-    ...s.forecast.flatMap(d => [d.base, d.lo, d.hi]),
-  ]).filter(Number.isFinite);
-  if (!allVals.length) return null;
-  const rawMin = Math.min(...allVals);
-  const rawMax = Math.max(...allVals);
-  const yPad   = (rawMax - rawMin) * 0.06 || 1;
-  const yMin   = rawMin - yPad;
-  const yMax   = rawMax + yPad;
-  const yRange = yMax - yMin;
-
-  const step       = plotW / (total - 1);
-  const xy         = (i, v) => [PADL + i * step, PADT + plotH - ((v - yMin) / yRange) * plotH];
-  const divX       = PADL + (histLen - 1) * step;
   const allPeriods = [...first.history, ...first.forecast];
-  const legendColW = plotW / legendCols;
-  const legendY0   = PADT + plotH + 22;
 
   const fmtV = v => {
     if (!Number.isFinite(v)) return '—';
@@ -333,115 +291,108 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
     return `${v.toFixed(dp)}%`;
   };
 
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(t => yMin + yRange * t);
+  // Build a unified data array. Each period has keys `{name}_h` (history) and
+  // `{name}_f` (forecast) for every series so Recharts can render N×2 lines.
+  const data = allPeriods.map((period, i) => {
+    const isFc = i >= histLen;
+    const row = { q: period.q, isFc };
+    series.forEach(s => {
+      row[`${s.name}_h`] = !isFc ? (s.history[i]?.v ?? null) : null;
+      row[`${s.name}_f`] = isFc  ? (s.forecast[i - histLen]?.base ?? null) : null;
+    });
+    return row;
+  });
+  // Anchor forecast start at last history value so lines connect
+  series.forEach(s => {
+    data[histLen - 1][`${s.name}_f`] = s.history[histLen - 1]?.v ?? null;
+  });
+
+  const splitQ  = first.history[histLen - 1]?.q;
+  const yAxisW  = unit === "$M" ? 52 : 48;
+
+  function ChartTooltip({ active, payload, label }) {
+    if (!active || !payload?.length) return null;
+    const pt    = payload[0]?.payload ?? {};
+    const isFc  = !!pt.isFc;
+    const vals  = series.map(s => ({
+      name: s.name,
+      color: s.color,
+      value: isFc ? pt[`${s.name}_f`] : pt[`${s.name}_h`],
+    })).filter(v => v.value != null);
+    if (!vals.length) return null;
+    return (
+      <div style={{
+        background: 'var(--bg)', border: '1px solid var(--line-strong)', borderRadius: 6,
+        padding: '6px 10px', fontSize: 11, fontFamily: 'Geist Mono, monospace',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.12)', pointerEvents: 'none',
+      }}>
+        <div style={{ color: 'var(--ink-3)', fontSize: 9, marginBottom: 4 }}>{label}{isFc ? ' · FORECAST' : ''}</div>
+        {vals.map(v => (
+          <div key={v.name} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color, flexShrink: 0 }}/>
+            <span style={{ color: 'var(--ink-2)', flex: 1, fontSize: 10, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {v.name.length > 14 ? v.name.slice(0, 13) + '…' : v.name}
+            </span>
+            <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{fmtV(v.value)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width: "100%", display: "block"}} xmlns="http://www.w3.org/2000/svg"
-      onMouseLeave={() => setHovIdx(null)}>
+    <div>
+      <ResponsiveContainer width="100%" height={200}>
+        <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
+          <XAxis
+            dataKey="q"
+            tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
+            tickLine={false}
+            axisLine={{ stroke: 'var(--line)' }}
+            interval={1}
+          />
+          <YAxis
+            tickFormatter={fmtV}
+            tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
+            tickLine={false}
+            axisLine={false}
+            width={yAxisW}
+          />
+          <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'var(--line-strong)', strokeWidth: 1, strokeDasharray: '2 2' }} />
 
-      {/* Y gridlines */}
-      {yTicks.map((t, i) => {
-        const y = PADT + plotH - ((t - yMin) / yRange) * plotH;
-        return (
-          <g key={i}>
-            <line x1={PADL} y1={y} x2={W - PADR} y2={y} stroke="var(--line)" strokeWidth="0.5" strokeDasharray={i === 0 ? "" : "2 3"}/>
-            <text x={PADL - 5} y={y + 3.5} textAnchor="end" fontSize="8.5" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">
-              {unit === "$M"
-                ? (t >= 1000 ? `$${(t / 1000).toFixed(dp)}B` : `$${t.toFixed(dp)}M`)
-                : unit === "$" ? `$${t.toFixed(dp)}` : `${t.toFixed(dp)}%`}
-            </text>
-          </g>
-        );
-      })}
+          {/* History / forecast divider */}
+          <ReferenceLine x={splitQ} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
+            label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }} />
 
-      {/* History / forecast divider */}
-      <line x1={divX} y1={PADT} x2={divX} y2={PADT + plotH} stroke="var(--line-strong)" strokeWidth="0.5" strokeDasharray="3 3"/>
-      <text x={divX + 5} y={PADT + 10} fontSize="8.5" fontFamily="Geist Mono, monospace" fill="var(--ink-3)">FORECAST →</text>
+          {/* One solid history line + one dashed forecast line per series */}
+          {series.map(s => (
+            <React.Fragment key={s.name}>
+              <Line type="monotone" dataKey={`${s.name}_h`} stroke={s.color} strokeWidth={1.8}
+                dot={{ r: 2, fill: s.color, strokeWidth: 0 }}
+                activeDot={{ r: 4, fill: s.color, strokeWidth: 0 }}
+                connectNulls={false} legendType="none" />
+              <Line type="monotone" dataKey={`${s.name}_f`} stroke={s.color} strokeWidth={1.8}
+                strokeDasharray="5 4" opacity={0.85}
+                dot={{ r: 2.5, fill: 'var(--bg)', stroke: s.color, strokeWidth: 1.4 }}
+                activeDot={{ r: 4, fill: s.color, strokeWidth: 0 }}
+                connectNulls={false} legendType="none" />
+            </React.Fragment>
+          ))}
+        </ComposedChart>
+      </ResponsiveContainer>
 
-      {/* Hover crosshair */}
-      {hovIdx != null && (
-        <line x1={PADL + hovIdx * step} y1={PADT} x2={PADL + hovIdx * step} y2={PADT + plotH}
-          stroke="var(--ink-4)" strokeWidth="0.8" strokeDasharray="2 2" pointerEvents="none"/>
-      )}
-
-      {/* Series lines + points */}
-      {series.map((s, si) => {
-        const hist  = s.history.slice(0, histLen).map((d, i) => xy(i, d.v));
-        const fc    = s.forecast.map((d, j) => xy(histLen + j, d.base));
-        const trans = [hist[hist.length - 1], fc[0]];
-        return (
-          <g key={s.name}>
-            <polyline points={hist.map(p => p.join(",")).join(" ")} fill="none" stroke={s.color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round"/>
-            <line x1={trans[0][0]} y1={trans[0][1]} x2={trans[1][0]} y2={trans[1][1]} stroke={s.color} strokeWidth="1.8" strokeDasharray="5 4" opacity="0.85"/>
-            <polyline points={fc.map(p => p.join(",")).join(" ")} fill="none" stroke={s.color} strokeWidth="1.8" strokeDasharray="5 4" strokeLinejoin="round" strokeLinecap="round" opacity="0.85"/>
-            {hist.map(([x, y], i) => <circle key={"h" + si + i} cx={x} cy={y} r="2" fill={s.color}/>)}
-            {fc.map(([x, y], j) => <circle key={"f" + si + j} cx={x} cy={y} r="2.5" fill="white" stroke={s.color} strokeWidth="1.4"/>)}
-          </g>
-        );
-      })}
-
-      {/* X axis labels every 2 ticks */}
-      {allPeriods.map((d, i) => {
-        if (i % 2 !== 0) return null;
-        return (
-          <text key={"x" + i} x={PADL + i * step} y={PADT + plotH + 13} textAnchor="middle"
-            fontSize="9" fill="var(--ink-3)" fontFamily="Geist Mono, monospace">{d.q}</text>
-        );
-      })}
-
-      {/* Invisible hit strips for hover */}
-      {allPeriods.map((_, i) => (
-        <rect key={"hit" + i} x={PADL + i * step - step / 2} y={PADT} width={step} height={plotH}
-          fill="transparent" style={{cursor: "crosshair"}} onMouseEnter={() => setHovIdx(i)}/>
-      ))}
-
-      {/* Hover tooltip: all series values at this x */}
-      {hovIdx != null && (() => {
-        const isFc   = hovIdx >= histLen;
-        const period = allPeriods[hovIdx];
-        const bw = 150, bpad = 8;
-        const bh = 17 + series.length * 15 + 5;
-        const tx = Math.min(Math.max(PADL, PADL + hovIdx * step - bw / 2), W - PADR - bw);
-        const ty = Math.max(PADT, PADT + 2);
-        return (
-          <g pointerEvents="none">
-            <rect x={tx} y={ty} width={bw} height={bh} rx="4"
-              fill="var(--bg)" stroke="var(--line-strong)" strokeWidth="0.8"
-              style={{filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.13))"}}/>
-            <text x={tx + bpad} y={ty + 12} fontSize="8.5" fontFamily="Geist Mono, monospace" fill="var(--ink-3)" fontWeight="500">
-              {period?.q}{isFc ? " · FCST" : ""}
-            </text>
-            {series.map((s, si) => {
-              const v = isFc ? s.forecast[hovIdx - histLen]?.base : s.history[hovIdx]?.v;
-              const label = s.name.length > 15 ? s.name.slice(0, 14) + "…" : s.name;
-              return (
-                <g key={si}>
-                  <circle cx={tx + bpad + 4} cy={ty + 22 + si * 15} r="3.5" fill={s.color}/>
-                  <text x={tx + bpad + 12} y={ty + 26 + si * 15} fontSize="9" fontFamily="Geist Mono, monospace" fill="var(--ink-2)">
-                    {label}  {fmtV(v)}
-                  </text>
-                </g>
-              );
-            })}
-          </g>
-        );
-      })()}
-
-      {/* Legend */}
-      {series.map((s, si) => {
-        const col = si % legendCols;
-        const row = Math.floor(si / legendCols);
-        const lx  = PADL + col * legendColW;
-        const ly  = legendY0 + row * 16;
-        return (
-          <g key={"leg" + si}>
-            <line x1={lx} y1={ly + 1} x2={lx + 14} y2={ly + 1} stroke={s.color} strokeWidth="2"/>
-            <circle cx={lx + 7} cy={ly + 1} r="2.5" fill={s.color}/>
-            <text x={lx + 18} y={ly + 4.5} fontSize="9.5" fontFamily="Geist Mono, monospace" fill="var(--ink-2)">{s.name}</text>
-          </g>
-        );
-      })}
-    </svg>
+      {/* Legend rendered as HTML below the chart */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8, paddingLeft: yAxisW + 8 }}>
+        {series.map(s => (
+          <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 9.5, fontFamily: 'Geist Mono, monospace', color: 'var(--ink-2)' }}>
+            <span style={{ display: 'inline-block', width: 14, height: 2, background: s.color, borderRadius: 1, flexShrink: 0 }}/>
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: s.color, flexShrink: 0 }}/>
+            {s.name}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
