@@ -73,8 +73,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
+import re
+import requests
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 import uvicorn
 
@@ -282,6 +285,40 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# ── Write-endpoint authentication ──────────────────────────────────────────────
+# Set DENDRAI_API_KEY (Railway env var) and VITE_API_KEY (same value, build-time
+# Vite var) to protect mutating endpoints from unauthenticated external writes.
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+_REQUIRED_API_KEY = os.environ.get("DENDRAI_API_KEY", "")
+
+async def _require_api_key(key: str | None = Security(_API_KEY_HEADER)) -> None:
+    if not _REQUIRED_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="DENDRAI_API_KEY not configured — set this env var to enable write endpoints",
+        )
+    if key != _REQUIRED_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing X-API-Key header")
+
+# ── SSRF blocklist for rss-proxy ───────────────────────────────────────────────
+# Blocks RFC-1918, loopback, link-local (AWS IMDS 169.254.x.x), IPv6 loopback,
+# and the 0.x.x.x range (resolves to localhost on Linux).
+_PRIVATE_HOST_RE = re.compile(
+    r"^("
+    r"localhost"
+    r"|127\."
+    r"|10\."
+    r"|172\.(1[6-9]|2\d|3[01])\."
+    r"|192\.168\."
+    r"|169\.254\."     # link-local / AWS IMDS
+    r"|0\."            # 0.x.x.x → loopback on Linux
+    r"|::1$"           # IPv6 loopback
+    r"|fc[0-9a-f]{2}:" # IPv6 unique local
+    r"|fe[89ab][0-9a-f]:"  # IPv6 link-local
+    r")",
+    re.IGNORECASE,
 )
 
 # MCP HTTP Telemetry: captures tool calls arriving via Streamable-HTTP endpoints.
@@ -624,31 +661,49 @@ def get_rss_feeds():
     return {"feeds": RSS_INGEST_FEEDS}
 
 
+def _validate_rss_host(url: str) -> None:
+    """Raise 400 if the URL's host resolves to a private/loopback address."""
+    from urllib.parse import urlparse as _up
+    host = _up(url).hostname or ""
+    if not host or _PRIVATE_HOST_RE.match(host):
+        raise HTTPException(status_code=400, detail=f"URL host is not allowed: {host or '(empty)'}")
+
+
 @app.get("/rss-proxy")
 def rss_proxy(url: str = Query(..., description="RSS feed URL to fetch server-side")):
     """
     Server-side RSS proxy — bypasses browser CORS restrictions.
-    Mirrors the Vite dev-server /api/rss-proxy route for production use.
-    Only http/https URLs are allowed; localhost/private ranges are rejected.
+    Only http/https URLs are allowed; private/loopback/link-local addresses are
+    rejected on every redirect hop to prevent SSRF.
     """
-    import re as _re
-    from urllib.parse import urlparse as _urlparse
-    parsed = _urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
+    from urllib.parse import urlparse as _up
+    from fastapi.responses import Response as _Response
+
+    if _up(url).scheme not in {"http", "https"}:
         raise HTTPException(status_code=400, detail="Only http/https URLs are allowed")
-    host = parsed.hostname or ""
-    if _re.match(r"^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)", host):
-        raise HTTPException(status_code=400, detail="Private/localhost URLs are not allowed")
+    _validate_rss_host(url)
+
+    _headers = {"User-Agent": "Mozilla/5.0 (compatible; DendraiRSSProxy/1.0)"}
+    current_url = url
     try:
-        resp = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; DendraiRSSProxy/1.0)"},
-            timeout=10,
-            allow_redirects=True,
-        )
+        for _ in range(6):  # max 5 redirects
+            resp = requests.get(current_url, headers=_headers, timeout=10, allow_redirects=False)
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                break
+            location = resp.headers.get("Location", "")
+            if not location:
+                break
+            # Re-validate each redirect hop before following it
+            if _up(location).scheme not in {"http", "https"}:
+                raise HTTPException(status_code=400, detail="Redirect to non-http(s) scheme blocked")
+            _validate_rss_host(location)
+            current_url = location
+        else:
+            raise HTTPException(status_code=400, detail="Too many redirects")
         content_type = resp.headers.get("Content-Type", "application/xml")
-        from fastapi.responses import Response as _Response
         return _Response(content=resp.content, media_type=content_type)
+    except HTTPException:
+        raise
     except requests.Timeout:
         raise HTTPException(status_code=504, detail="RSS feed fetch timed out")
     except requests.RequestException as exc:
@@ -1098,7 +1153,7 @@ def fred_correlations(req: FredRequest):
 
 # ── HITL persistence endpoints ─────────────────────────────────────────────────
 
-@app.post("/loop/hitl/risk-approvals")
+@app.post("/loop/hitl/risk-approvals", dependencies=[Depends(_require_api_key)])
 def persist_risk_approvals(req: RiskApprovalsRequest):
     """
     Persist Gate 1 per-risk HITL decisions from the frontend.
@@ -1113,7 +1168,7 @@ def persist_risk_approvals(req: RiskApprovalsRequest):
     return {"saved": True, "run_id": req.run_id, "count": len(req.approvals)}
 
 
-@app.post("/loop/hitl/scope-approvals")
+@app.post("/loop/hitl/scope-approvals", dependencies=[Depends(_require_api_key)])
 def persist_scope_approvals(req: ScopeApprovalsRequest):
     """
     Persist Gate 2 per-objective HITL decisions from the frontend.
@@ -1128,7 +1183,7 @@ def persist_scope_approvals(req: ScopeApprovalsRequest):
     return {"saved": True, "run_id": req.run_id, "count": len(req.approvals)}
 
 
-@app.post("/loop/persist")
+@app.post("/loop/persist", dependencies=[Depends(_require_api_key)])
 def persist_loop_completion(req: LoopPersistRequest):
     """
     Batch-save loop completion data: loop log, audit objectives, CEM events,
@@ -1283,7 +1338,7 @@ def rac_from_db(req: RacFromDbRequest):
     return result
 
 
-@app.post("/rac/from-excel")
+@app.post("/rac/from-excel", dependencies=[Depends(_require_api_key)])
 async def rac_from_excel(
     file:       UploadFile  = File(...),
     ticker:     str         = Form(...),
@@ -1360,7 +1415,7 @@ def get_code_editor(storage_key: str):
     return row
 
 
-@app.put("/config/code-editor/{storage_key}")
+@app.put("/config/code-editor/{storage_key}", dependencies=[Depends(_require_api_key)])
 def save_code_editor(storage_key: str, req: CodeEditorSaveRequest):
     """Persist Risk-as-Code or Policy-as-Code YAML editor content to the database.
 
@@ -1390,7 +1445,7 @@ def get_pipeline_config():
     return config
 
 
-@app.put("/config/pipeline")
+@app.put("/config/pipeline", dependencies=[Depends(_require_api_key)])
 def save_pipeline_config(body: Dict[str, Any] = Body(...)):
     """Persist the pipeline configuration to the database.
 
@@ -1421,7 +1476,7 @@ def get_last_loop_state():
     return state
 
 
-@app.put("/loop/last-state")
+@app.put("/loop/last-state", dependencies=[Depends(_require_api_key)])
 def save_last_loop_state(body: Dict[str, Any] = Body(...)):
     """Persist the full pipeline run state to the database for restoration on reload.
 

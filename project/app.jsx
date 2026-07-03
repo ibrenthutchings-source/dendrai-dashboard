@@ -37,6 +37,15 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
 
 const APPETITE_THRESHOLDS = { GREEN: 12.0, AMBER: 18.0, RED: 23.0 };
 
+// API key sent on all mutating requests. Set VITE_API_KEY at build time (same
+// value as DENDRAI_API_KEY on the server) to authenticate write endpoints.
+const _API_KEY = import.meta.env.VITE_API_KEY || "";
+const _authHeaders = (extra = {}) => ({
+  "Content-Type": "application/json",
+  ...(_API_KEY ? { "X-API-Key": _API_KEY } : {}),
+  ...extra,
+});
+
 function App() {
   // ---- Tweaks ----
   const [tweaks, setTweak] = useTweaks(DEFAULT_TWEAKS);
@@ -117,7 +126,7 @@ function App() {
     setLastSaved(savedAt);
     fetch("/api/mcp/config/pipeline", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: _authHeaders(),
       body: JSON.stringify(payload),
     }).catch(() => {});
   }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds, aiChatCfg]);
@@ -282,7 +291,7 @@ function App() {
     try { localStorage.setItem("dendrai.lastLoop", JSON.stringify(payload)); } catch {}
     fetch("/api/mcp/loop/last-state", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: _authHeaders(),
       body: JSON.stringify(payload),
     }).catch(() => {});
   }, [hasRun, output]);
@@ -477,12 +486,12 @@ function App() {
     if (mcpMode && runIdRef.current) {
       if (n === 1) {
         fetch('/api/mcp/loop/hitl/risk-approvals', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
+          method: 'POST', headers: _authHeaders(),
           body: JSON.stringify({ run_id: runIdRef.current, approvals: riskApprovals }),
         }).catch(() => {});
       } else if (n === 2) {
         fetch('/api/mcp/loop/hitl/scope-approvals', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
+          method: 'POST', headers: _authHeaders(),
           body: JSON.stringify({ run_id: runIdRef.current, approvals: scopeApprovals }),
         }).catch(() => {});
       }
@@ -1146,7 +1155,7 @@ function App() {
 
     if (mcpMode && runIdRef.current) {
       fetch('/api/mcp/loop/persist', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: _authHeaders(),
         body: JSON.stringify({
           run_id: runIdRef.current,
           loop_log: loopLogRef.current,

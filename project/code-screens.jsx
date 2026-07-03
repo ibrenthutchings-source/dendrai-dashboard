@@ -4,6 +4,13 @@
    evaluation/diff against the current run on the right.
    ============================================================ */
 
+const _CODE_API_KEY = import.meta.env.VITE_API_KEY || "";
+const _codeAuthHeaders = (extra = {}) => ({
+  "Content-Type": "application/json",
+  ...(_CODE_API_KEY ? { "X-API-Key": _CODE_API_KEY } : {}),
+  ...extra,
+});
+
 function CodeEditorScreen({ kicker, title, sub, storageKey, defaultCode, fileLabel, renderEval }) {
   const [code, setCode] = useState(() => {
     try { return localStorage.getItem(storageKey) || defaultCode; } catch { return defaultCode; }
@@ -47,7 +54,7 @@ function CodeEditorScreen({ kicker, title, sub, storageKey, defaultCode, fileLab
     try {
       const r = await fetch(`/api/config/code-editor/${encodeURIComponent(storageKey)}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: _codeAuthHeaders(),
         body: JSON.stringify({ content: code }),
       });
       const data = r.ok ? await r.json() : null;
@@ -201,7 +208,7 @@ function RiskAsCodeScreen({ risks, baseRisks }) {
     try {
       const r = await fetch(`/api/config/code-editor/${encodeURIComponent(STORAGE_KEY)}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: _codeAuthHeaders(),
         body: JSON.stringify({ content: code }),
       });
       const data = r.ok ? await r.json() : null;
