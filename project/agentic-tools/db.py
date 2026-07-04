@@ -989,6 +989,39 @@ CREATE TABLE IF NOT EXISTS observability.tool_call_suppressions (
 CREATE INDEX IF NOT EXISTS idx_suppress_active
     ON observability.tool_call_suppressions (target_tool, server_name)
     WHERE active;
+
+CREATE TABLE IF NOT EXISTS observability.monitored_systems (
+    id               BIGSERIAL    PRIMARY KEY,
+    display_name     VARCHAR(128) NOT NULL,
+    server_name      VARCHAR(128) NOT NULL,
+    server_type      VARCHAR(64)  NOT NULL DEFAULT 'custom',
+    description      TEXT,
+    active           BOOLEAN      NOT NULL DEFAULT TRUE,
+    governance_tiers TEXT[]       NOT NULL DEFAULT '{CRITICAL,HIGH,MEDIUM}',
+    blocking_tools   TEXT[],
+    alert_webhook    TEXT,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by       VARCHAR(128)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_systems_server_name
+    ON observability.monitored_systems (server_name)
+    WHERE active;
+
+CREATE TABLE IF NOT EXISTS observability.pac_repositories (
+    id           BIGSERIAL    PRIMARY KEY,
+    display_name VARCHAR(128) NOT NULL,
+    provider     VARCHAR(32)  NOT NULL DEFAULT 'github',
+    repo_url     TEXT         NOT NULL,
+    branch       VARCHAR(128) NOT NULL DEFAULT 'main',
+    rego_path    VARCHAR(256) NOT NULL DEFAULT 'policies/',
+    process      VARCHAR(64)  NOT NULL DEFAULT 'all',
+    description  TEXT,
+    active       BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by   VARCHAR(128)
+);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.

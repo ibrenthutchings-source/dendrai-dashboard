@@ -1461,6 +1461,13 @@ function App() {
             </div>
           )}
 
+          {/* ---- UBO Configuration ---- */}
+          {activeScreen === "uboconfig" && (
+            <div className="panel active">
+              <UboConfigScreen />
+            </div>
+          )}
+
           {/* ---- Pipeline (with action bar + sub-tabs) ---- */}
           {activeScreen === "pipeline" && (
           <div className="panel active">
