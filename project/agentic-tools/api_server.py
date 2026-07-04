@@ -77,7 +77,8 @@ load_dotenv()
 
 import re
 import requests
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Security, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Security, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
