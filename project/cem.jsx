@@ -553,7 +553,7 @@ function UBOGovPanel() {
         )}
 
         {tab === "stream" && (
-          <RawFeedTab rows={rawRows} loading={loading} isPaused={isPaused} />
+          <RawFeedTab rows={rawRows} adjudicated={adjudicated} loading={loading} isPaused={isPaused} />
         )}
       </div>
     </div>
@@ -812,91 +812,393 @@ function UBOCouncilTab({ adjudicated, loading }) {
   </>);
 }
 
-// ── Raw telemetry live-feed tab ───────────────────────────────────────────────
+// ── Raw telemetry live-feed tab — Bronze → Silver → Gold medallion flow ────────
 
 const _FLAG_COLOR = {
+  bypass_keyword:  { bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
+  sensitive_tool:  { bg:"var(--amber-soft)", ink:"var(--amber-ink)" },
+  bulk_args:       { bg:"var(--blue-soft)",  ink:"var(--blue-ink)"  },
+  large_payload:   { bg:"var(--surface-2)",  ink:"var(--ink-2)"     },
   HIGH_LATENCY:    { bg:"var(--amber-soft)", ink:"var(--amber-ink)" },
   ELEVATED_RISK:   { bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
   POLICY_VIOLATION:{ bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
 };
 
-function RawFeedTab({ rows, loading, isPaused }) {
+const _BRONZE_HDR = { bg:"rgba(180,110,40,0.12)",  border:"rgba(180,110,40,0.28)",  lbl:"var(--amber-ink,#b45309)" };
+const _SILVER_HDR = { bg:"rgba(100,116,139,0.10)", border:"rgba(100,116,139,0.25)", lbl:"var(--ink-2)"             };
+const _GOLD_HDR   = { bg:"rgba(155,130,10,0.12)",  border:"rgba(155,130,10,0.28)",  lbl:"var(--amber-ink,#b45309)" };
+
+function _flagToEventType(flags, status) {
+  if (status === "error") return "MCP_TOOL_ERROR";
+  if (!flags?.length)     return "ANOMALY";
+  if (flags.length >= 3)                    return "MCP_GOVERNANCE_VIOLATION";
+  if (flags.includes("bypass_keyword"))  return "MCP_TOOL_BYPASS";
+  if (flags.includes("sensitive_tool"))  return "MCP_SENSITIVE_TOOL_CALL";
+  if (flags.includes("bulk_args"))       return "MCP_BULK_ARGS";
+  if (flags.includes("large_payload"))   return "MCP_LARGE_PAYLOAD";
+  return "ANOMALY";
+}
+
+const _MCP_BASE_WEIGHT = {
+  MCP_GOVERNANCE_VIOLATION: 0.90,
+  MCP_TOOL_BYPASS:          0.85,
+  MCP_SENSITIVE_TOOL_CALL:  0.70,
+  MCP_BULK_ARGS:            0.45,
+  MCP_TOOL_ERROR:           0.40,
+  MCP_LARGE_PAYLOAD:        0.35,
+  ANOMALY:                  0.35,
+};
+
+function _violSeverityWeight(v) {
+  if (/CRITICAL/i.test(v)) return 0.20;
+  if (/HIGH/i.test(v))     return 0.12;
+  if (/MEDIUM/i.test(v))   return 0.06;
+  return 0.02;
+}
+
+function MedallionPaneHdr({ tier, subtitle, color }) {
+  return (
+    <div style={{ padding:"8px 12px", background:color.bg, borderBottom:`1px solid ${color.border}`,
+      display:"flex", alignItems:"baseline", gap:6, flexShrink:0 }}>
+      <span style={{ fontSize:10, fontWeight:700, fontFamily:"'Geist Mono',monospace",
+        letterSpacing:".08em", color:color.lbl }}>{tier}</span>
+      <span style={{ fontSize:9, color:"var(--ink-4)", fontFamily:"'Geist Mono',monospace" }}>{subtitle}</span>
+    </div>
+  );
+}
+
+function PaneSection({ label, children }) {
+  return (
+    <div style={{ marginBottom:10 }}>
+      <div style={{ fontSize:9, fontWeight:700, color:"var(--ink-4)", letterSpacing:".07em",
+        fontFamily:"'Geist Mono',monospace", marginBottom:4 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function PaneKV({ k, v, vColor }) {
+  return (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8,
+      fontSize:10, padding:"2px 0", borderBottom:"1px solid var(--line)" }}>
+      <span style={{ color:"var(--ink-3)", flexShrink:0 }}>{k}</span>
+      <span style={{ color:vColor||"var(--ink)", fontFamily:"'Geist Mono',monospace",
+        textAlign:"right", wordBreak:"break-all", maxWidth:"62%" }}>{v}</span>
+    </div>
+  );
+}
+
+function BronzeDetail({ row }) {
+  if (!row) return (
+    <div style={{ padding:16, color:"var(--ink-4)", fontSize:11, textAlign:"center", paddingTop:32 }}>
+      Select an event from the list
+    </div>
+  );
+  const flags  = row.risk_flags || [];
+  const evType = _flagToEventType(flags, row.status);
+  return (
+    <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
+      <PaneSection label="Ingestion Handler">
+        <PaneKV k="Handler"    v="McpProxyBronzeHandler" />
+        <PaneKV k="Schema"     v="MCP-Telemetry-v1" />
+        <PaneKV k="Source"     v="MCP_PROXY" />
+        <PaneKV k="Actor ID"   v={row.session_id ? row.session_id.slice(0,8)+"…" : "—"} />
+        <PaneKV k="Actor Type" v="SERVICE" />
+        <PaneKV k="Event Type" v={evType} />
+        <PaneKV k="Checksum"   v="✓ SHA-256" vColor="var(--green-ink)" />
+        <PaneKV k="Stage Out"  v="BRONZE" vColor="var(--amber-ink,#b45309)" />
+      </PaneSection>
+      <PaneSection label="Raw Fields">
+        <PaneKV k="Tool"      v={row.target_tool || row.method || "—"} />
+        <PaneKV k="Server"    v={row.server_name || "—"} />
+        <PaneKV k="Direction" v={(row.direction||"—").toUpperCase()} />
+        <PaneKV k="Status"    v={row.status || "—"} />
+        {row.execution_time_ms != null && (
+          <PaneKV k="Latency" v={`${row.execution_time_ms}ms`}
+            vColor={row.execution_time_ms > 30000 ? "var(--red-ink)" : undefined} />
+        )}
+        {row.error_message && (
+          <PaneKV k="Error" v={String(row.error_message).slice(0,80)} vColor="var(--red-ink)" />
+        )}
+      </PaneSection>
+      <PaneSection label={flags.length > 0 ? `Risk Flags (${flags.length})` : "Risk Flags"}>
+        {flags.length === 0 ? (
+          <div style={{ fontSize:10, color:"var(--ink-4)" }}>None — event will not enter governance pipeline</div>
+        ) : (
+          <div style={{ display:"flex", flexWrap:"wrap", gap:4, paddingTop:2 }}>
+            {flags.map((f, i) => {
+              const fc = _FLAG_COLOR[f] || { bg:"var(--surface-2)", ink:"var(--ink-2)" };
+              return (
+                <span key={i} style={{ padding:"2px 6px", borderRadius:4, background:fc.bg, color:fc.ink,
+                  fontSize:9, fontWeight:700, fontFamily:"'Geist Mono',monospace" }}>{f}</span>
+              );
+            })}
+          </div>
+        )}
+      </PaneSection>
+    </div>
+  );
+}
+
+function SilverDetail({ row, adj }) {
+  if (!row) return null;
+  if (!adj) return (
+    <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
+      <div style={{ fontSize:10, color:"var(--ink-3)", marginBottom:6 }}>Not yet processed through UBO pipeline.</div>
+      <div style={{ fontSize:9.5, color:"var(--ink-4)", lineHeight:1.6 }}>
+        {(row.risk_flags||[]).length > 0
+          ? "This event has risk flags and is queued for conformation. Click ▶ PROCESS QUEUE or wait for the 30s auto-cycle."
+          : "No risk flags — this event will not enter the governance pipeline."}
+      </div>
+    </div>
+  );
+  const violations = adj.policy_violations || [];
+  const ss = adj.source_system || "MCP_PROXY";
+  const schemaConform = {
+    SAP:"SAP-CDHDR-v1-conform", GITHUB:"GitHub-Webhook-v3-conform",
+    SAILPOINT:"SailPoint-IDN-v3-conform", MCP_PROXY:"MCP-Telemetry-v1-conform",
+  };
+  return (
+    <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
+      <PaneSection label="Conformation">
+        <PaneKV k="Handler"       v={`${ss}SilverConformer`} />
+        <PaneKV k="Schema"        v={schemaConform[ss] || "generic-conform"} />
+        <PaneKV k="Resource"      v={adj.target_tool || row.target_tool || "—"} />
+        <PaneKV k="Resource Type" v="mcp_tool" />
+        <PaneKV k="Action"        v="tools/call" />
+        <PaneKV k="Outcome"       v={row.status || "unknown"} />
+        <PaneKV k="Stage Out"     v="SILVER" vColor="var(--ink-2)" />
+      </PaneSection>
+      <PaneSection label={`Policy-as-Code · ${violations.length} violation${violations.length !== 1 ? "s" : ""}`}>
+        {violations.length === 0 ? (
+          <div style={{ fontSize:10, color:"var(--green-ink)", display:"flex", alignItems:"center", gap:4 }}>
+            <span>✓</span> All policies passed
+          </div>
+        ) : (
+          violations.map((v, i) => (
+            <div key={i} style={{ fontSize:9.5, color:"var(--red-ink)", padding:"4px 0",
+              borderBottom:"1px solid var(--line)", lineHeight:1.5 }}>{v}</div>
+          ))
+        )}
+      </PaneSection>
+      {adj.conflict_flags?.length > 0 && (
+        <PaneSection label="Conflict Flags">
+          {adj.conflict_flags.map((f, i) => (
+            <div key={i} style={{ fontSize:9.5, color:"var(--amber-ink)", padding:"2px 0" }}>{f}</div>
+          ))}
+        </PaneSection>
+      )}
+    </div>
+  );
+}
+
+function GoldDetail({ row, adj }) {
+  if (!row) return null;
+  if (!adj) return (
+    <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
+      <div style={{ fontSize:10, color:"var(--ink-3)" }}>Not yet scored.</div>
+    </div>
+  );
+  const violations  = adj.policy_violations || [];
+  const flags       = adj.risk_flags || [];
+  const evType      = _flagToEventType(flags, row.status);
+  const baseW       = _MCP_BASE_WEIGHT[evType] ?? 0.35;
+  const violPenalty = violations.reduce((s, v) => s + _violSeverityWeight(v), 0);
+  const actorPenalty = 0.08;
+  const reconScore   = Math.min(1.0, baseW + violPenalty + actorPenalty);
+  const ts      = adj.risk_tier || "LOW";
+  const tStyle  = _UBO_TIER_STYLE[ts] || _UBO_TIER_STYLE.LOW;
+  const vStyle  = _UBO_VERDICT_STYLE[adj.final_verdict || "CLEAR"] || _UBO_VERDICT_STYLE.CLEAR;
+  const score   = adj.risk_score;
+  const scoreColor = ts === "CRITICAL" ? "var(--red-ink)" : ts === "HIGH" ? "var(--amber-ink)"
+    : ts === "MEDIUM" ? "var(--blue-ink)" : "var(--green-ink)";
+  return (
+    <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
+      <div style={{ textAlign:"center", padding:"6px 0 12px", borderBottom:"1px solid var(--line)", marginBottom:10 }}>
+        <div style={{ fontSize:38, fontWeight:700, fontFamily:"'Geist Mono',monospace",
+          color:scoreColor, lineHeight:1 }}>
+          {score != null ? score.toFixed(3) : "—"}
+        </div>
+        <div style={{ display:"flex", justifyContent:"center", gap:6, marginTop:6 }}>
+          <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:4,
+            background:tStyle.bg, color:tStyle.ink }}>{ts}</span>
+          <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:4,
+            background:vStyle.bg, color:vStyle.ink }}>{adj.final_verdict || "—"}</span>
+        </div>
+      </div>
+      <PaneSection label="Score Breakdown">
+        <PaneKV k={`Base (${evType})`} v={baseW.toFixed(2)} vColor="var(--ink-2)" />
+        <PaneKV k="Violation penalty"   v={`+${violPenalty.toFixed(2)}`}
+          vColor={violPenalty > 0 ? "var(--red-ink)" : "var(--ink-4)"} />
+        <PaneKV k="Actor (SERVICE)"     v="+0.08" vColor="var(--amber-ink,#b45309)" />
+        <PaneKV k="Cascade bonus"       v="+0.00" vColor="var(--ink-4)" />
+        <div style={{ display:"flex", justifyContent:"space-between", padding:"4px 0",
+          borderTop:"1px solid var(--line)", marginTop:2 }}>
+          <span style={{ fontSize:10, fontWeight:600, color:"var(--ink)" }}>Reconstructed</span>
+          <span style={{ fontSize:10, fontWeight:600, fontFamily:"'Geist Mono',monospace",
+            color:"var(--ink)" }}>≈ {reconScore.toFixed(3)}</span>
+        </div>
+      </PaneSection>
+      <PaneSection label="Adjudication">
+        <PaneKV k="Confidence" v={adj.ensemble_confidence != null
+          ? `${(adj.ensemble_confidence*100).toFixed(0)}%` : "—"} />
+        <PaneKV k="Stage Out"  v="GOLD → COUNCIL" vColor="var(--amber-ink,#b45309)" />
+        {adj.requires_human_review && (
+          <PaneKV k="Human Review" v="⚠ REQUIRED" vColor="var(--red-ink)" />
+        )}
+        {adj.adjudicated_at && (
+          <PaneKV k="Adjudicated" v={new Date(adj.adjudicated_at).toLocaleTimeString("en-US",
+            {hour:"2-digit",minute:"2-digit",second:"2-digit"})} />
+        )}
+      </PaneSection>
+    </div>
+  );
+}
+
+function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
+  const [selectedId, setSelectedId] = useState(null);
+
+  const adjByTelId = useMemo(() => {
+    const m = new Map();
+    (adjudicated || []).forEach(a => {
+      if (a.telemetry_id != null) m.set(String(a.telemetry_id), a);
+    });
+    return m;
+  }, [adjudicated]);
+
+  useEffect(() => {
+    if (rows.length > 0 && selectedId === null) setSelectedId(rows[0].id);
+  }, [rows]);
+
+  const selectedRaw = useMemo(
+    () => rows.find(r => String(r.id) === String(selectedId)) ?? null,
+    [rows, selectedId],
+  );
+  const selectedAdj = useMemo(
+    () => (selectedId != null ? adjByTelId.get(String(selectedId)) ?? null : null),
+    [adjByTelId, selectedId],
+  );
+
   if (loading && rows.length === 0) return (
     <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
       <span className="spin"/> Loading telemetry…
     </div>
   );
-  if (rows.length === 0) return (
-    <Empty>No MCP telemetry rows yet. The proxy writes rows here as tool calls arrive from claude.ai integrations.</Empty>
-  );
 
   return (
-    <div style={{padding:"0 18px 18px"}}>
-      <div className="bb-section-sep" style={{marginTop:0}}>
-        <span>RAW MCP TELEMETRY</span>
-        <span style={{display:"flex",alignItems:"center",gap:6}}>
-          {isPaused
-            ? <span style={{fontSize:9,fontWeight:700,color:"var(--amber-ink)"}}>⏸ PAUSED</span>
-            : <span style={{fontSize:9,fontWeight:700,color:"var(--green-ink)",display:"flex",alignItems:"center",gap:4}}>
-                <span style={{width:5,height:5,borderRadius:"50%",background:"var(--green-ink)",display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
-                LIVE
-              </span>
-          }
-          {rows.length} ROWS
-        </span>
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      {/* Top bar */}
+      <div style={{ padding:"5px 12px", borderBottom:"1px solid var(--line)", display:"flex",
+        alignItems:"center", gap:8, flexShrink:0 }}>
+        <span style={{ fontSize:9, fontWeight:700, color:"var(--ink-4)", fontFamily:"'Geist Mono',monospace",
+          letterSpacing:".06em" }}>BRONZE FEED</span>
+        {isPaused
+          ? <span style={{fontSize:9,fontWeight:700,color:"var(--amber-ink)"}}>⏸ PAUSED</span>
+          : <span style={{fontSize:9,fontWeight:700,color:"var(--green-ink)",display:"flex",alignItems:"center",gap:3}}>
+              <span style={{width:5,height:5,borderRadius:"50%",background:"var(--green-ink)",
+                display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
+              LIVE
+            </span>
+        }
+        <span style={{fontSize:9,color:"var(--ink-4)",marginLeft:"auto"}}>{rows.length} rows</span>
       </div>
-      {rows.map((r, i) => {
-        const hasFlags  = (r.risk_flags || []).length > 0;
-        const processed = !!r.processed_at;
-        const ts = r.ts ? new Date(r.ts) : null;
-        return (
-          <div key={r.id ?? i} style={{
-            display:"flex", alignItems:"flex-start", gap:10,
-            padding:"7px 0", borderBottom:"1px solid var(--line)",
-            opacity: processed ? 0.7 : 1,
-          }}>
-            {/* Timestamp */}
-            <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:"var(--ink-3)",flexShrink:0,minWidth:56}}>
-              {ts ? ts.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}) : "—"}
-            </span>
-            {/* Direction */}
-            <span style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:3,flexShrink:0,
-              background: r.direction === "request" ? "var(--blue-soft,#dbeafe)" : "var(--violet-soft,#ede9fe)",
-              color:      r.direction === "request" ? "var(--blue-ink,#1e40af)"  : "var(--violet-ink,#5b21b6)"}}>
-              {(r.direction || "?").toUpperCase()}
-            </span>
-            {/* Tool name */}
-            <span style={{fontSize:11,fontFamily:"'Geist Mono',monospace",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--ink-1)"}}>
-              {r.target_tool || r.method || "—"}
-            </span>
-            {/* Server */}
-            <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0,maxWidth:90,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-              {r.server_name || ""}
-            </span>
-            {/* Latency */}
-            {r.execution_time_ms != null && (
-              <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:"var(--ink-3)",flexShrink:0}}>
-                {r.execution_time_ms}ms
-              </span>
-            )}
-            {/* Risk flags */}
-            {hasFlags && (r.risk_flags || []).map((f, fi) => {
-              const fc = _FLAG_COLOR[f] || { bg:"var(--surface-2)", ink:"var(--ink-2)" };
-              return (
-                <span key={fi} style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:3,flexShrink:0,
-                  background:fc.bg, color:fc.ink, fontFamily:"'Geist Mono',monospace", letterSpacing:".03em"}}>
-                  {f}
-                </span>
-              );
-            })}
-            {/* Processing state */}
-            <span style={{fontSize:9,flexShrink:0,fontFamily:"'Geist Mono',monospace",
-              color: processed ? "var(--green-ink)" : hasFlags ? "var(--amber-ink)" : "var(--ink-4)"}}>
-              {processed ? "✓ ADJUDICATED" : hasFlags ? "⟳ PENDING" : "OK"}
-            </span>
-          </div>
-        );
-      })}
+
+      {/* Three-pane pipeline flow */}
+      <div style={{ display:"flex", flex:1, overflow:"hidden", minHeight:0 }}>
+
+        {/* ── Bronze column: event list ── */}
+        <div style={{ width:"34%", minWidth:190, display:"flex", flexDirection:"column",
+          overflow:"hidden", borderRight:"1px solid var(--line)" }}>
+          <MedallionPaneHdr tier="BRONZE" subtitle="Raw Ingestion" color={_BRONZE_HDR} />
+          {rows.length === 0 ? (
+            <div style={{padding:12,color:"var(--ink-4)",fontSize:11}}>
+              No MCP telemetry yet. The proxy writes rows here as tool calls arrive.
+            </div>
+          ) : (
+            <div style={{ overflowY:"auto", flex:1 }}>
+              {rows.map((r, i) => {
+                const hasFlags = (r.risk_flags || []).length > 0;
+                const isAdj    = adjByTelId.has(String(r.id));
+                const isSel    = String(r.id) === String(selectedId);
+                const ts       = r.ts ? new Date(r.ts) : null;
+                return (
+                  <div key={r.id ?? i} onClick={() => setSelectedId(r.id)}
+                    style={{ display:"flex", flexDirection:"column", gap:3, padding:"7px 12px",
+                      cursor:"pointer", borderBottom:"1px solid var(--line)",
+                      borderLeft: isSel ? "3px solid var(--amber-ink,#b45309)" : "3px solid transparent",
+                      background: isSel ? "var(--surface-2)" : "transparent" }}>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:"var(--ink-4)",flexShrink:0}}>
+                        {ts ? ts.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}) : "—"}
+                      </span>
+                      <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,flexShrink:0,
+                        background: r.direction==="request" ? "var(--blue-soft,#dbeafe)" : "var(--violet-soft,#ede9fe)",
+                        color:      r.direction==="request" ? "var(--blue-ink,#1e40af)"  : "var(--violet-ink,#5b21b6)"}}>
+                        {(r.direction||"?").toUpperCase()}
+                      </span>
+                      <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",flex:1,overflow:"hidden",
+                        textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--ink-1)"}}>
+                        {r.target_tool || r.method || "—"}
+                      </span>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:3,flexWrap:"wrap"}}>
+                      {hasFlags && (r.risk_flags||[]).slice(0,3).map((f, fi) => {
+                        const fc = _FLAG_COLOR[f] || {bg:"var(--surface-2)",ink:"var(--ink-2)"};
+                        return (
+                          <span key={fi} style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,
+                            background:fc.bg,color:fc.ink,fontFamily:"'Geist Mono',monospace"}}>{f}</span>
+                        );
+                      })}
+                      {hasFlags && (r.risk_flags||[]).length > 3 && (
+                        <span style={{fontSize:8,color:"var(--ink-4)"}}>+{(r.risk_flags||[]).length-3}</span>
+                      )}
+                      <span style={{fontSize:8,marginLeft:"auto",fontFamily:"'Geist Mono',monospace",
+                        color: isAdj ? "var(--green-ink)" : hasFlags ? "var(--amber-ink)" : "var(--ink-4)"}}>
+                        {isAdj ? "✓ ADJ" : hasFlags ? "⟳ PEND" : "OK"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* Bronze detail for selected event */}
+          {selectedRaw && (
+            <div style={{ borderTop:"1px solid var(--line)", flex:"0 0 auto", maxHeight:"45%",
+              display:"flex", flexDirection:"column", overflow:"hidden" }}>
+              <div style={{ fontSize:9, fontWeight:700, color:"var(--ink-4)", letterSpacing:".06em",
+                fontFamily:"'Geist Mono',monospace", padding:"5px 12px 2px",
+                borderBottom:"1px solid var(--line)" }}>BRONZE DETAIL</div>
+              <BronzeDetail row={selectedRaw} />
+            </div>
+          )}
+        </div>
+
+        {/* B→S arrow */}
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"center", width:18,
+          flexShrink:0, color:"var(--ink-4)", fontSize:13, userSelect:"none",
+          background:"var(--surface-1,var(--bg))" }}>→</div>
+
+        {/* ── Silver column: conformation + policy ── */}
+        <div style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden",
+          borderLeft:"1px solid var(--line)", borderRight:"1px solid var(--line)" }}>
+          <MedallionPaneHdr tier="SILVER" subtitle="Conformation + Policy" color={_SILVER_HDR} />
+          <SilverDetail row={selectedRaw} adj={selectedAdj} />
+        </div>
+
+        {/* S→G arrow */}
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"center", width:18,
+          flexShrink:0, color:"var(--ink-4)", fontSize:13, userSelect:"none",
+          background:"var(--surface-1,var(--bg))" }}>→</div>
+
+        {/* ── Gold column: scoring + adjudication ── */}
+        <div style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden",
+          borderLeft:"1px solid var(--line)" }}>
+          <MedallionPaneHdr tier="GOLD" subtitle="Scoring + Adjudication" color={_GOLD_HDR} />
+          <GoldDetail row={selectedRaw} adj={selectedAdj} />
+        </div>
+
+      </div>
     </div>
   );
 }
