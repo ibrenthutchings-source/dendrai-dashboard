@@ -56,8 +56,8 @@ A slide-out conversational interface accessible from the **"Ask Claude" / "Ask G
 | MAPs | Management Action Plans dashboard |
 | Notifications | Live signal notifications |
 | Audit Scope | Audit objectives and sprint plan |
-| Risk-as-Code | YAML risk register editor |
-| Policy-as-Code | Policy definition editor |
+| Risk-as-Code | YAML risk register editor with live Generate CaC button |
+| Policy-as-Code | Rego policy editor — 5 ERP processes, version history, multi-approver sign-off, GitHub/Confluence hooks, animated process flow map |
 | Grey Swan Scenarios | Bear / Base / Bull scenarios + Grey Swan cascade |
 | Governance Intelligence | Board, exec comp, shareholder proposals, peer benchmarking |
 
@@ -102,7 +102,8 @@ The Python backend (`project/agentic-tools/`) exposes all data and analytics as 
 ```bash
 cd project/agentic-tools
 pip install fastapi uvicorn pydantic python-dotenv requests anthropic \
-            feedparser httpx psycopg2-binary mcp pyyaml
+            feedparser httpx psycopg2-binary mcp pyyaml \
+            "passlib[bcrypt]" PyJWT
 # Optional: Gemini support for the AI chat panel
 pip install google-generativeai
 cp .env.example .env   # fill in API keys
@@ -118,6 +119,8 @@ python api_server.py   # → http://localhost:8001/docs
 | RSS | Industry news + five compliance feeds (BIS, CISA, SEC, Fed, EPA) | None (public) |
 | Predictive Analytics | Ten risk models: M-Score, forecasting, scenarios, grey swan | None |
 | Risks-as-Code | OSCAL + COSO ERM YAML artifacts from live risk register | None |
+| **Policy-as-Code** | **Rego modules for 5 Oracle Fusion ERP processes, version history, approvals** | None |
+| **Controls-as-Code** | **CaC Rego generation, test harness synthesis, risk coverage matrix** | None |
 | AI endpoints | HITL gate recommendations, narrative analysis, persona briefs, **AI chat** | `ANTHROPIC_API_KEY` |
 | **Oracle Fusion** | **Control library, test results, deficiencies, SOD violations, audit trail** | **See below** |
 
@@ -157,20 +160,70 @@ POST /oracle-fusion/control-issues  — open deficiencies
 POST /oracle-fusion/audit-events    — transaction audit trail
 ```
 
-**MCP tools for Claude** — run `oracle_fusion_mcp_server.py` and add it to `.claude/settings.json`:
-```json
-{
-  "mcpServers": {
-    "oracle-fusion": {
-      "command": "python",
-      "args": ["C:/path/to/agentic-tools/oracle_fusion_mcp_server.py"]
-    }
-  }
-}
-```
-Claude can then call `fusion_control_summary`, `fusion_sod_violations`, `fusion_audit_events`, and four other tools directly.
+**MCP tools for Claude** — run any `*_mcp_server.py` and add it to `.claude/settings.json`. See `MCP-server.md` for the complete tool reference for all nine MCP servers.
 
 See `project/agentic-tools/README.md` for the complete backend reference.
+
+## Authentication
+
+The dashboard is protected by a JWT-based auth system integrated into `api_server.py`.
+
+### Default accounts
+
+| Username | Password | Role | Notes |
+|---|---|---|---|
+| `admin` | `Admin@Dendrai1!` | admin | Must change password on first login |
+| `dendrai` | `Dendrai@Pass1!` | user | Must change password on first login |
+
+### Features
+
+- **Local login** — bcrypt password hashing, rate-limited to 5 attempts / IP / 15 minutes
+- **SSO** — Microsoft/Azure AD, Google Workspace, GitHub, Okta (PKCE OAuth 2.0, JIT provisioning)
+- **JWT sessions** — HS256-signed tokens stored as HTTP-only, Secure, SameSite=Strict cookies (24-hour TTL)
+- **Password policy** — 8+ chars, upper, lower, digit, special character; last-3 password history check
+- **Force password change** — both seed accounts have `must_change_pw = true`
+
+### Environment variables for auth
+
+```bash
+# Required for stable JWT sessions across restarts
+AUTH_JWT_SECRET=your-long-random-secret
+
+# Required for OAuth redirect URIs to work
+PUBLIC_URL=https://your-app.railway.app
+
+# Microsoft Azure AD (optional)
+AZURE_CLIENT_ID=...
+AZURE_CLIENT_SECRET=...
+AZURE_TENANT_ID=...
+
+# Google Workspace (optional)
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+
+# GitHub (optional)
+GITHUB_CLIENT_ID=...
+GITHUB_CLIENT_SECRET=...
+
+# Okta (optional)
+OKTA_CLIENT_ID=...
+OKTA_CLIENT_SECRET=...
+OKTA_DOMAIN=your-org.okta.com
+```
+
+SSO providers only appear on the login screen when all required env vars for that provider are set.
+
+### Auth endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/auth/login` | Local username + password login |
+| `POST` | `/auth/logout` | Revoke session cookie |
+| `GET` | `/auth/me` | Current user info |
+| `POST` | `/auth/change-password` | Change password (history-checked) |
+| `GET` | `/auth/sso/providers` | List enabled SSO providers |
+| `GET` | `/auth/sso/{provider}/start` | Begin OAuth PKCE flow |
+| `GET` | `/auth/sso/{provider}/callback` | OAuth callback + JIT provisioning |
 
 ## Backend (dendrai-app)
 

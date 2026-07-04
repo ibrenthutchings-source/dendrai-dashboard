@@ -14,7 +14,8 @@ cd project/agentic-tools
 
 # 1. Install dependencies
 pip install fastapi uvicorn pydantic python-dotenv requests anthropic \
-            feedparser httpx psycopg2-binary mcp pyyaml
+            feedparser httpx psycopg2-binary mcp pyyaml \
+            "passlib[bcrypt]" PyJWT
 
 # 2. Configure credentials
 cp .env.example .env
@@ -45,6 +46,15 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `ORACLE_FUSION_API_VERSION` | Oracle Fusion | REST API version (default `11.13.18.05`). |
 | `DENDRAI_CLAUDE_MODEL` | AI features | Override the Claude model (default `claude-opus-4-8`). |
 | `DENDRAI_MCP_URL` | Managed agents | Hosted MCP server URL for the cloud agent deployment. |
+| `AUTH_JWT_SECRET` | Authentication | JWT signing key. Auto-generates a random key each restart if not set — set explicitly for stable sessions. |
+| `PUBLIC_URL` | Authentication (SSO) | Base URL of your deployment, e.g. `https://app.railway.app`. Required for OAuth redirect URIs. |
+| `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` + `AZURE_TENANT_ID` | Microsoft SSO | All three required to enable Microsoft/Azure AD login. |
+| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Google SSO | Both required to enable Google Workspace login. |
+| `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` | GitHub SSO | Both required to enable GitHub login. |
+| `OKTA_CLIENT_ID` + `OKTA_CLIENT_SECRET` + `OKTA_DOMAIN` | Okta SSO | All three required to enable Okta login. |
+| `AUTH_SESSION_TTL_HOURS` | Authentication | JWT session lifetime (default `24`). |
+| `AUTH_COOKIE_SECURE` | Authentication | Set to `false` only for HTTP-only local dev (default `true`). |
+| `MCP_READ_ONLY` | PaC / CaC MCP servers | Set to `true` to block all write operations from the PAC and CaC MCP servers. |
 
 ---
 
@@ -242,6 +252,68 @@ Or for Claude Desktop, add the same block to `~/.claude/claude_desktop_config.js
 
 ---
 
+### Policy-as-Code (`pac_endpoints.py` + `pac_mcp_server.py`)
+
+Manages Rego policy modules for five Oracle Fusion ERP processes (ITGC, O2C, P2P, R2S, R2R). Each process ships with a production-grade built-in Rego default; saved versions are stored immutably with version history and multi-approver sign-offs.
+
+**REST endpoints (prefix `/api/pac`):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/pac/modules` | All processes — latest saved or default |
+| `GET` | `/pac/modules/{process}` | Full Rego + approvals for a process |
+| `PUT` | `/pac/modules/{process}` | Save a new versioned module |
+| `GET` | `/pac/modules/{process}/history` | Version history (last 20) |
+| `POST` | `/pac/modules/{process}/approve` | Add approver sign-off |
+| `GET` | `/pac/hooks` | All external hook configs |
+| `PUT` | `/pac/hooks/{hook_type}` | Save/update GitHub or Confluence hook |
+| `POST` | `/pac/cac/generate` | Generate Controls-as-Code Rego from a controls list |
+| `GET` | `/pac/cac/latest` | Most recent CaC artifact |
+| `GET` | `/pac/defaults/{process}` | Built-in default Rego (no DB) |
+
+**MCP server:** `pac_mcp_server.py` — 10 tools. See `mcp.md` → `policy-as-code`.
+
+---
+
+### Controls-as-Code (`cac_mcp_server.py`)
+
+Generates and manages Rego Controls-as-Code artifacts. Synthesises testable control harnesses from PAC deny rules, evaluates policy against sample input events, and maps control coverage to the risk register.
+
+**MCP server:** `cac_mcp_server.py` — 8 tools. See `mcp.md` → `controls-as-code`.
+
+CaC artifacts are stored in the `controls_as_code_artifacts` table and indexed via vector embeddings for semantic search.
+
+---
+
+### Authentication (`auth_db.py` + `auth_endpoints.py`)
+
+JWT-based auth system integrated into `api_server.py`. Provides local login with bcrypt hashing, four SSO providers via PKCE OAuth 2.0, and JIT provisioning for new SSO users.
+
+**Default accounts (both require password change on first login):**
+
+| Username | Password | Role |
+|---|---|---|
+| `admin` | `Admin@Dendrai1!` | admin |
+| `dendrai` | `Dendrai@Pass1!` | user |
+
+**Auth endpoints (prefix `/auth`):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/auth/login` | Local username + password login (rate-limited) |
+| `POST` | `/auth/logout` | Revoke session cookie |
+| `GET` | `/auth/me` | Current user info |
+| `POST` | `/auth/change-password` | Change password (history-checked, revokes all sessions) |
+| `GET` | `/auth/sso/providers` | List enabled SSO providers |
+| `GET` | `/auth/sso/{provider}/start` | Begin PKCE OAuth flow |
+| `GET` | `/auth/sso/{provider}/callback` | Token exchange + JIT provisioning |
+
+**Middleware:** `_DendraiAuthMiddleware` (Starlette `BaseHTTPMiddleware`) validates JWT on all routes except `/auth/`, `/health`, `/db/status`, `/docs`, `/redoc`, `/openapi.json`, `/mcp/`, `/github/`.
+
+**Database schema:** `auth` PostgreSQL schema with 4 tables — `auth.users`, `auth.password_history`, `auth.sso_identities`, `auth.sessions`.
+
+---
+
 ### AI endpoints (`ai_endpoints.py`)
 
 Claude-powered analysis layers. All require `ANTHROPIC_API_KEY`; return HTTP 503 without it.
@@ -263,7 +335,7 @@ Tracks input/output token counts and estimated USD cost per AI call, per run.
 
 ## Database persistence
 
-Set `DATABASE_URL` to enable a PostgreSQL-backed 28-table schema covering:
+Set `DATABASE_URL` to enable a PostgreSQL-backed schema covering:
 
 - Company reference data + EDGAR metadata
 - XBRL financial time-series
@@ -273,6 +345,10 @@ Set `DATABASE_URL` to enable a PostgreSQL-backed 28-table schema covering:
 - RSS signals and articles
 - Risks-as-Code OSCAL + COSO ERM artifacts
 - AI analysis outputs and token usage
+- **Policy-as-Code modules** (`pac_policy_modules`, `pac_policy_approvals`, `pac_external_hooks`)
+- **Controls-as-Code artifacts** (`controls_as_code_artifacts`)
+- **Authentication** (`auth.users`, `auth.password_history`, `auth.sso_identities`, `auth.sessions`)
+- **MCP observability** (`observability.mcp_telemetry`, `observability.adjudicated_events`)
 
 Without `DATABASE_URL` the pipeline runs in stateless mode — all data is returned in the API response but nothing is persisted.
 
