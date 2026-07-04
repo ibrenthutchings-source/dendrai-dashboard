@@ -941,6 +941,7 @@ CREATE INDEX IF NOT EXISTS idx_adj_session
 CREATE INDEX IF NOT EXISTS idx_adj_source
     ON observability.adjudicated_tool_calls (source_system, adjudicated_at DESC);
 
+DROP VIEW IF EXISTS observability.tool_latency_summary;
 CREATE OR REPLACE VIEW observability.tool_latency_summary AS
 SELECT
     server_name,
