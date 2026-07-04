@@ -314,70 +314,569 @@ function RiskAsCodeScreen({ risks, baseRisks }) {
   );
 }
 
-// ---------- POLICY-AS-CODE ----------
-const POLICY_CODE_DEFAULT = `# Control & governance policies — evaluated against signals
-policy "P1 cascade":
-  when: event.severity == "P1"
-  notify: [owner, mgmt, cae, cfo, board]
-  sla_hours: 24
+// ---------- POLICY-AS-CODE (Rego / OPA) ----------
 
-policy "P2 cascade":
-  when: event.severity == "P2"
-  notify: [owner, mgmt, cae]
-  sla_hours: 72
+const PAC_PROCESSES = [
+  { id:"itgc",             label:"ITGCs",            shortLabel:"ITGC", color:"#6366f1", bg:"rgba(99,102,241,0.12)",  icon:"🔒",
+    desc:"IT General Controls — Oracle Fusion access provisioning, SOD, change management, audit logging via IDCS and Security Console." },
+  { id:"order_to_cash",    label:"Order to Cash",    shortLabel:"O2C",  color:"#0ea5e9", bg:"rgba(14,165,233,0.12)",  icon:"💰",
+    desc:"Order Management → AR Invoice → Revenue Recognition — Oracle OM, Configurator, AR, Revenue Management modules." },
+  { id:"procure_to_pay",   label:"Procure to Pay",   shortLabel:"P2P",  color:"#f59e0b", bg:"rgba(245,158,11,0.12)",  icon:"📦",
+    desc:"Requisition → PO → Receipt → Invoice → Payment — Oracle Purchasing, iProcurement, AP, Payment modules." },
+  { id:"receive_to_ship",  label:"Receive to Ship",  shortLabel:"R2S",  color:"#10b981", bg:"rgba(16,185,129,0.12)",  icon:"🚢",
+    desc:"Inbound Receipt → WMS Putaway → Pick/Pack/Ship → POD — Oracle WMS, Shipping Execution, Inventory modules." },
+  { id:"record_to_report", label:"Record to Report", shortLabel:"R2R",  color:"#ef4444", bg:"rgba(239,68,68,0.12)",   icon:"📊",
+    desc:"Journal Entry → Sub-ledger → GL Close → Financial Statements — Oracle GL, SLA, FAH, Financial Reporting modules." },
+];
 
-policy "MAP SLA":
-  when: map.status == "open" and map.overdue
-  action: alert(owner)
+const _PROC_CONTROLS = {
+  itgc:            ["AC-01","AC-02","AC-03","SI-01","AU-01","CA-01","CM-01","IA-01"],
+  order_to_cash:   ["OTC-01","OTC-02","OTC-03","OTC-04","OTC-05","OTC-06"],
+  procure_to_pay:  ["P2P-01","P2P-02","P2P-03","P2P-04","P2P-05","P2P-06"],
+  receive_to_ship: ["RTS-01","RTS-02","RTS-03","RTS-04","RTS-05"],
+  record_to_report:["RTR-01","RTR-02","RTR-03","RTR-04","RTR-05","RTR-06"],
+};
 
-policy "Appetite gate":
-  when: risk.score >= appetite.threshold
-  action: require_hitl(gate=1)
-`;
+const _PAC_RULES = {
+  itgc:            ["deny_access_event","deny_privileged_activity","deny_config_change","deny_audit_event"],
+  order_to_cash:   ["deny_order_event","deny_billing_event","deny_revenue_event","deny_credit_event"],
+  procure_to_pay:  ["deny_invoice_event","deny_payment_event","deny_vendor_event","deny_po_event"],
+  receive_to_ship: ["deny_receiving_event","deny_shipment_event","deny_inventory_event"],
+  record_to_report:["deny_journal_event","deny_period_close_event","deny_reconciliation_event","deny_financial_event"],
+};
 
-function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
-  const renderEval = () => {
-    const p1 = (events || []).filter(e => e.severity === "P1").length;
-    const p2 = (events || []).filter(e => e.severity === "P2").length;
-    const openMaps = (maps || []).filter(m => (m.completion_pct || 0) < 100).length;
-    const overRisks = (risks || []).filter(r => r.score >= appetiteThreshold);
+const _PROC_NARRATIVES = {
+  itgc: `Oracle Fusion ITGCs govern the logical access and change management lifecycle across all ERP modules. User provisioning requests originate in Oracle IDCS (Identity Cloud Service) and must complete an approval workflow before the identity is granted roles in the Fusion Security Console. Privileged role assignments — including Data Role, Abstract Role, and Job Role combinations — are reviewed quarterly via Oracle Access Certification. Segregation of duties (SOD) conflicts are detected at provisioning time using Oracle Advanced Access Controls (OAAC) and raised as policy violations. Change management follows a formal RFC lifecycle: Development → SIT → UAT → Production, with each environment promotion gated by approvals captured in the Oracle Fusion Change Management module. Audit events are streamed to Oracle Audit Vault for retention and anomaly detection. This Rego module evaluates each incoming event against these controls and denies policy violations with structured messages including the Oracle module, user, and control reference.`,
+  order_to_cash: `The Oracle Fusion Order-to-Cash process spans Oracle Order Management (OM), Configurator, Receivables (AR), and Revenue Management. Customer orders are created in OM and validated against the customer credit limit held in AR — orders exceeding the limit are automatically placed on credit hold. Order lines are fulfilled via shipping authorizations (SHIP_CONFIRM events) which are matched to booked order lines; unfulfilled lines trigger hold violations. AR invoices are auto-generated from the shipping interface and must match the original order price within a configurable tolerance. Revenue is recognized under ASC 606/IFRS 15 rules using Oracle Revenue Management's Performance Obligation framework — manual override of system-determined recognition schedules is a policy violation. Cash receipts are applied using the AR AutoApply engine; unapplied receipts aged beyond 15 days require resolution. This Rego module denies each class of violation with the Oracle transaction number, customer ID, and affected AR control.`,
+  procure_to_pay: `Oracle Fusion Procure-to-Pay covers iProcurement → Oracle Purchasing (PO) → Inventory Receipt → Oracle Payables (AP) → Oracle Payments. Purchase requisitions must be approved per the Approval Management Engine (AME) hierarchy before conversion to a PO. All POs above the corporate threshold require dual approval. Receipt to invoice three-way matching (PO Qty × PO Price = Receipt Qty × Invoice Price within 2% tolerance) is enforced by the AP Matching process — invoices failing the match are held. Vendor master changes (banking details, address, status) require a separate approval chain with mandatory audit trail. Payment batches above $250,000 require a dual-control release from AP Supervisor and Treasury. SOD between PO creation and invoice approval roles is enforced via OAAC. This Rego module evaluates AP/PO events and issues structured denials referencing the PO number, supplier ID, and control reference.`,
+  receive_to_ship: `Oracle Fusion Receive-to-Ship covers Oracle WMS (Warehouse Management), Shipping Execution, and Inventory Management. Inbound receipts are created against ASNs or POs and require inspection disposition before putaway; receipts with no corresponding source document are quarantined. WMS putaway directives route items to pre-defined locators — manual locator overrides are flagged. Outbound picking is driven by Oracle Shipping Execution pick release — unauthorized pick confirmations (no pick wave reference) are violations. Ship confirmations require a matching backorder-free delivery and a valid carrier booking; shipments above the declared weight limit trigger an alert. Proof of Delivery (POD) must be recorded within 48 hours of ship confirm for AR invoice to be released. Negative inventory adjustments above $10,000 require supervisor approval. This Rego module evaluates WMS/Shipping events and denies policy violations with shipment, delivery, and locator details.`,
+  record_to_report: `Oracle Fusion Record-to-Report encompasses Oracle General Ledger (GL), Subledger Accounting (SLA), Fusion Accounting Hub (FAH), and Oracle Financial Reporting (FR). Manual journal entries above $50,000 require approval via AME and must include a business justification. Journal sources flagged as "Manual" with no supporting subledger event are high-risk and require controller sign-off. Subledger-to-GL reconciliations must be completed within 3 business days of period end; unreconciled differences above $1,000 are policy exceptions. Period close follows a structured close checklist in Oracle Close Monitor — out-of-sequence close steps are violations. Account reconciliations are certified in Oracle Account Reconciliations Cloud (ARCS) by the GL Accountant and reviewed by the Controller. Financial statements are generated from certified ledger balances; any post-certification adjustment requires CFO approval. This Rego module evaluates GL/SLA events against these controls and issues structured violations with journal ID, ledger, and period references.`,
+};
 
-    const checks = [
-      { ok: true,  name: "P1 cascade", detail: `matched ${p1} event${p1 !== 1 ? "s" : ""}` },
-      { ok: true,  name: "P2 cascade", detail: `matched ${p2} event${p2 !== 1 ? "s" : ""}` },
-      { ok: openMaps === 0, name: "MAP SLA", detail: openMaps === 0 ? "no open MAPs" : `${openMaps} open MAP(s) to monitor` },
-      { ok: overRisks.length === 0, name: "Appetite gate", detail: overRisks.length === 0 ? "all risks within tolerance" : `${overRisks.length} risk(s) ≥ ${appetiteThreshold}` },
-    ];
+// ── Animated Process Flow Map ─────────────────────────────────────────────
+function ProcessFlowMap({ activeProcess }) {
+  const [selected, setSelected] = useState(activeProcess || "itgc");
+  useEffect(() => { setSelected(activeProcess || "itgc"); }, [activeProcess]);
 
-    return (
-      <>
-        <div className="code-eval-summary mono">{checks.length} policies active</div>
-        {checks.map((c, i) => (
-          <div className="code-eval-row" key={i}>
-            <span className={"code-eval-check " + (c.ok ? "ok" : "warn")}>{c.ok ? <Icon name="check" size={10}/> : "!"}</span>
-            <div className="code-eval-name"><b>{c.name}</b></div>
-            <div className="mono code-eval-detail">{c.detail}</div>
-          </div>
-        ))}
-        {overRisks.length > 0 && (
-          <div className="code-eval-note mono">
-            Triggered HITL Gate 1 for: {overRisks.map(r => r.id).join(", ")}
-          </div>
-        )}
-      </>
-    );
-  };
+  const W = 660, H = 320;
+  const colW = W / PAC_PROCESSES.length;
+  const cx = (i) => Math.round(colW * i + colW / 2);
+  const ROW_Y    = [44, 136, 228, 299];
+  const ROW_R    = [24,  18,  18,  12];
+  const ROW_LBL  = ["Process","PaC (Rego)","CaC (Rego)","Outcome"];
+  const ROW_ICON = ["⚙️","📜","🛡️","✅"];
+  const STAGGER  = [0, 0.67, 1.33];
+
+  const selCol = PAC_PROCESSES.find(c => c.id === selected) || PAC_PROCESSES[0];
 
   return (
-    <CodeEditorScreen
-      kicker="Execution · Policy-as-Code"
-      title="Policy-as-Code"
-      sub="Codify control-monitoring and governance policies. Evaluation runs against the current events, MAPs, and register."
-      storageKey="dendrai.policycode"
-      fileLabel="policies.yaml"
-      defaultCode={POLICY_CODE_DEFAULT}
-      renderEval={renderEval}
-    />
+    <div className="pac-flow-map">
+      <div className="pac-flow-header">
+        <span className="pac-flow-title">PROCESS FLOW MAP — PAC &amp; CaC</span>
+        <span className="pac-flow-sub">Click a column to inspect policy rules and controls</span>
+      </div>
+
+      <div className="pac-flow-svg-wrap">
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", height:"auto", display:"block", overflow:"visible" }}>
+          {/* Row labels */}
+          {ROW_LBL.map((lbl, ri) => (
+            <text key={ri} x={3} y={ROW_Y[ri]} dominantBaseline="middle"
+              fontSize={7.5} fill="var(--ink-3)" fontWeight={600}>
+              {ROW_ICON[ri]} {lbl}
+            </text>
+          ))}
+
+          {/* Selected column background */}
+          {PAC_PROCESSES.map((col, ci) => (
+            <rect key={col.id}
+              x={cx(ci) - colW / 2 + 6} y={4}
+              width={colW - 12} height={H - 8}
+              rx={8}
+              fill={selected === col.id ? col.bg : "transparent"}
+              style={{ cursor:"pointer", transition:"fill 0.25s" }}
+              onClick={() => setSelected(col.id)}
+            />
+          ))}
+
+          {/* CaC horizontal link */}
+          <line x1={cx(0)} y1={ROW_Y[2]} x2={cx(4)} y2={ROW_Y[2]}
+            stroke="var(--line)" strokeWidth={1} strokeDasharray="3 5" opacity={0.4} />
+
+          {/* Per-column edges + particles + nodes */}
+          {PAC_PROCESSES.map((col, ci) => {
+            const dim = selected === col.id ? 1 : 0.28;
+            return (
+              <g key={col.id} opacity={dim} style={{ transition:"opacity 0.3s", cursor:"pointer" }} onClick={() => setSelected(col.id)}>
+                {/* Edges */}
+                {[0,1,2].map(ri => (
+                  <line key={ri}
+                    x1={cx(ci)} y1={ROW_Y[ri] + ROW_R[ri]}
+                    x2={cx(ci)} y2={ROW_Y[ri+1] - ROW_R[ri+1]}
+                    stroke={col.color} strokeWidth={1.5} strokeDasharray="3 3" opacity={0.45}
+                  />
+                ))}
+
+                {/* Animated particles on each edge */}
+                {[0,1,2].map(ri =>
+                  STAGGER.map((off, pi) => {
+                    const y1 = ROW_Y[ri] + ROW_R[ri];
+                    const y2 = ROW_Y[ri+1] - ROW_R[ri+1];
+                    return (
+                      <circle key={`p${ri}-${pi}`} r={selected === col.id ? 3.5 : 2} fill={col.color} opacity={0.9}>
+                        <animateMotion path={`M ${cx(ci)},${y1} L ${cx(ci)},${y2}`}
+                          dur={`${1.3 + ri * 0.25}s`} begin={`${off}s`} repeatCount="indefinite" />
+                      </circle>
+                    );
+                  })
+                )}
+
+                {/* Process node (row 0) */}
+                <rect x={cx(ci)-ROW_R[0]} y={ROW_Y[0]-ROW_R[0]} width={ROW_R[0]*2} height={ROW_R[0]*2}
+                  rx={8} fill={col.color}
+                  filter={selected === col.id ? `drop-shadow(0 0 7px ${col.color})` : "none"}
+                  style={{ transition:"filter 0.3s" }} />
+                <text x={cx(ci)} y={ROW_Y[0]} dominantBaseline="middle" textAnchor="middle"
+                  fontSize={14} style={{ userSelect:"none" }}>{col.icon}</text>
+                <text x={cx(ci)} y={ROW_Y[0]+ROW_R[0]+10} dominantBaseline="middle" textAnchor="middle"
+                  fontSize={7.5} fontWeight={800} fill={col.color} letterSpacing={0.4}>{col.shortLabel}</text>
+
+                {/* PaC node (row 1) */}
+                <circle cx={cx(ci)} cy={ROW_Y[1]} r={ROW_R[1]}
+                  fill={selected === col.id ? col.color : "var(--surface-2)"}
+                  stroke={col.color} strokeWidth={1.5}
+                  filter={selected === col.id ? `drop-shadow(0 0 5px ${col.color})` : "none"}
+                  style={{ transition:"all 0.25s" }} />
+                <text x={cx(ci)} y={ROW_Y[1]} dominantBaseline="middle" textAnchor="middle"
+                  fontSize={7} fontWeight={800} fill={selected === col.id ? "#fff" : col.color}>PAC</text>
+                <text x={cx(ci)} y={ROW_Y[1]+ROW_R[1]+9} dominantBaseline="middle" textAnchor="middle"
+                  fontSize={6.5} fill="var(--ink-3)">{(_PAC_RULES[col.id]||[]).length} rules</text>
+
+                {/* CaC node (row 2) */}
+                <circle cx={cx(ci)} cy={ROW_Y[2]} r={ROW_R[2]}
+                  fill={selected === col.id ? col.color : "var(--surface-2)"}
+                  stroke={col.color} strokeWidth={1.5}
+                  filter={selected === col.id ? `drop-shadow(0 0 5px ${col.color})` : "none"}
+                  style={{ transition:"all 0.25s" }} />
+                <text x={cx(ci)} y={ROW_Y[2]} dominantBaseline="middle" textAnchor="middle"
+                  fontSize={7} fontWeight={800} fill={selected === col.id ? "#fff" : col.color}>CAC</text>
+                <text x={cx(ci)} y={ROW_Y[2]+ROW_R[2]+9} dominantBaseline="middle" textAnchor="middle"
+                  fontSize={6.5} fill="var(--ink-3)">{(_PROC_CONTROLS[col.id]||[]).length} controls</text>
+
+                {/* Outcome node (row 3) */}
+                <circle cx={cx(ci)} cy={ROW_Y[3]} r={ROW_R[3]}
+                  fill={selected === col.id ? col.color : "var(--surface-2)"}
+                  stroke={col.color} strokeWidth={1.5}
+                  style={{ transition:"all 0.25s" }} />
+                <text x={cx(ci)} y={ROW_Y[3]} dominantBaseline="middle" textAnchor="middle"
+                  fontSize={6} fontWeight={800} fill={selected === col.id ? "#fff" : col.color}>✓</text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Detail panel */}
+      <div className="pac-flow-detail" style={{ borderTop:`2px solid ${selCol.color}33` }}>
+        <div style={{ marginBottom:10, display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:15 }}>{selCol.icon}</span>
+          <span style={{ fontWeight:700, fontSize:12.5, color:selCol.color }}>{selCol.label}</span>
+          <span style={{ fontSize:10, color:"var(--ink-3)", flex:1 }}>— {selCol.desc.slice(0,95)}…</span>
+        </div>
+        <div className="pac-detail-grid">
+          <div>
+            <div className="pac-detail-col-title" style={{ color:selCol.color }}>📜 PaC Deny Rules</div>
+            {(_PAC_RULES[selected]||[]).map((r,i) => (
+              <div key={i} className="pac-rule-chip">
+                <span className="rule-dot" style={{ background:selCol.color }} />
+                <span className="mono" style={{ fontSize:10.5 }}>{r}[msg]</span>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div className="pac-detail-col-title" style={{ color:selCol.color }}>🛡️ CaC Controls</div>
+            <div style={{ display:"flex", flexWrap:"wrap" }}>
+              {(_PROC_CONTROLS[selected]||[]).map((c,i) => (
+                <span key={i} className="pac-ctrl-chip">
+                  <span style={{ width:5, height:5, borderRadius:"50%", background:selCol.color, display:"inline-block", flexShrink:0 }} />
+                  {c}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── PolicyAsCodeScreen ────────────────────────────────────────────────────
+function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
+  const [activeProcess, setActiveProcess] = useState("itgc");
+  const [mainTab,       setMainTab]       = useState("editor");
+
+  // Editor state
+  const [rego,     setRego]     = useState("");
+  const [origRego, setOrigRego] = useState("");
+  const [saving,   setSaving]   = useState(false);
+  const [saveMsg,  setSaveMsg]  = useState(null);
+  const [modMeta,  setModMeta]  = useState(null);
+
+  // Approver modal
+  const [showApprove, setShowApprove] = useState(false);
+  const [appName,     setAppName]     = useState("");
+  const [appRole,     setAppRole]     = useState("");
+
+  // External sources
+  const [ghConfig,     setGhConfig]     = useState({ repo_url:"", branch:"main", path_filter:"", pat:"" });
+  const [cfConfig,     setCfConfig]     = useState({ base_url:"", space_key:"", api_token:"" });
+  const [hookMsg,      setHookMsg]      = useState({});
+  const [ghSaved,      setGhSaved]      = useState(false);
+  const [cfSaved,      setCfSaved]      = useState(false);
+
+  const dirty = rego !== origRego;
+
+  // Load module when process changes
+  useEffect(() => {
+    setSaveMsg(null);
+    fetch(`/api/pac/modules/${activeProcess}`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        setRego(data.rego_content || "");
+        setOrigRego(data.rego_content || "");
+        setModMeta({
+          id:             data.id,
+          version:        data.version || "1.0",
+          last_revised_at:data.last_revised_at,
+          module_name:    data.module_name || `controls.oracle_fusion.${activeProcess}`,
+          approvers:      data.approvers || [],
+        });
+      })
+      .catch(() => {});
+  }, [activeProcess]);
+
+  // Load hooks on mount
+  useEffect(() => {
+    fetch("/api/pac/hooks", { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        if (data.github)     { setGhConfig(c => ({ ...c, ...data.github }));     setGhSaved(true); }
+        if (data.confluence) { setCfConfig(c => ({ ...c, ...data.confluence })); setCfSaved(true); }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleSave() {
+    if (!rego.trim()) return;
+    setSaving(true); setSaveMsg(null);
+    try {
+      const r = await fetch(`/api/pac/modules/${activeProcess}`, {
+        method: "PUT", headers: _codeAuthHeaders(),
+        body: JSON.stringify({
+          module_name:   modMeta?.module_name || `controls.oracle_fusion.${activeProcess}`,
+          rego_content:  rego,
+          version:       modMeta?.version || "1.0",
+        }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        setOrigRego(rego);
+        setModMeta(m => ({ ...m, id:d.id, last_revised_at:new Date().toISOString(), approvers:[] }));
+        setSaveMsg({ kind:"ok", msg:"Saved as new version." });
+      } else {
+        setSaveMsg({ kind:"err", msg:"Save failed." });
+      }
+    } catch { setSaveMsg({ kind:"err", msg:"Network error." }); }
+    setSaving(false);
+  }
+
+  async function handleApprove() {
+    if (!appName.trim() || !modMeta?.id) return;
+    const r = await fetch(`/api/pac/modules/${activeProcess}/approve`, {
+      method: "POST", headers: _codeAuthHeaders(),
+      body: JSON.stringify({ approver: appName.trim(), role: appRole.trim() || null }),
+    });
+    if (r.ok) {
+      setModMeta(m => ({
+        ...m,
+        approvers: [...(m?.approvers||[]), { approver:appName.trim(), role:appRole.trim()||null, approved_at:new Date().toISOString() }],
+      }));
+      setAppName(""); setAppRole(""); setShowApprove(false);
+    }
+  }
+
+  async function saveHook(type) {
+    const config = type === "github" ? ghConfig : cfConfig;
+    const r = await fetch(`/api/pac/hooks/${type}`, {
+      method: "PUT", headers: _codeAuthHeaders(),
+      body: JSON.stringify({ config }),
+    });
+    if (r.ok) {
+      if (type === "github") setGhSaved(true); else setCfSaved(true);
+      setHookMsg(m => ({ ...m, [type]:"✓ Saved" }));
+      setTimeout(() => setHookMsg(m => ({ ...m, [type]:null })), 2000);
+    } else {
+      setHookMsg(m => ({ ...m, [type]:"Save failed" }));
+    }
+  }
+
+  const proc = PAC_PROCESSES.find(p => p.id === activeProcess) || PAC_PROCESSES[0];
+
+  const MAIN_TABS = [
+    { id:"editor",    label:"Rego Editor" },
+    { id:"sources",   label:"External Sources" },
+    { id:"narrative", label:"Narrative & Flow Map" },
+  ];
+
+  return (
+    <div className="pac-shell">
+      {/* Process selector tabs */}
+      <div className="pac-process-bar">
+        {PAC_PROCESSES.map(p => (
+          <button key={p.id}
+            className={"pac-proc-tab" + (activeProcess === p.id ? " active" : "")}
+            onClick={() => setActiveProcess(p.id)}
+            style={activeProcess === p.id ? { borderColor:`${p.color}55`, color:p.color } : {}}>
+            <span className="pac-proc-dot" style={{ background:p.color }} />
+            <span className="pac-proc-icon">{p.icon}</span>
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Main sub-tabs */}
+      <div className="pac-main-tabs">
+        {MAIN_TABS.map(t => (
+          <button key={t.id}
+            className={"pac-main-tab" + (mainTab === t.id ? " active" : "")}
+            onClick={() => setMainTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── TAB 1: Rego Editor ── */}
+      {mainTab === "editor" && (
+        <>
+          <div className="pac-editor-split">
+            {/* Meta sidebar */}
+            <div className="pac-meta-panel">
+              <div className="pac-meta-label">Process</div>
+              <div style={{ fontWeight:700, fontSize:12, color:proc.color, marginBottom:12 }}>
+                {proc.icon} {proc.label}
+              </div>
+
+              <div className="pac-meta-label">Module</div>
+              <div className="pac-meta-val mono" style={{ fontSize:9.5, wordBreak:"break-all" }}>
+                {modMeta?.module_name || `controls.oracle_fusion.${activeProcess}`}
+              </div>
+
+              <div className="pac-meta-sep" />
+
+              <div className="pac-meta-label">Version</div>
+              <div style={{ marginBottom:12 }}>
+                <span className="pac-version-badge">{modMeta?.version || "—"}</span>
+              </div>
+
+              <div className="pac-meta-label">Last Revised</div>
+              <div className="pac-meta-val">
+                {modMeta?.last_revised_at
+                  ? new Date(modMeta.last_revised_at).toLocaleDateString("en-US",{ month:"short", day:"numeric", year:"numeric" })
+                  : "—"}
+              </div>
+
+              <div className="pac-meta-sep" />
+
+              <div className="pac-meta-label">Sign-offs</div>
+              <div style={{ marginBottom:8, display:"flex", flexWrap:"wrap", gap:2 }}>
+                {(modMeta?.approvers||[]).length === 0
+                  ? <span style={{ fontSize:10, color:"var(--ink-3)" }}>None yet</span>
+                  : (modMeta?.approvers||[]).map((a,i) => (
+                      <span key={i} className="pac-approver-chip"
+                        title={a.approved_at ? new Date(a.approved_at).toLocaleString() : ""}>
+                        <span className="dot" />
+                        {a.approver}{a.role ? ` · ${a.role}` : ""}
+                      </span>
+                    ))
+                }
+              </div>
+              <button className="btn btn-sm"
+                style={{ width:"100%", justifyContent:"center", marginBottom:12, fontSize:10 }}
+                onClick={() => setShowApprove(true)}
+                disabled={!modMeta?.id || dirty}
+                title={dirty ? "Save first before signing off" : "Add a sign-off"}>
+                + Sign Off
+              </button>
+
+              <div className="pac-meta-sep" />
+
+              <div className="pac-meta-label">Description</div>
+              <div style={{ fontSize:10, color:"var(--ink-3)", lineHeight:1.55 }}>{proc.desc}</div>
+
+              {saveMsg && (
+                <div className={"code-status " + saveMsg.kind} style={{ fontSize:10, marginTop:10 }}>
+                  {saveMsg.msg}
+                </div>
+              )}
+            </div>
+
+            {/* Rego editor */}
+            <div className="pac-rego-pane">
+              <div className="pac-rego-head">
+                <span style={{ color:proc.color }}>■</span>
+                <span className="mono">{`package controls.oracle_fusion.${activeProcess}`}</span>
+                {dirty && <span className="dirty-dot" title="Unsaved changes">●</span>}
+                {modMeta?.version && (
+                  <span style={{ marginLeft:"auto", fontSize:9, color:"var(--ink-3)" }}>v{modMeta.version}</span>
+                )}
+              </div>
+              <textarea
+                className="code-editor mono"
+                spellCheck={false}
+                value={rego}
+                onChange={e => setRego(e.target.value)}
+                style={{ flex:1, resize:"none", fontSize:11.5, lineHeight:1.65, padding:"12px 16px" }}
+                placeholder={`# Rego policy for ${proc.label}\npackage controls.oracle_fusion.${activeProcess}\n\nimport future.keywords.in\nimport future.keywords.if\n\n# deny_*[msg] rules go here...`}
+              />
+            </div>
+          </div>
+
+          {/* Action bar */}
+          <div className="pac-actions-bar">
+            <button className="btn btn-sm btn-acc" onClick={handleSave} disabled={!dirty || saving}>
+              {saving ? "Saving…" : "Save Version"}
+            </button>
+            <span style={{ flex:1 }} />
+            {dirty && <span style={{ fontSize:10, color:"#f59e0b" }}>● Unsaved changes</span>}
+          </div>
+        </>
+      )}
+
+      {/* ── TAB 2: External Sources ── */}
+      {mainTab === "sources" && (
+        <div className="pac-sources-grid">
+          {/* GitHub */}
+          <div className="pac-hook-card">
+            <div className="pac-hook-title">
+              <svg width={16} height={16} viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink:0 }}>
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+              </svg>
+              GitHub
+              <span className="pac-hook-badge github">GIT</span>
+              {ghSaved && <span className="pac-hook-saved">✓ Connected</span>}
+            </div>
+            {[
+              { label:"Repository URL", key:"repo_url", ph:"https://github.com/org/policies" },
+              { label:"Branch",         key:"branch",   ph:"main" },
+              { label:"Path Filter",    key:"path_filter", ph:"policies/oracle/" },
+              { label:"Personal Access Token", key:"pat", ph:"ghp_••••••••••••••••", type:"password" },
+            ].map(({ label, key, ph, type }) => (
+              <div key={key} className="pac-hook-input-row">
+                <label>{label}</label>
+                <input className="code-input mono" type={type||"text"}
+                  value={ghConfig[key]||""} placeholder={ph}
+                  onChange={e => setGhConfig(c => ({ ...c, [key]:e.target.value }))} />
+              </div>
+            ))}
+            <div className="pac-hook-actions">
+              <button className="btn btn-sm btn-acc" onClick={() => saveHook("github")}>Save &amp; Connect</button>
+              {hookMsg.github && (
+                <span style={{ fontSize:10, alignSelf:"center",
+                  color:hookMsg.github.startsWith("✓") ? "var(--acc)" : "var(--red)" }}>
+                  {hookMsg.github}
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize:10, color:"var(--ink-3)", lineHeight:1.6, margin:0 }}>
+              Syncs plain text or Markdown policy files from the specified GitHub repo path. Token is stored server-side and persists until updated.
+            </p>
+          </div>
+
+          {/* Confluence */}
+          <div className="pac-hook-card">
+            <div className="pac-hook-title">
+              <svg width={16} height={16} viewBox="0 0 24 24" fill="#0052CC" style={{ flexShrink:0 }}>
+                <path d="M.89 17.27c-.3.48-.65 1.12-.89 1.52a.41.41 0 00.14.56l3.54 2.17a.41.41 0 00.56-.14c.22-.36.56-.93.93-1.53C7.15 17.29 8.37 17 9.5 17.5l6.54 3.08a.41.41 0 00.54-.2l1.76-3.74a.41.41 0 00-.2-.54l-6.61-3.11C8.24 11.6 3.58 12.37.89 17.27zm22.22-9.54c.3-.48.65-1.12.89-1.52a.41.41 0 00-.14-.56L20.32 3.48a.41.41 0 00-.56.14c-.22.36-.56.93-.93 1.53-2.01 2.56-3.23 2.29-4.36 1.79L8.93 3.86a.41.41 0 00-.54.2L6.63 7.8a.41.41 0 00.2.54l6.61 3.11c3.29 1.39 7.95.62 10.67-4.28z"/>
+              </svg>
+              Confluence
+              <span className="pac-hook-badge confluence">WIKI</span>
+              {cfSaved && <span className="pac-hook-saved">✓ Connected</span>}
+            </div>
+            {[
+              { label:"Base URL",   key:"base_url",  ph:"https://yourorg.atlassian.net/wiki" },
+              { label:"Space Key",  key:"space_key", ph:"RISK" },
+              { label:"API Token",  key:"api_token", ph:"••••••••••••••••", type:"password" },
+            ].map(({ label, key, ph, type }) => (
+              <div key={key} className="pac-hook-input-row">
+                <label>{label}</label>
+                <input className="code-input mono" type={type||"text"}
+                  value={cfConfig[key]||""} placeholder={ph}
+                  onChange={e => setCfConfig(c => ({ ...c, [key]:e.target.value }))} />
+              </div>
+            ))}
+            <div className="pac-hook-actions">
+              <button className="btn btn-sm btn-acc" onClick={() => saveHook("confluence")}>Save &amp; Connect</button>
+              {hookMsg.confluence && (
+                <span style={{ fontSize:10, alignSelf:"center",
+                  color:hookMsg.confluence.startsWith("✓") ? "var(--acc)" : "var(--red)" }}>
+                  {hookMsg.confluence}
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize:10, color:"var(--ink-3)", lineHeight:1.6, margin:0 }}>
+              Pulls plain text or Markdown pages from the given Confluence space. Token is stored server-side and persists until updated.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── TAB 3: Narrative & Flow Map ── */}
+      {mainTab === "narrative" && (
+        <div className="pac-narrative-wrap">
+          <div className="pac-narrative-prose">
+            <h3 style={{ color:proc.color }}>{proc.icon} {proc.label} — Policy Narrative</h3>
+            <div style={{ borderLeft:`3px solid ${proc.color}`, paddingLeft:16, marginBottom:14, color:"var(--ink-2)" }}>
+              {_PROC_NARRATIVES[activeProcess] || "No narrative available."}
+            </div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:0 }}>
+              {(_PROC_CONTROLS[activeProcess]||[]).map(c => (
+                <span key={c} className="pac-ctrl-chip" style={{ borderColor:`${proc.color}44`, color:proc.color }}>
+                  <span style={{ width:5, height:5, borderRadius:"50%", background:proc.color, display:"inline-block" }} />
+                  {c}
+                </span>
+              ))}
+            </div>
+          </div>
+          <ProcessFlowMap activeProcess={activeProcess} />
+        </div>
+      )}
+
+      {/* Approver modal */}
+      {showApprove && (
+        <div className="pac-modal-overlay" onClick={() => setShowApprove(false)}>
+          <div className="pac-modal" onClick={e => e.stopPropagation()}>
+            <h4>Sign Off — {proc.label}</h4>
+            <div className="pac-modal-row">
+              <label>Approver Name *</label>
+              <input className="code-input" value={appName} placeholder="Jane Smith" autoFocus
+                onChange={e => setAppName(e.target.value)} />
+            </div>
+            <div className="pac-modal-row">
+              <label>Role</label>
+              <input className="code-input" value={appRole} placeholder="IT Audit Manager"
+                onChange={e => setAppRole(e.target.value)} />
+            </div>
+            <div className="pac-modal-actions">
+              <button className="btn btn-sm" onClick={() => setShowApprove(false)}>Cancel</button>
+              <button className="btn btn-sm btn-acc" onClick={handleApprove} disabled={!appName.trim()}>
+                Confirm Sign-Off
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -415,6 +914,8 @@ function RisksAsCodeLiveScreen({ risks, objectives, maps, signals, ratios, ticke
   const [generating, setGenerating]           = useState(false);
   const [genError, setGenError]               = useState(null);
   const [riskCount, setRiskCount]             = useState(0);
+  const [cacGenerating, setCacGenerating]     = useState(false);
+  const [cacMsg, setCacMsg]                   = useState(null);
   const esRef = useRef(null);
 
   // Close any open SSE connection on unmount
@@ -496,6 +997,30 @@ function RisksAsCodeLiveScreen({ risks, objectives, maps, signals, ratios, ticke
     }
   }
 
+  async function handleGenerateCaC() {
+    if (!risks?.length) return;
+    setCacGenerating(true); setCacMsg(null);
+    try {
+      // Fetch controls from the register endpoint, fall back to risk-derived list
+      let controls = [];
+      try {
+        const cr = await fetch("/api/controls", { headers: _codeAuthHeaders() });
+        if (cr.ok) { const cd = await cr.json(); controls = cd.controls || cd || []; }
+      } catch {}
+
+      const res = await fetch("/api/pac/cac/generate", {
+        method: "POST", headers: _codeAuthHeaders(),
+        body: JSON.stringify({ ticker: ticker || "", run_id: runId || null, controls }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setCacMsg({ kind:"ok", msg:"CaC generated & saved." });
+    } catch (err) {
+      setCacMsg({ kind:"err", msg:`CaC error: ${err.message}` });
+    }
+    setCacGenerating(false);
+    setTimeout(() => setCacMsg(null), 4000);
+  }
+
   function handleDownload(fw) {
     const content = artifacts[fw];
     if (!content) return;
@@ -541,6 +1066,17 @@ function RisksAsCodeLiveScreen({ risks, objectives, maps, signals, ratios, ticke
             </span>
           )}
           {genError && <span className="code-status err">{genError}</span>}
+          {cacMsg && <span className={"code-status " + cacMsg.kind}>{cacMsg.msg}</span>}
+          <button
+            className={"btn btn-sm" + (cacGenerating ? " loading" : "")}
+            onClick={handleGenerateCaC}
+            disabled={noRisks || cacGenerating}
+            title={noRisks ? "Run the loop first" : "Generate Controls-as-Code Rego from the controls library"}
+            style={{ borderColor:"#10b981", color:"#10b981" }}
+          >
+            <Icon name="spark" size={11} />
+            {cacGenerating ? " CaC…" : " Generate CaC"}
+          </button>
           <button
             className={"btn btn-sm btn-acc" + (generating ? " loading" : "")}
             onClick={handleGenerate}

@@ -64,6 +64,8 @@ EMBT_CEM_RC        = "cem_root_cause"       # CEM root-cause narratives
 EMBT_PROXY         = "proxy_governance"     # DEF 14A governance section chunks
 EMBT_RAC           = "risks_as_code"        # Risks-as-Code YAML content
 EMBT_RISK_NARRATIVE = "risk_narrative"      # Risk name + category + narrative for similarity search
+EMBT_CAC           = "controls_as_code"     # Controls-as-Code Rego content
+EMBT_PAC           = "policy_as_code"       # Policy-as-Code Rego content per process
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DDL — 28 tables
@@ -794,6 +796,49 @@ CREATE TABLE IF NOT EXISTS cem_event_risk_links (
 );
 CREATE INDEX IF NOT EXISTS idx_cerl_event ON cem_event_risk_links (cem_event_id);
 CREATE INDEX IF NOT EXISTS idx_cerl_risk  ON cem_event_risk_links (risk_ref);
+
+-- Controls-as-Code artifacts: Rego representation of the controls library (global, not run-bound)
+CREATE TABLE IF NOT EXISTS controls_as_code_artifacts (
+    id           BIGSERIAL    PRIMARY KEY,
+    ticker       VARCHAR(16),
+    run_id       INT          REFERENCES risk_loop_runs(id) ON DELETE SET NULL,
+    content_rego TEXT         NOT NULL,
+    generated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_cac_artifacts_ticker ON controls_as_code_artifacts (ticker, generated_at DESC);
+
+-- Policy-as-Code modules: versioned Rego per business process
+-- One row per version; latest version is the one with the highest id per process.
+CREATE TABLE IF NOT EXISTS pac_policy_modules (
+    id              BIGSERIAL    PRIMARY KEY,
+    process         VARCHAR(64)  NOT NULL,   -- 'itgc' | 'order_to_cash' | 'procure_to_pay' | 'receive_to_ship' | 'record_to_report'
+    module_name     VARCHAR(128) NOT NULL,
+    rego_content    TEXT         NOT NULL,
+    version         VARCHAR(16)  NOT NULL DEFAULT '1.0',
+    last_revised_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pac_modules_process ON pac_policy_modules (process, created_at DESC);
+
+-- Policy-as-Code approvals: multiple approvers per module version
+CREATE TABLE IF NOT EXISTS pac_policy_approvals (
+    id          BIGSERIAL    PRIMARY KEY,
+    module_id   BIGINT       NOT NULL REFERENCES pac_policy_modules(id) ON DELETE CASCADE,
+    approver    VARCHAR(128) NOT NULL,
+    role        VARCHAR(64),
+    approved_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pac_approvals_module ON pac_policy_approvals (module_id);
+
+-- Policy-as-Code external hooks: one active row per hook_type (github | confluence)
+-- Persists until updated or deleted by the user.
+CREATE TABLE IF NOT EXISTS pac_external_hooks (
+    id          BIGSERIAL    PRIMARY KEY,
+    hook_type   VARCHAR(16)  NOT NULL UNIQUE,  -- 'github' | 'confluence'
+    config_json JSONB        NOT NULL DEFAULT '{}',
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -4255,3 +4300,247 @@ def get_cik_for_ticker(ticker: str) -> Optional[str]:
                     return None
                 return str(row[0]).zfill(10)
     return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Controls-as-Code artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_controls_as_code_artifact(content_rego: str, ticker: Optional[str] = None, run_id: Optional[int] = None) -> Optional[int]:
+    """Persist a Controls-as-Code Rego artifact. Returns the row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO controls_as_code_artifacts (ticker, run_id, content_rego, generated_at)
+                    VALUES (%s, %s, %s, NOW())
+                    RETURNING id
+                    """,
+                    (ticker.upper() if ticker else None, run_id, content_rego),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_latest_cac_artifact(ticker: Optional[str] = None) -> Optional[dict]:
+    """Return the most recent CaC artifact (optionally filtered by ticker)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if ticker:
+                    cur.execute(
+                        "SELECT id, ticker, run_id, content_rego, generated_at "
+                        "FROM controls_as_code_artifacts WHERE ticker = %s "
+                        "ORDER BY generated_at DESC LIMIT 1",
+                        (ticker.upper(),),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT id, ticker, run_id, content_rego, generated_at "
+                        "FROM controls_as_code_artifacts ORDER BY generated_at DESC LIMIT 1"
+                    )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "ticker": row[1], "run_id": row[2],
+                    "content_rego": row[3],
+                    "generated_at": row[4].isoformat() if row[4] else None,
+                }
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Policy-as-Code modules
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_pac_module(process: str, module_name: str, rego_content: str, version: str = "1.0") -> Optional[int]:
+    """Insert a new versioned Rego module for a process. Returns the row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pac_policy_modules
+                        (process, module_name, rego_content, version, last_revised_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    RETURNING id
+                    """,
+                    (process, module_name, rego_content, version),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_latest_pac_module(process: str) -> Optional[dict]:
+    """Return the most recent module version for a process, with its approvers."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, process, module_name, rego_content, version, last_revised_at, created_at
+                    FROM pac_policy_modules
+                    WHERE process = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (process,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                module_id = row[0]
+                cur.execute(
+                    "SELECT id, approver, role, approved_at FROM pac_policy_approvals WHERE module_id = %s ORDER BY approved_at",
+                    (module_id,),
+                )
+                approvals = [
+                    {"id": a[0], "approver": a[1], "role": a[2],
+                     "approved_at": a[3].isoformat() if a[3] else None}
+                    for a in cur.fetchall()
+                ]
+                return {
+                    "id": module_id, "process": row[1], "module_name": row[2],
+                    "rego_content": row[3], "version": row[4],
+                    "last_revised_at": row[5].isoformat() if row[5] else None,
+                    "created_at": row[6].isoformat() if row[6] else None,
+                    "approvals": approvals,
+                }
+    return _run(_do)
+
+
+def list_pac_modules() -> list:
+    """Return the latest module for every process that has been saved."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (process)
+                        id, process, module_name, version, last_revised_at, created_at
+                    FROM pac_policy_modules
+                    ORDER BY process, created_at DESC
+                    """
+                )
+                rows = cur.fetchall()
+                result = []
+                for row in rows:
+                    module_id = row[0]
+                    cur.execute(
+                        "SELECT approver, role, approved_at FROM pac_policy_approvals WHERE module_id = %s ORDER BY approved_at",
+                        (module_id,),
+                    )
+                    approvals = [
+                        {"approver": a[0], "role": a[1],
+                         "approved_at": a[2].isoformat() if a[2] else None}
+                        for a in cur.fetchall()
+                    ]
+                    result.append({
+                        "id": module_id, "process": row[1], "module_name": row[2],
+                        "version": row[3],
+                        "last_revised_at": row[4].isoformat() if row[4] else None,
+                        "created_at": row[5].isoformat() if row[5] else None,
+                        "approvals": approvals,
+                    })
+                return result
+    return _run(_do) or []
+
+
+def get_pac_module_history(process: str, limit: int = 20) -> list:
+    """Return version history for a process (newest first)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, version, last_revised_at, created_at
+                    FROM pac_policy_modules
+                    WHERE process = %s
+                    ORDER BY created_at DESC LIMIT %s
+                    """,
+                    (process, limit),
+                )
+                return [
+                    {
+                        "id": r[0], "version": r[1],
+                        "last_revised_at": r[2].isoformat() if r[2] else None,
+                        "created_at": r[3].isoformat() if r[3] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def save_pac_approval(module_id: int, approver: str, role: Optional[str] = None) -> Optional[int]:
+    """Add an approver sign-off for a module version. Returns the row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO pac_policy_approvals (module_id, approver, role) VALUES (%s, %s, %s) RETURNING id",
+                    (module_id, approver, role),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Policy-as-Code external hooks
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_pac_hook(hook_type: str, config: dict) -> bool:
+    """Upsert a GitHub or Confluence hook config. Returns True on success."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pac_external_hooks (hook_type, config_json, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (hook_type) DO UPDATE SET
+                        config_json = EXCLUDED.config_json,
+                        updated_at  = NOW()
+                    """,
+                    (hook_type, Json(config)),
+                )
+        return True
+    return _run(_do, default=False) or False
+
+
+def get_pac_hook(hook_type: str) -> Optional[dict]:
+    """Return config for a specific hook type, or None."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT hook_type, config_json, updated_at FROM pac_external_hooks WHERE hook_type = %s",
+                    (hook_type,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "hook_type": row[0], "config": row[1],
+                    "updated_at": row[2].isoformat() if row[2] else None,
+                }
+    return _run(_do)
+
+
+def get_all_pac_hooks() -> dict:
+    """Return all hook configs keyed by hook_type."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT hook_type, config_json, updated_at FROM pac_external_hooks")
+                return {
+                    row[0]: {
+                        "config": row[1],
+                        "updated_at": row[2].isoformat() if row[2] else None,
+                    }
+                    for row in cur.fetchall()
+                }
+    return _run(_do) or {}
