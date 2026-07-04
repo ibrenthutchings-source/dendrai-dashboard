@@ -58,6 +58,7 @@ pip install -r requirements.txt
 
 Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project-scoped). Replace the path prefix with your local clone location.
 
+**Without telemetry** (plain servers):
 ```json
 {
   "mcpServers": {
@@ -70,6 +71,24 @@ Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project
     "policy-as-code":       { "command": "python", "args": ["<path>/pac_mcp_server.py"] },
     "controls-as-code":     { "command": "python", "args": ["<path>/cac_mcp_server.py"] },
     "oracle-fusion":        { "command": "python", "args": ["<path>/oracle_fusion_mcp_server.py"] }
+  }
+}
+```
+
+**With telemetry proxy** (recommended — enables UBO Governance Brain, holds, and detection):
+```json
+{
+  "mcpServers": {
+    "edgar": {
+      "command": "python",
+      "args": ["<path>/mcp_telemetry_proxy.py", "--name", "edgar", "--", "python", "<path>/edgar_mcp_server.py"],
+      "env": { "DATABASE_URL": "postgresql://..." }
+    },
+    "fred-macro": {
+      "command": "python",
+      "args": ["<path>/mcp_telemetry_proxy.py", "--name", "fred-macro", "--", "python", "<path>/fred_mcp_server.py"],
+      "env": { "DATABASE_URL": "postgresql://..." }
+    }
   }
 }
 ```
@@ -270,3 +289,84 @@ Pulls control data from Oracle Fusion Cloud (Risk Management Cloud + FSCM).
 | `fusion_audit_events` | Transaction audit trail from FSCM modules (AP, AR, GL, FA, PRC, HCM) |
 
 **Module codes for `fusion_audit_events`:** `FIN_AP`, `FIN_AR`, `FIN_GL`, `FIN_FA`, `PRC`, `HCM`
+
+---
+
+## telemetry-proxy
+
+**File:** `mcp_telemetry_proxy.py`  
+**Requires:** `DATABASE_URL` (telemetry and holds are silently no-ops without it).
+
+Wraps any FastMCP server with transparent stdio relay, real-time risk detection, and a pre-execution blocking gate. All tool calls and responses are logged to `observability.mcp_telemetry` without adding latency to the forwarding path.
+
+The proxy is not an MCP server itself — it is a wrapper process. See the **With telemetry proxy** configuration example above.
+
+#### Risk detection flags
+
+| Flag | Trigger |
+|---|---|
+| `prompt_injection` | Tool arguments contain known injection keywords |
+| `sensitive_data` | PII or credential patterns detected (SSN, card numbers, PEM keys, Bearer tokens) |
+| `large_response` | Response payload exceeds 100 KB |
+| `high_frequency` | Same tool called more than `PROXY_FREQ_THRESHOLD` times in `PROXY_FREQ_WINDOW_S` seconds |
+| `escalation_sequence` | Session tail matches a dangerous sequence (e.g. `read_file → write_file → shell`) |
+
+#### Pre-execution blocking gate
+
+When a tool name matches `PROXY_BLOCKING_TOOLS`, the proxy:
+1. Inserts a `PENDING` hold in `observability.tool_call_holds`
+2. Polls every `PROXY_HOLD_POLL_S` seconds for an operator decision
+3. On `DENIED`: sends JSON-RPC error `-32600` back to the client (tool never runs)
+4. On `APPROVED` or timeout: forwards the call normally
+
+Holds are resolved from the **Holds** tab in the Dendrai dashboard.
+
+#### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROXY_BLOCKING_TOOLS` | `shell,execute,bash,…` | Comma-separated tool names requiring pre-execution approval |
+| `PROXY_HOLD_TIMEOUT_S` | `30` | Seconds before an unresolved hold auto-expires |
+| `PROXY_HOLD_POLL_S` | `1.0` | Polling interval while awaiting hold resolution |
+| `PROXY_FREQ_WINDOW_S` | `60` | Rolling window for high-frequency detection |
+| `PROXY_FREQ_THRESHOLD` | `10` | Max calls within window before `high_frequency` fires |
+| `PROXY_WRITE_TIMEOUT_S` | `2.0` | DB write cancellation threshold |
+| `PROXY_LOG_LEVEL` | `WARNING` | `DEBUG` / `INFO` / `WARNING` |
+
+---
+
+## ubo-governance-brain
+
+**File:** `mcp_governance.py`  
+**Requires:** `DATABASE_URL` + UBO package on Python path. Starts automatically as a background task in `api_server.py`.
+
+Polls `observability.mcp_telemetry` every `MCP_GOV_POLL_INTERVAL_S` seconds for rows that the proxy flagged but haven't been processed yet. Runs each through the four-layer UBO medallion pipeline and persists the adjudication.
+
+#### Pipeline stages
+
+| Stage | Layer | Output |
+|---|---|---|
+| Bronze | Raw ingestion | URO (Unified Risk Object) from telemetry dict |
+| Silver | Conformation + Policy-as-Code | Structured payload + policy violations |
+| Gold | Risk scoring | `risk_score` (0.0–1.0), `risk_tier` (LOW/MEDIUM/HIGH/CRITICAL) |
+| Council | Quant + Linguist + Graph Architect → Adjudicator | `final_verdict`, `ensemble_confidence`, `council_votes` |
+
+**Verdict types:** `ESCALATE` · `MONITOR` · `CLEAR` · `INSUFFICIENT_DATA`
+
+#### Additional features
+
+| Feature | Description |
+|---|---|
+| Alert webhook | ESCALATE verdicts POST a Slack-compatible payload to `MCP_ALERT_WEBHOOK_URL` |
+| Suppression allowlist | `(server, tool, args-hash)` triplets auto-clear without running the pipeline |
+| Session timeline | `/observability/session/{id}/timeline` — chronological call + verdict view |
+| Coverage report | `/observability/coverage` — per-tool flag rate; 0% = potential blind spot |
+| Holds management | `/observability/holds` — list/approve/deny pre-execution blocking holds |
+
+#### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_ALERT_WEBHOOK_URL` | `""` | Slack webhook URL for ESCALATE alerts (unset = silent) |
+| `MCP_GOV_POLL_INTERVAL_S` | `30` | Seconds between poll cycles |
+| `MCP_GOV_BATCH_SIZE` | `20` | Rows processed per cycle |
