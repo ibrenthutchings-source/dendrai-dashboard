@@ -18,6 +18,8 @@ https://<your-host>/mcp/rss/mcp
 https://<your-host>/mcp/token-cost/mcp
 https://<your-host>/mcp/predictive/mcp
 https://<your-host>/mcp/risk-as-code/mcp
+https://<your-host>/mcp/policy-as-code/mcp
+https://<your-host>/mcp/controls-as-code/mcp
 https://<your-host>/mcp/oracle/mcp
 ```
 
@@ -64,6 +66,9 @@ Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project
     "rss-news":             { "command": "python", "args": ["<path>/rss_mcp_server.py"] },
     "predictive-analytics": { "command": "python", "args": ["<path>/predictive_analytics_mcp_server.py"] },
     "token-cost":           { "command": "python", "args": ["<path>/token_cost_mcp_server.py"] },
+    "risk-as-code":         { "command": "python", "args": ["<path>/risk_as_code_mcp_server.py"] },
+    "policy-as-code":       { "command": "python", "args": ["<path>/pac_mcp_server.py"] },
+    "controls-as-code":     { "command": "python", "args": ["<path>/cac_mcp_server.py"] },
     "oracle-fusion":        { "command": "python", "args": ["<path>/oracle_fusion_mcp_server.py"] }
   }
 }
@@ -200,6 +205,50 @@ Estimates and tracks Claude API token costs.
 | `cost_list_sessions` | List all sessions tracked in `token_costs.json` |
 
 **Model aliases:** `opus` → claude-opus-4-8, `sonnet` → claude-sonnet-4-6, `haiku` → claude-haiku-4-5, `fable` → claude-fable-5
+
+---
+
+## policy-as-code
+
+**File:** `pac_mcp_server.py`  
+**Requires:** `DATABASE_URL` optional (falls back gracefully). Set `MCP_READ_ONLY=true` to disable writes.
+
+Manages Rego policy modules for the five Oracle Fusion ERP processes. Each process has a built-in default Rego module; saved versions are stored with immutable version history and multi-approver sign-offs.
+
+| Tool | Description |
+|---|---|
+| `pac_list_modules` | Latest module metadata for all 5 processes; unsaved processes show built-in defaults |
+| `pac_get_module` | Full Rego content + version + approvals for a process |
+| `pac_save_module` | Save a new versioned module (auto-increments version when omitted) |
+| `pac_module_history` | Version history, newest first (provides module_id for approve) |
+| `pac_approve_module` | Add a named approver sign-off to a specific module version |
+| `pac_get_hooks` | GitHub and/or Confluence hook configs |
+| `pac_save_hook` | Save/update a GitHub (push Rego on save) or Confluence (sync narratives) hook |
+| `pac_get_default` | Built-in Dendrai Rego default for any process — no DB required |
+| `pac_validate_rego` | Static analysis: package, brace balance, deny rule inventory, sprintf sanity |
+| `pac_diff_modules` | Unified diff of the two most recent saved module versions |
+
+**Supported processes:** `itgc` · `order_to_cash` · `procure_to_pay` · `receive_to_ship` · `record_to_report`
+
+---
+
+## controls-as-code
+
+**File:** `cac_mcp_server.py`  
+**Requires:** `DATABASE_URL` optional. Set `MCP_READ_ONLY=true` to disable writes.
+
+Generates Rego Controls-as-Code artifacts from a controls list or by synthesising testable harnesses directly from PAC deny rules. Supports evaluation simulation, structured export, and risk coverage mapping.
+
+| Tool | Description |
+|---|---|
+| `cac_generate` | Generate `control_active[ref]` Rego from a JSON controls array; persists to DB with embedding |
+| `cac_get_latest` | Most recent CaC artifact (full Rego + metadata), optionally filtered by ticker |
+| `cac_list_artifacts` | Paginated metadata list of saved CaC artifacts (no Rego content) |
+| `cac_from_pac` | Synthesise a test-harness CaC from PAC deny rules — one `control_active` per deny rule |
+| `cac_validate` | Structural validation: package, `control_active` rules, required fields, no duplicate refs |
+| `cac_evaluate_event` | Heuristic deny-rule simulation against a sample OPA input event (no OPA binary) |
+| `cac_export` | Export any artifact as `rego`, `json`, or `yaml` |
+| `cac_map_to_risks` | Map controls to `risk_scores` rows → coverage matrix + uncovered risks list |
 
 ---
 

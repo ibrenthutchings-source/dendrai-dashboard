@@ -152,6 +152,54 @@ Converts risk lists from three sources (live loop output, PostgreSQL, Excel/CSV)
 
 ---
 
+---
+
+## 8. Policy-as-Code MCP Server
+**File:** [`pac_mcp_server.py`](project/agentic-tools/pac_mcp_server.py)  
+**Server name:** `policy-as-code`  
+**Dependencies:** `pac_endpoints.py`, `db.py`  
+**Auth:** None. `DATABASE_URL` optional for persistence; `MCP_READ_ONLY=true` blocks writes.
+
+Manages Rego policy modules for the five Oracle Fusion ERP processes (ITGC, O2C, P2P, R2S, R2R). Handles version history, multi-approver sign-offs, and GitHub / Confluence integration hooks.
+
+| Tool | Input | Description |
+|------|-------|-------------|
+| `pac_list_modules` | `process=""` | Latest module metadata for all 5 processes. Falls back to built-in defaults for processes not yet saved. |
+| `pac_get_module` | `process` | Full Rego content + version + approvals. Falls back to built-in default if no saved version. |
+| `pac_save_module` | `process`, `rego_content`, `version=""`, `module_name=""` | Save a new versioned module. Auto-increments version when omitted. Blocked by `MCP_READ_ONLY`. |
+| `pac_module_history` | `process`, `limit=10` | Version history (newest first). Each entry includes `module_id` for `pac_approve_module`. |
+| `pac_approve_module` | `module_id`, `approver`, `role=""` | Add a named approver sign-off to a specific module version. |
+| `pac_get_hooks` | `hook_type=""` | GitHub and/or Confluence hook configs. |
+| `pac_save_hook` | `hook_type`, `repo_url=""`, `branch="main"`, `token=""`, `confluence_url=""`, `space_key=""`, `page_id=""` | Save/update a GitHub or Confluence integration hook. |
+| `pac_get_default` | `process` | Built-in Dendrai Rego default for any process — no DB required. |
+| `pac_validate_rego` | `rego_content` | Static analysis: package declaration, brace balance, deny rule inventory, sprintf format sanity. No OPA binary required. |
+| `pac_diff_modules` | `process`, `context_lines=5` | Unified diff of the two most recent saved versions. |
+
+**Processes:** `itgc` · `order_to_cash` · `procure_to_pay` · `receive_to_ship` · `record_to_report`
+
+---
+
+## 9. Controls-as-Code MCP Server
+**File:** [`cac_mcp_server.py`](project/agentic-tools/cac_mcp_server.py)  
+**Server name:** `controls-as-code`  
+**Dependencies:** `pac_endpoints.py`, `db.py`  
+**Auth:** None. `DATABASE_URL` optional for persistence; `MCP_READ_ONLY=true` blocks writes.
+
+Generates and manages Rego Controls-as-Code artifacts. Synthesises testable control harnesses from PAC deny rules, evaluates controls against sample OPA input events, and maps control coverage to the risk register.
+
+| Tool | Input | Description |
+|------|-------|-------------|
+| `cac_generate` | `controls_json`, `ticker=""`, `run_id=0`, `persist=True` | Generate `control_active[ref]` Rego from a JSON controls array. Groups by category. Persists to DB with vector embedding. |
+| `cac_get_latest` | `ticker=""` | Most recent CaC artifact from the database (full Rego + metadata). |
+| `cac_list_artifacts` | `ticker=""`, `limit=20` | Paginated metadata list (id, ticker, run_id, generated_at). No Rego content. |
+| `cac_from_pac` | `process=""`, `ticker=""` | Synthesise a test-harness CaC from PAC deny rules — one `control_active` entry per deny rule. Persists to DB. |
+| `cac_validate` | `rego_content` | Structural validation: package, `control_active` rules, required fields, no duplicate refs. |
+| `cac_evaluate_event` | `rego_content`, `input_event_json` | Heuristic simulation of deny rule evaluation against a sample OPA input event. No OPA binary required. Returns fired / passed / skipped rules with confidence scores. |
+| `cac_export` | `artifact_id=0`, `format="rego"` | Export an artifact as `rego`, `json` (parsed controls array), or `yaml`. Defaults to latest artifact. |
+| `cac_map_to_risks` | `ticker=""`, `run_id=0`, `limit=50` | Token-match controls against `risk_scores` rows → coverage matrix showing mapped controls per risk and uncovered risks. |
+
+---
+
 ## Setup Summary
 
 All servers are registered identically in Claude Code (`.claude/settings.json`) or Claude Desktop (`~/.claude/claude_desktop_config.json`):
@@ -176,3 +224,5 @@ All servers are registered identically in Claude Code (`.claude/settings.json`) 
 | `token_cost_mcp_server.py` | `token-cost` | `ANTHROPIC_API_KEY` optional |
 | `oracle_fusion_mcp_server.py` | `oracle-fusion` | `ORACLE_FUSION_HOST/USERNAME/PASSWORD` |
 | `risk_as_code_mcp_server.py` | `risk-as-code` | `DATABASE_URL` optional |
+| `pac_mcp_server.py` | `policy-as-code` | `DATABASE_URL` optional |
+| `cac_mcp_server.py` | `controls-as-code` | `DATABASE_URL` optional |

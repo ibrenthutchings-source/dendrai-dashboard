@@ -1,73 +1,55 @@
-# React + TypeScript + Vite
+# Dendrai Dashboard — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite frontend for the Dendrai Risk Loop dashboard.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd project
+npm install
+npm run dev        # Vite dev server at http://localhost:5173
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The frontend expects `api_server.py` running at `http://localhost:8001`. Start the backend first:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd project/agentic-tools
+python api_server.py
 ```
+
+## Build
+
+```bash
+cd project
+npm run build      # outputs to project/dist/
+```
+
+## Entry point
+
+`project/src/main.jsx` imports all component modules in order, exposes globals on `window`, wraps the app in `AuthProvider`, and mounts `<App />`.
+
+## Key files
+
+| File | Purpose |
+|---|---|
+| `src/main.jsx` | Entry point — imports, globals, auth wrapping, React root |
+| `app.jsx` | Root component: pipeline state, routing, loop orchestration |
+| `auth.jsx` | Auth context, `LoginScreen`, `ChangePasswordScreen` |
+| `pipeline.jsx` | Six-stage pipeline UI + HITL gate substep rendering |
+| `code-screens.jsx` | `PolicyAsCodeScreen` (Rego editor + flow map), `RisksAsCodeLiveScreen` |
+| `rail.jsx` | Live Register right-hand rail (Risks · Heatmap · Loop tabs) |
+| `nav.jsx` | Left navigation sidebar |
+| `charts.jsx` | All Recharts chart components |
+| `governance.jsx` | Governance Intelligence screen |
+| `cem.jsx` | Control Event Monitor screen |
+| `styles.css` | All component CSS including auth, PAC, pipeline, charts |
+
+## Authentication
+
+The app is gated by `AuthProvider` (from `auth.jsx`). On load it fetches `/auth/me` — if not authenticated it renders `LoginScreen`. On first login with a `must_change_pw` account it renders `ChangePasswordScreen` before the app.
+
+Default credentials: `admin` / `Admin@Dendrai1!` and `dendrai` / `Dendrai@Pass1!` (both force a password change).
+
+## MCP integration
+
+The frontend communicates with the backend over REST. MCP tools are called server-side by `api_server.py`; the frontend never talks to MCP directly. The AI chat panel in the dashboard surfaces MCP tool traces in real time as Claude calls tools during a conversation.
