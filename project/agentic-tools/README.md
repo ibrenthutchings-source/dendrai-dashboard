@@ -55,6 +55,16 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `AUTH_SESSION_TTL_HOURS` | Authentication | JWT session lifetime (default `24`). |
 | `AUTH_COOKIE_SECURE` | Authentication | Set to `false` only for HTTP-only local dev (default `true`). |
 | `MCP_READ_ONLY` | PaC / CaC MCP servers | Set to `true` to block all write operations from the PAC and CaC MCP servers. |
+| `MCP_ALERT_WEBHOOK_URL` | UBO Governance Brain | Slack-compatible webhook URL. When set, ESCALATE verdicts POST a JSON alert payload. |
+| `MCP_GOV_POLL_INTERVAL_S` | UBO Governance Brain | Seconds between governance poll cycles (default `30`). |
+| `MCP_GOV_BATCH_SIZE` | UBO Governance Brain | Telemetry rows processed per poll cycle (default `20`). |
+| `PROXY_BLOCKING_TOOLS` | Telemetry Proxy | Comma-separated tool names that trigger pre-execution holds (default: `shell,execute,bash,run_command,drop,truncate,delete_file,exec_sql`). |
+| `PROXY_HOLD_TIMEOUT_S` | Telemetry Proxy | Seconds to wait for operator approval before expiring a hold (default `30`). |
+| `PROXY_HOLD_POLL_S` | Telemetry Proxy | Polling interval in seconds while waiting for hold resolution (default `1.0`). |
+| `PROXY_FREQ_WINDOW_S` | Telemetry Proxy | Rolling window in seconds for high-frequency detection (default `60`). |
+| `PROXY_FREQ_THRESHOLD` | Telemetry Proxy | Call-count threshold within window before `high_frequency` fires (default `10`). |
+| `PROXY_WRITE_TIMEOUT_S` | Telemetry Proxy | Seconds before a DB write is silently cancelled (default `2.0`). |
+| `PROXY_LOG_LEVEL` | Telemetry Proxy | Log verbosity: `DEBUG`, `INFO`, `WARNING` (default `WARNING`). |
 
 ---
 
@@ -333,6 +343,116 @@ Tracks input/output token counts and estimated USD cost per AI call, per run.
 
 ---
 
+---
+
+### MCP Telemetry Proxy (`mcp_telemetry_proxy.py`)
+
+Transparent stdio relay that wraps any FastMCP server. Captures every JSON-RPC 2.0 message, computes per-call latency, runs real-time risk detection, and writes telemetry to PostgreSQL asynchronously — without adding latency to the forwarding path.
+
+#### How it works
+
+```
+CLIENT stdin/stdout
+     │
+     ▼
+MCP TELEMETRY PROXY
+  relay_stdin  ────────────► subprocess.stdin
+  relay_stdout ◄────────────  subprocess.stdout
+  (fire-and-forget DB write)
+     │
+     ▼
+FASTMCP SERVER (subprocess)
+```
+
+#### Usage
+
+```bash
+# Wrap any FastMCP server:
+python mcp_telemetry_proxy.py -- python edgar_mcp_server.py
+
+# With a named server tag:
+python mcp_telemetry_proxy.py --name edgar -- python edgar_mcp_server.py
+```
+
+In `claude_desktop_config.json` or `.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "edgar": {
+      "command": "python",
+      "args": [
+        "/path/to/mcp_telemetry_proxy.py",
+        "--name", "edgar",
+        "--",
+        "python", "/path/to/edgar_mcp_server.py"
+      ]
+    }
+  }
+}
+```
+
+#### Detection rules (run on every message)
+
+| Flag | Description |
+|---|---|
+| `prompt_injection` | Keyword scan in tool arguments for known injection phrases |
+| `sensitive_data` | Regex match for SSNs, credit card numbers, PEM keys, Bearer tokens, API keys |
+| `large_response` | Response payload >100 KB |
+| `high_frequency` | Same tool called >`PROXY_FREQ_THRESHOLD` times within `PROXY_FREQ_WINDOW_S` |
+| `escalation_sequence` | Tail of session history matches a known dangerous sequence (e.g. `read_file → write_file → shell`) |
+
+#### Pre-execution blocking gate
+
+Tools in `PROXY_BLOCKING_TOOLS` are paused before forwarding. The proxy inserts a `PENDING` hold into `observability.tool_call_holds`, then polls for an operator decision from the dashboard Holds tab. `DENIED` sends a JSON-RPC error `-32600` back to the client; `APPROVED` or `TIMEOUT` resumes forwarding normally.
+
+Default blocking tools: `shell, execute, bash, run_command, drop, truncate, delete_file, exec_sql`
+
+---
+
+### UBO Governance Brain (`mcp_governance.py`)
+
+Background service that consumes flagged telemetry rows and runs them through the full UBO medallion pipeline:
+
+```
+Bronze → Silver (PaC) → Gold (risk score) → Council (Quant + Linguist + Graph Architect → Adjudicator)
+```
+
+Adjudication results are written to `observability.adjudicated_tool_calls`. Started automatically alongside `api_server.py`.
+
+**Verdict types:** `ESCALATE`, `MONITOR`, `CLEAR`, `INSUFFICIENT_DATA`  
+**Risk tiers:** `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`
+
+#### Additional capabilities
+
+| Capability | Description |
+|---|---|
+| Alert webhook | ESCALATE verdicts POST a Slack-compatible payload to `MCP_ALERT_WEBHOOK_URL` |
+| Suppression allowlist | Known-good `(server, tool, args-hash)` triplets auto-clear without entering the pipeline |
+| Session timeline | Chronological call view joined to adjudication verdicts for a given session UUID |
+| Coverage report | Per-tool flag rate; 0% flag-rate = potential governance blind spot |
+| Pre-execution holds | Approve or deny blocking-gate holds from the dashboard |
+
+#### Observability REST endpoints (prefix `/observability`)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/telemetry/summary` | P50/P95/P99 latency + error rate per tool |
+| `GET` | `/telemetry/flagged` | Recent tool calls that fired ≥ 1 governance flag |
+| `GET` | `/telemetry/adjudicated` | UBO adjudication results (filter by `?tier=HIGH`) |
+| `GET` | `/telemetry/human-review` | Adjudications requiring human review, sorted by risk score |
+| `POST` | `/telemetry/process` | Manually trigger one governance batch |
+| `GET` | `/telemetry/raw` | Raw mcp_telemetry rows for the live-stream feed |
+| `PUT` | `/telemetry/adjudicated/{id}/review` | Mark as human-reviewed; optionally override verdict |
+| `GET` | `/holds` | Pending pre-execution holds awaiting operator decision |
+| `PUT` | `/holds/{id}/resolve` | Approve or deny a hold — body: `{status, resolved_by}` |
+| `GET` | `/session/{session_id}/timeline` | All calls for a session in chronological order |
+| `GET` | `/coverage` | Per-tool flag rate table; annotates blind spots |
+| `GET` | `/suppressions` | Active + inactive suppression rules |
+| `POST` | `/suppressions` | Add a suppression rule — body: `{server_name, target_tool, tool_args_hash, reason}` |
+| `DELETE` | `/suppressions/{id}` | Soft-delete (deactivate) a rule |
+
+---
+
 ## Database persistence
 
 Set `DATABASE_URL` to enable a PostgreSQL-backed schema covering:
@@ -348,7 +468,13 @@ Set `DATABASE_URL` to enable a PostgreSQL-backed schema covering:
 - **Policy-as-Code modules** (`pac_policy_modules`, `pac_policy_approvals`, `pac_external_hooks`)
 - **Controls-as-Code artifacts** (`controls_as_code_artifacts`)
 - **Authentication** (`auth.users`, `auth.password_history`, `auth.sso_identities`, `auth.sessions`)
-- **MCP observability** (`observability.mcp_telemetry`, `observability.adjudicated_events`)
+- **MCP observability** — `observability` schema:
+  - `mcp_telemetry` — every JSON-RPC call logged by the proxy
+  - `adjudicated_tool_calls` — UBO Governance Brain verdicts
+  - `tool_call_holds` — pre-execution holds (PENDING / APPROVED / DENIED / EXPIRED)
+  - `tool_call_suppressions` — suppression allowlist rules
+  - `tool_latency_summary` — materialized view: P50/P95/P99 per tool
+  - `flagged_calls` — view: telemetry rows with at least one risk flag
 
 Without `DATABASE_URL` the pipeline runs in stateless mode — all data is returned in the API response but nothing is persisted.
 
