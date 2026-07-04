@@ -651,3 +651,216 @@ a { color: inherit; text-decoration: none; }
 [data-theme="dark"] .gov-tab-bar { border-bottom-color: var(--line); }
 [data-theme="dark"] .gov-table th { border-bottom-color: var(--line); }
 [data-theme="dark"] .gov-table td { border-bottom-color: var(--line); }
+
+/* ─── Policy-as-Code (PAC) Screen ───────────────────────────────────────── */
+
+.pac-shell {
+  display: flex; flex-direction: column; height: 100%; min-height: 0;
+  background: var(--bg);
+}
+
+/* Process selector tabs */
+.pac-process-bar {
+  display: flex; gap: 4px; padding: 12px 20px 0;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0; overflow-x: auto;
+  scrollbar-width: none;
+}
+.pac-process-bar::-webkit-scrollbar { display: none; }
+.pac-proc-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 8px 8px 0 0;
+  font-size: 11.5px; font-weight: 600; cursor: pointer;
+  border: 1px solid transparent; border-bottom: none;
+  white-space: nowrap; color: var(--ink-3);
+  background: transparent; transition: all 0.15s;
+  position: relative; bottom: -1px;
+}
+.pac-proc-tab:hover { color: var(--ink); background: var(--surface-2); }
+.pac-proc-tab.active {
+  background: var(--surface); border-color: var(--line);
+  border-bottom-color: var(--surface); color: var(--ink);
+}
+.pac-proc-tab .pac-proc-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.pac-proc-tab .pac-proc-icon { font-size: 13px; }
+
+/* Main sub-tabs (Editor / External Sources / Narrative) */
+.pac-main-tabs {
+  display: flex; gap: 2px; padding: 10px 20px 0;
+  border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.pac-main-tab {
+  padding: 6px 14px; font-size: 11px; font-weight: 500;
+  cursor: pointer; border-radius: 6px 6px 0 0;
+  border: 1px solid transparent; border-bottom: none;
+  color: var(--ink-3); background: transparent;
+  transition: all 0.15s; position: relative; bottom: -1px;
+}
+.pac-main-tab:hover { color: var(--ink); background: var(--hover); }
+.pac-main-tab.active {
+  background: var(--surface); border-color: var(--line);
+  border-bottom-color: var(--surface); color: var(--ink); font-weight: 600;
+}
+
+/* Editor split layout */
+.pac-editor-split {
+  display: flex; flex: 1; min-height: 0; overflow: hidden;
+}
+.pac-meta-panel {
+  width: 220px; flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 0;
+  overflow-y: auto; padding: 16px 14px;
+  background: var(--surface);
+}
+.pac-meta-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  color: var(--ink-3); text-transform: uppercase; margin-bottom: 4px;
+}
+.pac-meta-val { font-size: 11.5px; color: var(--ink); margin-bottom: 12px; }
+.pac-meta-sep { height: 1px; background: var(--line); margin: 10px 0; }
+
+.pac-version-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700;
+  background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line);
+}
+.pac-approver-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+  background: var(--acc-soft); color: var(--acc-ink);
+  border: 1px solid var(--acc-soft); margin: 2px 2px 2px 0;
+}
+.pac-approver-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--acc); }
+
+.pac-actions-bar {
+  display: flex; gap: 6px; padding: 8px 14px;
+  border-top: 1px solid var(--line); flex-shrink: 0; background: var(--surface);
+}
+.pac-rego-pane {
+  flex: 1; display: flex; flex-direction: column; min-width: 0;
+}
+.pac-rego-head {
+  padding: 8px 12px; border-bottom: 1px solid var(--line);
+  font-size: 10.5px; font-family: var(--mono); color: var(--ink-3);
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  background: var(--surface-2);
+}
+.pac-rego-head .dirty-dot { color: #f59e0b; font-size: 16px; line-height: 1; }
+
+/* Sources tab */
+.pac-sources-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  padding: 20px; overflow-y: auto; flex: 1;
+}
+.pac-hook-card {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 18px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface);
+}
+.pac-hook-title {
+  font-size: 13px; font-weight: 700; color: var(--ink);
+  display: flex; align-items: center; gap: 8px;
+}
+.pac-hook-badge {
+  font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 8px;
+  letter-spacing: 0.05em;
+}
+.pac-hook-badge.github { background: #24292e18; color: #24292e; }
+.pac-hook-badge.confluence { background: #0052CC18; color: #0052CC; }
+.pac-hook-saved { color: var(--acc); font-size: 10px; margin-left: auto; }
+.pac-hook-input-row { display: flex; flex-direction: column; gap: 4px; }
+.pac-hook-input-row label { font-size: 10px; font-weight: 600; color: var(--ink-3); }
+.pac-hook-actions { display: flex; gap: 6px; margin-top: 4px; }
+
+/* Narrative tab */
+.pac-narrative-wrap {
+  flex: 1; overflow-y: auto; padding: 20px;
+  display: flex; flex-direction: column; gap: 24px;
+}
+.pac-narrative-prose {
+  border: 1px solid var(--line); border-radius: 10px; padding: 20px;
+  background: var(--surface); line-height: 1.75;
+  font-size: 12.5px; color: var(--ink-2);
+}
+.pac-narrative-prose h3 {
+  margin: 0 0 12px; font-size: 14px; color: var(--ink); font-weight: 700;
+}
+
+/* Flow Map */
+.pac-flow-map {
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface); overflow: hidden;
+}
+.pac-flow-header {
+  padding: 12px 18px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px;
+  background: var(--surface-2);
+}
+.pac-flow-title { font-size: 11px; font-weight: 700; color: var(--ink); letter-spacing: 0.04em; }
+.pac-flow-sub { font-size: 10px; color: var(--ink-3); margin-left: auto; }
+.pac-flow-svg-wrap { padding: 8px 8px 4px; }
+
+.pac-flow-detail {
+  border-top: 1px solid var(--line); padding: 16px 20px;
+  animation: fadeSlideUp 0.2s ease;
+}
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.pac-detail-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+}
+.pac-detail-col-title {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; margin-bottom: 8px;
+}
+.pac-rule-chip {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 5px 8px; border-radius: 6px; margin-bottom: 4px;
+  background: var(--surface-2); font-size: 10.5px; color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+.pac-rule-chip .rule-dot { width: 5px; height: 5px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+.pac-ctrl-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 6px; margin: 2px;
+  font-size: 10px; font-weight: 600; background: var(--surface-2);
+  border: 1px solid var(--line); color: var(--ink-2);
+}
+
+/* PAC SVG flow animations */
+@keyframes pacFlowPulse {
+  0%, 100% { opacity: 0.3; }
+  50%       { opacity: 1; }
+}
+@keyframes pacNodeGlow {
+  0%, 100% { filter: drop-shadow(0 0 0px transparent); }
+  50%       { filter: drop-shadow(0 0 8px currentColor); }
+}
+
+/* Approver modal */
+.pac-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+}
+.pac-modal {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; padding: 24px; width: 360px;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.18);
+}
+.pac-modal h4 { margin: 0 0 16px; font-size: 14px; color: var(--ink); }
+.pac-modal-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.pac-modal-row label { font-size: 10px; font-weight: 600; color: var(--ink-3); }
+.pac-modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* Dark mode PAC overrides */
+@media (prefers-color-scheme: dark) {
+  .pac-hook-badge.github { background: #ffffff18; color: #c8d1da; }
+  .pac-hook-badge.confluence { background: #2684ff18; color: #4c9aff; }
+}
+[data-theme="dark"] .pac-hook-badge.github  { background: #ffffff18; color: #c8d1da; }
+[data-theme="dark"] .pac-hook-badge.confluence { background: #2684ff18; color: #4c9aff; }
