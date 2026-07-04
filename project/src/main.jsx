@@ -29,6 +29,7 @@ import '../nav.jsx'
 import '../config-screen.jsx'
 import '../ai-chat-panel.jsx'
 import '../audit-scope.jsx'
+import '../auth.jsx'
 import '../code-screens.jsx'
 import '../risk-register-review.jsx'
 import '../sox-scope.jsx'
@@ -60,5 +61,13 @@ class RootBoundary extends React.Component {
   }
 }
 
+const { AuthProvider } = window;
+
 const root = ReactDOM.createRoot(document.getElementById('root'))
-root.render(<RootBoundary><App /></RootBoundary>)
+root.render(
+  <RootBoundary>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </RootBoundary>
+)

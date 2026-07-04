@@ -150,6 +150,8 @@ except Exception:
     _HAS_HTTP_TELEMETRY = False
 
 import github_endpoints
+import auth_db
+import auth_endpoints
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -167,6 +169,11 @@ async def lifespan(application: FastAPI):
         _seed_cem_templates()
         _seed_ticker_cik()
         logger.info("Static reference data seeded")
+        # Auth schema + default users
+        if auth_db.init_auth_db():
+            seeded = auth_db.seed_default_users()
+            if seeded:
+                logger.info("Auth: seeded %d default user(s)", seeded)
     # FastMCP Streamable-HTTP requires each server's session_manager task group to be
     # initialized during app lifespan. Starlette does not automatically propagate
     # lifespan events to mounted sub-apps, so we initialize them here explicitly.
@@ -328,6 +335,40 @@ if _HAS_HTTP_TELEMETRY:
     app.add_middleware(mcp_http_telemetry.MCPHttpTelemetryMiddleware)
     logger.info("MCP HTTP telemetry middleware registered")
 
+# ── Auth middleware ────────────────────────────────────────────────────────────
+# Validates the dendrai_session JWT cookie on all routes except the exemptions
+# below.  Returns 401 JSON for API calls and 302 to /login for browser navigations.
+_AUTH_EXEMPT = (
+    "/auth/",
+    "/health",
+    "/db/status",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/mcp",      # MCP Streamable-HTTP — Claude authenticates separately
+    "/github/",  # GitHub webhook uses its own HMAC verification
+)
+
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
+
+class _DendraiAuthMiddleware(_BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if any(path == p or path.startswith(p) for p in _AUTH_EXEMPT):
+            return await call_next(request)
+        cookie = request.cookies.get("dendrai_session")
+        if not cookie:
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        payload = auth_endpoints.decode_jwt(cookie)
+        if not payload:
+            return JSONResponse({"detail": "Invalid session token"}, status_code=401)
+        if not auth_db.validate_session(payload.get("jti", "")):
+            return JSONResponse({"detail": "Session expired"}, status_code=401)
+        return await call_next(request)
+
+app.add_middleware(_DendraiAuthMiddleware)
+logger.info("Dendrai auth middleware registered")
+
 # AI-augmented endpoints (recommendations #1–#4). Active only when ANTHROPIC_API_KEY
 # is set; otherwise each route returns 503 and the deterministic pipeline is unaffected.
 app.include_router(ai_endpoints.router)
@@ -354,6 +395,10 @@ app.include_router(pac_endpoints.router, prefix="/api")
 if _HAS_MCP_GOVERNANCE:
     app.include_router(mcp_governance.router)
     logger.info("MCP governance router registered at /observability")
+
+# Authentication: local login, logout, me, change-password, SSO OAuth flows.
+app.include_router(auth_endpoints.router)
+logger.info("Auth router registered at /auth")
 
 # GitHub Webhook: receive repo events and run them through the UBO pipeline.
 app.include_router(github_endpoints.router)
