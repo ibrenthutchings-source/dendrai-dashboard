@@ -974,3 +974,395 @@ async def delete_suppression(suppression_id: int):
     """Deactivate a suppression rule (soft delete)."""
     ok = await asyncio.to_thread(_delete_suppression, suppression_id)
     return {"ok": ok, "id": suppression_id}
+
+
+# ── Monitored systems CRUD ─────────────────────────────────────────────────────
+
+def _fetch_systems() -> list[dict]:
+    """Return all monitored systems joined with last-seen timestamp from telemetry."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        s.id, s.display_name, s.server_name, s.server_type,
+                        s.description, s.active, s.governance_tiers,
+                        s.blocking_tools, s.alert_webhook,
+                        s.created_at, s.updated_at, s.created_by,
+                        MAX(t.ts) AS last_seen,
+                        COUNT(t.id)  AS total_calls,
+                        COUNT(t.id) FILTER (WHERE t.risk_flags IS NOT NULL
+                                              AND array_length(t.risk_flags, 1) > 0
+                        ) AS flagged_calls
+                    FROM observability.monitored_systems s
+                    LEFT JOIN observability.mcp_telemetry t
+                           ON t.server_name = s.server_name
+                    GROUP BY s.id
+                    ORDER BY s.active DESC, s.display_name ASC
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("created_at", "updated_at", "last_seen"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_systems error: %s", exc)
+        return []
+
+
+def _create_system(
+    display_name: str,
+    server_name: str,
+    server_type: str,
+    description: str | None,
+    active: bool,
+    governance_tiers: list[str],
+    blocking_tools: list[str] | None,
+    alert_webhook: str | None,
+    created_by: str = "operator",
+) -> int | None:
+    if not db.is_available():
+        return None
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.monitored_systems
+                        (display_name, server_name, server_type, description, active,
+                         governance_tiers, blocking_tools, alert_webhook, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        display_name[:128],
+                        server_name[:128],
+                        server_type[:64],
+                        (description or None),
+                        active,
+                        governance_tiers or ["CRITICAL", "HIGH", "MEDIUM"],
+                        blocking_tools or None,
+                        (alert_webhook or None),
+                        created_by[:128],
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.warning("_create_system error: %s", exc)
+        return None
+
+
+def _update_system(
+    system_id: int,
+    display_name: str,
+    server_name: str,
+    server_type: str,
+    description: str | None,
+    active: bool,
+    governance_tiers: list[str],
+    blocking_tools: list[str] | None,
+    alert_webhook: str | None,
+) -> bool:
+    if not db.is_available():
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.monitored_systems
+                    SET display_name     = %s,
+                        server_name      = %s,
+                        server_type      = %s,
+                        description      = %s,
+                        active           = %s,
+                        governance_tiers = %s,
+                        blocking_tools   = %s,
+                        alert_webhook    = %s,
+                        updated_at       = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        display_name[:128],
+                        server_name[:128],
+                        server_type[:64],
+                        (description or None),
+                        active,
+                        governance_tiers or ["CRITICAL", "HIGH", "MEDIUM"],
+                        blocking_tools or None,
+                        (alert_webhook or None),
+                        system_id,
+                    ),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as exc:
+        logger.warning("_update_system error (id=%s): %s", system_id, exc)
+        return False
+
+
+def _delete_system(system_id: int) -> bool:
+    """Soft-delete a monitored system (sets active=FALSE)."""
+    if not db.is_available():
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE observability.monitored_systems SET active = FALSE, updated_at = NOW() WHERE id = %s",
+                    (system_id,),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as exc:
+        logger.warning("_delete_system error (id=%s): %s", system_id, exc)
+        return False
+
+
+@router.get("/systems")
+async def list_systems():
+    """All monitored systems registered with the UBO Governance Brain."""
+    rows = await asyncio.to_thread(_fetch_systems)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.post("/systems")
+async def create_system(body: dict = Body(...)):
+    """Register a new system for UBO Governance Brain monitoring."""
+    new_id = await asyncio.to_thread(
+        _create_system,
+        str(body.get("display_name") or "")[:128],
+        str(body.get("server_name") or "")[:128],
+        str(body.get("server_type") or "custom")[:64],
+        body.get("description"),
+        bool(body.get("active", True)),
+        list(body.get("governance_tiers") or ["CRITICAL", "HIGH", "MEDIUM"]),
+        list(body.get("blocking_tools") or []) or None,
+        body.get("alert_webhook"),
+        str(body.get("created_by") or "operator")[:128],
+    )
+    return {"ok": new_id is not None, "id": new_id}
+
+
+@router.put("/systems/{system_id}")
+async def update_system(system_id: int, body: dict = Body(...)):
+    """Update an existing monitored system."""
+    ok = await asyncio.to_thread(
+        _update_system,
+        system_id,
+        str(body.get("display_name") or "")[:128],
+        str(body.get("server_name") or "")[:128],
+        str(body.get("server_type") or "custom")[:64],
+        body.get("description"),
+        bool(body.get("active", True)),
+        list(body.get("governance_tiers") or ["CRITICAL", "HIGH", "MEDIUM"]),
+        list(body.get("blocking_tools") or []) or None,
+        body.get("alert_webhook"),
+    )
+    return {"ok": ok, "id": system_id}
+
+
+@router.delete("/systems/{system_id}")
+async def delete_system(system_id: int):
+    """Deactivate a monitored system (soft delete)."""
+    ok = await asyncio.to_thread(_delete_system, system_id)
+    return {"ok": ok, "id": system_id}
+
+
+# ── PAC repositories CRUD ──────────────────────────────────────────────────────
+
+def _fetch_pac_repos() -> list[dict]:
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, display_name, provider, repo_url, branch,
+                           rego_path, process, description, active,
+                           created_at, updated_at, created_by
+                    FROM observability.pac_repositories
+                    ORDER BY active DESC, display_name ASC
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("created_at", "updated_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_pac_repos error: %s", exc)
+        return []
+
+
+def _create_pac_repo(
+    display_name: str,
+    provider: str,
+    repo_url: str,
+    branch: str,
+    rego_path: str,
+    process: str,
+    description: str | None,
+    active: bool,
+    created_by: str = "operator",
+) -> int | None:
+    if not db.is_available():
+        return None
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.pac_repositories
+                        (display_name, provider, repo_url, branch, rego_path,
+                         process, description, active, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        display_name[:128],
+                        provider[:32],
+                        repo_url,
+                        branch[:128],
+                        rego_path[:256],
+                        process[:64],
+                        description or None,
+                        active,
+                        created_by[:128],
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.warning("_create_pac_repo error: %s", exc)
+        return None
+
+
+def _update_pac_repo(
+    repo_id: int,
+    display_name: str,
+    provider: str,
+    repo_url: str,
+    branch: str,
+    rego_path: str,
+    process: str,
+    description: str | None,
+    active: bool,
+) -> bool:
+    if not db.is_available():
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.pac_repositories
+                    SET display_name = %s, provider = %s, repo_url = %s,
+                        branch = %s, rego_path = %s, process = %s,
+                        description = %s, active = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        display_name[:128],
+                        provider[:32],
+                        repo_url,
+                        branch[:128],
+                        rego_path[:256],
+                        process[:64],
+                        description or None,
+                        active,
+                        repo_id,
+                    ),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as exc:
+        logger.warning("_update_pac_repo error (id=%s): %s", repo_id, exc)
+        return False
+
+
+def _delete_pac_repo(repo_id: int) -> bool:
+    if not db.is_available():
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE observability.pac_repositories SET active = FALSE, updated_at = NOW() WHERE id = %s",
+                    (repo_id,),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as exc:
+        logger.warning("_delete_pac_repo error (id=%s): %s", repo_id, exc)
+        return False
+
+
+@router.get("/pac-repos")
+async def list_pac_repos():
+    """Policy-as-Code source repositories."""
+    rows = await asyncio.to_thread(_fetch_pac_repos)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.post("/pac-repos")
+async def create_pac_repo(body: dict = Body(...)):
+    """Register a Policy-as-Code source repository."""
+    new_id = await asyncio.to_thread(
+        _create_pac_repo,
+        str(body.get("display_name") or "")[:128],
+        str(body.get("provider") or "github")[:32],
+        str(body.get("repo_url") or ""),
+        str(body.get("branch") or "main")[:128],
+        str(body.get("rego_path") or "policies/")[:256],
+        str(body.get("process") or "all")[:64],
+        body.get("description"),
+        bool(body.get("active", True)),
+        str(body.get("created_by") or "operator")[:128],
+    )
+    return {"ok": new_id is not None, "id": new_id}
+
+
+@router.put("/pac-repos/{repo_id}")
+async def update_pac_repo(repo_id: int, body: dict = Body(...)):
+    """Update a Policy-as-Code source repository."""
+    ok = await asyncio.to_thread(
+        _update_pac_repo,
+        repo_id,
+        str(body.get("display_name") or "")[:128],
+        str(body.get("provider") or "github")[:32],
+        str(body.get("repo_url") or ""),
+        str(body.get("branch") or "main")[:128],
+        str(body.get("rego_path") or "policies/")[:256],
+        str(body.get("process") or "all")[:64],
+        body.get("description"),
+        bool(body.get("active", True)),
+    )
+    return {"ok": ok, "id": repo_id}
+
+
+@router.delete("/pac-repos/{repo_id}")
+async def delete_pac_repo(repo_id: int):
+    """Deactivate a PAC repository (soft delete)."""
+    ok = await asyncio.to_thread(_delete_pac_repo, repo_id)
+    return {"ok": ok, "id": repo_id}

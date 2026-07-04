@@ -42,7 +42,8 @@ const NAV_SECTIONS = [
   {
     label: "Configuration",
     items: [
-      { id: "config", icon: "gear", l: "Setup" },
+      { id: "config",    icon: "gear",   l: "Setup" },
+      { id: "uboconfig", icon: "shield", l: "UBO Configuration" },
     ],
   }
 ];
