@@ -46,13 +46,15 @@ Endpoints:
     PUT  /loop/last-state                    Persist full pipeline run state to DB
 
 MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
-    /mcp/edgar/mcp          SEC EDGAR filings, financials, risk factors, 8-K events
-    /mcp/fred/mcp           Federal Reserve macro economic indicators
-    /mcp/rss/mcp            Industry & compliance RSS news feeds
-    /mcp/token-cost/mcp     Anthropic API token cost tracking
-    /mcp/predictive/mcp     Risk scoring, forecasting, predictive analytics
-    /mcp/risk-as-code/mcp   Risk-as-Code OSCAL/COSO YAML generation
-    /mcp/oracle/mcp         Oracle Fusion ERP data (requires ORACLE_FUSION_* env vars)
+    /mcp/edgar/mcp              SEC EDGAR filings, financials, risk factors, 8-K events
+    /mcp/fred/mcp               Federal Reserve macro economic indicators
+    /mcp/rss/mcp                Industry & compliance RSS news feeds
+    /mcp/token-cost/mcp         Anthropic API token cost tracking
+    /mcp/predictive/mcp         Risk scoring, forecasting, predictive analytics
+    /mcp/risk-as-code/mcp       Risk-as-Code OSCAL/COSO YAML generation
+    /mcp/policy-as-code/mcp     Policy-as-Code Rego module management & approvals
+    /mcp/controls-as-code/mcp   Controls-as-Code generation, evaluation & risk mapping
+    /mcp/oracle/mcp             Oracle Fusion ERP data (requires ORACLE_FUSION_* env vars)
 
     GET  /mcp               Discovery — lists all mounted MCP servers and their URLs
 """
@@ -127,6 +129,8 @@ from rss_mcp_server import mcp as _rss_mcp
 from token_cost_mcp_server import mcp as _token_cost_mcp
 from predictive_analytics_mcp_server import mcp as _predictive_mcp
 from risk_as_code_mcp_server import mcp as _rac_mcp
+from pac_mcp_server import mcp as _pac_mcp
+from cac_mcp_server import mcp as _cac_mcp
 
 try:
     from oracle_fusion_mcp_server import mcp as _oracle_mcp
@@ -427,13 +431,15 @@ def _mount_mcp(path: str, label: str, mcp_instance) -> None:
     except Exception as exc:
         logger.warning("Failed to mount MCP server at %s: %s", path, exc)
 
-_mount_mcp("/mcp/edgar",       "EDGAR filings & financials",              _edgar_mcp)
-_mount_mcp("/mcp/fred",        "FRED macro indicators",                   _fred_mcp)
-_mount_mcp("/mcp/rss",         "RSS news & compliance feeds",             _rss_mcp)
-_mount_mcp("/mcp/token-cost",  "Anthropic API token cost tracking",       _token_cost_mcp)
-_mount_mcp("/mcp/predictive",  "Risk scoring & predictive analytics",     _predictive_mcp)
-_mount_mcp("/mcp/risk-as-code","Risk-as-Code OSCAL/COSO YAML generation", _rac_mcp)
-_mount_mcp("/mcp/oracle",      "Oracle Fusion ERP data",                  _oracle_mcp)
+_mount_mcp("/mcp/edgar",            "EDGAR filings & financials",               _edgar_mcp)
+_mount_mcp("/mcp/fred",             "FRED macro indicators",                    _fred_mcp)
+_mount_mcp("/mcp/rss",              "RSS news & compliance feeds",              _rss_mcp)
+_mount_mcp("/mcp/token-cost",       "Anthropic API token cost tracking",        _token_cost_mcp)
+_mount_mcp("/mcp/predictive",       "Risk scoring & predictive analytics",      _predictive_mcp)
+_mount_mcp("/mcp/risk-as-code",     "Risk-as-Code OSCAL/COSO YAML generation",  _rac_mcp)
+_mount_mcp("/mcp/policy-as-code",   "Policy-as-Code Rego module management",    _pac_mcp)
+_mount_mcp("/mcp/controls-as-code", "Controls-as-Code generation & evaluation", _cac_mcp)
+_mount_mcp("/mcp/oracle",           "Oracle Fusion ERP data",                   _oracle_mcp)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
