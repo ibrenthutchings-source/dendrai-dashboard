@@ -14,6 +14,14 @@ the proxy flagged (risk_flags IS NOT NULL) and have not yet been processed
 The adjudication result is written to observability.adjudicated_tool_calls and
 the source telemetry row is stamped with processed_at = NOW().
 
+Additional capabilities
+-----------------------
+    Pre-execution holds   — proxy inserts PENDING rows; operator approves / denies
+    Alert webhook         — ESCALATE verdicts POST to MCP_ALERT_WEBHOOK_URL
+    Suppression allowlist — known-good (tool, args-hash) pairs skip the pipeline
+    Session timeline      — chronological view of all calls in a session
+    Coverage report       — tools with zero flag rate (potential blind spots)
+
 All DB calls use asyncio.to_thread() so the asyncio event loop is never blocked
 by psycopg2's synchronous driver.  The polling loop is silent-fail: errors are
 logged but never crash the api_server process.
@@ -26,6 +34,7 @@ import json
 import logging
 import os
 import sys
+import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -63,10 +72,12 @@ import db  # project/agentic-tools/db.py — psycopg2 thread pool
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-POLL_INTERVAL_S = float(os.environ.get("MCP_GOV_POLL_INTERVAL_S", "30"))
-BATCH_SIZE      = int(os.environ.get("MCP_GOV_BATCH_SIZE", "20"))
+POLL_INTERVAL_S    = float(os.environ.get("MCP_GOV_POLL_INTERVAL_S", "30"))
+BATCH_SIZE         = int(os.environ.get("MCP_GOV_BATCH_SIZE", "20"))
 # Only run the full Council for HIGH and above; MEDIUM/LOW get auto-cleared
-COUNCIL_TIERS   = {"CRITICAL", "HIGH", "MEDIUM"}
+COUNCIL_TIERS      = {"CRITICAL", "HIGH", "MEDIUM"}
+# Slack-compatible webhook for ESCALATE verdicts (optional)
+_ALERT_WEBHOOK_URL = os.environ.get("MCP_ALERT_WEBHOOK_URL", "")
 
 # ── Lazy UBO pipeline instances (one set shared across all poll cycles) ────────
 
@@ -86,6 +97,49 @@ def _get_pipeline():
         _gold    = GoldAggregationLayer()
         _council = CouncilOrchestrator(only_for_tiers=COUNCIL_TIERS)
     return _bronze, _silver, _gold, _council
+
+
+# ── Alert webhook ──────────────────────────────────────────────────────────────
+
+def _dispatch_alert(
+    *,
+    tool_name: str,
+    session_id: str,
+    risk_tier: str,
+    risk_score: float,
+    verdict: str,
+    reasoning: str,
+) -> None:
+    """POST a Slack-compatible alert payload for ESCALATE verdicts."""
+    if not _ALERT_WEBHOOK_URL:
+        return
+    try:
+        body = json.dumps({
+            "text": (
+                f"\U0001f6a8 *MCP GOVERNANCE ESCALATE* — `{tool_name}` "
+                f"(session {session_id[:8]}…)"
+            ),
+            "attachments": [{
+                "color": "#c0392b",
+                "fields": [
+                    {"title": "Tool",       "value": tool_name,            "short": True},
+                    {"title": "Risk Tier",  "value": risk_tier,            "short": True},
+                    {"title": "Risk Score", "value": f"{risk_score:.3f}",  "short": True},
+                    {"title": "Verdict",    "value": verdict,              "short": True},
+                    {"title": "Session",    "value": session_id[:8] + "…", "short": True},
+                    {"title": "Reasoning",  "value": (reasoning or "")[:300]},
+                ],
+            }],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            _ALERT_WEBHOOK_URL,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5)
+        logger.info("Alert dispatched for tool=%s verdict=%s", tool_name, verdict)
+    except Exception as exc:
+        logger.warning("Alert webhook failed: %s", exc)
 
 
 # ── Database helpers (synchronous psycopg2, called via asyncio.to_thread) ─────
@@ -135,7 +189,7 @@ def _write_adjudication(
     session_id: str,
     uro: "URO",
 ) -> None:
-    """Write adjudication result and stamp processed_at on the source row."""
+    """Write adjudication result, stamp processed_at, and dispatch webhook on ESCALATE."""
     if not db.is_available():
         return
     adj = uro.adjudication
@@ -196,6 +250,21 @@ def _write_adjudication(
                     (telemetry_id,),
                 )
             conn.commit()
+
+        # Dispatch webhook alert for ESCALATE verdicts (non-fatal)
+        if adj and getattr(getattr(adj, "final_verdict", None), "value", None) == "ESCALATE":
+            try:
+                _dispatch_alert(
+                    tool_name=uro.conformed_payload.resource_id if uro.conformed_payload else "unknown",
+                    session_id=session_id,
+                    risk_tier=str(uro.risk_tier or "UNKNOWN"),
+                    risk_score=float(uro.risk_score) if uro.risk_score is not None else 0.0,
+                    verdict="ESCALATE",
+                    reasoning=(adj.conflict_reasoning or "")[:500],
+                )
+            except Exception as alert_exc:
+                logger.warning("Alert dispatch error: %s", alert_exc)
+
     except Exception as exc:
         logger.warning("_write_adjudication error (telemetry_id=%s): %s", telemetry_id, exc)
         try:
@@ -203,6 +272,48 @@ def _write_adjudication(
         except Exception:
             pass
 
+
+def _check_suppressed(row: dict) -> bool:
+    """Return True if this telemetry row matches an active suppression rule."""
+    if not db.is_available():
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM observability.tool_call_suppressions
+                    WHERE active
+                      AND (target_tool   IS NULL OR target_tool   = %s)
+                      AND (server_name   IS NULL OR server_name   = %s)
+                      AND (tool_args_hash IS NULL OR tool_args_hash = %s)
+                    LIMIT 1
+                    """,
+                    (row.get("target_tool"), row.get("server_name"), row.get("tool_args_hash")),
+                )
+                return cur.fetchone() is not None
+    except Exception as exc:
+        logger.warning("_check_suppressed error: %s", exc)
+        return False
+
+
+def _stamp_processed_suppressed(telemetry_id: int) -> None:
+    """Stamp processed_at on a suppressed row without writing an adjudication."""
+    if not db.is_available():
+        return
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE observability.mcp_telemetry SET processed_at = NOW() WHERE id = %s",
+                    (telemetry_id,),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("_stamp_processed_suppressed error (id=%s): %s", telemetry_id, exc)
+
+
+# ── Read helpers ───────────────────────────────────────────────────────────────
 
 def _fetch_summary_rows() -> list[dict]:
     """Read observability.tool_latency_summary for the REST endpoint."""
@@ -392,19 +503,263 @@ def _human_review_adjudication(row_id: int, human_verdict: str, notes: str) -> b
         return False
 
 
+# ── Governance holds ───────────────────────────────────────────────────────────
+
+def _fetch_pending_holds() -> list[dict]:
+    """Fetch all PENDING governance holds (pre-execution blocking gate)."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, session_id, message_id, target_tool, tool_args_hash,
+                           status, created_at
+                    FROM observability.tool_call_holds
+                    WHERE status = 'PENDING'
+                    ORDER BY created_at ASC
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("session_id"):
+                        d["session_id"] = str(d["session_id"])
+                    if d.get("created_at") and hasattr(d["created_at"], "isoformat"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_pending_holds error: %s", exc)
+        return []
+
+
+def _resolve_hold(hold_id: int, status: str, resolved_by: str = "operator") -> bool:
+    """Approve or deny a pending governance hold."""
+    if not db.is_available():
+        return False
+    safe_status = status.upper()
+    if safe_status not in ("APPROVED", "DENIED"):
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.tool_call_holds
+                    SET status = %s, resolved_at = NOW(), resolved_by = %s
+                    WHERE id = %s AND status = 'PENDING'
+                    """,
+                    (safe_status, resolved_by[:128], hold_id),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as exc:
+        logger.warning("_resolve_hold error (id=%s): %s", hold_id, exc)
+        return False
+
+
+# ── Session timeline ───────────────────────────────────────────────────────────
+
+def _fetch_session_timeline(session_id: str) -> list[dict]:
+    """All telemetry rows for a session in chronological order, joined to adjudications."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT t.id, t.ts, t.direction, t.method, t.target_tool,
+                           t.execution_time_ms, t.status, t.error_message,
+                           t.server_name, t.risk_flags, t.processed_at,
+                           a.final_verdict, a.risk_tier, a.risk_score
+                    FROM observability.mcp_telemetry t
+                    LEFT JOIN observability.adjudicated_tool_calls a
+                           ON a.telemetry_id = t.id
+                    WHERE t.session_id = %s::uuid
+                    ORDER BY t.ts ASC
+                    LIMIT 500
+                    """,
+                    (session_id,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("ts", "processed_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    if d.get("risk_score") is not None:
+                        d["risk_score"] = float(d["risk_score"])
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_session_timeline error: %s", exc)
+        return []
+
+
+# ── Coverage report ────────────────────────────────────────────────────────────
+
+def _fetch_coverage() -> list[dict]:
+    """Per-tool flag rate; 0% = potential blind spot (never triggered a governance rule)."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        server_name,
+                        target_tool,
+                        COUNT(*) AS call_count,
+                        COUNT(*) FILTER (
+                            WHERE risk_flags IS NOT NULL
+                              AND array_length(risk_flags, 1) > 0
+                        ) AS flagged_count,
+                        ROUND(
+                            100.0 * COUNT(*) FILTER (
+                                WHERE risk_flags IS NOT NULL
+                                  AND array_length(risk_flags, 1) > 0
+                            ) / NULLIF(COUNT(*), 0), 1
+                        ) AS flag_rate
+                    FROM observability.mcp_telemetry
+                    WHERE direction = 'response'
+                      AND target_tool IS NOT NULL
+                    GROUP BY server_name, target_tool
+                    ORDER BY flagged_count DESC, call_count DESC
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("flag_rate") is not None:
+                        d["flag_rate"] = float(d["flag_rate"])
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_coverage error: %s", exc)
+        return []
+
+
+# ── Suppression allowlist ──────────────────────────────────────────────────────
+
+def _fetch_suppressions() -> list[dict]:
+    """Fetch all suppression rules (active and inactive)."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, server_name, target_tool, tool_args_hash,
+                           reason, active, created_at, created_by
+                    FROM observability.tool_call_suppressions
+                    ORDER BY created_at DESC
+                    LIMIT 200
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("created_at") and hasattr(d["created_at"], "isoformat"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_suppressions error: %s", exc)
+        return []
+
+
+def _add_suppression(
+    server_name: str | None,
+    target_tool: str | None,
+    tool_args_hash: str | None,
+    reason: str,
+    created_by: str = "operator",
+) -> int | None:
+    """Insert a new suppression rule; returns the new row ID."""
+    if not db.is_available():
+        return None
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.tool_call_suppressions
+                        (server_name, target_tool, tool_args_hash, reason, created_by)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        server_name or None,
+                        target_tool or None,
+                        tool_args_hash or None,
+                        reason[:500],
+                        created_by[:128],
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.warning("_add_suppression error: %s", exc)
+        return None
+
+
+def _delete_suppression(suppression_id: int) -> bool:
+    """Soft-delete (deactivate) a suppression rule."""
+    if not db.is_available():
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.tool_call_suppressions
+                    SET active = FALSE
+                    WHERE id = %s AND active
+                    """,
+                    (suppression_id,),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as exc:
+        logger.warning("_delete_suppression error (id=%s): %s", suppression_id, exc)
+        return False
+
+
 # ── Core processing logic ──────────────────────────────────────────────────────
 
 async def _process_one(row: dict) -> bool:
     """
     Run one telemetry row through the full UBO pipeline and persist the result.
+    Suppressed rows are auto-cleared without entering the pipeline.
     Returns True on success, False if any stage fails.
     """
+    telemetry_id = row["id"]
+    session_id   = row.get("session_id", "UNKNOWN")
+
+    # Check suppression list first — if matched, auto-clear without UBO pipeline
+    if await asyncio.to_thread(_check_suppressed, row):
+        await asyncio.to_thread(_stamp_processed_suppressed, telemetry_id)
+        logger.info(
+            "Suppressed telemetry %d: tool=%s server=%s — auto-cleared",
+            telemetry_id, row.get("target_tool"), row.get("server_name"),
+        )
+        return True
+
     bronze, silver, gold, council = _get_pipeline()
     if bronze is None:
         return False
-
-    telemetry_id = row["id"]
-    session_id   = row.get("session_id", "UNKNOWN")
 
     try:
         # Bronze: map raw telemetry dict → URO
@@ -538,9 +893,84 @@ async def human_review_adjudication(row_id: int, body: dict = Body(...)):
     """
     Mark an adjudicated record as human-reviewed.
     Body: { human_verdict: "APPROVE|ESCALATE|CLEAR|MONITOR", notes: "..." }
-    Clears the requires_human_review flag and appends reviewer note to reasoning.
     """
     human_verdict = str(body.get("human_verdict") or "")
     notes         = str(body.get("notes") or "")
     ok = await asyncio.to_thread(_human_review_adjudication, row_id, human_verdict, notes)
     return {"ok": ok, "id": row_id}
+
+
+# ── Governance holds endpoints ─────────────────────────────────────────────────
+
+@router.get("/holds")
+async def list_holds():
+    """Pending pre-execution governance holds awaiting operator approval."""
+    rows = await asyncio.to_thread(_fetch_pending_holds)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.put("/holds/{hold_id}/resolve")
+async def resolve_hold(hold_id: int, body: dict = Body(...)):
+    """
+    Approve or deny a pending governance hold.
+    Body: { status: "APPROVED" | "DENIED", resolved_by: "operator" }
+    """
+    status = str(body.get("status") or "").upper()
+    if status not in ("APPROVED", "DENIED"):
+        return JSONResponse({"error": "status must be APPROVED or DENIED"}, status_code=400)
+    resolved_by = str(body.get("resolved_by") or "operator")[:128]
+    ok = await asyncio.to_thread(_resolve_hold, hold_id, status, resolved_by)
+    return {"ok": ok, "id": hold_id, "status": status}
+
+
+# ── Session timeline endpoint ──────────────────────────────────────────────────
+
+@router.get("/session/{session_id}/timeline")
+async def session_timeline(session_id: str):
+    """All telemetry rows for a session in chronological order."""
+    rows = await asyncio.to_thread(_fetch_session_timeline, session_id)
+    return {"rows": rows, "count": len(rows), "session_id": session_id}
+
+
+# ── Coverage report endpoint ───────────────────────────────────────────────────
+
+@router.get("/coverage")
+async def tool_coverage():
+    """Per-tool flag rate; 0% flag_rate entries are governance blind spots."""
+    rows = await asyncio.to_thread(_fetch_coverage)
+    blind_spots = sum(1 for r in rows if (r.get("flag_rate") or 0) == 0)
+    return {"rows": rows, "count": len(rows), "blind_spots": blind_spots}
+
+
+# ── Suppression allowlist endpoints ───────────────────────────────────────────
+
+@router.get("/suppressions")
+async def list_suppressions():
+    """Active and inactive suppression rules (tool/server allowlist)."""
+    rows = await asyncio.to_thread(_fetch_suppressions)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.post("/suppressions")
+async def add_suppression(body: dict = Body(...)):
+    """
+    Add a suppression rule to auto-clear matching flagged tool calls.
+    Body: { server_name, target_tool, tool_args_hash, reason, created_by }
+    All filter fields are optional; omitting one means "match any".
+    """
+    new_id = await asyncio.to_thread(
+        _add_suppression,
+        body.get("server_name"),
+        body.get("target_tool"),
+        body.get("tool_args_hash"),
+        str(body.get("reason") or "")[:500],
+        str(body.get("created_by") or "operator")[:128],
+    )
+    return {"ok": new_id is not None, "id": new_id}
+
+
+@router.delete("/suppressions/{suppression_id}")
+async def delete_suppression(suppression_id: int):
+    """Deactivate a suppression rule (soft delete)."""
+    ok = await asyncio.to_thread(_delete_suppression, suppression_id)
+    return {"ok": ok, "id": suppression_id}

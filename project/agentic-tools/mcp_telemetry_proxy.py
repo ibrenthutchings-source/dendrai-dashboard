@@ -60,6 +60,11 @@ Environment variables
     PROXY_POOL_MAX          asyncpg pool maximum size   (default: 3)
     PROXY_WRITE_TIMEOUT_S   seconds before a DB write is cancelled (default: 2.0)
     PROXY_LOG_LEVEL         DEBUG / INFO / WARNING (default: WARNING)
+    PROXY_HOLD_TIMEOUT_S    seconds to wait for operator approval on a hold (default: 30)
+    PROXY_HOLD_POLL_S       polling interval while waiting for hold resolution (default: 1.0)
+    PROXY_BLOCKING_TOOLS    comma-separated tool names that trigger pre-execution holds
+    PROXY_FREQ_WINDOW_S     rolling window in seconds for high-frequency detection (default: 60)
+    PROXY_FREQ_THRESHOLD    call-count threshold within window before high_frequency fires (default: 10)
 """
 
 from __future__ import annotations
@@ -69,8 +74,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -91,6 +99,22 @@ DATABASE_URL  = os.environ.get("DATABASE_URL", "")
 POOL_MIN      = int(os.environ.get("PROXY_POOL_MIN", "1"))
 POOL_MAX      = int(os.environ.get("PROXY_POOL_MAX", "3"))
 WRITE_TIMEOUT = float(os.environ.get("PROXY_WRITE_TIMEOUT_S", "2.0"))
+
+# Pre-execution hold (blocking gate) configuration
+HOLD_TIMEOUT_S = float(os.environ.get("PROXY_HOLD_TIMEOUT_S", "30"))
+HOLD_POLL_S    = float(os.environ.get("PROXY_HOLD_POLL_S", "1.0"))
+_BLOCKING_TOOLS: frozenset[str] = frozenset(
+    t.strip().lower()
+    for t in os.environ.get(
+        "PROXY_BLOCKING_TOOLS",
+        "shell,execute,bash,run_command,drop,truncate,delete_file,exec_sql",
+    ).split(",")
+    if t.strip()
+)
+
+# Frequency anomaly detection
+FREQ_WINDOW_S  = int(os.environ.get("PROXY_FREQ_WINDOW_S", "60"))
+FREQ_THRESHOLD = int(os.environ.get("PROXY_FREQ_THRESHOLD", "10"))
 
 # ── asyncpg pool (lazy-init, module-level singleton) ──────────────────────────
 
@@ -147,6 +171,58 @@ async def _close_pool() -> None:
         _pool = None
 
 
+# ── Session-level state for frequency and sequence detection ──────────────────
+# One proxy process == one MCP session, so these are implicitly session-scoped
+# without any DB overhead.
+
+_session_call_times:   defaultdict[str, list[float]] = defaultdict(list)
+_session_tool_history: list[str] = []
+
+# ── Prompt-injection keyword detector ─────────────────────────────────────────
+
+_INJECTION_KW: tuple[str, ...] = (
+    "ignore previous instructions",
+    "ignore all instructions",
+    "you are now",
+    "new system prompt",
+    "disregard your",
+    "forget everything",
+    "act as if you",
+    "jailbreak",
+    "dan mode",
+    "do anything now",
+    "prompt injection",
+    "override instructions",
+    "ignore the above",
+)
+
+# ── PII / credential pattern detector ─────────────────────────────────────────
+
+_SENSITIVE_RE = re.compile(
+    r"(?:"
+    r"\b\d{3}-\d{2}-\d{4}\b"                                 # SSN
+    r"|\b(?:4\d{12}(?:\d{3})?|5[1-5]\d{14})\b"               # Visa / MC card
+    r"|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"     # PEM private key
+    r"|\bBearer\s+[A-Za-z0-9\-._~+/]{20,}={0,2}"             # Bearer token
+    r"|(?:password|passwd|secret|pwd)\s*[:=]\s*[^\s,\"']{4,}" # password=value
+    r"|(?:api[_-]?key|access[_-]?token|client[_-]?secret)\s*[:=\s][^\s,\"']{8,}"
+    r")",
+    re.IGNORECASE,
+)
+
+# ── Dangerous tool-call sequence patterns ──────────────────────────────────────
+
+_ESCALATION_SEQUENCES: tuple[tuple[str, ...], ...] = (
+    ("read_file",  "write_file",  "shell"),
+    ("read_file",  "write_file",  "execute"),
+    ("read_file",  "write_file",  "bash"),
+    ("exec_sql",   "shell"),
+    ("exec_sql",   "execute"),
+    ("exec_sql",   "bash"),
+    ("read_file",  "delete_file"),
+    ("list_files", "delete_file"),
+)
+
 # ── Schema bootstrap (idempotent, runs once per process) ──────────────────────
 
 _SCHEMA_DDL = """
@@ -183,6 +259,23 @@ CREATE INDEX IF NOT EXISTS idx_tel_method   ON observability.mcp_telemetry (meth
 CREATE INDEX IF NOT EXISTS idx_tel_errors   ON observability.mcp_telemetry (status, ts DESC)
     WHERE status IN ('error', 'timeout');
 CREATE INDEX IF NOT EXISTS idx_tel_ts       ON observability.mcp_telemetry (ts DESC);
+
+-- Pre-execution governance holds (blocking gate)
+CREATE TABLE IF NOT EXISTS observability.tool_call_holds (
+    id              BIGSERIAL    PRIMARY KEY,
+    session_id      UUID         NOT NULL,
+    message_id      TEXT,
+    target_tool     VARCHAR(128) NOT NULL,
+    tool_args_hash  CHAR(64),
+    status          VARCHAR(16)  NOT NULL DEFAULT 'PENDING'
+                                 CHECK (status IN ('PENDING','APPROVED','DENIED','EXPIRED')),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ,
+    resolved_by     VARCHAR(128)
+);
+CREATE INDEX IF NOT EXISTS idx_holds_pending
+    ON observability.tool_call_holds (status, created_at DESC)
+    WHERE status = 'PENDING';
 
 -- Governance view: per-tool P50/P95 latency and error rate
 CREATE OR REPLACE VIEW observability.tool_latency_summary AS
@@ -319,18 +412,134 @@ _RISK_CHECKS: dict[str, Any] = {
         "delete", "drop", "truncate", "exec_sql", "run_query",
         "write_file", "shell", "execute",
     },
+    # Prompt injection: look for instructions-override keywords in tool arguments
+    "prompt_injection": lambda p: any(
+        kw in json.dumps(p.get("params") or {}).lower()
+        for kw in _INJECTION_KW
+    ),
+    # Sensitive data: PII, credentials, or private keys in arguments
+    "sensitive_data": lambda p: bool(
+        _SENSITIVE_RE.search(json.dumps(p.get("params") or {}))
+    ),
 }
 
 
-def _detect_risk_flags(payload: dict) -> list[str] | None:
-    flags = []
+def _detect_risk_flags(payload: dict, direction: str = "unknown") -> list[str] | None:
+    """
+    Run all governance checks against a payload.
+    Direction-sensitive checks (large_response, high_frequency, escalation_sequence)
+    require the direction to be passed.
+    """
+    flags: list[str] = []
+
+    raw_str = json.dumps(payload)
+
+    # Static checks (direction-agnostic)
     for name, check in _RISK_CHECKS.items():
         try:
             if check(payload):
                 flags.append(name)
         except Exception:
             pass
+
+    # Large response — server-side exfiltration indicator
+    if direction == "response" and len(raw_str) > 100_000:
+        flags.append("large_response")
+
+    # Frequency and sequence checks apply only to tool-call requests
+    if direction == "request":
+        tool = _extract_tool(payload)
+        if tool:
+            tool_lc = tool.lower()
+            now = time.monotonic()
+
+            # High-frequency: rolling count within FREQ_WINDOW_S
+            times = _session_call_times[tool_lc]
+            times[:] = [t for t in times if now - t < FREQ_WINDOW_S]
+            times.append(now)
+            if len(times) > FREQ_THRESHOLD:
+                flags.append("high_frequency")
+
+            # Escalation sequence: append to history and scan for known patterns
+            _session_tool_history.append(tool_lc)
+            if len(_session_tool_history) > 30:
+                del _session_tool_history[0]
+
+            for seq in _ESCALATION_SEQUENCES:
+                seq_len = len(seq)
+                if len(_session_tool_history) >= seq_len:
+                    if _session_tool_history[-seq_len:] == list(seq):
+                        flags.append("escalation_sequence")
+                        break
+
     return flags or None
+
+
+# ── Governance hold management ─────────────────────────────────────────────────
+
+async def _insert_hold(
+    pool: Any,
+    tool_name: str,
+    tool_args_hash: str | None,
+    message_id: str,
+) -> int | None:
+    """Insert a PENDING pre-execution hold; return its ID."""
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO observability.tool_call_holds
+                    (session_id, message_id, target_tool, tool_args_hash, status)
+                VALUES ($1, $2, $3, $4, 'PENDING')
+                RETURNING id
+                """,
+                uuid.UUID(SESSION_ID),
+                message_id or None,
+                tool_name,
+                tool_args_hash,
+            )
+            return int(row["id"]) if row else None
+    except Exception as exc:
+        logger.warning("_insert_hold error: %s — hold skipped", exc)
+        return None
+
+
+async def _poll_hold_status(pool: Any, hold_id: int) -> str:
+    """
+    Poll the hold row until its status changes from PENDING or HOLD_TIMEOUT_S
+    elapses.  Returns the final status string ('APPROVED', 'DENIED', 'TIMEOUT').
+    On timeout the row is stamped EXPIRED.
+    """
+    loop     = asyncio.get_running_loop()
+    deadline = loop.time() + HOLD_TIMEOUT_S
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE observability.tool_call_holds
+                        SET status = 'EXPIRED', resolved_at = NOW()
+                        WHERE id = $1 AND status = 'PENDING'
+                        """,
+                        hold_id,
+                    )
+            except Exception:
+                pass
+            return "TIMEOUT"
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT status FROM observability.tool_call_holds WHERE id = $1",
+                    hold_id,
+                )
+                if row and row["status"] != "PENDING":
+                    return row["status"]
+        except Exception as exc:
+            logger.warning("_poll_hold_status error: %s", exc)
+            return "TIMEOUT"
+        await asyncio.sleep(min(HOLD_POLL_S, remaining))
 
 
 # ── Async DB write — fire-and-forget, silent-fail ─────────────────────────────
@@ -406,7 +615,7 @@ async def _write_row(
             error,
             _sha256(raw),
             server_name,
-            _detect_risk_flags(payload),
+            _detect_risk_flags(payload, direction),
         )
 
 
@@ -445,23 +654,81 @@ async def run_proxy(server_argv: list[str], server_name: str) -> None:
     async def relay_stdin() -> None:
         """
         Read from our stdin using asyncio.to_thread() so the event loop is
-        never blocked during a slow read.  Forwards each line to the subprocess
-        immediately, then fires a telemetry task.
+        never blocked during a slow read.  For non-blocking tool calls, forwards
+        each line to the subprocess immediately.  For blocking-tier tools
+        (shell, execute, drop, truncate, …) waits for operator approval before
+        forwarding — DENIED calls send a JSON-RPC error to the client instead.
         """
         while True:
-            # run_in_executor keeps the event loop free while readline() blocks
             line: bytes = await asyncio.to_thread(sys.stdin.buffer.readline)
             if not line:
-                break  # EOF — client closed the connection
+                break
 
-            # ── Forward FIRST, parse second ────────────────────────────────────
+            # ── Parse first — needed for hold checks and telemetry ─────────────
+            payload:   dict | None = None
+            tool_name: str  | None = None
+            msg_id = ""
+            try:
+                payload   = json.loads(line)
+                msg_id    = str(payload.get("id", ""))
+                tool_name = (
+                    _extract_tool(payload)
+                    if payload.get("method") == "tools/call"
+                    else None
+                )
+            except (json.JSONDecodeError, Exception):
+                pass
+
+            # ── Pre-execution hold for blocking-tier tools ─────────────────────
+            if tool_name is not None and tool_name.lower() in _BLOCKING_TOOLS:
+                hold_pool = await _get_pool()
+                if hold_pool is not None:
+                    args_hash = _extract_tool_args_hash(payload) if payload else None
+                    hold_id   = await _insert_hold(hold_pool, tool_name, args_hash, msg_id)
+                    if hold_id is not None:
+                        logger.warning(
+                            "GOV HOLD — tool=%s hold_id=%d timeout=%.0fs session=%s",
+                            tool_name, hold_id, HOLD_TIMEOUT_S, SESSION_ID[:8],
+                        )
+                        status = await _poll_hold_status(hold_pool, hold_id)
+                        if status == "DENIED":
+                            logger.warning(
+                                "GOV DENIED — tool=%s hold_id=%d", tool_name, hold_id
+                            )
+                            err_resp = (
+                                json.dumps({
+                                    "jsonrpc": "2.0",
+                                    "id": payload.get("id") if payload else None,
+                                    "error": {
+                                        "code": -32600,
+                                        "message": f"UBO governance gate DENIED: {tool_name}",
+                                    },
+                                }) + "\n"
+                            ).encode("utf-8")
+                            sys.stdout.buffer.write(err_resp)
+                            sys.stdout.buffer.flush()
+                            if payload is not None:
+                                asyncio.create_task(
+                                    _db_write(
+                                        direction="request",
+                                        payload=payload,
+                                        server_name=server_name,
+                                    )
+                                )
+                            continue
+                        if status == "TIMEOUT":
+                            logger.warning(
+                                "GOV TIMEOUT — tool=%s hold_id=%d forwarding without approval",
+                                tool_name, hold_id,
+                            )
+                        # APPROVED or TIMEOUT: fall through to forward below
+
+            # ── Forward to subprocess ──────────────────────────────────────────
             proc.stdin.write(line)
             await proc.stdin.drain()
 
-            # ── Telemetry (best-effort, never blocks forwarding) ───────────────
-            try:
-                payload = json.loads(line)
-                msg_id = str(payload.get("id", ""))
+            # ── Telemetry (fire-and-forget) ────────────────────────────────────
+            if payload is not None:
                 if msg_id:
                     pending[msg_id] = loop.time()
                 asyncio.create_task(
@@ -471,8 +738,6 @@ async def run_proxy(server_argv: list[str], server_name: str) -> None:
                         server_name=server_name,
                     )
                 )
-            except (json.JSONDecodeError, Exception):
-                pass  # malformed client input: still forwarded, never log to stdout
 
         try:
             proc.stdin.close()

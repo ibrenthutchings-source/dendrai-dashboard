@@ -232,6 +232,8 @@ function CEMMeta({ l, v }) {
 const _CEM_API_KEY = import.meta.env.VITE_API_KEY || "";
 const _cemAuthHdr  = () => _CEM_API_KEY ? { "X-API-Key": _CEM_API_KEY } : {};
 
+function _uboBase() { return window.MCP_API_BASE || "/api/mcp"; }
+
 const _UBO_TIER_STYLE = {
   CRITICAL: { bg: "var(--red-soft)",   ink: "var(--red-ink)"   },
   HIGH:     { bg: "var(--amber-soft)", ink: "var(--amber-ink)" },
@@ -246,32 +248,37 @@ const _UBO_VERDICT_STYLE = {
 };
 
 function UBOGovPanel() {
-  const [adjudicated, setAdjudicated] = useState([]);
-  const [humanReview, setHumanReview] = useState([]);
-  const [latency,     setLatency]     = useState([]);
-  const [rawRows,     setRawRows]     = useState([]);
-  const [loading,     setLoading]     = useState(true);
-  const [triggering,  setTriggering]  = useState(false);
-  const [filter,      setFilter]      = useState("all");
-  const [expanded,    setExpanded]    = useState(new Set());
-  const [lastRefresh, setLastRefresh] = useState(null);
-  const [fetchErr,      setFetchErr]      = useState(null);
-  const [tab,           setTab]           = useState("adjudications");
-  const [processStatus, setProcessStatus] = useState(null);
-  const [isPaused,      setIsPaused]      = useState(false);
-  const [newIds,        setNewIds]        = useState(new Set());
+  const [adjudicated,  setAdjudicated]  = useState([]);
+  const [humanReview,  setHumanReview]  = useState([]);
+  const [latency,      setLatency]      = useState([]);
+  const [rawRows,      setRawRows]      = useState([]);
+  const [holds,        setHolds]        = useState([]);
+  const [coverage,     setCoverage]     = useState([]);
+  const [suppressions, setSuppressions] = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [triggering,   setTriggering]   = useState(false);
+  const [filter,       setFilter]       = useState("all");
+  const [expanded,     setExpanded]     = useState(new Set());
+  const [lastRefresh,  setLastRefresh]  = useState(null);
+  const [fetchErr,       setFetchErr]       = useState(null);
+  const [tab,            setTab]            = useState("adjudications");
+  const [processStatus,  setProcessStatus]  = useState(null);
+  const [isPaused,       setIsPaused]       = useState(false);
+  const [newIds,         setNewIds]         = useState(new Set());
 
   const knownIdsRef       = useRef(new Set());
   const highlightTimerRef = useRef(null);
 
   async function refresh() {
-    const base = window.MCP_API_BASE || "/api/mcp";
+    const base = _uboBase();
     try {
-      const [adjRes, hrRes, latRes, rawRes] = await Promise.all([
+      const [adjRes, hrRes, latRes, rawRes, holdsRes, covRes] = await Promise.all([
         fetch(`${base}/observability/telemetry/adjudicated?limit=100`),
         fetch(`${base}/observability/telemetry/human-review`),
         fetch(`${base}/observability/telemetry/summary`),
         fetch(`${base}/observability/telemetry/raw?limit=200`),
+        fetch(`${base}/observability/holds`),
+        fetch(`${base}/observability/coverage`),
       ]);
       if (adjRes.ok) {
         const d = await adjRes.json();
@@ -285,9 +292,11 @@ function UBOGovPanel() {
           highlightTimerRef.current = setTimeout(() => setNewIds(new Set()), 4000);
         }
       }
-      if (hrRes.ok)  { const d = await hrRes.json();  setHumanReview(d.rows || []); }
-      if (latRes.ok) { const d = await latRes.json(); setLatency(d.rows || []); }
-      if (rawRes.ok) { const d = await rawRes.json(); setRawRows(d.rows || []); }
+      if (hrRes.ok)    { const d = await hrRes.json();    setHumanReview(d.rows || []); }
+      if (latRes.ok)   { const d = await latRes.json();   setLatency(d.rows || []); }
+      if (rawRes.ok)   { const d = await rawRes.json();   setRawRows(d.rows || []); }
+      if (holdsRes.ok) { const d = await holdsRes.json(); setHolds(d.rows || []); }
+      if (covRes.ok)   { const d = await covRes.json();   setCoverage(d.rows || []); }
       setFetchErr(null);
       setLastRefresh(new Date());
     } catch (e) {
@@ -295,6 +304,46 @@ function UBOGovPanel() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function refreshSuppressions() {
+    const base = _uboBase();
+    try {
+      const res = await fetch(`${base}/observability/suppressions`);
+      if (res.ok) { const d = await res.json(); setSuppressions(d.rows || []); }
+    } catch (_) {}
+  }
+
+  async function resolveHold(holdId, status) {
+    const base = _uboBase();
+    const res = await fetch(`${base}/observability/holds/${holdId}/resolve`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ..._cemAuthHdr() },
+      body: JSON.stringify({ status }),
+    });
+    if (res.ok) setHolds(prev => prev.filter(h => h.id !== holdId));
+    return res.ok;
+  }
+
+  async function addSuppression(data) {
+    const base = _uboBase();
+    const res = await fetch(`${base}/observability/suppressions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ..._cemAuthHdr() },
+      body: JSON.stringify(data),
+    });
+    if (res.ok) await refreshSuppressions();
+    return res.ok;
+  }
+
+  async function deleteSuppression(id) {
+    const base = _uboBase();
+    const res = await fetch(`${base}/observability/suppressions/${id}`, {
+      method: "DELETE",
+      headers: { ..._cemAuthHdr() },
+    });
+    if (res.ok) setSuppressions(prev => prev.filter(s => s.id !== id));
+    return res.ok;
   }
 
   useEffect(() => {
@@ -308,7 +357,7 @@ function UBOGovPanel() {
     setTriggering(true);
     setProcessStatus(null);
     try {
-      const base = window.MCP_API_BASE || "/api/mcp";
+      const base = _uboBase();
       const res = await fetch(`${base}/observability/telemetry/process`, { method: "POST" });
       const data = res.ok ? await res.json() : { error: `HTTP ${res.status}` };
       setProcessStatus(data);
@@ -321,7 +370,7 @@ function UBOGovPanel() {
   }
 
   async function submitReview(rowId, humanVerdict, notes) {
-    const base = window.MCP_API_BASE || "/api/mcp";
+    const base = _uboBase();
     const res = await fetch(`${base}/observability/telemetry/adjudicated/${rowId}/review`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ..._cemAuthHdr() },
@@ -401,6 +450,7 @@ function UBOGovPanel() {
         <div className="bb-ticker-item"><div className="bb-ticker-label">HIGH</div><div className={`bb-ticker-val${counts.high > 0 ? " amber" : ""}`}>{counts.high}</div></div>
         <div className="bb-ticker-item"><div className="bb-ticker-label">NEEDS REVIEW</div><div className={`bb-ticker-val${counts.review > 0 ? " orange" : ""}`}>{counts.review}</div></div>
         <div className="bb-ticker-item"><div className="bb-ticker-label">TOOLS MONITORED</div><div className="bb-ticker-val">{latency.length}</div></div>
+        <div className="bb-ticker-item"><div className="bb-ticker-label">PENDING HOLDS</div><div className={`bb-ticker-val${holds.length > 0 ? " red" : ""}`}>{holds.length}</div></div>
       </div>
 
       {fetchErr && (
@@ -434,6 +484,13 @@ function UBOGovPanel() {
           <button className={"cem-filter" + (tab === "stream" ? " active" : "")} onClick={() => setTab("stream")}>
             Raw Feed {rawRows.length > 0 && <span style={{marginLeft:4,fontSize:9,opacity:.7}}>{rawRows.length}</span>}
           </button>
+          <button className={"cem-filter" + (tab === "holds" ? " active" : "")} onClick={() => setTab("holds")}
+            style={holds.length > 0 ? {color:"var(--red-ink)",fontWeight:700} : {}}>
+            Holds {holds.length > 0 && <span style={{marginLeft:4,fontSize:9,background:"var(--red-soft)",color:"var(--red-ink)",padding:"1px 5px",borderRadius:8,fontWeight:700}}>{holds.length}</span>}
+          </button>
+          <button className={"cem-filter" + (tab === "coverage" ? " active" : "")} onClick={() => setTab("coverage")}>Coverage</button>
+          <button className={"cem-filter" + (tab === "timeline" ? " active" : "")} onClick={() => setTab("timeline")}>Timeline</button>
+          <button className={"cem-filter" + (tab === "suppressions" ? " active" : "")} onClick={() => { setTab("suppressions"); refreshSuppressions(); }}>Suppressions</button>
         </div>
       </div>
 
@@ -554,6 +611,22 @@ function UBOGovPanel() {
 
         {tab === "stream" && (
           <RawFeedTab rows={rawRows} adjudicated={adjudicated} loading={loading} isPaused={isPaused} />
+        )}
+
+        {tab === "holds" && (
+          <HoldsTab holds={holds} onResolve={resolveHold} />
+        )}
+
+        {tab === "coverage" && (
+          <CoverageTab coverage={coverage} loading={loading} />
+        )}
+
+        {tab === "timeline" && (
+          <TimelineTab adjudicated={adjudicated} loading={loading} />
+        )}
+
+        {tab === "suppressions" && (
+          <SuppressionsTab suppressions={suppressions} onAdd={addSuppression} onDelete={deleteSuppression} />
         )}
       </div>
     </div>
@@ -815,13 +888,19 @@ function UBOCouncilTab({ adjudicated, loading }) {
 // ── Raw telemetry live-feed tab — Bronze → Silver → Gold medallion flow ────────
 
 const _FLAG_COLOR = {
-  bypass_keyword:  { bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
-  sensitive_tool:  { bg:"var(--amber-soft)", ink:"var(--amber-ink)" },
-  bulk_args:       { bg:"var(--blue-soft)",  ink:"var(--blue-ink)"  },
-  large_payload:   { bg:"var(--surface-2)",  ink:"var(--ink-2)"     },
-  HIGH_LATENCY:    { bg:"var(--amber-soft)", ink:"var(--amber-ink)" },
-  ELEVATED_RISK:   { bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
-  POLICY_VIOLATION:{ bg:"var(--red-soft)",   ink:"var(--red-ink)"   },
+  bypass_keyword:      { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  sensitive_tool:      { bg:"var(--amber-soft)",  ink:"var(--amber-ink)" },
+  bulk_args:           { bg:"var(--blue-soft)",   ink:"var(--blue-ink)"  },
+  large_payload:       { bg:"var(--surface-2)",   ink:"var(--ink-2)"     },
+  HIGH_LATENCY:        { bg:"var(--amber-soft)",  ink:"var(--amber-ink)" },
+  ELEVATED_RISK:       { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  POLICY_VIOLATION:    { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  // New detection rules
+  prompt_injection:    { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  sensitive_data:      { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  large_response:      { bg:"var(--amber-soft)",  ink:"var(--amber-ink)" },
+  high_frequency:      { bg:"var(--amber-soft)",  ink:"var(--amber-ink)" },
+  escalation_sequence: { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
 };
 
 const _BRONZE_HDR = { bg:"rgba(180,110,40,0.12)",  border:"rgba(180,110,40,0.28)",  lbl:"var(--amber-ink,#b45309)" };
@@ -831,20 +910,30 @@ const _GOLD_HDR   = { bg:"rgba(155,130,10,0.12)",  border:"rgba(155,130,10,0.28)
 function _flagToEventType(flags, status) {
   if (status === "error") return "MCP_TOOL_ERROR";
   if (!flags?.length)     return "ANOMALY";
-  if (flags.length >= 3)                    return "MCP_GOVERNANCE_VIOLATION";
-  if (flags.includes("bypass_keyword"))  return "MCP_TOOL_BYPASS";
-  if (flags.includes("sensitive_tool"))  return "MCP_SENSITIVE_TOOL_CALL";
-  if (flags.includes("bulk_args"))       return "MCP_BULK_ARGS";
-  if (flags.includes("large_payload"))   return "MCP_LARGE_PAYLOAD";
+  if (flags.length >= 3)                            return "MCP_GOVERNANCE_VIOLATION";
+  if (flags.includes("prompt_injection"))        return "MCP_PROMPT_INJECTION";
+  if (flags.includes("escalation_sequence"))     return "MCP_ESCALATION";
+  if (flags.includes("sensitive_data"))          return "MCP_DATA_EXPOSURE";
+  if (flags.includes("bypass_keyword"))          return "MCP_TOOL_BYPASS";
+  if (flags.includes("sensitive_tool"))          return "MCP_SENSITIVE_TOOL_CALL";
+  if (flags.includes("high_frequency"))          return "MCP_HIGH_FREQUENCY";
+  if (flags.includes("bulk_args"))               return "MCP_BULK_ARGS";
+  if (flags.includes("large_response"))          return "MCP_LARGE_RESPONSE";
+  if (flags.includes("large_payload"))           return "MCP_LARGE_PAYLOAD";
   return "ANOMALY";
 }
 
 const _MCP_BASE_WEIGHT = {
   MCP_GOVERNANCE_VIOLATION: 0.90,
+  MCP_PROMPT_INJECTION:     0.92,
+  MCP_ESCALATION:           0.88,
+  MCP_DATA_EXPOSURE:        0.80,
   MCP_TOOL_BYPASS:          0.85,
   MCP_SENSITIVE_TOOL_CALL:  0.70,
+  MCP_HIGH_FREQUENCY:       0.55,
   MCP_BULK_ARGS:            0.45,
   MCP_TOOL_ERROR:           0.40,
+  MCP_LARGE_RESPONSE:       0.38,
   MCP_LARGE_PAYLOAD:        0.35,
   ANOMALY:                  0.35,
 };
@@ -1201,6 +1290,374 @@ function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
       </div>
     </div>
   );
+}
+
+// ── Governance Holds tab ──────────────────────────────────────────────────────
+
+function HoldRow({ hold, onResolve }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+
+  async function resolve(status) {
+    setBusy(true);
+    const ok = await onResolve(hold.id, status);
+    setBusy(false);
+    if (ok) setDone(status);
+  }
+
+  const ageS = hold.created_at
+    ? Math.round((Date.now() - new Date(hold.created_at)) / 1000)
+    : null;
+
+  return (
+    <div style={{
+      display:"flex", alignItems:"center", gap:10, padding:"10px 14px",
+      background:"var(--surface-1)", border:"1.5px solid var(--red-ink,#c0392b)",
+      borderRadius:6, marginBottom:8,
+    }}>
+      <span style={{fontSize:11,fontWeight:700,color:"var(--red-ink)",fontFamily:"'Geist Mono',monospace",flexShrink:0}}>
+        ⛔ {hold.target_tool || "—"}
+      </span>
+      <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
+        {hold.session_id ? hold.session_id.slice(0,8) + "…" : "—"}
+      </span>
+      {ageS != null && (
+        <span style={{fontSize:10,color:"var(--ink-4)",flexShrink:0}}>{ageS}s ago</span>
+      )}
+      <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+        {done ? (
+          <span style={{
+            fontSize:10,fontWeight:700,padding:"3px 10px",borderRadius:4,
+            background: done === "APPROVED" ? "var(--green-soft)" : "var(--surface-2)",
+            color:      done === "APPROVED" ? "var(--green-ink)"  : "var(--ink-3)",
+          }}>{done === "APPROVED" ? "✓ APPROVED" : "✕ DENIED"}</span>
+        ) : (<>
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => resolve("APPROVED")}>
+            {busy ? <span className="spin"/> : "✓ Approve"}
+          </button>
+          <button className="btn btn-sm" disabled={busy} onClick={() => resolve("DENIED")}>
+            {busy ? <span className="spin"/> : "✕ Deny"}
+          </button>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+function HoldsTab({ holds, onResolve }) {
+  if (holds.length === 0) return (
+    <Empty>
+      No pending governance holds. Holds appear when a blocking-tier tool
+      (shell, execute, drop, truncate, exec_sql…) is called and the operator
+      must approve or deny before the request is forwarded.
+    </Empty>
+  );
+  return (<>
+    <div className="bb-section-sep">
+      <span style={{color:"var(--red-ink)"}}>⛔ PENDING EXECUTION HOLDS</span>
+      <span>{holds.length} AWAITING DECISION</span>
+    </div>
+    <div style={{padding:"0 18px 18px"}}>
+      {holds.map((h, i) => (
+        <HoldRow key={h.id ?? i} hold={h} onResolve={onResolve} />
+      ))}
+      <div style={{fontSize:10,color:"var(--ink-4)",marginTop:8,lineHeight:1.6}}>
+        Holds time out after 30 s by default (PROXY_HOLD_TIMEOUT_S). The proxy forwards
+        on timeout but logs a warning. Configure PROXY_BLOCKING_TOOLS to add or remove tools
+        from the blocking list.
+      </div>
+    </div>
+  </>);
+}
+
+// ── Coverage Report tab ───────────────────────────────────────────────────────
+
+function CoverageTab({ coverage, loading }) {
+  if (loading && coverage.length === 0) return (
+    <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
+      <span className="spin"/> Loading coverage…
+    </div>
+  );
+  const blindSpots = coverage.filter(r => (r.flag_rate || 0) === 0).length;
+  return (<>
+    <div className="bb-section-sep">
+      <span>TOOL COVERAGE REPORT</span>
+      <span>{coverage.length} TOOLS · {blindSpots > 0 ? <span style={{color:"var(--amber-ink)"}}>{blindSpots} BLIND SPOTS</span> : "ALL COVERED"}</span>
+    </div>
+    {coverage.length === 0 ? (
+      <Empty>No tool calls recorded yet. Coverage data appears once MCP tool calls flow through the telemetry proxy.</Empty>
+    ) : (
+      <div style={{padding:"0 18px 18px",overflowX:"auto"}}>
+        <table className="ubo-lat-table">
+          <thead>
+            <tr>
+              <th>Server</th><th>Tool</th><th>Calls</th>
+              <th>Flagged</th><th>Flag %</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {coverage.map((r, i) => {
+              const isBlind = (r.flag_rate || 0) === 0;
+              return (
+                <tr key={i}>
+                  <td className="mono">{r.server_name || "—"}</td>
+                  <td className="mono">{r.target_tool || "—"}</td>
+                  <td>{r.call_count}</td>
+                  <td>{r.flagged_count}</td>
+                  <td className={isBlind ? "ubo-lat-warn" : ""}>
+                    {r.flag_rate != null ? `${r.flag_rate}%` : "—"}
+                  </td>
+                  <td>
+                    {isBlind
+                      ? <span style={{color:"var(--amber-ink)",fontSize:10,fontWeight:700,fontFamily:"'Geist Mono',monospace"}}>⚠ BLIND SPOT</span>
+                      : <span style={{color:"var(--green-ink)",fontSize:10,fontWeight:700,fontFamily:"'Geist Mono',monospace"}}>✓ COVERED</span>
+                    }
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{fontSize:10,color:"var(--ink-4)",marginTop:10,lineHeight:1.6}}>
+          <strong>Blind spot</strong> = tool has been called but no governance rule has ever flagged it.
+          Add targeted rules to <code>_RISK_CHECKS</code> in mcp_telemetry_proxy.py or create a suppression
+          if the tool is intentionally low-risk.
+        </div>
+      </div>
+    )}
+  </>);
+}
+
+// ── Session Timeline tab ──────────────────────────────────────────────────────
+
+function TimelineRow({ row }) {
+  const isReq     = row.direction === "request";
+  const hasFlags  = (row.risk_flags || []).length > 0;
+  const ts        = row.ts ? new Date(row.ts) : null;
+  const tier      = row.risk_tier;
+  const tierStyle = tier ? (_UBO_TIER_STYLE[tier] || _UBO_TIER_STYLE.LOW) : null;
+  return (
+    <div style={{
+      display:"flex", alignItems:"center", gap:6, padding:"5px 0",
+      borderBottom:"1px solid var(--line)", fontSize:10,
+    }}>
+      <span style={{fontSize:9,color:"var(--ink-4)",fontFamily:"'Geist Mono',monospace",flexShrink:0,width:60}}>
+        {ts ? ts.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}) : "—"}
+      </span>
+      <span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,flexShrink:0,
+        background: isReq ? "var(--blue-soft)" : "var(--violet-soft,#ede9fe)",
+        color:      isReq ? "var(--blue-ink)"  : "var(--violet-ink,#5b21b6)"}}>
+        {isReq ? "→ REQ" : "← RES"}
+      </span>
+      <span style={{fontFamily:"'Geist Mono',monospace",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--ink-1)"}}>
+        {row.target_tool || row.method || "—"}
+      </span>
+      {row.execution_time_ms != null && (
+        <span style={{fontSize:9,color:"var(--ink-4)",flexShrink:0}}>{row.execution_time_ms}ms</span>
+      )}
+      {row.status && (
+        <span style={{fontSize:9,fontWeight:700,color: row.status === "error" ? "var(--red-ink)" : "var(--green-ink)",flexShrink:0}}>
+          {row.status.toUpperCase()}
+        </span>
+      )}
+      {hasFlags && (row.risk_flags||[]).slice(0,2).map((f, fi) => {
+        const fc = _FLAG_COLOR[f] || {bg:"var(--surface-2)",ink:"var(--ink-2)"};
+        return (
+          <span key={fi} style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,flexShrink:0,
+            background:fc.bg,color:fc.ink,fontFamily:"'Geist Mono',monospace"}}>{f}</span>
+        );
+      })}
+      {tierStyle && (
+        <span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,flexShrink:0,
+          background:tierStyle.bg,color:tierStyle.ink}}>{tier}</span>
+      )}
+      {row.final_verdict && (
+        <span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,flexShrink:0,
+          ...((_UBO_VERDICT_STYLE[row.final_verdict]||_UBO_VERDICT_STYLE.CLEAR))}}>{row.final_verdict}</span>
+      )}
+    </div>
+  );
+}
+
+function TimelineTab({ adjudicated, loading }) {
+  const [sessionId, setSessionId] = useState(null);
+  const [timeline,  setTimeline]  = useState([]);
+  const [tlLoading, setTlLoading] = useState(false);
+
+  // Unique sessions from adjudicated data, most recent first
+  const sessions = useMemo(() => {
+    const seen = new Set();
+    const out  = [];
+    for (const r of adjudicated) {
+      if (r.session_id && !seen.has(r.session_id)) {
+        seen.add(r.session_id);
+        out.push(r);
+      }
+    }
+    return out.slice(0, 10);
+  }, [adjudicated]);
+
+  async function loadTimeline(sid) {
+    setSessionId(sid);
+    setTlLoading(true);
+    try {
+      const res = await fetch(`${_uboBase()}/observability/session/${sid}/timeline`);
+      if (res.ok) { const d = await res.json(); setTimeline(d.rows || []); }
+    } catch (_) {}
+    setTlLoading(false);
+  }
+
+  return (<>
+    <div className="bb-section-sep">
+      <span>SESSION TIMELINE</span>
+      <span>{sessions.length} SESSIONS WITH ADJUDICATIONS</span>
+    </div>
+    <div style={{padding:"0 18px 8px"}}>
+      {sessions.length === 0 ? (
+        <div style={{fontSize:11,color:"var(--ink-4)",padding:"8px 0"}}>
+          No sessions with adjudicated calls yet. Sessions appear here once the UBO pipeline processes flagged telemetry.
+        </div>
+      ) : (
+        <div className="cem-toolbar">
+          {sessions.map(r => (
+            <button key={r.session_id}
+              className={"cem-filter" + (sessionId === r.session_id ? " active" : "")}
+              onClick={() => loadTimeline(r.session_id)}>
+              {r.session_id.slice(0,8)}…{r.server_name ? ` [${r.server_name}]` : ""}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+    {sessionId && (
+      tlLoading ? (
+        <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
+          <span className="spin"/> Loading timeline…
+        </div>
+      ) : timeline.length === 0 ? (
+        <Empty>No telemetry rows found for this session.</Empty>
+      ) : (
+        <div style={{padding:"0 18px 18px"}}>
+          <div style={{fontSize:9,fontWeight:700,color:"var(--ink-4)",fontFamily:"'Geist Mono',monospace",
+            letterSpacing:".06em",marginBottom:6}}>
+            SESSION {sessionId.slice(0,8).toUpperCase()} — {timeline.length} EVENTS
+          </div>
+          {timeline.map((row, i) => <TimelineRow key={i} row={row} />)}
+        </div>
+      )
+    )}
+  </>);
+}
+
+// ── Suppressions tab ──────────────────────────────────────────────────────────
+
+function SuppressionsTab({ suppressions, onAdd, onDelete }) {
+  const [showForm,  setShowForm]  = useState(false);
+  const [tool,      setTool]      = useState("");
+  const [server,    setServer]    = useState("");
+  const [argsHash,  setArgsHash]  = useState("");
+  const [reason,    setReason]    = useState("");
+  const [busy,      setBusy]      = useState(false);
+
+  async function handleAdd(e) {
+    e.preventDefault();
+    setBusy(true);
+    await onAdd({
+      target_tool:    tool.trim()     || undefined,
+      server_name:    server.trim()   || undefined,
+      tool_args_hash: argsHash.trim() || undefined,
+      reason:         reason.trim()   || "Operator suppression",
+    });
+    setBusy(false);
+    setShowForm(false);
+    setTool(""); setServer(""); setArgsHash(""); setReason("");
+  }
+
+  const active = suppressions.filter(s => s.active);
+  return (<>
+    <div className="bb-section-sep">
+      <span>SUPPRESSION ALLOWLIST</span>
+      <span>{active.length} ACTIVE RULES</span>
+    </div>
+    <div style={{padding:"0 18px 18px"}}>
+      <div style={{marginBottom:10}}>
+        <button className="btn btn-sm btn-primary" onClick={() => setShowForm(s => !s)}>
+          {showForm ? "Cancel" : "+ Add Rule"}
+        </button>
+      </div>
+
+      {showForm && (
+        <form onSubmit={handleAdd} style={{
+          background:"var(--surface-1)",border:"1px solid var(--line)",borderRadius:6,
+          padding:"12px 14px",marginBottom:12,display:"flex",flexDirection:"column",gap:8,
+        }}>
+          <div style={{fontSize:11,fontWeight:700,color:"var(--ink-2)",marginBottom:2}}>New Suppression Rule</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {[
+              [tool, setTool, "Tool name (e.g. get_company)"],
+              [server, setServer, "Server name (e.g. edgar)"],
+            ].map(([val, set, ph], i) => (
+              <input key={i} value={val} onChange={e => set(e.target.value)}
+                placeholder={ph} style={{fontSize:11,padding:"5px 8px",borderRadius:4,
+                  border:"1px solid var(--line)",background:"var(--surface-2)",color:"var(--ink-1)"}}/>
+            ))}
+          </div>
+          <input value={argsHash} onChange={e => setArgsHash(e.target.value)}
+            placeholder="Args hash (SHA-256, optional — leave blank to match any args)"
+            style={{fontSize:11,padding:"5px 8px",borderRadius:4,border:"1px solid var(--line)",
+              background:"var(--surface-2)",color:"var(--ink-1)",fontFamily:"'Geist Mono',monospace"}}/>
+          <input value={reason} onChange={e => setReason(e.target.value)}
+            placeholder="Reason (e.g. read-only tool, reviewed and approved)"
+            style={{fontSize:11,padding:"5px 8px",borderRadius:4,border:"1px solid var(--line)",
+              background:"var(--surface-2)",color:"var(--ink-1)"}}/>
+          <div style={{fontSize:10,color:"var(--ink-4)"}}>
+            Leave tool/server blank to match <em>any</em>. At least one field must be filled.
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            <button type="submit" className="btn btn-sm btn-primary" disabled={busy || (!tool && !server && !argsHash)}>
+              {busy ? <><span className="spin"/> Saving…</> : "Save Rule"}
+            </button>
+            <button type="button" className="btn btn-sm" onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {active.length === 0 ? (
+        <div style={{fontSize:11,color:"var(--ink-4)",padding:"8px 0"}}>
+          No active suppression rules. Add a rule to auto-clear matching flagged calls without running the UBO pipeline.
+        </div>
+      ) : (
+        <table className="ubo-lat-table">
+          <thead>
+            <tr>
+              <th>Server</th><th>Tool</th><th>Args Hash</th><th>Reason</th><th>Created</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {active.map((s, i) => (
+              <tr key={s.id ?? i}>
+                <td className="mono">{s.server_name || <span style={{color:"var(--ink-4)"}}>any</span>}</td>
+                <td className="mono">{s.target_tool || <span style={{color:"var(--ink-4)"}}>any</span>}</td>
+                <td className="mono" style={{fontSize:9,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis"}}>
+                  {s.tool_args_hash ? s.tool_args_hash.slice(0,12) + "…" : <span style={{color:"var(--ink-4)"}}>any</span>}
+                </td>
+                <td style={{maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:10}}>
+                  {s.reason || "—"}
+                </td>
+                <td style={{fontSize:9,color:"var(--ink-4)"}}>
+                  {s.created_at ? new Date(s.created_at).toLocaleDateString() : "—"}
+                </td>
+                <td>
+                  <button className="btn btn-sm" style={{fontSize:10,padding:"2px 8px"}}
+                    onClick={() => onDelete(s.id)}>✕</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  </>);
 }
 
 // Pulse keyframe injected once for the live indicator dot
