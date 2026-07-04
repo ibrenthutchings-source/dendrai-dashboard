@@ -957,6 +957,38 @@ FROM observability.mcp_telemetry
 WHERE direction = 'response'
   AND target_tool IS NOT NULL
 GROUP BY server_name, target_tool;
+
+-- Pre-execution governance holds (written by the telemetry proxy, resolved by operators)
+CREATE TABLE IF NOT EXISTS observability.tool_call_holds (
+    id              BIGSERIAL    PRIMARY KEY,
+    session_id      UUID         NOT NULL,
+    message_id      TEXT,
+    target_tool     VARCHAR(128) NOT NULL,
+    tool_args_hash  CHAR(64),
+    status          VARCHAR(16)  NOT NULL DEFAULT 'PENDING'
+                                 CHECK (status IN ('PENDING','APPROVED','DENIED','EXPIRED')),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ,
+    resolved_by     VARCHAR(128)
+);
+CREATE INDEX IF NOT EXISTS idx_holds_pending
+    ON observability.tool_call_holds (status, created_at DESC)
+    WHERE status = 'PENDING';
+
+-- Suppression allowlist — known-good (tool, args-hash) pairs that skip the pipeline
+CREATE TABLE IF NOT EXISTS observability.tool_call_suppressions (
+    id              BIGSERIAL    PRIMARY KEY,
+    server_name     VARCHAR(128),
+    target_tool     VARCHAR(128),
+    tool_args_hash  CHAR(64),
+    reason          TEXT,
+    active          BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by      VARCHAR(128)
+);
+CREATE INDEX IF NOT EXISTS idx_suppress_active
+    ON observability.tool_call_suppressions (target_tool, server_name)
+    WHERE active;
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
