@@ -350,8 +350,10 @@ _AUTH_EXEMPT = (
     "/docs",
     "/openapi.json",
     "/redoc",
-    "/mcp",      # MCP Streamable-HTTP — Claude authenticates separately
-    "/github/",  # GitHub webhook uses its own HMAC verification
+    "/mcp",           # MCP Streamable-HTTP — Claude authenticates separately
+    "/github/",       # GitHub webhook uses its own HMAC verification
+    "/rss/feeds",     # read-only feed registry, fetched at JS module init time
+    "/scoring/config", # read-only scoring vocabulary, fetched at JS module init time
 )
 
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
