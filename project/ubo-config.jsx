@@ -5,16 +5,18 @@
    ============================================================ */
 
 const UBO_SERVER_TYPES = [
-  { id: "edgar",               label: "EDGAR / SEC" },
-  { id: "fred",                label: "FRED Macro" },
-  { id: "rss-news",            label: "RSS / News" },
-  { id: "oracle-fusion",       label: "Oracle Fusion" },
-  { id: "policy-as-code",      label: "Policy-as-Code" },
-  { id: "controls-as-code",    label: "Controls-as-Code" },
-  { id: "predictive-analytics",label: "Predictive Analytics" },
-  { id: "token-cost",          label: "Token Cost" },
-  { id: "custom",              label: "Custom" },
+  { id: "saviynt",              label: "Saviynt IGA" },
+  { id: "oracle-fusion",        label: "Oracle Fusion ERP" },
+  { id: "sap",                  label: "SAP" },
+  { id: "servicenow",           label: "ServiceNow" },
+  { id: "workday",              label: "Workday" },
+  { id: "entra",                label: "Microsoft Entra ID" },
+  { id: "github",               label: "GitHub" },
+  { id: "mcp",                  label: "MCP Server" },
+  { id: "custom",               label: "Custom / Generic" },
 ];
+
+const UBO_MCP_TYPE = "mcp";
 
 const UBO_GOVERNANCE_TIERS = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
@@ -94,12 +96,80 @@ function EmptyState({ icon, title, sub }) {
   );
 }
 
+// ── API key display (copy-to-clipboard with reveal toggle) ───────────────────
+
+function ApiKeyDisplay({ apiKey, ingestBase }) {
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  if (!apiKey) return <span style={{ fontSize: 10, color: "var(--ink-4)" }}>—</span>;
+
+  const masked = apiKey.slice(0, 8) + "••••••••••••••••••••••••••••";
+  const display = revealed ? apiKey : masked;
+
+  function copy(text) {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <code style={{
+          fontSize: 10,
+          fontFamily: "var(--mono, monospace)",
+          background: "var(--surface-2)",
+          padding: "2px 6px",
+          borderRadius: 3,
+          color: "var(--ink-2)",
+          letterSpacing: "0.03em",
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}>{display}</code>
+        <button className="btn btn-sm btn-ghost" onClick={() => setRevealed(r => !r)}
+          style={{ padding: "2px 6px", fontSize: 10 }} title={revealed ? "Hide" : "Reveal"}>
+          {revealed ? "Hide" : "Show"}
+        </button>
+        <button className="btn btn-sm btn-ghost" onClick={() => copy(apiKey)}
+          style={{ padding: "2px 6px", fontSize: 10, color: copied ? "var(--green)" : undefined }}>
+          {copied ? "✓" : "Copy key"}
+        </button>
+      </div>
+      {ingestBase && (
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <code style={{
+            fontSize: 9,
+            fontFamily: "var(--mono, monospace)",
+            color: "var(--ink-4)",
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={`POST ${ingestBase}/telemetry/ingest`}>
+            POST {ingestBase}/telemetry/ingest
+          </code>
+          <button className="btn btn-sm btn-ghost"
+            onClick={() => copy(`POST ${ingestBase}/telemetry/ingest\nAuthorization: Bearer ${apiKey}`)}
+            style={{ padding: "2px 6px", fontSize: 10 }}>
+            Copy curl
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Monitored Systems ──────────────────────────────────────────────────────────
 
 const SYSTEM_BLANK = {
   display_name: "",
   server_name: "",
-  server_type: "custom",
+  server_type: "saviynt",
   description: "",
   active: true,
   governance_tiers: ["CRITICAL", "HIGH", "MEDIUM"],
@@ -152,19 +222,19 @@ function SystemForm({ initial, onSave, onCancel, saving }) {
           <label className="field-label">Display name *</label>
           <input className="input" value={form.display_name}
             onChange={e => set("display_name", e.target.value)}
-            placeholder="e.g. EDGAR Financial Data" />
+            placeholder="e.g. Saviynt Production" />
         </div>
         <div className="field" style={{ marginBottom: 0 }}>
-          <label className="field-label">Server tag *
-            <span style={{ fontWeight: 400 }}> — matches proxy --name arg</span>
+          <label className="field-label">
+            {form.server_type === UBO_MCP_TYPE ? "Server tag * — matches proxy --name" : "System identifier *"}
           </label>
           <input className="input" value={form.server_name}
             onChange={e => set("server_name", e.target.value)}
-            placeholder="edgar"
+            placeholder={form.server_type === UBO_MCP_TYPE ? "edgar" : "saviynt-prod"}
             style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
         </div>
         <div className="field" style={{ marginBottom: 0 }}>
-          <label className="field-label">Server type</label>
+          <label className="field-label">System type</label>
           <select className="input" value={form.server_type} onChange={e => set("server_type", e.target.value)}>
             {UBO_SERVER_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
@@ -207,16 +277,18 @@ function SystemForm({ initial, onSave, onCancel, saving }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div className="field" style={{ marginBottom: 0 }}>
-          <label className="field-label">Blocking tools override
-            <span style={{ fontWeight: 400 }}> — comma-separated; empty = use global default</span>
-          </label>
-          <input className="input" value={form.blocking_tools}
-            onChange={e => set("blocking_tools", e.target.value)}
-            placeholder="shell,exec_sql,drop"
-            style={{ fontFamily: "var(--mono, monospace)", fontSize: 11 }} />
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: form.server_type === UBO_MCP_TYPE ? "1fr 1fr" : "1fr", gap: 10 }}>
+        {form.server_type === UBO_MCP_TYPE && (
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="field-label">Blocking tools override
+              <span style={{ fontWeight: 400 }}> — comma-separated; empty = use global default</span>
+            </label>
+            <input className="input" value={form.blocking_tools}
+              onChange={e => set("blocking_tools", e.target.value)}
+              placeholder="shell,exec_sql,drop"
+              style={{ fontFamily: "var(--mono, monospace)", fontSize: 11 }} />
+          </div>
+        )}
         <div className="field" style={{ marginBottom: 0 }}>
           <label className="field-label">Alert webhook override
             <span style={{ fontWeight: 400 }}> — empty = use global</span>
@@ -249,6 +321,7 @@ function SystemForm({ initial, onSave, onCancel, saving }) {
 
 function SystemRow({ sys, onEdit, onDelete, onToggle }) {
   const tiers = sys.governance_tiers || [];
+  const isMcp = sys.server_type === UBO_MCP_TYPE;
   const age = sys.last_seen
     ? (() => {
         const ms = Date.now() - new Date(sys.last_seen).getTime();
@@ -262,39 +335,50 @@ function SystemRow({ sys, onEdit, onDelete, onToggle }) {
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "20px 1fr 140px 110px 180px 100px 80px",
-      alignItems: "center",
+      gridTemplateColumns: "20px 1fr 110px 180px 140px 80px",
+      alignItems: "start",
       gap: 10,
-      padding: "8px 12px",
+      padding: "10px 12px",
       borderBottom: "1px solid var(--line)",
       fontSize: 12,
       opacity: sys.active ? 1 : 0.55,
     }}>
-      <StatusDot active={sys.active} />
+      <div style={{ paddingTop: 2 }}><StatusDot active={sys.active} /></div>
       <div>
         <div style={{ fontWeight: 600 }}>{sys.display_name}</div>
+        <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 1 }}>
+          <span style={{
+            fontFamily: "var(--mono, monospace)",
+            background: "var(--acc-soft)",
+            color: "var(--acc-ink)",
+            padding: "1px 5px",
+            borderRadius: 3,
+            marginRight: 5,
+          }}>{sys.server_name}</span>
+          {UBO_SERVER_TYPES.find(t => t.id === sys.server_type)?.label || sys.server_type}
+          {isMcp && <span style={{ marginLeft: 5, opacity: 0.6 }}>· proxy</span>}
+        </div>
         {sys.description && (
-          <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 1 }}>{sys.description}</div>
+          <div style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 2 }}>{sys.description}</div>
         )}
       </div>
-      <div style={{ fontFamily: "var(--mono, monospace)", fontSize: 11, color: "var(--acc-ink)",
-        background: "var(--acc-soft)", padding: "2px 6px", borderRadius: 4, justifySelf: "start" }}>
-        {sys.server_name}
-      </div>
-      <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
-        {UBO_SERVER_TYPES.find(t => t.id === sys.server_type)?.label || sys.server_type}
-      </div>
-      <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-        {tiers.map(t => <TierChip key={t} tier={t} />)}
-      </div>
-      <div style={{ fontSize: 10, color: "var(--ink-4)", fontFamily: "var(--mono, monospace)" }}>
-        <div>{sys.total_calls || 0} calls</div>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", fontFamily: "var(--mono, monospace)", paddingTop: 2 }}>
+        <div>{sys.total_calls || 0} events</div>
         <div style={{ color: sys.flagged_calls > 0 ? "var(--amber-ink)" : "var(--ink-4)" }}>
           {sys.flagged_calls || 0} flagged
         </div>
         <div>{age}</div>
       </div>
-      <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
+      <div style={{ paddingTop: 2 }}>
+        {!isMcp && sys.ingest_api_key
+          ? <ApiKeyDisplay apiKey={sys.ingest_api_key} ingestBase={_uboConfigBase()} />
+          : <span style={{ fontSize: 10, color: "var(--ink-4)" }}>MCP proxy telemetry</span>
+        }
+      </div>
+      <div style={{ display: "flex", gap: 3, flexWrap: "wrap", paddingTop: 2 }}>
+        {tiers.map(t => <TierChip key={t} tier={t} />)}
+      </div>
+      <div style={{ display: "flex", gap: 5, justifyContent: "flex-end", paddingTop: 2 }}>
         <button className="btn btn-sm btn-ghost" onClick={() => onToggle(sys)}
           title={sys.active ? "Deactivate" : "Activate"}
           style={{ padding: "3px 7px", fontSize: 10 }}>
@@ -400,9 +484,10 @@ function MonitoredSystemsCard() {
         <div>
           <div className="cfg-card-title">Monitored Systems</div>
           <div className="cfg-card-sub">
-            MCP servers registered for UBO Governance Brain telemetry and adjudication.
-            Each entry maps to the <code style={{fontSize:10}}>--name</code> tag used when
-            launching <code style={{fontSize:10}}>mcp_telemetry_proxy.py</code>.
+            Any system can send telemetry to the UBO Governance Brain — Saviynt, SAP, Oracle Fusion,
+            ServiceNow, Workday, Entra ID, GitHub, or any custom system. Each non-MCP system receives
+            a unique ingest API key for <code style={{fontSize:10}}>POST /observability/telemetry/ingest</code>.
+            MCP servers use the telemetry proxy instead.
           </div>
         </div>
         <button className="btn btn-sm" onClick={() => { setAdding(true); setEditingId(null); }}>
@@ -432,13 +517,13 @@ function MonitoredSystemsCard() {
         <EmptyState
           icon="🛡"
           title="No systems registered"
-          sub="Add a system to start receiving UBO Governance Brain coverage for that MCP server's telemetry." />
+          sub="Add any system — Saviynt, SAP, Oracle Fusion, ServiceNow, Workday, Entra ID, GitHub, or an MCP server — to start receiving UBO Governance Brain coverage." />
       ) : (
         <>
           {systems.length > 0 && (
             <div style={{
               display: "grid",
-              gridTemplateColumns: "20px 1fr 140px 110px 180px 100px 80px",
+              gridTemplateColumns: "20px 1fr 110px 180px 140px 80px",
               gap: 10,
               padding: "5px 12px 5px",
               fontSize: 10,
@@ -448,11 +533,10 @@ function MonitoredSystemsCard() {
               fontWeight: 600,
             }}>
               <div/>
-              <div>Name</div>
-              <div>Server tag</div>
-              <div>Type</div>
-              <div>Gov. tiers</div>
+              <div>System</div>
               <div>Activity</div>
+              <div>Ingest key</div>
+              <div>Gov. tiers</div>
               <div/>
             </div>
           )}
@@ -480,8 +564,9 @@ function MonitoredSystemsCard() {
       )}
 
       <div className="mono" style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 10, lineHeight: 1.5 }}>
-        Activity counts are derived from <code>observability.mcp_telemetry</code>.
-        Last-seen timestamp updates each time the proxy relays a call for that server tag.
+        Activity counts combine <code>observability.mcp_telemetry</code> (MCP proxy) and
+        <code> observability.system_telemetry</code> (REST ingest). Non-MCP systems push events to{" "}
+        <code>POST /api/mcp/observability/telemetry/ingest</code> using their ingest API key as a Bearer token.
       </div>
     </section>
   );

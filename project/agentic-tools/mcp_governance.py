@@ -979,7 +979,7 @@ async def delete_suppression(suppression_id: int):
 # ── Monitored systems CRUD ─────────────────────────────────────────────────────
 
 def _fetch_systems() -> list[dict]:
-    """Return all monitored systems joined with last-seen timestamp from telemetry."""
+    """Return all monitored systems with activity stats unioned from both telemetry tables."""
     if not db.is_available():
         return []
     try:
@@ -992,15 +992,30 @@ def _fetch_systems() -> list[dict]:
                         s.description, s.active, s.governance_tiers,
                         s.blocking_tools, s.alert_webhook,
                         s.created_at, s.updated_at, s.created_by,
-                        MAX(t.ts) AS last_seen,
-                        COUNT(t.id)  AS total_calls,
-                        COUNT(t.id) FILTER (WHERE t.risk_flags IS NOT NULL
-                                              AND array_length(t.risk_flags, 1) > 0
-                        ) AS flagged_calls
+                        s.ingest_api_key,
+                        COALESCE(mt.total_calls,   0) + COALESCE(st.total_calls,   0) AS total_calls,
+                        COALESCE(mt.flagged_calls, 0) + COALESCE(st.flagged_calls, 0) AS flagged_calls,
+                        GREATEST(mt.last_seen, st.last_seen) AS last_seen
                     FROM observability.monitored_systems s
-                    LEFT JOIN observability.mcp_telemetry t
-                           ON t.server_name = s.server_name
-                    GROUP BY s.id
+                    LEFT JOIN (
+                        SELECT server_name,
+                               COUNT(*)  AS total_calls,
+                               COUNT(*) FILTER (WHERE risk_flags IS NOT NULL
+                                                  AND array_length(risk_flags, 1) > 0) AS flagged_calls,
+                               MAX(ts)  AS last_seen
+                        FROM observability.mcp_telemetry
+                        GROUP BY server_name
+                    ) mt ON mt.server_name = s.server_name
+                    LEFT JOIN (
+                        SELECT server_name,
+                               COUNT(*)  AS total_calls,
+                               COUNT(*) FILTER (WHERE array_length(risk_flags, 1) > 0) AS flagged_calls,
+                               MAX(created_at) AS last_seen
+                        FROM observability.system_telemetry
+                        GROUP BY server_name
+                    ) st ON st.server_name = s.server_name
+                    GROUP BY s.id, mt.total_calls, mt.flagged_calls, mt.last_seen,
+                             st.total_calls, st.flagged_calls, st.last_seen
                     ORDER BY s.active DESC, s.display_name ASC
                     """
                 )
@@ -1011,6 +1026,8 @@ def _fetch_systems() -> list[dict]:
                     for tf in ("created_at", "updated_at", "last_seen"):
                         if d.get(tf) and hasattr(d[tf], "isoformat"):
                             d[tf] = d[tf].isoformat()
+                    if d.get("ingest_api_key"):
+                        d["ingest_api_key"] = str(d["ingest_api_key"])
                     rows.append(d)
                 return rows
     except Exception as exc:
@@ -1129,6 +1146,257 @@ def _delete_system(system_id: int) -> bool:
     except Exception as exc:
         logger.warning("_delete_system error (id=%s): %s", system_id, exc)
         return False
+
+
+# ── Generic system telemetry ───────────────────────────────────────────────────
+# Enterprise systems (Saviynt, SAP, Oracle Fusion, ServiceNow, etc.) authenticate
+# with their per-system ingest_api_key and POST events to /observability/telemetry/ingest.
+
+_PRIVILEGED_ACTIONS = {
+    "grant_role", "revoke_role", "assign_role", "reset_password", "modify_permissions",
+    "override", "bypass", "delete_audit", "provision_admin", "disable_user",
+    "enable_user", "unlock_account", "approve_access", "elevate_privilege",
+}
+_PRIVILEGED_RESOURCE_KW = {"admin", "root", "superuser", "privileged", "elevated", "sysadmin", "basis"}
+_SENSITIVE_RESOURCE_KW  = {"financial", "payroll", "pii", "ssn", "credit", "audit_log", "compliance", "salary"}
+_SOD_KW                 = {"sod", "segregation", "conflict", "violation", "dual_control", "incompatible"}
+
+
+def _detect_system_flags(event: dict) -> list[str]:
+    """Apply generic detection rules to a system telemetry event. Returns risk flag list."""
+    flags: set[str] = set()
+    action   = (event.get("action")   or "").lower()
+    resource = (event.get("resource") or "").lower()
+    severity = (event.get("severity") or "INFO").upper()
+    payload  = event.get("payload") or {}
+    payload_str = str(payload).lower()
+
+    if action in _PRIVILEGED_ACTIONS or any(k in resource for k in _PRIVILEGED_RESOURCE_KW):
+        flags.add("privileged_access")
+    if any(k in resource for k in _SENSITIVE_RESOURCE_KW):
+        flags.add("sensitive_resource")
+    if (payload.get("sod_violation") or any(k in payload_str for k in _SOD_KW)
+            or "sod" in (event.get("event_type") or "").lower()):
+        flags.add("sod_violation")
+    if severity == "CRITICAL" or payload.get("policy_violation"):
+        flags.add("policy_violation")
+    return sorted(flags)
+
+
+def _get_system_by_api_key(api_key: str) -> dict | None:
+    """Look up a monitored system by its ingest API key."""
+    if not db.is_available() or not api_key:
+        return None
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, display_name, server_name, server_type, active,
+                           governance_tiers, alert_webhook
+                    FROM observability.monitored_systems
+                    WHERE ingest_api_key = %s::uuid AND active = TRUE
+                    """,
+                    (api_key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+    except Exception as exc:
+        logger.warning("_get_system_by_api_key error: %s", exc)
+        return None
+
+
+def _ingest_system_event(
+    server_name: str,
+    system_type: str,
+    event_type: str,
+    event_id: str | None,
+    actor: str | None,
+    action: str | None,
+    resource: str | None,
+    severity: str,
+    risk_flags: list[str],
+    raw_payload: dict | None,
+    source_ip: str | None,
+) -> int | None:
+    """Insert a single event into system_telemetry. Returns new row id."""
+    if not db.is_available():
+        return None
+    try:
+        import json as _json
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.system_telemetry
+                        (server_name, system_type, event_type, event_id, actor,
+                         action, resource, severity, risk_flags, raw_payload, source_ip)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        server_name[:128],
+                        system_type[:64],
+                        event_type[:128],
+                        (event_id or None),
+                        (actor or None),
+                        (action or None),
+                        (resource or None),
+                        severity[:32],
+                        risk_flags or [],
+                        (_json.dumps(raw_payload) if raw_payload else None),
+                        (source_ip or None),
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.warning("_ingest_system_event error: %s", exc)
+        return None
+
+
+def _fetch_system_telemetry(
+    server_name: str | None = None,
+    severity: str | None = None,
+    flagged_only: bool = False,
+    limit: int = 100,
+) -> list[dict]:
+    """Fetch recent events from system_telemetry with optional filters."""
+    if not db.is_available():
+        return []
+    try:
+        filters = []
+        params: list = []
+        if server_name:
+            filters.append("server_name = %s")
+            params.append(server_name)
+        if severity:
+            filters.append("severity = %s")
+            params.append(severity.upper())
+        if flagged_only:
+            filters.append("array_length(risk_flags, 1) > 0")
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, server_name, system_type, event_type, event_id,
+                           actor, action, resource, severity, risk_flags,
+                           raw_payload, source_ip, created_at
+                    FROM observability.system_telemetry
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("created_at") and hasattr(d["created_at"], "isoformat"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_system_telemetry error: %s", exc)
+        return []
+
+
+# ── Telemetry ingest endpoint ──────────────────────────────────────────────────
+
+@router.post("/telemetry/ingest")
+async def ingest_system_telemetry(request: Request, body: dict = Body(...)):
+    """
+    Receive a telemetry event from any registered system.
+
+    Authentication: Authorization: Bearer <ingest_api_key>
+    The ingest_api_key is shown per system in the UBO Configuration screen.
+
+    Required fields: server_name, event_type
+    Optional fields: event_id, actor, action, resource, severity (INFO/WARNING/HIGH/CRITICAL),
+                     payload (arbitrary JSON object)
+
+    Example (Saviynt access provisioning):
+        {
+          "server_name": "saviynt-prod",
+          "event_type":  "access_provisioned",
+          "event_id":    "SAV-12345",
+          "actor":       "john.doe@company.com",
+          "action":      "GRANT_ROLE",
+          "resource":    "SAP_BASIS_ADMIN",
+          "severity":    "HIGH",
+          "payload":     { "sod_violation": true, "approver": "jane.smith@company.com" }
+        }
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization: Bearer <ingest_api_key>")
+    api_key = auth_header[len("Bearer "):].strip()
+
+    system = await asyncio.to_thread(_get_system_by_api_key, api_key)
+    if not system:
+        raise HTTPException(status_code=401, detail="Invalid ingest API key")
+
+    server_name = body.get("server_name", "")
+    if server_name and server_name != system["server_name"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"server_name '{server_name}' does not match the key's registered system '{system['server_name']}'",
+        )
+    server_name = system["server_name"]
+
+    event_type = (body.get("event_type") or "").strip()
+    if not event_type:
+        raise HTTPException(status_code=422, detail="event_type is required")
+
+    flags = _detect_system_flags(body)
+    source_ip = request.client.host if request.client else None
+
+    row_id = await asyncio.to_thread(
+        _ingest_system_event,
+        server_name,
+        system["server_type"],
+        event_type,
+        body.get("event_id"),
+        body.get("actor"),
+        body.get("action"),
+        body.get("resource"),
+        (body.get("severity") or "INFO").upper(),
+        flags,
+        body.get("payload"),
+        source_ip,
+    )
+
+    return {
+        "ok": True,
+        "id": row_id,
+        "server_name": server_name,
+        "flags": flags,
+    }
+
+
+@router.get("/telemetry")
+async def list_system_telemetry(
+    server_name: str = Query(default=""),
+    severity: str = Query(default=""),
+    flagged_only: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """Recent telemetry events from all registered (non-MCP) systems."""
+    rows = await asyncio.to_thread(
+        _fetch_system_telemetry,
+        server_name or None,
+        severity or None,
+        flagged_only,
+        limit,
+    )
+    return {"rows": rows, "count": len(rows)}
 
 
 @router.get("/systems")
