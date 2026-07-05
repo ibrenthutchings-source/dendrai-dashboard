@@ -1008,6 +1008,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_systems_server_name
     ON observability.monitored_systems (server_name)
     WHERE active;
 
+-- Per-system ingest API key (added after initial release — idempotent)
+ALTER TABLE observability.monitored_systems
+    ADD COLUMN IF NOT EXISTS ingest_api_key UUID NOT NULL DEFAULT gen_random_uuid();
+
+-- Generic system telemetry: any registered system pushes events here via REST.
+-- Enterprise systems (Saviynt, SAP, Oracle Fusion, ServiceNow, etc.) authenticate
+-- with their per-system ingest_api_key and POST structured events to /observability/telemetry/ingest.
+CREATE TABLE IF NOT EXISTS observability.system_telemetry (
+    id              BIGSERIAL    PRIMARY KEY,
+    server_name     VARCHAR(128) NOT NULL,
+    system_type     VARCHAR(64)  NOT NULL DEFAULT 'custom',
+    event_type      VARCHAR(128) NOT NULL,
+    event_id        VARCHAR(256),
+    actor           VARCHAR(256),
+    action          VARCHAR(256),
+    resource        VARCHAR(512),
+    severity        VARCHAR(32)  NOT NULL DEFAULT 'INFO',
+    risk_flags      TEXT[]       NOT NULL DEFAULT '{}',
+    raw_payload     JSONB,
+    source_ip       VARCHAR(64),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system_telemetry_server
+    ON observability.system_telemetry (server_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_telemetry_created
+    ON observability.system_telemetry (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_telemetry_flags
+    ON observability.system_telemetry USING GIN (risk_flags);
+
 CREATE TABLE IF NOT EXISTS observability.pac_repositories (
     id           BIGSERIAL    PRIMARY KEY,
     display_name VARCHAR(128) NOT NULL,
