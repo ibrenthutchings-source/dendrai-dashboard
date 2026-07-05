@@ -177,7 +177,7 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
   // Seed forecast start at last history value so lines and band connect cleanly
   data[history.length - 1] = { ...data[history.length - 1], base: lastH.v, lo: lastH.v, hiMinusLo: 0 };
 
-  const yAxisW = (unit === "%" && dp >= 2) ? 54 : (unit === "$M") ? 50 : 44;
+  const yAxisW = (unit === "%" && dp >= 2) ? 54 : (unit === "$M") ? (dp >= 2 ? 62 : 50) : 44;
 
   const fmtMt = (v, p = 2) => (v == null || !Number.isFinite(v)) ? '—' : v.toFixed(p);
   const mapeColor = v => v == null ? 'var(--ink-3)' : v < 5 ? 'var(--green-ink)' : v < 15 ? 'var(--amber-ink)' : 'var(--red-ink)';
