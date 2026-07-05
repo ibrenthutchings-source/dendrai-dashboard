@@ -90,6 +90,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
       },
+      // Auth endpoints — keep /auth/ prefix; FastAPI router is prefixed "/auth"
+      '/auth': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
       // Risk Register Review API (reviews, framework search, convert-to-code, upload)
       '/api/risk-register': {
         target: 'http://127.0.0.1:8001',
@@ -139,6 +144,10 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
+      },
+      '/auth': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
       },
     },
   },
