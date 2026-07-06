@@ -213,12 +213,13 @@ function App() {
   const [govFetchError, setGovFetchError] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
 
-  // Load-on-demand: if you land on Governance Intelligence without govData in
-  // memory (page reload, or navigating here without rerunning the pipeline),
-  // pull whatever was saved to the DB from a previous run for this ticker
-  // instead of requiring a fresh live EDGAR fetch.
+  // Load-on-demand: if you land on Governance Intelligence, or the Pipeline
+  // screen's Beneish M-Score gauge needs peer data for benchmarking, without
+  // govData/govPeerData in memory (page reload, or navigating here without
+  // rerunning the pipeline) — pull whatever was saved to the DB from a
+  // previous run for this ticker instead of requiring a fresh live EDGAR fetch.
   useEffect(() => {
-    if (activeScreen !== "gov" || govData || govPeerData || govLoading || !cfg.ticker) return;
+    if ((activeScreen !== "gov" && activeScreen !== "pipeline") || govData || govPeerData || govLoading || !cfg.ticker) return;
     setGovLoading(true);
     Promise.allSettled([
       MCP.fetchSavedProxyData(cfg.ticker),
@@ -1589,7 +1590,8 @@ function App() {
                 flowMeta={profile.riskFlow}
                 onOpenMainFlow={() => setActiveScreen("flow")}
                 risks={output.s2?.risks || profile?.risks || []}
-                companyName={profile?.entity?.name || ""} />
+                companyName={profile?.entity?.name || ""}
+                peerData={govPeerData} />
             )}
           </div>
           )}
