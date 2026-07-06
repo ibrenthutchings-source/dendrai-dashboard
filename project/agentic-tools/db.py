@@ -995,7 +995,9 @@ SELECT
     ROUND(AVG(execution_time_ms))                                       AS avg_ms,
     PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY execution_time_ms)    AS p50_ms,
     PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY execution_time_ms)    AS p95_ms,
+    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY execution_time_ms)    AS p99_ms,
     COUNT(*) FILTER (WHERE status = 'error')                           AS error_count,
+    ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'error') / NULLIF(COUNT(*), 0), 2) AS error_pct,
     MIN(ts)                                                             AS first_call_at,
     MAX(ts)                                                             AS last_call_at
 FROM observability.mcp_telemetry
