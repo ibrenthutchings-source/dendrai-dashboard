@@ -237,6 +237,29 @@ window.MCP = (function () {
     return _post('/edgar/peers', { ticker });
   }
 
+  // ── Governance Intelligence — load from DB without a live pipeline run ──────
+  // Both return null on 404 (nothing saved yet for this ticker) instead of throwing,
+  // so callers can treat "no saved data" as a normal, non-error case.
+
+  async function _getSavedOrNull(path) {
+    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
+  async function fetchSavedProxyData(ticker) {
+    return _getSavedOrNull(`/edgar/proxy/${encodeURIComponent(ticker)}`);
+  }
+
+  async function fetchSavedPeerBenchmarks(ticker) {
+    return _getSavedOrNull(`/edgar/peers/${encodeURIComponent(ticker)}`);
+  }
+
   // ── Item 1A enrichment ──────────────────────────────────────────────────────
 
   // Category keywords used to match filing paragraphs to risk register entries.
@@ -552,6 +575,8 @@ window.MCP = (function () {
     fetch8kEvents,
     fetchProxyData,
     fetchPeerBenchmarks,
+    fetchSavedProxyData,
+    fetchSavedPeerBenchmarks,
     enrichRisksFromFactors,
     map8kToCemEvents,
     // AI-augmented (#1–#4b)
