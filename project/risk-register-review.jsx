@@ -153,8 +153,12 @@ function autoMapControls(name, category) {
 
 function initRiskStates(risks) {
   const states = {};
-  for (const r of (risks || [])) {
-    const key = r.id || r.risk_ref;
+  (risks || []).forEach((r, idx) => {
+    // Fallback to a positional key when a risk lacks a stable id/risk_ref
+    // (e.g. rows persisted before predictive_analytics_tool.py assigned one) —
+    // otherwise every such risk collapses onto the same key and silently
+    // shares state with every other id-less risk.
+    const key = r.id || r.risk_ref || `idx-${idx}`;
     const wording = r.current_wording || r.name || "";
     states[key] = {
       included: true,
@@ -162,14 +166,14 @@ function initRiskStates(risks) {
       originalWording: wording,
       reason: "",
     };
-  }
+  });
   return states;
 }
 
 function initControlStates(risks) {
   const states = {};
-  for (const r of (risks || [])) {
-    const key = r.id || r.risk_ref;
+  (risks || []).forEach((r, idx) => {
+    const key = r.id || r.risk_ref || `idx-${idx}`;
     // Use backend-provided auto_controls when present (framework-discovery risks carry these)
     const kwRefs = (r.auto_controls && r.auto_controls.length)
       ? r.auto_controls.filter(ref => CTRL_BY_REF[ref])
@@ -181,7 +185,7 @@ function initControlStates(risks) {
       : [];
     const autoRefs = [...new Set([...kwRefs, ...fwRefs])].slice(0, 6);
     states[key] = { autoMapped: autoRefs, manual: [], generateCode: new Set() };
-  }
+  });
   return states;
 }
 
@@ -802,7 +806,10 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
               const db_ = domainNames[b.id || b.risk_ref] || inferDomain(b);
               return da.localeCompare(db_);
             }).map((r, idx, arr) => {
-              const key      = r.id || r.risk_ref;
+              // Fallback for legacy rows persisted before predictive_analytics_tool.py
+              // assigned stable risk ids — prevents every id-less risk from colliding
+              // onto the same React key and sharing wording/control state.
+              const key      = r.id || r.risk_ref || `idx-${idx}`;
               const state    = riskStates[key] || { wording: r.current_wording || r.name || "", included: true };
               const cs       = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [], generateCode: new Set() };
               const allRefs  = [...(cs.autoMapped || []), ...(cs.manual || [])];
