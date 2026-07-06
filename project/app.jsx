@@ -1728,7 +1728,10 @@ function App() {
           <div className="panel active">
             <ScenariosPanel
               scenarios={profile.scenarios}
-              greySwan={profile.greySwan} />
+              greySwan={profile.greySwan}
+              reverseStress={profile.reverseStress}
+              historicalAnalogs={profile.historicalAnalogs}
+              governanceScenario={profile.governanceScenario} />
           </div>
           )}
 
