@@ -397,27 +397,68 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
 }
 
 // ---------- M-Score gauge ----------
-function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22 }) {
+// peers: [{ ticker, m_score }] — peer benchmarking data from /edgar/peers.
+// Peers plot as muted tick marks on the same scale as the subject company,
+// with a rank + median summary and a sorted chip list below.
+function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22, peers = [] }) {
   // Scale: -4 (left/green) → 0 (right/red). Visual mapping: clamp.
   const min = -4, max = 0;
   const pct = clamp((m - min) / (max - min), 0, 1);
   const band = m > redThreshold ? "RED" : m > amberThreshold ? "AMBER" : "GREEN";
   const bandColor = band === "RED" ? "var(--red)" : band === "AMBER" ? "var(--amber)" : "var(--green)";
   const bandInk   = band === "RED" ? "var(--red-ink)" : band === "AMBER" ? "var(--amber-ink)" : "var(--green-ink)";
+
+  const peerScores = (peers || [])
+    .filter(p => p.m_score != null && Number.isFinite(p.m_score))
+    .map(p => ({ ticker: p.ticker || p.name || p.company_name || "?", m: p.m_score }));
+
+  let peerStats = null;
+  if (peerScores.length > 0) {
+    const sorted = [...peerScores].sort((a, b) => a.m - b.m); // most negative (safest) first
+    const combined = [...sorted.map(p => p.m), m].sort((a, b) => a - b);
+    const rank = combined.indexOf(m) + 1; // 1 = safest of the group
+    const mid = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 === 1
+      ? sorted[mid].m
+      : (sorted[mid - 1].m + sorted[mid].m) / 2;
+    peerStats = { sorted, rank, total: combined.length, median };
+  }
+
   return (
     <div>
       <div style={{position:"relative", height: 12, borderRadius: 6, overflow: "hidden",
         background: "linear-gradient(90deg, var(--green-soft), var(--amber-soft), var(--red-soft))",
         border: "1px solid var(--line)"}}>
+        {peerStats && peerStats.sorted.map((p, i) => (
+          <div key={i} title={`${p.ticker}: ${p.m.toFixed(2)}`}
+            style={{position:"absolute", left: `${clamp((p.m - min) / (max - min), 0, 1) * 100}%`,
+              top: 2, width: 3, height: 8, borderRadius: 1,
+              background: "var(--ink-3)", opacity: 0.6}}/>
+        ))}
         <div style={{position:"absolute", left: `${pct * 100}%`, top: -2, bottom: -2, width: 2, background: "var(--ink)"}}/>
       </div>
       <div className="mono" style={{display:"flex", justifyContent:"space-between", fontSize: 10, color: "var(--ink-3)", marginTop: 4}}>
         <span>-4.0</span><span>-2.22</span><span>-1.78</span><span>0.0</span>
       </div>
-      <div style={{display:"flex", alignItems:"baseline", gap: 8, marginTop: 8}}>
+      <div style={{display:"flex", alignItems:"baseline", gap: 8, marginTop: 8, flexWrap:"wrap"}}>
         <span className="mono" style={{fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em"}}>{m.toFixed(2)}</span>
         <span className="rag-chip" style={{background: `color-mix(in oklch, ${bandColor} 14%, transparent)`, color: bandInk}}>{band}</span>
+        {peerStats && (
+          <span style={{fontSize: 10.5, color: "var(--ink-3)"}}>
+            vs {peerStats.total - 1} peer{peerStats.total - 1 !== 1 ? "s" : ""} · rank {peerStats.rank}/{peerStats.total} (1 = safest) · peer median {peerStats.median.toFixed(2)}
+          </span>
+        )}
       </div>
+      {peerStats && (
+        <div style={{display:"flex", flexWrap:"wrap", gap:4, marginTop:8}}>
+          {peerStats.sorted.map((p, i) => (
+            <span key={i} className="mono" style={{fontSize:9.5, padding:"2px 6px", borderRadius:4,
+              background:"var(--surface-2,var(--surface))", border:"1px solid var(--line)", color:"var(--ink-2)"}}>
+              {p.ticker} {p.m.toFixed(2)}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
