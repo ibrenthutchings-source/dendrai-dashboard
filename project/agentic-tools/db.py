@@ -861,6 +861,24 @@ ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework  VARCHAR(128);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative          TEXT;
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
 ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
+
+-- forecasts.UNIQUE(run_id, metric, model, horizon_quarter) was added to the
+-- CREATE TABLE statement after some databases already had the table created
+-- without it — CREATE TABLE IF NOT EXISTS never retrofits constraints onto an
+-- existing table, so save_forecasts()'s targeted ON CONFLICT silently failed
+-- with "no unique or exclusion constraint matching the ON CONFLICT specification"
+-- on any such database. Idempotent: no-ops once the constraint exists.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'forecasts_run_id_metric_model_horizon_quarter_key'
+          AND conrelid = 'forecasts'::regclass
+    ) THEN
+        ALTER TABLE forecasts ADD CONSTRAINT forecasts_run_id_metric_model_horizon_quarter_key
+            UNIQUE (run_id, metric, model, horizon_quarter);
+    END IF;
+END $$;
 """
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
@@ -1859,8 +1877,14 @@ def save_forecasts(run_id: int, metric: str, forecast_data: dict) -> None:
             rows.append((run_id, metric, "Ensemble", horizon,
                          f.get("point"), f.get("ci_lower"), f.get("ci_upper"), None))
             for model_name, mf in (f.get("per_model") or {}).items():
-                rows.append((run_id, metric, model_name, horizon,
-                             mf.get("point"), mf.get("ci_lower"), mf.get("ci_upper"), mf.get("sigma")))
+                # per_model values are usually a bare point forecast (a number);
+                # accept a {point, ci_lower, ci_upper, sigma} dict too in case a
+                # future producer supplies per-model confidence intervals.
+                if isinstance(mf, dict):
+                    rows.append((run_id, metric, model_name, horizon,
+                                 mf.get("point"), mf.get("ci_lower"), mf.get("ci_upper"), mf.get("sigma")))
+                else:
+                    rows.append((run_id, metric, model_name, horizon, mf, None, None, None))
         if not rows:
             return
         with _conn() as conn:
