@@ -71,6 +71,23 @@ class SoxSystemRequest(BaseModel):
     added_by: Optional[str] = None
 
 
+class SoxAccountDetailRequest(BaseModel):
+    geography: List[str] = []
+    segments: List[str] = []
+    notes: Optional[str] = None
+    manual_in_scope: Optional[bool] = None
+    manual_priority: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class SoxProcessDetailRequest(BaseModel):
+    geography: List[str] = []
+    segments: List[str] = []
+    notes: Optional[str] = None
+    manual_coverage_level: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
 class SoxSegmentRequest(BaseModel):
     segments: List[Dict[str, Any]]
     fiscal_year: str
@@ -142,6 +159,10 @@ def compute_sox_scope(req: SoxScopeRequest):
             mat_pct  = cfg["materiality_pct"]
             perf_pct = cfg["performance_mat_pct"]
 
+    # Load user-supplied account / process detail & scope overrides
+    account_overrides = db.get_sox_account_details(company_id) if db_ok else {}
+    process_overrides = db.get_sox_process_details(company_id) if db_ok else {}
+
     result = run_sox_scoping(
         run_id=req.run_id,
         forecast=req.forecast,
@@ -153,6 +174,8 @@ def compute_sox_scope(req: SoxScopeRequest):
         materiality_pct=mat_pct,
         performance_mat_pct=perf_pct,
         trigger_reason=req.trigger_reason,
+        account_overrides=account_overrides,
+        process_overrides=process_overrides,
     )
 
     if db_ok and req.run_id is not None:
@@ -268,6 +291,62 @@ def remove_sox_system(ticker: str, system_id: int):
     if not ok:
         raise HTTPException(status_code=404, detail=f"System {system_id} not found for {ticker.upper()}")
     return {"deactivated": True, "system_id": system_id}
+
+
+# ── Account / process detail & override endpoints ──────────────────────────────
+
+@router.get("/accounts/{ticker}")
+def list_sox_account_details(ticker: str):
+    """
+    Retrieve user-supplied detail/overrides for SOX significant accounts
+    (geography, segments, notes, manual in-scope override), keyed by account_id.
+    """
+    company_id = _resolve_company_id(ticker)
+    details = db.get_sox_account_details(company_id) if company_id else {}
+    return {"ticker": ticker.upper(), "accounts": details}
+
+
+@router.post("/accounts/{ticker}/{account_id}")
+def upsert_sox_account_detail(ticker: str, account_id: str, req: SoxAccountDetailRequest):
+    """
+    Add or update geography, segment, notes, or a manual in-scope/priority
+    override for a SOX significant account. Applied on the next scoping run
+    (POST /sox/scope) — click "Rescope" to see the change reflected.
+    """
+    company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"saved": False, "reason": "database not configured", "account_id": account_id}
+    detail_id = db.upsert_sox_account_detail(company_id, account_id, req.dict())
+    if not detail_id:
+        raise HTTPException(status_code=500, detail="Failed to save account detail")
+    return {"saved": True, "detail_id": detail_id, "ticker": ticker.upper(), "account_id": account_id}
+
+
+@router.get("/processes/{ticker}")
+def list_sox_process_details(ticker: str):
+    """
+    Retrieve user-supplied detail/overrides for SOX processes (geography,
+    segments, notes, manual coverage-level override), keyed by process_id.
+    """
+    company_id = _resolve_company_id(ticker)
+    details = db.get_sox_process_details(company_id) if company_id else {}
+    return {"ticker": ticker.upper(), "processes": details}
+
+
+@router.post("/processes/{ticker}/{process_id}")
+def upsert_sox_process_detail(ticker: str, process_id: str, req: SoxProcessDetailRequest):
+    """
+    Add or update geography, segment, notes, or a manual coverage-level
+    override (P1 | P2 | Out) for a SOX process. Applied on the next scoping
+    run (POST /sox/scope) — click "Rescope" to see the change reflected.
+    """
+    company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"saved": False, "reason": "database not configured", "process_id": process_id}
+    detail_id = db.upsert_sox_process_detail(company_id, process_id, req.dict())
+    if not detail_id:
+        raise HTTPException(status_code=500, detail="Failed to save process detail")
+    return {"saved": True, "detail_id": detail_id, "ticker": ticker.upper(), "process_id": process_id}
 
 
 # ── Segment endpoints ──────────────────────────────────────────────────────────

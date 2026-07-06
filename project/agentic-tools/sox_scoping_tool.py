@@ -326,6 +326,7 @@ def scope_accounts(
     ratios: dict,
     risk_scores: dict,
     segments: Optional[list] = None,
+    account_overrides: Optional[dict] = None,
 ) -> list:
     """
     Decide which accounts are in scope.
@@ -336,7 +337,13 @@ def scope_accounts(
     3. Account balance > trivial but < performance materiality AND linked to
        RED or AMBER risk → qualitatively significant (risk-based in-scope).
     4. Elevated-risk accounts get lower effective threshold (75% of perf mat).
+
+    account_overrides: optional {account_id: {geography, segments, notes,
+    manual_in_scope, manual_priority}} — user-supplied detail/overrides
+    (see db.get_sox_account_details). manual_in_scope, when not None,
+    replaces the computed in-scope decision.
     """
+    account_overrides = account_overrides or {}
     pm   = materiality.get("performance_materiality")
     trivial = materiality.get("trivial_threshold")
     risks = risk_scores.get("risks", [])
@@ -401,6 +408,16 @@ def scope_accounts(
             priority = None
             rationale = "Below performance materiality; no elevated risk linkage"
 
+        override = account_overrides.get(acc["id"])
+        manual_override = False
+        if override and override.get("manual_in_scope") is not None:
+            manual_override = True
+            in_scope = override["manual_in_scope"]
+            priority = override.get("manual_priority") or (priority if in_scope else None) or ("P2" if in_scope else None)
+            rationale = f"Manually overridden by user — {rationale}"
+        elif override and override.get("manual_priority") and in_scope:
+            priority = override["manual_priority"]
+
         result.append({
             "account_id":      acc["id"],
             "account_name":    acc["name"],
@@ -410,6 +427,10 @@ def scope_accounts(
             "rag_linkage":     worst_rag,
             "linked_risks":    linked_risks[:4],
             "rationale":       rationale,
+            "geography":       (override or {}).get("geography") or [],
+            "segments":        (override or {}).get("segments") or [],
+            "notes":           (override or {}).get("notes"),
+            "manual_override": manual_override,
         })
 
     return result
@@ -417,14 +438,20 @@ def scope_accounts(
 
 # ── Process Scoping ────────────────────────────────────────────────────────────
 
-def scope_processes(risk_scores: dict, account_scope: list) -> list:
+def scope_processes(risk_scores: dict, account_scope: list, process_overrides: Optional[dict] = None) -> list:
     """
     Assign coverage level to each SOX process based on risk scores and account scope.
 
     P1 = mandatory or driven by RED risk / always-in account
     P2 = elevated (AMBER risk or quantitatively significant account linked)
     Out = no risk trigger and no material account linkage
+
+    process_overrides: optional {process_id: {geography, segments, notes,
+    manual_coverage_level}} — user-supplied detail/overrides (see
+    db.get_sox_process_details). manual_coverage_level, when set, replaces
+    the computed coverage decision.
     """
+    process_overrides = process_overrides or {}
     risks = risk_scores.get("risks", [])
     in_scope_accs = {a["account_id"] for a in account_scope if a["in_scope"]}
 
@@ -486,6 +513,13 @@ def scope_processes(risk_scores: dict, account_scope: list) -> list:
 
             linked_risk_names = [r["name"] for r in kw_matched_risks]
 
+        override = process_overrides.get(proc["id"])
+        manual_override = False
+        if override and override.get("manual_coverage_level"):
+            manual_override = True
+            coverage = override["manual_coverage_level"]
+            rationale = f"Manually overridden by user — {rationale}"
+
         result.append({
             "process_id":    proc["id"],
             "process_name":  proc["name"],
@@ -494,6 +528,10 @@ def scope_processes(risk_scores: dict, account_scope: list) -> list:
             "linked_risks":  linked_risk_names[:4],
             "rationale":     rationale,
             "description":   proc["description"],
+            "geography":     (override or {}).get("geography") or [],
+            "segments":      (override or {}).get("segments") or [],
+            "notes":         (override or {}).get("notes"),
+            "manual_override": manual_override,
         })
 
     return result
@@ -650,6 +688,8 @@ def run_sox_scoping(
     materiality_pct: float = 5.0,
     performance_mat_pct: float = 75.0,
     trigger_reason: Optional[str] = None,
+    account_overrides: Optional[dict] = None,
+    process_overrides: Optional[dict] = None,
 ) -> dict:
     """
     Full SOX scoping run.
@@ -663,10 +703,10 @@ def run_sox_scoping(
     mat = compute_materiality(projections, materiality_pct, performance_mat_pct)
 
     # 3. Account scoping
-    accounts = scope_accounts(mat, projections, ratios, risk_scores, segments)
+    accounts = scope_accounts(mat, projections, ratios, risk_scores, segments, account_overrides)
 
     # 4. Process scoping
-    processes = scope_processes(risk_scores, accounts)
+    processes = scope_processes(risk_scores, accounts, process_overrides)
 
     # 5. System scoping
     systems_out = scope_systems(systems_registry or [], processes)

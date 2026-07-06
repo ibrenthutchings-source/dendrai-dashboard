@@ -631,6 +631,39 @@ CREATE TABLE IF NOT EXISTS sox_rescoping_triggers (
 );
 CREATE INDEX IF NOT EXISTS idx_sox_rescoping_co ON sox_rescoping_triggers (company_id, triggered_at DESC);
 
+-- User-editable detail/override records for individual SOX significant accounts
+-- (keyed to the SOX_ACCOUNTS catalogue ids in sox_scoping_tool.py)
+CREATE TABLE IF NOT EXISTS sox_account_details (
+    id               SERIAL PRIMARY KEY,
+    company_id       INT NOT NULL REFERENCES companies(id),
+    account_id       VARCHAR(64) NOT NULL,
+    geography        TEXT[],
+    segments         TEXT[],
+    notes            TEXT,
+    manual_in_scope  BOOLEAN,
+    manual_priority  VARCHAR(4),
+    updated_by       VARCHAR(128),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sox_acct_details_co ON sox_account_details (company_id);
+
+-- User-editable detail/override records for individual SOX processes
+-- (keyed to the SOX_PROCESSES catalogue ids in sox_scoping_tool.py)
+CREATE TABLE IF NOT EXISTS sox_process_details (
+    id                     SERIAL PRIMARY KEY,
+    company_id             INT NOT NULL REFERENCES companies(id),
+    process_id             VARCHAR(64) NOT NULL,
+    geography              TEXT[],
+    segments               TEXT[],
+    notes                  TEXT,
+    manual_coverage_level  VARCHAR(8),
+    updated_by             VARCHAR(128),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, process_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sox_proc_details_co ON sox_process_details (company_id);
+
 -- Risks-as-Code artifacts: OSCAL and COSO ERM / ISO 31000 outputs per run
 CREATE TABLE IF NOT EXISTS risks_as_code_artifacts (
     id           BIGSERIAL    PRIMARY KEY,
@@ -2972,6 +3005,116 @@ def list_sox_systems(company_id: int, active_only: bool = True) -> list:
                     for r in cur.fetchall()
                 ]
     return _run(_do) or []
+
+
+def upsert_sox_account_detail(company_id: int, account_id: str, detail: dict) -> Optional[int]:
+    """Add or update a user-supplied detail/override for a SOX significant account."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_account_details
+                        (company_id, account_id, geography, segments, notes,
+                         manual_in_scope, manual_priority, updated_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (company_id, account_id) DO UPDATE SET
+                        geography       = EXCLUDED.geography,
+                        segments        = EXCLUDED.segments,
+                        notes           = EXCLUDED.notes,
+                        manual_in_scope = EXCLUDED.manual_in_scope,
+                        manual_priority = EXCLUDED.manual_priority,
+                        updated_by      = EXCLUDED.updated_by,
+                        updated_at      = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        company_id, account_id,
+                        detail.get("geography") or [],
+                        detail.get("segments") or [],
+                        detail.get("notes"),
+                        detail.get("manual_in_scope"),
+                        detail.get("manual_priority"),
+                        detail.get("updated_by"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_sox_account_details(company_id: int) -> dict:
+    """All account detail/override rows for a company, keyed by account_id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT account_id, geography, segments, notes, manual_in_scope, "
+                    "manual_priority, updated_at FROM sox_account_details WHERE company_id = %s",
+                    (company_id,),
+                )
+                return {
+                    r[0]: {
+                        "geography": r[1] or [], "segments": r[2] or [], "notes": r[3],
+                        "manual_in_scope": r[4], "manual_priority": r[5],
+                        "updated_at": r[6].isoformat() if r[6] else None,
+                    }
+                    for r in cur.fetchall()
+                }
+    return _run(_do) or {}
+
+
+def upsert_sox_process_detail(company_id: int, process_id: str, detail: dict) -> Optional[int]:
+    """Add or update a user-supplied detail/override for a SOX process."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_process_details
+                        (company_id, process_id, geography, segments, notes,
+                         manual_coverage_level, updated_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (company_id, process_id) DO UPDATE SET
+                        geography              = EXCLUDED.geography,
+                        segments               = EXCLUDED.segments,
+                        notes                  = EXCLUDED.notes,
+                        manual_coverage_level  = EXCLUDED.manual_coverage_level,
+                        updated_by             = EXCLUDED.updated_by,
+                        updated_at             = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        company_id, process_id,
+                        detail.get("geography") or [],
+                        detail.get("segments") or [],
+                        detail.get("notes"),
+                        detail.get("manual_coverage_level"),
+                        detail.get("updated_by"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_sox_process_details(company_id: int) -> dict:
+    """All process detail/override rows for a company, keyed by process_id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT process_id, geography, segments, notes, manual_coverage_level, "
+                    "updated_at FROM sox_process_details WHERE company_id = %s",
+                    (company_id,),
+                )
+                return {
+                    r[0]: {
+                        "geography": r[1] or [], "segments": r[2] or [], "notes": r[3],
+                        "manual_coverage_level": r[4],
+                        "updated_at": r[5].isoformat() if r[5] else None,
+                    }
+                    for r in cur.fetchall()
+                }
+    return _run(_do) or {}
 
 
 def upsert_sox_segment(company_id: int, run_id: Optional[int], segment: dict) -> None:
