@@ -215,21 +215,27 @@ function App() {
 
   // Load-on-demand: if you land on Governance Intelligence, or the Pipeline
   // screen's Beneish M-Score gauge needs peer data for benchmarking, without
-  // govData/govPeerData in memory (page reload, or navigating here without
-  // rerunning the pipeline) — pull whatever was saved to the DB from a
-  // previous run for this ticker instead of requiring a fresh live EDGAR fetch.
+  // govData/govPeerData in memory (page reload, navigating here without
+  // rerunning the pipeline, or the live peer fetch failed while the proxy
+  // fetch succeeded) — pull whichever piece is still missing from the DB for
+  // this ticker instead of requiring a fresh live EDGAR fetch. govData and
+  // govPeerData are checked independently so one succeeding doesn't block
+  // retrying the other.
   useEffect(() => {
-    if ((activeScreen !== "gov" && activeScreen !== "pipeline") || govData || govPeerData || govLoading || !cfg.ticker) return;
+    if ((activeScreen !== "gov" && activeScreen !== "pipeline") || govLoading || !cfg.ticker) return;
+    if (govData && govPeerData) return;
+    const wantProxy = !govData;
+    const wantPeers = !govPeerData;
     setGovLoading(true);
     Promise.allSettled([
-      MCP.fetchSavedProxyData(cfg.ticker),
-      MCP.fetchSavedPeerBenchmarks(cfg.ticker),
+      wantProxy ? MCP.fetchSavedProxyData(cfg.ticker) : Promise.resolve(null),
+      wantPeers ? MCP.fetchSavedPeerBenchmarks(cfg.ticker) : Promise.resolve(null),
     ]).then(([proxyRes, peerRes]) => {
-      if (proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
-      if (peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
+      if (wantProxy && proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
+      if (wantPeers && peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
       setGovLoading(false);
     });
-  }, [activeScreen, cfg.ticker]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeScreen, cfg.ticker, govData, govPeerData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
