@@ -214,6 +214,41 @@ MCP_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Generic Enterprise System Rules (system_telemetry ingest) ────────────────
+
+SYSTEM_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-SYS-001",
+        name="Generic SoD Violation Mandatory Escalation",
+        description=(
+            "Any system_telemetry event tagged sod_violation must be treated as a "
+            "mandatory CRITICAL escalation path, regardless of source system."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-SYS-002",
+        name="Privileged Access on Critical Severity",
+        description=(
+            "Events tagged privileged_access with severity=CRITICAL require authorization "
+            "review before the action is considered closed."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-SYS-003",
+        name="Compound Generic Governance Violation",
+        description=(
+            "Two or more risk flags firing simultaneously on a single generic system event "
+            "indicates a compound governance failure requiring CRITICAL escalation."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── Global Registry ───────────────────────────────────────────────────────────
 
 POLICY_REGISTRY: list[PolicyRule] = [
@@ -222,6 +257,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *GITHUB_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
+    *SYSTEM_RULES,
 ]
 
 

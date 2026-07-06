@@ -403,7 +403,7 @@ function UBOGovPanel() {
   const filtered = adjudicated.filter(r => {
     if (filter === "all")    return true;
     if (filter === "review") return r.requires_human_review;
-    if (filter === "GITHUB" || filter === "MCP_PROXY") return (r.source_system || "MCP_PROXY") === filter;
+    if (filter === "GITHUB" || filter === "MCP_PROXY" || filter === "SYSTEM_TELEMETRY") return (r.source_system || "MCP_PROXY") === filter;
     return r.risk_tier === filter;
   });
 
@@ -526,6 +526,7 @@ function UBOGovPanel() {
                 { id:"review",   l:"Needs Review" },
                 { id:"GITHUB",   l:"GitHub" },
                 { id:"MCP_PROXY",l:"MCP" },
+                { id:"SYSTEM_TELEMETRY", l:"Systems" },
               ].map(f => (
                 <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
                   {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
@@ -901,13 +902,29 @@ const _FLAG_COLOR = {
   large_response:      { bg:"var(--amber-soft)",  ink:"var(--amber-ink)" },
   high_frequency:      { bg:"var(--amber-soft)",  ink:"var(--amber-ink)" },
   escalation_sequence: { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  // Generic system_telemetry detection rules (any monitored enterprise system)
+  privileged_access:   { bg:"var(--amber-soft)",  ink:"var(--amber-ink)" },
+  sod_violation:       { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  sensitive_resource:  { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
+  policy_violation:    { bg:"var(--red-soft)",    ink:"var(--red-ink)"   },
 };
 
 const _BRONZE_HDR = { bg:"rgba(180,110,40,0.12)",  border:"rgba(180,110,40,0.28)",  lbl:"var(--amber-ink,#b45309)" };
 const _SILVER_HDR = { bg:"rgba(100,116,139,0.10)", border:"rgba(100,116,139,0.25)", lbl:"var(--ink-2)"             };
 const _GOLD_HDR   = { bg:"rgba(155,130,10,0.12)",  border:"rgba(155,130,10,0.28)",  lbl:"var(--amber-ink,#b45309)" };
 
-function _flagToEventType(flags, status) {
+const _GENERIC_SYSTEM_FLAGS = ["sod_violation", "privileged_access", "sensitive_resource", "policy_violation"];
+
+function _flagToEventType(flags, status, origin) {
+  if (origin === "system" || flags?.some(f => _GENERIC_SYSTEM_FLAGS.includes(f))) {
+    if (!flags?.length) return "ANOMALY";
+    if (flags.length >= 2)                      return "SYSTEM_GOVERNANCE_VIOLATION";
+    if (flags.includes("sod_violation"))        return "SOD_VIOLATION";
+    if (flags.includes("privileged_access"))    return "PRIVILEGE_ESCALATION";
+    if (flags.includes("sensitive_resource"))   return "SENSITIVE_RESOURCE_ACCESS";
+    if (flags.includes("policy_violation"))     return "POLICY_VIOLATION";
+    return "ANOMALY";
+  }
   if (status === "error") return "MCP_TOOL_ERROR";
   if (!flags?.length)     return "ANOMALY";
   if (flags.length >= 3)                            return "MCP_GOVERNANCE_VIOLATION";
@@ -927,6 +944,11 @@ const _MCP_BASE_WEIGHT = {
   MCP_GOVERNANCE_VIOLATION: 0.90,
   MCP_PROMPT_INJECTION:     0.92,
   MCP_ESCALATION:           0.88,
+  SYSTEM_GOVERNANCE_VIOLATION: 0.85,
+  SOD_VIOLATION:              0.80,
+  PRIVILEGE_ESCALATION:       0.80,
+  SENSITIVE_RESOURCE_ACCESS:  0.65,
+  POLICY_VIOLATION:           0.60,
   MCP_DATA_EXPOSURE:        0.80,
   MCP_TOOL_BYPASS:          0.85,
   MCP_SENSITIVE_TOOL_CALL:  0.70,
@@ -983,16 +1005,17 @@ function BronzeDetail({ row }) {
       Select an event from the list
     </div>
   );
-  const flags  = row.risk_flags || [];
-  const evType = _flagToEventType(flags, row.status);
+  const flags    = row.risk_flags || [];
+  const isSystem = row.origin === "system";
+  const evType   = _flagToEventType(flags, row.status, row.origin);
   return (
     <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
       <PaneSection label="Ingestion Handler">
-        <PaneKV k="Handler"    v="McpProxyBronzeHandler" />
-        <PaneKV k="Schema"     v="MCP-Telemetry-v1" />
-        <PaneKV k="Source"     v="MCP_PROXY" />
-        <PaneKV k="Actor ID"   v={row.session_id ? row.session_id.slice(0,8)+"…" : "—"} />
-        <PaneKV k="Actor Type" v="SERVICE" />
+        <PaneKV k="Handler"    v={isSystem ? "SystemTelemetryBronzeHandler" : "McpProxyBronzeHandler"} />
+        <PaneKV k="Schema"     v={isSystem ? "System-Telemetry-v1" : "MCP-Telemetry-v1"} />
+        <PaneKV k="Source"     v={isSystem ? (row.system_type || "SYSTEM_TELEMETRY").toUpperCase() : "MCP_PROXY"} />
+        <PaneKV k="Actor ID"   v={isSystem ? (row.actor || "—") : (row.session_id ? row.session_id.slice(0,8)+"…" : "—")} />
+        <PaneKV k="Actor Type" v={isSystem ? "HUMAN" : "SERVICE"} />
         <PaneKV k="Event Type" v={evType} />
         <PaneKV k="Checksum"   v="✓ SHA-256" vColor="var(--green-ink)" />
         <PaneKV k="Stage Out"  v="BRONZE" vColor="var(--amber-ink,#b45309)" />
@@ -1046,6 +1069,7 @@ function SilverDetail({ row, adj }) {
   const schemaConform = {
     SAP:"SAP-CDHDR-v1-conform", GITHUB:"GitHub-Webhook-v3-conform",
     SAILPOINT:"SailPoint-IDN-v3-conform", MCP_PROXY:"MCP-Telemetry-v1-conform",
+    SYSTEM_TELEMETRY:"System-Telemetry-v1-conform",
   };
   return (
     <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
@@ -1090,10 +1114,11 @@ function GoldDetail({ row, adj }) {
   );
   const violations  = adj.policy_violations || [];
   const flags       = adj.risk_flags || [];
-  const evType      = _flagToEventType(flags, row.status);
+  const evType      = _flagToEventType(flags, row.status, row.origin);
   const baseW       = _MCP_BASE_WEIGHT[evType] ?? 0.35;
-  const violPenalty = violations.reduce((s, v) => s + _violSeverityWeight(v), 0);
-  const actorPenalty = 0.08;
+  const violPenalty  = violations.reduce((s, v) => s + _violSeverityWeight(v), 0);
+  const actorType    = row.origin === "system" ? "HUMAN" : "SERVICE";
+  const actorPenalty = actorType === "SERVICE" ? 0.08 : 0.0;
   const reconScore   = Math.min(1.0, baseW + violPenalty + actorPenalty);
   const ts      = adj.risk_tier || "LOW";
   const tStyle  = _UBO_TIER_STYLE[ts] || _UBO_TIER_STYLE.LOW;
@@ -1119,7 +1144,7 @@ function GoldDetail({ row, adj }) {
         <PaneKV k={`Base (${evType})`} v={baseW.toFixed(2)} vColor="var(--ink-2)" />
         <PaneKV k="Violation penalty"   v={`+${violPenalty.toFixed(2)}`}
           vColor={violPenalty > 0 ? "var(--red-ink)" : "var(--ink-4)"} />
-        <PaneKV k="Actor (SERVICE)"     v="+0.08" vColor="var(--amber-ink,#b45309)" />
+        <PaneKV k={`Actor (${actorType})`} v={`+${actorPenalty.toFixed(2)}`} vColor={actorPenalty > 0 ? "var(--amber-ink,#b45309)" : "var(--ink-4)"} />
         <PaneKV k="Cascade bonus"       v="+0.00" vColor="var(--ink-4)" />
         <div style={{ display:"flex", justifyContent:"space-between", padding:"4px 0",
           borderTop:"1px solid var(--line)", marginTop:2 }}>
@@ -1144,28 +1169,34 @@ function GoldDetail({ row, adj }) {
   );
 }
 
-function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
-  const [selectedId, setSelectedId] = useState(null);
+// mcp_telemetry.id and system_telemetry.id are independent sequences and can
+// collide, so every raw row and adjudication is addressed by an origin-qualified
+// key rather than the bare numeric id.
+const _rowKey = r => `${r.origin || "mcp"}:${r.id}`;
+const _adjKey = a => `${(a.source_system === "SYSTEM_TELEMETRY") ? "system" : "mcp"}:${a.telemetry_id ?? a.system_telemetry_id}`;
 
-  const adjByTelId = useMemo(() => {
+function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
+  const [selectedKey, setSelectedKey] = useState(null);
+
+  const adjByKey = useMemo(() => {
     const m = new Map();
     (adjudicated || []).forEach(a => {
-      if (a.telemetry_id != null) m.set(String(a.telemetry_id), a);
+      if (a.telemetry_id != null || a.system_telemetry_id != null) m.set(_adjKey(a), a);
     });
     return m;
   }, [adjudicated]);
 
   useEffect(() => {
-    if (rows.length > 0 && selectedId === null) setSelectedId(rows[0].id);
+    if (rows.length > 0 && selectedKey === null) setSelectedKey(_rowKey(rows[0]));
   }, [rows]);
 
   const selectedRaw = useMemo(
-    () => rows.find(r => String(r.id) === String(selectedId)) ?? null,
-    [rows, selectedId],
+    () => rows.find(r => _rowKey(r) === selectedKey) ?? null,
+    [rows, selectedKey],
   );
   const selectedAdj = useMemo(
-    () => (selectedId != null ? adjByTelId.get(String(selectedId)) ?? null : null),
-    [adjByTelId, selectedId],
+    () => (selectedKey != null ? adjByKey.get(selectedKey) ?? null : null),
+    [adjByKey, selectedKey],
   );
 
   if (loading && rows.length === 0) return (
@@ -1201,17 +1232,18 @@ function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
           <MedallionPaneHdr tier="BRONZE" subtitle="Raw Ingestion" color={_BRONZE_HDR} />
           {rows.length === 0 ? (
             <div style={{padding:12,color:"var(--ink-4)",fontSize:11}}>
-              No MCP telemetry yet. The proxy writes rows here as tool calls arrive.
+              No telemetry yet. MCP tool calls and system_telemetry events from monitored systems appear here as they arrive.
             </div>
           ) : (
             <div style={{ overflowY:"auto", flex:1 }}>
               {rows.map((r, i) => {
+                const rKey     = _rowKey(r);
                 const hasFlags = (r.risk_flags || []).length > 0;
-                const isAdj    = adjByTelId.has(String(r.id));
-                const isSel    = String(r.id) === String(selectedId);
+                const isAdj    = adjByKey.has(rKey);
+                const isSel    = rKey === selectedKey;
                 const ts       = r.ts ? new Date(r.ts) : null;
                 return (
-                  <div key={r.id ?? i} onClick={() => setSelectedId(r.id)}
+                  <div key={rKey} onClick={() => setSelectedKey(rKey)}
                     style={{ display:"flex", flexDirection:"column", gap:3, padding:"7px 12px",
                       cursor:"pointer", borderBottom:"1px solid var(--line)",
                       borderLeft: isSel ? "3px solid var(--amber-ink,#b45309)" : "3px solid transparent",
@@ -1221,8 +1253,8 @@ function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
                         {ts ? ts.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}) : "—"}
                       </span>
                       <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,flexShrink:0,
-                        background: r.direction==="request" ? "var(--blue-soft,#dbeafe)" : "var(--violet-soft,#ede9fe)",
-                        color:      r.direction==="request" ? "var(--blue-ink,#1e40af)"  : "var(--violet-ink,#5b21b6)"}}>
+                        background: r.direction==="request" ? "var(--blue-soft,#dbeafe)" : r.direction==="event" ? "var(--amber-soft,#fff8e1)" : "var(--violet-soft,#ede9fe)",
+                        color:      r.direction==="request" ? "var(--blue-ink,#1e40af)"  : r.direction==="event" ? "var(--amber-ink,#b45309)" : "var(--violet-ink,#5b21b6)"}}>
                         {(r.direction||"?").toUpperCase()}
                       </span>
                       <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",flex:1,overflow:"hidden",

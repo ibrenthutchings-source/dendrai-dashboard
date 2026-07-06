@@ -62,6 +62,9 @@ _EVENT_BASE_WEIGHTS: dict[EventType, float] = {
     EventType.MCP_BULK_ARGS:              0.45,
     EventType.MCP_TOOL_ERROR:             0.40,
     EventType.MCP_LARGE_PAYLOAD:          0.35,
+    # Generic Enterprise Systems (system_telemetry ingest)
+    EventType.SENSITIVE_RESOURCE_ACCESS:   0.65,
+    EventType.SYSTEM_GOVERNANCE_VIOLATION: 0.85,
 }
 
 _POLICY_SEVERITY_WEIGHTS: dict[str, float] = {

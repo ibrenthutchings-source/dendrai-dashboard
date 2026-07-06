@@ -48,6 +48,7 @@ class SilverConformationLayer(SilverLayerBase):
             SourceSystem.GITHUB:     self._conform_github,
             SourceSystem.SAILPOINT:  self._conform_sailpoint,
             SourceSystem.MCP_PROXY:  self._conform_mcp_proxy,
+            SourceSystem.SYSTEM_TELEMETRY: self._conform_system_telemetry,
         }
         conformer = conformers.get(uro.source_system, self._conform_generic)
         conformed = conformer(raw, uro)
@@ -216,6 +217,34 @@ class SilverConformationLayer(SilverLayerBase):
                         f"simultaneously ({', '.join(flags)}) — CRITICAL escalation required"
                     )
 
+        # ── Generic Enterprise System rules ───────────────────────────────────
+        elif rule.rule_id == "POL-SYS-001":
+            if uro.source_system == SourceSystem.SYSTEM_TELEMETRY:
+                flags = raw.get("risk_flags") or []
+                if "sod_violation" in flags:
+                    return (
+                        f"System event on '{raw.get('server_name', 'unknown')}' tagged "
+                        "sod_violation — mandatory CRITICAL escalation path applies"
+                    )
+
+        elif rule.rule_id == "POL-SYS-002":
+            if uro.source_system == SourceSystem.SYSTEM_TELEMETRY:
+                flags = raw.get("risk_flags") or []
+                if "privileged_access" in flags and str(raw.get("severity", "")).upper() == "CRITICAL":
+                    return (
+                        f"Privileged-access event on '{raw.get('server_name', 'unknown')}' at "
+                        "CRITICAL severity — requires authorization review"
+                    )
+
+        elif rule.rule_id == "POL-SYS-003":
+            if uro.source_system == SourceSystem.SYSTEM_TELEMETRY:
+                flags = raw.get("risk_flags") or []
+                if len(flags) >= 2:
+                    return (
+                        f"Compound generic governance violation: {len(flags)} risk flags fired "
+                        f"simultaneously ({', '.join(flags)}) — CRITICAL escalation required"
+                    )
+
         return None  # Rule passed
 
     # ── Source-specific conformation ──────────────────────────────────────────
@@ -309,6 +338,33 @@ class SilverConformationLayer(SilverLayerBase):
             },
             affected_entities=[tool, server, str(raw.get("session_id", ""))],
             conformation_rules_applied=["MCP-Telemetry-v1-conform"],
+        )
+
+    def _conform_system_telemetry(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
+        risk_flags: list[str] = raw.get("risk_flags") or []
+        server = raw.get("server_name", "")
+        event_type = raw.get("event_type") or "unknown_event"
+        narrative = (
+            f"{raw.get('system_type', 'system')} event '{event_type}' on '{server}' flagged: {', '.join(risk_flags)}"
+            if risk_flags
+            else f"{raw.get('system_type', 'system')} event '{event_type}' on '{server}'"
+        )
+        return ConformedPayload(
+            resource_id=raw.get("resource") or server,
+            resource_type="enterprise_system_resource",
+            action=raw.get("action") or event_type,
+            outcome=str(raw.get("severity") or "INFO").lower(),
+            risk_indicators={
+                "risk_flags":   risk_flags,
+                "flag_count":   len(risk_flags),
+                "severity":     raw.get("severity"),
+                "server_name":  server,
+                "system_type":  raw.get("system_type"),
+                "event_id":     raw.get("event_id"),
+                "narrative":    narrative,
+            },
+            affected_entities=[server, str(raw.get("actor", ""))],
+            conformation_rules_applied=["System-Telemetry-v1-conform"],
         )
 
     def _conform_generic(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
