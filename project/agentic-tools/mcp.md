@@ -70,7 +70,12 @@ Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project
     "risk-as-code":         { "command": "python", "args": ["<path>/risk_as_code_mcp_server.py"] },
     "policy-as-code":       { "command": "python", "args": ["<path>/pac_mcp_server.py"] },
     "controls-as-code":     { "command": "python", "args": ["<path>/cac_mcp_server.py"] },
-    "oracle-fusion":        { "command": "python", "args": ["<path>/oracle_fusion_mcp_server.py"] }
+    "oracle-fusion":        { "command": "python", "args": ["<path>/oracle_fusion_mcp_server.py"] },
+    "opa": {
+      "command": "npx",
+      "args": ["-y", "@orygn/opa-mcp"],
+      "env": { "OPA_MCP_ALLOWED_PATHS": "<path>" }
+    }
   }
 }
 ```
@@ -265,9 +270,21 @@ Generates Rego Controls-as-Code artifacts from a controls list or by synthesisin
 | `cac_list_artifacts` | Paginated metadata list of saved CaC artifacts (no Rego content) |
 | `cac_from_pac` | Synthesise a test-harness CaC from PAC deny rules — one `control_active` per deny rule |
 | `cac_validate` | Structural validation: package, `control_active` rules, required fields, no duplicate refs |
-| `cac_evaluate_event` | Heuristic deny-rule simulation against a sample OPA input event (no OPA binary) |
+| `cac_evaluate_event` | Deny-rule evaluation against a sample OPA input event — uses the real `opa eval` binary when found (`OPA_BINARY` env var or `opa` on PATH), falls back to a labelled Python heuristic otherwise |
 | `cac_export` | Export any artifact as `rego`, `json`, or `yaml` |
 | `cac_map_to_risks` | Map controls to `risk_scores` rows → coverage matrix + uncovered risks list |
+
+---
+
+## opa
+
+**Third-party server:** [`@orygn/opa-mcp`](https://github.com/OrygnsCode/opa-mcp-server) (MIT) — a full Rego/OPA authoring environment with 52 tools (`rego_eval`, `rego_fmt`, `rego_lint` via Regal, `rego_explain_decision`, OPA server policy CRUD, bundle build/sign, and more). Reference copy of its source lives at `project/agentic-tools/opa-mcp-server/` for reading — it is **not** built or run from that checkout. The standard install (`npx -y @orygn/opa-mcp`) always pulls the current published package.
+
+Unlike this project's other MCP servers, `opa` is Node.js and runs the actual OPA binary (fetched automatically per-platform), so `rego_eval` and friends are authoritative — not the heuristic simulation `cac_evaluate_event` falls back to when OPA isn't installed.
+
+**Requires:** Node.js ≥ 20. Optionally set `OPA_BINARY` / `REGAL_BINARY` to point at existing installs instead of the bundled ones, and `OPA_MCP_ALLOWED_PATHS` to scope which directories it may read/write Rego files in (defaults are conservative).
+
+See its own [README](opa-mcp-server/README.md) for the full 52-tool reference, prompts, and resources (OPA builtin catalog, Rego style guide, RBAC/ABAC/K8s pattern library).
 
 ---
 

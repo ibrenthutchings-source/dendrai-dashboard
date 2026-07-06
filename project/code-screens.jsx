@@ -521,6 +521,13 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
   const [saveMsg,  setSaveMsg]  = useState(null);
   const [modMeta,  setModMeta]  = useState(null);
 
+  // Evaluate panel — real OPA when available, heuristic fallback (see /api/pac/evaluate)
+  const [showEval,    setShowEval]    = useState(false);
+  const [evalInput,   setEvalInput]   = useState('{\n  "event": {\n    "type": "user_provisioning",\n    "approved_by": null\n  }\n}');
+  const [evaluating,  setEvaluating]  = useState(false);
+  const [evalResult,  setEvalResult]  = useState(null);
+  const [evalErr,     setEvalErr]     = useState(null);
+
   // Approver modal
   const [showApprove, setShowApprove] = useState(false);
   const [appName,     setAppName]     = useState("");
@@ -604,6 +611,31 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
       }));
       setAppName(""); setAppRole(""); setShowApprove(false);
     }
+  }
+
+  async function handleEvaluate() {
+    setEvalErr(null); setEvalResult(null);
+    if (!rego.trim()) { setEvalErr("Rego module is empty — nothing to evaluate."); return; }
+    let inputEvent;
+    try {
+      inputEvent = JSON.parse(evalInput);
+    } catch (e) {
+      setEvalErr(`Input event is not valid JSON — ${e.message}`);
+      return;
+    }
+    setEvaluating(true);
+    try {
+      const r = await fetch("/api/pac/evaluate", {
+        method: "POST", headers: _codeAuthHeaders(),
+        body: JSON.stringify({ rego_content: rego, input_event: inputEvent }),
+      });
+      const d = await r.json();
+      if (r.ok) setEvalResult(d);
+      else setEvalErr(d.detail || "Evaluation failed.");
+    } catch (e) {
+      setEvalErr(`Network error — ${e.message}`);
+    }
+    setEvaluating(false);
   }
 
   async function saveHook(type) {
@@ -747,9 +779,85 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
             <button className="btn btn-sm btn-acc" onClick={handleSave} disabled={!dirty || saving}>
               {saving ? "Saving…" : "Save Version"}
             </button>
+            <button className="btn btn-sm" onClick={() => setShowEval(v => !v)}>
+              {showEval ? "▾ Evaluate" : "▸ Evaluate"}
+            </button>
             <span style={{ flex:1 }} />
             {dirty && <span style={{ fontSize:10, color:"#f59e0b" }}>● Unsaved changes</span>}
           </div>
+
+          {/* Evaluate panel — real OPA when installed, heuristic fallback otherwise */}
+          {showEval && (
+            <div className="pac-eval-panel" style={{ display:"flex", gap:12, padding:"10px 16px", borderTop:"1px solid var(--line,#eee)" }}>
+              <div style={{ flex:"0 0 320px", display:"flex", flexDirection:"column", gap:6 }}>
+                <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-3,#888)", letterSpacing:".04em", textTransform:"uppercase" }}>
+                  Sample input event
+                </div>
+                <textarea
+                  className="code-editor mono"
+                  spellCheck={false}
+                  value={evalInput}
+                  onChange={e => setEvalInput(e.target.value)}
+                  style={{ height:120, resize:"vertical", fontSize:10.5, lineHeight:1.5, padding:8 }}
+                />
+                <button className="btn btn-sm btn-acc" onClick={handleEvaluate} disabled={evaluating} style={{ alignSelf:"flex-start" }}>
+                  {evaluating ? "Evaluating…" : "▶ Run"}
+                </button>
+                {evalErr && <div className="code-status err" style={{ fontSize:10 }}>{evalErr}</div>}
+              </div>
+
+              <div style={{ flex:1, minWidth:0 }}>
+                {!evalResult ? (
+                  <div style={{ fontSize:11, color:"var(--ink-3,#888)", padding:"8px 0" }}>
+                    Run against the current (unsaved edits included) Rego module. Uses the real <code>opa</code> binary when installed — set <code>OPA_BINARY</code> or install <code>opa</code> on PATH — otherwise falls back to a labelled heuristic simulation.
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+                      <span style={{
+                        fontSize:9.5, fontWeight:700, padding:"2px 8px", borderRadius:999,
+                        background: evalResult.evaluation?.startsWith("opa eval") ? "var(--green-soft,#e8f5e9)" : "var(--amber-soft,#fff8e1)",
+                        color:      evalResult.evaluation?.startsWith("opa eval") ? "var(--green-ink,#166534)" : "var(--amber-ink,#b45309)",
+                      }}>
+                        {evalResult.evaluation?.startsWith("opa eval") ? `✓ OPA ${evalResult.opa_version || ""}` : "⚠ Heuristic (not authoritative)"}
+                      </span>
+                      {evalResult.opa_unavailable_reason && (
+                        <span style={{ fontSize:9.5, color:"var(--ink-3)" }} title={evalResult.opa_unavailable_reason}>
+                          {evalResult.opa_unavailable_reason}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display:"flex", gap:16 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:9.5, fontWeight:700, color:"var(--red-ink,#b91c1c)", marginBottom:4 }}>
+                          Fired ({(evalResult.rules_fired||[]).length})
+                        </div>
+                        {(evalResult.rules_fired||[]).length === 0
+                          ? <div style={{ fontSize:10.5, color:"var(--ink-3)" }}>None</div>
+                          : evalResult.rules_fired.map((r,i) => (
+                              <div key={i} className="mono" style={{ fontSize:10, padding:"3px 0", borderBottom:"1px solid var(--line,#eee)" }}>
+                                {r.rule}{r.confidence != null ? ` (${(r.confidence*100).toFixed(0)}%)` : ""}
+                              </div>
+                            ))}
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-3)", marginBottom:4 }}>
+                          Passed ({(evalResult.rules_passed||[]).length})
+                        </div>
+                        {(evalResult.rules_passed||[]).length === 0
+                          ? <div style={{ fontSize:10.5, color:"var(--ink-3)" }}>None</div>
+                          : evalResult.rules_passed.map((r,i) => (
+                              <div key={i} className="mono" style={{ fontSize:10, padding:"3px 0", borderBottom:"1px solid var(--line,#eee)" }}>
+                                {r.rule}{r.confidence != null ? ` (${(r.confidence*100).toFixed(0)}%)` : ""}
+                              </div>
+                            ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </>
       )}
 

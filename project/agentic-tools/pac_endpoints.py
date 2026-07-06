@@ -20,7 +20,13 @@ Router prefix: /pac
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -672,6 +678,200 @@ class GenerateCaCRequest(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Policy evaluation — real OPA when available, Python heuristic fallback
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared by POST /pac/evaluate (web UI) and cac_mcp_server.py's cac_evaluate_event
+# (Claude chat tool) so both surfaces give identical results.
+
+def _find_opa_binary() -> Optional[str]:
+    """Locate a real OPA binary. OPA_BINARY env var takes precedence over PATH."""
+    env_path = os.environ.get("OPA_BINARY", "").strip()
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    return shutil.which("opa")
+
+
+def _opa_version(opa_bin: str) -> str:
+    try:
+        proc = subprocess.run([opa_bin, "version"], capture_output=True, text=True, timeout=5)
+        return proc.stdout.strip().splitlines()[0] if proc.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _run_real_opa_eval(rego_content: str, input_event: dict) -> dict:
+    """
+    Run the actual OPA binary against a Rego module and input document.
+    Queries every rule under the module's own package, returning which
+    deny/allow rules fired vs. stayed silent.
+
+    Raises RuntimeError if OPA isn't installed, the module has no package
+    declaration, or the eval subprocess fails — callers should catch this
+    and fall back to _heuristic_evaluate().
+    """
+    opa_bin = _find_opa_binary()
+    if not opa_bin:
+        raise RuntimeError("OPA binary not found — set OPA_BINARY or install opa on PATH")
+
+    pkg_match = re.search(r"^package\s+([\w.]+)", rego_content, re.MULTILINE)
+    if not pkg_match:
+        raise RuntimeError("rego_content has no package declaration")
+    package = pkg_match.group(1)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rego_path = os.path.join(tmp, "policy.rego")
+        input_path = os.path.join(tmp, "input.json")
+        with open(rego_path, "w", encoding="utf-8") as f:
+            f.write(rego_content)
+        with open(input_path, "w", encoding="utf-8") as f:
+            json.dump(input_event, f)
+
+        try:
+            proc = subprocess.run(
+                [opa_bin, "eval", "-f", "json",
+                 "-d", rego_path, "-i", input_path,
+                 f"data.{package}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("opa eval timed out after 10s")
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"opa eval failed: {(proc.stderr or proc.stdout).strip()[:500]}")
+
+        try:
+            parsed = json.loads(proc.stdout)
+            bindings = parsed["result"][0]["expressions"][0]["value"] or {}
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"could not parse opa eval output: {exc}")
+
+        fired: list[dict] = []
+        passed: list[dict] = []
+        for key, val in bindings.items():
+            if not (key.startswith("deny") or key.startswith("allow")):
+                continue
+            entry = {"rule": key, "value": val}
+            is_empty = val in (None, False, [], {}, set())
+            (passed if is_empty else fired).append(entry)
+
+        return {
+            "evaluation": "opa eval (authoritative)",
+            "opa_version": _opa_version(opa_bin),
+            "package": package,
+            "rules_fired": fired,
+            "rules_passed": passed,
+        }
+
+
+def _heuristic_evaluate(rego_content: str, input_event: dict) -> dict:
+    """
+    Pattern-match deny rule conditions against an input event without OPA.
+    Approximation only — used when no OPA binary is available. Checks
+    whether the fields referenced in each deny rule are present and satisfy
+    the comparison conditions (==, !=, >, <, >=, <=, or a bare `not` check).
+    """
+    def _flatten(d: dict, prefix: str = "") -> dict:
+        flat: dict = {}
+        for k, v in d.items():
+            key = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                flat.update(_flatten(v, key))
+            else:
+                flat[key] = v
+        return flat
+
+    flat_input = _flatten(input_event)
+
+    rule_pattern = re.compile(
+        r'^(deny_\w+)\[msg\]\s+if\s*\{([^}]+?)\}',
+        re.MULTILINE | re.DOTALL,
+    )
+
+    fired: list[dict] = []
+    passed: list[dict] = []
+    skipped: list[dict] = []
+
+    for m in rule_pattern.finditer(rego_content):
+        rule_name = m.group(1)
+        body = m.group(2)
+
+        conditions = re.findall(
+            r'input\.([\w.]+)\s*(==|!=|>|<|>=|<=|!=)\s*([^\n]+)',
+            body,
+        )
+        not_conditions = re.findall(r'not\s+input\.([\w.]+)', body)
+
+        if not conditions and not not_conditions:
+            skipped.append({"rule": rule_name, "reason": "No evaluable conditions found"})
+            continue
+
+        score = 0
+        total = 0
+        detail: list[str] = []
+
+        for path, op, val_str in conditions:
+            total += 1
+            val_str = val_str.strip().strip('"')
+            actual = flat_input.get(f"input.{path}", flat_input.get(path))
+            if actual is None:
+                detail.append(f"input.{path} not in event (condition unknown)")
+                continue
+            try:
+                val_cmp: object = json.loads(val_str)
+            except (json.JSONDecodeError, ValueError):
+                val_cmp = val_str
+            try:
+                result = (
+                    (op == "==" and actual == val_cmp) or
+                    (op == "!=" and actual != val_cmp) or
+                    (op == ">" and float(actual) > float(val_cmp)) or  # type: ignore[arg-type]
+                    (op == "<" and float(actual) < float(val_cmp)) or  # type: ignore[arg-type]
+                    (op == ">=" and float(actual) >= float(val_cmp)) or  # type: ignore[arg-type]
+                    (op == "<=" and float(actual) <= float(val_cmp))      # type: ignore[arg-type]
+                )
+                if result:
+                    score += 1
+                detail.append(f"input.{path} {op} {val_cmp!r}: {'✓' if result else '✗'} (actual={actual!r})")
+            except (TypeError, ValueError):
+                detail.append(f"input.{path} {op} {val_cmp!r}: ? (type mismatch)")
+
+        for path in not_conditions:
+            total += 1
+            actual = flat_input.get(f"input.{path}", flat_input.get(path))
+            satisfied = actual is None or actual is False or actual == ""
+            if satisfied:
+                score += 1
+            detail.append(f"not input.{path}: {'✓' if satisfied else '✗'} (actual={actual!r})")
+
+        confidence = round(score / total, 2) if total else 0.0
+        entry = {"rule": rule_name, "confidence": confidence, "conditions_checked": detail}
+        (fired if confidence >= 0.7 else passed).append(entry)
+
+    return {
+        "evaluation": "simulation (Python heuristic — not authoritative OPA)",
+        "rules_fired": fired,
+        "rules_passed": passed,
+        "rules_skipped": skipped,
+        "summary": {
+            "fired_count": len(fired),
+            "passed_count": len(passed),
+            "skipped_count": len(skipped),
+        },
+    }
+
+
+def evaluate_policy_event(rego_content: str, input_event: dict) -> dict:
+    """Evaluate a Rego module against a sample input event — real OPA when
+    available, labelled heuristic fallback otherwise."""
+    try:
+        return _run_real_opa_eval(rego_content, input_event)
+    except RuntimeError as exc:
+        result = _heuristic_evaluate(rego_content, input_event)
+        result["opa_unavailable_reason"] = str(exc)
+        return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CaC generation helper
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -918,6 +1118,26 @@ async def get_latest_cac(ticker: Optional[str] = None):
 
     artifact = db.get_latest_cac_artifact(ticker)
     return {"artifact": artifact}
+
+
+class EvaluateRequest(BaseModel):
+    rego_content: str
+    input_event: Dict[str, Any]
+
+
+@router.post("/evaluate")
+async def evaluate_policy(req: EvaluateRequest):
+    """
+    Evaluate a Rego module against a sample input event.
+
+    Uses the real OPA binary when found (OPA_BINARY env var or `opa` on
+    PATH) for an authoritative result; falls back to a labelled Python
+    heuristic pattern-matcher otherwise. Same logic Claude uses via the
+    cac_evaluate_event MCP tool, so both surfaces agree.
+    """
+    if not req.rego_content.strip():
+        raise HTTPException(status_code=422, detail="rego_content must not be empty")
+    return evaluate_policy_event(req.rego_content, req.input_event)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

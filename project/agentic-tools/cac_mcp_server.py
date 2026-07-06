@@ -76,6 +76,7 @@ from pac_endpoints import (
     VALID_PROCESSES,
     _REGO_DEFAULTS,
     _controls_to_rego,
+    evaluate_policy_event,
 )
 
 mcp = FastMCP("controls-as-code")
@@ -519,18 +520,17 @@ def cac_validate(rego_content: str) -> str:
 @mcp.tool()
 def cac_evaluate_event(rego_content: str, input_event_json: str) -> str:
     """
-    Simulate CaC/PaC policy evaluation against a sample OPA input event.
+    Evaluate CaC/PaC policy against a sample OPA input event.
 
-    This is a Python-based simulation — it does NOT require the OPA binary.
-    It pattern-matches deny rule conditions heuristically by checking whether
-    the input event fields referenced in each deny rule are present and
-    satisfy the comparison conditions (==, !=, >, <, >=, <=).
+    Uses the real `opa` binary when found (OPA_BINARY env var, or `opa` on
+    PATH — e.g. the `opa` MCP server's bundled binary) for an authoritative
+    result. Falls back to a Python heuristic pattern-matcher, clearly labelled
+    as non-authoritative, when OPA isn't installed: it checks whether the
+    input event fields referenced in each deny rule are present and satisfy
+    the comparison conditions (==, !=, >, <, >=, <=).
 
-    Returns a list of rules that would likely FIRE (deny) and rules that would
-    PASS (allow) based on the input event, along with confidence scores.
-
-    Note: This is an approximation. For authoritative evaluation, run:
-        opa eval -d <module.rego> -i <input.json> 'data.controls.oracle_fusion.<pkg>.deny_*'
+    Returns a list of rules that fired (deny) and rules that passed (allow),
+    plus which evaluation mode was actually used.
 
     Args:
         rego_content:    Rego module content (PAC or CaC)
@@ -546,101 +546,8 @@ def cac_evaluate_event(rego_content: str, input_event_json: str) -> str:
         except json.JSONDecodeError as exc:
             return f"Error: input_event_json is not valid JSON — {exc}"
 
-        def _flatten(d: dict, prefix: str = "") -> dict[str, object]:
-            """Flatten nested dict to dot-path keys."""
-            flat: dict[str, object] = {}
-            for k, v in d.items():
-                key = f"{prefix}.{k}" if prefix else k
-                if isinstance(v, dict):
-                    flat.update(_flatten(v, key))
-                else:
-                    flat[key] = v
-            return flat
-
-        flat_input = _flatten(input_event)
-
-        # Extract deny rule bodies
-        rule_pattern = re.compile(
-            r'^(deny_\w+)\[msg\]\s+if\s*\{([^}]+?)\}',
-            re.MULTILINE | re.DOTALL,
-        )
-
-        fired: list[dict]   = []
-        passed: list[dict]  = []
-        skipped: list[dict] = []
-
-        for m in rule_pattern.finditer(rego_content):
-            rule_name = m.group(1)
-            body      = m.group(2)
-
-            # Extract conditions: lines of form "input.path.field == value"
-            conditions = re.findall(
-                r'input\.([\w.]+)\s*(==|!=|>|<|>=|<=|!=)\s*([^\n]+)',
-                body,
-            )
-            not_conditions = re.findall(r'not\s+input\.([\w.]+)', body)
-
-            if not conditions and not not_conditions:
-                skipped.append({"rule": rule_name, "reason": "No evaluable conditions found"})
-                continue
-
-            score = 0
-            total = 0
-            detail: list[str] = []
-
-            for path, op, val_str in conditions:
-                total += 1
-                val_str = val_str.strip().strip('"')
-                actual  = flat_input.get(f"input.{path}", flat_input.get(path))
-                if actual is None:
-                    detail.append(f"input.{path} not in event (condition unknown)")
-                    continue
-                # Best-effort type coercion
-                try:
-                    val_cmp: object = json.loads(val_str)
-                except (json.JSONDecodeError, ValueError):
-                    val_cmp = val_str
-                try:
-                    result = (
-                        (op == "==" and actual == val_cmp) or
-                        (op == "!=" and actual != val_cmp) or
-                        (op == ">"  and float(actual) > float(val_cmp)) or  # type: ignore[arg-type]
-                        (op == "<"  and float(actual) < float(val_cmp)) or  # type: ignore[arg-type]
-                        (op == ">=" and float(actual) >= float(val_cmp)) or  # type: ignore[arg-type]
-                        (op == "<=" and float(actual) <= float(val_cmp))      # type: ignore[arg-type]
-                    )
-                    if result:
-                        score += 1
-                    detail.append(f"input.{path} {op} {val_cmp!r}: {'✓' if result else '✗'} (actual={actual!r})")
-                except (TypeError, ValueError):
-                    detail.append(f"input.{path} {op} {val_cmp!r}: ? (type mismatch)")
-
-            for path in not_conditions:
-                total += 1
-                actual = flat_input.get(f"input.{path}", flat_input.get(path))
-                satisfied = actual is None or actual is False or actual == ""
-                if satisfied:
-                    score += 1
-                detail.append(f"not input.{path}: {'✓' if satisfied else '✗'} (actual={actual!r})")
-
-            confidence = round(score / total, 2) if total else 0.0
-            entry = {"rule": rule_name, "confidence": confidence, "conditions_checked": detail}
-            if confidence >= 0.7:
-                fired.append(entry)
-            else:
-                passed.append(entry)
-
-        return json.dumps({
-            "evaluation": "simulation (Python heuristic — not authoritative OPA)",
-            "rules_fired":   fired,
-            "rules_passed":  passed,
-            "rules_skipped": skipped,
-            "summary": {
-                "fired_count":   len(fired),
-                "passed_count":  len(passed),
-                "skipped_count": len(skipped),
-            },
-        }, indent=2)
+        result = evaluate_policy_event(rego_content, input_event)
+        return json.dumps(result, indent=2)
     except Exception as exc:
         return f"Error evaluating event: {exc}"
 
