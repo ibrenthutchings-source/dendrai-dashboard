@@ -253,6 +253,73 @@ class McpProxyBronzeHandler(BronzeLayerBase):
         )
 
 
+class SystemTelemetryBronzeHandler(BronzeLayerBase):
+    """
+    Ingests flagged rows from observability.system_telemetry — the generic REST
+    ingest path any monitored system (Saviynt, SAP, Oracle Fusion, ServiceNow,
+    Workday, Entra, custom) pushes events to via its per-system ingest_api_key.
+
+    Detection rules run at ingest time (_detect_system_flags in mcp_governance.py)
+    tag each row with 0+ of: privileged_access, sod_violation, sensitive_resource,
+    policy_violation. Multiple simultaneous flags produce a compound
+    SYSTEM_GOVERNANCE_VIOLATION event type, mirroring McpProxyBronzeHandler.
+    """
+
+    source_system = SourceSystem.SYSTEM_TELEMETRY
+
+    # Priority-ordered: most severe flag drives the EventType when only one fires.
+    # Reuses existing EventTypes where the semantics already match (SOD_VIOLATION,
+    # PRIVILEGE_ESCALATION, POLICY_VIOLATION already carry Gold-layer base weights).
+    _FLAG_EVENT_MAP: dict[str, EventType] = {
+        "sod_violation":      EventType.SOD_VIOLATION,
+        "privileged_access":  EventType.PRIVILEGE_ESCALATION,
+        "sensitive_resource": EventType.SENSITIVE_RESOURCE_ACCESS,
+        "policy_violation":   EventType.POLICY_VIOLATION,
+    }
+
+    async def ingest(self, raw_event: dict[str, Any]) -> URO:
+        ts = _parse_ts(raw_event.get("created_at") or raw_event.get("timestamp"))
+
+        risk_flags: list[str] = raw_event.get("risk_flags") or []
+
+        if len(risk_flags) >= 2:
+            event_type = EventType.SYSTEM_GOVERNANCE_VIOLATION
+        elif risk_flags:
+            event_type = next(
+                (self._FLAG_EVENT_MAP[f] for f in self._FLAG_EVENT_MAP if f in risk_flags),
+                EventType.POLICY_VIOLATION,
+            )
+        else:
+            event_type = EventType.ANOMALY
+
+        actor = str(raw_event.get("actor") or "UNKNOWN")
+
+        env = CloudEnvironment(
+            provider=raw_event.get("system_type", "custom"),
+            tags={
+                "server_name": raw_event.get("server_name", ""),
+                "event_type":  raw_event.get("event_type", ""),
+                "severity":    raw_event.get("severity", "INFO"),
+            },
+        )
+
+        return URO(
+            timestamp=ts,
+            source_system=SourceSystem.SYSTEM_TELEMETRY,
+            event_type=event_type,
+            actor_id=actor,
+            actor_type=ActorType.HUMAN,
+            environment=env,
+            raw_payload=RawPayload(
+                content={
+                    **{k: str(v) if hasattr(v, "hex") else v for k, v in raw_event.items()}
+                },
+                schema_version="System-Telemetry-v1",
+            ),
+            pipeline_stage=PipelineStage.BRONZE,
+        )
+
+
 # ── Bronze Dispatcher ─────────────────────────────────────────────────────────
 
 class BronzeIngestionLayer:
@@ -270,6 +337,7 @@ class BronzeIngestionLayer:
             SourceSystem.GITHUB:     GitHubBronzeHandler(),
             SourceSystem.SAILPOINT:  SailPointBronzeHandler(),
             SourceSystem.MCP_PROXY:  McpProxyBronzeHandler(),
+            SourceSystem.SYSTEM_TELEMETRY: SystemTelemetryBronzeHandler(),
         }
 
     async def ingest(

@@ -29,6 +29,7 @@ class SourceSystem(str, Enum):
     SEC_EDGAR      = "SEC_EDGAR"
     ORACLE_FUSION  = "ORACLE_FUSION"
     MCP_PROXY      = "MCP_PROXY"
+    SYSTEM_TELEMETRY = "SYSTEM_TELEMETRY"  # generic REST-ingested enterprise systems (Saviynt, SAP, ServiceNow, ...)
     INTERNAL       = "INTERNAL"
     UNKNOWN        = "UNKNOWN"
 
@@ -72,6 +73,10 @@ class EventType(str, Enum):
     MCP_LARGE_PAYLOAD          = "MCP_LARGE_PAYLOAD"         # payload > 50 KB
     MCP_TOOL_ERROR             = "MCP_TOOL_ERROR"            # tool returned error status
     MCP_GOVERNANCE_VIOLATION   = "MCP_GOVERNANCE_VIOLATION"  # 3+ flags simultaneously
+
+    # ── Generic Enterprise Systems (system_telemetry ingest) ──
+    SENSITIVE_RESOURCE_ACCESS   = "SENSITIVE_RESOURCE_ACCESS"    # sensitive_resource flag
+    SYSTEM_GOVERNANCE_VIOLATION = "SYSTEM_GOVERNANCE_VIOLATION"  # 2+ flags simultaneously
 
 
 class PipelineStage(str, Enum):

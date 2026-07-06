@@ -1037,6 +1037,27 @@ CREATE INDEX IF NOT EXISTS idx_system_telemetry_created
 CREATE INDEX IF NOT EXISTS idx_system_telemetry_flags
     ON observability.system_telemetry USING GIN (risk_flags);
 
+-- Adjudication pipeline support for generic system_telemetry rows (added after
+-- initial release — idempotent). processed_at mirrors mcp_telemetry's polling
+-- marker; system_telemetry_id lets adjudicated_tool_calls reference this table
+-- too, since its original telemetry_id FK points only at mcp_telemetry (which
+-- pre-dates system_telemetry and can't be repointed to it).
+ALTER TABLE observability.system_telemetry
+    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_system_telemetry_unprocessed
+    ON observability.system_telemetry (created_at ASC)
+    WHERE processed_at IS NULL AND array_length(risk_flags, 1) > 0;
+
+ALTER TABLE observability.adjudicated_tool_calls
+    ADD COLUMN IF NOT EXISTS system_telemetry_id BIGINT
+        REFERENCES observability.system_telemetry (id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_adj_system_telemetry
+    ON observability.adjudicated_tool_calls (system_telemetry_id)
+    WHERE system_telemetry_id IS NOT NULL;
+-- system_telemetry-sourced adjudications have no MCP session
+ALTER TABLE observability.adjudicated_tool_calls
+    ALTER COLUMN session_id DROP NOT NULL;
+
 CREATE TABLE IF NOT EXISTS observability.pac_repositories (
     id           BIGSERIAL    PRIMARY KEY,
     display_name VARCHAR(128) NOT NULL,

@@ -145,7 +145,7 @@ def _dispatch_alert(
 # ── Database helpers (synchronous psycopg2, called via asyncio.to_thread) ─────
 
 def _fetch_unprocessed(batch_size: int) -> list[dict]:
-    """Fetch up to batch_size unprocessed flagged telemetry rows."""
+    """Fetch up to batch_size unprocessed flagged telemetry rows from mcp_telemetry."""
     if not db.is_available():
         return []
     try:
@@ -177,6 +177,7 @@ def _fetch_unprocessed(batch_size: int) -> list[dict]:
                         d["ts"] = d["ts"].isoformat() if hasattr(d["ts"], "isoformat") else str(d["ts"])
                     if d.get("risk_flags") is None:
                         d["risk_flags"] = []
+                    d["_origin"] = "mcp"
                     rows.append(d)
                 return rows
     except Exception as exc:
@@ -184,12 +185,59 @@ def _fetch_unprocessed(batch_size: int) -> list[dict]:
         return []
 
 
+def _fetch_unprocessed_system(batch_size: int) -> list[dict]:
+    """Fetch up to batch_size unprocessed flagged rows from system_telemetry —
+    the generic REST-ingest path for non-MCP monitored systems (Saviynt, SAP,
+    ServiceNow, etc.)."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, created_at, server_name, system_type, event_type,
+                           event_id, actor, action, resource, severity, risk_flags
+                    FROM observability.system_telemetry
+                    WHERE array_length(risk_flags, 1) > 0
+                      AND processed_at IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                    """,
+                    (batch_size,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("created_at") is not None:
+                        d["created_at"] = d["created_at"].isoformat() if hasattr(d["created_at"], "isoformat") else str(d["created_at"])
+                    if d.get("risk_flags") is None:
+                        d["risk_flags"] = []
+                    d["_origin"] = "system"
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_unprocessed_system error: %s", exc)
+        return []
+
+
 def _write_adjudication(
-    telemetry_id: int,
-    session_id: str,
+    source_id: int,
+    origin: str,
+    session_id: str | None,
     uro: "URO",
 ) -> None:
-    """Write adjudication result, stamp processed_at, and dispatch webhook on ESCALATE."""
+    """
+    Write adjudication result, stamp processed_at, and dispatch webhook on ESCALATE.
+
+    origin distinguishes which source table source_id refers to:
+      "mcp"    → observability.mcp_telemetry (telemetry_id FK)
+      "system" → observability.system_telemetry (system_telemetry_id FK) —
+                 generic REST-ingested events have no MCP session, so session_id
+                 is None for these rows.
+    """
     if not db.is_available():
         return
     adj = uro.adjudication
@@ -205,6 +253,9 @@ def _write_adjudication(
         }
         for e in (adj.evaluations if adj else [])
     ])
+    telemetry_id        = source_id if origin == "mcp" else None
+    system_telemetry_id  = source_id if origin == "system" else None
+    source_system_label  = "MCP_PROXY" if origin == "mcp" else "SYSTEM_TELEMETRY"
     try:
         with db.get_conn() as conn:
             with conn.cursor() as cur:
@@ -212,7 +263,7 @@ def _write_adjudication(
                 cur.execute(
                     """
                     INSERT INTO observability.adjudicated_tool_calls (
-                        telemetry_id, session_id,
+                        telemetry_id, system_telemetry_id, session_id, source_system,
                         target_tool, server_name, risk_flags, execution_time_ms,
                         uro_id, risk_score, risk_tier,
                         final_verdict, ensemble_confidence,
@@ -220,14 +271,16 @@ def _write_adjudication(
                         policy_violations, adjudicator_reasoning,
                         council_votes
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s::jsonb
                     )
                     """,
                     (
                         telemetry_id,
+                        system_telemetry_id,
                         session_id,
+                        source_system_label,
                         uro.conformed_payload.resource_id if uro.conformed_payload else None,
                         uro.environment.tags.get("server_name"),
                         list(uro.raw_payload.content.get("risk_flags") or []),
@@ -244,11 +297,17 @@ def _write_adjudication(
                         council_votes,
                     ),
                 )
-                # Stamp source row as processed
-                cur.execute(
-                    "UPDATE observability.mcp_telemetry SET processed_at = NOW() WHERE id = %s",
-                    (telemetry_id,),
-                )
+                # Stamp source row as processed (correct table per origin)
+                if origin == "mcp":
+                    cur.execute(
+                        "UPDATE observability.mcp_telemetry SET processed_at = NOW() WHERE id = %s",
+                        (source_id,),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE observability.system_telemetry SET processed_at = NOW() WHERE id = %s",
+                        (source_id,),
+                    )
             conn.commit()
 
         # Dispatch webhook alert for ESCALATE verdicts (non-fatal)
@@ -256,7 +315,7 @@ def _write_adjudication(
             try:
                 _dispatch_alert(
                     tool_name=uro.conformed_payload.resource_id if uro.conformed_payload else "unknown",
-                    session_id=session_id,
+                    session_id=session_id or f"system-{source_id}",
                     risk_tier=str(uro.risk_tier or "UNKNOWN"),
                     risk_score=float(uro.risk_score) if uro.risk_score is not None else 0.0,
                     verdict="ESCALATE",
@@ -266,7 +325,7 @@ def _write_adjudication(
                 logger.warning("Alert dispatch error: %s", alert_exc)
 
     except Exception as exc:
-        logger.warning("_write_adjudication error (telemetry_id=%s): %s", telemetry_id, exc)
+        logger.warning("_write_adjudication error (source_id=%s origin=%s): %s", source_id, origin, exc)
         try:
             conn.rollback()
         except Exception:
@@ -377,7 +436,8 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
         return []
 
     _BASE_COLS = """
-        SELECT id, adjudicated_at, session_id, target_tool, server_name,
+        SELECT id, telemetry_id, system_telemetry_id, adjudicated_at, session_id,
+               target_tool, server_name,
                risk_flags, risk_score, risk_tier, final_verdict,
                ensemble_confidence, requires_human_review,
                conflict_flags, policy_violations, adjudicator_reasoning,
@@ -434,7 +494,9 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
 
 
 def _fetch_raw_telemetry(limit: int) -> list[dict]:
-    """Fetch the most recent mcp_telemetry rows for the live-stream view."""
+    """Fetch the most recent telemetry rows for the live-stream view, merged
+    across mcp_telemetry (MCP tool calls) and system_telemetry (generic
+    REST-ingested events from any monitored system), newest first."""
     if not db.is_available():
         return []
     try:
@@ -452,7 +514,7 @@ def _fetch_raw_telemetry(limit: int) -> list[dict]:
                     (limit,),
                 )
                 cols = [d[0] for d in cur.description]
-                rows = []
+                mcp_rows = []
                 for row in cur.fetchall():
                     d = dict(zip(cols, row))
                     if d.get("session_id"):
@@ -460,8 +522,48 @@ def _fetch_raw_telemetry(limit: int) -> list[dict]:
                     for tf in ("ts", "processed_at"):
                         if d.get(tf) and hasattr(d[tf], "isoformat"):
                             d[tf] = d[tf].isoformat()
-                    rows.append(d)
-                return rows
+                    d["origin"] = "mcp"
+                    mcp_rows.append(d)
+
+                cur.execute(
+                    """
+                    SELECT id, created_at, server_name, system_type, event_type,
+                           actor, resource, severity, risk_flags, processed_at
+                    FROM observability.system_telemetry
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                cols = [d[0] for d in cur.description]
+                system_rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("created_at", "processed_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    severity = str(d.get("severity") or "INFO").upper()
+                    system_rows.append({
+                        "id":                d["id"],
+                        "origin":            "system",
+                        "ts":                d["created_at"],
+                        "session_id":        None,
+                        "direction":         "event",
+                        "method":            d.get("event_type"),
+                        "target_tool":       d.get("resource") or d.get("server_name"),
+                        "execution_time_ms": None,
+                        "status":            "error" if severity in ("CRITICAL", "HIGH") else "ok",
+                        "server_name":       d.get("server_name"),
+                        "risk_flags":        d.get("risk_flags") or [],
+                        "processed_at":      d.get("processed_at"),
+                        "actor":             d.get("actor"),
+                        "system_type":       d.get("system_type"),
+                        "severity":          severity,
+                    })
+
+                merged = mcp_rows + system_rows
+                merged.sort(key=lambda d: d.get("ts") or "", reverse=True)
+                return merged[:limit]
     except Exception as exc:
         logger.warning("_fetch_raw_telemetry error: %s", exc)
         return []
@@ -742,18 +844,21 @@ def _delete_suppression(suppression_id: int) -> bool:
 async def _process_one(row: dict) -> bool:
     """
     Run one telemetry row through the full UBO pipeline and persist the result.
-    Suppressed rows are auto-cleared without entering the pipeline.
+    Suppressed rows are auto-cleared without entering the pipeline (MCP-origin only —
+    the suppression allowlist is keyed on target_tool/tool_args_hash, which don't
+    apply to generic system_telemetry events).
     Returns True on success, False if any stage fails.
     """
-    telemetry_id = row["id"]
-    session_id   = row.get("session_id", "UNKNOWN")
+    source_id = row["id"]
+    origin    = row.get("_origin", "mcp")
+    session_id = row.get("session_id") if origin == "mcp" else None
+    ubo_source = UBOSourceSystem.MCP_PROXY if origin == "mcp" else UBOSourceSystem.SYSTEM_TELEMETRY
 
-    # Check suppression list first — if matched, auto-clear without UBO pipeline
-    if await asyncio.to_thread(_check_suppressed, row):
-        await asyncio.to_thread(_stamp_processed_suppressed, telemetry_id)
+    if origin == "mcp" and await asyncio.to_thread(_check_suppressed, row):
+        await asyncio.to_thread(_stamp_processed_suppressed, source_id)
         logger.info(
             "Suppressed telemetry %d: tool=%s server=%s — auto-cleared",
-            telemetry_id, row.get("target_tool"), row.get("server_name"),
+            source_id, row.get("target_tool"), row.get("server_name"),
         )
         return True
 
@@ -762,8 +867,10 @@ async def _process_one(row: dict) -> bool:
         return False
 
     try:
-        # Bronze: map raw telemetry dict → URO
-        uro = await bronze.ingest(row, UBOSourceSystem.MCP_PROXY)
+        # Bronze: map raw telemetry/system dict → URO (strip internal routing marker
+        # before it lands in the audit-grade raw_payload)
+        raw_event = {k: v for k, v in row.items() if k != "_origin"}
+        uro = await bronze.ingest(raw_event, ubo_source)
 
         # Silver: conform + Policy-as-Code
         uro = await silver.conform(uro)
@@ -775,11 +882,11 @@ async def _process_one(row: dict) -> bool:
         uro = await council.evaluate(uro)
 
         # Persist adjudication (blocking psycopg2 call, run in thread)
-        await asyncio.to_thread(_write_adjudication, telemetry_id, session_id, uro)
+        await asyncio.to_thread(_write_adjudication, source_id, origin, session_id, uro)
 
         logger.info(
-            "Adjudicated telemetry %d: tool=%s tier=%s verdict=%s human_review=%s",
-            telemetry_id,
+            "Adjudicated %s %d: resource=%s tier=%s verdict=%s human_review=%s",
+            origin, source_id,
             uro.conformed_payload.resource_id if uro.conformed_payload else "?",
             uro.risk_tier,
             uro.adjudication.final_verdict.value if uro.adjudication else "?",
@@ -788,13 +895,18 @@ async def _process_one(row: dict) -> bool:
         return True
 
     except Exception as exc:
-        logger.warning("_process_one failed for telemetry_id=%d: %s", telemetry_id, exc)
+        logger.warning("_process_one failed for %s id=%s: %s", origin, source_id, exc)
         return False
 
 
 async def _process_batch() -> int:
-    """Fetch one batch of unprocessed flagged rows and process them all."""
-    rows = await asyncio.to_thread(_fetch_unprocessed, BATCH_SIZE)
+    """Fetch one batch of unprocessed flagged rows from both mcp_telemetry and
+    system_telemetry, and process them all."""
+    mcp_rows, system_rows = await asyncio.gather(
+        asyncio.to_thread(_fetch_unprocessed, BATCH_SIZE),
+        asyncio.to_thread(_fetch_unprocessed_system, BATCH_SIZE),
+    )
+    rows = mcp_rows + system_rows
     if not rows:
         return 0
 
