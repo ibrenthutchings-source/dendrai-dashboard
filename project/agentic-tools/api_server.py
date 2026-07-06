@@ -1024,7 +1024,8 @@ def edgar_8k_events(req: TickerRequest):
 
 
 def _enrich_peer_financials(peer: dict) -> dict:
-    """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity, revenue_growth."""
+    """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity,
+    revenue_growth, and a simplified Beneish M-score for cross-peer benchmarking."""
     try:
         cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
         if not cik or cik == "0000000000":
@@ -1044,10 +1045,26 @@ def _enrich_peer_financials(peer: dict) -> dict:
         rev,    rev_prev = latest_two_annual("Revenue")
         gp,     _        = latest_two_annual("GrossProfit")
         rd,     _        = latest_two_annual("ResearchAndDevelopment")
+        ar,     ar_prev  = latest_two_annual("AccountsReceivable")
+        ni,     _        = latest_two_annual("NetIncome")
+        cfo,    _        = latest_two_annual("OperatingCashFlow")
+        assets, _        = latest_two_annual("TotalAssets")
 
         peer["gross_margin"]   = (gp  / rev) if rev and gp  is not None else None
         peer["rd_intensity"]   = (rd  / rev) if rev and rd  is not None else None
         peer["revenue_growth"] = ((rev - rev_prev) / rev_prev) if rev and rev_prev else None
+
+        # Simplified Beneish M-score (same 3-of-8-variable formula as risk-engine.js's
+        # computeRatios(), with GMI/AQI/DEPI/SGAI/LVGI held at their neutral defaults)
+        # so a peer's score is directly comparable to the subject company's gauge.
+        sgi  = (rev / rev_prev) if rev and rev_prev else None
+        dsri = ((ar / rev) / (ar_prev / rev_prev)) if (ar and rev and ar_prev and rev_prev) else None
+        tata = ((ni - cfo) / assets) if (ni is not None and cfo is not None and assets) else None
+        if sgi is not None or dsri is not None or tata is not None:
+            d = dsri if dsri is not None else 1.0
+            t = tata if tata is not None else 0.0
+            s = sgi  if sgi  is not None else 1.0
+            peer["m_score"] = -4.84 + 0.920 * d + 0.528 * 1.0 + 0.892 * s + 4.679 * t
     except Exception:
         pass
     return peer
