@@ -8,6 +8,7 @@
 import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ReferenceLine, ResponsiveContainer,
+  PieChart, Pie, Cell,
 } from 'recharts';
 
 // ---------- HEATMAP ----------
@@ -403,7 +404,6 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
 function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22, peers = [] }) {
   // Scale: -4 (left/green) → 0 (right/red). Visual mapping: clamp.
   const min = -4, max = 0;
-  const pct = clamp((m - min) / (max - min), 0, 1);
   const band = m > redThreshold ? "RED" : m > amberThreshold ? "AMBER" : "GREEN";
   const bandColor = band === "RED" ? "var(--red)" : band === "AMBER" ? "var(--amber)" : "var(--green)";
   const bandInk   = band === "RED" ? "var(--red-ink)" : band === "AMBER" ? "var(--amber-ink)" : "var(--green-ink)";
@@ -424,23 +424,76 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22, peers = 
     peerStats = { sorted, rank, total: combined.length, median };
   }
 
+  // Semicircular gauge geometry — angles in the standard math convention
+  // (0° = 3 o'clock, increasing counter-clockwise), matching Recharts' Pie
+  // startAngle=180/endAngle=0 sweep over the top of the arc.
+  const angleOf = v => 180 - clamp((v - min) / (max - min), 0, 1) * 180;
+  const toXY = (angleDeg, r, cx, cy) => {
+    const rad = (angleDeg * Math.PI) / 180;
+    return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+  };
+
+  const W = 280, H = 160;
+  const cx = W / 2, cy = H - 16;
+  const rOuter = 108, rInner = 80;
+  const needleLen = rInner - 6;
+  const tickInner = rOuter + 3, tickOuter = rOuter + 11;
+  const labelR = rOuter + 14;
+
+  const bandData = [
+    { name: "NORMAL",   value: amberThreshold - min,          color: "var(--green)" },
+    { name: "GRAY ZONE", value: redThreshold - amberThreshold, color: "var(--amber)" },
+    { name: "ELEVATED", value: max - redThreshold,            color: "var(--red)" },
+  ];
+
+  const needleTip = toXY(angleOf(m), needleLen, cx, cy);
+
   return (
     <div>
-      <div style={{position:"relative", height: 12, borderRadius: 6, overflow: "hidden",
-        background: "linear-gradient(90deg, var(--green-soft), var(--amber-soft), var(--red-soft))",
-        border: "1px solid var(--line)"}}>
-        {peerStats && peerStats.sorted.map((p, i) => (
-          <div key={i} title={`${p.ticker}: ${p.m.toFixed(2)}`}
-            style={{position:"absolute", left: `${clamp((p.m - min) / (max - min), 0, 1) * 100}%`,
-              top: 2, width: 3, height: 8, borderRadius: 1,
-              background: "var(--ink-3)", opacity: 0.6}}/>
-        ))}
-        <div style={{position:"absolute", left: `${pct * 100}%`, top: -2, bottom: -2, width: 2, background: "var(--ink)"}}/>
+      <div style={{position:"relative", width: "100%", maxWidth: W, margin: "0 auto"}}>
+        <PieChart width={W} height={H}>
+          <Pie
+            data={bandData}
+            dataKey="value"
+            cx={cx} cy={cy}
+            startAngle={180} endAngle={0}
+            innerRadius={rInner} outerRadius={rOuter}
+            stroke="none"
+            isAnimationActive={false}
+          >
+            {bandData.map((d, i) => <Cell key={i} fill={d.color} fillOpacity={0.30}/>)}
+          </Pie>
+        </PieChart>
+        <svg width={W} height={H} style={{position:"absolute", top:0, left:0, pointerEvents:"none"}}>
+          {/* Peer tick marks — same scale, muted, hoverable */}
+          {peerStats && peerStats.sorted.map((p, i) => {
+            const a = angleOf(p.m);
+            const p1 = toXY(a, tickInner, cx, cy);
+            const p2 = toXY(a, tickOuter, cx, cy);
+            return (
+              <line key={i} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+                stroke="var(--ink-3)" strokeWidth="2.5" strokeLinecap="round" opacity="0.65">
+                <title>{`${p.ticker}: ${p.m.toFixed(2)}`}</title>
+              </line>
+            );
+          })}
+          {/* Needle */}
+          <line x1={cx} y1={cy} x2={needleTip.x} y2={needleTip.y}
+            stroke="var(--ink)" strokeWidth="3" strokeLinecap="round"/>
+          <circle cx={cx} cy={cy} r="5.5" fill="var(--ink)"/>
+          {/* Threshold labels along the arc */}
+          {[min, amberThreshold, redThreshold, max].map((v, i) => {
+            const p = toXY(angleOf(v), labelR, cx, cy);
+            return (
+              <text key={i} x={p.x} y={p.y} textAnchor="middle" fontSize="9"
+                fontFamily="Geist Mono, monospace" fill="var(--ink-3)">
+                {v.toFixed(2)}
+              </text>
+            );
+          })}
+        </svg>
       </div>
-      <div className="mono" style={{display:"flex", justifyContent:"space-between", fontSize: 10, color: "var(--ink-3)", marginTop: 4}}>
-        <span>-4.0</span><span>-2.22</span><span>-1.78</span><span>0.0</span>
-      </div>
-      <div style={{display:"flex", alignItems:"baseline", gap: 8, marginTop: 8, flexWrap:"wrap"}}>
+      <div style={{display:"flex", alignItems:"baseline", gap: 8, marginTop: -4, flexWrap:"wrap", justifyContent:"center"}}>
         <span className="mono" style={{fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em"}}>{m.toFixed(2)}</span>
         <span className="rag-chip" style={{background: `color-mix(in oklch, ${bandColor} 14%, transparent)`, color: bandInk}}>{band}</span>
         {peerStats && (
