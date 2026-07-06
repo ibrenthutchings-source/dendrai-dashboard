@@ -1026,7 +1026,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         return (
           <div className="stage-detail">
             <h5>Beneish M-Score · financial reporting risk</h5>
-            <MSG m={ms.m}/>
+            <MSG m={ms.m} peers={peerData?.peers}/>
             <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
               <div style={{display:"flex", gap:10}}>
                 <span className="mono" style={{color:"var(--ink-4)"}}>M = {ms.m?.toFixed(2)}</span>
