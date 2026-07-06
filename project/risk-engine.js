@@ -899,6 +899,188 @@ window.RISK_ENGINE = (function () {
     };
   }
 
+  // ── Build Reverse Stress Test ────────────────────────────────
+  // Unlike Bear/Base/Bull/Grey Swan (which project forward from an event),
+  // this starts from an unacceptable outcome and solves backward: how much
+  // headroom exists today, and which register risks would need to jointly
+  // crystallise to consume it.
+  function buildReverseStressTest(risks, ratios, ticker, industry) {
+    const BREACH_FCF_MARGIN   = -0.12;  // FCF margin treated as a going-concern/covenant-style trigger
+    const REV_SENSITIVITY     = 0.004;  // ~0.4pt FCF-margin decline per 1pt revenue decline (operating leverage proxy)
+    const MARGIN_SENSITIVITY  = 0.007;  // ~0.7pt FCF-margin decline per 100bps gross-margin compression
+
+    const currentFcfMargin = ratios.fcfMargin ?? -0.02;
+    const alreadyBreached  = currentFcfMargin <= BREACH_FCF_MARGIN;
+    const gap = Math.max(0, currentFcfMargin - BREACH_FCF_MARGIN); // FCF-margin points of headroom remaining
+
+    // Two isolated paths to breach — report whichever needs the smaller shock,
+    // since that is the more urgent vector to monitor.
+    const revOnlyPct    = +(gap / REV_SENSITIVITY).toFixed(1);
+    const marginOnlyBps = Math.round((gap / MARGIN_SENSITIVITY) * 100);
+    const primaryVector = revOnlyPct <= marginOnlyBps / 100 ? 'revenue' : 'margin';
+
+    const byScore = arr => [...arr].sort((a, b) => b.score - a.score);
+    const revDrivers    = risks.filter(r => ['Revenue', 'Supply', 'Trade Compliance'].includes(r.category));
+    const marginDrivers = risks.filter(r => ['Financial Reporting', 'Operational', 'Compliance'].includes(r.category));
+    const pool = primaryVector === 'revenue' ? revDrivers : marginDrivers;
+    const contributors = (pool.length ? byScore(pool) : byScore(risks)).slice(0, 3);
+
+    const scoreSum = contributors.reduce((s, r) => s + r.score, 0) || 1;
+    const contributingRisks = contributors.map(r => ({
+      id: r.id, name: r.name.split('—')[0].trim(), rag: r.rag, score: r.score,
+      share: +((r.score / scoreSum) * 100).toFixed(0),
+    }));
+
+    return {
+      id: 'reverse-stress',
+      breakpoint: {
+        label: 'Going-concern / covenant-style trigger',
+        definition: `FCF margin falls to ${(BREACH_FCF_MARGIN * 100).toFixed(0)}% or below`,
+      },
+      already_breached: alreadyBreached,
+      current_fcf_margin_pct: +(currentFcfMargin * 100).toFixed(1),
+      headroom_pts: +(gap * 100).toFixed(1),
+      primary_vector: primaryVector,
+      required_shock: {
+        revenue_decline_pts: revOnlyPct,
+        margin_compression_bps: marginOnlyBps,
+      },
+      narrative: alreadyBreached
+        ? `${ticker} is already at or beyond the going-concern trigger on current FCF margin (${(currentFcfMargin * 100).toFixed(1)}%) — this is a live finding, not a forward scenario.`
+        : `From today's FCF margin of ${(currentFcfMargin * 100).toFixed(1)}%, ${ticker} has ${(gap * 100).toFixed(1)}pts of headroom before crossing the going-concern trigger. That headroom is consumed by either a further ${revOnlyPct}pt revenue decline alone, or ${marginOnlyBps}bps of additional gross-margin compression alone — whichever arrives first is the vector to monitor.`,
+      contributing_risks: contributingRisks,
+      monitoring_kris: contributors.map(r => `${r.id} velocity ≥ +2 (currently ${r.velocity > 0 ? '+' : ''}${r.velocity})`),
+      audit_focus: [
+        'Covenant headroom recalculation using latest trailing-twelve-month FCF',
+        'Going-concern disclosure adequacy if headroom is less than two quarters at current burn trend',
+        primaryVector === 'revenue'
+          ? 'Revenue recognition and backlog quality — primary breach vector'
+          : 'Accrual and reserve adequacy — primary breach vector',
+      ],
+    };
+  }
+
+  // ── Historical analog library ────────────────────────────────
+  // Real macro shocks with approximate realised deltas, replayed against the
+  // current entity's ratios via this industry's FRED correlation sensitivities
+  // (FRED_BY_INDUSTRY, defined below) rather than synthetic assumptions.
+  const HISTORICAL_ANALOGS_LIB = [
+    { id: 'gfc-2008', name: '2008 Global Financial Crisis', period: 'Q4 2008 – Q2 2009',
+      macro_severity: 1.00,
+      realized: { gdp_pts: -4.3, credit_spread_bps: 400, unemployment_pts: 5.0 },
+      parallel: 'Credit contraction and demand collapse across nearly all sectors simultaneously.' },
+    { id: 'covid-2020', name: '2020 COVID-19 Demand Shock', period: 'Q1 2020 – Q3 2020',
+      macro_severity: 0.85,
+      realized: { gdp_pts: -9.0, credit_spread_bps: 300, unemployment_pts: 11.0 },
+      parallel: 'Sudden demand/supply-chain shock followed by a sharp policy-driven recovery.' },
+    { id: 'rate-2022', name: '2022 Rate-Shock & Inflation Surge', period: 'Q1 2022 – Q4 2022',
+      macro_severity: 0.55,
+      realized: { gdp_pts: -0.6, credit_spread_bps: 150, unemployment_pts: 0.5, fed_funds_pts: 4.25 },
+      parallel: 'Rapid rate repricing compresses valuations and raises financing costs without a demand collapse.' },
+  ];
+
+  // ── Build Historical Analogs ─────────────────────────────────
+  function buildHistoricalAnalogs(ratios, ticker, industry) {
+    const fredRows = FRED_BY_INDUSTRY[industry] || FRED_BY_INDUSTRY['Generic'];
+    const avgAbsCorr = fredRows.reduce((s, f) => s + Math.abs(f.r), 0) / fredRows.length;
+    const annRevM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 2000;
+
+    return HISTORICAL_ANALOGS_LIB.map(h => {
+      // Replay impact: historical severity × this industry's average macro sensitivity,
+      // scaled so a GFC-grade shock at a typical ~0.65 avg correlation lands near -20%
+      // revenue — consistent with (but distinct from) the Bear scenario's -18%.
+      const revenueImpactPct = -Math.round(h.macro_severity * avgAbsCorr * 30);
+      const revenueAtRiskM   = Math.round(annRevM * Math.abs(revenueImpactPct) / 100);
+      return {
+        id: h.id, name: h.name, period: h.period,
+        revenue_impact_pct: revenueImpactPct,
+        revenue_at_risk_m: revenueAtRiskM,
+        realized_deltas: h.realized,
+        parallel: h.parallel,
+        sensitivity_basis: `${industry} avg |correlation| ${avgAbsCorr.toFixed(2)} across ${fredRows.length} tracked FRED series`,
+        probability: h.macro_severity >= 0.9 ? 'LOW · historically rare'
+                   : h.macro_severity >= 0.65 ? 'LOW-MEDIUM · has recurred'
+                   : 'MEDIUM · cyclical',
+      };
+    });
+  }
+
+  // ── Build AI/Agent Governance Scenario ───────────────────────
+  // Unlike Grey Swan (industry-specific exogenous event), this cascade shape is
+  // cross-industry: any enterprise running AI agents against production tools
+  // faces it. Anchored on the entity's own Cybersecurity/Operational/Compliance
+  // risk with the highest score.
+  function buildGovernanceScenario(risks, ratios, ticker, industry) {
+    const candidates = risks.filter(r => ['Cybersecurity', 'Operational', 'Compliance'].includes(r.category));
+    const byScore = [...(candidates.length ? candidates : risks)].sort((a, b) => b.score - a.score);
+    const anchor = byScore[0] || { id: 'R-01', name: 'Primary Risk', score: 5.0, rag: 'A', velocity: 0 };
+
+    const annRevM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 2000;
+    const imp30 = Math.round(annRevM * 0.02);
+    const imp60 = Math.round(annRevM * 0.06);
+    const imp90 = Math.round(annRevM * 0.12);
+
+    const ragAt = s => s >= 15 ? 'R' : s >= 9 ? 'A' : 'G';
+    const gsStart = 3.5, gs30 = 8.0, gs60 = 12.5, gsEnd = 17.0;
+    const anchorName = anchor.name?.split('—')[0].trim() || anchor.name;
+
+    return {
+      id: 'ai-governance',
+      kind: 'AI GOVERNANCE',
+      name: 'Ungoverned AI-agent tool access — cascading governance failure',
+      risk_id: anchor.id, risk_name: anchor.name,
+      starting_rag: 'G', starting_score: gsStart,
+      ending_rag: 'R', ending_score: gsEnd,
+      peak_impact_m: imp90,
+      revenue_impact_pct: -12,
+      probability: 'MEDIUM · rising with agent adoption',
+      headline: `Unreviewed AI-agent tool calls escalate past ${anchorName} (score ${anchor.score}/25) into unauthorised production actions`,
+      description: 'An AI agent (internal copilot, MCP-connected tool, or third-party integration) is granted broad tool access without governance holds. A sensitive or destructive tool call executes without human review, and by the time telemetry surfaces the pattern, multiple systems have already been touched.',
+      catalysts: [
+        'Agent or MCP integration is granted a new tool scope without a governance hold configured',
+        'Prompt injection or over-broad instructions cause the agent to invoke a sensitive/destructive tool',
+        'Bypass-keyword or suppression pattern (e.g. skip-ci, force, override) appears in agent-issued calls',
+        'Governance hold queue backlog grows faster than human reviewers can clear it, and timeouts start auto-forwarding calls',
+      ],
+      impacts_at_max: [
+        `Revenue/remediation exposure at T+90: ~$${imp90}M — incident response, customer notification, and control remediation costs`,
+        `${anchorName} score amplifies from ${anchor.score}/25 to ~${Math.min(25, anchor.score + 7).toFixed(1)}/25`,
+        'Regulatory/customer disclosure obligations triggered if the unauthorised action touched customer or financial data',
+        'Board and audit committee briefing required; AI governance program credibility questioned',
+      ],
+      early_warnings: [
+        'Sensitive-tool call rate crosses baseline by >2x week-over-week (per UBO Governance Brain telemetry)',
+        'Pending governance-hold queue depth exceeds reviewer throughput for >48 hours',
+        'Repeated bypass-keyword flags from the same agent/session without escalation',
+        'New MCP server or agent integration goes live without a documented governance-tier assignment',
+      ],
+      mitigations: [
+        'Enforce pre-execution holds on all sensitive/destructive tools by default, not opt-in',
+        'Set a maximum hold-queue SLA with automatic escalation rather than silent timeout-forwarding',
+        'Require governance-tier classification before any new MCP server or agent integration is enabled',
+        'Run a quarterly tabletop exercise simulating an unauthorised agent tool-call cascade',
+      ],
+      timeline: [
+        { t: 'T+0', label: 'Unreviewed access granted', score: gsStart, rag: ragAt(gsStart), likelihood: 0.08, impact_$m: 0,
+          impact: 'New agent/tool scope enabled without governance-tier review',
+          signals: [`Score ${gsStart}/25`, 'No hold configured for new tool scope'],
+          action: 'Assign governance owner; classify tool scope before go-live' },
+        { t: 'T+30', label: 'Anomalous call pattern', score: gs30, rag: ragAt(gs30), likelihood: 0.15, impact_$m: imp30,
+          impact: `First bypass/sensitive-tool flag fires; exposure reaches $${imp30}M if unactioned`,
+          signals: ['Bypass-keyword flag observed', 'Sensitive-tool call rate elevated'],
+          action: 'Governance hold triggered; incident triage opened' },
+        { t: 'T+60', label: 'Hold backlog builds', score: gs60, rag: ragAt(gs60), likelihood: 0.20, impact_$m: imp60,
+          impact: `Reviewer backlog exceeds SLA; timeout auto-forwarding begins; $${imp60}M at risk`,
+          signals: ['Hold queue depth > reviewer throughput', 'Repeated flags from same session'],
+          action: 'Escalate to security/audit leadership; freeze new tool scopes pending review' },
+        { t: 'T+90', label: 'Unauthorised action executed', score: gsEnd, rag: ragAt(gsEnd), likelihood: 0.25, impact_$m: imp90,
+          impact: `Unauthorised production action confirmed; $${imp90}M exposure; disclosure assessment required`,
+          signals: ['Confirmed unauthorised write/delete action', 'Customer or financial data potentially touched'],
+          action: 'Activate incident response; assess disclosure obligations; board briefing' },
+      ],
+    };
+  }
+
   // ── Build Personas ──────────────────────────────────────────
   function buildPersonas(risks, ticker) {
     const red   = risks.filter(r => r.rag === 'R').map(r => r.id);
@@ -1003,6 +1185,53 @@ window.RISK_ENGINE = (function () {
     return { lastY, lastQ, fcLabels, defaultLatestQ: `Q${lastQ}-${String(lastY).slice(-2)}` };
   }
 
+  // ── Monte Carlo revenue forecast bands ───────────────────────
+  // Historical QoQ volatility drives N simulated paths over the forecast horizon;
+  // lo/hi become the 10th/90th percentile of simulated outcomes per quarter,
+  // replacing a fixed ±8% band with a distribution anchored to how volatile
+  // this company's revenue has actually been.
+  function _qoqVolatility(quarters) {
+    if (quarters.length < 3) return 0.06; // fallback: 6% QoQ stdev
+    const rets = [];
+    for (let i = 1; i < quarters.length; i++) {
+      const prev = quarters[i - 1].v, curr = quarters[i].v;
+      if (prev > 0) rets.push((curr - prev) / prev);
+    }
+    if (rets.length < 2) return 0.06;
+    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+    const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length - 1);
+    return Math.sqrt(variance) || 0.06;
+  }
+  function _boxMuller() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  function _monteCarloRevenue(lastV, qGrowth, volatility, horizonQ, nSims = 500) {
+    const paths = Array.from({ length: nSims }, () => {
+      let v = lastV;
+      const path = [];
+      for (let i = 0; i < horizonQ; i++) {
+        v = v * (1 + qGrowth + volatility * _boxMuller());
+        path.push(Math.max(0, v));
+      }
+      return path;
+    });
+    const pct = (arr, p) => {
+      const sorted = [...arr].sort((a, b) => a - b);
+      const idx = clamp(Math.round(p * (sorted.length - 1)), 0, sorted.length - 1);
+      return sorted[idx];
+    };
+    const byQuarter = Array.from({ length: horizonQ }, (_, i) => {
+      const vals = paths.map(p => p[i]);
+      return { p10: pct(vals, 0.10), p50: pct(vals, 0.50), p90: pct(vals, 0.90) };
+    });
+    const finalVals = paths.map(p => p[horizonQ - 1]);
+    const probDecline = finalVals.filter(v => v < lastV).length / nSims;
+    return { byQuarter, probDecline, volatility, nSims };
+  }
+
   // ── Build Forecasts from EDGAR quarterly series ─────────────
   function buildForecasts(ratios, ticker, industry, fin) {
     const { lastY, lastQ, fcLabels, defaultLatestQ } = _quarterBoundaries();
@@ -1046,9 +1275,12 @@ window.RISK_ENGINE = (function () {
     const lastV   = histQuarters.length ? histQuarters[histQuarters.length - 1].v : 1000;
     const trend   = ratios.revGrowth ?? 0;
     const qGrowth = Math.pow(1 + trend, 0.25) - 1;
+    const revVolatility = _qoqVolatility(histQuarters);
+    const revMonteCarlo = _monteCarloRevenue(lastV, qGrowth, revVolatility, fcLabels.length);
     const fcastQ  = fcLabels.map((q, i) => {
       const base = +(lastV * Math.pow(1 + qGrowth, i + 1)).toFixed(0);
-      return { q, base, lo: +(base * 0.92).toFixed(0), hi: +(base * 1.08).toFixed(0) };
+      const mcQ  = revMonteCarlo.byQuarter[i];
+      return { q, base, lo: +mcQ.p10.toFixed(0), hi: +mcQ.p90.toFixed(0) };
     });
 
     const histMargins = [];
@@ -1175,7 +1407,11 @@ window.RISK_ENGINE = (function () {
 
     const fred = FRED_BY_INDUSTRY[industry] || FRED_BY_INDUSTRY['Generic'];
     return {
-      revenue:   { history: histQuarters, forecast: fcastQ },
+      revenue:   { history: histQuarters, forecast: fcastQ, monteCarlo: {
+        probDecline: revMonteCarlo.probDecline,
+        volatilityPct: +(revMonteCarlo.volatility * 100).toFixed(1),
+        nSims: revMonteCarlo.nSims,
+      } },
       margin:    { history: histMargins,  forecast: fcastGM },
       eps:       synthEPS,
       netIncome: synthNI,
@@ -1280,6 +1516,9 @@ window.RISK_ENGINE = (function () {
     const maps     = buildMAPs(risks, objectives);
     const scenarios  = buildScenarios(risks, ratios, ticker, industry);
     const greySwan   = buildGreySwan(risks, ratios, ticker, industry);
+    const reverseStress      = buildReverseStressTest(risks, ratios, ticker, industry);
+    const historicalAnalogs  = buildHistoricalAnalogs(ratios, ticker, industry);
+    const governanceScenario = buildGovernanceScenario(risks, ratios, ticker, industry);
     const personas   = buildPersonas(risks, ticker);
     const forecasts  = buildForecasts(ratios, ticker, industry, fin);
     const signals    = buildSignals(ratios, ticker, industry);
@@ -1289,6 +1528,7 @@ window.RISK_ENGINE = (function () {
     const eventTemplates = window.MOCK?.eventTemplates || [];
     return { entity, signals, risks, objectives, maps, closure, loop,
              eventTemplates, forecasts, scenarios, greySwan,
+             reverseStress, historicalAnalogs, governanceScenario,
              riskFlow: buildRiskFlow(risks, industry, maps),
              personas, fred:forecasts.fred };
   }
