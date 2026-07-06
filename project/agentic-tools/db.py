@@ -879,6 +879,33 @@ BEGIN
             UNIQUE (run_id, metric, model, horizon_quarter);
     END IF;
 END $$;
+
+-- Same retrofit gap on rss_articles: the CREATE TABLE statement moved from
+-- UNIQUE(article_url) to UNIQUE(title, feed_name) (articles without a URL,
+-- or re-crawled under a slightly different URL, need title+feed as the real
+-- dedup key), but existing databases kept the old constraint forever. That
+-- made save_rss_signals()/save_rss_articles_full()'s ON CONFLICT (title, feed_name)
+-- fail with "no unique or exclusion constraint matching the ON CONFLICT
+-- specification" on any such database. Drop the stale constraint (nothing
+-- targets it) and add the one the code actually references.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'rss_articles_article_url_key'
+          AND conrelid = 'rss_articles'::regclass
+    ) THEN
+        ALTER TABLE rss_articles DROP CONSTRAINT rss_articles_article_url_key;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'rss_articles_title_feed_name_key'
+          AND conrelid = 'rss_articles'::regclass
+    ) THEN
+        ALTER TABLE rss_articles ADD CONSTRAINT rss_articles_title_feed_name_key
+            UNIQUE (title, feed_name);
+    END IF;
+END $$;
 """
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
