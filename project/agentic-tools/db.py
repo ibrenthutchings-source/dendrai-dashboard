@@ -3197,6 +3197,19 @@ def get_sox_segments(company_id: int, fiscal_year: str) -> list:
     return _run(_do) or []
 
 
+def delete_sox_segment(company_id: int, segment_id: int) -> bool:
+    """Delete a geography / business-segment financial record."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM sox_financial_segments WHERE id = %s AND company_id = %s",
+                    (segment_id, company_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do) or False
+
+
 def save_segment_forecasts(run_id: int, rows: list) -> None:
     """Persist per-segment forecast KPIs for a pipeline run.
 
