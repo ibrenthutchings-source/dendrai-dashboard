@@ -126,16 +126,80 @@ function MaterialityCard({ scope }) {
 }
 
 
+// ── Inline detail/override editor (shared by accounts + processes) ───────────
+
+function DetailEditor({ form, setForm, scopeField }) {
+  return (
+    <div onClick={e => e.stopPropagation()} style={{marginTop: 8, padding: "10px 12px", background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", borderRadius: 6}}>
+      <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
+        <input placeholder="Geography (comma-separated, e.g. US, EMEA, APAC)" value={form.geography}
+          onChange={e => setForm(f => ({...f, geography: e.target.value}))}
+          style={{flex: 1, minWidth: 160, fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
+        <input placeholder="Segments (comma-separated)" value={form.segments}
+          onChange={e => setForm(f => ({...f, segments: e.target.value}))}
+          style={{flex: 1, minWidth: 160, fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
+      </div>
+      <textarea placeholder="Notes / additional detail" value={form.notes} rows={2}
+        onChange={e => setForm(f => ({...f, notes: e.target.value}))}
+        style={{width: "100%", fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)", marginBottom: 8, boxSizing: "border-box", resize: "vertical", fontFamily: "inherit"}}/>
+      {scopeField}
+    </div>
+  );
+}
+
 // ── Accounts table ────────────────────────────────────────────────────────────
 
-function AccountsTable({ accounts }) {
+function AccountsTable({ accounts, ticker, onUpdate }) {
   const inScope = accounts.filter(a => a.in_scope);
   const outScope = accounts.filter(a => !a.in_scope);
   const [showOut, setShowOut] = React.useState(false);
 
   function AccountRow({ acc }) {
     const [open, setOpen] = React.useState(false);
+    const [editing, setEditing] = React.useState(false);
+    const [saving, setSaving] = React.useState(false);
+    const [err, setErr] = React.useState(null);
+    const [form, setForm] = React.useState(() => ({
+      geography: (acc.geography || []).join(", "),
+      segments: (acc.segments || []).join(", "),
+      notes: acc.notes || "",
+      manual_in_scope: acc.manual_override ? (acc.in_scope ? "in" : "out") : "auto",
+      manual_priority: acc.priority || "",
+    }));
     const rag = RAG_COLORS[acc.rag_linkage] || {};
+
+    async function handleSave() {
+      setSaving(true); setErr(null);
+      const payload = {
+        geography: form.geography.split(",").map(s => s.trim()).filter(Boolean),
+        segments: form.segments.split(",").map(s => s.trim()).filter(Boolean),
+        notes: form.notes.trim() || null,
+        manual_in_scope: form.manual_in_scope === "auto" ? null : form.manual_in_scope === "in",
+        manual_priority: form.manual_in_scope === "in" ? (form.manual_priority || null) : null,
+      };
+      try {
+        const res = await fetch(`/api/mcp/sox/accounts/${encodeURIComponent(ticker)}/${acc.account_id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        onUpdate && onUpdate(acc.account_id, {
+          geography: payload.geography,
+          segments: payload.segments,
+          notes: payload.notes,
+          manual_override: payload.manual_in_scope !== null,
+          in_scope: payload.manual_in_scope !== null ? payload.manual_in_scope : acc.in_scope,
+          priority: payload.manual_in_scope !== null ? (payload.manual_priority || (payload.manual_in_scope ? "P2" : null)) : acc.priority,
+        });
+        setEditing(false);
+      } catch (e) {
+        setErr(e.message);
+      } finally {
+        setSaving(false);
+      }
+    }
+
     return (
       <div style={{borderBottom: "1px solid var(--line)"}}>
         <div
@@ -146,18 +210,57 @@ function AccountsTable({ accounts }) {
           {acc.balance_estimate && (
             <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{fmtM(acc.balance_estimate)}</span>
           )}
+          {acc.manual_override && <Pill label="MANUAL" ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}/>}
           {acc.priority && <Pill label={acc.priority} ink={COV_COLORS[acc.priority]?.ink} soft={COV_COLORS[acc.priority]?.soft}/>}
           <Icon name={open ? "chev-u" : "chev-d"} size={11} className="muted"/>
         </div>
         {open && (
-          <div style={{paddingLeft: 14, paddingBottom: 8, fontSize: 10.5, color: "var(--ink-3)", borderLeft: "2px solid var(--line)", marginLeft: 3}}>
+          <div style={{paddingLeft: 14, paddingBottom: 10, fontSize: 10.5, color: "var(--ink-3)", borderLeft: "2px solid var(--line)", marginLeft: 3}}>
             <div style={{marginBottom: 4}}>{acc.rationale}</div>
+            {(acc.geography?.length > 0 || acc.segments?.length > 0) && (
+              <div style={{display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 4}}>
+                {acc.geography?.length > 0 && <span>🌐 {acc.geography.join(", ")}</span>}
+                {acc.segments?.length > 0 && <span>▤ {acc.segments.join(", ")}</span>}
+              </div>
+            )}
+            {acc.notes && <div style={{marginBottom: 4, fontStyle: "italic"}}>{acc.notes}</div>}
             {acc.linked_risks?.length > 0 && (
-              <div style={{display: "flex", gap: 4, flexWrap: "wrap"}}>
+              <div style={{display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6}}>
                 {acc.linked_risks.map((r, i) => (
                   <span key={i} className="mono" style={{fontSize: 9.5, padding: "1px 6px", borderRadius: 4, background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", color: "var(--ink-3)"}}>{r}</span>
                 ))}
               </div>
+            )}
+            {!editing ? (
+              <button className="cfg-link" style={{fontSize: 10}} onClick={() => setEditing(true)}>
+                <Icon name="edit" size={10}/> Edit detail
+              </button>
+            ) : (
+              <DetailEditor form={form} setForm={setForm} scopeField={
+                <div onClick={e => e.stopPropagation()}>
+                  <div style={{display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap"}}>
+                    <select value={form.manual_in_scope} onChange={e => setForm(f => ({...f, manual_in_scope: e.target.value}))}
+                      style={{fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}>
+                      <option value="auto">Auto (computed)</option>
+                      <option value="in">Force in-scope</option>
+                      <option value="out">Force out-of-scope</option>
+                    </select>
+                    {form.manual_in_scope === "in" && (
+                      <select value={form.manual_priority} onChange={e => setForm(f => ({...f, manual_priority: e.target.value}))}
+                        style={{fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}>
+                        <option value="">Priority…</option>
+                        <option value="P1">P1</option>
+                        <option value="P2">P2</option>
+                      </select>
+                    )}
+                  </div>
+                  {err && <div className="mono" style={{fontSize: 10, color: "var(--red-ink)", marginBottom: 6}}>{err}</div>}
+                  <div style={{display: "flex", gap: 8}}>
+                    <button className="btn btn-sm approve" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                    <button className="btn btn-sm" onClick={() => setEditing(false)}>Cancel</button>
+                  </div>
+                </div>
+              }/>
             )}
           </div>
         )}
@@ -191,7 +294,7 @@ function AccountsTable({ accounts }) {
 
 // ── Processes table ───────────────────────────────────────────────────────────
 
-function ProcessesTable({ processes }) {
+function ProcessesTable({ processes, ticker, onUpdate }) {
   const p1 = processes.filter(p => p.coverage_level === "P1");
   const p2 = processes.filter(p => p.coverage_level === "P2");
   const out = processes.filter(p => p.coverage_level === "Out");
@@ -199,26 +302,98 @@ function ProcessesTable({ processes }) {
 
   function ProcRow({ proc }) {
     const [open, setOpen] = React.useState(false);
+    const [editing, setEditing] = React.useState(false);
+    const [saving, setSaving] = React.useState(false);
+    const [err, setErr] = React.useState(null);
+    const [form, setForm] = React.useState(() => ({
+      geography: (proc.geography || []).join(", "),
+      segments: (proc.segments || []).join(", "),
+      notes: proc.notes || "",
+      manual_coverage_level: proc.manual_override ? proc.coverage_level : "auto",
+    }));
     const cov = COV_COLORS[proc.coverage_level] || {};
+
+    async function handleSave() {
+      setSaving(true); setErr(null);
+      const payload = {
+        geography: form.geography.split(",").map(s => s.trim()).filter(Boolean),
+        segments: form.segments.split(",").map(s => s.trim()).filter(Boolean),
+        notes: form.notes.trim() || null,
+        manual_coverage_level: form.manual_coverage_level === "auto" ? null : form.manual_coverage_level,
+      };
+      try {
+        const res = await fetch(`/api/mcp/sox/processes/${encodeURIComponent(ticker)}/${proc.process_id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        onUpdate && onUpdate(proc.process_id, {
+          geography: payload.geography,
+          segments: payload.segments,
+          notes: payload.notes,
+          manual_override: payload.manual_coverage_level !== null,
+          coverage_level: payload.manual_coverage_level || proc.coverage_level,
+        });
+        setEditing(false);
+      } catch (e) {
+        setErr(e.message);
+      } finally {
+        setSaving(false);
+      }
+    }
+
     return (
       <div style={{borderBottom: "1px solid var(--line)"}}>
         <div onClick={() => setOpen(o => !o)}
           style={{display: "flex", alignItems: "center", gap: 8, padding: "7px 0", cursor: "pointer"}}>
           <Pill label={cov.label || proc.coverage_level} ink={cov.ink} soft={cov.soft}/>
           <span style={{flex: 1, fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{proc.process_name}</span>
+          {proc.manual_override && <Pill label="MANUAL" ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}/>}
           {proc.always_in && <span className="mono" style={{fontSize: 9, color: "var(--acc-ink, var(--ink-3))"}}>REQUIRED</span>}
           <Icon name={open ? "chev-u" : "chev-d"} size={11} className="muted"/>
         </div>
         {open && (
-          <div style={{paddingLeft: 14, paddingBottom: 8, fontSize: 10.5, color: "var(--ink-3)", borderLeft: "2px solid var(--line)", marginLeft: 3}}>
+          <div style={{paddingLeft: 14, paddingBottom: 10, fontSize: 10.5, color: "var(--ink-3)", borderLeft: "2px solid var(--line)", marginLeft: 3}}>
             <div style={{marginBottom: 4}}>{proc.description}</div>
             <div style={{fontSize: 10, color: "var(--ink-4)", marginBottom: 4}}>{proc.rationale}</div>
+            {(proc.geography?.length > 0 || proc.segments?.length > 0) && (
+              <div style={{display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 4}}>
+                {proc.geography?.length > 0 && <span>🌐 {proc.geography.join(", ")}</span>}
+                {proc.segments?.length > 0 && <span>▤ {proc.segments.join(", ")}</span>}
+              </div>
+            )}
+            {proc.notes && <div style={{marginBottom: 4, fontStyle: "italic"}}>{proc.notes}</div>}
             {proc.linked_risks?.length > 0 && (
-              <div style={{display: "flex", gap: 4, flexWrap: "wrap"}}>
+              <div style={{display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6}}>
                 {proc.linked_risks.map((r, i) => (
                   <span key={i} className="mono" style={{fontSize: 9.5, padding: "1px 6px", borderRadius: 4, background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", color: "var(--ink-3)"}}>{r}</span>
                 ))}
               </div>
+            )}
+            {!editing ? (
+              <button className="cfg-link" style={{fontSize: 10}} onClick={() => setEditing(true)}>
+                <Icon name="edit" size={10}/> Edit detail
+              </button>
+            ) : (
+              <DetailEditor form={form} setForm={setForm} scopeField={
+                <div onClick={e => e.stopPropagation()}>
+                  <div style={{marginBottom: 8}}>
+                    <select value={form.manual_coverage_level} onChange={e => setForm(f => ({...f, manual_coverage_level: e.target.value}))}
+                      style={{fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}>
+                      <option value="auto">Auto (computed)</option>
+                      <option value="P1">Force P1</option>
+                      <option value="P2">Force P2</option>
+                      <option value="Out">Force out-of-scope</option>
+                    </select>
+                  </div>
+                  {err && <div className="mono" style={{fontSize: 10, color: "var(--red-ink)", marginBottom: 6}}>{err}</div>}
+                  <div style={{display: "flex", gap: 8}}>
+                    <button className="btn btn-sm approve" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                    <button className="btn btn-sm" onClick={() => setEditing(false)}>Cancel</button>
+                  </div>
+                </div>
+              }/>
             )}
           </div>
         )}
@@ -662,6 +837,20 @@ function SoxScopePanel({
     }
   }
 
+  function patchAccount(accountId, patch) {
+    setLocalScope(prev => prev ? {
+      ...prev,
+      accounts_in_scope: (prev.accounts_in_scope || []).map(a => a.account_id === accountId ? {...a, ...patch} : a),
+    } : prev);
+  }
+
+  function patchProcess(processId, patch) {
+    setLocalScope(prev => prev ? {
+      ...prev,
+      processes_in_scope: (prev.processes_in_scope || []).map(p => p.process_id === processId ? {...p, ...patch} : p),
+    } : prev);
+  }
+
   const tabs = [
     { id: "accounts",  label: "Accounts" },
     { id: "processes", label: "Processes" },
@@ -726,8 +915,12 @@ function SoxScopePanel({
 
           {/* Tab content */}
           <div style={{padding: "14px 24px", flex: 1, overflow: "auto"}}>
-            {activeTab === "accounts"  && <AccountsTable accounts={displayScope.accounts_in_scope || []}/>}
-            {activeTab === "processes" && <ProcessesTable processes={displayScope.processes_in_scope || []}/>}
+            {activeTab === "accounts"  && (
+              <AccountsTable accounts={displayScope.accounts_in_scope || []} ticker={ticker || ""} onUpdate={patchAccount}/>
+            )}
+            {activeTab === "processes" && (
+              <ProcessesTable processes={displayScope.processes_in_scope || []} ticker={ticker || ""} onUpdate={patchProcess}/>
+            )}
             {activeTab === "systems"   && (
               <SystemsPanel
                 systems={localSystems}
