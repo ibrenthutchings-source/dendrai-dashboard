@@ -13,6 +13,10 @@ Endpoints:
     GET  /sox/systems/{ticker}                List all systems in the registry for a ticker
     POST /sox/systems/{ticker}                Add or update a system in the registry
     DELETE /sox/systems/{ticker}/{id}         Deactivate a system
+    GET  /sox/accounts/{ticker}               List account detail/overrides (geography, segments, notes, manual scope)
+    POST /sox/accounts/{ticker}/{account_id}  Add/update detail or manual override for a significant account
+    GET  /sox/processes/{ticker}              List process detail/overrides (geography, segments, notes, manual coverage)
+    POST /sox/processes/{ticker}/{process_id} Add/update detail or manual override for a SOX process
     POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
     GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
     GET  /sox/segments/{ticker}/forecasts/{run_id}  Retrieve computed segment forecast KPIs for a run
