@@ -882,6 +882,11 @@ function App() {
           if (proxyRes.status === "rejected" && peerRes.status === "rejected") {
             setGovFetchError(proxyRes.reason?.message || "MCP server unreachable — ensure api_server.py is running");
             log(`MCP Governance: server unreachable — ${proxyRes.reason?.message || "connection refused"}`);
+          } else if (peerRes.status === "rejected") {
+            // Peer fetch alone can fail (10-K competitor extraction + per-peer XBRL
+            // enrichment is slow) without tripping the "both failed" branch above —
+            // log it separately so a partial failure isn't silent.
+            log(`MCP Peers: fetch failed — ${peerRes.reason?.message || "unknown error"}`);
           }
           setGovLoading(false);
           if (proxyRes.status === "fulfilled") log(`MCP Governance: proxy data loaded`);
