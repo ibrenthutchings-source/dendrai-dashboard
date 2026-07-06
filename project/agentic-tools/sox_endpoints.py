@@ -19,6 +19,7 @@ Endpoints:
     POST /sox/processes/{ticker}/{process_id} Add/update detail or manual override for a SOX process
     POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
     GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
+    DELETE /sox/segments/{ticker}/{id}        Delete a geography/segment financial record
     GET  /sox/segments/{ticker}/forecasts/{run_id}  Retrieve computed segment forecast KPIs for a run
     POST /sox/segments/{ticker}/peers         Add/update peer company segment breakdowns
     GET  /sox/segments/{ticker}/peers/{fy}    Retrieve peer segment data for a company + fiscal year
@@ -388,6 +389,18 @@ def get_sox_segments(ticker: str, fiscal_year: str):
         "count": len(segments),
         "segments": segments,
     }
+
+
+@router.delete("/segments/{ticker}/{segment_id}")
+def remove_sox_segment(ticker: str, segment_id: int):
+    """Delete a geography / business-segment financial record."""
+    company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"deleted": False, "reason": "database not configured", "segment_id": segment_id}
+    ok = db.delete_sox_segment(company_id, segment_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Segment {segment_id} not found for {ticker.upper()}")
+    return {"deleted": True, "segment_id": segment_id}
 
 
 @router.get("/segments/{ticker}/forecasts/{run_id}")
