@@ -1888,6 +1888,7 @@ function App() {
 // ---- Header ----
 function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName,
                   aiChatLabel, chatOpen, onChatToggle }) {
+  const auth = window.useAuth ? window.useAuth() : null;
   return (
     <header className="hdr">
       <div className="hdr-brand">
@@ -1933,6 +1934,17 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
         <Icon name="spark" size={11} />
         {aiChatLabel || "Ask Claude"}
       </button>
+      {auth?.user && (
+        <button
+          className="hdr-user-btn"
+          onClick={auth.logout}
+          title={`Signed in as ${auth.user.username} · Sign out`}
+        >
+          <Icon name="user" size={11} />
+          <span className="hdr-user-name">{auth.user.username}</span>
+          <Icon name="logout" size={11} />
+        </button>
+      )}
     </header>);
 
 }
