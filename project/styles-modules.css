@@ -2560,6 +2560,19 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 [data-theme="dark"] .hdr-ai-btn:hover,
 [data-theme="dark"] .hdr-ai-btn.active { color: #fff; }
 
+/* User menu / sign-out — secondary, neutral (not the accent AI button) */
+.hdr-user-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; margin-left: 8px; border-radius: 7px;
+  border: 1px solid var(--line); background: transparent; color: var(--ink-2);
+  font-size: 11.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+.hdr-user-btn:hover { background: var(--red-soft); color: var(--red-ink); border-color: color-mix(in oklch, var(--red) 30%, var(--line)); }
+.hdr-user-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.hdr-user-btn:hover .hdr-user-name::after { content: " · sign out"; }
+
 /* Slide-out panel — starts below the 56px header so the header button stays clickable */
 .ai-chat-panel {
   position: fixed; top: 56px; right: 0; bottom: 0;
