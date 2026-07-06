@@ -1332,6 +1332,44 @@ def save_sic_peers(company_id: int, peers: list) -> None:
     _run(_do)
 
 
+def get_sic_peers(ticker: str) -> Optional[dict]:
+    """Return the most recently saved SIC peer identities for a ticker, or None
+    if nothing has been saved yet. Callers should re-enrich with fresh
+    financials (peer identities are stable; financial ratios are not)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, company_name, sic, sic_description FROM companies WHERE ticker = %s",
+                    (ticker.upper(),),
+                )
+                comp = cur.fetchone()
+                if not comp:
+                    return None
+                company_id, company_name, sic, sic_description = comp
+                cur.execute(
+                    """
+                    SELECT peer_ticker, peer_cik, peer_name, peer_state, sic
+                    FROM sic_peers WHERE company_id = %s
+                    """,
+                    (company_id,),
+                )
+                peers = [
+                    {"ticker": r[0], "cik": r[1], "name": r[2], "state": r[3], "sic": r[4]}
+                    for r in cur.fetchall()
+                ]
+                if not peers:
+                    return None
+                return {
+                    "ticker": ticker.upper(),
+                    "company_name": company_name,
+                    "sic": sic,
+                    "sic_description": sic_description,
+                    "peers": peers,
+                }
+    return _run(_do)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # EDGAR
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1463,6 +1501,53 @@ def save_edgar_proxy(
                     ),
                 )
     _run(_do)
+
+
+def get_edgar_proxy(ticker: str) -> Optional[dict]:
+    """Return the most recently saved DEF 14A proxy filings for a ticker, or
+    None if nothing has been saved yet. Section text is stored in full, so
+    this fully reconstructs the /edgar/proxy response without a live fetch."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.company_name, p.filing_date, p.accession_number,
+                           p.executive_compensation, p.board_of_directors,
+                           p.say_on_pay, p.shareholder_proposals
+                    FROM edgar_proxy_filings p
+                    JOIN companies c ON c.id = p.company_id
+                    WHERE c.ticker = %s
+                    ORDER BY p.filing_date DESC
+                    LIMIT 5
+                    """,
+                    (ticker.upper(),),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    return None
+                company_name = rows[0][0]
+                proxy_filings = [
+                    {
+                        "filing_date": r[1].isoformat() if hasattr(r[1], "isoformat") else r[1],
+                        "accession_number": r[2],
+                        "sections": {
+                            k: v for k, v in {
+                                "executive_compensation": r[3],
+                                "board_of_directors":     r[4],
+                                "say_on_pay":              r[5],
+                                "shareholder_proposals":   r[6],
+                            }.items() if v
+                        },
+                    }
+                    for r in rows
+                ]
+                return {
+                    "ticker": ticker.upper(),
+                    "company_name": company_name,
+                    "proxy_filings": proxy_filings,
+                }
+    return _run(_do)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1121,6 +1121,27 @@ def edgar_peers(req: TickerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/edgar/peers/{ticker}")
+def edgar_peers_saved(ticker: str):
+    """
+    Return previously-saved SIC peers for a ticker from the DB, without redoing
+    the (slow) 10-K named-competitor extraction. Peer identities are cached;
+    financial ratios are re-enriched live since they go stale between runs.
+    Returns 404 if this ticker has never been through /edgar/peers before.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
+    saved = db.get_sic_peers(ticker)
+    if not saved:
+        raise HTTPException(status_code=404, detail="No saved peer data for this ticker")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        peers = list(pool.map(_enrich_peer_financials, saved["peers"]))
+    saved["peers"] = [p for p in peers if _peer_has_data(p)]
+    saved["peer_source"] = "saved SIC peers"
+    saved["named_competitors"] = []
+    return saved
+
+
 @app.post("/edgar/proxy")
 def edgar_proxy(req: RiskFactorsRequest):
     """Return DEF 14A proxy governance sections and save to edgar_proxy_filings."""
@@ -1165,6 +1186,22 @@ def edgar_proxy(req: RiskFactorsRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/edgar/proxy/{ticker}")
+def edgar_proxy_saved(ticker: str):
+    """
+    Return previously-saved DEF 14A proxy sections for a ticker from the DB,
+    without a live EDGAR fetch. Section text is stored in full at save time,
+    so this fully reconstructs the /edgar/proxy response.
+    Returns 404 if this ticker has never been through /edgar/proxy before.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
+    saved = db.get_edgar_proxy(ticker)
+    if not saved:
+        raise HTTPException(status_code=404, detail="No saved proxy filings for this ticker")
+    return saved
 
 
 @app.post("/fred/correlations")
