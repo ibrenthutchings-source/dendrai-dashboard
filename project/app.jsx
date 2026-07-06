@@ -213,6 +213,23 @@ function App() {
   const [govFetchError, setGovFetchError] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
 
+  // Load-on-demand: if you land on Governance Intelligence without govData in
+  // memory (page reload, or navigating here without rerunning the pipeline),
+  // pull whatever was saved to the DB from a previous run for this ticker
+  // instead of requiring a fresh live EDGAR fetch.
+  useEffect(() => {
+    if (activeScreen !== "gov" || govData || govPeerData || govLoading || !cfg.ticker) return;
+    setGovLoading(true);
+    Promise.allSettled([
+      MCP.fetchSavedProxyData(cfg.ticker),
+      MCP.fetchSavedPeerBenchmarks(cfg.ticker),
+    ]).then(([proxyRes, peerRes]) => {
+      if (proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
+      if (peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
+      setGovLoading(false);
+    });
+  }, [activeScreen, cfg.ticker]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
   const [overrideOpen, setOverrideOpen] = useState(false);
