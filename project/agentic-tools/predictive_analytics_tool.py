@@ -790,7 +790,7 @@ def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
     template = INDUSTRY_TEMPLATES.get(industry, INDUSTRY_TEMPLATES["Generic"])
     risks = []
 
-    for t in template:
+    for i, t in enumerate(template):
         base  = t["base"]
         delta = _risk_delta(ratios, t["rules"])
         score = max(1.0, min(10.0, base + delta))
@@ -805,7 +805,12 @@ def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
         velocity = round(delta)          # integer −1 to +3 (clamped)
         velocity = max(-1, min(3, velocity))
 
+        # Stable per-industry ref — without this, save_risk_scores() writes
+        # risk_ref=NULL for every row, and every risk collapses onto the same
+        # React key downstream (RiskFrameworkMatrix keys rows by id/risk_ref).
         risks.append({
+            "id":            f"R-{i+1:02d}",
+            "risk_ref":      f"R-{i+1:02d}",
             "name":          t["name"],
             "category":      t["category"],
             "base_score":    round(base, 1),
