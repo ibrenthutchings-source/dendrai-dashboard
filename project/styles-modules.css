@@ -909,6 +909,8 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .scen-card.bear .tag { background: var(--red-soft); color: var(--red-ink); }
 .scen-card.base .tag { background: var(--acc-soft); color: var(--acc-ink); }
 .scen-card.bull .tag { background: var(--green-soft); color: var(--green-ink); }
+.scen-card.reverse-stress { border-color: color-mix(in oklch, var(--ink-3) 35%, var(--line)); }
+.scen-card.analog { border-color: color-mix(in oklch, var(--acc) 25%, var(--line)); }
 .scen-name { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.35; margin-bottom: 6px; }
 .scen-desc { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; margin-bottom: 14px; }
 .scen-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }

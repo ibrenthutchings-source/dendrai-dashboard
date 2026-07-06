@@ -2,15 +2,15 @@
    Scenarios panel — Bear / Base / Bull stress test
    ============================================================ */
 
-function ScenariosPanel({ scenarios, greySwan }) {
+function ScenariosPanel({ scenarios, greySwan, reverseStress, historicalAnalogs, governanceScenario }) {
   if (!scenarios) return <Empty>Run the loop to populate scenarios. Once the base ensemble is anchored, Bear / Bull cases auto-generate from FRED correlates.</Empty>;
   return (
     <div data-screen-label="Scenarios">
       <div className="panel-head">
         <div>
           <div className="kicker">Scenario stress test</div>
-          <div className="panel-title mt-8">Bear · Base · Bull · Grey Swan</div>
-          <div className="panel-sub">Three explicitly-modelled futures with quantified macro shifts, risk re-scoring, and audit-objective re-prioritization. The Grey Swan card below tracks a single foreseeable cascade where a low-band risk escalates through one quarter.</div>
+          <div className="panel-title mt-8">Bear · Base · Bull · Grey Swan · Reverse Stress · Historical Analogs · AI Governance</div>
+          <div className="panel-sub">Three explicitly-modelled futures with quantified macro shifts, risk re-scoring, and audit-objective re-prioritization. Grey Swan tracks a single foreseeable cascade where a low-band risk escalates through one quarter; the sections below add a backward-solved breakpoint analysis, real-world macro replays, and a cross-cutting AI-agent governance cascade.</div>
         </div>
       </div>
 
@@ -75,11 +75,103 @@ function ScenariosPanel({ scenarios, greySwan }) {
       </div>
 
       {greySwan && <GreySwanCard data={greySwan}/>}
+      {governanceScenario && <GreySwanCard data={governanceScenario}/>}
+      {reverseStress && <ReverseStressCard data={reverseStress}/>}
+      {historicalAnalogs && historicalAnalogs.length > 0 && <HistoricalAnalogsGrid data={historicalAnalogs}/>}
     </div>
   );
 }
 
-// ---------- GREY SWAN — 90-day cascade timeline ----------
+// ---------- REVERSE STRESS TEST — backward-solved breakpoint ----------
+function ReverseStressCard({ data }) {
+  return (
+    <div className="scen-card reverse-stress" style={{marginTop: 14}}>
+      <div className="head">
+        <span className="tag" style={{background: "var(--surface-2)", color: "var(--ink-2)"}}>REVERSE STRESS TEST</span>
+        <span className="mono" style={{fontSize: 10, color: data.already_breached ? "var(--red-ink)" : "var(--ink-3)"}}>
+          {data.already_breached ? "ALREADY BREACHED" : `${data.headroom_pts}pts headroom`}
+        </span>
+      </div>
+      <div className="scen-name">{data.breakpoint.label}</div>
+      <div className="scen-desc">{data.breakpoint.definition}</div>
+
+      <div className="scen-metrics">
+        <ScenM l="Current FCF margin" v={`${data.current_fcf_margin_pct}%`}/>
+        <ScenM l="Headroom" v={`${data.headroom_pts}pts`}/>
+        <ScenM l="Rev decline to breach" v={`${data.required_shock.revenue_decline_pts}pt`}/>
+        <ScenM l="Margin compression to breach" v={`${data.required_shock.margin_compression_bps}bps`}/>
+      </div>
+
+      <div className="scen-section">
+        <div className="lbl">Backward-solved narrative</div>
+        <div style={{fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.5}}>{data.narrative}</div>
+      </div>
+
+      <div className="scen-section">
+        <div className="lbl">Contributing risks · {data.primary_vector} vector</div>
+        <div className="scen-pills">
+          {data.contributing_risks.map(r => (
+            <span key={r.id} className={`scen-pill${r.rag === "R" ? " red" : ""}`}>{r.id} {r.name} · {r.share}%</span>
+          ))}
+        </div>
+      </div>
+
+      <div className="scen-section">
+        <div className="lbl">Monitoring KRIs</div>
+        <ul className="scen-list">
+          {data.monitoring_kris.map((k, i) => <li key={i}>{k}</li>)}
+        </ul>
+      </div>
+
+      <div className="scen-section">
+        <div className="lbl">Audit focus</div>
+        <ul className="scen-list">
+          {data.audit_focus.map((a, i) => <li key={i}>{a}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// ---------- HISTORICAL ANALOGS — real macro shocks replayed against current ratios ----------
+function HistoricalAnalogsGrid({ data }) {
+  return (
+    <div style={{marginTop: 14}}>
+      <div className="kicker">Historical analog replay</div>
+      <div className="panel-sub" style={{marginBottom: 10}}>Real macro shocks replayed against current ratios using this industry's FRED correlation sensitivities — not synthetic assumptions.</div>
+      <div className="scen-grid">
+        {data.map(h => (
+          <div key={h.id} className="scen-card analog">
+            <div className="head">
+              <span className="tag" style={{background: "var(--surface-2)", color: "var(--ink-2)"}}>{h.period}</span>
+              <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{h.probability}</span>
+            </div>
+            <div className="scen-name">{h.name}</div>
+            <div className="scen-desc">{h.parallel}</div>
+
+            <div className="scen-metrics">
+              <ScenM l="Revenue Δ" v={`${h.revenue_impact_pct}%`}/>
+              <ScenM l="Revenue at risk" v={`$${h.revenue_at_risk_m}M`}/>
+            </div>
+
+            <div className="scen-section">
+              <div className="lbl">Realised macro deltas</div>
+              <div className="scen-pills">
+                {Object.entries(h.realized_deltas).map(([k, v]) => (
+                  <span key={k} className="scen-pill">{k.replace(/_/g, " ")} {v > 0 ? "+" : ""}{v}</span>
+                ))}
+              </div>
+            </div>
+
+            <div style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 8}}>{h.sensitivity_basis}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- GREY SWAN / AI GOVERNANCE — 90-day cascade timeline ----------
 function GreySwanCard({ data }) {
   const ragColor = { R: "var(--red)",       A: "var(--amber)",       G: "var(--green)" };
   const ragInk   = { R: "var(--red-ink)",   A: "var(--amber-ink)",   G: "var(--green-ink)" };
@@ -105,7 +197,7 @@ function GreySwanCard({ data }) {
             <span className="gs-dot" style={{background: ragColor[data.starting_rag]}}/>
             <span className="gs-arrow">→</span>
             <span className="gs-dot" style={{background: ragColor[data.ending_rag]}}/>
-            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)", marginLeft: 8, letterSpacing: ".05em"}}>GREY SWAN</span>
+            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)", marginLeft: 8, letterSpacing: ".05em"}}>{data.kind || "GREY SWAN"}</span>
           </div>
           <div className="gs-name">{data.name}</div>
           <div className="gs-sub">
@@ -138,7 +230,7 @@ function GreySwanCard({ data }) {
             <div style={{marginTop: 12, textAlign: "center", padding: "8px 12px", background: "var(--red-soft)", borderRadius: 6}}>
               <div style={{fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 2}}>Revenue at risk · T+90</div>
               <div className="mono" style={{fontSize: 18, fontWeight: 600, color: "var(--red-ink)"}}>~${data.peak_impact_m}M</div>
-              <div style={{fontSize: 10, color: "var(--ink-3)"}}>≈15% of annual revenue</div>
+              <div style={{fontSize: 10, color: "var(--ink-3)"}}>≈{Math.abs(data.revenue_impact_pct)}% of annual revenue</div>
             </div>
           )}
         </div>
