@@ -383,8 +383,14 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
   }
 
   const nameValid = name.trim().length > 0;
+  // aiState.reco counts as "changed" on its own: the AI may recommend keeping the
+  // current rag/score/velocity/ce (i.e. no numeric delta), but its rationale is
+  // still a disposition the auditor is choosing to submit and route for sign-off —
+  // without this, accepting an AI "no change needed" recommendation could never
+  // enable Submit even with a full rationale filled in.
   const changed = rag !== risk.rag || score !== risk.score || velocity !== risk.velocity || ce !== risk.ce
-    || name.trim() !== (risk.name || "") || category.trim() !== (risk.category || "");
+    || name.trim() !== (risk.name || "") || category.trim() !== (risk.category || "")
+    || !!aiState.reco;
   const valid = changed && rationale.trim().length >= 30 && nameValid;
 
   return (

@@ -418,15 +418,18 @@ function App() {
   }, [log]);
 
   const approveAllRemainingRisks = useCallback(() => {
+    // Newly-added risks (_isNew) are excluded — they still require individual
+    // assessment via Adjust before they can be approved, same as the per-row gate.
+    const newRiskIds = new Set((output.s2?.risks || []).filter(r => r._isNew).map(r => r.id));
     setRiskApprovals(prev => {
       const next = { ...prev };
       Object.keys(next).forEach(id => {
-        if (next[id].status === "pending") next[id] = { ...next[id], status: "approved" };
+        if (next[id].status === "pending" && !newRiskIds.has(id)) next[id] = { ...next[id], status: "approved" };
       });
       return next;
     });
     log(`Bulk-approve: all remaining pending risks accepted by ${auditorName}`);
-  }, [auditorName, log]);
+  }, [auditorName, log, output.s2?.risks]);
 
   // ---- Per-objective HITL handlers (Gate 2) ----
   const approveObjective = useCallback((objId) => {
