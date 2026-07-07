@@ -47,7 +47,6 @@ const NAV_SECTIONS = [
       { id: "config",     icon: "gear",   l: "Setup" },
       { id: "uboconfig",  icon: "shield", l: "UBO Configuration" },
       { id: "userconfig", icon: "user",   l: "User Configuration", adminOnly: true },
-      { id: "admin",      icon: "gear",   l: "Screen Access", adminOnly: true },
     ],
   }
 ];

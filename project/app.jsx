@@ -1562,17 +1562,10 @@ function App() {
             </ScreenAccessGate>
           )}
 
-          {/* ---- User Configuration (add/change/remove local accounts) ---- */}
+          {/* ---- User Configuration (add/change/remove local accounts + per-role screen access) ---- */}
           {activeScreen === "userconfig" && (
             <div className="panel active">
               <UserConfigScreen />
-            </div>
-          )}
-
-          {/* ---- Screen Access (per-role read/edit permission matrix) ---- */}
-          {activeScreen === "admin" && (
-            <div className="panel active">
-              <AdminConfigScreen />
             </div>
           )}
 
