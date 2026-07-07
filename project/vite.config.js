@@ -90,8 +90,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mcp/, ''),
       },
-      // Auth endpoints — keep /auth/ prefix; FastAPI router is prefixed "/auth"
-      '/auth': {
+      // Auth endpoints — keep /auth/ prefix; FastAPI router is prefixed "/auth".
+      // Trailing slash is required: a bare '/auth' prefix also matches the
+      // /auth.jsx source module (import '../auth.jsx' in src/main.jsx), which
+      // Vite must serve itself — proxying it to the backend causes a 401 and
+      // breaks AuthProvider/useAuth for the whole app.
+      '/auth/': {
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
