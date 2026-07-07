@@ -144,7 +144,7 @@ function ScopeGantt({ objectives, maps, sprintFilter }) {
   );
 }
 
-function AuditScopeScreen({ objectives, maps, risks, hasRun }) {
+function AuditScopeScreen({ objectives, maps, risks, hasRun, savedRunAt }) {
   const [view, setView] = useState("kanban");      // kanban | gantt
   const [sprintFilter, setSprintFilter] = useState("all");
 
@@ -160,6 +160,12 @@ function AuditScopeScreen({ objectives, maps, risks, hasRun }) {
           <div className="kicker">Execution · Audit Plan</div>
           <div className="panel-title mt-8">Audit Scope</div>
           <div className="panel-sub">Risk-linked audit objectives, organized by fiscal quarter. Switch between board and timeline views.</div>
+          {savedRunAt && (
+            <div className="mono" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--ink-4)", marginTop: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--amber-ink)", flexShrink: 0 }} />
+              Showing saved objectives from {new Date(savedRunAt).toLocaleString()} — re-run Assess Enterprise Risk for a fresh scope
+            </div>
+          )}
         </div>
         <div className="scope-toolbar">
           <select className="input scope-sprint-sel" value={sprintFilter} onChange={e => setSprintFilter(e.target.value)}>

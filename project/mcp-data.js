@@ -260,6 +260,10 @@ window.MCP = (function () {
     return _getSavedOrNull(`/edgar/peers/${encodeURIComponent(ticker)}`);
   }
 
+  async function fetchSavedAuditScope(ticker) {
+    return _getSavedOrNull(`/audit-scope/${encodeURIComponent(ticker)}`);
+  }
+
   // ── Item 1A enrichment ──────────────────────────────────────────────────────
 
   // Category keywords used to match filing paragraphs to risk register entries.
@@ -577,6 +581,7 @@ window.MCP = (function () {
     fetchPeerBenchmarks,
     fetchSavedProxyData,
     fetchSavedPeerBenchmarks,
+    fetchSavedAuditScope,
     enrichRisksFromFactors,
     map8kToCemEvents,
     // AI-augmented (#1–#4b)
