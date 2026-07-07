@@ -2550,4 +2550,4 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   );
 }
 
-Object.assign(window, { RiskRegisterReviewScreen });
+Object.assign(window, { RiskRegisterReviewScreen, FW_MOCK_RISKS });
