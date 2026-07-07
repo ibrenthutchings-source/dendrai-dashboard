@@ -340,7 +340,8 @@ function App() {
     }).catch(() => {});
   }, [hasRun, output]);
 
-  const auditorName = (selectedPersona && selectedPersona !== "Internal Audit") ? selectedPersona : "Internal Audit";
+  const auth = window.useAuth ? window.useAuth() : null;
+  const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
 
   // ---- Logging helper ----
   const log = useCallback((msg) => {
@@ -395,123 +396,137 @@ function App() {
     }
   });
 
+  // ---- Real approval workflow: submit a preparer disposition, get back the
+  // resolved status (submitted-to-manager, or auto-approved if no manager) ----
+  const submitApprovalTask = useCallback(async (gateType, itemRef, itemLabel, disposition, adjustments, rationale) => {
+    if (!mcpMode || !runIdRef.current) return null;
+    try {
+      const result = await MCP.prepareApprovalTask({
+        runId: runIdRef.current, gateType, itemRef, itemLabel, disposition, adjustments, rationale,
+      });
+      return result.task;
+    } catch (e) {
+      log(`Approval submission failed: ${e.message}`);
+      return null;
+    }
+  }, [mcpMode, log]);
+
   // ---- Per-risk HITL handlers ----
   const approveRisk = useCallback((riskId) => {
+    const risk = (output.s2?.risks || []).find(r => r.id === riskId);
     setRiskApprovals(prev => ({ ...prev, [riskId]: { ...(prev[riskId]||{}), status: "approved" } }));
     log(`Risk ${riskId}: APPROVED as scored by ${auditorName}`);
-  }, [auditorName, log]);
+    submitApprovalTask("risk", riskId, risk?.name, "approved", null, null);
+  }, [auditorName, log, output.s2?.risks, submitApprovalTask]);
 
   const openAdjustRisk = useCallback((riskId) => {
     setAdjustingRiskId(riskId);
     setAdjustOpen(true);
   }, []);
 
-  const submitAdjustment = useCallback((payload) => {
+  const submitAdjustment = useCallback(async (payload) => {
     const id = adjustingRiskId;
     if (!id) return;
+    const risk = (output.s2?.risks || []).find(r => r.id === id);
+    const adjustments = { name: payload.name, category: payload.category, rag: payload.rag, score: payload.score, velocity: payload.velocity, ce: payload.ce, _isNew: false };
+    const task = await submitApprovalTask("risk", id, payload.name || risk?.name, "adjusted", adjustments, payload.rationale);
     setRiskApprovals(prev => ({
       ...prev,
       [id]: {
-        status: "adjusted",
-        adjustments: { name: payload.name, category: payload.category, rag: payload.rag, score: payload.score, velocity: payload.velocity, ce: payload.ce, _isNew: false },
+        status: task?.status || "submitted",
+        adjustments,
         rationale: payload.rationale,
         adjustedBy: auditorName,
         adjustedAt: Date.now(),
-        signoffs: {}
+        managerName: task?.manager_name || null,
       }
     }));
-    log(`Risk ${id}: ADJUSTED by ${auditorName} — routed to CAE / CFO / Audit Committee`);
+    log(task?.status === "approved"
+      ? `Risk ${id}: ADJUSTED by ${auditorName} — auto-approved (no manager configured)`
+      : `Risk ${id}: ADJUSTED by ${auditorName} — routed to ${task?.manager_name || "your manager"} for review`);
     setAdjustOpen(false);
     setAdjustingRiskId(null);
-  }, [adjustingRiskId, auditorName, log]);
-
-  const signoffRisk = useCallback((riskId, role) => {
-    const SIG_MAP = { cae: "Sarah Lin (CAE)", cfo: "Marcus Reed (CFO)", ac: "J. Vance (Audit Committee)" };
-    setRiskApprovals(prev => {
-      const cur = prev[riskId];
-      if (!cur) return prev;
-      const newSigs = { ...(cur.signoffs||{}), [role]: { who: SIG_MAP[role], signedAt: Date.now() } };
-      const allSigned = !!newSigs.cae && !!newSigs.cfo && !!newSigs.ac;
-      return { ...prev, [riskId]: { ...cur, signoffs: newSigs, status: allSigned ? "signed" : "adjusted" } };
-    });
-    log(`Risk ${riskId}: ${role.toUpperCase()} sign-off captured (${SIG_MAP[role]})`);
-  }, [log]);
+  }, [adjustingRiskId, auditorName, log, output.s2?.risks, submitApprovalTask]);
 
   const approveAllRemainingRisks = useCallback(() => {
     // Newly-added risks (_isNew) are excluded — they still require individual
     // assessment via Adjust before they can be approved, same as the per-row gate.
-    const newRiskIds = new Set((output.s2?.risks || []).filter(r => r._isNew).map(r => r.id));
+    const risksNow = output.s2?.risks || [];
+    const newRiskIds = new Set(risksNow.filter(r => r._isNew).map(r => r.id));
     setRiskApprovals(prev => {
       const next = { ...prev };
       Object.keys(next).forEach(id => {
-        if (next[id].status === "pending" && !newRiskIds.has(id)) next[id] = { ...next[id], status: "approved" };
+        if (next[id].status === "pending" && !newRiskIds.has(id)) {
+          next[id] = { ...next[id], status: "approved" };
+          const risk = risksNow.find(r => r.id === id);
+          submitApprovalTask("risk", id, risk?.name, "approved", null, null);
+        }
       });
       return next;
     });
     log(`Bulk-approve: all remaining pending risks accepted by ${auditorName}`);
-  }, [auditorName, log, output.s2?.risks]);
+  }, [auditorName, log, output.s2?.risks, submitApprovalTask]);
 
   // ---- Per-objective HITL handlers (Gate 2) ----
   const approveObjective = useCallback((objId) => {
+    const obj = (output.s3?.objectives || []).find(o => o.id === objId);
     setScopeApprovals(prev => ({ ...prev, [objId]: { ...(prev[objId]||{}), status: "approved" } }));
     log(`Objective ${objId}: APPROVED as scoped by ${auditorName}`);
-  }, [auditorName, log]);
+    submitApprovalTask("objective", objId, obj?.objective, "approved", null, null);
+  }, [auditorName, log, output.s3?.objectives, submitApprovalTask]);
 
   const openAdjustObjective = useCallback((objId) => {
     setAdjustingObjId(objId);
     setAdjustObjOpen(true);
   }, []);
 
-  const submitObjAdjustment = useCallback((payload) => {
+  const submitObjAdjustment = useCallback(async (payload) => {
     const id = adjustingObjId;
     if (!id) return;
+    const adjustments = {
+      objective: payload.objective,
+      priority: payload.priority,
+      sprint: payload.sprint,
+      hours: payload.hours,
+      linked_risks: payload.linked_risks,
+      controls: payload.controls,
+      residualRiskReduction: payload.residualRiskReduction,
+      _isNew: false,
+    };
+    const task = await submitApprovalTask("objective", id, payload.objective, "adjusted", adjustments, payload.rationale);
     setScopeApprovals(prev => ({
       ...prev,
       [id]: {
-        status: "adjusted",
-        adjustments: {
-          objective: payload.objective,
-          priority: payload.priority,
-          sprint: payload.sprint,
-          hours: payload.hours,
-          linked_risks: payload.linked_risks,
-          controls: payload.controls,
-          residualRiskReduction: payload.residualRiskReduction,
-          _isNew: false,
-        },
+        status: task?.status || "submitted",
+        adjustments,
         rationale: payload.rationale,
         adjustedBy: auditorName,
         adjustedAt: Date.now(),
-        signoffs: {}
+        managerName: task?.manager_name || null,
       }
     }));
-    log(`Objective ${id}: ADJUSTED by ${auditorName} — routed to CAE / CFO / Audit Committee`);
+    log(task?.status === "approved"
+      ? `Objective ${id}: ADJUSTED by ${auditorName} — auto-approved (no manager configured)`
+      : `Objective ${id}: ADJUSTED by ${auditorName} — routed to ${task?.manager_name || "your manager"} for review`);
     setAdjustObjOpen(false);
     setAdjustingObjId(null);
-  }, [adjustingObjId, auditorName, log]);
-
-  const signoffObjective = useCallback((objId, role) => {
-    const SIG_MAP = { cae: "Sarah Lin (CAE)", cfo: "Marcus Reed (CFO)", ac: "J. Vance (Audit Committee)" };
-    setScopeApprovals(prev => {
-      const cur = prev[objId];
-      if (!cur) return prev;
-      const newSigs = { ...(cur.signoffs||{}), [role]: { who: SIG_MAP[role], signedAt: Date.now() } };
-      const allSigned = !!newSigs.cae && !!newSigs.cfo && !!newSigs.ac;
-      return { ...prev, [objId]: { ...cur, signoffs: newSigs, status: allSigned ? "signed" : "adjusted" } };
-    });
-    log(`Objective ${objId}: ${role.toUpperCase()} sign-off captured (${SIG_MAP[role]})`);
-  }, [log]);
+  }, [adjustingObjId, auditorName, log, submitApprovalTask]);
 
   const approveAllRemainingObjectives = useCallback(() => {
+    const objsNow = output.s3?.objectives || [];
     setScopeApprovals(prev => {
       const next = { ...prev };
       Object.keys(next).forEach(id => {
-        if (!next[id] || next[id].status === "pending") next[id] = { status: "approved" };
+        if (!next[id] || next[id].status === "pending") {
+          next[id] = { status: "approved" };
+          const obj = objsNow.find(o => o.id === id);
+          submitApprovalTask("objective", id, obj?.objective, "approved", null, null);
+        }
       });
       return next;
     });
     log(`Bulk-approve: all remaining objectives accepted by ${auditorName}`);
-  }, [auditorName, log]);
+  }, [auditorName, log, output.s3?.objectives, submitApprovalTask]);
 
   const addObjective = useCallback(() => {
     const newId = `OBJ-${String((output.s3?.objectives?.length || 0) + 1).padStart(2, "0")}`;
@@ -558,49 +573,41 @@ function App() {
     setAdjustOpen(true);
   }, [output.s2?.risks, log]);
 
+  // Each item's disposition is already persisted individually as it's actioned
+  // (submitApprovalTask, above) — confirming the gate just unblocks the pipeline
+  // and folds any adjustments into output.sN so downstream stages see them.
+  // Manager review happens asynchronously afterward via the Approval Inbox and
+  // does not block pipeline progression.
   const approveGate = (n) => {
-    if (mcpMode && runIdRef.current) {
-      if (n === 1) {
-        fetch('/api/mcp/loop/hitl/risk-approvals', {
-          method: 'POST', headers: _authHeaders(),
-          body: JSON.stringify({ run_id: runIdRef.current, approvals: riskApprovals }),
-        }).catch(() => {});
-      } else if (n === 2) {
-        fetch('/api/mcp/loop/hitl/scope-approvals', {
-          method: 'POST', headers: _authHeaders(),
-          body: JSON.stringify({ run_id: runIdRef.current, approvals: scopeApprovals }),
-        }).catch(() => {});
-      }
-    }
-    // For Gate 1, commit per-risk adjustments back into output.s2.risks
+    const isResolved = (a) => a?.status === "approved" || a?.status === "submitted" || a?.status === "manager_approved";
     if (n === 1) {
       setOutput(prev => {
         const orig = prev.s2?.risks || [];
         const merged = orig.map(r => {
           const a = riskApprovals[r.id];
-          if (a && (a.status === "adjusted" || a.status === "signed") && a.adjustments) {
+          if (a && isResolved(a) && a.status !== "approved" && a.adjustments) {
             return { ...r, ...a.adjustments };
           }
           return r;
         });
         return { ...prev, s2: { ...(prev.s2||{}), risks: merged } };
       });
-      const adjusted = Object.values(riskApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
-      log(`HITL Gate ${n}: CONFIRMED — ${Object.values(riskApprovals).filter(a=>a.status==="approved").length} accepted, ${adjusted} adjusted with sign-off`);
+      const adjusted = Object.values(riskApprovals).filter(a => a.status !== "approved" && isResolved(a)).length;
+      log(`HITL Gate ${n}: CONFIRMED — ${Object.values(riskApprovals).filter(a=>a.status==="approved").length} accepted, ${adjusted} adjusted and routed for review`);
     } else if (n === 2) {
       setOutput(prev => {
         const orig = prev.s3?.objectives || [];
         const merged = orig.map(o => {
           const a = scopeApprovals[o.id];
-          if (a && (a.status === "adjusted" || a.status === "signed") && a.adjustments) {
+          if (a && isResolved(a) && a.status !== "approved" && a.adjustments) {
             return { ...o, ...a.adjustments };
           }
           return o;
         });
         return { ...prev, s3: { ...(prev.s3||{}), objectives: merged } };
       });
-      const adjObjs = Object.values(scopeApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
-      log(`HITL Gate 2: CONFIRMED — ${Object.values(scopeApprovals).filter(a=>a.status==="approved").length} objectives accepted, ${adjObjs} adjusted with sign-off`);
+      const adjObjs = Object.values(scopeApprovals).filter(a => a.status !== "approved" && isResolved(a)).length;
+      log(`HITL Gate 2: CONFIRMED — ${Object.values(scopeApprovals).filter(a=>a.status==="approved").length} objectives accepted, ${adjObjs} adjusted and routed for review`);
     } else {
       log(`HITL Gate ${n}: APPROVED`);
     }
@@ -1628,13 +1635,11 @@ function App() {
                 riskApprovals={riskApprovals}
                 onApproveRisk={approveRisk}
                 onApproveAllRisks={approveAllRemainingRisks}
-                onSignoffRisk={signoffRisk}
                 onAddRisk={addRisk}
                 scopeApprovals={scopeApprovals}
                 onApproveObjective={approveObjective}
                 onOpenAdjustObjective={openAdjustObjective}
                 onApproveAllObjectives={approveAllRemainingObjectives}
-                onSignoffObjective={signoffObjective}
                 onAddObjective={addObjective}
                 manualAudits={manualAudits}
                 onAddAudit={addManualAudit}
