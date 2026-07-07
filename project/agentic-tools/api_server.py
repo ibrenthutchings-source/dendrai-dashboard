@@ -1589,6 +1589,23 @@ def get_last_loop_state():
     return state
 
 
+@app.get("/audit-scope/{ticker}")
+def get_saved_audit_scope(ticker: str):
+    """
+    Most recently completed run's saved audit objectives for a ticker.
+
+    Used by the Audit Scope screen to show real prior-run data before
+    Assess Enterprise Risk has been run in the current browser session.
+    Returns 404 when no completed run with objectives has been saved yet.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
+    saved = db.get_latest_audit_objectives(ticker)
+    if not saved:
+        raise HTTPException(status_code=404, detail=f"No saved audit objectives for {ticker.upper()}")
+    return saved
+
+
 @app.put("/loop/last-state", dependencies=[Depends(_require_api_key)])
 def save_last_loop_state(body: Dict[str, Any] = Body(...)):
     """Persist the full pipeline run state to the database for restoration on reload.

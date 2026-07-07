@@ -213,6 +213,26 @@ function App() {
   const [govFetchError, setGovFetchError] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
 
+  // ---- Audit Scope: DB-backed fallback when Assess Enterprise Risk hasn't
+  // been run in this session ----
+  const [savedAuditScope, setSavedAuditScope] = useState(null); // { run_id, run_at, objectives }
+  const [savedAuditScopeLoading, setSavedAuditScopeLoading] = useState(false);
+
+  // Load-on-demand: land on Audit Scope with no live run in memory (page
+  // reload, or navigating here without rerunning the pipeline this session)
+  // — pull the last completed run's saved objectives from the DB instead of
+  // showing the generic industry-template mock. Cleared whenever a live run
+  // exists so the freshly-computed objectives always take priority.
+  useEffect(() => {
+    if (activeScreen !== "scope" || savedAuditScopeLoading || !cfg.ticker) return;
+    if (output.s3?.objectives?.length || savedAuditScope) return;
+    setSavedAuditScopeLoading(true);
+    MCP.fetchSavedAuditScope(cfg.ticker)
+      .then(saved => { if (saved) setSavedAuditScope(saved); })
+      .catch(() => {})
+      .finally(() => setSavedAuditScopeLoading(false));
+  }, [activeScreen, cfg.ticker, output.s3?.objectives, savedAuditScope]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load-on-demand: if you land on Governance Intelligence, or the Pipeline
   // screen's Beneish M-Score gauge needs peer data for benchmarking, without
   // govData/govPeerData in memory (page reload, navigating here without
@@ -1712,10 +1732,13 @@ function App() {
           {activeScreen === "scope" && (
           <div className="panel active">
             <AuditScopeScreen
-              objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
+              objectives={output.s3?.objectives?.length ? output.s3.objectives
+                : savedAuditScope?.objectives?.length ? savedAuditScope.objectives
+                : (hasRun ? profile.objectives : [])}
               maps={railMaps}
               risks={railRisks}
-              hasRun={hasRun} />
+              hasRun={hasRun}
+              savedRunAt={!output.s3?.objectives?.length ? savedAuditScope?.run_at : null} />
           </div>
           )}
 

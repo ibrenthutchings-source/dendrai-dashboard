@@ -2497,20 +2497,22 @@ def save_audit_objectives(run_id: int, objectives: list) -> None:
     if not objectives:
         return
     def _do():
-        rows = [
-            (
+        rows = []
+        for o in objectives:
+            linked_risks = o.get("linked_risks") or ([o["linked_risk"]] if o.get("linked_risk") else [])
+            linked_risk_ref = o.get("linked_risk") or o.get("linked_risk_ref") or (linked_risks[0] if linked_risks else None)
+            rows.append((
                 run_id,
                 o.get("id") or o.get("obj_id", ""),
                 o.get("objective") or o.get("objective_text", ""),
                 o.get("priority"),
-                o.get("linked_risk") or o.get("linked_risk_ref"),
+                linked_risk_ref,
+                linked_risks,
                 o.get("controls") or [],
                 o.get("hours"),
                 o.get("sprint"),
                 o.get("residualRiskReduction") or o.get("residual_risk_reduction"),
-            )
-            for o in objectives
-        ]
+            ))
         with _conn() as conn:
             with conn.cursor() as cur:
                 execute_values(
@@ -2518,13 +2520,54 @@ def save_audit_objectives(run_id: int, objectives: list) -> None:
                     """
                     INSERT INTO audit_objectives
                         (run_id, obj_id, objective_text, priority, linked_risk_ref,
-                         controls, hours, sprint, residual_risk_reduction)
+                         linked_risks, controls, hours, sprint, residual_risk_reduction)
                     VALUES %s
                     ON CONFLICT (run_id, obj_id) DO NOTHING
                     """,
                     rows,
                 )
     _run(_do)
+
+
+def get_latest_audit_objectives(ticker: str) -> Optional[dict]:
+    """Most recently completed run's saved audit objectives for a ticker.
+
+    Used by the Audit Scope screen to show real prior-run data (instead of
+    the generic industry-template mock) before Assess Enterprise Risk has
+    been run in the current session.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, run_at FROM risk_loop_runs "
+                    "WHERE ticker = %s AND completed = TRUE "
+                    "ORDER BY run_at DESC LIMIT 1",
+                    (ticker.upper(),),
+                )
+                run_row = cur.fetchone()
+                if not run_row:
+                    return None
+                run_id, run_at = run_row
+                cur.execute(
+                    "SELECT obj_id, objective_text, priority, linked_risk_ref, linked_risks, "
+                    "controls, hours, sprint, residual_risk_reduction "
+                    "FROM audit_objectives WHERE run_id = %s ORDER BY obj_id",
+                    (run_id,),
+                )
+                objectives = [
+                    {
+                        "id": r[0], "objective": r[1], "priority": r[2],
+                        "linked_risk": r[3], "linked_risks": r[4] or ([r[3]] if r[3] else []),
+                        "controls": r[5] or [], "hours": r[6], "sprint": r[7],
+                        "residualRiskReduction": float(r[8]) if r[8] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+                if not objectives:
+                    return None
+                return {"run_id": run_id, "run_at": run_at.isoformat() if run_at else None, "objectives": objectives}
+    return _run(_do)
 
 
 def save_manual_audits(run_id: int, audits: list) -> None:
