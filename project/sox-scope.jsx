@@ -1007,7 +1007,7 @@ function SoxScopePanel({
 
   // ── HITL gates (Gate S1: materiality + accounts, Gate S2: process coverage) ──
   const auth = window.useAuth ? window.useAuth() : null;
-  const auditorName = auth?.user?.username || "Auditor";
+  const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
   const [hitlSox, setHitlSox] = React.useState({ accounts: true, coverage: true });
   const [gateState, setGateState] = React.useState({ g1: null, g2: null }); // null / "pending" / "approved" / "overridden"
   const [materialityApproval, setMaterialityApproval] = React.useState({ status: "pending" });
@@ -1023,21 +1023,55 @@ function SoxScopePanel({
 
   const displayScope = localScope;
 
-  function initGateApprovals(data, g1Done, g2Done) {
-    setMaterialityApproval({ status: g1Done ? "approved" : "pending" });
+  // Maps an approval_tasks row (server) onto the shape SoxGate1Review /
+  // SoxGate2Review expect for a single item's approval state.
+  function taskToApproval(task) {
+    return {
+      status: task.status,
+      adjustments: task.adjustments || undefined,
+      rationale: task.rationale || undefined,
+      adjustedBy: task.prepared_by_name || undefined,
+      adjustedAt: task.prepared_at ? new Date(task.prepared_at).getTime() : undefined,
+      managerName: task.manager_name || undefined,
+      reviewerName: task.reviewed_by_name || undefined,
+      reviewedAt: task.reviewed_at ? new Date(task.reviewed_at).getTime() : undefined,
+      reviewComment: task.review_comment || undefined,
+    };
+  }
+
+  const isResolvedStatus = (s) => s === "approved" || s === "submitted" || s === "manager_approved";
+
+  function initGateApprovals(data, tasks) {
+    const byKey = {};
+    (tasks || []).forEach(t => { byKey[`${t.gate_type}:${t.item_ref}`] = t; });
+
+    const matTask = byKey["sox_materiality:materiality"];
+    setMaterialityApproval(matTask ? taskToApproval(matTask) : { status: "pending" });
+
+    let allAccResolved = true;
     const initAcc = {};
     (data.accounts_in_scope || []).forEach(a => {
-      initAcc[a.account_id] = { status: g1Done ? "approved" : "pending", account_name: a.account_name };
+      const t = byKey[`sox_account:${a.account_id}`];
+      const approval = t ? taskToApproval(t) : { status: "pending" };
+      initAcc[a.account_id] = { ...approval, account_name: a.account_name };
+      if (!isResolvedStatus(approval.status)) allAccResolved = false;
     });
     setAccountApprovals(initAcc);
+
+    let allProcResolved = true;
     const initProc = {};
     (data.processes_in_scope || []).forEach(p => {
-      initProc[p.process_id] = { status: g2Done ? "approved" : "pending", process_name: p.process_name };
+      const t = byKey[`sox_process:${p.process_id}`];
+      const approval = t ? taskToApproval(t) : { status: "pending" };
+      initProc[p.process_id] = { ...approval, process_name: p.process_name };
+      if (!isResolvedStatus(approval.status)) allProcResolved = false;
     });
     setProcessApprovals(initProc);
+
+    const g1Done = isResolvedStatus((matTask ? taskToApproval(matTask) : { status: "pending" }).status) && allAccResolved;
     setGateState({
       g1: g1Done ? "approved" : (hitlSox.accounts ? "pending" : "approved"),
-      g2: g2Done ? "approved" : (g1Done ? (hitlSox.coverage ? "pending" : "approved") : null),
+      g2: (g1Done && allProcResolved) ? "approved" : (g1Done ? (hitlSox.coverage ? "pending" : "approved") : null),
     });
   }
 
@@ -1046,17 +1080,17 @@ function SoxScopePanel({
     if (!runId) return;
     (async () => {
       try {
-        const [scopeRes, gateRes] = await Promise.all([
+        const [scopeRes, statusRes] = await Promise.all([
           fetch(`/api/mcp/sox/scope/${runId}`),
-          fetch(`/api/mcp/sox/hitl/gate-status/${runId}`),
+          fetch(`/approvals/status/${runId}`, { credentials: "include" }),
         ]);
-        let gs = {};
-        try { if (gateRes.ok) gs = await gateRes.json(); } catch (_) {}
+        let tasks = [];
+        try { if (statusRes.ok) tasks = (await statusRes.json()).tasks || []; } catch (_) {}
         if (scopeRes.ok) {
           const data = await scopeRes.json();
           setLocalScope(data);
           setLocalSystems(data.systems_in_scope || []);
-          initGateApprovals(data, gs.gate3_status === "approved", gs.gate4_status === "approved");
+          initGateApprovals(data, tasks.filter(t => t.gate_type.startsWith("sox_")));
         }
       } catch (_) {}
     })();
@@ -1098,7 +1132,7 @@ function SoxScopePanel({
       setLocalSystems(data.systems_in_scope || []);
       // A fresh Rescope always re-opens the gates for review, mirroring the
       // Enterprise Risk pipeline's rerunFromS3 resetting Gate 2 on rerun.
-      initGateApprovals(data, false, false);
+      initGateApprovals(data, []);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1106,30 +1140,54 @@ function SoxScopePanel({
     }
   }
 
-  // ---- Gate S1 handlers (materiality + per-account) ----
-  const sigMap = window.sxSigMap ? window.sxSigMap() : {};
+  // ---- Real approval workflow: submit a preparer disposition, get back the
+  // resolved status (submitted-to-manager, or auto-approved if no manager) ----
+  async function submitSoxApprovalTask(gateType, itemRef, itemLabel, disposition, adjustments, rationale) {
+    if (!runId || !window.MCP) return null;
+    try {
+      const result = await window.MCP.prepareApprovalTask({
+        runId, gateType, itemRef: String(itemRef), itemLabel, disposition, adjustments, rationale,
+      });
+      return result.task;
+    } catch (_) {
+      return null;
+    }
+  }
 
-  const approveMaterial = () => setMaterialityApproval(prev => ({ ...prev, status: "approved" }));
-  const submitMaterialAdjustment = (payload) => {
+  // ---- Gate S1 handlers (materiality + per-account) ----
+  const approveMaterial = () => {
+    setMaterialityApproval(prev => ({ ...prev, status: "approved" }));
+    submitSoxApprovalTask("sox_materiality", "materiality", "Materiality thresholds", "approved", null, null);
+  };
+  const submitMaterialAdjustment = async (payload) => {
+    const adjustments = { materiality_pct: payload.materiality_pct, performance_mat_pct: payload.performance_mat_pct };
+    const task = await submitSoxApprovalTask("sox_materiality", "materiality", "Materiality thresholds", "adjusted", adjustments, payload.rationale);
     setMaterialityApproval({
-      status: "adjusted",
-      adjustments: { materiality_pct: payload.materiality_pct, performance_mat_pct: payload.performance_mat_pct },
-      rationale: payload.rationale, adjustedBy: auditorName, adjustedAt: Date.now(), signoffs: {},
+      status: task?.status || "submitted",
+      adjustments, rationale: payload.rationale, adjustedBy: auditorName, adjustedAt: Date.now(),
+      managerName: task?.manager_name || null,
     });
     setAdjustMatOpen(false);
   };
 
-  const approveAccount = (id) => setAccountApprovals(prev => ({ ...prev, [id]: { ...(prev[id] || {}), status: "approved" } }));
+  const approveAccount = (id) => {
+    setAccountApprovals(prev => ({ ...prev, [id]: { ...(prev[id] || {}), status: "approved" } }));
+    const acc = (displayScope?.accounts_in_scope || []).find(a => a.account_id === id);
+    submitSoxApprovalTask("sox_account", id, acc?.account_name, "approved", null, null);
+  };
   const openAdjustAccount = (id) => { setAdjustAccountId(id); setAdjustAccountOpen(true); };
-  const submitAccountAdjustment = (payload) => {
+  const submitAccountAdjustment = async (payload) => {
     const id = adjustAccountId;
     if (!id) return;
+    const acc = (displayScope?.accounts_in_scope || []).find(a => a.account_id === id);
+    const adjustments = { in_scope: payload.in_scope, priority: payload.priority };
+    const task = await submitSoxApprovalTask("sox_account", id, acc?.account_name, "adjusted", adjustments, payload.rationale);
     setAccountApprovals(prev => ({
       ...prev,
       [id]: {
-        status: "adjusted",
-        adjustments: { in_scope: payload.in_scope, priority: payload.priority },
-        rationale: payload.rationale, adjustedBy: auditorName, adjustedAt: Date.now(), signoffs: {},
+        status: task?.status || "submitted",
+        adjustments, rationale: payload.rationale, adjustedBy: auditorName, adjustedAt: Date.now(),
+        managerName: task?.manager_name || null, account_name: acc?.account_name,
       },
     }));
     setAdjustAccountOpen(false);
@@ -1137,55 +1195,50 @@ function SoxScopePanel({
   };
   const approveAllRemainingAccounts = () => setAccountApprovals(prev => {
     const next = { ...prev };
-    Object.keys(next).forEach(id => { if (next[id].status === "pending") next[id] = { ...next[id], status: "approved" }; });
+    Object.keys(next).forEach(id => {
+      if (next[id].status === "pending") {
+        next[id] = { ...next[id], status: "approved" };
+        const acc = (displayScope?.accounts_in_scope || []).find(a => a.account_id === id);
+        submitSoxApprovalTask("sox_account", id, acc?.account_name, "approved", null, null);
+      }
+    });
     return next;
   });
 
-  // kind: "materiality" | "account"; id: null for materiality, account_id otherwise
-  const signoffGate1 = (kind, id, role) => {
-    const apply = (cur) => {
-      if (!cur) return cur;
-      const newSigs = { ...(cur.signoffs || {}), [role]: { who: sigMap[role], signedAt: Date.now() } };
-      const allSigned = !!newSigs.cae && !!newSigs.cfo && !!newSigs.ac;
-      return { ...cur, signoffs: newSigs, status: allSigned ? "signed" : "adjusted" };
-    };
-    if (kind === "materiality") setMaterialityApproval(prev => apply(prev));
-    else setAccountApprovals(prev => ({ ...prev, [id]: apply(prev[id]) }));
-  };
-
-  async function confirmGate1() {
+  function confirmGate1() {
     setLocalScope(prev => {
       if (!prev) return prev;
       const merged = (prev.accounts_in_scope || []).map(a => {
         const ap = accountApprovals[a.account_id];
-        if (ap && (ap.status === "adjusted" || ap.status === "signed") && ap.adjustments) {
+        if (ap && isResolvedStatus(ap.status) && ap.status !== "approved" && ap.adjustments) {
           return { ...a, in_scope: ap.adjustments.in_scope, priority: ap.adjustments.priority, manual_override: true };
         }
         return a;
       });
       return { ...prev, accounts_in_scope: merged };
     });
-    if (runId) {
-      fetch('/api/mcp/sox/hitl/scope-approvals', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ run_id: runId, materiality: materialityApproval, accounts: accountApprovals, persona: auditorName }),
-      }).catch(() => {});
-    }
     setGateState(prev => ({ ...prev, g1: "approved", g2: hitlSox.coverage ? "pending" : "approved" }));
   }
 
   // ---- Gate S2 handlers (per-process coverage) ----
-  const approveProcess = (id) => setProcessApprovals(prev => ({ ...prev, [id]: { ...(prev[id] || {}), status: "approved" } }));
+  const approveProcess = (id) => {
+    setProcessApprovals(prev => ({ ...prev, [id]: { ...(prev[id] || {}), status: "approved" } }));
+    const proc = (displayScope?.processes_in_scope || []).find(p => p.process_id === id);
+    submitSoxApprovalTask("sox_process", id, proc?.process_name, "approved", null, null);
+  };
   const openAdjustProcess = (id) => { setAdjustProcessId(id); setAdjustProcessOpen(true); };
-  const submitProcessAdjustment = (payload) => {
+  const submitProcessAdjustment = async (payload) => {
     const id = adjustProcessId;
     if (!id) return;
+    const proc = (displayScope?.processes_in_scope || []).find(p => p.process_id === id);
+    const adjustments = { coverage_level: payload.coverage_level };
+    const task = await submitSoxApprovalTask("sox_process", id, proc?.process_name, "adjusted", adjustments, payload.rationale);
     setProcessApprovals(prev => ({
       ...prev,
       [id]: {
-        status: "adjusted",
-        adjustments: { coverage_level: payload.coverage_level },
-        rationale: payload.rationale, adjustedBy: auditorName, adjustedAt: Date.now(), signoffs: {},
+        status: task?.status || "submitted",
+        adjustments, rationale: payload.rationale, adjustedBy: auditorName, adjustedAt: Date.now(),
+        managerName: task?.manager_name || null, process_name: proc?.process_name,
       },
     }));
     setAdjustProcessOpen(false);
@@ -1193,35 +1246,28 @@ function SoxScopePanel({
   };
   const approveAllRemainingProcesses = () => setProcessApprovals(prev => {
     const next = { ...prev };
-    Object.keys(next).forEach(id => { if (next[id].status === "pending") next[id] = { ...next[id], status: "approved" }; });
+    Object.keys(next).forEach(id => {
+      if (next[id].status === "pending") {
+        next[id] = { ...next[id], status: "approved" };
+        const proc = (displayScope?.processes_in_scope || []).find(p => p.process_id === id);
+        submitSoxApprovalTask("sox_process", id, proc?.process_name, "approved", null, null);
+      }
+    });
     return next;
   });
-  const signoffGate2 = (id, role) => setProcessApprovals(prev => {
-    const cur = prev[id];
-    if (!cur) return prev;
-    const newSigs = { ...(cur.signoffs || {}), [role]: { who: sigMap[role], signedAt: Date.now() } };
-    const allSigned = !!newSigs.cae && !!newSigs.cfo && !!newSigs.ac;
-    return { ...prev, [id]: { ...cur, signoffs: newSigs, status: allSigned ? "signed" : "adjusted" } };
-  });
 
-  async function confirmGate2() {
+  function confirmGate2() {
     setLocalScope(prev => {
       if (!prev) return prev;
       const merged = (prev.processes_in_scope || []).map(p => {
         const ap = processApprovals[p.process_id];
-        if (ap && (ap.status === "adjusted" || ap.status === "signed") && ap.adjustments) {
+        if (ap && isResolvedStatus(ap.status) && ap.status !== "approved" && ap.adjustments) {
           return { ...p, coverage_level: ap.adjustments.coverage_level, manual_override: true };
         }
         return p;
       });
       return { ...prev, processes_in_scope: merged };
     });
-    if (runId) {
-      fetch('/api/mcp/sox/hitl/coverage-approvals', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ run_id: runId, processes: processApprovals, persona: auditorName }),
-      }).catch(() => {});
-    }
     setGateState(prev => ({ ...prev, g2: "approved" }));
   }
 
@@ -1327,7 +1373,7 @@ function SoxScopePanel({
                   onApproveMateriality={approveMaterial} onAdjustMateriality={() => setAdjustMatOpen(true)}
                   onApproveAccount={approveAccount} onAdjustAccount={openAdjustAccount}
                   onApproveAllAccounts={approveAllRemainingAccounts}
-                  onSignoff={signoffGate1} onSubmit={confirmGate1}
+                  onSubmit={confirmGate1}
                   onOverrideGate={() => requestOverrideGate(1)}
                 />
               ) : (
@@ -1347,7 +1393,7 @@ function SoxScopePanel({
                   processes={displayScope.processes_in_scope || []} processApprovals={processApprovals}
                   onApproveProcess={approveProcess} onAdjustProcess={openAdjustProcess}
                   onApproveAllProcesses={approveAllRemainingProcesses}
-                  onSignoff={signoffGate2} onSubmit={confirmGate2}
+                  onSubmit={confirmGate2}
                   onOverrideGate={() => requestOverrideGate(2)}
                 />
               ) : (

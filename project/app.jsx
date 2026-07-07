@@ -1397,8 +1397,8 @@ function App() {
       const b = risksCur.filter(r => r.score >= t).map(r => r.id);
       return { threshold: t, level, breaching: b, status: b.length > 0 ? "BREACHED" : "WITHIN APPETITE" };
     })();
-    const adjRiskCount = Object.values(riskApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
-    const adjObjCount  = Object.values(scopeApprovals).filter(a => a.status === "adjusted" || a.status === "signed").length;
+    const adjRiskCount = Object.values(riskApprovals).filter(a => a.adjustments && a.status !== "pending").length;
+    const adjObjCount  = Object.values(scopeApprovals).filter(a => a.adjustments && a.status !== "pending").length;
 
     return {
       entity: `${profile.entity.name} (${cfg.ticker})`,
