@@ -137,9 +137,10 @@ function Empty({ children, icon = "—" }) {
   );
 }
 
-// ---- Screen access gate — enforces the per-role Read/Edit matrix configured
-// in Configuration > Screen Access (admin-config.jsx / auth.screen_permissions).
-// Admins always bypass it. A screen with no saved row is allowed by default.
+// ---- Screen access gate — enforces the per-user Read/Edit matrix configured
+// in Configuration > User Configuration > Screen Access (user-config.jsx /
+// auth.screen_permissions). Admins always bypass it. A screen with no saved
+// row is allowed by default.
 // Read=false hides the screen entirely; Edit=false renders it but disables
 // every form control inside via a native <fieldset disabled> (backed up by a
 // pointer-events overlay for non-form interactive elements).
