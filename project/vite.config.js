@@ -99,6 +99,14 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
+      // Approval workflow endpoints — session-cookie authenticated like /auth/,
+      // not API-key-gated like /api/mcp/. Trailing slash for the same reason
+      // as /auth/ above (avoid matching a same-named source module if one is
+      // ever added).
+      '/approvals/': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
       // Risk Register Review API (reviews, framework search, convert-to-code, upload)
       '/api/risk-register': {
         target: 'http://127.0.0.1:8001',
@@ -150,6 +158,14 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
       },
       '/auth/': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
+      // Approval workflow endpoints — session-cookie authenticated like /auth/,
+      // not API-key-gated like /api/mcp/. Trailing slash for the same reason
+      // as /auth/ above (avoid matching a same-named source module if one is
+      // ever added).
+      '/approvals/': {
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },

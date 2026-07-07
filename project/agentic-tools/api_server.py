@@ -113,6 +113,7 @@ import oracle_fusion_endpoints
 import sox_endpoints
 import risk_register_endpoints
 import pac_endpoints
+import approvals_endpoints
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -407,6 +408,9 @@ if _HAS_MCP_GOVERNANCE:
 # Authentication: local login, logout, me, change-password, SSO OAuth flows.
 app.include_router(auth_endpoints.router)
 logger.info("Auth router registered at /auth")
+
+# Approval workflow: real 2-stage preparer -> manager review for HITL gates.
+app.include_router(approvals_endpoints.router)
 
 # GitHub Webhook: receive repo events and run them through the UBO pipeline.
 app.include_router(github_endpoints.router)

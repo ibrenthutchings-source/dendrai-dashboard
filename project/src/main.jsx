@@ -37,6 +37,7 @@ import '../risk-register-review.jsx'
 import '../sox-hitl.jsx'
 import '../sox-scope.jsx'
 import '../coverage-gap.jsx'
+import '../approval-inbox.jsx'
 import '../tweaks.jsx'
 
 import App from '../app.jsx'

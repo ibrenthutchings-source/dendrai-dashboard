@@ -22,6 +22,7 @@ const NAV_SECTIONS = [
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
+      { id: "approvals", icon: "check",    l: "Approval Inbox" },
       { id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "ubogov",   icon: "shield",    l: "UBO Governance Brain" },
       { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },

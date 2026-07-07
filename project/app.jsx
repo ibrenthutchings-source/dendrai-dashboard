@@ -1742,6 +1742,13 @@ function App() {
           </div>
           )}
 
+          {/* ---- Approval Inbox ---- */}
+          {activeScreen === "approvals" && (
+          <div className="panel active">
+            <ApprovalInboxScreen />
+          </div>
+          )}
+
           {/* ---- Coverage Gap Analysis ---- */}
           {activeScreen === "coverage" && (
           <div className="panel active" style={{overflow:"auto"}}>
@@ -1960,6 +1967,37 @@ function App() {
 function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName,
                   aiChatLabel, chatOpen, onChatToggle }) {
   const auth = window.useAuth ? window.useAuth() : null;
+  const [userMenuOpen, setUserMenuOpen] = React.useState(false);
+  const [orgUsers, setOrgUsers] = React.useState([]);
+  const [managerId, setManagerId] = React.useState(auth?.user?.manager_id ?? "");
+  const [savingManager, setSavingManager] = React.useState(false);
+
+  React.useEffect(() => {
+    setManagerId(auth?.user?.manager_id ?? "");
+  }, [auth?.user?.manager_id]);
+
+  React.useEffect(() => {
+    if (!userMenuOpen || orgUsers.length) return;
+    fetch("/auth/users", { credentials: "include" })
+      .then(r => r.ok ? r.json() : { users: [] })
+      .then(d => setOrgUsers(d.users || []))
+      .catch(() => {});
+  }, [userMenuOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function saveManager(e) {
+    const val = e.target.value;
+    setManagerId(val);
+    setSavingManager(true);
+    try {
+      await fetch("/auth/users/me/manager", {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manager_id: val ? Number(val) : null }),
+      });
+    } catch (_) {}
+    setSavingManager(false);
+  }
+
   return (
     <header className="hdr">
       <div className="hdr-brand">
@@ -2006,15 +2044,48 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
         {aiChatLabel || "Ask Claude"}
       </button>
       {auth?.user && (
-        <button
-          className="hdr-user-btn"
-          onClick={auth.logout}
-          title={`Signed in as ${auth.user.username} · Sign out`}
-        >
-          <Icon name="user" size={11} />
-          <span className="hdr-user-name">{auth.user.username}</span>
-          <Icon name="logout" size={11} />
-        </button>
+        <div style={{ position: "relative" }}>
+          <button
+            className="hdr-user-btn"
+            onClick={() => setUserMenuOpen(o => !o)}
+            title={`Signed in as ${auth.user.username}`}
+          >
+            <Icon name="user" size={11} />
+            <span className="hdr-user-name">{auth.user.username}</span>
+            <Icon name={userMenuOpen ? "chev-u" : "chev-d"} size={10} />
+          </button>
+          {userMenuOpen && (
+            <>
+              <div onClick={() => setUserMenuOpen(false)}
+                style={{ position: "fixed", inset: 0, zIndex: 49 }} />
+              <div style={{
+                position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 50,
+                background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
+                padding: "12px 14px", minWidth: 230, boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+              }}>
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 10 }}>
+                  Signed in as <b style={{ color: "var(--ink)" }}>{auth.user.username}</b>
+                </div>
+                <label className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 4 }}>
+                  MY MANAGER
+                </label>
+                <select value={managerId} onChange={saveManager} disabled={savingManager}
+                  className="fi-input" style={{ width: "100%", fontSize: 11.5, marginBottom: 8, boxSizing: "border-box" }}>
+                  <option value="">— none set —</option>
+                  {orgUsers.filter(u => u.id !== auth.user.id).map(u => (
+                    <option key={u.id} value={u.id}>{u.display_name || u.username}</option>
+                  ))}
+                </select>
+                <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginBottom: 12, lineHeight: 1.4 }}>
+                  HITL adjustments you submit for Enterprise Risk and SOX gates route to this person for review.
+                </div>
+                <button className="btn btn-sm" style={{ width: "100%" }} onClick={auth.logout}>
+                  <Icon name="logout" size={11} /> Sign out
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       )}
     </header>);
 

@@ -471,6 +471,41 @@ CREATE TABLE IF NOT EXISTS sox_process_approval_signoffs (
     signed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Real 2-stage (preparer -> manager) HITL approval workflow, unified across all
+-- gate types (Enterprise Risk Gate 1/2, SOX Gate S1/S2). Replaces the fixed
+-- 3-name CAE/CFO/Audit-Committee signoff chain above on the write path — those
+-- tables are left in place (unused) for historical data, nothing reads them
+-- going forward. prepared_by / manager_id / reviewed_by are soft references to
+-- auth.users(id) (no FK: db.init_db() runs before auth_db.init_auth_db(), so
+-- auth.users may not exist yet when this table is first created) — identity is
+-- always populated server-side from the authenticated session, never trusted
+-- from the request body.
+CREATE TABLE IF NOT EXISTS approval_tasks (
+    id                BIGSERIAL   PRIMARY KEY,
+    run_id            INT         NOT NULL REFERENCES risk_loop_runs(id),
+    gate_type         VARCHAR(24) NOT NULL,  -- 'risk' | 'objective' | 'sox_materiality' | 'sox_account' | 'sox_process'
+    item_ref          VARCHAR(64) NOT NULL,  -- risk_ref / obj_id / 'materiality' / account_id / process_id
+    item_label        VARCHAR(255),
+    status            VARCHAR(24) NOT NULL DEFAULT 'pending', -- pending | approved | submitted | manager_approved | rejected
+    disposition       VARCHAR(16),           -- 'approved' | 'adjusted' — what the preparer did
+    adjustments       JSONB,
+    rationale         TEXT,
+    prepared_by       BIGINT,
+    prepared_by_name  VARCHAR(128),
+    prepared_at       TIMESTAMPTZ,
+    manager_id        BIGINT,
+    manager_name      VARCHAR(128),
+    reviewed_by       BIGINT,
+    reviewed_by_name  VARCHAR(128),
+    reviewed_at       TIMESTAMPTZ,
+    review_comment    TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, gate_type, item_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_approval_tasks_manager ON approval_tasks (manager_id, status);
+CREATE INDEX IF NOT EXISTS idx_approval_tasks_run ON approval_tasks (run_id, gate_type);
+
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
     run_id                  INT         NOT NULL REFERENCES risk_loop_runs(id),
@@ -2487,6 +2522,179 @@ def get_sox_hitl_gate_status(run_id: int) -> dict:
                 row = cur.fetchone()
                 return {"gate3_status": row[0], "gate4_status": row[1]} if row else {}
     return _run(_do) or {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Approval workflow (real 2-stage preparer -> manager review, replacing the
+# fixed CAE/CFO/Audit-Committee signoff chain above)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_approval_task(
+    run_id: int,
+    gate_type: str,
+    item_ref: str,
+    item_label: Optional[str],
+    disposition: str,          # 'approved' | 'adjusted'
+    adjustments: Optional[dict],
+    rationale: Optional[str],
+    prepared_by: int,
+    prepared_by_name: str,
+    manager_id: Optional[int] = None,
+    manager_name: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Record a preparer's disposition on a HITL gate item.
+
+    'approved' (accepted as computed, nothing changed) finalises immediately —
+    there is nothing for a second person to check. 'adjusted' (a real override)
+    routes to the preparer's manager for review; if the preparer has no
+    manager configured it auto-approves with a note, so the workflow still
+    functions before an org chart / manager assignments exist.
+    """
+    if disposition == "adjusted" and manager_id:
+        status, review_comment = "submitted", None
+    elif disposition == "adjusted":
+        status, review_comment = "approved", "Auto-approved — preparer has no manager configured"
+    else:
+        status, review_comment = "approved", None
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO approval_tasks
+                        (run_id, gate_type, item_ref, item_label, status, disposition,
+                         adjustments, rationale, prepared_by, prepared_by_name, prepared_at,
+                         manager_id, manager_name, review_comment, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,NOW())
+                    ON CONFLICT (run_id, gate_type, item_ref) DO UPDATE SET
+                        item_label       = EXCLUDED.item_label,
+                        status           = EXCLUDED.status,
+                        disposition      = EXCLUDED.disposition,
+                        adjustments      = EXCLUDED.adjustments,
+                        rationale        = EXCLUDED.rationale,
+                        prepared_by      = EXCLUDED.prepared_by,
+                        prepared_by_name = EXCLUDED.prepared_by_name,
+                        prepared_at      = NOW(),
+                        manager_id       = EXCLUDED.manager_id,
+                        manager_name     = EXCLUDED.manager_name,
+                        reviewed_by      = NULL,
+                        reviewed_by_name = NULL,
+                        reviewed_at      = NULL,
+                        review_comment   = EXCLUDED.review_comment,
+                        updated_at       = NOW()
+                    RETURNING id, run_id, gate_type, item_ref, item_label, status, disposition,
+                              adjustments, rationale, prepared_by, prepared_by_name, prepared_at,
+                              manager_id, manager_name, reviewed_by, reviewed_by_name, reviewed_at,
+                              review_comment
+                    """,
+                    (
+                        run_id, gate_type, item_ref, item_label, status, disposition,
+                        Json(adjustments) if adjustments is not None else None,
+                        rationale, prepared_by, prepared_by_name,
+                        manager_id, manager_name, review_comment,
+                    ),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
+
+
+def review_approval_task(task_id: int, reviewer_id: int, reviewer_name: str, decision: str, comment: Optional[str]) -> Optional[dict]:
+    """
+    Manager decision on a submitted item ('approved' or 'rejected').
+    Caller (API layer) must verify reviewer_id matches the task's manager_id
+    before calling this — it only re-checks status='submitted' to avoid a
+    double-decision race, not identity.
+    """
+    status = "manager_approved" if decision == "approved" else "rejected"
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE approval_tasks SET
+                        status = %s, reviewed_by = %s, reviewed_by_name = %s,
+                        reviewed_at = NOW(), review_comment = %s, updated_at = NOW()
+                    WHERE id = %s AND status = 'submitted'
+                    RETURNING id, run_id, gate_type, item_ref, status
+                    """,
+                    (status, reviewer_id, reviewer_name, comment, task_id),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description] if cur.description else []
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
+
+
+def get_approval_task(task_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, run_id, gate_type, item_ref, manager_id, status FROM approval_tasks WHERE id = %s",
+                    (task_id,),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description] if cur.description else []
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
+
+
+def get_approval_inbox(manager_id: int) -> list:
+    """Items awaiting this user's review, newest-submitted first."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT t.id, t.run_id, t.gate_type, t.item_ref, t.item_label, t.disposition,
+                           t.adjustments, t.rationale, t.prepared_by_name, t.prepared_at, r.ticker
+                    FROM approval_tasks t
+                    JOIN risk_loop_runs r ON r.id = t.run_id
+                    WHERE t.manager_id = %s AND t.status = 'submitted'
+                    ORDER BY t.prepared_at DESC
+                    """,
+                    (manager_id,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("prepared_at") and hasattr(d["prepared_at"], "isoformat"):
+                        d["prepared_at"] = d["prepared_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_approval_tasks_for_run(run_id: int, gate_type: Optional[str] = None) -> list:
+    """All approval tasks for a run (optionally filtered to one gate type) —
+    used to restore Gate 1/2/S1/S2 UI state on reload."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                q = ("SELECT id, gate_type, item_ref, item_label, status, disposition, adjustments, "
+                     "rationale, prepared_by, prepared_by_name, prepared_at, manager_id, manager_name, "
+                     "reviewed_by, reviewed_by_name, reviewed_at, review_comment "
+                     "FROM approval_tasks WHERE run_id = %s")
+                params = [run_id]
+                if gate_type:
+                    q += " AND gate_type = %s"
+                    params.append(gate_type)
+                cur.execute(q, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("prepared_at", "reviewed_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
