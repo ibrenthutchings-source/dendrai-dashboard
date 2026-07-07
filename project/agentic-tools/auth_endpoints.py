@@ -306,6 +306,10 @@ class ChangePasswordRequest(BaseModel):
     new_password:     str
 
 
+class SetManagerRequest(BaseModel):
+    manager_id: Optional[int] = None  # None clears it
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/sso/providers", summary="List enabled SSO providers")
@@ -373,6 +377,35 @@ def logout(
 @router.get("/me", summary="Current authenticated user")
 def me(current_user: dict = Depends(get_current_user)):
     return {"user": current_user}
+
+
+@router.get("/users", summary="List active user accounts")
+def list_users(current_user: dict = Depends(get_current_user)):
+    """
+    Active accounts (id, username, display_name, role, manager_id) — powers
+    the manager picker and name resolution for the approval workflow.
+    Any authenticated user can list this (no sensitive fields returned);
+    it is not an admin-only directory.
+    """
+    return {"users": auth_db.list_active_users()}
+
+
+@router.put("/users/me/manager", summary="Set your own manager (self-service)")
+def set_my_manager(req: SetManagerRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Self-service reporting-line assignment used to route HITL gate
+    adjustments to the right person for review. No admin role required —
+    there is no admin console for this yet, so this is intentionally
+    self-service. A user cannot set themselves as their own manager.
+    """
+    if req.manager_id is not None:
+        manager = auth_db.get_user_by_id(req.manager_id)
+        if not manager or not manager.get("is_active"):
+            raise HTTPException(status_code=404, detail="Manager account not found or inactive")
+    ok = auth_db.set_manager(current_user["id"], req.manager_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not set manager (cannot be yourself)")
+    return {"ok": True, "manager_id": req.manager_id}
 
 
 @router.post("/change-password", summary="Change own password")

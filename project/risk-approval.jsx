@@ -1,24 +1,12 @@
 /* ============================================================
    Per-Risk Approval Review (HITL Gate 1)
    - Lists every risk inline with Approve / Adjust controls
-   - Adjusted risks require sequential sign-off:
-       1. CAE (Sarah Lin)        — Chief Audit Executive
-       2. CFO (Marcus Reed)      — Chief Financial Officer
-       3. Audit Committee        — J. Vance, Chair
+   - Approve as-is is final immediately (nothing changed, nothing to check).
+   - Adjustments route to the preparer's manager (real org-chart reporting
+     line, see auth.users.manager_id) for a second review, via the Approval
+     Inbox screen — not a fixed fictional signoff chain.
    - Rationale captured verbatim into the audit trail
    ============================================================ */
-
-const SIGNOFFS = [
-  { id: "cae", role: "CAE",              who: "Sarah Lin",      title: "Chief Audit Executive" },
-  { id: "cfo", role: "CFO",              who: "Marcus Reed",    title: "Chief Financial Officer" },
-  { id: "ac",  role: "Audit Committee",  who: "J. Vance",       title: "Audit Committee, Chair"  },
-];
-
-// Status values per risk approval:
-//   'pending'    — awaiting auditor disposition
-//   'approved'   — AI score accepted as-is
-//   'adjusted'   — values changed; signoffs are routing through CAE → CFO → AC
-//   'signed'     — fully signed off (all three signatures captured)
 
 function deltaLabel(orig, next, key, fmt = (v) => v) {
   if (orig[key] === next[key]) return null;
@@ -27,6 +15,13 @@ function deltaLabel(orig, next, key, fmt = (v) => v) {
 
 const RAR_CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
 const RAR_APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
+
+// Status values per risk approval:
+//   'pending'          — awaiting preparer disposition
+//   'approved'         — accepted as scored; final, no review needed
+//   'submitted'        — adjusted with rationale; routed to manager for review
+//   'manager_approved' — manager reviewed and approved the adjustment; final
+//   'rejected'         — manager sent it back; preparer must revise
 
 function RiskApprovalReview({
   risks,
@@ -38,7 +33,6 @@ function RiskApprovalReview({
   onApproveRisk,
   onOpenAdjust,
   onApproveAll,
-  onSignoff,
   onSubmit,
   onOverrideGate,
   onAddRisk,
@@ -47,11 +41,12 @@ function RiskApprovalReview({
   const [expandedId, setExpandedId] = React.useState(null);
   const total = risks.length;
   const decided = risks.filter(r => {
-    const a = approvals[r.id];
-    return a && (a.status === "approved" || a.status === "signed");
+    const s = approvals[r.id]?.status;
+    return s === "approved" || s === "submitted" || s === "manager_approved";
   }).length;
-  const adjustedCount = risks.filter(r => approvals[r.id]?.status === "adjusted" || approvals[r.id]?.status === "signed").length;
-  const pendingSig = risks.filter(r => approvals[r.id]?.status === "adjusted").length;
+  const submittedCount = risks.filter(r => ["submitted", "manager_approved", "rejected"].includes(approvals[r.id]?.status)).length;
+  const pendingReview = risks.filter(r => approvals[r.id]?.status === "submitted").length;
+  const rejectedCount = risks.filter(r => approvals[r.id]?.status === "rejected").length;
   const allResolved = decided === total;
 
   return (
@@ -63,8 +58,7 @@ function RiskApprovalReview({
           </div>
           <div className="rar-title">Risk Assessment · Per-Risk Review</div>
           <div className="rar-sub">
-            Approve each risk as-is, or adjust scoring with rationale. Adjustments are routed for sign-off:
-            <span className="rar-sub-chain">CAE → CFO → Audit Committee</span>.
+            Approve each risk as-is, or adjust scoring with rationale. Adjustments route to your manager for review.
           </div>
         </div>
         <div className="rar-head-r">
@@ -72,8 +66,9 @@ function RiskApprovalReview({
             <div className="rar-prog-track"><div className="rar-prog-fill" style={{width: `${(decided/total)*100}%`}}/></div>
             <div className="rar-prog-meta">
               <span className="mono"><b style={{color:"var(--ink)",fontWeight:500}}>{decided}</b> / {total} resolved</span>
-              {adjustedCount > 0 && <span className="mono muted">· {adjustedCount} adjusted</span>}
-              {pendingSig > 0 && <span className="mono" style={{color:"var(--amber-ink)"}}>· {pendingSig} awaiting sign-off</span>}
+              {submittedCount > 0 && <span className="mono muted">· {submittedCount} adjusted</span>}
+              {pendingReview > 0 && <span className="mono" style={{color:"var(--amber-ink)"}}>· {pendingReview} awaiting manager</span>}
+              {rejectedCount > 0 && <span className="mono" style={{color:"var(--red-ink)"}}>· {rejectedCount} rejected</span>}
             </div>
           </div>
         </div>
@@ -98,7 +93,6 @@ function RiskApprovalReview({
               onSetPerRiskLevel={(lvl) => onSetPerRiskAppetite && onSetPerRiskAppetite(prev => ({...prev, [r.id]: lvl}))}
               onApprove={() => onApproveRisk(r.id)}
               onAdjust={() => onOpenAdjust(r.id)}
-              onSignoff={(role) => onSignoff(r.id, role)}
               expanded={expandedId === r.id}
               onToggle={() => setExpandedId(prev => prev === r.id ? null : r.id)}
             />
@@ -117,7 +111,7 @@ function RiskApprovalReview({
         )}
         <div className="rar-foot-spacer"/>
         <button className="btn btn-sm" onClick={onApproveAll} disabled={allResolved}>
-          Approve all remaining ({total - decided - pendingSig})
+          Approve all remaining ({total - decided})
         </button>
         <button className="btn btn-sm btn-primary" disabled={!allResolved} onClick={onSubmit}>
           <Icon name="check" size={11}/> Confirm Risk Assessment
@@ -127,7 +121,7 @@ function RiskApprovalReview({
   );
 }
 
-function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBER", onSetPerRiskLevel, onApprove, onAdjust, onSignoff, expanded, onToggle }) {
+function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBER", onSetPerRiskLevel, onApprove, onAdjust, expanded, onToggle }) {
   const r = risk;
   const status = approval.status || "pending";
   const adj = approval.adjustments || null;
@@ -136,7 +130,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
   const effVel = adj?.velocity ?? risk.velocity;
   const effCe = adj?.ce ?? risk.ce;
 
-  const isAdjusted = status === "adjusted" || status === "signed";
+  const wasAdjusted = ["submitted", "manager_approved", "rejected"].includes(status);
   const controls = MOCK.riskFlow?.[risk.id]?.controls || [];
   const threshold = RAR_APPETITE_THRESHOLDS[perRiskLevel] ?? 7.5;
   const breachesAppetite = effScore >= threshold;
@@ -146,7 +140,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
       <div className="rar-td rar-td-name">
         <div className="rar-name-head">
           <RAGChip rag={effRag}>{effRag}</RAGChip>
-          {isAdjusted && effRag !== risk.rag && (
+          {wasAdjusted && effRag !== risk.rag && (
             <span className="rar-was mono">was <RAGChip rag={risk.rag}>{risk.rag}</RAGChip></span>
           )}
           <div className="rar-rname">{risk.name}</div>
@@ -165,7 +159,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
       <div className="rar-td rar-td-score">
         <div className="rar-score-row">
           <span className="mono" style={{color: scoreColorInk(effScore), fontWeight: 500}}>{fmt2(effScore)}</span>
-          {isAdjusted && effScore !== risk.score && (
+          {wasAdjusted && effScore !== risk.score && (
             <span className="rar-was mono">was {fmt2(risk.score)}</span>
           )}
         </div>
@@ -196,14 +190,14 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
       <div className="rar-td rar-td-vel">
         <VelocityPill v={effVel}/>
-        {isAdjusted && effVel !== risk.velocity && (
+        {wasAdjusted && effVel !== risk.velocity && (
           <span className="rar-was mono">was {risk.velocity > 0 ? "+" : ""}{risk.velocity}</span>
         )}
       </div>
 
       <div className="rar-td rar-td-ce">
         <span className="mono" style={{fontSize: 10.5}}>{effCe}</span>
-        {isAdjusted && effCe !== risk.ce && (
+        {wasAdjusted && effCe !== risk.ce && (
           <span className="rar-was mono">was {risk.ce}</span>
         )}
       </div>
@@ -234,16 +228,27 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
             <span>Approved as scored</span>
           </div>
         )}
-        {status === "adjusted" && (
+        {status === "submitted" && (
           <div className="rar-disposition rar-disposition-adjusted">
             <Icon name="alert" size={11}/>
-            <span>Awaiting sign-off</span>
+            <span>Awaiting {approval.managerName || "manager"} review</span>
           </div>
         )}
-        {status === "signed" && (
+        {status === "manager_approved" && (
           <div className="rar-disposition rar-disposition-signed">
             <Icon name="check" size={11}/>
-            <span>Adjustment signed</span>
+            <span>Approved by {approval.reviewerName || "manager"}</span>
+          </div>
+        )}
+        {status === "rejected" && (
+          <div className="rar-actions">
+            <div className="rar-disposition" style={{color: "var(--red-ink)"}}>
+              <Icon name="alert" size={11}/>
+              <span>Rejected — revise</span>
+            </div>
+            <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); onAdjust(); }}>
+              <Icon name="edit" size={10}/> Revise
+            </button>
           </div>
         )}
       </div>
@@ -272,40 +277,27 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
             </div>
           )}
 
-          {isAdjusted && (
+          {wasAdjusted && (
             <div className="rar-row-detail">
               <div className="rar-detail-rationale">
                 <div className="rar-detail-label mono">RATIONALE — {approval.adjustedBy || "Auditor"} · {approval.adjustedAt ? new Date(approval.adjustedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}) : "—"}</div>
                 <div className="rar-detail-text">{approval.rationale}</div>
               </div>
-              <div className="rar-signoff-chain">
-                {SIGNOFFS.map((s, i) => {
-                  const sig = approval.signoffs?.[s.id];
-                  const isSigned = !!sig?.signedAt;
-                  const prevSigned = i === 0 || approval.signoffs?.[SIGNOFFS[i-1].id]?.signedAt;
-                  const canSign = !isSigned && prevSigned;
-                  return (
-                    <div key={s.id} className={`rar-sig ${isSigned ? "rar-sig-signed" : canSign ? "rar-sig-active" : "rar-sig-blocked"}`}>
-                      <div className="rar-sig-num mono">{i+1}</div>
-                      <div className="rar-sig-body">
-                        <div className="rar-sig-role">{s.role}</div>
-                        <div className="rar-sig-who mono">{isSigned ? sig.who : s.who}</div>
-                      </div>
-                      {isSigned ? (
-                        <div className="rar-sig-stamp">
-                          <Icon name="check" size={11}/>
-                          <span className="mono">{new Date(sig.signedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</span>
-                        </div>
-                      ) : canSign ? (
-                        <button className="btn btn-sm rar-sig-btn" onClick={(e) => { e.stopPropagation(); onSignoff(s.id); }}>
-                          Sign as {s.role}
-                        </button>
-                      ) : (
-                        <span className="rar-sig-pending mono">Blocked</span>
-                      )}
-                    </div>
-                  );
-                })}
+              <div style={{display: "flex", flexDirection: "column", gap: 6, borderLeft: "1px solid var(--line)", paddingLeft: 16}}>
+                <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em"}}>REVIEW STATUS</div>
+                {status === "submitted" && (
+                  <div style={{fontSize: 11.5, color: "var(--amber-ink)"}}>Awaiting review from {approval.managerName || "your manager"}.</div>
+                )}
+                {status === "manager_approved" && (
+                  <div style={{fontSize: 11.5, color: "var(--green-ink)"}}>
+                    Approved by {approval.reviewerName || "manager"}{approval.reviewedAt ? ` at ${new Date(approval.reviewedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}` : ""}.
+                  </div>
+                )}
+                {status === "rejected" && (
+                  <div style={{fontSize: 11.5, color: "var(--red-ink)"}}>
+                    Rejected by {approval.reviewerName || "manager"}{approval.reviewComment ? `: "${approval.reviewComment}"` : "."}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -503,7 +495,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
 
           <div className="ar-rationale">
             <label className="ar-label">
-              Rationale <span className="muted">· captured verbatim into audit trail, sent to CAE, CFO, Audit Committee</span>
+              Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
             </label>
             <textarea className="fi-ta" value={rationale}
               onChange={e => setRationale(e.target.value)}
@@ -517,27 +509,13 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
             </div>
           </div>
 
-          <div className="ar-signoff-preview">
-            <div className="rar-detail-label mono">SIGN-OFF ROUTING ON SUBMIT</div>
-            <div className="ar-chain">
-              {SIGNOFFS.map((s, i) => (
-                <React.Fragment key={s.id}>
-                  <div className="ar-chain-node">
-                    <div className="ar-chain-num mono">{i+1}</div>
-                    <div>
-                      <div className="ar-chain-role">{s.role}</div>
-                      <div className="ar-chain-who mono">{s.who}</div>
-                    </div>
-                  </div>
-                  {i < SIGNOFFS.length - 1 && <div className="ar-chain-arrow">→</div>}
-                </React.Fragment>
-              ))}
-            </div>
+          <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", padding: "8px 10px", background: "var(--surface-2, var(--surface))", borderRadius: 6, border: "1px solid var(--line)"}}>
+            This adjustment will be submitted to your manager for review. If you have no manager configured (set one from the header user menu), it is auto-approved so the workflow still completes.
           </div>
         </div>
         <div className="modal-foot">
           <span className="muted mono" style={{fontSize: 11}}>
-            {valid ? "Submitting routes for 3-step sign-off" : "Write a rationale (min 30 characters) to continue"}
+            {valid ? "Submitting routes to your manager for review" : "Write a rationale (min 30 characters) to continue"}
           </span>
           <div style={{display: "flex", gap: 6}}>
             <button className="btn btn-sm" onClick={onClose}>Cancel</button>
@@ -552,5 +530,5 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
   );
 }
 
-Object.assign(window, { RiskApprovalReview, AdjustRiskModal, SIGNOFFS });
-export { RiskApprovalReview, AdjustRiskModal, SIGNOFFS };
+Object.assign(window, { RiskApprovalReview, AdjustRiskModal });
+export { RiskApprovalReview, AdjustRiskModal };

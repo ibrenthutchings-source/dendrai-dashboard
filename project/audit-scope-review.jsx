@@ -1,10 +1,10 @@
 /* ============================================================
    Per-Objective Scope Approval Review (HITL Gate 2)
    - Lists every audit objective with Approve / Adjust controls
-   - Adjusted objectives require sequential sign-off:
-       1. CAE (Sarah Lin)       — Chief Audit Executive
-       2. CFO (Marcus Reed)     — Chief Financial Officer
-       3. Audit Committee       — J. Vance, Chair
+   - Approve as-is is final immediately (nothing changed, nothing to check).
+   - Adjustments route to the preparer's manager (real org-chart reporting
+     line, see auth.users.manager_id) for a second review, via the Approval
+     Inbox screen — not a fixed fictional signoff chain.
    - Reuses .rar styles; adds .sar column overrides
    ============================================================ */
 
@@ -24,6 +24,13 @@ function defaultRiskReduction(priority, ce) {
   return Math.min(50, Math.max(5, base + adj));
 }
 
+// Status values per objective approval:
+//   'pending'          — awaiting preparer disposition
+//   'approved'         — accepted as scoped; final, no review needed
+//   'submitted'        — adjusted with rationale; routed to manager for review
+//   'manager_approved' — manager reviewed and approved the adjustment; final
+//   'rejected'         — manager sent it back; preparer must revise
+
 function ScopeApprovalReview({
   objectives,
   approvals,
@@ -31,7 +38,6 @@ function ScopeApprovalReview({
   onApproveObjective,
   onOpenAdjust,
   onApproveAll,
-  onSignoff,
   onSubmit,
   onOverrideGate,
   onAddObjective,
@@ -49,13 +55,12 @@ function ScopeApprovalReview({
 
   const total = objectives.length;
   const decided = objectives.filter(o => {
-    const a = approvals[o.id];
-    return a && (a.status === "approved" || a.status === "signed");
+    const s = approvals[o.id]?.status;
+    return s === "approved" || s === "submitted" || s === "manager_approved";
   }).length;
-  const adjustedCount = objectives.filter(o =>
-    approvals[o.id]?.status === "adjusted" || approvals[o.id]?.status === "signed"
-  ).length;
-  const pendingSig = objectives.filter(o => approvals[o.id]?.status === "adjusted").length;
+  const submittedCount = objectives.filter(o => ["submitted", "manager_approved", "rejected"].includes(approvals[o.id]?.status)).length;
+  const pendingReview = objectives.filter(o => approvals[o.id]?.status === "submitted").length;
+  const rejectedCount = objectives.filter(o => approvals[o.id]?.status === "rejected").length;
   const allResolved = decided === total;
 
   const totalHours = objectives.reduce((sum, o) => {
@@ -72,8 +77,7 @@ function ScopeApprovalReview({
           <div className="rar-title">Audit Scope · Per-Objective Review</div>
           <div className="rar-sub">
             Approve each objective as-is, or adjust priority / hours / fiscal quarter with rationale.
-            Adjustments are routed for sign-off:
-            <span className="rar-sub-chain">CAE → CFO → Audit Committee</span>.
+            Adjustments route to your manager for review.
           </div>
         </div>
         <div className="rar-head-r">
@@ -85,10 +89,11 @@ function ScopeApprovalReview({
               <span className="mono">
                 <b style={{color:"var(--ink)",fontWeight:500}}>{decided}</b> / {total} resolved
               </span>
-              {adjustedCount > 0 && <span className="mono muted">· {adjustedCount} adjusted</span>}
-              {pendingSig > 0 && (
-                <span className="mono" style={{color:"var(--amber-ink)"}}>· {pendingSig} awaiting sign-off</span>
+              {submittedCount > 0 && <span className="mono muted">· {submittedCount} adjusted</span>}
+              {pendingReview > 0 && (
+                <span className="mono" style={{color:"var(--amber-ink)"}}>· {pendingReview} awaiting manager</span>
               )}
+              {rejectedCount > 0 && <span className="mono" style={{color:"var(--red-ink)"}}>· {rejectedCount} rejected</span>}
             </div>
           </div>
         </div>
@@ -123,7 +128,6 @@ function ScopeApprovalReview({
                 onSetRiskReduction={val => setRiskReductions(prev => ({ ...prev, [o.id]: val }))}
                 onApprove={() => onApproveObjective(o.id)}
                 onAdjust={() => onOpenAdjust(o.id)}
-                onSignoff={(role) => onSignoff(o.id, role)}
               />
             );
           })}
@@ -147,7 +151,7 @@ function ScopeApprovalReview({
         )}
         <div className="rar-foot-spacer"/>
         <button className="btn btn-sm" onClick={onApproveAll} disabled={allResolved}>
-          Approve all remaining ({total - decided - pendingSig})
+          Approve all remaining ({total - decided})
         </button>
         <button className="btn btn-sm btn-primary" disabled={!allResolved} onClick={onSubmit}>
           <Icon name="check" size={11}/> Confirm Audit Scope
@@ -157,13 +161,13 @@ function ScopeApprovalReview({
   );
 }
 
-function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskReduction, onApprove, onAdjust, onSignoff }) {
+function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskReduction, onApprove, onAdjust }) {
   const status = approval.status || "pending";
   const adj = approval.adjustments || null;
   const effPri = adj?.priority ?? obj.priority;
   const effHours = adj?.hours ?? obj.hours;
   const effSprint = adj?.sprint ?? obj.sprint;
-  const isAdjusted = status === "adjusted" || status === "signed";
+  const wasAdjusted = ["submitted", "manager_approved", "rejected"].includes(status);
   const [sliderOpen, setSliderOpen] = React.useState(false);
 
   return (
@@ -172,7 +176,7 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
         <span className="sar-pri-chip" style={{color: priColor(effPri), background: priSoft(effPri)}}>
           {effPri}
         </span>
-        {isAdjusted && effPri !== obj.priority && (
+        {wasAdjusted && effPri !== obj.priority && (
           <div className="rar-was mono">was {obj.priority}</div>
         )}
       </div>
@@ -223,14 +227,14 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
 
       <div className="rar-td sar-td-num">
         <span className="mono" style={{fontWeight:500,color:"var(--ink)"}}>{effHours}h</span>
-        {isAdjusted && effHours !== obj.hours && (
+        {wasAdjusted && effHours !== obj.hours && (
           <div className="rar-was mono">was {obj.hours}h</div>
         )}
       </div>
 
       <div className="rar-td sar-td-num">
         <span className="mono" style={{color:"var(--ink-2)"}} title="Fiscal Quarter">Q{effSprint}</span>
-        {isAdjusted && effSprint !== obj.sprint && (
+        {wasAdjusted && effSprint !== obj.sprint && (
           <div className="rar-was mono">was Q{obj.sprint}</div>
         )}
       </div>
@@ -258,19 +262,29 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
             <Icon name="check" size={11}/><span>Approved as scoped</span>
           </div>
         )}
-        {status === "adjusted" && (
+        {status === "submitted" && (
           <div className="rar-disposition rar-disposition-adjusted">
-            <Icon name="alert" size={11}/><span>Awaiting sign-off</span>
+            <Icon name="alert" size={11}/><span>Awaiting {approval.managerName || "manager"} review</span>
           </div>
         )}
-        {status === "signed" && (
+        {status === "manager_approved" && (
           <div className="rar-disposition rar-disposition-signed">
-            <Icon name="check" size={11}/><span>Adjustment signed</span>
+            <Icon name="check" size={11}/><span>Approved by {approval.reviewerName || "manager"}</span>
+          </div>
+        )}
+        {status === "rejected" && (
+          <div className="rar-actions">
+            <div className="rar-disposition" style={{color: "var(--red-ink)"}}>
+              <Icon name="alert" size={11}/><span>Rejected — revise</span>
+            </div>
+            <button className="btn btn-sm" onClick={onAdjust}>
+              <Icon name="edit" size={10}/> Revise
+            </button>
           </div>
         )}
       </div>
 
-      {isAdjusted && (
+      {wasAdjusted && (
         <div className="rar-row-detail">
           <div className="rar-detail-rationale">
             <div className="rar-detail-label mono">
@@ -280,34 +294,21 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
             </div>
             <div className="rar-detail-text">{approval.rationale}</div>
           </div>
-          <div className="rar-signoff-chain">
-            {SIGNOFFS.map((s, i) => {
-              const sig = approval.signoffs?.[s.id];
-              const isSigned = !!sig?.signedAt;
-              const prevSigned = i === 0 || approval.signoffs?.[SIGNOFFS[i-1].id]?.signedAt;
-              const canSign = !isSigned && prevSigned;
-              return (
-                <div key={s.id} className={`rar-sig ${isSigned ? "rar-sig-signed" : canSign ? "rar-sig-active" : "rar-sig-blocked"}`}>
-                  <div className="rar-sig-num mono">{i+1}</div>
-                  <div className="rar-sig-body">
-                    <div className="rar-sig-role">{s.role}</div>
-                    <div className="rar-sig-who mono">{isSigned ? sig.who : s.who}</div>
-                  </div>
-                  {isSigned ? (
-                    <div className="rar-sig-stamp">
-                      <Icon name="check" size={11}/>
-                      <span className="mono">{new Date(sig.signedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</span>
-                    </div>
-                  ) : canSign ? (
-                    <button className="btn btn-sm rar-sig-btn" onClick={() => onSignoff(s.id)}>
-                      Sign as {s.role}
-                    </button>
-                  ) : (
-                    <span className="rar-sig-pending mono">Blocked</span>
-                  )}
-                </div>
-              );
-            })}
+          <div style={{display: "flex", flexDirection: "column", gap: 6, borderLeft: "1px solid var(--line)", paddingLeft: 16}}>
+            <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em"}}>REVIEW STATUS</div>
+            {status === "submitted" && (
+              <div style={{fontSize: 11.5, color: "var(--amber-ink)"}}>Awaiting review from {approval.managerName || "your manager"}.</div>
+            )}
+            {status === "manager_approved" && (
+              <div style={{fontSize: 11.5, color: "var(--green-ink)"}}>
+                Approved by {approval.reviewerName || "manager"}{approval.reviewedAt ? ` at ${new Date(approval.reviewedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}` : ""}.
+              </div>
+            )}
+            {status === "rejected" && (
+              <div style={{fontSize: 11.5, color: "var(--red-ink)"}}>
+                Rejected by {approval.reviewerName || "manager"}{approval.reviewComment ? `: "${approval.reviewComment}"` : "."}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -442,13 +443,15 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
   const riskIdsChanged = JSON.stringify([...linkedRiskIds].sort()) !== JSON.stringify([...origLinkedRiskIds].sort());
   const controlsChanged = JSON.stringify([...controlRefs].sort()) !== JSON.stringify([...origControls].sort());
   const objectiveChanged = objectiveText.trim() !== (obj.objective || "").trim();
+  // Tracked for the "was X" diff indicators, not required to submit — a written
+  // rationale on its own is sufficient grounds for Adjust (matches Gate 1).
   const changed = priority !== obj.priority || sprint !== obj.sprint
     || (hoursValid && hoursNum !== obj.hours)
     || riskIdsChanged
     || controlsChanged
     || objectiveChanged
     || residualReduction !== origResidual;
-  const valid = changed && rationale.trim().length >= 30 && hoursValid && residualValid && objectiveText.trim().length > 0;
+  const valid = rationale.trim().length >= 30 && hoursValid && residualValid && objectiveText.trim().length > 0;
 
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
@@ -677,7 +680,7 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
           <div className="ar-rationale">
             <label className="ar-label">
               Rationale
-              <span className="muted"> · captured verbatim, routed to CAE / CFO / Audit Committee</span>
+              <span className="muted"> · captured verbatim, routed to your manager for review</span>
             </label>
             <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
               placeholder="Describe the basis for this adjustment — resource constraints, risk prioritisation rationale, scheduling dependencies, or control coverage changes considered. Minimum 30 characters."
@@ -686,31 +689,17 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
               <span style={{color: rationale.trim().length >= 30 ? "var(--green-ink)" : "var(--ink-3)"}}>
                 {rationale.trim().length} / 30 chars
               </span>
-              {!changed && <span className="muted">· no changes made yet</span>}
+              {!changed && rationale.trim().length >= 30 && <span className="muted">· reaffirming as scoped, with rationale on file</span>}
             </div>
           </div>
 
-          <div className="ar-signoff-preview">
-            <div className="rar-detail-label mono">SIGN-OFF ROUTING ON SUBMIT</div>
-            <div className="ar-chain">
-              {SIGNOFFS.map((s, i) => (
-                <React.Fragment key={s.id}>
-                  <div className="ar-chain-node">
-                    <div className="ar-chain-num mono">{i+1}</div>
-                    <div>
-                      <div className="ar-chain-role">{s.role}</div>
-                      <div className="ar-chain-who mono">{s.who}</div>
-                    </div>
-                  </div>
-                  {i < SIGNOFFS.length - 1 && <div className="ar-chain-arrow">→</div>}
-                </React.Fragment>
-              ))}
-            </div>
+          <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", padding: "8px 10px", background: "var(--surface-2, var(--surface))", borderRadius: 6, border: "1px solid var(--line)"}}>
+            This adjustment will be submitted to your manager for review. If you have no manager configured (set one from the header user menu), it is auto-approved so the workflow still completes.
           </div>
         </div>
         <div className="modal-foot">
           <span className="muted mono" style={{fontSize: 11}}>
-            {changed ? "Submitting routes for 3-step sign-off" : "Adjust at least one field to continue"}
+            {valid ? "Submitting routes to your manager for review" : "Write a rationale (min 30 characters) to continue"}
           </span>
           <div style={{display:"flex",gap:6}}>
             <button className="btn btn-sm" onClick={onClose}>Cancel</button>

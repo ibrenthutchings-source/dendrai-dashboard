@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS auth.users (
     must_change_pw  BOOLEAN      NOT NULL DEFAULT FALSE,
     password_hash   TEXT,
     sso_only        BOOLEAN      NOT NULL DEFAULT FALSE,
+    manager_id      BIGINT       REFERENCES auth.users(id),
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     last_login_at   TIMESTAMPTZ
 );
@@ -70,6 +71,10 @@ CREATE TABLE IF NOT EXISTS auth.sessions (
     ip_address  TEXT,
     user_agent  TEXT
 );
+-- Retrofit for auth.users created before manager_id existed — CREATE TABLE IF
+-- NOT EXISTS above never adds columns to an already-existing table.
+ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS manager_id BIGINT REFERENCES auth.users(id);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_user
     ON auth.sessions (user_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_cleanup
@@ -113,7 +118,7 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, username, email, display_name, role, is_active, "
-                    "must_change_pw, sso_only, last_login_at "
+                    "must_change_pw, sso_only, manager_id, last_login_at "
                     "FROM auth.users WHERE id = %s",
                     (user_id,),
                 )
@@ -121,6 +126,61 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
                 return _row_to_dict(cur, row) if row else None
     except Exception as exc:
         logger.warning("get_user_by_id error: %s", exc)
+        return None
+
+
+def list_active_users() -> list:
+    """All active accounts (id, username, display_name, role, manager_id) —
+    used to populate the manager picker and to resolve/display names for the
+    approval workflow without a cross-request round trip per user."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, username, display_name, role, manager_id "
+                    "FROM auth.users WHERE is_active = TRUE ORDER BY username"
+                )
+                return [_row_to_dict(cur, row) for row in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("list_active_users error: %s", exc)
+        return []
+
+
+def set_manager(user_id: int, manager_id: Optional[int]) -> bool:
+    """Self-service (or admin) assignment of a user's manager. manager_id=None clears it."""
+    if manager_id == user_id:
+        return False
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE auth.users SET manager_id = %s WHERE id = %s",
+                    (manager_id, user_id),
+                )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("set_manager error: %s", exc)
+        return False
+
+
+def get_manager_of(user_id: int) -> Optional[dict]:
+    """The resolved manager (id, username, display_name) for a user, or None if unset."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT m.id, m.username, m.display_name
+                    FROM auth.users u JOIN auth.users m ON m.id = u.manager_id
+                    WHERE u.id = %s AND m.is_active = TRUE
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                return _row_to_dict(cur, row) if row else None
+    except Exception as exc:
+        logger.warning("get_manager_of error: %s", exc)
         return None
 
 
