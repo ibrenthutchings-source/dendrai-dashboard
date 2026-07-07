@@ -383,19 +383,21 @@ CREATE TABLE IF NOT EXISTS risk_approval_signoffs (
 );
 
 CREATE TABLE IF NOT EXISTS objective_approvals (
-    id                      SERIAL PRIMARY KEY,
-    session_id              INT NOT NULL REFERENCES hitl_sessions(id),
-    obj_id                  VARCHAR(16) NOT NULL,
-    objective_text          TEXT,
-    status                  VARCHAR(16) NOT NULL,
-    adjusted_priority       VARCHAR(4),
-    adjusted_sprint         INT,
-    adjusted_hours          INT,
-    adjusted_linked_risks   TEXT[],
-    residual_risk_reduction NUMERIC,
-    rationale               TEXT,
-    adjusted_by             VARCHAR(64),
-    adjusted_at             TIMESTAMPTZ
+    id                       SERIAL PRIMARY KEY,
+    session_id               INT NOT NULL REFERENCES hitl_sessions(id),
+    obj_id                   VARCHAR(16) NOT NULL,
+    objective_text           TEXT,
+    status                   VARCHAR(16) NOT NULL,
+    adjusted_objective_text  TEXT,
+    adjusted_priority        VARCHAR(4),
+    adjusted_sprint          INT,
+    adjusted_hours           INT,
+    adjusted_linked_risks    TEXT[],
+    adjusted_controls        TEXT[],
+    residual_risk_reduction  NUMERIC,
+    rationale                TEXT,
+    adjusted_by              VARCHAR(64),
+    adjusted_at              TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS objective_approval_signoffs (
@@ -959,6 +961,8 @@ ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
 ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
 ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate3_status VARCHAR(16);
 ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate4_status VARCHAR(16);
+ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_objective_text TEXT;
+ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_controls TEXT[];
 
 -- forecasts.UNIQUE(run_id, metric, model, horizon_quarter) was added to the
 -- CREATE TABLE statement after some databases already had the table created
@@ -2293,10 +2297,10 @@ def save_objective_approvals(run_id: int, approvals: dict, persona: Optional[str
                         """
                         INSERT INTO objective_approvals
                             (session_id, obj_id, objective_text, status,
-                             adjusted_priority, adjusted_sprint, adjusted_hours,
-                             adjusted_linked_risks, residual_risk_reduction,
+                             adjusted_objective_text, adjusted_priority, adjusted_sprint, adjusted_hours,
+                             adjusted_linked_risks, adjusted_controls, residual_risk_reduction,
                              rationale, adjusted_by, adjusted_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                                 CASE WHEN %s IS NOT NULL
                                      THEN to_timestamp(%s / 1000.0) ELSE NULL END)
                         RETURNING id
@@ -2304,8 +2308,10 @@ def save_objective_approvals(run_id: int, approvals: dict, persona: Optional[str
                         (
                             session_id, obj_id, approval.get("objective_text"),
                             approval.get("status", "pending"),
+                            adj.get("objective"),
                             adj.get("priority"), adj.get("sprint"), adj.get("hours"),
                             adj.get("linked_risks") or adj.get("linked_risk_ids"),
+                            adj.get("controls"),
                             adj.get("residualRiskReduction") or adj.get("residual_risk_reduction"),
                             approval.get("rationale"), approval.get("adjustedBy"),
                             adj_at, adj_at,

@@ -393,7 +393,7 @@ function App() {
       ...prev,
       [id]: {
         status: "adjusted",
-        adjustments: { rag: payload.rag, score: payload.score, velocity: payload.velocity, ce: payload.ce },
+        adjustments: { name: payload.name, category: payload.category, rag: payload.rag, score: payload.score, velocity: payload.velocity, ce: payload.ce, _isNew: false },
         rationale: payload.rationale,
         adjustedBy: auditorName,
         adjustedAt: Date.now(),
@@ -447,11 +447,14 @@ function App() {
       [id]: {
         status: "adjusted",
         adjustments: {
+          objective: payload.objective,
           priority: payload.priority,
           sprint: payload.sprint,
           hours: payload.hours,
           linked_risks: payload.linked_risks,
+          controls: payload.controls,
           residualRiskReduction: payload.residualRiskReduction,
+          _isNew: false,
         },
         rationale: payload.rationale,
         adjustedBy: auditorName,
@@ -491,12 +494,13 @@ function App() {
     const newId = `OBJ-${String((output.s3?.objectives?.length || 0) + 1).padStart(2, "0")}`;
     const newObj = {
       id: newId,
-      objective: "New audit objective — click Adjust to define scope",
+      objective: "New audit objective — click Edit to define scope",
       priority: "P2",
-      linked_risk: output.s2?.risks?.[0]?.id || "R-01",
+      linked_risks: [],
       controls: [],
       hours: 40,
       sprint: 1,
+      _isNew: true,
     };
     setOutput(prev => ({
       ...prev,
@@ -504,7 +508,32 @@ function App() {
     }));
     setScopeApprovals(prev => ({ ...prev, [newId]: { status: "pending" } }));
     log(`Added new objective ${newId}`);
-  }, [output.s3?.objectives?.length, output.s2?.risks, log]);
+    setAdjustingObjId(newId);
+    setAdjustObjOpen(true);
+  }, [output.s3?.objectives?.length, log]);
+
+  const addRisk = useCallback(() => {
+    const risksNow = output.s2?.risks || [];
+    const newId = `R-${String(risksNow.length + 1).padStart(2, "0")}`;
+    const newRisk = {
+      id: newId,
+      name: "New risk — click Assess to score",
+      category: "Operational",
+      score: 1,
+      velocity: 0,
+      ce: "ADEQUATE",
+      rag: "G",
+      _isNew: true,
+    };
+    setOutput(prev => ({
+      ...prev,
+      s2: { ...(prev.s2 || {}), risks: [...(prev.s2?.risks || []), newRisk] },
+    }));
+    setRiskApprovals(prev => ({ ...prev, [newId]: { status: "pending" } }));
+    log(`Added new risk ${newId}`);
+    setAdjustingRiskId(newId);
+    setAdjustOpen(true);
+  }, [output.s2?.risks, log]);
 
   const approveGate = (n) => {
     if (mcpMode && runIdRef.current) {
@@ -1577,6 +1606,7 @@ function App() {
                 onApproveRisk={approveRisk}
                 onApproveAllRisks={approveAllRemainingRisks}
                 onSignoffRisk={signoffRisk}
+                onAddRisk={addRisk}
                 scopeApprovals={scopeApprovals}
                 onApproveObjective={approveObjective}
                 onOpenAdjustObjective={openAdjustObjective}

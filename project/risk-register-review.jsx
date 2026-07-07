@@ -71,6 +71,11 @@ async function _loadControlsFromApi() {
   } catch (_) {}
 }
 
+// MASTER_CONTROLS is mutated in place (length=0 + push above), so this window
+// reference stays live/in-sync for other screens (e.g. HITL Gate 2) that need
+// the shared control library without importing this module directly.
+Object.assign(window, { MASTER_CONTROLS, loadControlsFromApi: _loadControlsFromApi });
+
 async function _loadMatrixConfigFromApi() {
   try {
     const res = await fetch("/api/risk-register/matrix-config");

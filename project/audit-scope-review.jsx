@@ -71,7 +71,7 @@ function ScopeApprovalReview({
           </div>
           <div className="rar-title">Audit Scope · Per-Objective Review</div>
           <div className="rar-sub">
-            Approve each objective as-is, or adjust priority / hours / sprint with rationale.
+            Approve each objective as-is, or adjust priority / hours / fiscal quarter with rationale.
             Adjustments are routed for sign-off:
             <span className="rar-sub-chain">CAE → CFO → Audit Committee</span>.
           </div>
@@ -102,7 +102,7 @@ function ScopeApprovalReview({
           <div className="rar-th sar-th-ctrl">Control</div>
           <div className="rar-th sar-th-rr">Risk Red.</div>
           <div className="rar-th sar-th-num">Hrs</div>
-          <div className="rar-th sar-th-num">Sprint</div>
+          <div className="rar-th sar-th-num" title="Fiscal Quarter">FQ</div>
           <div className="rar-th sar-th-action">Disposition</div>
         </div>
         <div className="rar-tbody">
@@ -229,20 +229,29 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
       </div>
 
       <div className="rar-td sar-td-num">
-        <span className="mono" style={{color:"var(--ink-2)"}}>S{effSprint}</span>
+        <span className="mono" style={{color:"var(--ink-2)"}} title="Fiscal Quarter">Q{effSprint}</span>
         {isAdjusted && effSprint !== obj.sprint && (
-          <div className="rar-was mono">was S{obj.sprint}</div>
+          <div className="rar-was mono">was Q{obj.sprint}</div>
         )}
       </div>
 
       <div className="rar-td rar-td-action">
         {status === "pending" && (
-          <div className="rar-actions">
-            <button className="btn btn-sm rar-btn-approve" onClick={onApprove}>
-              <Icon name="check" size={10}/> Approve
-            </button>
-            <button className="btn btn-sm" onClick={onAdjust}>Adjust</button>
-          </div>
+          obj._isNew ? (
+            <div className="rar-actions">
+              <button className="btn btn-sm" onClick={onAdjust}>
+                <Icon name="edit" size={10}/> Define scope
+              </button>
+              <div className="mono" style={{fontSize: 9, color: "var(--amber-ink)"}}>New — must be defined</div>
+            </div>
+          ) : (
+            <div className="rar-actions">
+              <button className="btn btn-sm rar-btn-approve" onClick={onApprove}>
+                <Icon name="check" size={10}/> Approve
+              </button>
+              <button className="btn btn-sm" onClick={onAdjust}>Adjust</button>
+            </div>
+          )
         )}
         {status === "approved" && (
           <div className="rar-disposition rar-disposition-approved">
@@ -307,6 +316,7 @@ function ObjectiveRow({ obj, approval, linkedRiskCE, riskReduction, onSetRiskRed
 }
 
 function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, onSubmit }) {
+  const [objectiveText, setObjectiveText] = useState(obj?.objective || "");
   const [priority, setPriority] = useState(obj?.priority || "P2");
   const [sprint, setSprint] = useState(obj?.sprint ?? 1);
   const [hours, setHours] = useState(String(obj?.hours ?? 40));
@@ -316,18 +326,29 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
     if (obj?.linked_risk) return [obj.linked_risk];
     return [];
   });
-  const [residualReduction, setResidualReduction] = useState(obj?.residualRiskReduction ?? 0);
+  const [controlRefs, setControlRefs] = useState(() => obj?.controls || []);
+  const [residual, setResidual] = useState(String(obj?.residualRiskReduction ?? 0));
   const [aiState, setAiState] = useState({ loading: false, error: null, reco: null });
+  const [ctrlPickerOpen, setCtrlPickerOpen] = useState(false);
+  const [ctrlSearch, setCtrlSearch] = useState("");
+  const [ctrlCreateOpen, setCtrlCreateOpen] = useState(false);
+  const [newCtrl, setNewCtrl] = useState({ ref: "", name: "", framework: "", desc: "" });
+  const [ctrlCreateErr, setCtrlCreateErr] = useState("");
 
   useEffect(() => {
     if (open && obj) {
+      setObjectiveText(obj.objective || "");
       setPriority(obj.priority);
       setSprint(obj.sprint);
       setHours(String(obj.hours ?? 40));
       setRationale("");
       setLinkedRiskIds(obj.linked_risks?.length ? obj.linked_risks : obj.linked_risk ? [obj.linked_risk] : []);
-      setResidualReduction(obj.residualRiskReduction ?? 0);
+      setControlRefs(obj.controls || []);
+      setResidual(String(obj.residualRiskReduction ?? 0));
       setAiState({ loading: false, error: null, reco: null });
+      setCtrlPickerOpen(false);
+      setCtrlCreateOpen(false);
+      setCtrlSearch("");
     }
   }, [open, obj?.id]);
 
@@ -371,23 +392,63 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
     setLinkedRiskIds(prev => prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id]);
   };
 
-  const origLinkedRiskIds = obj.linked_risks?.length ? obj.linked_risks
-    : obj.linked_risk ? [obj.linked_risk] : [];
-  const origResidual = obj.residualRiskReduction ?? 0;
-
-  const riskIdsChanged = JSON.stringify([...linkedRiskIds].sort()) !== JSON.stringify([...origLinkedRiskIds].sort());
-  const changed = priority !== obj.priority || sprint !== obj.sprint
-    || (hoursValid && hoursNum !== obj.hours)
-    || riskIdsChanged
-    || residualReduction !== origResidual;
-  const valid = changed && rationale.trim().length >= 30 && hoursValid;
-
   const ragInk = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
   const primaryRisk = sortedRisks.find(r => linkedRiskIds.includes(r.id));
+  const maxResidual = primaryRisk ? primaryRisk.score : 5;
+
+  const residualNum = parseFloat(residual);
+  const residualValid = residual.trim() === "" || (!isNaN(residualNum) && residualNum >= 0 && residualNum <= maxResidual);
+  const residualReduction = residualValid && residual.trim() !== "" ? residualNum : 0;
   const residualScore = primaryRisk
     ? Math.max(0, parseFloat((primaryRisk.score - residualReduction).toFixed(1)))
     : null;
   const residualRag = residualScore == null ? null : residualScore >= 15 ? "R" : residualScore >= 9 ? "A" : "G";
+
+  const addControl = (ref) => setControlRefs(prev => prev.includes(ref) ? prev : [...prev, ref]);
+  const removeControl = (ref) => setControlRefs(prev => prev.filter(r => r !== ref));
+
+  const CTRL_BY_REF = Object.fromEntries((window.MASTER_CONTROLS || []).map(c => [c.ref, c]));
+  const addableControls = (window.MASTER_CONTROLS || []).filter(c =>
+    !controlRefs.includes(c.ref) &&
+    (ctrlSearch === "" || c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) || c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()))
+  );
+
+  async function handleCreateControl() {
+    const ref = newCtrl.ref.trim().toUpperCase();
+    if (!ref) { setCtrlCreateErr("Control reference is required."); return; }
+    if (CTRL_BY_REF[ref]) { setCtrlCreateErr(`${ref} already exists in the control library.`); return; }
+    if (!newCtrl.name.trim()) { setCtrlCreateErr("Control name is required."); return; }
+    const ctrl = {
+      ref, framework: newCtrl.framework.trim() || "Custom", name: newCtrl.name.trim(),
+      category: "Custom", domain: "Custom", description: newCtrl.desc.trim(), desc: newCtrl.desc.trim(),
+    };
+    try {
+      await fetch("/api/risk-register/controls", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ctrl),
+      });
+    } catch (_) {}
+    if (window.MASTER_CONTROLS) window.MASTER_CONTROLS.push(ctrl);
+    addControl(ref);
+    setCtrlCreateOpen(false);
+    setNewCtrl({ ref: "", name: "", framework: "", desc: "" });
+    setCtrlCreateErr("");
+  }
+
+  const origLinkedRiskIds = obj.linked_risks?.length ? obj.linked_risks
+    : obj.linked_risk ? [obj.linked_risk] : [];
+  const origResidual = obj.residualRiskReduction ?? 0;
+  const origControls = obj.controls || [];
+
+  const riskIdsChanged = JSON.stringify([...linkedRiskIds].sort()) !== JSON.stringify([...origLinkedRiskIds].sort());
+  const controlsChanged = JSON.stringify([...controlRefs].sort()) !== JSON.stringify([...origControls].sort());
+  const objectiveChanged = objectiveText.trim() !== (obj.objective || "").trim();
+  const changed = priority !== obj.priority || sprint !== obj.sprint
+    || (hoursValid && hoursNum !== obj.hours)
+    || riskIdsChanged
+    || controlsChanged
+    || objectiveChanged
+    || residualReduction !== origResidual;
+  const valid = changed && rationale.trim().length >= 30 && hoursValid && residualValid && objectiveText.trim().length > 0;
 
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
@@ -420,6 +481,18 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
           </div>
         )}
         <div className="modal-body">
+          <div className="ar-field" style={{marginBottom: 14}}>
+            <label className="ar-label">Objective</label>
+            <textarea value={objectiveText} onChange={e => setObjectiveText(e.target.value)}
+              className="fi-ta" rows={2} placeholder="Describe the audit objective…"
+              style={{minHeight: 50, width: "100%", boxSizing: "border-box", fontFamily: "inherit"}}/>
+            {obj._isNew ? (
+              <div className="ar-orig mono">New objective — name it and set scope below</div>
+            ) : (
+              <div className="ar-orig mono">Original: {obj.objective}</div>
+            )}
+          </div>
+
           <div className="ar-grid" style={{gridTemplateColumns:"1fr 1fr 1fr"}}>
             <div className="ar-field">
               <label className="ar-label">Priority</label>
@@ -433,14 +506,14 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
             </div>
 
             <div className="ar-field">
-              <label className="ar-label">Sprint</label>
+              <label className="ar-label">Fiscal Quarter</label>
               <div className="ar-ce-row">
-                {[1,2,3].map(v => (
+                {[1,2,3,4].map(v => (
                   <button key={v} className={`ar-ce-opt ${sprint === v ? "active" : ""}`}
-                    onClick={() => setSprint(v)}>S{v}</button>
+                    onClick={() => setSprint(v)}>Q{v}</button>
                 ))}
               </div>
-              <div className="ar-orig mono">AI scoped: S{obj.sprint}</div>
+              <div className="ar-orig mono">AI scoped: Q{obj.sprint}</div>
             </div>
 
             <div className="ar-field">
@@ -497,13 +570,18 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
           {/* Project Residual Risk */}
           <div className="ar-field" style={{marginBottom: 14}}>
             <label className="ar-label">
-              Project Residual Risk
-              <span className="mono ar-val" style={{marginLeft: 6, color: residualReduction > 0 ? "var(--green-ink)" : "var(--ink-3)"}}>
-                {residualReduction > 0 ? `−${residualReduction.toFixed(1)} pts` : "no reduction set"}
+              Project Risk Reduction
+              <span className="muted" style={{marginLeft: 6}}>
+                · max {maxResidual.toFixed(1)} pts (cannot exceed the linked risk's score)
               </span>
             </label>
-            <input type="range" min="0" max="5" step="0.5" value={residualReduction}
-              onChange={e => setResidualReduction(parseFloat(e.target.value))} className="ar-slider"/>
+            <input type="number" min="0" max={maxResidual} step="0.1" value={residual}
+              onChange={e => setResidual(e.target.value)}
+              className="fi-input" style={{fontFamily: "Geist Mono, monospace", fontSize: 13}}/>
+            <div className="ar-orig mono">
+              AI scoped: {origResidual.toFixed(1)} pts
+              {!residualValid && residual !== "" && <span style={{color:"var(--red-ink)", marginLeft:6}}>must be between 0 and {maxResidual.toFixed(1)}</span>}
+            </div>
             {primaryRisk ? (
               <div className="ar-residual-preview">
                 <span className="mono" style={{color: "var(--ink-3)"}}>
@@ -531,18 +609,69 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
           </div>
 
           <div className="ar-field" style={{marginBottom: 14}}>
-            <label className="ar-label">Controls in scope</label>
-            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-              {(obj.controls || []).map((c,i) => (
-                <span key={i} className="mono"
-                  style={{fontSize:10,padding:"2px 7px",border:"1px solid var(--line)",borderRadius:4,color:"var(--ink-2)"}}>
-                  {c}
-                </span>
-              ))}
-              {(obj.controls || []).length === 0 && (
+            <label className="ar-label">
+              Controls in scope
+              <span className="muted" style={{marginLeft: 6}}>· choose which controls this audit will test</span>
+            </label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:5, marginBottom: 6}}>
+              {controlRefs.map(ref => {
+                const ctrl = CTRL_BY_REF[ref];
+                return (
+                  <span key={ref} className="mono" style={{display:"flex", alignItems:"center", gap:4, fontSize:10,padding:"2px 4px 2px 7px",border:"1px solid var(--line)",borderRadius:4,color:"var(--ink-2)", background:"var(--surface-2, var(--surface))"}}>
+                    {ref}{ctrl && <span style={{color:"var(--ink-3)"}}>· {ctrl.name}</span>}
+                    <button type="button" onClick={() => removeControl(ref)}
+                      style={{border:"none", background:"transparent", cursor:"pointer", color:"var(--ink-3)", fontSize:11, lineHeight:1, padding:"0 2px"}}>×</button>
+                  </span>
+                );
+              })}
+              {controlRefs.length === 0 && (
                 <span className="mono" style={{fontSize:10.5,color:"var(--ink-3)"}}>None assigned</span>
               )}
             </div>
+            <div style={{display:"flex", gap:6}}>
+              <button type="button" className="btn btn-sm" style={{fontSize:10, padding:"2px 8px"}}
+                onClick={() => { setCtrlPickerOpen(p => !p); setCtrlCreateOpen(false); }}>+ Add</button>
+              <button type="button" className="btn btn-sm" style={{fontSize:10, padding:"2px 8px"}}
+                onClick={() => { setCtrlCreateOpen(p => !p); setCtrlPickerOpen(false); setCtrlCreateErr(""); }}
+                title="Create a brand-new control with a new reference number">+ New</button>
+            </div>
+            {ctrlPickerOpen && (
+              <div style={{marginTop:6, padding:8, background:"var(--surface-2, var(--surface))", border:"1px solid var(--line)", borderRadius:6, maxHeight:180, display:"flex", flexDirection:"column", gap:6}}>
+                <input value={ctrlSearch} onChange={e => setCtrlSearch(e.target.value)}
+                  placeholder="Search controls…" className="fi-input" style={{fontSize:10.5, padding:"3px 7px"}} autoFocus/>
+                <div style={{overflowY:"auto", maxHeight:130, display:"flex", flexDirection:"column", gap:2}}>
+                  {addableControls.slice(0,20).map(c => (
+                    <button key={c.ref} type="button"
+                      onClick={() => { addControl(c.ref); setCtrlPickerOpen(false); setCtrlSearch(""); }}
+                      style={{display:"flex", gap:6, padding:"4px 6px", border:"none", background:"transparent", cursor:"pointer", textAlign:"left", fontSize:10, borderRadius:3}}>
+                      <span className="mono" style={{fontWeight:600, color:"var(--acc-ink, var(--ink))", minWidth:46}}>{c.ref}</span>
+                      <span style={{color:"var(--ink)"}}>{c.name}</span>
+                      <span style={{marginLeft:"auto", fontSize:9, color:"var(--ink-3)"}}>{c.category}</span>
+                    </button>
+                  ))}
+                  {addableControls.length === 0 && <span className="mono" style={{fontSize:9.5, color:"var(--ink-3)", padding:4}}>No matches</span>}
+                </div>
+              </div>
+            )}
+            {ctrlCreateOpen && (
+              <div style={{marginTop:6, padding:10, background:"var(--surface-2, var(--surface))", border:"1px solid var(--acc-ink, var(--line))", borderRadius:6, display:"flex", flexDirection:"column", gap:7}}>
+                <div style={{display:"flex", gap:6}}>
+                  <input placeholder="Ref * e.g. AC-06" value={newCtrl.ref} onChange={e => setNewCtrl(p => ({...p, ref: e.target.value}))}
+                    className="fi-input" style={{flex:"0 0 100px", fontSize:10.5, padding:"3px 6px"}}/>
+                  <input placeholder="Framework" value={newCtrl.framework} onChange={e => setNewCtrl(p => ({...p, framework: e.target.value}))}
+                    className="fi-input" style={{flex:1, fontSize:10.5, padding:"3px 6px"}}/>
+                </div>
+                <input placeholder="Control name *" value={newCtrl.name} onChange={e => setNewCtrl(p => ({...p, name: e.target.value}))}
+                  className="fi-input" style={{fontSize:10.5, padding:"3px 6px"}}/>
+                <textarea placeholder="Description" value={newCtrl.desc} onChange={e => setNewCtrl(p => ({...p, desc: e.target.value}))}
+                  rows={2} className="fi-input" style={{fontSize:10.5, padding:"3px 6px", resize:"vertical", fontFamily:"inherit"}}/>
+                {ctrlCreateErr && <div className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>{ctrlCreateErr}</div>}
+                <div style={{display:"flex", gap:6}}>
+                  <button type="button" className="btn btn-sm btn-primary" style={{fontSize:10, padding:"2px 9px"}} onClick={handleCreateControl}>Create &amp; Assign</button>
+                  <button type="button" className="btn btn-sm" style={{fontSize:10, padding:"2px 9px"}} onClick={() => { setCtrlCreateOpen(false); setCtrlCreateErr(""); }}>Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="ar-rationale">
@@ -587,10 +716,12 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
             <button className="btn btn-sm" onClick={onClose}>Cancel</button>
             <button className="btn btn-sm btn-primary" disabled={!valid}
               onClick={() => onSubmit({
+                objective: objectiveText.trim(),
                 priority,
                 sprint,
                 hours: hoursValid ? hoursNum : obj.hours,
                 linked_risks: linkedRiskIds,
+                controls: controlRefs,
                 residualRiskReduction: residualReduction,
                 rationale: rationale.trim(),
               })}>
