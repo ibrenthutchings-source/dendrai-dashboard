@@ -1832,6 +1832,23 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 }
 
 /* ============================================================
+   SOX Gate S1 (accounts) / Gate S2 (processes) — column overrides on .rar
+   ============================================================ */
+.sxa .rar-thead,
+.sxa .rar-row {
+  grid-template-columns: minmax(180px, 1fr) 100px 90px 160px;
+}
+.sxp .rar-thead,
+.sxp .rar-row {
+  grid-template-columns: 90px minmax(180px, 1fr) 160px;
+}
+@media (max-width: 1100px) {
+  .sxa .rar-thead, .sxa .rar-row { grid-template-columns: minmax(140px, 1fr) 72px 140px; }
+  .sxa .rar-th:nth-child(2), .sxa .rar-row > .rar-td:nth-child(2) { display: none; }
+  .sxp .rar-thead, .sxp .rar-row { grid-template-columns: 64px minmax(140px, 1fr) 140px; }
+}
+
+/* ============================================================
    RSS Ingestion Panel
    ============================================================ */
 .rss-feed-grid {

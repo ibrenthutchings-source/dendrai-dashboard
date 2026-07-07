@@ -406,6 +406,69 @@ CREATE TABLE IF NOT EXISTS objective_approval_signoffs (
     signed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- SOX HITL Gate S1 — materiality basis approval (single item per session)
+CREATE TABLE IF NOT EXISTS sox_materiality_approvals (
+    id                       SERIAL PRIMARY KEY,
+    session_id               INT NOT NULL REFERENCES hitl_sessions(id),
+    status                   VARCHAR(16) NOT NULL,
+    adjusted_materiality_pct NUMERIC(5,3),
+    adjusted_performance_pct NUMERIC(5,3),
+    rationale                TEXT,
+    adjusted_by              VARCHAR(64),
+    adjusted_at              TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS sox_materiality_approval_signoffs (
+    id          SERIAL PRIMARY KEY,
+    approval_id INT        NOT NULL REFERENCES sox_materiality_approvals(id),
+    role        VARCHAR(8) NOT NULL,
+    signatory   VARCHAR(128),
+    signed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- SOX HITL Gate S1 — per-account significant-account scope approval
+CREATE TABLE IF NOT EXISTS sox_account_approvals (
+    id                SERIAL PRIMARY KEY,
+    session_id        INT NOT NULL REFERENCES hitl_sessions(id),
+    account_id        VARCHAR(64) NOT NULL,
+    account_name      VARCHAR(128),
+    status            VARCHAR(16) NOT NULL,
+    adjusted_in_scope BOOLEAN,
+    adjusted_priority VARCHAR(4),
+    rationale         TEXT,
+    adjusted_by       VARCHAR(64),
+    adjusted_at       TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS sox_account_approval_signoffs (
+    id          SERIAL PRIMARY KEY,
+    approval_id INT        NOT NULL REFERENCES sox_account_approvals(id),
+    role        VARCHAR(8) NOT NULL,
+    signatory   VARCHAR(128),
+    signed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- SOX HITL Gate S2 — per-process coverage approval
+CREATE TABLE IF NOT EXISTS sox_process_approvals (
+    id                      SERIAL PRIMARY KEY,
+    session_id              INT NOT NULL REFERENCES hitl_sessions(id),
+    process_id              VARCHAR(64) NOT NULL,
+    process_name            VARCHAR(128),
+    status                  VARCHAR(16) NOT NULL,
+    adjusted_coverage_level VARCHAR(8),
+    rationale               TEXT,
+    adjusted_by             VARCHAR(64),
+    adjusted_at             TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS sox_process_approval_signoffs (
+    id          SERIAL PRIMARY KEY,
+    approval_id INT        NOT NULL REFERENCES sox_process_approvals(id),
+    role        VARCHAR(8) NOT NULL,
+    signatory   VARCHAR(128),
+    signed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
     run_id                  INT         NOT NULL REFERENCES risk_loop_runs(id),
@@ -894,6 +957,8 @@ ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework  VARCHAR(128);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative          TEXT;
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
 ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
+ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate3_status VARCHAR(16);
+ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate4_status VARCHAR(16);
 
 -- forecasts.UNIQUE(run_id, metric, model, horizon_quarter) was added to the
 -- CREATE TABLE statement after some databases already had the table created
@@ -2259,6 +2324,161 @@ def save_objective_approvals(run_id: int, approvals: dict, persona: Optional[str
                             (approval_id, role, sig.get("who"), sig_at, sig_at),
                         )
     _run(_do)
+
+
+def save_sox_scope_approvals(
+    run_id: int,
+    materiality_approval: Optional[dict],
+    account_approvals: dict,
+    persona: Optional[str] = None,
+) -> None:
+    """Persist SOX HITL Gate S1 decisions: materiality basis + per-account scope."""
+    if not materiality_approval and not account_approvals:
+        return
+    def _do():
+        with _conn() as conn:
+            session_id = _ensure_hitl_session(conn, run_id, persona)
+            statuses = [materiality_approval.get("status", "pending")] if materiality_approval else []
+            statuses += [v.get("status", "pending") for v in account_approvals.values()]
+            gate3 = "approved" if statuses and all(s in ("approved", "adjusted", "signed") for s in statuses) else "partial"
+            with conn.cursor() as cur:
+                cur.execute("UPDATE hitl_sessions SET gate3_status = %s WHERE id = %s", (gate3, session_id))
+
+                if materiality_approval:
+                    adj = materiality_approval.get("adjustments") or {}
+                    adj_at = materiality_approval.get("adjustedAt")
+                    cur.execute(
+                        """
+                        INSERT INTO sox_materiality_approvals
+                            (session_id, status, adjusted_materiality_pct, adjusted_performance_pct,
+                             rationale, adjusted_by, adjusted_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,
+                                CASE WHEN %s IS NOT NULL
+                                     THEN to_timestamp(%s / 1000.0) ELSE NULL END)
+                        RETURNING id
+                        """,
+                        (
+                            session_id, materiality_approval.get("status", "pending"),
+                            adj.get("materiality_pct"), adj.get("performance_mat_pct"),
+                            materiality_approval.get("rationale"), materiality_approval.get("adjustedBy"),
+                            adj_at, adj_at,
+                        ),
+                    )
+                    approval_id = cur.fetchone()[0]
+                    for role, sig in (materiality_approval.get("signoffs") or {}).items():
+                        sig_at = sig.get("signedAt")
+                        cur.execute(
+                            """
+                            INSERT INTO sox_materiality_approval_signoffs (approval_id, role, signatory, signed_at)
+                            VALUES (%s, %s, %s,
+                                    CASE WHEN %s IS NOT NULL
+                                         THEN to_timestamp(%s / 1000.0) ELSE NOW() END)
+                            """,
+                            (approval_id, role, sig.get("who"), sig_at, sig_at),
+                        )
+
+                for account_id, approval in account_approvals.items():
+                    adj = approval.get("adjustments") or {}
+                    adj_at = approval.get("adjustedAt")
+                    cur.execute(
+                        """
+                        INSERT INTO sox_account_approvals
+                            (session_id, account_id, account_name, status,
+                             adjusted_in_scope, adjusted_priority, rationale, adjusted_by, adjusted_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,
+                                CASE WHEN %s IS NOT NULL
+                                     THEN to_timestamp(%s / 1000.0) ELSE NULL END)
+                        RETURNING id
+                        """,
+                        (
+                            session_id, account_id, approval.get("account_name"),
+                            approval.get("status", "pending"),
+                            adj.get("in_scope"), adj.get("priority"),
+                            approval.get("rationale"), approval.get("adjustedBy"),
+                            adj_at, adj_at,
+                        ),
+                    )
+                    approval_id = cur.fetchone()[0]
+                    for role, sig in (approval.get("signoffs") or {}).items():
+                        sig_at = sig.get("signedAt")
+                        cur.execute(
+                            """
+                            INSERT INTO sox_account_approval_signoffs (approval_id, role, signatory, signed_at)
+                            VALUES (%s, %s, %s,
+                                    CASE WHEN %s IS NOT NULL
+                                         THEN to_timestamp(%s / 1000.0) ELSE NOW() END)
+                            """,
+                            (approval_id, role, sig.get("who"), sig_at, sig_at),
+                        )
+    _run(_do)
+
+
+def save_sox_coverage_approvals(
+    run_id: int,
+    process_approvals: dict,
+    persona: Optional[str] = None,
+) -> None:
+    """Persist SOX HITL Gate S2 decisions: per-process coverage level."""
+    if not process_approvals:
+        return
+    def _do():
+        with _conn() as conn:
+            session_id = _ensure_hitl_session(conn, run_id, persona)
+            statuses = [v.get("status", "pending") for v in process_approvals.values()]
+            gate4 = "approved" if all(s in ("approved", "adjusted", "signed") for s in statuses) else "partial"
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE hitl_sessions SET gate4_status = %s, completed_at = NOW() WHERE id = %s",
+                    (gate4, session_id),
+                )
+                for process_id, approval in process_approvals.items():
+                    adj = approval.get("adjustments") or {}
+                    adj_at = approval.get("adjustedAt")
+                    cur.execute(
+                        """
+                        INSERT INTO sox_process_approvals
+                            (session_id, process_id, process_name, status,
+                             adjusted_coverage_level, rationale, adjusted_by, adjusted_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,
+                                CASE WHEN %s IS NOT NULL
+                                     THEN to_timestamp(%s / 1000.0) ELSE NULL END)
+                        RETURNING id
+                        """,
+                        (
+                            session_id, process_id, approval.get("process_name"),
+                            approval.get("status", "pending"),
+                            adj.get("coverage_level"),
+                            approval.get("rationale"), approval.get("adjustedBy"),
+                            adj_at, adj_at,
+                        ),
+                    )
+                    approval_id = cur.fetchone()[0]
+                    for role, sig in (approval.get("signoffs") or {}).items():
+                        sig_at = sig.get("signedAt")
+                        cur.execute(
+                            """
+                            INSERT INTO sox_process_approval_signoffs (approval_id, role, signatory, signed_at)
+                            VALUES (%s, %s, %s,
+                                    CASE WHEN %s IS NOT NULL
+                                         THEN to_timestamp(%s / 1000.0) ELSE NOW() END)
+                            """,
+                            (approval_id, role, sig.get("who"), sig_at, sig_at),
+                        )
+    _run(_do)
+
+
+def get_sox_hitl_gate_status(run_id: int) -> dict:
+    """Retrieve SOX Gate S1 (gate3) / Gate S2 (gate4) status for a run, if any."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT gate3_status, gate4_status FROM hitl_sessions WHERE run_id = %s",
+                    (run_id,),
+                )
+                row = cur.fetchone()
+                return {"gate3_status": row[0], "gate4_status": row[1]} if row else {}
+    return _run(_do) or {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

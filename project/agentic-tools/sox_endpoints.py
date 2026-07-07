@@ -17,6 +17,9 @@ Endpoints:
     POST /sox/accounts/{ticker}/{account_id}  Add/update detail or manual override for a significant account
     GET  /sox/processes/{ticker}              List process detail/overrides (geography, segments, notes, manual coverage)
     POST /sox/processes/{ticker}/{process_id} Add/update detail or manual override for a SOX process
+    POST /sox/hitl/scope-approvals            Gate S1 — materiality + per-account scope HITL decisions
+    POST /sox/hitl/coverage-approvals         Gate S2 — per-process coverage HITL decisions
+    GET  /sox/hitl/gate-status/{run_id}       Gate S1/S2 status for a run
     POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
     GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
     DELETE /sox/segments/{ticker}/{id}        Delete a geography/segment financial record
@@ -103,6 +106,19 @@ class PeerSegmentRequest(BaseModel):
     peer_name: Optional[str] = None
     fiscal_year: str
     segments: List[Dict[str, Any]]
+
+
+class SoxScopeApprovalsRequest(BaseModel):
+    run_id: int
+    materiality: Optional[Dict[str, Any]] = None
+    accounts: Dict[str, Any] = {}
+    persona: Optional[str] = None
+
+
+class SoxCoverageApprovalsRequest(BaseModel):
+    run_id: int
+    processes: Dict[str, Any] = {}
+    persona: Optional[str] = None
 
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
@@ -352,6 +368,43 @@ def upsert_sox_process_detail(ticker: str, process_id: str, req: SoxProcessDetai
     if not detail_id:
         raise HTTPException(status_code=500, detail="Failed to save process detail")
     return {"saved": True, "detail_id": detail_id, "ticker": ticker.upper(), "process_id": process_id}
+
+
+# ── HITL gate endpoints ─────────────────────────────────────────────────────────
+# Gate S1 (materiality + significant accounts) and Gate S2 (process coverage),
+# mirroring the Enterprise Risk pipeline's Gate 1 (risk approval) / Gate 2
+# (scope approval) — per-item Approve/Adjust with a CAE → CFO → Audit Committee
+# sign-off chain on adjustments. Persisted as an audit trail (no upsert/dedupe),
+# same as /loop/hitl/risk-approvals and /loop/hitl/scope-approvals.
+
+@router.post("/hitl/scope-approvals")
+def save_sox_scope_approvals(req: SoxScopeApprovalsRequest):
+    """Persist SOX HITL Gate S1 decisions (materiality basis + per-account scope)."""
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+    if not req.materiality and not req.accounts:
+        return {"saved": False, "reason": "no approvals provided"}
+    db.save_sox_scope_approvals(req.run_id, req.materiality, req.accounts, req.persona or None)
+    return {"saved": True, "run_id": req.run_id, "account_count": len(req.accounts)}
+
+
+@router.post("/hitl/coverage-approvals")
+def save_sox_coverage_approvals(req: SoxCoverageApprovalsRequest):
+    """Persist SOX HITL Gate S2 decisions (per-process coverage level)."""
+    if not db.is_available():
+        return {"saved": False, "reason": "database not configured"}
+    if not req.processes:
+        return {"saved": False, "reason": "no approvals provided"}
+    db.save_sox_coverage_approvals(req.run_id, req.processes, req.persona or None)
+    return {"saved": True, "run_id": req.run_id, "process_count": len(req.processes)}
+
+
+@router.get("/hitl/gate-status/{run_id}")
+def get_sox_hitl_gate_status(run_id: int):
+    """Retrieve SOX Gate S1 / Gate S2 status for a run (for restoring UI state on reload)."""
+    if not db.is_available():
+        return {"gate3_status": None, "gate4_status": None}
+    return db.get_sox_hitl_gate_status(run_id)
 
 
 # ── Segment endpoints ──────────────────────────────────────────────────────────
