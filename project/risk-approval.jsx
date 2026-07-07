@@ -316,7 +316,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 }
 
 // ----------- Adjust Risk Modal -----------
-function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, onSubmit }) {
+function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResult, onClose, onSubmit }) {
   const [name, setName] = useState(risk?.name || "");
   const [category, setCategory] = useState(risk?.category || "");
   const [rag, setRag] = useState(risk?.rag || "A");
@@ -366,6 +366,22 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
 
   if (!open || !risk) return null;
 
+  const frameworkRisks = window.FW_MOCK_RISKS || {};
+  const fwRiskByName = {};
+  Object.values(frameworkRisks).flat().forEach(r => { fwRiskByName[r.name] = r; });
+
+  const categoryOptions = [...new Set([
+    risk.category,
+    ...risks.map(r => r.category),
+    ...Object.values(frameworkRisks).flat().map(r => r.category),
+  ].filter(Boolean))].sort();
+
+  function handleNameSelect(newName) {
+    setName(newName);
+    const match = fwRiskByName[newName];
+    if (match) setCategory(match.category);
+  }
+
   const nameValid = name.trim().length > 0;
   const changed = rag !== risk.rag || score !== risk.score || velocity !== risk.velocity || ce !== risk.ce
     || name.trim() !== (risk.name || "") || category.trim() !== (risk.category || "");
@@ -405,18 +421,27 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
           <div className="ar-field" style={{marginBottom: 14, display: "flex", gap: 12}}>
             <div style={{flex: 2}}>
               <label className="ar-label">Risk Name</label>
-              <input type="text" value={name} onChange={e => setName(e.target.value)}
-                className="fi-input" placeholder="Describe the risk…"/>
+              <select value={name} onChange={e => handleNameSelect(e.target.value)} className="fi-input">
+                <optgroup label="Current">
+                  <option value={risk.name}>{risk.name}</option>
+                </optgroup>
+                {Object.entries(frameworkRisks).map(([fw, list]) => (
+                  <optgroup key={fw} label={fw}>
+                    {list.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+                  </optgroup>
+                ))}
+              </select>
               {risk._isNew ? (
-                <div className="ar-orig mono">New risk — name it and set a real score below</div>
+                <div className="ar-orig mono">New risk — pick a name and set a real score below</div>
               ) : (
                 <div className="ar-orig mono">Original: {risk.name}</div>
               )}
             </div>
             <div style={{flex: 1}}>
               <label className="ar-label">Category</label>
-              <input type="text" value={category} onChange={e => setCategory(e.target.value)}
-                className="fi-input" placeholder="e.g. Operational"/>
+              <select value={category} onChange={e => setCategory(e.target.value)} className="fi-input">
+                {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
             </div>
           </div>
 

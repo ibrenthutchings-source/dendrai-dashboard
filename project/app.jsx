@@ -1883,6 +1883,7 @@ function App() {
       <AdjustRiskModal
         open={adjustOpen}
         risk={(output.s2?.risks || []).find(r => r.id === adjustingRiskId)}
+        risks={output.s2?.risks || []}
         ticker={cfg.ticker}
         runId={runIdRef.current}
         narrativeResult={narrativeResult}
