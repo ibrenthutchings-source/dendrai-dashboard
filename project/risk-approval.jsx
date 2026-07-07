@@ -41,6 +41,7 @@ function RiskApprovalReview({
   onSignoff,
   onSubmit,
   onOverrideGate,
+  onAddRisk,
 }) {
   if (!risks || risks.length === 0) return null;
   const [expandedId, setExpandedId] = React.useState(null);
@@ -109,6 +110,11 @@ function RiskApprovalReview({
         <button className="btn btn-sm" onClick={onOverrideGate}>
           <Icon name="alert" size={11}/> Override entire gate
         </button>
+        {onAddRisk && (
+          <button className="btn btn-sm" onClick={onAddRisk}>
+            <Icon name="plus" size={11}/> Add Risk
+          </button>
+        )}
         <div className="rar-foot-spacer"/>
         <button className="btn btn-sm" onClick={onApproveAll} disabled={allResolved}>
           Approve all remaining ({total - decided - pendingSig})
@@ -204,14 +210,23 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
       <div className="rar-td rar-td-action">
         {status === "pending" && (
-          <div className="rar-actions">
-            <button className="btn btn-sm rar-btn-approve" onClick={onApprove}>
-              <Icon name="check" size={10}/> Approve
-            </button>
-            <button className="btn btn-sm" onClick={onAdjust}>
-              <Icon name="edit" size={10}/> Adjust
-            </button>
-          </div>
+          risk._isNew ? (
+            <div className="rar-actions">
+              <button className="btn btn-sm" onClick={onAdjust}>
+                <Icon name="edit" size={10}/> Assess risk
+              </button>
+              <div className="mono" style={{fontSize: 9, color: "var(--amber-ink)"}}>New — must be assessed</div>
+            </div>
+          ) : (
+            <div className="rar-actions">
+              <button className="btn btn-sm rar-btn-approve" onClick={onApprove}>
+                <Icon name="check" size={10}/> Approve
+              </button>
+              <button className="btn btn-sm" onClick={onAdjust}>
+                <Icon name="edit" size={10}/> Adjust
+              </button>
+            </div>
+          )
         )}
         {status === "approved" && (
           <div className="rar-disposition rar-disposition-approved">
@@ -302,6 +317,8 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
 // ----------- Adjust Risk Modal -----------
 function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, onSubmit }) {
+  const [name, setName] = useState(risk?.name || "");
+  const [category, setCategory] = useState(risk?.category || "");
   const [rag, setRag] = useState(risk?.rag || "A");
   const [score, setScore] = useState(risk?.score ?? 5);
   const [velocity, setVelocity] = useState(risk?.velocity ?? 0);
@@ -311,6 +328,8 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
 
   useEffect(() => {
     if (open && risk) {
+      setName(risk.name || "");
+      setCategory(risk.category || "");
       setRag(risk.rag);
       setScore(risk.score);
       setVelocity(risk.velocity);
@@ -347,8 +366,10 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
 
   if (!open || !risk) return null;
 
-  const changed = rag !== risk.rag || score !== risk.score || velocity !== risk.velocity || ce !== risk.ce;
-  const valid = changed && rationale.trim().length >= 30;
+  const nameValid = name.trim().length > 0;
+  const changed = rag !== risk.rag || score !== risk.score || velocity !== risk.velocity || ce !== risk.ce
+    || name.trim() !== (risk.name || "") || category.trim() !== (risk.category || "");
+  const valid = changed && rationale.trim().length >= 30 && nameValid;
 
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
@@ -381,6 +402,24 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
           </div>
         )}
         <div className="modal-body">
+          <div className="ar-field" style={{marginBottom: 14, display: "flex", gap: 12}}>
+            <div style={{flex: 2}}>
+              <label className="ar-label">Risk Name</label>
+              <input type="text" value={name} onChange={e => setName(e.target.value)}
+                className="fi-input" placeholder="Describe the risk…"/>
+              {risk._isNew ? (
+                <div className="ar-orig mono">New risk — name it and set a real score below</div>
+              ) : (
+                <div className="ar-orig mono">Original: {risk.name}</div>
+              )}
+            </div>
+            <div style={{flex: 1}}>
+              <label className="ar-label">Category</label>
+              <input type="text" value={category} onChange={e => setCategory(e.target.value)}
+                className="fi-input" placeholder="e.g. Operational"/>
+            </div>
+          </div>
+
           <div className="ar-grid">
             <div className="ar-field">
               <label className="ar-label">RAG Band</label>
@@ -473,7 +512,7 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
           <div style={{display: "flex", gap: 6}}>
             <button className="btn btn-sm" onClick={onClose}>Cancel</button>
             <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({ rag, score, velocity, ce, rationale: rationale.trim() })}>
+              onClick={() => onSubmit({ name: name.trim(), category: category.trim(), rag, score, velocity, ce, rationale: rationale.trim() })}>
               Submit Adjustment
             </button>
           </div>

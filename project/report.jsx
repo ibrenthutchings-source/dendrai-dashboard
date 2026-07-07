@@ -274,7 +274,7 @@ function ReportModal({ open, onClose, payload }) {
                         {a?.adjustments && (
                           <div style={{display:"grid", gap:3}}>
                             {a.adjustments.priority && <Row k="Priority" v={`${o.priority} → ${a.adjustments.priority}`}/>}
-                            {a.adjustments.sprint   && <Row k="Sprint"   v={`${o.sprint} → ${a.adjustments.sprint}`}/>}
+                            {a.adjustments.sprint   && <Row k="Fiscal Quarter"   v={`Q${o.sprint} → Q${a.adjustments.sprint}`}/>}
                             {a.adjustments.hours != null && <Row k="Hours" v={<span className="mono">{o.hours}h → <b>{a.adjustments.hours}h</b></span>}/>}
                           </div>
                         )}
@@ -322,7 +322,7 @@ function ReportModal({ open, onClose, payload }) {
                   <b style={{fontWeight: 500, fontSize: 13}}>{o.objective}</b>
                 </div>
                 <Row k="Linked Risk"      v={o.linked_risk}/>
-                <Row k="Sprint / Hours"   v={`${o.sprint} / ${o.hours}h`}/>
+                <Row k="Fiscal Qtr / Hours" v={`Q${o.sprint} / ${o.hours}h`}/>
                 <Row k="Controls to Test" v={o.controls.join(", ")}/>
                 <Row k="Rationale"        v={o.rationale}/>
               </div>
@@ -533,7 +533,7 @@ function RepSubhead({ children, style }) {
 const STAGE_META = [
   { id: "s1", name: "Signal Intake",                      desc: "10-K · peer filings · industry RSS · internal KRIs" },
   { id: "s2", name: "Risk Assessment + Velocity",         desc: "Continuous scoring · velocity delta · RAG matrix" },
-  { id: "s3", name: "Audit Scope Generator",              desc: "Risk-linked audit plan · sprint-ready workplan" },
+  { id: "s3", name: "Audit Scope Generator",              desc: "Risk-linked audit plan · fiscal-quarter-ready workplan" },
   { id: "s4", name: "Findings → Management Action Plans", desc: "Root cause · owner · due date · success criteria" },
   { id: "s5", name: "Closure Evidence + Risk Reduction",  desc: "Quantified risk reduction · MAP completion" },
   { id: "s6", name: "Loop Calibration + Re-feed",         desc: "Updated register · velocity recalibration · lessons" },
@@ -569,7 +569,7 @@ function stageSummary(id, out) {
       { l: "Objectives", v: objs.length },
       { l: "P1", v: p1 },
       { l: "Total hours", v: objs.reduce((a, o) => a + (o.hours || 0), 0) + "h" },
-    ], tasks: objs.map(o => `${o.id} [${o.priority}] · ${o.objective} — ${o.sprint} / ${o.hours}h`) };
+    ], tasks: objs.map(o => `${o.id} [${o.priority}] · ${o.objective} — Q${o.sprint} / ${o.hours}h`) };
   }
   if (id === "s4") {
     const maps = out.maps || [];

@@ -115,7 +115,7 @@ function ScopeGantt({ objectives, maps, sprintFilter }) {
       {sprints.map(({ sprint, items }) => (
         <React.Fragment key={sprint}>
           <div className="scope-gantt-sprint" style={{gridTemplateColumns: cols}}>
-            <div className="scope-gantt-sprint-lbl">Sprint {sprint}</div>
+            <div className="scope-gantt-sprint-lbl">Fiscal Quarter {sprint}</div>
             <div style={{gridColumn: `2 / span ${weeks}`}} className="scope-gantt-sprint-rule" />
           </div>
           {items.map(o => {
@@ -159,12 +159,12 @@ function AuditScopeScreen({ objectives, maps, risks, hasRun }) {
         <div>
           <div className="kicker">Execution · Audit Plan</div>
           <div className="panel-title mt-8">Audit Scope</div>
-          <div className="panel-sub">Risk-linked audit objectives, organized by sprint. Switch between board and timeline views.</div>
+          <div className="panel-sub">Risk-linked audit objectives, organized by fiscal quarter. Switch between board and timeline views.</div>
         </div>
         <div className="scope-toolbar">
           <select className="input scope-sprint-sel" value={sprintFilter} onChange={e => setSprintFilter(e.target.value)}>
-            <option value="all">All sprints</option>
-            {sprintIds.map(s => <option key={s} value={String(s)}>Sprint {s}</option>)}
+            <option value="all">All fiscal quarters</option>
+            {sprintIds.map(s => <option key={s} value={String(s)}>Fiscal Quarter {s}</option>)}
           </select>
           <div className="scope-view-toggle">
             <button className={"btn btn-sm" + (view === "gantt" ? " btn-primary" : " btn-ghost")} onClick={() => setView("gantt")}>
@@ -183,7 +183,7 @@ function AuditScopeScreen({ objectives, maps, risks, hasRun }) {
         <>
           <div className="scope-stats">
             <div className="scope-stat"><div className="v">{objs.length}</div><div className="l">Objectives</div></div>
-            <div className="scope-stat"><div className="v">{sprintIds.length}</div><div className="l">Sprints</div></div>
+            <div className="scope-stat"><div className="v">{sprintIds.length}</div><div className="l">Fiscal Quarters</div></div>
             <div className="scope-stat"><div className="v">{totalHours}</div><div className="l">Planned hours</div></div>
             <div className="scope-stat"><div className="v" style={{color:"var(--red-ink)"}}>{byPri.P1 || 0}</div><div className="l">P1 items</div></div>
           </div>

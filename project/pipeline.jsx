@@ -10,7 +10,7 @@ import { ScopeApprovalReview } from "./audit-scope-review.jsx";
 const STAGES = [
   { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · SEC 8-K · internal KRIs" },
   { id: "s2", name: "Risk Assessment + Velocity",          desc: "Continuous scoring · velocity delta · RAG matrix" },
-  { id: "s3", name: "Audit Scope Generator",               desc: "Risk-linked audit plan · sprint-ready workplan" },
+  { id: "s3", name: "Audit Scope Generator",               desc: "Risk-linked audit plan · fiscal-quarter-ready workplan" },
   { id: "s4", name: "Findings → Management Action Plans",  desc: "Root cause · owner · due date · success criteria" },
   { id: "s5", name: "Closure Evidence + Risk Reduction",   desc: "Quantified risk reduction · MAP completion" },
   { id: "s6", name: "Loop Calibration + Re-feed",          desc: "Updated register · velocity recalibration · lessons" },
@@ -23,7 +23,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     liveRssSignals, rssLastUpdated, rssRefreshing, rssRunProgress, rssFeeds,
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
-                    riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
+                    riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk, onAddRisk,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit,
                     narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "",
@@ -153,6 +153,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     onSignoff={onSignoffRisk}
                     onSubmit={() => onApprove(1)}
                     onOverrideGate={() => onOverride(1)}
+                    onAddRisk={onAddRisk}
                   />
                 ) : gateNum === 2 && gateState.g2 === "pending" ? (
                   <ScopeApprovalReview
@@ -595,8 +596,8 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
         detail: "Allocated proportionally to risk score and velocity",
       } : null,
       {
-        label: "Sprint-ready workplan built",
-        detail: "Objectives structured for sprint execution with defined scope, linked risks, and control coverage",
+        label: "Fiscal-quarter-ready workplan built",
+        detail: "Objectives structured for fiscal-quarter execution with defined scope, linked risks, and control coverage",
       },
       manual.length > 0 ? {
         label: `${manual.length} manual audit${manual.length !== 1 ? "s" : ""} incorporated`,
@@ -1529,7 +1530,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             </table>
           </div>
           <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginTop:6}}>
-            Forecast used by Stage 3 to prioritize sprint allocation · high-trajectory risks earn P1 objectives regardless of current RAG
+            Forecast used by Stage 3 to prioritize fiscal-quarter allocation · high-trajectory risks earn P1 objectives regardless of current RAG
           </div>
         </div>
       )}
@@ -1691,7 +1692,7 @@ function S3Body({ output, manualAudits = [], onAddAudit, onRemoveAudit, risks = 
       </div>
 
       <div className="stage-detail">
-        <h5>Sprint-ready objectives</h5>
+        <h5>Fiscal-quarter-ready objectives</h5>
         <ul>
           {objs.map(o => (
             <li key={o.id}>
