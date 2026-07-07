@@ -80,19 +80,35 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user
 CREATE INDEX IF NOT EXISTS idx_sessions_cleanup
     ON auth.sessions (expires_at) WHERE NOT revoked;
 
--- Per-role screen access matrix (Configuration > Workflow Admin > Screen Access).
--- A missing (role, screen_id) row means "allowed" — this is a blocklist, not an
--- allowlist, so newly added screens aren't silently hidden from existing roles.
--- The 'admin' role is never subject to this table (enforced in the endpoint,
--- not here) so an admin can never lock themselves out of the app.
+-- Retrofit: screen_permissions started out keyed by role; replaced with a
+-- per-user matrix (each account gets its own Read/Edit set, configured from
+-- Configuration > User Configuration > Screen Access). Drop the old
+-- role-keyed table so CREATE TABLE IF NOT EXISTS below can lay down the new
+-- shape — there's no meaningful data to preserve across that schema change.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'auth' AND table_name = 'screen_permissions' AND column_name = 'role'
+    ) THEN
+        DROP TABLE auth.screen_permissions;
+    END IF;
+END $$;
+
+-- Per-user screen access matrix. A missing (user_id, screen_id) row means
+-- "allowed" — this is a blocklist, not an allowlist, so newly added screens
+-- aren't silently hidden from existing accounts. Admins are never subject to
+-- this table (enforced in the endpoint, not here) so an admin can never lock
+-- themselves out of the app.
 CREATE TABLE IF NOT EXISTS auth.screen_permissions (
-    role        VARCHAR(32) NOT NULL,
+    user_id     BIGINT      NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     screen_id   VARCHAR(64) NOT NULL,
     can_read    BOOLEAN     NOT NULL DEFAULT TRUE,
     can_edit    BOOLEAN     NOT NULL DEFAULT TRUE,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (role, screen_id)
+    PRIMARY KEY (user_id, screen_id)
 );
+CREATE INDEX IF NOT EXISTS idx_screen_permissions_user ON auth.screen_permissions (user_id);
 """
 
 PW_HISTORY_LIMIT  = 3
@@ -531,18 +547,18 @@ def revoke_all_user_sessions(user_id: int) -> None:
         pass
 
 
-# ── Screen access permissions (per role) ────────────────────────────────────────
+# ── Screen access permissions (per user) ────────────────────────────────────────
 
-def get_screen_permissions(role: str) -> dict:
-    """{screen_id: {"can_read": bool, "can_edit": bool}} for the given role.
+def get_screen_permissions(user_id: int) -> dict:
+    """{screen_id: {"can_read": bool, "can_edit": bool}} for the given user.
     Screens with no row are intentionally absent — callers should treat a
     missing screen_id as allowed (see table comment in _AUTH_DDL)."""
     try:
         with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT screen_id, can_read, can_edit FROM auth.screen_permissions WHERE role = %s",
-                    (role,),
+                    "SELECT screen_id, can_read, can_edit FROM auth.screen_permissions WHERE user_id = %s",
+                    (user_id,),
                 )
                 return {r[0]: {"can_read": r[1], "can_edit": r[2]} for r in cur.fetchall()}
     except Exception as exc:
@@ -550,20 +566,20 @@ def get_screen_permissions(role: str) -> dict:
         return {}
 
 
-def set_screen_permissions(role: str, perms: list) -> bool:
-    """Replace the full permission set for a role. perms: list of
+def set_screen_permissions(user_id: int, perms: list) -> bool:
+    """Replace the full permission set for a user. perms: list of
     {"screen_id": str, "can_read": bool, "can_edit": bool}."""
     try:
         with db._conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM auth.screen_permissions WHERE role = %s", (role,))
+                cur.execute("DELETE FROM auth.screen_permissions WHERE user_id = %s", (user_id,))
                 for p in perms:
                     cur.execute(
                         """
-                        INSERT INTO auth.screen_permissions (role, screen_id, can_read, can_edit)
+                        INSERT INTO auth.screen_permissions (user_id, screen_id, can_read, can_edit)
                         VALUES (%s, %s, %s, %s)
                         """,
-                        (role, p["screen_id"], bool(p.get("can_read", True)), bool(p.get("can_edit", True))),
+                        (user_id, p["screen_id"], bool(p.get("can_read", True)), bool(p.get("can_edit", True))),
                     )
             conn.commit()
         return True

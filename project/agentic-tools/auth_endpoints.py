@@ -21,8 +21,8 @@ PUT  /auth/admin/users/{id}/role     Promote/demote a user, admin only
 PUT  /auth/admin/users/{id}/active   Activate/deactivate a user, admin only
 PUT  /auth/admin/users/{id}/password Set/reset a user's password (manual or generated), admin only
 DELETE /auth/admin/users/{id}        Permanently remove a user, admin only
-GET  /auth/admin/screen-permissions/{role}  Get a role's screen access matrix, admin only
-PUT  /auth/admin/screen-permissions/{role}  Replace a role's screen access matrix, admin only
+GET  /auth/admin/screen-permissions/{user_id}  Get a user's screen access matrix, admin only
+PUT  /auth/admin/screen-permissions/{user_id}  Replace a user's screen access matrix, admin only
 
 Dependencies (pip install):
     passlib[bcrypt]     password hashing
@@ -444,9 +444,9 @@ def logout(
 @router.get("/me", summary="Current authenticated user")
 def me(current_user: dict = Depends(get_current_user)):
     # Admins are never subject to the screen-permission matrix (never locked
-    # out); everyone else gets their role's saved matrix so the frontend can
+    # out); everyone else gets their own saved matrix so the frontend can
     # gate nav + screens without a second round trip on every load.
-    perms = None if current_user.get("role") == "admin" else auth_db.get_screen_permissions(current_user.get("role", "user"))
+    perms = None if current_user.get("role") == "admin" else auth_db.get_screen_permissions(current_user["id"])
     return {"user": {**current_user, "screen_permissions": perms}}
 
 
@@ -630,25 +630,31 @@ def admin_delete_user(user_id: int, current_user: dict = Depends(require_admin))
     return {"ok": True}
 
 
-# ── Screen access permissions (Configuration > Workflow Admin > Screen Access) ─
-# Per-role read/edit matrix. The 'admin' role is intentionally never editable
-# here — it always has full access, so an admin can never lock every admin out.
+# ── Screen access permissions (Configuration > User Configuration > Screen Access)
+# Per-user read/edit matrix. Admin accounts are intentionally never editable
+# here — they always have full access, so an admin can never lock every admin out.
 
-@router.get("/admin/screen-permissions/{role}", summary="Get a role's screen permissions (admin)")
-def admin_get_screen_permissions(role: str, current_user: dict = Depends(require_admin)):
-    if role == "admin":
-        raise HTTPException(status_code=400, detail="The admin role always has full access and has no configurable permissions")
-    return {"role": role, "permissions": auth_db.get_screen_permissions(role)}
+@router.get("/admin/screen-permissions/{user_id}", summary="Get a user's screen permissions (admin)")
+def admin_get_screen_permissions(user_id: int, current_user: dict = Depends(require_admin)):
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Admin accounts always have full access and have no configurable permissions")
+    return {"user_id": user_id, "permissions": auth_db.get_screen_permissions(user_id)}
 
 
-@router.put("/admin/screen-permissions/{role}", summary="Replace a role's screen permissions (admin)")
-def admin_set_screen_permissions(role: str, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
-    if role == "admin":
-        raise HTTPException(status_code=400, detail="The admin role always has full access and has no configurable permissions")
-    ok = auth_db.set_screen_permissions(role, [p.model_dump() for p in req.permissions])
+@router.put("/admin/screen-permissions/{user_id}", summary="Replace a user's screen permissions (admin)")
+def admin_set_screen_permissions(user_id: int, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Admin accounts always have full access and have no configurable permissions")
+    ok = auth_db.set_screen_permissions(user_id, [p.model_dump() for p in req.permissions])
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to save screen permissions")
-    return {"ok": True, "role": role, "permissions": auth_db.get_screen_permissions(role)}
+    return {"ok": True, "user_id": user_id, "permissions": auth_db.get_screen_permissions(user_id)}
 
 
 @router.post("/change-password", summary="Change own password")
