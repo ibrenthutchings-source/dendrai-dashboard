@@ -570,6 +570,232 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
 }
 
 
+// ── Geography / segment data manager (DB-backed, edit + save) ────────────────
+
+const SEGMENT_TYPE_LABELS = {
+  geography: "Geography", business_segment: "Business Segment", product_line: "Product Line",
+};
+const SEGMENT_TYPES = Object.entries(SEGMENT_TYPE_LABELS).map(([v, l]) => ({ value: v, label: l }));
+
+const EMPTY_SEGMENT_FORM = {
+  segment_name: "", segment_type: "geography",
+  revenue: "", revenue_pct: "", rev_growth_yoy_pct: "",
+  gross_profit: "", operating_income: "", net_income: "", assets: "",
+  gross_margin_pct: "", op_margin_pct: "", net_margin_pct: "",
+};
+
+function segFormToPayload(form) {
+  const num = v => (v === "" || v == null ? null : Number(v));
+  return {
+    segment_name: form.segment_name.trim(),
+    segment_type: form.segment_type,
+    revenue: num(form.revenue),
+    revenue_pct: num(form.revenue_pct),
+    rev_growth_yoy_pct: num(form.rev_growth_yoy_pct),
+    gross_profit: num(form.gross_profit),
+    operating_income: num(form.operating_income),
+    net_income: num(form.net_income),
+    assets: num(form.assets),
+    gross_margin_pct: num(form.gross_margin_pct),
+    op_margin_pct: num(form.op_margin_pct),
+    net_margin_pct: num(form.net_margin_pct),
+    source: "manual",
+  };
+}
+
+function segToForm(seg) {
+  const str = v => (v == null ? "" : String(v));
+  return {
+    segment_name: seg.segment_name || "", segment_type: seg.segment_type || "geography",
+    revenue: str(seg.revenue), revenue_pct: str(seg.revenue_pct), rev_growth_yoy_pct: str(seg.rev_growth_yoy_pct),
+    gross_profit: str(seg.gross_profit), operating_income: str(seg.operating_income),
+    net_income: str(seg.net_income), assets: str(seg.assets),
+    gross_margin_pct: str(seg.gross_margin_pct), op_margin_pct: str(seg.op_margin_pct), net_margin_pct: str(seg.net_margin_pct),
+  };
+}
+
+function SegmentFieldGrid({ form, setForm }) {
+  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
+  const inputStyle = {fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"};
+  return (
+    <>
+      <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
+        <input placeholder="Segment name *" value={form.segment_name} onChange={set("segment_name")}
+          style={{...inputStyle, flex: 2, minWidth: 140}}/>
+        <select value={form.segment_type} onChange={set("segment_type")} style={{...inputStyle, flex: 1, minWidth: 130}}>
+          {SEGMENT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+      </div>
+      <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
+        <input placeholder="Revenue $" value={form.revenue} onChange={set("revenue")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+        <input placeholder="Revenue % of total" value={form.revenue_pct} onChange={set("revenue_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+        <input placeholder="Rev. growth YoY %" value={form.rev_growth_yoy_pct} onChange={set("rev_growth_yoy_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+      </div>
+      <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
+        <input placeholder="Gross profit $" value={form.gross_profit} onChange={set("gross_profit")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+        <input placeholder="Operating income $" value={form.operating_income} onChange={set("operating_income")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+        <input placeholder="Net income $" value={form.net_income} onChange={set("net_income")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+        <input placeholder="Assets $" value={form.assets} onChange={set("assets")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+      </div>
+      <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
+        <input placeholder="Gross margin %" value={form.gross_margin_pct} onChange={set("gross_margin_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+        <input placeholder="Op. margin %" value={form.op_margin_pct} onChange={set("op_margin_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+        <input placeholder="Net margin %" value={form.net_margin_pct} onChange={set("net_margin_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+      </div>
+    </>
+  );
+}
+
+function SegmentsManager({ ticker, fiscalYear }) {
+  const [segments, setSegments] = React.useState([]);
+  const [loading, setLoading]   = React.useState(false);
+  const [error, setError]       = React.useState(null);
+  const [showForm, setShowForm] = React.useState(false);
+  const [addForm, setAddForm]   = React.useState(EMPTY_SEGMENT_FORM);
+  const [saving, setSaving]     = React.useState(false);
+  const [editingId, setEditingId] = React.useState(null);
+  const [editForm, setEditForm]   = React.useState(EMPTY_SEGMENT_FORM);
+
+  const reload = React.useCallback(async () => {
+    if (!ticker || !fiscalYear) return;
+    setLoading(true); setError(null);
+    try {
+      const r = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/${encodeURIComponent(fiscalYear)}`);
+      if (r.ok) {
+        const data = await r.json();
+        setSegments(data.segments || []);
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [ticker, fiscalYear]);
+
+  React.useEffect(() => { reload(); }, [reload]);
+
+  async function handleAdd() {
+    if (!addForm.segment_name.trim()) { setError("Segment name required"); return; }
+    setSaving(true); setError(null);
+    try {
+      const res = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segments: [segFormToPayload(addForm)], fiscal_year: fiscalYear }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setAddForm(EMPTY_SEGMENT_FORM);
+      setShowForm(false);
+      await reload();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSaveEdit(seg) {
+    setSaving(true); setError(null);
+    try {
+      const res = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segments: [segFormToPayload(editForm)], fiscal_year: fiscalYear }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setEditingId(null);
+      await reload();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(seg) {
+    if (!confirm(`Delete segment "${seg.segment_name}"?`)) return;
+    try {
+      await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/${seg.id}`, { method: "DELETE" });
+      await reload();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  return (
+    <div style={{background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "12px 16px", marginBottom: 12}}>
+      <div style={{display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10}}>
+        <SectionHead title="GEOGRAPHY & SEGMENT DATA" count={segments.length || null} countColor="var(--acc-soft)"/>
+        <button className="btn btn-sm" style={{fontSize: 10, padding: "3px 10px"}} onClick={() => setShowForm(s => !s)}>
+          <Icon name="plus" size={10}/> Add segment
+        </button>
+      </div>
+
+      {error && (
+        <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4, marginBottom: 10}}>{error}</div>
+      )}
+
+      {showForm && (
+        <div style={{background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", borderRadius: 6, padding: "12px 14px", marginBottom: 12}}>
+          <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 8}}>NEW SEGMENT · {fiscalYear}</div>
+          <SegmentFieldGrid form={addForm} setForm={setAddForm}/>
+          <div style={{display: "flex", gap: 8}}>
+            <button className="btn btn-sm approve" onClick={handleAdd} disabled={saving}>{saving ? "Saving…" : "Save segment"}</button>
+            <button className="btn btn-sm" onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {loading && <div style={{fontSize: 11, color: "var(--ink-4)", padding: "6px 0"}}>Loading…</div>}
+
+      {!loading && segments.length === 0 && !showForm && (
+        <div style={{fontSize: 11, color: "var(--ink-4)", padding: "8px 0"}}>
+          No geography or segment data on file for {fiscalYear}. Click "Add segment" to enter revenue and financial breakdowns.
+        </div>
+      )}
+
+      {segments.map(seg => {
+        const isEditing = editingId === seg.id;
+        return (
+          <div key={seg.id} style={{padding: "8px 0", borderBottom: "1px solid var(--line)"}}>
+            {!isEditing ? (
+              <div style={{display: "flex", alignItems: "center", gap: 8}}>
+                <span className="mono" style={{fontSize: 9, padding: "1px 6px", borderRadius: 4, background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", color: "var(--ink-4)"}}>
+                  {SEGMENT_TYPE_LABELS[seg.segment_type] || seg.segment_type}
+                </span>
+                <div style={{flex: 1, minWidth: 0}}>
+                  <span style={{fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{seg.segment_name}</span>
+                </div>
+                <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{fmtM(seg.revenue)}</span>
+                <span className="mono" style={{fontSize: 10, color: "var(--ink-4)", minWidth: 44, textAlign: "right"}}>{seg.revenue_pct != null ? `${seg.revenue_pct.toFixed(1)}%` : "—"}</span>
+                <button className="btn btn-sm" style={{padding: "2px 7px", fontSize: 9}}
+                  onClick={() => { setEditForm(segToForm(seg)); setEditingId(seg.id); }}>
+                  <Icon name="edit" size={9}/> Edit
+                </button>
+                <button className="btn btn-sm" style={{padding: "2px 7px", fontSize: 9, opacity: 0.7}}
+                  onClick={() => handleDelete(seg)}>Delete</button>
+              </div>
+            ) : (
+              <div style={{background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px"}}>
+                <SegmentFieldGrid form={editForm} setForm={setEditForm}/>
+                <div style={{display: "flex", gap: 8}}>
+                  <button className="btn btn-sm approve" onClick={() => handleSaveEdit(seg)} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                  <button className="btn btn-sm" onClick={() => setEditingId(null)}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div style={{marginTop: 10, fontSize: 9.5, color: "var(--ink-4)"}}>
+        Saved to the database immediately. Click "Rescope" above to recompute SOX materiality coverage below with this data.
+      </div>
+    </div>
+  );
+}
+
+
 // ── Segment coverage + SOX materiality scoring ────────────────────────────────
 
 function SegmentCoverage({ segments, scope }) {
@@ -578,8 +804,8 @@ function SegmentCoverage({ segments, scope }) {
       <div style={{background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "20px 16px", marginBottom: 12, textAlign: "center"}}>
         <div style={{fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 6}}>No segment data on file</div>
         <div style={{fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.6, maxWidth: 480, margin: "0 auto"}}>
-          Upload geographic and business-segment revenue data to enable per-segment SOX materiality scoring.
-          Use <span className="mono" style={{background: "var(--surface-2)", padding: "1px 5px", borderRadius: 3}}>POST /sox/segments/{"{ticker}"}</span> or the MCP upload tool.
+          Coverage decisions are computed from the geography &amp; segment data above.
+          Add segment data, then click "Rescope" to compute per-segment SOX materiality.
           Segments with revenue ≥ 15% of total are automatically flagged P1 (AS2201).
         </div>
       </div>
@@ -932,7 +1158,12 @@ function SoxScopePanel({
                 onRemove={id => setLocalSystems(prev => prev.filter(s => s.system_id !== id && s.id !== id))}
               />
             )}
-            {activeTab === "segments"  && <SegmentCoverage segments={displayScope.segments_coverage || []} scope={displayScope}/>}
+            {activeTab === "segments"  && (
+              <>
+                <SegmentsManager ticker={ticker || ""} fiscalYear={displayScope.fiscal_year}/>
+                <SegmentCoverage segments={displayScope.segments_coverage || []} scope={displayScope}/>
+              </>
+            )}
           </div>
         </>
       )}
