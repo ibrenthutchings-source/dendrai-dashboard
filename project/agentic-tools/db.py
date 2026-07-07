@@ -478,6 +478,7 @@ CREATE TABLE IF NOT EXISTS audit_objectives (
     objective_text          TEXT        NOT NULL,
     priority                VARCHAR(4),
     linked_risk_ref         VARCHAR(16),
+    linked_risks            TEXT[],
     controls                TEXT[],
     hours                   INT,
     sprint                  INT,
@@ -963,6 +964,7 @@ ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate3_status VARCHAR(16);
 ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate4_status VARCHAR(16);
 ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_objective_text TEXT;
 ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_controls TEXT[];
+ALTER TABLE audit_objectives ADD COLUMN IF NOT EXISTS linked_risks TEXT[];
 
 -- forecasts.UNIQUE(run_id, metric, model, horizon_quarter) was added to the
 -- CREATE TABLE statement after some databases already had the table created
