@@ -1,6 +1,6 @@
 /* ============================================================
    User Configuration — add / change / remove local accounts,
-   plus the per-role Screen Access permission matrix, as two tabs
+   plus a per-user Screen Access permission matrix, as two tabs
    of one admin screen.
 
    Users tab: passwords can be set manually (validated against the
@@ -13,15 +13,16 @@
    Role / manager / active-status toggles live inline in the table;
    Add/Edit modals cover profile fields and password reset.
 
-   Screen Access tab: lists every screen in the left nav, grouped by
-   section exactly as the nav renders it. Checking/unchecking a
-   section's Read or Edit box toggles every screen in that section;
-   each screen can also be toggled individually. Applies to the
-   'user' role only — 'admin' always has full access so an admin can
-   never lock every admin out (see auth_endpoints.py require_admin).
-   Saved to auth.screen_permissions (auth_db.py). A screen with no
-   saved row is allowed by default, so screens added after this was
-   last saved aren't silently hidden from existing accounts.
+   Screen Access tab: pick a user, then set Read/Edit per screen,
+   grouped by nav section exactly as the nav renders it. Checking/
+   unchecking a section's Read or Edit box toggles every screen in
+   that section; each screen can also be toggled individually. Every
+   non-admin user gets their own independent matrix — 'admin' accounts
+   always have full access and aren't listed, so an admin can never
+   lock every admin out (see auth_endpoints.py require_admin). Saved
+   to auth.screen_permissions, keyed by user_id (auth_db.py). A screen
+   with no saved row for that user is allowed by default, so screens
+   added after this was last saved aren't silently hidden.
    ============================================================ */
 
 const PW_RULES = [
