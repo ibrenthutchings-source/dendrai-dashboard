@@ -17,8 +17,8 @@ function ReportModal({ open, onClose, payload }) {
     stageState = {}, stageOutput = {},
   } = payload;
 
-  const adjRisks = risks.filter(r => riskApprovals?.[r.id]?.status === "adjusted" || riskApprovals?.[r.id]?.status === "signed");
-  const adjObjs  = objectives.filter(o => scopeApprovals?.[o.id]?.status === "adjusted" || scopeApprovals?.[o.id]?.status === "signed");
+  const adjRisks = risks.filter(r => riskApprovals?.[r.id]?.adjustments && riskApprovals?.[r.id]?.status !== "pending");
+  const adjObjs  = objectives.filter(o => scopeApprovals?.[o.id]?.adjustments && scopeApprovals?.[o.id]?.status !== "pending");
 
   // #4 — Generate a board-ready narrative audit report with Claude.
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiAuditReport;
