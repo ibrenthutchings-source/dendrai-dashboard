@@ -142,8 +142,8 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
   const breachesAppetite = effScore >= threshold;
 
   return (
-    <div className={`rar-row rar-row-${status}`}>
-      <div className="rar-td rar-td-name" onClick={onToggle} style={{cursor: "pointer", userSelect: "none"}}>
+    <div className={`rar-row rar-row-${status}`} onClick={onToggle} style={{cursor: "pointer", userSelect: "none"}}>
+      <div className="rar-td rar-td-name">
         <div className="rar-name-head">
           <RAGChip rag={effRag}>{effRag}</RAGChip>
           {isAdjusted && effRag !== risk.rag && (
@@ -184,7 +184,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
                 <button key={ch}
                   className={"rar-apt-btn" + (isActive ? " active" : "")}
                   style={isActive ? {background:softs[ch], color:colors[ch], borderColor:colors[ch]} : {}}
-                  onClick={() => onSetPerRiskLevel && onSetPerRiskLevel(lvl)}
+                  onClick={(e) => { e.stopPropagation(); onSetPerRiskLevel && onSetPerRiskLevel(lvl); }}
                   title={`Set ${r.id} appetite to ${lvl}`}>
                   {ch}
                 </button>
@@ -212,17 +212,17 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
         {status === "pending" && (
           risk._isNew ? (
             <div className="rar-actions">
-              <button className="btn btn-sm" onClick={onAdjust}>
+              <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); onAdjust(); }}>
                 <Icon name="edit" size={10}/> Assess risk
               </button>
               <div className="mono" style={{fontSize: 9, color: "var(--amber-ink)"}}>New — must be assessed</div>
             </div>
           ) : (
             <div className="rar-actions">
-              <button className="btn btn-sm rar-btn-approve" onClick={onApprove}>
+              <button className="btn btn-sm rar-btn-approve" onClick={(e) => { e.stopPropagation(); onApprove(); }}>
                 <Icon name="check" size={10}/> Approve
               </button>
-              <button className="btn btn-sm" onClick={onAdjust}>
+              <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); onAdjust(); }}>
                 <Icon name="edit" size={10}/> Adjust
               </button>
             </div>
@@ -297,7 +297,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
                           <span className="mono">{new Date(sig.signedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</span>
                         </div>
                       ) : canSign ? (
-                        <button className="btn btn-sm rar-sig-btn" onClick={() => onSignoff(s.id)}>
+                        <button className="btn btn-sm rar-sig-btn" onClick={(e) => { e.stopPropagation(); onSignoff(s.id); }}>
                           Sign as {s.role}
                         </button>
                       ) : (
@@ -383,15 +383,14 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
   }
 
   const nameValid = name.trim().length > 0;
-  // aiState.reco counts as "changed" on its own: the AI may recommend keeping the
-  // current rag/score/velocity/ce (i.e. no numeric delta), but its rationale is
-  // still a disposition the auditor is choosing to submit and route for sign-off —
-  // without this, accepting an AI "no change needed" recommendation could never
-  // enable Submit even with a full rationale filled in.
+  // Tracked for the "was X" diff indicators below, not required to submit — a
+  // written rationale on its own is sufficient grounds for Adjust (an auditor may
+  // want to formally document/reaffirm a risk's disposition without moving its
+  // score, distinct from a quick "Approve as scored").
   const changed = rag !== risk.rag || score !== risk.score || velocity !== risk.velocity || ce !== risk.ce
     || name.trim() !== (risk.name || "") || category.trim() !== (risk.category || "")
     || !!aiState.reco;
-  const valid = changed && rationale.trim().length >= 30 && nameValid;
+  const valid = rationale.trim().length >= 30 && nameValid;
 
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
