@@ -11,6 +11,7 @@ const NAV_SECTIONS = [
       // right-hand Live Register rail on the Pipeline screen (post-run).
       { id: "pipeline", icon: "flow",      l: "Assess Enterprise Risk" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
+      { id: "scenarioanalysis", icon: "compass", l: "Scenario Analysis" },
       { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"},
       { id: "rrreview",   icon: "list",     l: "Risks & Controls Register" }
      // { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" }
