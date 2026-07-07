@@ -44,9 +44,10 @@ const NAV_SECTIONS = [
   {
     label: "Configuration",
     items: [
-      { id: "config",    icon: "gear",   l: "Setup" },
-      { id: "uboconfig", icon: "shield", l: "UBO Configuration" },
-      { id: "admin",     icon: "gear",   l: "Workflow Admin", adminOnly: true },
+      { id: "config",     icon: "gear",   l: "Setup" },
+      { id: "uboconfig",  icon: "shield", l: "UBO Configuration" },
+      { id: "userconfig", icon: "user",   l: "User Configuration", adminOnly: true },
+      { id: "admin",      icon: "gear",   l: "Screen Access", adminOnly: true },
     ],
   }
 ];
@@ -65,13 +66,23 @@ function NavIcon({ name, size = 14 }) {
   return <Icon name={name} size={size}/>;
 }
 
-function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false }) {
+function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null }) {
   const [collapsed, setCollapsed] = React.useState({});
 
   function isActive(item) {
     if (item.id !== activeScreen) return false;
     if (item.govTab) return item.govTab === activeGovTab;
     return true;
+  }
+
+  // Admins always see everything; adminOnly items are hidden from everyone
+  // else regardless of the screen-permission matrix. Otherwise a missing
+  // entry in screenPerms means "allowed" — see auth.screen_permissions.
+  function isVisible(item) {
+    if (item.adminOnly) return isAdmin;
+    if (isAdmin || !screenPerms) return true;
+    const p = screenPerms[item.id];
+    return !p || p.can_read !== false;
   }
 
   function toggleSection(label) {
@@ -86,7 +97,7 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
       </div>
 
       <div className="lnav-scroll">
-        {NAV_SECTIONS.map(section => {
+        {NAV_SECTIONS.filter(section => section.items.some(isVisible)).map(section => {
           const isCollapsed = !!collapsed[section.label];
           return (
             <div className="lnav-section" key={section.label}>
@@ -102,7 +113,7 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
                   <path d="M2 4l3 3 3-3"/>
                 </svg>
               </button>
-              {!isCollapsed && section.items.filter(item => !item.adminOnly || isAdmin).map(item => {
+              {!isCollapsed && section.items.filter(isVisible).map(item => {
                 const active = isActive(item);
                 const count = item.countKey ? counts[item.countKey] : 0;
                 const pulse = item.pulseKey ? counts[item.pulseKey] : false;

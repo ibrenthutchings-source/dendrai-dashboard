@@ -79,6 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user
     ON auth.sessions (user_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_cleanup
     ON auth.sessions (expires_at) WHERE NOT revoked;
+
+-- Per-role screen access matrix (Configuration > Workflow Admin > Screen Access).
+-- A missing (role, screen_id) row means "allowed" — this is a blocklist, not an
+-- allowlist, so newly added screens aren't silently hidden from existing roles.
+-- The 'admin' role is never subject to this table (enforced in the endpoint,
+-- not here) so an admin can never lock themselves out of the app.
+CREATE TABLE IF NOT EXISTS auth.screen_permissions (
+    role        VARCHAR(32) NOT NULL,
+    screen_id   VARCHAR(64) NOT NULL,
+    can_read    BOOLEAN     NOT NULL DEFAULT TRUE,
+    can_edit    BOOLEAN     NOT NULL DEFAULT TRUE,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (role, screen_id)
+);
 """
 
 PW_HISTORY_LIMIT  = 3
@@ -186,6 +200,66 @@ def set_active(user_id: int, is_active: bool) -> bool:
         return True
     except Exception as exc:
         logger.warning("set_active error: %s", exc)
+        return False
+
+
+def update_profile(user_id: int, email: Optional[str], display_name: Optional[str]) -> bool:
+    """Full replace of the admin-editable profile fields (not password/role/manager)."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE auth.users SET email = %s, display_name = %s WHERE id = %s",
+                    (email, display_name, user_id),
+                )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("update_profile error: %s", exc)
+        return False
+
+
+def set_must_change_pw(user_id: int, must_change: bool) -> None:
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE auth.users SET must_change_pw = %s WHERE id = %s",
+                    (must_change, user_id),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def add_password_history(user_id: int, pw_hash: str) -> None:
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO auth.password_history (user_id, hash) VALUES (%s, %s)",
+                    (user_id, pw_hash),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def delete_user(user_id: int) -> bool:
+    """Hard-delete a user. Direct reports have manager_id cleared first — the
+    self-referencing FK has no ON DELETE behavior and would otherwise block
+    the delete. Sessions/password history/SSO identities cascade. Historical
+    approval_tasks rows keep the numeric id in their soft (non-FK) prepared_by/
+    manager_id/reviewed_by columns, so the audit trail survives the delete."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE auth.users SET manager_id = NULL WHERE manager_id = %s", (user_id,))
+                cur.execute("DELETE FROM auth.users WHERE id = %s", (user_id,))
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("delete_user error: %s", exc)
         return False
 
 
@@ -455,6 +529,47 @@ def revoke_all_user_sessions(user_id: int) -> None:
             conn.commit()
     except Exception:
         pass
+
+
+# ── Screen access permissions (per role) ────────────────────────────────────────
+
+def get_screen_permissions(role: str) -> dict:
+    """{screen_id: {"can_read": bool, "can_edit": bool}} for the given role.
+    Screens with no row are intentionally absent — callers should treat a
+    missing screen_id as allowed (see table comment in _AUTH_DDL)."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT screen_id, can_read, can_edit FROM auth.screen_permissions WHERE role = %s",
+                    (role,),
+                )
+                return {r[0]: {"can_read": r[1], "can_edit": r[2]} for r in cur.fetchall()}
+    except Exception as exc:
+        logger.warning("get_screen_permissions error: %s", exc)
+        return {}
+
+
+def set_screen_permissions(role: str, perms: list) -> bool:
+    """Replace the full permission set for a role. perms: list of
+    {"screen_id": str, "can_read": bool, "can_edit": bool}."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM auth.screen_permissions WHERE role = %s", (role,))
+                for p in perms:
+                    cur.execute(
+                        """
+                        INSERT INTO auth.screen_permissions (role, screen_id, can_read, can_edit)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (role, p["screen_id"], bool(p.get("can_read", True)), bool(p.get("can_edit", True))),
+                    )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("set_screen_permissions error: %s", exc)
+        return False
 
 
 # ── Seed default users ────────────────────────────────────────────────────────

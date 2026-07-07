@@ -137,6 +137,45 @@ function Empty({ children, icon = "—" }) {
   );
 }
 
+// ---- Screen access gate — enforces the per-role Read/Edit matrix configured
+// in Configuration > Screen Access (admin-config.jsx / auth.screen_permissions).
+// Admins always bypass it. A screen with no saved row is allowed by default.
+// Read=false hides the screen entirely; Edit=false renders it but disables
+// every form control inside via a native <fieldset disabled> (backed up by a
+// pointer-events overlay for non-form interactive elements).
+function ScreenAccessGate({ screenId, children }) {
+  const auth = window.useAuth ? window.useAuth() : null;
+  if (!auth?.user || auth.user.role === "admin") return children;
+
+  const p = (auth.user.screen_permissions || {})[screenId];
+  const canRead = !p || p.can_read !== false;
+  const canEdit = !p || p.can_edit !== false;
+
+  if (!canRead) {
+    return (
+      <div className="panel active">
+        <Empty>You don't have access to this screen. Contact an administrator if this seems wrong.</Empty>
+      </div>
+    );
+  }
+  if (!canEdit) {
+    return (
+      <div style={{ position: "relative" }}>
+        <div className="mono" style={{
+          fontSize: 10, padding: "5px 12px", letterSpacing: "0.04em",
+          background: "var(--amber-soft)", color: "var(--amber-ink)", borderBottom: "1px solid var(--line)",
+        }}>
+          VIEW ONLY — your role doesn't have edit access to this screen
+        </div>
+        <fieldset disabled style={{ border: 0, padding: 0, margin: 0, pointerEvents: "none", opacity: 0.92 }}>
+          {children}
+        </fieldset>
+      </div>
+    );
+  }
+  return children;
+}
+
 // ---- Section heading ----
 function SectionLabel({ children, right }) {
   return (
@@ -196,4 +235,5 @@ Object.assign(window, {
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,
   Empty, SectionLabel, BBTermHeader,
+  ScreenAccessGate,
 });
