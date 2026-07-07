@@ -264,6 +264,24 @@ window.MCP = (function () {
     return _getSavedOrNull(`/audit-scope/${encodeURIComponent(ticker)}`);
   }
 
+  // ── Approval workflow (real 2-stage preparer -> manager HITL review) ────────
+  // Session-cookie authenticated (proxied at /approvals/, not /api/mcp/) —
+  // identity is always resolved server-side from the login session, never
+  // sent by the client. See approvals_endpoints.py.
+
+  async function prepareApprovalTask({ runId, gateType, itemRef, itemLabel, disposition, adjustments, rationale }) {
+    const res = await fetch('/approvals/prepare', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        run_id: runId, gate_type: gateType, item_ref: itemRef, item_label: itemLabel,
+        disposition, adjustments, rationale,
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json(); // { saved, task }
+  }
+
   // ── Item 1A enrichment ──────────────────────────────────────────────────────
 
   // Category keywords used to match filing paragraphs to risk register entries.
@@ -582,6 +600,7 @@ window.MCP = (function () {
     fetchSavedProxyData,
     fetchSavedPeerBenchmarks,
     fetchSavedAuditScope,
+    prepareApprovalTask,
     enrichRisksFromFactors,
     map8kToCemEvents,
     // AI-augmented (#1–#4b)

@@ -23,8 +23,8 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     liveRssSignals, rssLastUpdated, rssRefreshing, rssRunProgress, rssFeeds,
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
-                    riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk, onAddRisk,
-                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
+                    riskApprovals, onApproveRisk, onApproveAllRisks, onAddRisk,
+                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit,
                     narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "",
                     liveMode = false, fredSeries = null, industry = "",
@@ -150,7 +150,6 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     onApproveRisk={onApproveRisk}
                     onOpenAdjust={onOpenAdjustRisk}
                     onApproveAll={onApproveAllRisks}
-                    onSignoff={onSignoffRisk}
                     onSubmit={() => onApprove(1)}
                     onOverrideGate={() => onOverride(1)}
                     onAddRisk={onAddRisk}
@@ -163,7 +162,6 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     onApproveObjective={onApproveObjective}
                     onOpenAdjust={onOpenAdjustObjective}
                     onApproveAll={onApproveAllObjectives}
-                    onSignoff={onSignoffObjective}
                     onSubmit={() => onApprove(2)}
                     onOverrideGate={() => onOverride(2)}
                     onAddObjective={onAddObjective}
