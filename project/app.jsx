@@ -1798,6 +1798,20 @@ function App() {
           </div>
           )}
 
+          {/* ---- Scenario Analysis (VaR/CVaR, sensitivity, stress, liquidity, EWI) ---- */}
+          {activeScreen === "scenarioanalysis" && (
+          <div className="panel active">
+            <ScenarioAnalysisScreen
+              ticker={cfg.ticker}
+              hasRun={hasRun}
+              varCvar={profile.varCvar}
+              sensitivity={profile.sensitivity}
+              multiFactorStress={profile.multiFactorStress}
+              liquidityRunway={profile.liquidityRunway}
+              earlyWarning={profile.earlyWarning} />
+          </div>
+          )}
+
           {/* ---- SOX Scope ---- */}
           {activeScreen === "sox" && (
           <div className="panel active" style={{overflow: "auto"}}>

@@ -1,0 +1,390 @@
+/* ============================================================
+   Scenario Analysis — quantitative risk tooling
+   Five tabs: VaR/CVaR, Sensitivity/Tornado, Multi-Factor Stress Test,
+   Liquidity/Covenant Runway, Composite Early-Warning Indicator.
+   Each tab pairs an interactive Recharts visualization with an
+   assumptions/methodology block. Data is computed client-side in
+   risk-engine.js (buildVarCvar, buildSensitivity, buildMultiFactorStress,
+   buildLiquidityRunway, buildEarlyWarningIndicator) and passed in as props.
+   ============================================================ */
+
+import {
+  BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
+  Cell,
+} from 'recharts';
+
+const SCEN_TABS = [
+  { id: "var",         l: "VaR / CVaR" },
+  { id: "sensitivity", l: "Sensitivity / Tornado" },
+  { id: "stress",      l: "Multi-Factor Stress Test" },
+  { id: "liquidity",   l: "Liquidity / Covenant Runway" },
+  { id: "ewi",         l: "Early-Warning Indicator" },
+];
+
+function saFmtM(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1000) return `$${(v / 1000).toFixed(1)}B`;
+  return `$${Math.round(v)}M`;
+}
+
+function SaTooltip({ active, payload, label, formatter }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: 'var(--bg)', border: '1px solid var(--line-strong)', borderRadius: 6, padding: '6px 10px', fontSize: 11, fontFamily: 'Geist Mono, monospace', boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
+      {label != null && <div style={{ marginBottom: 3, color: 'var(--ink-3)' }}>{label}</div>}
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color || 'var(--ink)' }}>
+          {p.name ? `${p.name}: ` : ''}{formatter ? formatter(p.value) : p.value}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AssumptionsBlock({ items }) {
+  if (!items?.length) return null;
+  return (
+    <div style={{ marginTop: 18, padding: "12px 14px", background: "var(--surface-2, var(--surface))", borderRadius: 8, border: "1px solid var(--line)" }}>
+      <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 8 }}>ASSUMPTIONS &amp; METHODOLOGY</div>
+      <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.map((a, i) => <li key={i} style={{ fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.55 }}>{a}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, color }) {
+  return (
+    <div style={{ flex: 1, minWidth: 108 }}>
+      <div className="mono" style={{ fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 3 }}>{label.toUpperCase()}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: color || "var(--ink)", fontFamily: "var(--mono)" }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function TabCard({ children }) {
+  return <div style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, padding: "18px 20px" }}>{children}</div>;
+}
+
+function TabHead({ kicker, title, sub }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div className="kicker">{kicker}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ink)", marginTop: 2 }}>{title}</div>
+      {sub && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ── Tab 1: VaR / CVaR ──────────────────────────────────────────────────────
+
+function VarCvarTab({ data }) {
+  if (!data) return <Empty>Run the pipeline to generate the revenue distribution.</Empty>;
+  const chartData = data.histogram.map(b => ({ x: b.mid, count: b.count }));
+  const tailCutoff = data.base_revenue_m - data.var_95_m;
+
+  return (
+    <TabCard>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 14, marginBottom: 4 }}>
+        <TabHead kicker="Tail Risk" title={`Revenue Value-at-Risk · ${data.horizon_quarters}Q horizon`}
+          sub={`${data.n_sims.toLocaleString()} simulated paths from a base of ${saFmtM(data.base_revenue_m)} · ${data.volatility_pct}% quarterly volatility`} />
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          <StatTile label="VaR 95%" value={saFmtM(data.var_95_m)} color="var(--amber-ink)" sub="5% worst-case decline" />
+          <StatTile label="CVaR 95%" value={saFmtM(data.cvar_95_m)} color="var(--red-ink)" sub="avg. of worst 5%" />
+          <StatTile label="VaR 99%" value={saFmtM(data.var_99_m)} color="var(--amber-ink)" />
+          <StatTile label="CVaR 99%" value={saFmtM(data.cvar_99_m)} color="var(--red-ink)" />
+          <StatTile label="Prob. Decline" value={`${Math.round(data.prob_decline * 100)}%`} />
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={230}>
+        <BarChart data={chartData} margin={{ top: 12, right: 16, bottom: 4, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
+          <XAxis dataKey="x" tickFormatter={saFmtM} tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} tickLine={false} axisLine={{ stroke: 'var(--line)' }} />
+          <YAxis tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} tickLine={false} axisLine={false} width={30} />
+          <Tooltip content={<SaTooltip formatter={v => `${v} of ${data.n_sims} sims`} />} cursor={{ fill: 'var(--surface-2)' }} />
+          <Bar dataKey="count" radius={[3, 3, 0, 0]} isAnimationActive={true}>
+            {chartData.map((d, i) => (
+              <Cell key={i} fill={d.x <= tailCutoff ? "var(--red)" : "var(--acc)"} fillOpacity={0.75} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 10.5, color: "var(--ink-3)" }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--red)", marginRight: 5, opacity: 0.75 }} />Worst 5% of outcomes (VaR 95 tail)</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--acc)", marginRight: 5, opacity: 0.75 }} />Simulated outcome distribution</span>
+      </div>
+      <AssumptionsBlock items={data.assumptions} />
+    </TabCard>
+  );
+}
+
+// ── Tab 2: Sensitivity / Tornado ───────────────────────────────────────────
+
+function SensitivityTab({ data }) {
+  if (!data) return <Empty>Run the pipeline to generate sensitivity data.</Empty>;
+  const chartData = [...data.rows].reverse();
+  const maxAbs = Math.max(1, ...data.rows.map(r => Math.max(Math.abs(r.down_delta), Math.abs(r.up_delta))));
+
+  return (
+    <TabCard>
+      <TabHead kicker="Assumption Sensitivity" title="Portfolio Risk Score Tornado"
+        sub={<>Baseline portfolio score: <b style={{ color: "var(--ink)" }}>{data.baseline_score}</b> · each factor shocked independently, others held constant</>} />
+      <ResponsiveContainer width="100%" height={Math.max(220, chartData.length * 44)}>
+        <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 28, bottom: 4, left: 4 }} barGap={2}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} horizontal={false} />
+          <XAxis type="number" domain={[-maxAbs * 1.15, maxAbs * 1.15]} tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} tickLine={false} axisLine={{ stroke: 'var(--line)' }} />
+          <YAxis type="category" dataKey="label" width={150} tick={{ fontSize: 10.5, fill: 'var(--ink-2)' }} tickLine={false} axisLine={false} />
+          <Tooltip content={<SaTooltip formatter={v => `${v >= 0 ? '+' : ''}${v} pts`} />} cursor={{ fill: 'var(--surface-2)' }} />
+          <ReferenceLine x={0} stroke="var(--ink-3)" />
+          <Bar dataKey="down_delta" name="Downside shock" radius={[3, 0, 0, 3]}>
+            {chartData.map((d, i) => <Cell key={i} fill="var(--red)" fillOpacity={0.7} />)}
+          </Bar>
+          <Bar dataKey="up_delta" name="Upside shock" radius={[0, 3, 3, 0]}>
+            {chartData.map((d, i) => <Cell key={i} fill="var(--green)" fillOpacity={0.7} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 10.5, color: "var(--ink-3)" }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--red)", marginRight: 5, opacity: 0.7 }} />Downside shock ({data.rows[0] ? data.rows.find(r => r.key)?.down_shock_label : ''})</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--green)", marginRight: 5, opacity: 0.7 }} />Upside shock</span>
+      </div>
+      <div style={{ overflowX: "auto", marginTop: 12 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead><tr>{["Factor", "Downside Shock", "Δ Score", "Upside Shock", "Δ Score", "Swing"].map(h => (
+            <th key={h} style={{ textAlign: "left", padding: "5px 8px", color: "var(--ink-4)", fontWeight: 400, fontSize: 9.5, borderBottom: "1px solid var(--line)" }}>{h}</th>
+          ))}</tr></thead>
+          <tbody>
+            {data.rows.map(r => (
+              <tr key={r.key} style={{ borderBottom: "1px solid var(--line)" }}>
+                <td style={{ padding: "6px 8px", fontWeight: 500 }}>{r.label}</td>
+                <td className="mono" style={{ padding: "6px 8px", color: "var(--ink-3)" }}>{r.down_shock_label}</td>
+                <td className="mono" style={{ padding: "6px 8px", color: r.down_delta < 0 ? "var(--green-ink)" : "var(--red-ink)" }}>{r.down_delta >= 0 ? '+' : ''}{r.down_delta}</td>
+                <td className="mono" style={{ padding: "6px 8px", color: "var(--ink-3)" }}>{r.up_shock_label}</td>
+                <td className="mono" style={{ padding: "6px 8px", color: r.up_delta < 0 ? "var(--green-ink)" : "var(--red-ink)" }}>{r.up_delta >= 0 ? '+' : ''}{r.up_delta}</td>
+                <td className="mono" style={{ padding: "6px 8px", fontWeight: 600 }}>{r.swing}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <AssumptionsBlock items={data.assumptions} />
+    </TabCard>
+  );
+}
+
+// ── Tab 3: Multi-Factor Stress Test ────────────────────────────────────────
+
+function MultiFactorStressTab({ data }) {
+  if (!data) return <Empty>Run the pipeline to generate stress test data.</Empty>;
+  const chartData = data.rows.map(r => ({ label: r.label, fcf_margin: r.stressed_fcf_margin_pct, breach: r.breaches_going_concern }));
+
+  return (
+    <TabCard>
+      <TabHead kicker="Combined Shock Scenarios" title="Multi-Factor Stress Test"
+        sub={`Base FCF margin ${data.base_fcf_margin_pct}% · going-concern trigger at ${data.breach_threshold_pct}%`} />
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={chartData} margin={{ top: 8, right: 16, bottom: 30, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 9.5, fill: 'var(--ink-3)' }} tickLine={false} axisLine={{ stroke: 'var(--line)' }} angle={-14} textAnchor="end" height={56} interval={0} />
+          <YAxis tickFormatter={v => `${v}%`} tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} tickLine={false} axisLine={false} width={42} />
+          <Tooltip content={<SaTooltip formatter={v => `${v}%`} />} cursor={{ fill: 'var(--surface-2)' }} />
+          <ReferenceLine y={data.breach_threshold_pct} stroke="var(--red)" strokeDasharray="4 3" strokeWidth={1.2}
+            label={{ value: 'Going-concern trigger', position: 'insideTopRight', fontSize: 8.5, fill: 'var(--red-ink)', fontFamily: 'Geist Mono, monospace' }} />
+          <ReferenceLine y={0} stroke="var(--line-strong)" />
+          <Bar dataKey="fcf_margin" radius={[3, 3, 0, 0]}>
+            {chartData.map((d, i) => <Cell key={i} fill={d.breach ? "var(--red)" : "var(--acc)"} fillOpacity={0.75} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ overflowX: "auto", marginTop: 14 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead><tr>{["Scenario", "Rev. Decline", "Margin Compression", "Revenue at Risk", "Stressed FCF Margin", "Headroom", "Status"].map(h => (
+            <th key={h} style={{ textAlign: "left", padding: "5px 8px", color: "var(--ink-4)", fontWeight: 400, fontSize: 9.5, borderBottom: "1px solid var(--line)" }}>{h}</th>
+          ))}</tr></thead>
+          <tbody>
+            {data.rows.map(r => (
+              <tr key={r.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                <td style={{ padding: "6px 8px", fontWeight: 500 }}>{r.label}</td>
+                <td className="mono" style={{ padding: "6px 8px" }}>{r.rev_decline_pts}pt</td>
+                <td className="mono" style={{ padding: "6px 8px" }}>{r.margin_compression_bps}bps</td>
+                <td className="mono" style={{ padding: "6px 8px" }}>${r.revenue_at_risk_m}M</td>
+                <td className="mono" style={{ padding: "6px 8px" }}>{r.stressed_fcf_margin_pct}%</td>
+                <td className="mono" style={{ padding: "6px 8px" }}>{r.headroom_remaining_pts}pt</td>
+                <td style={{ padding: "6px 8px" }}>
+                  <span style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 999, background: r.breaches_going_concern ? "var(--red-soft)" : "var(--green-soft)", color: r.breaches_going_concern ? "var(--red-ink)" : "var(--green-ink)" }}>
+                    {r.breaches_going_concern ? "BREACH" : "OK"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {data.contributing_risks?.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 10, color: "var(--ink-4)" }}>Top contributing risks:</span>
+          {data.contributing_risks.map(r => (
+            <span key={r.id} className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 4, background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)" }}>{r.id} · {r.name}</span>
+          ))}
+        </div>
+      )}
+      <AssumptionsBlock items={data.assumptions} />
+    </TabCard>
+  );
+}
+
+// ── Tab 4: Liquidity / Covenant Runway ─────────────────────────────────────
+
+function LiquidityRunwayTab({ data }) {
+  if (!data) return <Empty>Run the pipeline to generate the liquidity runway.</Empty>;
+  const byQ = {};
+  data.scenarios.forEach(s => {
+    s.points.forEach(p => {
+      byQ[p.q] = byQ[p.q] || { q: `Q${p.q}` };
+      byQ[p.q][s.id] = p.cash_m;
+    });
+  });
+  const chartData = Object.values(byQ);
+  const COLORS = { base: "var(--acc)", stress: "var(--amber)", severe: "var(--red)" };
+
+  return (
+    <TabCard>
+      <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 14, marginBottom: 4 }}>
+        <TabHead kicker="Cash Runway" title={`Liquidity & Covenant Runway · ${data.horizon_quarters}Q`}
+          sub={`Starting cash ${saFmtM(data.starting_cash_m)} · base FCF margin ${data.base_fcf_margin_pct}%`} />
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          {data.scenarios.map(s => {
+            const breached = s.cash_depletion_quarter || s.covenant_breach_quarter;
+            return (
+              <StatTile key={s.id} label={s.label.split('—')[0].trim()}
+                value={s.cash_depletion_quarter ? `Q${s.cash_depletion_quarter}` : s.covenant_breach_quarter ? `Q${s.covenant_breach_quarter}*` : "Clear"}
+                sub={s.cash_depletion_quarter ? "cash depletion" : s.covenant_breach_quarter ? "*covenant breach" : `${data.horizon_quarters}Q horizon`}
+                color={breached ? "var(--red-ink)" : "var(--green-ink)"} />
+            );
+          })}
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={230}>
+        <LineChart data={chartData} margin={{ top: 12, right: 16, bottom: 4, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
+          <XAxis dataKey="q" tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} tickLine={false} axisLine={{ stroke: 'var(--line)' }} />
+          <YAxis tickFormatter={saFmtM} tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} tickLine={false} axisLine={false} width={48} />
+          <Tooltip content={<SaTooltip formatter={saFmtM} />} cursor={{ stroke: 'var(--line-strong)', strokeWidth: 1, strokeDasharray: '2 2' }} />
+          <ReferenceLine y={0} stroke="var(--red)" strokeDasharray="4 3"
+            label={{ value: 'Cash depleted', position: 'insideBottomRight', fontSize: 8.5, fill: 'var(--red-ink)', fontFamily: 'Geist Mono, monospace' }} />
+          {data.scenarios.map(s => (
+            <Line key={s.id} type="monotone" dataKey={s.id} name={s.label} stroke={COLORS[s.id] || 'var(--ink)'} strokeWidth={2}
+              dot={{ r: 2.5, fill: COLORS[s.id], strokeWidth: 0 }} activeDot={{ r: 5 }} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      <AssumptionsBlock items={data.assumptions} />
+    </TabCard>
+  );
+}
+
+// ── Tab 5: Composite Early-Warning Indicator ───────────────────────────────
+
+function EarlyWarningTab({ data }) {
+  if (!data) return <Empty>Run the pipeline to generate the early-warning indicator.</Empty>;
+  const levelColor = { RED: "var(--red-ink)", AMBER: "var(--amber-ink)", GREEN: "var(--green-ink)" }[data.level];
+  const levelSoft  = { RED: "var(--red-soft)", AMBER: "var(--amber-soft)", GREEN: "var(--green-soft)" }[data.level];
+  const trendData = data.trend.map((v, i) => ({ i: i + 1, score: v }));
+  const compData = data.components.map(c => ({ label: c.label, score: c.score }));
+
+  return (
+    <TabCard>
+      <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginBottom: 20 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minWidth: 160 }}>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 6 }}>COMPOSITE SCORE</div>
+          <div style={{ fontSize: 44, fontWeight: 800, color: levelColor, fontFamily: "var(--mono)", lineHeight: 1 }}>{data.composite_score}</div>
+          <div className="mono" style={{ fontSize: 11, padding: "3px 12px", borderRadius: 999, background: levelSoft, color: levelColor, marginTop: 8, fontWeight: 600, letterSpacing: "0.05em" }}>{data.level}</div>
+        </div>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div className="kicker">Historical Trend</div>
+          <ResponsiveContainer width="100%" height={100}>
+            <LineChart data={trendData} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+              <YAxis domain={[0, 100]} hide />
+              <XAxis dataKey="i" hide />
+              <Tooltip content={<SaTooltip formatter={v => `${v}/100`} />} />
+              <ReferenceLine y={65} stroke="var(--red)" strokeOpacity={0.35} strokeDasharray="3 3" />
+              <ReferenceLine y={40} stroke="var(--amber)" strokeOpacity={0.35} strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="score" stroke={levelColor} strokeWidth={2.5} dot={{ r: 3, fill: levelColor, strokeWidth: 0 }} activeDot={{ r: 5 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="kicker" style={{ marginBottom: 8 }}>Component Breakdown</div>
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={compData} layout="vertical" margin={{ top: 4, right: 28, bottom: 4, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} horizontal={false} />
+          <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} tickLine={false} axisLine={{ stroke: 'var(--line)' }} />
+          <YAxis type="category" dataKey="label" width={130} tick={{ fontSize: 10.5, fill: 'var(--ink-2)' }} tickLine={false} axisLine={false} />
+          <Tooltip content={<SaTooltip formatter={v => `${v}/100`} />} cursor={{ fill: 'var(--surface-2)' }} />
+          <Bar dataKey="score" radius={[0, 3, 3, 0]}>
+            {compData.map((d, i) => <Cell key={i} fill={d.score >= 65 ? "var(--red)" : d.score >= 40 ? "var(--amber)" : "var(--green)"} fillOpacity={0.75} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 10 }}>
+        {data.components.map(c => (
+          <div key={c.key} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 10.5, color: "var(--ink-3)" }}>
+            <span>{c.label} <span className="mono" style={{ color: "var(--ink-4)" }}>({Math.round(c.weight * 100)}% weight)</span></span>
+            <span className="mono" style={{ textAlign: "right" }}>{c.detail}</span>
+          </div>
+        ))}
+      </div>
+      <AssumptionsBlock items={data.assumptions} />
+    </TabCard>
+  );
+}
+
+// ── Main screen ─────────────────────────────────────────────────────────────
+
+function ScenarioAnalysisScreen({ ticker, hasRun, varCvar, sensitivity, multiFactorStress, liquidityRunway, earlyWarning }) {
+  const [activeTab, setActiveTab] = React.useState("var");
+  const hasData = !!(varCvar || sensitivity || multiFactorStress || liquidityRunway || earlyWarning);
+
+  return (
+    <div className="scope-screen" data-screen-label="Scenario Analysis">
+      <div className="panel-head">
+        <div>
+          <div className="kicker">Risk Intelligence · Quantitative</div>
+          <div className="panel-title mt-8">Scenario Analysis</div>
+          <div className="panel-sub">
+            Tail-risk, sensitivity, combined stress, liquidity runway, and a composite early-warning signal —
+            all derived from the live risk register and financial ratios for {ticker ? ticker.toUpperCase() : "the current company"}.
+          </div>
+        </div>
+      </div>
+
+      <div className="pipe-sub-tabs" style={{ marginTop: 4 }}>
+        {SCEN_TABS.map(t => (
+          <button key={t.id} className={"pipe-sub-tab" + (activeTab === t.id ? " active" : "")} onClick={() => setActiveTab(t.id)}>
+            {t.l}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: "18px 2px" }}>
+        {!hasData ? (
+          <Empty>Run the pipeline from Assess Enterprise Risk to populate scenario analysis.</Empty>
+        ) : (
+          <>
+            {activeTab === "var" && <VarCvarTab data={varCvar} />}
+            {activeTab === "sensitivity" && <SensitivityTab data={sensitivity} />}
+            {activeTab === "stress" && <MultiFactorStressTab data={multiFactorStress} />}
+            {activeTab === "liquidity" && <LiquidityRunwayTab data={liquidityRunway} />}
+            {activeTab === "ewi" && <EarlyWarningTab data={earlyWarning} />}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { ScenarioAnalysisScreen });
