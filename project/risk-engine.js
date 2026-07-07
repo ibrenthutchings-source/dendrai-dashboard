@@ -960,6 +960,265 @@ window.RISK_ENGINE = (function () {
     };
   }
 
+  // ── Value at Risk / Conditional Value at Risk ────────────────
+  // Reuses the same Monte Carlo revenue engine that drives the forecast
+  // confidence band (_monteCarloRevenue below), but reports the tail of the
+  // simulated distribution instead of just the 10th/90th percentile per quarter.
+  function buildVarCvar(ratios, forecasts, ticker) {
+    const hist = forecasts?.revenue?.history || [];
+    const lastV = hist.length ? hist[hist.length - 1].v : (Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 1000);
+    const trend = ratios.revGrowth ?? 0;
+    const qGrowth = Math.pow(1 + trend, 0.25) - 1;
+    const volatility = _qoqVolatility(hist);
+    const horizonQ = 4;
+    const nSims = 2000; // higher than the forecast band's 500 sims for a stabler tail estimate
+    const sim = _monteCarloRevenue(lastV, qGrowth, volatility, horizonQ, nSims);
+    const sorted = [...sim.finalVals].sort((a, b) => a - b);
+    const pct = p => sorted[clamp(Math.round(p * (sorted.length - 1)), 0, sorted.length - 1)];
+
+    const p5 = pct(0.05), p50 = pct(0.50), p95 = pct(0.95), p1 = pct(0.01);
+    const tail95 = sorted.slice(0, Math.max(1, Math.round(sorted.length * 0.05)));
+    const tail99 = sorted.slice(0, Math.max(1, Math.round(sorted.length * 0.01)));
+    const cvar95 = lastV - (tail95.reduce((a, b) => a + b, 0) / tail95.length);
+    const cvar99 = lastV - (tail99.reduce((a, b) => a + b, 0) / tail99.length);
+
+    const nBins = 22;
+    const min = sorted[0], max = sorted[sorted.length - 1];
+    const binW = (max - min) / nBins || 1;
+    const histogram = Array.from({ length: nBins }, (_, i) => ({ mid: Math.round(min + (i + 0.5) * binW), count: 0 }));
+    sim.finalVals.forEach(v => {
+      let idx = Math.floor((v - min) / binW);
+      idx = clamp(idx, 0, nBins - 1);
+      histogram[idx].count++;
+    });
+
+    return {
+      id: 'var-cvar',
+      ticker,
+      horizon_quarters: horizonQ,
+      n_sims: nSims,
+      volatility_pct: +(volatility * 100).toFixed(1),
+      base_revenue_m: Math.round(lastV),
+      p5_m: Math.round(p5), p50_m: Math.round(p50), p95_m: Math.round(p95),
+      var_95_m: Math.round(lastV - p5),
+      var_99_m: Math.round(lastV - p1),
+      cvar_95_m: Math.round(cvar95),
+      cvar_99_m: Math.round(cvar99),
+      prob_decline: sim.probDecline,
+      histogram,
+      assumptions: [
+        `${nSims.toLocaleString()} Monte Carlo simulations over a ${horizonQ}-quarter horizon, seeded from the same volatility model used in the Revenue Forecast confidence band`,
+        `Quarterly volatility of ${(volatility * 100).toFixed(1)}% derived from trailing revenue history (6% fallback when fewer than 3 quarters of history exist)`,
+        `Growth path compounds the latest annual trend (${(trend * 100).toFixed(1)}%) into a constant quarterly rate — no mean reversion or seasonality is applied`,
+        'VaR/CVaR are expressed as a $ revenue decline from the current run-rate over the horizon, not a P&L, EPS, or cash impact',
+        'Simulated returns are drawn i.i.d. from a normal distribution (Box-Muller transform) — real revenue shocks are typically fatter-tailed and autocorrelated, so these figures understate true tail risk',
+      ],
+    };
+  }
+
+  // ── Sensitivity / Tornado Analysis ───────────────────────────
+  // Shocks one financial-ratio input at a time (others held constant) and
+  // rebuilds the risk register with buildRisks() to measure how much the total
+  // portfolio score moves — reuses the real scoring logic rather than an
+  // approximation, so results stay consistent with the live risk register.
+  function buildSensitivity(ratios, ticker, industry) {
+    const baseRisks = buildRisks(industry, ratios, ticker);
+    const baselineScore = +baseRisks.reduce((s, r) => s + r.score, 0).toFixed(1);
+
+    const pct1 = v => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(0)}pt`;
+    const factors = [
+      { key: 'revGrowth',   label: 'Revenue Growth',           down: -0.10, up: 0.10, fmt: pct1 },
+      { key: 'grossMargin', label: 'Gross Margin',             down: -0.05, up: 0.05, fmt: pct1 },
+      { key: 'fcfMargin',   label: 'FCF Margin',                down: -0.05, up: 0.05, fmt: pct1 },
+      { key: 'mscore',      label: 'Earnings Quality (M-Score)', down: -0.5, up: 0.5, fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}` },
+      { key: 'cashRatio',   label: 'Cash Ratio',                down: -0.05, up: 0.05, fmt: pct1 },
+      { key: 'assetGrowth', label: 'Asset Growth',              down: -0.05, up: 0.05, fmt: pct1 },
+    ];
+
+    const rows = factors.map(f => {
+      const base = ratios[f.key] ?? 0;
+      const downRatios = { ...ratios, [f.key]: base + f.down };
+      const upRatios   = { ...ratios, [f.key]: base + f.up };
+      const downScore = buildRisks(industry, downRatios, ticker).reduce((s, r) => s + r.score, 0);
+      const upScore   = buildRisks(industry, upRatios, ticker).reduce((s, r) => s + r.score, 0);
+      const downDelta = +(downScore - baselineScore).toFixed(1);
+      const upDelta   = +(upScore - baselineScore).toFixed(1);
+      return {
+        key: f.key, label: f.label,
+        down_shock_label: f.fmt(f.down), up_shock_label: f.fmt(f.up),
+        down_delta: downDelta, up_delta: upDelta,
+        swing: +(Math.abs(downDelta) + Math.abs(upDelta)).toFixed(1),
+        low: Math.min(downDelta, upDelta, 0), high: Math.max(downDelta, upDelta, 0),
+      };
+    }).sort((a, b) => b.swing - a.swing);
+
+    return {
+      id: 'sensitivity',
+      baseline_score: baselineScore,
+      rows,
+      assumptions: [
+        'Impact = change in total portfolio risk score (sum of all register risk scores, each 0-25) when a single input is shocked in isolation, all other inputs held at current levels',
+        'Shock magnitudes are fixed, illustrative ranges (e.g. ±10pts revenue growth, ±5pts margin) representing a plausible one-notch macro/operational move — not statistically derived confidence intervals',
+        'Factors are shocked one at a time and do not capture correlation between inputs — see the Multi-Factor Stress Test tab for combined shocks',
+        'Ranked by total swing (|downside delta| + |upside delta|); the top row is what the current risk score is most sensitive to',
+      ],
+    };
+  }
+
+  // ── Multi-Factor Stress Test ─────────────────────────────────
+  // Extends the Reverse Stress Test's single-vector breakpoint logic to
+  // simultaneous revenue + margin shocks, reusing its sensitivity coefficients
+  // so results are directly comparable to that card.
+  function buildMultiFactorStress(risks, ratios, ticker, industry) {
+    const BREACH_FCF_MARGIN  = -0.12; // mirrors buildReverseStressTest's going-concern trigger
+    const REV_SENSITIVITY    = 0.004; // mirrors buildReverseStressTest
+    const MARGIN_SENSITIVITY = 0.007; // mirrors buildReverseStressTest
+
+    const baseFcfMargin = ratios.fcfMargin ?? -0.02;
+    const baseRevM = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 1000;
+
+    const factorScenarios = [
+      { id: 'revenue_only',      label: 'Revenue Shock Only',            rev_decline_pts: 15, margin_compression_bps: 0 },
+      { id: 'margin_only',       label: 'Margin Shock Only',             rev_decline_pts: 0,  margin_compression_bps: 300 },
+      { id: 'combined_moderate', label: 'Combined — Moderate',           rev_decline_pts: 12, margin_compression_bps: 200 },
+      { id: 'combined_severe',   label: 'Combined — Severe (CCAR-style)', rev_decline_pts: 22, margin_compression_bps: 450 },
+    ];
+
+    const rows = factorScenarios.map(s => {
+      const fcfMarginImpact = -(s.rev_decline_pts * REV_SENSITIVITY) - ((s.margin_compression_bps / 100) * MARGIN_SENSITIVITY);
+      const stressedFcfMargin = +(baseFcfMargin + fcfMarginImpact).toFixed(4);
+      return {
+        ...s,
+        stressed_fcf_margin_pct: +(stressedFcfMargin * 100).toFixed(1),
+        revenue_at_risk_m: Math.round(baseRevM * (s.rev_decline_pts / 100)),
+        breaches_going_concern: stressedFcfMargin <= BREACH_FCF_MARGIN,
+        headroom_remaining_pts: +((stressedFcfMargin - BREACH_FCF_MARGIN) * 100).toFixed(1),
+      };
+    });
+
+    const byScore = arr => [...arr].sort((a, b) => b.score - a.score);
+    const contributingRisks = byScore(risks).slice(0, 4).map(r => ({
+      id: r.id, name: r.name.split('—')[0].trim(), rag: r.rag, score: r.score,
+    }));
+
+    return {
+      id: 'multi-factor-stress',
+      base_fcf_margin_pct: +(baseFcfMargin * 100).toFixed(1),
+      breach_threshold_pct: +(BREACH_FCF_MARGIN * 100).toFixed(1),
+      rows,
+      contributing_risks: contributingRisks,
+      assumptions: [
+        'Combined scenarios apply a revenue decline and a gross-margin compression simultaneously, reusing the Reverse Stress Test\'s sensitivity coefficients (≈0.4pt FCF-margin decline per 1pt revenue decline; ≈0.7pt per 100bps margin compression) so results are directly comparable to that card',
+        'The four shock magnitudes are fixed illustrative levels, not derived from a formal correlation matrix between revenue and margin — this is a stylised combined-shock view, not a calibrated joint distribution',
+        `Going-concern / covenant-style trigger held at the same ${(BREACH_FCF_MARGIN * 100).toFixed(0)}% FCF margin threshold used in the Reverse Stress Test`,
+        'Single-pass shock only — does not model second-order effects (e.g. a covenant breach triggering a credit downgrade that triggers further margin pressure)',
+      ],
+    };
+  }
+
+  // ── Liquidity / Covenant Runway ──────────────────────────────
+  // Projects cash forward under three FCF-margin paths and reports the first
+  // quarter each path depletes cash or crosses the going-concern trigger.
+  function buildLiquidityRunway(ratios, ticker) {
+    const BREACH_FCF_MARGIN = -0.12; // mirrors buildReverseStressTest's going-concern trigger
+    const cashM = Number.isFinite(ratios.cash) ? ratios.cash / 1e6
+      : (Number.isFinite(ratios.assets) ? (ratios.assets / 1e6) * 0.15 : 200);
+    const revM  = Number.isFinite(ratios.rev) ? ratios.rev / 1e6 : 1000;
+    const qRevM = revM / 4;
+    const baseFcfMargin = ratios.fcfMargin ?? -0.02;
+    const horizonQ = 8;
+
+    function project(fcfMarginAt) {
+      let cash = cashM;
+      const points = [];
+      for (let i = 0; i < horizonQ; i++) {
+        const m = fcfMarginAt(i);
+        cash += qRevM * m;
+        points.push({ q: i + 1, cash_m: Math.round(cash), fcf_margin_pct: +(m * 100).toFixed(1) });
+      }
+      const depletionIdx = points.findIndex(p => p.cash_m <= 0);
+      const breachIdx = points.findIndex(p => p.fcf_margin_pct / 100 <= BREACH_FCF_MARGIN);
+      return { points, cash_depletion_quarter: depletionIdx === -1 ? null : depletionIdx + 1, covenant_breach_quarter: breachIdx === -1 ? null : breachIdx + 1 };
+    }
+
+    const basePath   = project(() => baseFcfMargin);
+    const stressPath = project(i => baseFcfMargin - 0.02 * Math.min(i + 1, 4));
+    const severePath = project(i => baseFcfMargin - 0.04 * Math.min(i + 1, 4));
+
+    return {
+      id: 'liquidity-runway',
+      starting_cash_m: Math.round(cashM),
+      base_fcf_margin_pct: +(baseFcfMargin * 100).toFixed(1),
+      breach_threshold_pct: +(BREACH_FCF_MARGIN * 100).toFixed(1),
+      horizon_quarters: horizonQ,
+      scenarios: [
+        { id: 'base',   label: 'Base — Current Trend',            ...basePath },
+        { id: 'stress', label: 'Stress — Gradual Deterioration',  ...stressPath },
+        { id: 'severe', label: 'Severe — Sharp Deterioration',    ...severePath },
+      ],
+      assumptions: [
+        `Starting cash of $${Math.round(cashM)}M projected forward using quarterly FCF at the current run-rate (Base) and two stepped-deterioration paths (Stress: -2pts of FCF margin per quarter for 4 quarters then flat; Severe: -4pts per quarter for 4 quarters then flat)`,
+        'Cash depletion quarter = first quarter the projected cash balance reaches zero; no revolver capacity, asset sales, or financing actions are modeled',
+        `Covenant-style breach quarter uses the same ${(BREACH_FCF_MARGIN * 100).toFixed(0)}% FCF margin trigger as the Reverse Stress Test`,
+        'Revenue is held flat at the current quarterly run-rate for this projection — see the VaR/CVaR tab for a revenue-distribution view',
+      ],
+    };
+  }
+
+  // ── Composite Early-Warning Indicator ────────────────────────
+  // Blends four signals already computed elsewhere in the platform (risk
+  // velocity, revenue momentum, Beneish earnings quality, macro/FRED direction)
+  // into a single 0-100 systemic-stress score.
+  function buildEarlyWarningIndicator(risks, ratios, forecasts, industry) {
+    const totalScoreWeight = risks.reduce((s, r) => s + r.score, 0) || 1;
+    const velocityWeighted = risks.reduce((s, r) => s + (r.velocity * r.score), 0) / totalScoreWeight; // ~ -1..3
+    const velocityScore = clamp(((velocityWeighted + 1) / 4) * 100, 0, 100);
+
+    const sentScore = forecasts?.sentiment?.score ?? 0; // -25..25, positive = improving
+    const momentumScore = clamp(50 - (sentScore / 25) * 50, 0, 100);
+
+    const mscore = ratios.mscore ?? -2.5;
+    const band = mscore > -1.78 ? 'ELEVATED' : mscore > -2.22 ? 'GRAY ZONE' : 'NORMAL';
+    const earningsQualityScore = band === 'ELEVATED' ? 85 : band === 'GRAY ZONE' ? 50 : 15;
+
+    const fred = FRED_BY_INDUSTRY[industry] || FRED_BY_INDUSTRY['Generic'];
+    const macroScore = fred.length ? (fred.filter(f => f.dir === 'CONTRACTIONARY').length / fred.length) * 100 : 0;
+
+    const WEIGHTS = { velocity: 0.30, momentum: 0.25, earnings: 0.25, macro: 0.20 };
+    const composite = +(velocityScore * WEIGHTS.velocity + momentumScore * WEIGHTS.momentum
+      + earningsQualityScore * WEIGHTS.earnings + macroScore * WEIGHTS.macro).toFixed(1);
+    const level = composite >= 65 ? 'RED' : composite >= 40 ? 'AMBER' : 'GREEN';
+
+    // Synthetic trend: rescales each register risk's own historical score
+    // trajectory (already computed by buildRisks -> hist) onto the 0-100 band,
+    // anchored to the actual composite on the most recent point.
+    const histLen = risks[0]?.hist?.length || 6;
+    const trend = Array.from({ length: histLen }, (_, i) => {
+      const avgHist = risks.reduce((s, r) => s + (r.hist?.[i] ?? r.score), 0) / (risks.length || 1);
+      return +clamp((avgHist / 25) * 100, 0, 100).toFixed(1);
+    });
+    trend[trend.length - 1] = composite;
+
+    return {
+      id: 'early-warning-indicator',
+      composite_score: composite,
+      level,
+      components: [
+        { key: 'velocity', label: 'Risk Velocity',      score: +velocityScore.toFixed(1), weight: WEIGHTS.velocity, detail: `Score-weighted average velocity across ${risks.length} register risks` },
+        { key: 'momentum', label: 'Revenue Momentum',   score: +momentumScore.toFixed(1), weight: WEIGHTS.momentum, detail: `QoQ momentum ${sentScore >= 0 ? '+' : ''}${sentScore} (${forecasts?.sentiment?.trend || 'STABLE'})` },
+        { key: 'earnings', label: 'Earnings Quality',   score: +earningsQualityScore.toFixed(1), weight: WEIGHTS.earnings, detail: `Beneish M-score ${mscore.toFixed(2)} — ${band}` },
+        { key: 'macro',    label: 'Macro Backdrop',     score: +macroScore.toFixed(1), weight: WEIGHTS.macro, detail: `${fred.filter(f => f.dir === 'CONTRACTIONARY').length} of ${fred.length} tracked FRED indicators reading contractionary` },
+      ],
+      trend,
+      assumptions: [
+        'Composite blends four inputs computed elsewhere in the platform: risk velocity (30%), revenue momentum (25%), Beneish earnings-quality band (25%), and macro/FRED direction (20%) — weights are illustrative, not statistically fitted',
+        'Scored 0-100 where higher = more stressed; banded GREEN < 40, AMBER 40-64, RED ≥ 65',
+        'Trend line approximates history by rescaling each register risk\'s own historical score trajectory — a directional proxy, not a recomputed historical composite',
+        'A monitoring signal, not a standalone forecast — pair with the other Scenario Analysis tabs for magnitude and impact detail',
+      ],
+    };
+  }
+
   // ── Historical analog library ────────────────────────────────
   // Real macro shocks with approximate realised deltas, replayed against the
   // current entity's ratios via this industry's FRED correlation sensitivities
@@ -1229,7 +1488,7 @@ window.RISK_ENGINE = (function () {
     });
     const finalVals = paths.map(p => p[horizonQ - 1]);
     const probDecline = finalVals.filter(v => v < lastV).length / nSims;
-    return { byQuarter, probDecline, volatility, nSims };
+    return { byQuarter, probDecline, volatility, nSims, finalVals, lastV };
   }
 
   // ── Build Forecasts from EDGAR quarterly series ─────────────
@@ -1526,13 +1785,20 @@ window.RISK_ENGINE = (function () {
     const loop       = buildLoop(risks);
     const entity     = buildEntity(ticker, fin, industry);
     const eventTemplates = window.MOCK?.eventTemplates || [];
+    const varCvar          = buildVarCvar(ratios, forecasts, ticker);
+    const sensitivity       = buildSensitivity(ratios, ticker, industry);
+    const multiFactorStress = buildMultiFactorStress(risks, ratios, ticker, industry);
+    const liquidityRunway   = buildLiquidityRunway(ratios, ticker);
+    const earlyWarning      = buildEarlyWarningIndicator(risks, ratios, forecasts, industry);
     return { entity, signals, risks, objectives, maps, closure, loop,
-             eventTemplates, forecasts, scenarios, greySwan,
+             eventTemplates, forecasts, scenarios, greySwan, ratios,
              reverseStress, historicalAnalogs, governanceScenario,
              riskFlow: buildRiskFlow(risks, industry, maps),
-             personas, fred:forecasts.fred };
+             personas, fred:forecasts.fred,
+             varCvar, sensitivity, multiFactorStress, liquidityRunway, earlyWarning };
   }
 
-  return { buildProfile, buildLoop, computeRatios, sic2industry, quarterBoundaries: _quarterBoundaries };
+  return { buildProfile, buildLoop, computeRatios, sic2industry, quarterBoundaries: _quarterBoundaries,
+           buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator };
 
 })();

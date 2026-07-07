@@ -467,7 +467,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
 
             <div className="ar-field">
               <label className="ar-label">Score <span className="mono ar-val">{fmt2(score)}</span></label>
-              <input type="range" min="0" max="10" step="0.1" value={score}
+              <input type="range" min="0" max="25" step="0.1" value={score}
                 onChange={e => setScore(parseFloat(e.target.value))} className="ar-slider"/>
               <div className="ar-orig mono">AI scored: {fmt2(risk.score)}</div>
             </div>
@@ -513,7 +513,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
               <span style={{color: rationale.trim().length >= 30 ? "var(--green-ink)" : "var(--ink-3)"}}>
                 {rationale.trim().length} / 30 chars
               </span>
-              {!changed && <span className="muted">· no changes made yet</span>}
+              {!changed && rationale.trim().length >= 30 && <span className="muted">· reaffirming as scored, with rationale on file</span>}
             </div>
           </div>
 
@@ -537,7 +537,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
         </div>
         <div className="modal-foot">
           <span className="muted mono" style={{fontSize: 11}}>
-            {changed ? "Submitting routes for 3-step sign-off" : "Adjust at least one field to continue"}
+            {valid ? "Submitting routes for 3-step sign-off" : "Write a rationale (min 30 characters) to continue"}
           </span>
           <div style={{display: "flex", gap: 6}}>
             <button className="btn btn-sm" onClick={onClose}>Cancel</button>
