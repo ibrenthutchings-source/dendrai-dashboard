@@ -14,9 +14,15 @@ GET  /auth/sso/{provider}/callback Handle OAuth callback + JIT provisioning
 GET  /auth/users                   List active accounts (manager picker)
 PUT  /auth/users/me/manager        Self-service manager assignment
 GET  /auth/admin/users             List all accounts, admin only
+POST /auth/admin/users             Create a user (manual or generated password), admin only
+PUT  /auth/admin/users/{id}          Update a user's email/display name, admin only
 PUT  /auth/admin/users/{id}/manager  Set any user's manager, admin only
 PUT  /auth/admin/users/{id}/role     Promote/demote a user, admin only
 PUT  /auth/admin/users/{id}/active   Activate/deactivate a user, admin only
+PUT  /auth/admin/users/{id}/password Set/reset a user's password (manual or generated), admin only
+DELETE /auth/admin/users/{id}        Permanently remove a user, admin only
+GET  /auth/admin/screen-permissions/{role}  Get a role's screen access matrix, admin only
+PUT  /auth/admin/screen-permissions/{role}  Replace a role's screen access matrix, admin only
 
 Dependencies (pip install):
     passlib[bcrypt]     password hashing
@@ -30,6 +36,7 @@ import logging
 import os
 import re
 import secrets
+import string
 import time
 import uuid
 from base64 import urlsafe_b64encode
@@ -112,6 +119,17 @@ def _validate_password(pw: str) -> Optional[str]:
     if not re.search(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]", pw):
         return "Password must include at least one special character."
     return None
+
+
+_PW_GEN_ALPHABET = string.ascii_uppercase + string.ascii_lowercase + string.digits + "!@#$%^&*()-_=+"
+
+
+def _generate_password(length: int = 14) -> str:
+    """System-generated password guaranteed to satisfy _validate_password."""
+    while True:
+        pw = "".join(secrets.choice(_PW_GEN_ALPHABET) for _ in range(length))
+        if _validate_password(pw) is None:
+            return pw
 
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────
@@ -324,6 +342,35 @@ class AdminSetActiveRequest(BaseModel):
     is_active: bool
 
 
+class AdminCreateUserRequest(BaseModel):
+    username: str
+    email: Optional[str] = None
+    display_name: Optional[str] = None
+    role: str = "user"
+    password: Optional[str] = None       # ignored if generate_password is True
+    generate_password: bool = False
+
+
+class AdminUpdateUserRequest(BaseModel):
+    email: Optional[str] = None
+    display_name: Optional[str] = None
+
+
+class AdminSetPasswordRequest(BaseModel):
+    password: Optional[str] = None       # ignored if generate is True
+    generate: bool = False
+
+
+class ScreenPermissionEntry(BaseModel):
+    screen_id: str
+    can_read: bool = True
+    can_edit: bool = True
+
+
+class SetScreenPermissionsRequest(BaseModel):
+    permissions: list[ScreenPermissionEntry]
+
+
 def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
@@ -396,7 +443,11 @@ def logout(
 
 @router.get("/me", summary="Current authenticated user")
 def me(current_user: dict = Depends(get_current_user)):
-    return {"user": current_user}
+    # Admins are never subject to the screen-permission matrix (never locked
+    # out); everyone else gets their role's saved matrix so the frontend can
+    # gate nav + screens without a second round trip on every load.
+    perms = None if current_user.get("role") == "admin" else auth_db.get_screen_permissions(current_user.get("role", "user"))
+    return {"user": {**current_user, "screen_permissions": perms}}
 
 
 @router.get("/users", summary="List active user accounts")
@@ -477,6 +528,127 @@ def admin_set_active(user_id: int, req: AdminSetActiveRequest, current_user: dic
     if not req.is_active:
         auth_db.revoke_all_user_sessions(user_id)
     return {"ok": True, "is_active": req.is_active}
+
+
+_USERNAME_RE = re.compile(r"^[a-z0-9._-]{3,64}$")
+
+
+@router.post("/admin/users", summary="Create a new user (admin)")
+def admin_create_user(req: AdminCreateUserRequest, current_user: dict = Depends(require_admin)):
+    if not _HAS_PASSLIB:
+        raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
+
+    username = req.username.strip().lower()
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(status_code=422, detail="Username must be 3-64 characters: lowercase letters, numbers, dot, underscore, hyphen.")
+    if req.role not in ("user", "admin"):
+        raise HTTPException(status_code=400, detail="role must be 'user' or 'admin'")
+    if auth_db.get_user_by_username(username):
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    email = req.email.strip().lower() if req.email else None
+    if email and auth_db.get_user_by_email(email):
+        raise HTTPException(status_code=409, detail="Email already in use")
+
+    generated = False
+    if req.generate_password or not req.password:
+        password = _generate_password()
+        generated = True
+    else:
+        err = _validate_password(req.password)
+        if err:
+            raise HTTPException(status_code=422, detail=err)
+        password = req.password
+
+    pw_hash = _pwd_ctx.hash(password)
+    # Admin-issued credentials always force a change at next login, same as seeded accounts.
+    uid = auth_db.create_user(
+        username=username, email=email, display_name=req.display_name,
+        role=req.role, password_hash=pw_hash, must_change_pw=True,
+    )
+    if not uid:
+        raise HTTPException(status_code=400, detail="Could not create user (username or email may already be in use)")
+    auth_db.add_password_history(uid, pw_hash)
+
+    return {"ok": True, "user": auth_db.get_user_by_id(uid), "generated_password": password if generated else None}
+
+
+@router.put("/admin/users/{user_id}", summary="Update a user's profile (admin)")
+def admin_update_user(user_id: int, req: AdminUpdateUserRequest, current_user: dict = Depends(require_admin)):
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    email = req.email.strip().lower() if req.email else None
+    if email:
+        existing = auth_db.get_user_by_email(email)
+        if existing and existing["id"] != user_id:
+            raise HTTPException(status_code=409, detail="Email already in use")
+
+    if not auth_db.update_profile(user_id, email=email, display_name=req.display_name):
+        raise HTTPException(status_code=500, detail="Failed to update profile")
+    return {"ok": True, "user": auth_db.get_user_by_id(user_id)}
+
+
+@router.put("/admin/users/{user_id}/password", summary="Set or reset a user's password (admin)")
+def admin_set_password(user_id: int, req: AdminSetPasswordRequest, current_user: dict = Depends(require_admin)):
+    if not _HAS_PASSLIB:
+        raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    generated = False
+    if req.generate or not req.password:
+        password = _generate_password()
+        generated = True
+    else:
+        err = _validate_password(req.password)
+        if err:
+            raise HTTPException(status_code=422, detail=err)
+        password = req.password
+
+    pw_hash = _pwd_ctx.hash(password)
+    if not auth_db.update_password(user_id, pw_hash):
+        raise HTTPException(status_code=500, detail="Failed to update password")
+    # update_password() clears must_change_pw for the self-service change-password
+    # flow it was built for — an admin-issued password should still force a change.
+    auth_db.set_must_change_pw(user_id, True)
+    auth_db.revoke_all_user_sessions(user_id)
+    return {"ok": True, "generated_password": password if generated else None}
+
+
+@router.delete("/admin/users/{user_id}", summary="Permanently remove a user (admin)")
+def admin_delete_user(user_id: int, current_user: dict = Depends(require_admin)):
+    if user_id == current_user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot remove your own account")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not auth_db.delete_user(user_id):
+        raise HTTPException(status_code=500, detail="Failed to remove user")
+    return {"ok": True}
+
+
+# ── Screen access permissions (Configuration > Workflow Admin > Screen Access) ─
+# Per-role read/edit matrix. The 'admin' role is intentionally never editable
+# here — it always has full access, so an admin can never lock every admin out.
+
+@router.get("/admin/screen-permissions/{role}", summary="Get a role's screen permissions (admin)")
+def admin_get_screen_permissions(role: str, current_user: dict = Depends(require_admin)):
+    if role == "admin":
+        raise HTTPException(status_code=400, detail="The admin role always has full access and has no configurable permissions")
+    return {"role": role, "permissions": auth_db.get_screen_permissions(role)}
+
+
+@router.put("/admin/screen-permissions/{role}", summary="Replace a role's screen permissions (admin)")
+def admin_set_screen_permissions(role: str, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
+    if role == "admin":
+        raise HTTPException(status_code=400, detail="The admin role always has full access and has no configurable permissions")
+    ok = auth_db.set_screen_permissions(role, [p.model_dump() for p in req.permissions])
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save screen permissions")
+    return {"ok": True, "role": role, "permissions": auth_db.get_screen_permissions(role)}
 
 
 @router.post("/change-password", summary="Change own password")

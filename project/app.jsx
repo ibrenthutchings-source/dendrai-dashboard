@@ -1514,6 +1514,7 @@ function App() {
           activeScreen={activeScreen}
           activeGovTab={activeGovTab}
           isAdmin={auth?.user?.role === "admin"}
+          screenPerms={auth?.user?.screen_permissions}
           onNavigate={(screen, govTab) => {
             setActiveScreen(screen);
             if (govTab) setActiveGovTab(govTab);
@@ -1530,6 +1531,7 @@ function App() {
 
           {/* ---- Configuration / Setup ---- */}
           {activeScreen === "config" && (
+            <ScreenAccessGate screenId="config">
             <div className="panel active">
               <ConfigScreen
                 cfg={cfg} setCfg={setCfg}
@@ -1548,16 +1550,26 @@ function App() {
                 colorScheme={tweaks.colorScheme || "system"}
                 setColorScheme={(v) => setTweak("colorScheme", v)} />
             </div>
+            </ScreenAccessGate>
           )}
 
           {/* ---- UBO Configuration ---- */}
           {activeScreen === "uboconfig" && (
+            <ScreenAccessGate screenId="uboconfig">
             <div className="panel active">
               <UboConfigScreen />
             </div>
+            </ScreenAccessGate>
           )}
 
-          {/* ---- Workflow Admin (approval-routing org chart + roles) ---- */}
+          {/* ---- User Configuration (add/change/remove local accounts) ---- */}
+          {activeScreen === "userconfig" && (
+            <div className="panel active">
+              <UserConfigScreen />
+            </div>
+          )}
+
+          {/* ---- Screen Access (per-role read/edit permission matrix) ---- */}
           {activeScreen === "admin" && (
             <div className="panel active">
               <AdminConfigScreen />
@@ -1566,6 +1578,7 @@ function App() {
 
           {/* ---- Pipeline (with action bar + sub-tabs) ---- */}
           {activeScreen === "pipeline" && (
+          <ScreenAccessGate screenId="pipeline">
           <div className="panel active">
             {/* Action bar — primary verbs live with the pipeline they drive */}
             <div className="pipe-action-bar">
@@ -1671,6 +1684,7 @@ function App() {
                 peerData={govPeerData} />
             )}
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* Risk Register, Risk Flow, Forecasts and Scenarios now live in the
@@ -1678,6 +1692,7 @@ function App() {
 
           {/* ---- Controls Monitor ---- */}
           {activeScreen === "controls" && (
+          <ScreenAccessGate screenId="controls">
           <div className="panel active">
             <CEMPanel
               events={events} setEvents={setEvents}
@@ -1687,13 +1702,16 @@ function App() {
               onInject={() => fireSyntheticEvent(1)}
               ticker={cfg.ticker} />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- UBO Governance Brain ---- */}
           {activeScreen === "ubogov" && (
+          <ScreenAccessGate screenId="ubogov">
           <div className="panel active">
             <UBOGovPanel />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Risk Flow ---- */}
@@ -1715,6 +1733,7 @@ function App() {
 
           {/* ---- MAPs ---- */}
           {activeScreen === "maps" && (
+          <ScreenAccessGate screenId="maps">
           <div className="panel active">
             <div className="panel-head">
               <div>
@@ -1725,10 +1744,12 @@ function App() {
             </div>
             <MapsTab maps={railMaps}/>
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Notifications ---- */}
           {activeScreen === "notifs" && (
+          <ScreenAccessGate screenId="notifs">
           <div className="panel active">
             <div className="panel-head">
               <div>
@@ -1739,10 +1760,12 @@ function App() {
             </div>
             <NotifTab log={notifLog}/>
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Audit Scope ---- */}
           {activeScreen === "scope" && (
+          <ScreenAccessGate screenId="scope">
           <div className="panel active">
             <AuditScopeScreen
               objectives={output.s3?.objectives?.length ? output.s3.objectives
@@ -1753,13 +1776,16 @@ function App() {
               hasRun={hasRun}
               savedRunAt={!output.s3?.objectives?.length ? savedAuditScope?.run_at : null} />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Approval Inbox ---- */}
           {activeScreen === "approvals" && (
+          <ScreenAccessGate screenId="approvals">
           <div className="panel active">
             <ApprovalInboxScreen />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Coverage Gap Analysis ---- */}
@@ -1786,6 +1812,7 @@ function App() {
 
           {/* ---- Risk Register Review (Phases 2-4) ---- */}
           {activeScreen === "rrreview" && (
+          <ScreenAccessGate screenId="rrreview">
           <div className="panel active">
             <RiskRegisterReviewScreen
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
@@ -1800,6 +1827,7 @@ function App() {
                 }
               }} />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Risks as Code (Industry Frameworks) ---- */}
@@ -1820,6 +1848,7 @@ function App() {
 
           {/* ---- Policy-as-Code ---- */}
           {activeScreen === "policycode" && (
+          <ScreenAccessGate screenId="policycode">
           <div className="panel active">
             <PolicyAsCodeScreen
               events={events}
@@ -1827,10 +1856,12 @@ function App() {
               risks={railRisks}
               appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Grey Swan Scenarios ---- */}
           {activeScreen === "scenarios" && (
+          <ScreenAccessGate screenId="scenarios">
           <div className="panel active">
             <ScenariosPanel
               scenarios={profile.scenarios}
@@ -1839,10 +1870,12 @@ function App() {
               historicalAnalogs={profile.historicalAnalogs}
               governanceScenario={profile.governanceScenario} />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Scenario Analysis (VaR/CVaR, sensitivity, stress, liquidity, EWI) ---- */}
           {activeScreen === "scenarioanalysis" && (
+          <ScreenAccessGate screenId="scenarioanalysis">
           <div className="panel active">
             <ScenarioAnalysisScreen
               ticker={cfg.ticker}
@@ -1853,10 +1886,12 @@ function App() {
               liquidityRunway={profile.liquidityRunway}
               earlyWarning={profile.earlyWarning} />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- SOX Scope ---- */}
           {activeScreen === "sox" && (
+          <ScreenAccessGate screenId="sox">
           <div className="panel active" style={{overflow: "auto"}}>
             <SoxScopePanel
               ticker={cfg.ticker}
@@ -1866,10 +1901,12 @@ function App() {
               ratios={profile.ratios || {}}
               hasRun={hasRun} />
           </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Governance Intelligence ---- */}
           {activeScreen === "gov" && (
+          <ScreenAccessGate screenId="gov">
           <div className="panel gov-panel active">
             <GovernanceView
               data={govData}
@@ -1880,6 +1917,7 @@ function App() {
               onTabChange={setActiveGovTab}
               govFetchError={govFetchError} />
           </div>
+          </ScreenAccessGate>
           )}
         </main>
 
