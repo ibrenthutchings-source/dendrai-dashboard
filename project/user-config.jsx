@@ -530,8 +530,6 @@ function UsersTab() {
 
 // ── Screen Access tab ────────────────────────────────────────────────────────
 
-const SCREEN_PERMS_ROLE = "user";
-
 // Mirrors LeftNav's rendering: one row per unique screen id per section,
 // admin-only nav entries excluded (they're gated by role, not this matrix),
 // and multi-tab screens (e.g. Governance Intelligence's 5 govTab entries,
@@ -611,18 +609,42 @@ function ScreenAccessSection({ section, perms, onToggleScreen, onToggleColumn })
 }
 
 function ScreenAccessTab() {
+  const [users, setUsers] = React.useState([]);
+  const [usersLoading, setUsersLoading] = React.useState(true);
+  const [selectedUserId, setSelectedUserId] = React.useState(null);
+
   const [perms, setPerms] = React.useState({});   // { screen_id: { can_read, can_edit } }
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [saved, setSaved] = React.useState(false);
 
   const sections = React.useMemo(getPermissionSections, []);
 
-  const reload = React.useCallback(async () => {
+  // Admins always have full access and aren't configurable here.
+  React.useEffect(() => {
+    (async () => {
+      setUsersLoading(true);
+      try {
+        const res = await fetch("/auth/admin/users", { credentials: "include" });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const nonAdmin = (data.users || []).filter(u => u.role !== "admin");
+        setUsers(nonAdmin);
+        setSelectedUserId(prev => prev ?? (nonAdmin[0]?.id ?? null));
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setUsersLoading(false);
+      }
+    })();
+  }, []);
+
+  const loadPerms = React.useCallback(async (userId) => {
+    if (!userId) { setPerms({}); return; }
     setLoading(true); setError(null); setSaved(false);
     try {
-      const res = await fetch(`/auth/admin/screen-permissions/${SCREEN_PERMS_ROLE}`, { credentials: "include" });
+      const res = await fetch(`/auth/admin/screen-permissions/${userId}`, { credentials: "include" });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setPerms(data.permissions || {});
@@ -633,7 +655,7 @@ function ScreenAccessTab() {
     }
   }, []);
 
-  React.useEffect(() => { reload(); }, [reload]);
+  React.useEffect(() => { loadPerms(selectedUserId); }, [selectedUserId, loadPerms]);
 
   function toggleScreen(screenId, field, value) {
     setSaved(false);
@@ -661,6 +683,7 @@ function ScreenAccessTab() {
   }
 
   async function save() {
+    if (!selectedUserId) return;
     setSaving(true); setError(null); setSaved(false);
     try {
       const permissions = sections.flatMap(sec => sec.screens.map(s => ({
@@ -668,7 +691,7 @@ function ScreenAccessTab() {
         can_read: perms[s.id]?.can_read !== false,
         can_edit: perms[s.id]?.can_edit !== false,
       })));
-      const res = await fetch(`/auth/admin/screen-permissions/${SCREEN_PERMS_ROLE}`, {
+      const res = await fetch(`/auth/admin/screen-permissions/${selectedUserId}`, {
         method: "PUT", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ permissions }),
@@ -687,15 +710,26 @@ function ScreenAccessTab() {
   return (
     <div>
       <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.5, maxWidth: 760, marginBottom: 14 }}>
-        Read and Edit access per screen for the <b>User</b> role, grouped by nav section — check a section's
-        box to set every screen inside it, or set screens individually. Admins always have full access.
-        A screen left unconfigured stays visible/editable by default.
+        Read and Edit access per screen, defined individually for each user, grouped by nav section — check a
+        section's box to set every screen inside it, or set screens individually. Admins always have full
+        access and aren't listed here. A screen left unconfigured for a user stays visible/editable by default.
       </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 14 }}>
-        <button className="btn btn-sm" onClick={reload} disabled={loading || saving}>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <label className="ar-label" style={{ marginBottom: 0 }}>User</label>
+        <select className="fi-input" style={{ fontSize: 11.5, minWidth: 220 }}
+          value={selectedUserId || ""} disabled={usersLoading || users.length === 0}
+          onChange={e => setSelectedUserId(e.target.value ? Number(e.target.value) : null)}>
+          {users.length === 0 && <option value="">— no non-admin users —</option>}
+          {users.map(u => (
+            <option key={u.id} value={u.id}>{u.display_name || u.username}{u.is_active ? "" : " (inactive)"}</option>
+          ))}
+        </select>
+        <div style={{ flex: 1 }} />
+        <button className="btn btn-sm" onClick={() => loadPerms(selectedUserId)} disabled={loading || saving || !selectedUserId}>
           <Icon name="reset" size={11} /> Revert
         </button>
-        <button className="btn btn-sm btn-primary" onClick={save} disabled={loading || saving}>
+        <button className="btn btn-sm btn-primary" onClick={save} disabled={loading || saving || !selectedUserId}>
           {saving ? "Saving…" : saved ? "Saved ✓" : "Save Changes"}
         </button>
       </div>
@@ -704,7 +738,9 @@ function ScreenAccessTab() {
         <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4, marginBottom: 12 }}>{error}</div>
       )}
 
-      {loading ? (
+      {!usersLoading && users.length === 0 ? (
+        <Empty>No non-admin accounts yet — add one in the Users tab first.</Empty>
+      ) : loading ? (
         <div style={{ padding: "24px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 12 }}>Loading…</div>
       ) : (
         <div>
