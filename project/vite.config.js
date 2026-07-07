@@ -149,7 +149,7 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
       },
-      '/auth': {
+      '/auth/': {
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
