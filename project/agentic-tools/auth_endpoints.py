@@ -11,6 +11,12 @@ POST /auth/change-password         Change own password (with history check)
 GET  /auth/sso/providers           List enabled SSO providers
 GET  /auth/sso/{provider}/start    Redirect to provider OAuth screen
 GET  /auth/sso/{provider}/callback Handle OAuth callback + JIT provisioning
+GET  /auth/users                   List active accounts (manager picker)
+PUT  /auth/users/me/manager        Self-service manager assignment
+GET  /auth/admin/users             List all accounts, admin only
+PUT  /auth/admin/users/{id}/manager  Set any user's manager, admin only
+PUT  /auth/admin/users/{id}/role     Promote/demote a user, admin only
+PUT  /auth/admin/users/{id}/active   Activate/deactivate a user, admin only
 
 Dependencies (pip install):
     passlib[bcrypt]     password hashing
@@ -310,6 +316,20 @@ class SetManagerRequest(BaseModel):
     manager_id: Optional[int] = None  # None clears it
 
 
+class AdminSetRoleRequest(BaseModel):
+    role: str  # 'user' | 'admin'
+
+
+class AdminSetActiveRequest(BaseModel):
+    is_active: bool
+
+
+def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return current_user
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/sso/providers", summary="List enabled SSO providers")
@@ -406,6 +426,57 @@ def set_my_manager(req: SetManagerRequest, current_user: dict = Depends(get_curr
     if not ok:
         raise HTTPException(status_code=400, detail="Could not set manager (cannot be yourself)")
     return {"ok": True, "manager_id": req.manager_id}
+
+
+# ── Admin workflow configuration (Phase 2) ────────────────────────────────────
+# Org-chart and role administration for the approval workflow. Every write
+# here re-derives identity from the session (require_admin), never trusts a
+# role claim from the request body, and blocks an admin from locking
+# themselves out (self-demotion / self-deactivation).
+
+@router.get("/admin/users", summary="List all accounts (admin)")
+def admin_list_users(current_user: dict = Depends(require_admin)):
+    return {"users": auth_db.list_all_users()}
+
+
+@router.put("/admin/users/{user_id}/manager", summary="Set any user's manager (admin)")
+def admin_set_manager(user_id: int, req: SetManagerRequest, current_user: dict = Depends(require_admin)):
+    if req.manager_id is not None:
+        manager = auth_db.get_user_by_id(req.manager_id)
+        if not manager or not manager.get("is_active"):
+            raise HTTPException(status_code=404, detail="Manager account not found or inactive")
+    ok = auth_db.set_manager(user_id, req.manager_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not set manager (cannot be their own manager)")
+    return {"ok": True, "manager_id": req.manager_id}
+
+
+@router.put("/admin/users/{user_id}/role", summary="Set a user's role (admin)")
+def admin_set_role(user_id: int, req: AdminSetRoleRequest, current_user: dict = Depends(require_admin)):
+    if req.role not in ("user", "admin"):
+        raise HTTPException(status_code=400, detail="role must be 'user' or 'admin'")
+    if user_id == current_user["id"] and req.role != "admin":
+        raise HTTPException(status_code=400, detail="You cannot remove your own admin role")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not auth_db.set_role(user_id, req.role):
+        raise HTTPException(status_code=500, detail="Failed to update role")
+    return {"ok": True, "role": req.role}
+
+
+@router.put("/admin/users/{user_id}/active", summary="Activate or deactivate a user (admin)")
+def admin_set_active(user_id: int, req: AdminSetActiveRequest, current_user: dict = Depends(require_admin)):
+    if user_id == current_user["id"] and not req.is_active:
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not auth_db.set_active(user_id, req.is_active):
+        raise HTTPException(status_code=500, detail="Failed to update active status")
+    if not req.is_active:
+        auth_db.revoke_all_user_sessions(user_id)
+    return {"ok": True, "is_active": req.is_active}
 
 
 @router.post("/change-password", summary="Change own password")

@@ -38,6 +38,7 @@ import '../sox-hitl.jsx'
 import '../sox-scope.jsx'
 import '../coverage-gap.jsx'
 import '../approval-inbox.jsx'
+import '../admin-config.jsx'
 import '../tweaks.jsx'
 
 import App from '../app.jsx'
