@@ -148,8 +148,8 @@ function SensitivityTab({ data }) {
         </BarChart>
       </ResponsiveContainer>
       <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 10.5, color: "var(--ink-3)" }}>
-        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--red)", marginRight: 5, opacity: 0.7 }} />Downside shock ({data.rows[0] ? data.rows.find(r => r.key)?.down_shock_label : ''})</span>
-        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--green)", marginRight: 5, opacity: 0.7 }} />Upside shock</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--red)", marginRight: 5, opacity: 0.7 }} />Downside shock impact (shock size per factor in table below)</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--green)", marginRight: 5, opacity: 0.7 }} />Upside shock impact</span>
       </div>
       <div style={{ overflowX: "auto", marginTop: 12 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
