@@ -146,6 +146,49 @@ def list_active_users() -> list:
         return []
 
 
+def list_all_users() -> list:
+    """Every account regardless of active status — for the admin config screen
+    (org chart + role management), unlike list_active_users() which powers the
+    manager picker and should only ever offer active accounts."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, username, email, display_name, role, is_active, manager_id "
+                    "FROM auth.users ORDER BY username"
+                )
+                return [_row_to_dict(cur, row) for row in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("list_all_users error: %s", exc)
+        return []
+
+
+def set_role(user_id: int, role: str) -> bool:
+    if role not in ("user", "admin"):
+        return False
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE auth.users SET role = %s WHERE id = %s", (role, user_id))
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("set_role error: %s", exc)
+        return False
+
+
+def set_active(user_id: int, is_active: bool) -> bool:
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE auth.users SET is_active = %s WHERE id = %s", (is_active, user_id))
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("set_active error: %s", exc)
+        return False
+
+
 def set_manager(user_id: int, manager_id: Optional[int]) -> bool:
     """Self-service (or admin) assignment of a user's manager. manager_id=None clears it."""
     if manager_id == user_id:

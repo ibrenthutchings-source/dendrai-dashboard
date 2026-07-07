@@ -46,6 +46,7 @@ const NAV_SECTIONS = [
     items: [
       { id: "config",    icon: "gear",   l: "Setup" },
       { id: "uboconfig", icon: "shield", l: "UBO Configuration" },
+      { id: "admin",     icon: "gear",   l: "Workflow Admin", adminOnly: true },
     ],
   }
 ];
@@ -64,7 +65,7 @@ function NavIcon({ name, size = 14 }) {
   return <Icon name={name} size={size}/>;
 }
 
-function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {} }) {
+function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false }) {
   const [collapsed, setCollapsed] = React.useState({});
 
   function isActive(item) {
@@ -101,7 +102,7 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {} }) {
                   <path d="M2 4l3 3 3-3"/>
                 </svg>
               </button>
-              {!isCollapsed && section.items.map(item => {
+              {!isCollapsed && section.items.filter(item => !item.adminOnly || isAdmin).map(item => {
                 const active = isActive(item);
                 const count = item.countKey ? counts[item.countKey] : 0;
                 const pulse = item.pulseKey ? counts[item.pulseKey] : false;

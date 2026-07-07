@@ -1513,6 +1513,7 @@ function App() {
         <LeftNav
           activeScreen={activeScreen}
           activeGovTab={activeGovTab}
+          isAdmin={auth?.user?.role === "admin"}
           onNavigate={(screen, govTab) => {
             setActiveScreen(screen);
             if (govTab) setActiveGovTab(govTab);
@@ -1553,6 +1554,13 @@ function App() {
           {activeScreen === "uboconfig" && (
             <div className="panel active">
               <UboConfigScreen />
+            </div>
+          )}
+
+          {/* ---- Workflow Admin (approval-routing org chart + roles) ---- */}
+          {activeScreen === "admin" && (
+            <div className="panel active">
+              <AdminConfigScreen />
             </div>
           )}
 
