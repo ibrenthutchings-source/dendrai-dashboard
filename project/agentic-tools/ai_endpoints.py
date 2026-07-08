@@ -11,6 +11,7 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
     POST /ai/gate1/recommend     #2  per-risk HITL disposition drafts
     POST /ai/gate2/recommend     #2  per-objective scope drafts
     POST /ai/approval/recommend  #2b manager review-assist for a submitted Approval Inbox item
+    POST /ai/pac/draft-rego      #1b draft a Rego module from a policy narrative
     POST /ai/narrative-analysis  #3  Item 1A / proxy narrative extraction
     POST /ai/persona-brief       #4  role-tailored summary (CAE / CFO / COO)
     POST /ai/audit-report        #4  full markdown audit report
@@ -26,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -445,6 +447,78 @@ def approval_review_recommend(req: ApprovalReviewRequest, current_user: dict = D
         summary=f"{result.get('recommendation')} ({result.get('confidence')})",
     )
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #1b — AI-drafted Rego from a policy narrative (Policy-as-Code screen)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DRAFT_REGO_SYSTEM = """You are an OPA/Rego policy engineer for the Dendrai \
+Policy-as-Code screen. You are given a plain-language internal-controls policy \
+narrative (often pulled directly from a GitHub policy-docs repo via the "Sync Now" \
+feature) for one business process, and must draft an actual enforceable Rego module \
+implementing it.
+
+Follow the house style used by every other module in this system:
+  package controls.oracle_fusion.<process>
+  import future.keywords.in
+  import future.keywords.if
+
+  deny_<category>_event[msg] if {
+      input.event.type == "<event_type>"
+      not input.event.<some_condition>
+      msg := sprintf("<CONTROL-ID>: <human-readable violation>", [input.event.<field>])
+  }
+
+Derive one or more deny_*_event rules per control described in the narrative. Invent \
+control IDs in the pattern used by the narrative if none are given (e.g. AC-01, \
+P2P-03). Add a header comment block (package, process, version 1.0, source note, \
+last-revised date) matching the existing modules' style. Output ONLY the Rego \
+source — no markdown fences, no prose before or after."""
+
+
+class DraftRegoRequest(BaseModel):
+    process: str
+    narrative: str
+
+
+@router.post("/ai/pac/draft-rego")
+def draft_rego(req: DraftRegoRequest):
+    """
+    Convert a plain-language policy narrative (e.g. pulled in via the Policy-as-
+    Code GitHub 'Sync Now' button) into an actual Rego module. The result only
+    replaces the editor's draft — nothing is persisted until the user clicks
+    Save, same as every other AI-assist feature in this app.
+    """
+    _require_ai()
+    if not req.narrative.strip():
+        raise HTTPException(status_code=422, detail="narrative must not be empty")
+
+    user = (
+        f"Process: {req.process}\n\n"
+        f"Policy narrative to convert:\n{req.narrative[:12000]}\n\n"
+        "Draft the Rego module now."
+    )
+    try:
+        text = claude_client.complete_text(
+            _DRAFT_REGO_SYSTEM, user, label="pac_draft_rego",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    # Models sometimes wrap output in a ```rego fence despite instructions not to.
+    rego_content = text.strip()
+    if rego_content.startswith("```"):
+        rego_content = re.sub(r"^```[a-zA-Z]*\n", "", rego_content)
+        rego_content = re.sub(r"\n```$", "", rego_content)
+
+    db.save_ai_analysis(
+        "pac_rego_draft", {"rego_content": rego_content},
+        subject_ref=req.process, model=_MODEL_STRUCTURED, effort="medium",
+        summary=f"Drafted Rego for process '{req.process}'",
+    )
+    return {"rego_content": rego_content}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
