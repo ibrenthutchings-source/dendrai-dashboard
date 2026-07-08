@@ -21,6 +21,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import claude_client
+import db
+from ai_endpoints import _embed_text  # shared OpenAI text-embedding-3-small helper
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
