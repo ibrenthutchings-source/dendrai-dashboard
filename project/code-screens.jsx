@@ -542,6 +542,24 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
   const [ghSyncing,    setGhSyncing]    = useState(false);
   const [ghSyncResult, setGhSyncResult] = useState(null); // { imported:[], skipped:[], files_found } | { error }
 
+  // #1b — AI-drafted Rego from whatever's currently in the editor (e.g. a
+  // narrative just pulled in via Sync Now). Only replaces the local draft —
+  // nothing is persisted until Save Version is clicked.
+  const [drafting, setDrafting] = useState(false);
+  const [draftErr, setDraftErr] = useState(null);
+  const aiDraftAvailable = typeof window !== "undefined" && window.MCP?.aiDraftRego;
+  async function handleDraftRego() {
+    if (!aiDraftAvailable || !rego.trim()) return;
+    setDrafting(true); setDraftErr(null);
+    try {
+      const result = await window.MCP.aiDraftRego(activeProcess, rego);
+      setRego(result.rego_content || "");
+    } catch (e) {
+      setDraftErr(e.message || "AI unavailable");
+    }
+    setDrafting(false);
+  }
+
   const dirty = rego !== origRego;
 
   const loadModule = useCallback((process) => {
@@ -806,6 +824,13 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
             <button className="btn btn-sm" onClick={() => setShowEval(v => !v)}>
               {showEval ? "▾ Evaluate" : "▸ Evaluate"}
             </button>
+            {aiDraftAvailable && (
+              <button className="btn btn-sm" onClick={handleDraftRego} disabled={drafting || !rego.trim()}
+                title="Convert the current editor content (e.g. a narrative just pulled in via Sync Now) into an actual Rego module">
+                <Icon name="spark" size={11}/> {drafting ? "Drafting…" : "Draft Rego with AI"}
+              </button>
+            )}
+            {draftErr && <span className="mono" style={{ fontSize:10, color:"var(--red-ink)" }}>AI draft failed: {draftErr}</span>}
             <span style={{ flex:1 }} />
             {dirty && <span style={{ fontSize:10, color:"#f59e0b" }}>● Unsaved changes</span>}
           </div>
