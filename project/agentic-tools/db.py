@@ -499,6 +499,8 @@ CREATE TABLE IF NOT EXISTS approval_tasks (
     reviewed_by_name  VARCHAR(128),
     reviewed_at       TIMESTAMPTZ,
     review_comment    TEXT,
+    ai_suggested      JSONB,       -- AI "Suggest with AI" values, keyed like `adjustments`; NULL if no AI involved
+    ai_accepted       BOOLEAN,     -- true=preparer kept AI's values as-is, false=overrode, NULL=no AI suggestion
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (run_id, gate_type, item_ref)
@@ -1000,6 +1002,13 @@ ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate4_status VARCHAR(16);
 ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_objective_text TEXT;
 ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_controls TEXT[];
 ALTER TABLE audit_objectives ADD COLUMN IF NOT EXISTS linked_risks TEXT[];
+-- AI-suggestion acceptance tracking: when a Gate 1/2 "Suggest with AI" drafted
+-- the disposition, ai_suggested holds the normalized field values it proposed
+-- (same key names as `adjustments`) and ai_accepted records whether the
+-- preparer's final submission matched them exactly or was overridden. Both
+-- are NULL when no AI suggestion was involved in that item.
+ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS ai_suggested JSONB;
+ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS ai_accepted BOOLEAN;
 
 -- forecasts.UNIQUE(run_id, metric, model, horizon_quarter) was added to the
 -- CREATE TABLE statement after some databases already had the table created
@@ -2541,6 +2550,7 @@ def upsert_approval_task(
     prepared_by_name: str,
     manager_id: Optional[int] = None,
     manager_name: Optional[str] = None,
+    ai_suggested: Optional[dict] = None,
 ) -> Optional[dict]:
     """
     Record a preparer's disposition on a HITL gate item.
@@ -2550,6 +2560,13 @@ def upsert_approval_task(
     routes to the preparer's manager for review; if the preparer has no
     manager configured it auto-approves with a note, so the workflow still
     functions before an org chart / manager assignments exist.
+
+    ai_suggested: when the preparer used "Suggest with AI", the suggested
+    field values keyed the same as `adjustments` (e.g. {"rag": "A", "score": 8}).
+    ai_accepted is derived here — True if the final adjustments match the
+    suggestion on every key the AI proposed, False if any differ, None if no
+    AI suggestion was involved. This is the raw data for measuring how often
+    preparers accept vs. override each AI-assisted gate over time.
     """
     if disposition == "adjusted" and manager_id:
         status, review_comment = "submitted", None
@@ -2557,6 +2574,11 @@ def upsert_approval_task(
         status, review_comment = "approved", "Auto-approved — preparer has no manager configured"
     else:
         status, review_comment = "approved", None
+
+    ai_accepted = None
+    if ai_suggested:
+        adjustments = adjustments or {}
+        ai_accepted = all(adjustments.get(k) == v for k, v in ai_suggested.items())
 
     def _do():
         with _conn() as conn:
@@ -2566,8 +2588,8 @@ def upsert_approval_task(
                     INSERT INTO approval_tasks
                         (run_id, gate_type, item_ref, item_label, status, disposition,
                          adjustments, rationale, prepared_by, prepared_by_name, prepared_at,
-                         manager_id, manager_name, review_comment, updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,NOW())
+                         manager_id, manager_name, review_comment, ai_suggested, ai_accepted, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,NOW())
                     ON CONFLICT (run_id, gate_type, item_ref) DO UPDATE SET
                         item_label       = EXCLUDED.item_label,
                         status           = EXCLUDED.status,
@@ -2583,23 +2605,52 @@ def upsert_approval_task(
                         reviewed_by_name = NULL,
                         reviewed_at      = NULL,
                         review_comment   = EXCLUDED.review_comment,
+                        ai_suggested     = EXCLUDED.ai_suggested,
+                        ai_accepted      = EXCLUDED.ai_accepted,
                         updated_at       = NOW()
                     RETURNING id, run_id, gate_type, item_ref, item_label, status, disposition,
                               adjustments, rationale, prepared_by, prepared_by_name, prepared_at,
                               manager_id, manager_name, reviewed_by, reviewed_by_name, reviewed_at,
-                              review_comment
+                              review_comment, ai_suggested, ai_accepted
                     """,
                     (
                         run_id, gate_type, item_ref, item_label, status, disposition,
                         Json(adjustments) if adjustments is not None else None,
                         rationale, prepared_by, prepared_by_name,
                         manager_id, manager_name, review_comment,
+                        Json(ai_suggested) if ai_suggested is not None else None,
+                        ai_accepted,
                     ),
                 )
                 row = cur.fetchone()
                 cols = [d[0] for d in cur.description]
                 return dict(zip(cols, row)) if row else None
     return _run(_do)
+
+
+def get_ai_acceptance_stats(gate_type: Optional[str] = None) -> list:
+    """Aggregate AI-suggestion acceptance rate per gate_type — the measurable
+    trail for 'did preparers keep what the AI suggested or override it'."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT gate_type,
+                           COUNT(*) FILTER (WHERE ai_suggested IS NOT NULL) AS ai_assisted_count,
+                           COUNT(*) FILTER (WHERE ai_accepted = TRUE)       AS accepted_count,
+                           COUNT(*) FILTER (WHERE ai_accepted = FALSE)      AS overridden_count
+                    FROM approval_tasks
+                    WHERE ai_suggested IS NOT NULL
+                      AND (%s IS NULL OR gate_type = %s)
+                    GROUP BY gate_type
+                    ORDER BY gate_type
+                    """,
+                    (gate_type, gate_type),
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _run(_do) or []
 
 
 def review_approval_task(task_id: int, reviewer_id: int, reviewer_name: str, decision: str, comment: Optional[str]) -> Optional[dict]:

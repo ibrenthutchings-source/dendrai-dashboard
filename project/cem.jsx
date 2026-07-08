@@ -779,6 +779,9 @@ const _AGENT_STYLE = {
   "The Quant":           { accent: "var(--blue-ink)",   bg: "var(--blue-soft)"   },
   "The Linguist":        { accent: "var(--amber-ink)",  bg: "var(--amber-soft)"  },
   "The Graph Architect": { accent: "var(--green-ink)",  bg: "var(--green-soft)"  },
+  // LLM-based 4th opinion — only present when the heuristic Council already
+  // flagged conflict/low-confidence and requires_human_review is true.
+  "The Reviewer (AI)":   { accent: "var(--violet-ink)", bg: "var(--violet-soft)" },
 };
 
 function UBOCouncilRow({ row, expanded, onToggle }) {
