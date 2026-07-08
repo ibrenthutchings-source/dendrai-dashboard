@@ -2685,7 +2685,11 @@ def get_approval_task(task_id: int) -> Optional[dict]:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, run_id, gate_type, item_ref, manager_id, status FROM approval_tasks WHERE id = %s",
+                    """
+                    SELECT id, run_id, gate_type, item_ref, item_label, manager_id, status,
+                           disposition, adjustments, rationale, prepared_by_name
+                    FROM approval_tasks WHERE id = %s
+                    """,
                     (task_id,),
                 )
                 row = cur.fetchone()
@@ -2702,7 +2706,8 @@ def get_approval_inbox(manager_id: int) -> list:
                 cur.execute(
                     """
                     SELECT t.id, t.run_id, t.gate_type, t.item_ref, t.item_label, t.disposition,
-                           t.adjustments, t.rationale, t.prepared_by_name, t.prepared_at, r.ticker
+                           t.adjustments, t.rationale, t.prepared_by_name, t.prepared_at, r.ticker,
+                           t.ai_suggested, t.ai_accepted
                     FROM approval_tasks t
                     JOIN risk_loop_runs r ON r.id = t.run_id
                     WHERE t.manager_id = %s AND t.status = 'submitted'

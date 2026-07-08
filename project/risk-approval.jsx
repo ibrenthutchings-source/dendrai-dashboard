@@ -384,6 +384,16 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
     || !!aiState.reco;
   const valid = rationale.trim().length >= 30 && nameValid;
 
+  // Normalized to the same keys as the submitted adjustments, so the backend
+  // can tell whether the preparer kept the AI's suggestion or overrode it —
+  // see approval_tasks.ai_suggested / ai_accepted.
+  const aiSuggestedFields = aiState.reco ? {
+    ...(aiState.reco.suggested_rag != null      ? { rag: aiState.reco.suggested_rag } : {}),
+    ...(aiState.reco.suggested_score != null    ? { score: aiState.reco.suggested_score } : {}),
+    ...(aiState.reco.suggested_velocity != null ? { velocity: aiState.reco.suggested_velocity } : {}),
+    ...(aiState.reco.suggested_ce != null       ? { ce: aiState.reco.suggested_ce } : {}),
+  } : null;
+
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
       <div className="modal-box" style={{width: 640}}>
@@ -520,7 +530,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
           <div style={{display: "flex", gap: 6}}>
             <button className="btn btn-sm" onClick={onClose}>Cancel</button>
             <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({ name: name.trim(), category: category.trim(), rag, score, velocity, ce, rationale: rationale.trim() })}>
+              onClick={() => onSubmit({ name: name.trim(), category: category.trim(), rag, score, velocity, ce, rationale: rationale.trim(), ai_suggested: aiSuggestedFields })}>
               Submit Adjustment
             </button>
           </div>
