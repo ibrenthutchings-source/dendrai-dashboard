@@ -14,12 +14,14 @@ Router prefix: /pac
     POST /pac/modules/{process}/approve   Add approver sign-off
     GET  /pac/hooks                       Get all external hook configs
     PUT  /pac/hooks/{hook_type}           Save / update a hook config
+    POST /pac/hooks/github/sync           Pull .rego files from the configured repo path and import them
     POST /pac/cac/generate                Generate Controls-as-Code Rego from controls library
     GET  /pac/cac/latest                  Get the latest CaC artifact
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -29,7 +31,9 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -1071,6 +1075,149 @@ async def save_hook(hook_type: str, req: SaveHookRequest):
 
     ok = db.upsert_pac_hook(hook_type, req.config)
     return {"saved": ok, "hook_type": hook_type}
+
+
+def _parse_github_repo(repo_url: str) -> tuple[str, str]:
+    """Extract (owner, repo) from a GitHub HTTPS URL, e.g.
+    'https://github.com/org/policies' -> ('org', 'policies')."""
+    parts = [p for p in urlparse(repo_url.strip()).path.split("/") if p]
+    if len(parts) < 2:
+        raise ValueError(f"Could not parse an owner/repo from repo_url '{repo_url}'")
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    return owner, repo
+
+
+_SYNC_EXTENSIONS = (".rego", ".md", ".txt")
+
+
+def _norm_process_key(s: str) -> str:
+    return s.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _match_process(path: str) -> Optional[str]:
+    """Match a repo file path to a known process by checking the filename
+    stem, then every ancestor directory name — case-insensitive, hyphens
+    and spaces treated as underscores. Handles both a flat layout
+    ('procure-to-pay.md' -> procure_to_pay) and a per-process folder layout
+    ('ITGC/access-management.md' -> itgc, via the folder name)."""
+    parts = path.split("/")
+    filename = parts[-1]
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    for candidate in [stem] + parts[:-1]:
+        key = _norm_process_key(candidate)
+        if key in VALID_PROCESSES:
+            return key
+    return None
+
+
+@router.post("/hooks/github/sync")
+async def sync_github():
+    """
+    Recursively pull every .rego/.md/.txt file out of the configured repo
+    path and import it as a Policy-as-Code module, matching each file to a
+    known process by filename or containing folder (e.g. 'itgc.rego' or
+    'ITGC/access-management.md' both resolve to process 'itgc'). Multiple
+    files matching the same process are concatenated into one module, each
+    section marked with its source path. Files that don't match a known
+    process are reported back as skipped, not silently dropped.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    hook = db.get_pac_hook("github")
+    config = (hook or {}).get("config") or {}
+    repo_url = (config.get("repo_url") or "").strip()
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="GitHub hook not configured — save the repo URL first")
+
+    branch = (config.get("branch") or "main").strip()
+    path_filter = (config.get("path_filter") or "").strip().strip("/")
+    # The UI's field key is 'pat'; accept 'token' too for anything saved via
+    # the pac_save_hook MCP tool, which uses that name instead.
+    token = (config.get("pat") or config.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="No Personal Access Token saved for the GitHub hook")
+
+    try:
+        owner, repo = _parse_github_repo(repo_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "dendrai-policy-as-code-sync",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            tr = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}",
+                params={"recursive": "1"}, headers=headers,
+            )
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail=f"Could not reach GitHub: {exc}")
+
+        if tr.status_code == 401:
+            raise HTTPException(status_code=401, detail="GitHub rejected the token — it may be invalid or expired")
+        if tr.status_code == 403:
+            raise HTTPException(status_code=403, detail="GitHub denied access (403) — check the token's repo permissions")
+        if tr.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Branch '{branch}' not found on {owner}/{repo}")
+        if tr.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"GitHub returned {tr.status_code}: {tr.text[:300]}")
+
+        tree = tr.json().get("tree", [])
+        blobs = [
+            item for item in tree
+            if item.get("type") == "blob"
+            and item["path"].lower().endswith(_SYNC_EXTENSIONS)
+            and (not path_filter or item["path"] == path_filter or item["path"].startswith(path_filter + "/"))
+        ]
+
+        by_process: Dict[str, List[Dict[str, str]]] = {}
+        skipped: List[Dict[str, str]] = []
+
+        for item in blobs:
+            process = _match_process(item["path"])
+            if not process:
+                skipped.append({"name": item["path"], "reason": f"doesn't match a known process ({', '.join(sorted(VALID_PROCESSES))})"})
+                continue
+            try:
+                br = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/git/blobs/{item['sha']}",
+                    headers=headers,
+                )
+                br.raise_for_status()
+                blob = br.json()
+                content = base64.b64decode(blob["content"]).decode("utf-8", errors="replace")
+            except Exception as exc:
+                skipped.append({"name": item["path"], "reason": f"failed to fetch: {exc}"})
+                continue
+            by_process.setdefault(process, []).append({"path": item["path"], "content": content})
+
+        imported: List[Dict[str, Any]] = []
+        for process, files in by_process.items():
+            files.sort(key=lambda f: f["path"])
+            combined = "\n\n".join(f"# ─── {f['path']} ───\n\n{f['content']}" for f in files)
+            module_name = f"controls.oracle_fusion.{process}"
+            module_id = db.save_pac_module(process, module_name, combined, "1.0")
+            if module_id:
+                imported.append({"process": process, "module_name": module_name, "module_id": module_id, "file_count": len(files)})
+            else:
+                skipped.append({"name": ", ".join(f["path"] for f in files), "reason": "database save failed"})
+
+    return {
+        "synced": True,
+        "repo": f"{owner}/{repo}",
+        "branch": branch,
+        "path": path_filter or "/",
+        "files_found": len(blobs),
+        "imported": imported,
+        "skipped": skipped,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

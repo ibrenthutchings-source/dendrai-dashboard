@@ -539,13 +539,13 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
   const [hookMsg,      setHookMsg]      = useState({});
   const [ghSaved,      setGhSaved]      = useState(false);
   const [cfSaved,      setCfSaved]      = useState(false);
+  const [ghSyncing,    setGhSyncing]    = useState(false);
+  const [ghSyncResult, setGhSyncResult] = useState(null); // { imported:[], skipped:[], files_found } | { error }
 
   const dirty = rego !== origRego;
 
-  // Load module when process changes
-  useEffect(() => {
-    setSaveMsg(null);
-    fetch(`/api/pac/modules/${activeProcess}`, { headers: _codeAuthHeaders() })
+  const loadModule = useCallback((process) => {
+    return fetch(`/api/pac/modules/${process}`, { headers: _codeAuthHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return;
@@ -555,12 +555,18 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
           id:             data.id,
           version:        data.version || "1.0",
           last_revised_at:data.last_revised_at,
-          module_name:    data.module_name || `controls.oracle_fusion.${activeProcess}`,
+          module_name:    data.module_name || `controls.oracle_fusion.${process}`,
           approvers:      data.approvers || [],
         });
       })
       .catch(() => {});
-  }, [activeProcess]);
+  }, []);
+
+  // Load module when process changes
+  useEffect(() => {
+    setSaveMsg(null);
+    loadModule(activeProcess);
+  }, [activeProcess, loadModule]);
 
   // Load hooks on mount
   useEffect(() => {
@@ -650,6 +656,24 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
       setTimeout(() => setHookMsg(m => ({ ...m, [type]:null })), 2000);
     } else {
       setHookMsg(m => ({ ...m, [type]:"Save failed" }));
+    }
+  }
+
+  // Pull every .rego file out of the configured repo path and import it as a
+  // module for the matching process, then refresh the currently open editor
+  // in case the active process was one of the files just pulled in.
+  async function syncGithubNow() {
+    setGhSyncing(true); setGhSyncResult(null);
+    try {
+      const r = await fetch("/api/pac/hooks/github/sync", { method:"POST", headers:_codeAuthHeaders() });
+      const d = await r.json();
+      if (!r.ok) { setGhSyncResult({ error: d.detail || "Sync failed" }); return; }
+      setGhSyncResult(d);
+      await loadModule(activeProcess);
+    } catch (e) {
+      setGhSyncResult({ error: e.message || "Network error" });
+    } finally {
+      setGhSyncing(false);
     }
   }
 
@@ -889,6 +913,10 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
             ))}
             <div className="pac-hook-actions">
               <button className="btn btn-sm btn-acc" onClick={() => saveHook("github")}>Save &amp; Connect</button>
+              <button className="btn btn-sm" disabled={!ghSaved || ghSyncing} onClick={syncGithubNow}
+                title={ghSaved ? "Pull .rego files from the configured repo path" : "Save the connection first"}>
+                {ghSyncing ? "Syncing…" : "Sync Now"}
+              </button>
               {hookMsg.github && (
                 <span style={{ fontSize:10, alignSelf:"center",
                   color:hookMsg.github.startsWith("✓") ? "var(--acc)" : "var(--red)" }}>
@@ -896,8 +924,34 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
                 </span>
               )}
             </div>
+            {ghSyncResult && (
+              <div className="mono" style={{
+                fontSize:10, lineHeight:1.6, padding:"8px 10px", borderRadius:6,
+                background: ghSyncResult.error ? "var(--red-soft, rgba(239,68,68,0.08))" : "var(--surface-2, var(--surface))",
+                border:"1px solid var(--line)", color: ghSyncResult.error ? "var(--red)" : "var(--ink-2)",
+              }}>
+                {ghSyncResult.error ? (
+                  <>Sync failed: {ghSyncResult.error}</>
+                ) : (
+                  <>
+                    Found {ghSyncResult.files_found} file{ghSyncResult.files_found === 1 ? "" : "s"} (.rego/.md/.txt) in {ghSyncResult.repo}@{ghSyncResult.branch}:{ghSyncResult.path}
+                    {ghSyncResult.imported?.length > 0 && (
+                      <div>✓ Imported: {ghSyncResult.imported.map(m => `${m.process} (${m.file_count} file${m.file_count === 1 ? "" : "s"})`).join(", ")}</div>
+                    )}
+                    {ghSyncResult.skipped?.length > 0 && (
+                      <div style={{ color:"var(--amber-ink, #b45309)" }}>
+                        Skipped: {ghSyncResult.skipped.map(s => `${s.name} (${s.reason})`).join("; ")}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             <p style={{ fontSize:10, color:"var(--ink-3)", lineHeight:1.6, margin:0 }}>
-              Syncs plain text or Markdown policy files from the specified GitHub repo path. Token is stored server-side and persists until updated.
+              Syncs plain text, Markdown, or Rego policy files from the specified GitHub repo path. Token is stored server-side and persists until updated.
+              "Sync Now" recursively scans the repo path for <code>.rego</code>/<code>.md</code>/<code>.txt</code> files and matches each one to a process by
+              filename or containing folder (e.g. <code>itgc.rego</code> or <code>ITGC/access-management.md</code> both resolve to the ITGC process).
+              Multiple matching files are combined into that process's module.
             </p>
           </div>
 
