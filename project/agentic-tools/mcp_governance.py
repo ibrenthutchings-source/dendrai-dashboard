@@ -69,6 +69,7 @@ except ImportError as exc:
     logger.warning("UBO not importable — MCP governance adjudication disabled: %s", exc)
 
 import db  # project/agentic-tools/db.py — psycopg2 thread pool
+import claude_client  # optional 4th-opinion reviewer for conflicted/low-confidence UROs
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -140,6 +141,87 @@ def _dispatch_alert(
         logger.info("Alert dispatched for tool=%s verdict=%s", tool_name, verdict)
     except Exception as exc:
         logger.warning("Alert webhook failed: %s", exc)
+
+
+# ── LLM 4th-opinion reviewer ────────────────────────────────────────────────────
+# The Quant / Linguist / Graph Architect are pure heuristics — regex, thresholds,
+# temporal-graph correlation. When they disagree or land at low confidence (i.e.
+# the Adjudicator already set requires_human_review), we get a real semantic read
+# from Claude before the human ever sees it. This is strictly advisory: it is
+# appended to council_votes as a 4th entry for the reviewer to read, and never
+# changes the Adjudicator's deterministic verdict/score/requires_human_review —
+# CRITICAL/HIGH-tier routing stays fully deterministic even if the LLM call fails
+# or disagrees.
+
+_COUNCIL_REVIEW_SYSTEM = """You are a senior fourth reviewer on the UBO Governance \
+Council, brought in only when the three heuristic agents (The Quant, The Linguist, \
+The Graph Architect) disagree or produced a low-confidence verdict. You have their \
+full evaluations plus the Adjudicator's conflict analysis, and the underlying event \
+evidence. Read the narrative/evidence directly and form your own independent \
+judgment — do not simply average the other agents' verdicts. Call out anything the \
+keyword-based heuristics likely missed: sarcasm, unusual phrasing, a legitimate-\
+sounding justification that doesn't actually address the risk, or a false positive \
+from an innocuous keyword match. Keep reasoning to 2-4 sentences."""
+
+_COUNCIL_REVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "verdict":    {"type": "string", "enum": ["ESCALATE", "MONITOR", "CLEAR", "INSUFFICIENT_DATA"]},
+        "confidence": {"type": "number"},
+        "risk_delta": {"type": "number"},
+        "reasoning":  {"type": "string"},
+    },
+    "required": ["verdict", "confidence", "risk_delta", "reasoning"],
+}
+
+
+def _llm_council_opinion(uro: "URO", adj: Any) -> dict | None:
+    """Advisory 4th evaluation from Claude. Returns an AgentEvaluation-shaped
+    dict (same fields council_votes already stores) or None on any failure —
+    this must never break adjudication."""
+    if not claude_client.is_available():
+        return None
+    try:
+        cp = uro.conformed_payload
+        event_payload = {
+            "event_type":     uro.event_type.value if uro.event_type else None,
+            "source_system":  uro.source_system.value if uro.source_system else None,
+            "actor":          getattr(uro, "actor_id", None),
+            "resource":       cp.resource_id if cp else None,
+            "risk_indicators": cp.risk_indicators if cp else {},
+            "raw_narrative_fields": {
+                k: v for k, v in (uro.raw_payload.content or {}).items()
+                if isinstance(v, str) and len(v) < 2000
+            },
+        }
+        agent_summaries = [
+            {"agent": e.agent_name, "verdict": e.verdict.value, "confidence": e.confidence,
+             "risk_delta": e.risk_delta, "reasoning": e.reasoning}
+            for e in adj.evaluations
+        ]
+        user = (
+            f"Event under review:\n{json.dumps(event_payload, indent=2, default=str)[:6000]}\n\n"
+            f"Heuristic Council evaluations:\n{json.dumps(agent_summaries, indent=2)}\n\n"
+            f"Adjudicator conflict analysis: {adj.conflict_reasoning}\n\n"
+            "Form your own independent verdict."
+        )
+        result = claude_client.complete_json(
+            _COUNCIL_REVIEW_SYSTEM, user, _COUNCIL_REVIEW_SCHEMA,
+            label="ubo_council_review", model="claude-sonnet-4-6", effort="medium", max_tokens=1200,
+        )
+        return {
+            "agent_name":    "The Reviewer (AI)",
+            "verdict":       result.get("verdict", "INSUFFICIENT_DATA"),
+            "confidence":    float(result.get("confidence", 0.5)),
+            "risk_delta":    float(result.get("risk_delta", 0.0)),
+            "reasoning":     result.get("reasoning", ""),
+            "evidence":      {},
+            "evaluation_ms": 0,
+        }
+    except Exception as exc:
+        logger.warning("LLM council review skipped (uro=%s): %s", uro.id, exc)
+        return None
 
 
 # ── Database helpers (synchronous psycopg2, called via asyncio.to_thread) ─────
@@ -241,7 +323,7 @@ def _write_adjudication(
     if not db.is_available():
         return
     adj = uro.adjudication
-    council_votes = json.dumps([
+    council_votes_list = [
         {
             "agent_name":    e.agent_name,
             "verdict":       e.verdict.value,
@@ -252,7 +334,14 @@ def _write_adjudication(
             "evaluation_ms": e.evaluation_ms,
         }
         for e in (adj.evaluations if adj else [])
-    ])
+    ]
+    # Only the cases the heuristic Council already flagged for human review get
+    # a 4th, LLM-based opinion — most events never pay for the extra API call.
+    if adj and adj.requires_human_review:
+        llm_eval = _llm_council_opinion(uro, adj)
+        if llm_eval:
+            council_votes_list.append(llm_eval)
+    council_votes = json.dumps(council_votes_list)
     telemetry_id        = source_id if origin == "mcp" else None
     system_telemetry_id  = source_id if origin == "system" else None
     source_system_label  = "MCP_PROXY" if origin == "mcp" else "SYSTEM_TELEMETRY"
