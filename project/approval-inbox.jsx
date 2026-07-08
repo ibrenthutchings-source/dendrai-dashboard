@@ -49,6 +49,7 @@ function InboxItem({ item, onDecide }) {
   const [comment, setComment] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
+  const [aiState, setAiState] = React.useState({ loading: false, error: null, reco: null });
 
   async function decide(decision) {
     setBusy(true); setErr(null);
@@ -57,6 +58,21 @@ function InboxItem({ item, onDecide }) {
     } catch (e) {
       setErr(e.message);
       setBusy(false);
+    }
+  }
+
+  // #2b — draft a review recommendation the manager accepts or overrides;
+  // never auto-decides, only pre-fills the comment for them to edit.
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiApprovalRecommend;
+  async function runAiSuggest() {
+    if (!aiAvailable) return;
+    setAiState({ loading: true, error: null, reco: null });
+    try {
+      const reco = await window.MCP.aiApprovalRecommend(item.id);
+      setComment(`[AI suggestion, ${reco.confidence} confidence] ${reco.reasoning || ""}`.trim());
+      setAiState({ loading: false, error: null, reco });
+    } catch (e) {
+      setAiState({ loading: false, error: e.message || "AI unavailable", reco: null });
     }
   }
 
@@ -87,11 +103,37 @@ function InboxItem({ item, onDecide }) {
             </div>
           )}
           <AdjustmentSummary adjustments={item.adjustments} />
+          {item.ai_suggested && (
+            <div className="mono" style={{ fontSize: 10, marginTop: 8, color: item.ai_accepted ? "var(--green-ink)" : "var(--amber-ink)" }}>
+              <Icon name="spark" size={10} />{" "}
+              {item.ai_accepted
+                ? "Preparer kept the AI's suggested values as-is"
+                : "Preparer adjusted the AI's suggestion before submitting"}
+            </div>
+          )}
 
           <div style={{ marginTop: 14 }}>
-            <label className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 4 }}>
-              REVIEW COMMENT <span style={{ textTransform: "none", letterSpacing: 0 }}>(optional for approve, recommended for reject)</span>
-            </label>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+              <label className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em" }}>
+                REVIEW COMMENT <span style={{ textTransform: "none", letterSpacing: 0 }}>(optional for approve, recommended for reject)</span>
+              </label>
+              {aiAvailable && (
+                <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+                  title="Draft a review recommendation with Claude — accept or override as needed">
+                  <Icon name="spark" size={11} /> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+                </button>
+              )}
+            </div>
+            {aiState.error && (
+              <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 6 }}>
+                AI suggestion unavailable: {aiState.error}
+              </div>
+            )}
+            {aiState.reco && (
+              <div className="mono" style={{ fontSize: 10.5, color: "var(--acc-ink)", marginBottom: 6 }}>
+                AI recommends: <b>{aiState.reco.recommendation}</b> ({aiState.reco.confidence} confidence) — comment pre-filled below, edit freely.
+              </div>
+            )}
             <textarea className="fi-ta" value={comment} onChange={e => setComment(e.target.value)}
               placeholder="Add context for the audit trail…" style={{ minHeight: 60, width: "100%", boxSizing: "border-box" }} />
           </div>

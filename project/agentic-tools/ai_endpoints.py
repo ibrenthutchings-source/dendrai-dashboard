@@ -10,6 +10,7 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
 
     POST /ai/gate1/recommend     #2  per-risk HITL disposition drafts
     POST /ai/gate2/recommend     #2  per-objective scope drafts
+    POST /ai/approval/recommend  #2b manager review-assist for a submitted Approval Inbox item
     POST /ai/narrative-analysis  #3  Item 1A / proxy narrative extraction
     POST /ai/persona-brief       #4  role-tailored summary (CAE / CFO / COO)
     POST /ai/audit-report        #4  full markdown audit report
@@ -27,12 +28,13 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import claude_client
 import db
+from auth_endpoints import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -366,6 +368,81 @@ def gate2_recommend(req: Gate2Request):
         "gate2_recommendation", result,
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="medium",
         summary=f"{len(result.get('recommendations', []))} objective scopes",
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #2b — AI-assisted manager review (Approval Inbox second-line review)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_APPROVAL_REVIEW_SYSTEM = """You are assisting a manager who is second-line \
+reviewing a preparer's HITL gate override before it is finalized. You receive the \
+gate type, the item under review, the preparer's proposed field changes, and the \
+preparer's written rationale.
+
+Recommend "approved" or "rejected" and explain why in 2-4 sentences, grounded \
+specifically in whether the rationale actually justifies the proposed changes. Flag \
+rationales that are vague, boilerplate, or don't address the specific fields being \
+changed — that is exactly the kind of override this review step exists to catch. Do \
+not rubber-stamp: only recommend "approved" when the rationale genuinely supports \
+the change."""
+
+_APPROVAL_REVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "recommendation": {"type": "string", "enum": ["approved", "rejected"]},
+        "confidence":      {"type": "string", "enum": ["low", "medium", "high"]},
+        "reasoning":       {"type": "string"},
+    },
+    "required": ["recommendation", "confidence", "reasoning"],
+}
+
+
+class ApprovalReviewRequest(BaseModel):
+    task_id: int
+
+
+@router.post("/ai/approval/recommend")
+def approval_review_recommend(req: ApprovalReviewRequest, current_user: dict = Depends(get_current_user)):
+    """
+    AI-drafted approve/reject recommendation for a manager reviewing a submitted
+    HITL gate override in the Approval Inbox. Purely advisory — the manager still
+    has to click Approve/Reject themselves; this never auto-decides.
+    """
+    _require_ai()
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    task = db.get_approval_task(req.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Approval task not found")
+    if task.get("manager_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="You are not the assigned reviewer for this item")
+    if task.get("status") != "submitted":
+        raise HTTPException(status_code=409, detail=f"Item is not awaiting review (status: {task.get('status')})")
+
+    user = (
+        f"Gate type: {task.get('gate_type')}\n"
+        f"Item: {task.get('item_label') or task.get('item_ref')}\n"
+        f"Preparer: {task.get('prepared_by_name')}\n\n"
+        f"Proposed changes:\n{json.dumps(task.get('adjustments') or {}, indent=2, default=str)}\n\n"
+        f"Preparer's rationale:\n{task.get('rationale') or '(none provided)'}\n\n"
+        "Recommend approve or reject."
+    )
+    try:
+        result = claude_client.complete_json(
+            _APPROVAL_REVIEW_SYSTEM, user, _APPROVAL_REVIEW_SCHEMA, label="approval_review",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=1200,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    db.save_ai_analysis(
+        "approval_review_recommendation", result,
+        subject_ref=str(req.task_id), model=_MODEL_STRUCTURED, effort="medium",
+        summary=f"{result.get('recommendation')} ({result.get('confidence')})",
     )
     return result
 

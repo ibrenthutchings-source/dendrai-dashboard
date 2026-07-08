@@ -453,6 +453,17 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
     || residualReduction !== origResidual;
   const valid = rationale.trim().length >= 30 && hoursValid && residualValid && objectiveText.trim().length > 0;
 
+  // Normalized to the same keys as the submitted adjustments, so the backend
+  // can tell whether the preparer kept the AI's suggestion or overrode it —
+  // see approval_tasks.ai_suggested / ai_accepted.
+  const aiSuggestedFields = aiState.reco ? {
+    ...(aiState.reco.suggested_priority != null            ? { priority: aiState.reco.suggested_priority } : {}),
+    ...(typeof aiState.reco.suggested_sprint === "number"   ? { sprint: aiState.reco.suggested_sprint } : {}),
+    ...(typeof aiState.reco.suggested_hours === "number"    ? { hours: aiState.reco.suggested_hours } : {}),
+    ...(Array.isArray(aiState.reco.suggested_linked_risks)  ? { linked_risks: aiState.reco.suggested_linked_risks } : {}),
+    ...(typeof aiState.reco.suggested_residual_reduction === "number" ? { residualRiskReduction: aiState.reco.suggested_residual_reduction } : {}),
+  } : null;
+
   return (
     <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
       <div className="modal-box" style={{width: 640}}>
@@ -713,6 +724,7 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
                 controls: controlRefs,
                 residualRiskReduction: residualReduction,
                 rationale: rationale.trim(),
+                ai_suggested: aiSuggestedFields,
               })}>
               Submit Adjustment
             </button>

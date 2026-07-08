@@ -269,13 +269,13 @@ window.MCP = (function () {
   // identity is always resolved server-side from the login session, never
   // sent by the client. See approvals_endpoints.py.
 
-  async function prepareApprovalTask({ runId, gateType, itemRef, itemLabel, disposition, adjustments, rationale }) {
+  async function prepareApprovalTask({ runId, gateType, itemRef, itemLabel, disposition, adjustments, rationale, aiSuggested }) {
     const res = await fetch('/approvals/prepare', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         run_id: runId, gate_type: gateType, item_ref: itemRef, item_label: itemLabel,
-        disposition, adjustments, rationale,
+        disposition, adjustments, rationale, ai_suggested: aiSuggested || null,
       }),
     });
     if (!res.ok) throw new Error(await res.text());
@@ -443,6 +443,12 @@ window.MCP = (function () {
     return _postAi('/ai/gate2/recommend', { ticker, run_id: runId, objectives, risks });
   }
 
+  /** #2b — AI-drafted approve/reject recommendation for a manager reviewing a
+   *  submitted Approval Inbox item. Returns { recommendation, confidence, reasoning }. */
+  function aiApprovalRecommend(taskId) {
+    return _postAi('/ai/approval/recommend', { task_id: taskId });
+  }
+
   /** #3 — Item 1A / proxy narrative analysis. Returns emerging_risks, yoy_changes, summary. */
   function aiNarrative(ticker, runId = null, opts = {}) {
     return _postAi('/ai/narrative-analysis', {
@@ -607,6 +613,7 @@ window.MCP = (function () {
     aiEnabled,
     aiGate1Recommend,
     aiGate2Recommend,
+    aiApprovalRecommend,
     aiNarrative,
     aiPersonaBrief,
     aiAuditReport,

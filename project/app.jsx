@@ -398,11 +398,11 @@ function App() {
 
   // ---- Real approval workflow: submit a preparer disposition, get back the
   // resolved status (submitted-to-manager, or auto-approved if no manager) ----
-  const submitApprovalTask = useCallback(async (gateType, itemRef, itemLabel, disposition, adjustments, rationale) => {
+  const submitApprovalTask = useCallback(async (gateType, itemRef, itemLabel, disposition, adjustments, rationale, aiSuggested) => {
     if (!mcpMode || !runIdRef.current) return null;
     try {
       const result = await MCP.prepareApprovalTask({
-        runId: runIdRef.current, gateType, itemRef, itemLabel, disposition, adjustments, rationale,
+        runId: runIdRef.current, gateType, itemRef, itemLabel, disposition, adjustments, rationale, aiSuggested,
       });
       return result.task;
     } catch (e) {
@@ -429,7 +429,7 @@ function App() {
     if (!id) return;
     const risk = (output.s2?.risks || []).find(r => r.id === id);
     const adjustments = { name: payload.name, category: payload.category, rag: payload.rag, score: payload.score, velocity: payload.velocity, ce: payload.ce, _isNew: false };
-    const task = await submitApprovalTask("risk", id, payload.name || risk?.name, "adjusted", adjustments, payload.rationale);
+    const task = await submitApprovalTask("risk", id, payload.name || risk?.name, "adjusted", adjustments, payload.rationale, payload.ai_suggested);
     setRiskApprovals(prev => ({
       ...prev,
       [id]: {
@@ -493,7 +493,7 @@ function App() {
       residualRiskReduction: payload.residualRiskReduction,
       _isNew: false,
     };
-    const task = await submitApprovalTask("objective", id, payload.objective, "adjusted", adjustments, payload.rationale);
+    const task = await submitApprovalTask("objective", id, payload.objective, "adjusted", adjustments, payload.rationale, payload.ai_suggested);
     setScopeApprovals(prev => ({
       ...prev,
       [id]: {

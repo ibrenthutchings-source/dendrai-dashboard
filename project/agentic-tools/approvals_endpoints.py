@@ -83,6 +83,7 @@ def prepare_item(req: PrepareRequest, current_user: dict = Depends(get_current_u
         prepared_by_name=_display_name(current_user),
         manager_id=manager["id"] if manager else None,
         manager_name=_display_name(manager) if manager else None,
+        ai_suggested=req.ai_suggested,
     )
     if not task:
         raise HTTPException(status_code=500, detail="Failed to save approval task")
@@ -131,3 +132,15 @@ def get_run_status(run_id: int, gate_type: Optional[str] = Query(default=None), 
     if not db.is_available():
         return {"tasks": []}
     return {"tasks": db.get_approval_tasks_for_run(run_id, gate_type)}
+
+
+@router.get("/ai-acceptance-stats")
+def get_ai_acceptance_stats(gate_type: Optional[str] = Query(default=None), current_user: dict = Depends(require_admin)):
+    """
+    Per-gate-type counts of how often a preparer kept an AI 'Suggest with AI'
+    disposition as-is vs. overrode it — the measurable trail for whether the
+    AI recommendations are actually trusted, not just offered.
+    """
+    if not db.is_available():
+        return {"stats": []}
+    return {"stats": db.get_ai_acceptance_stats(gate_type)}
