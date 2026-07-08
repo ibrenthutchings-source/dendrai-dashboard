@@ -18,6 +18,7 @@ Endpoints:
     POST /approvals/review             Manager approves or rejects a submitted item
     GET  /approvals/inbox              Items awaiting the current user's review
     GET  /approvals/status/{run_id}    All approval tasks for a run (restores gate UI state)
+    GET  /approvals/ai-acceptance-stats  Admin: how often preparers keep vs. override AI suggestions
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from pydantic import BaseModel
 
 import auth_db
 import db
-from auth_endpoints import get_current_user
+from auth_endpoints import get_current_user, require_admin
 
 router = APIRouter(prefix="/approvals", tags=["Approval Workflow"])
 
@@ -42,6 +43,7 @@ class PrepareRequest(BaseModel):
     disposition: str          # 'approved' | 'adjusted'
     adjustments: Optional[Dict[str, Any]] = None
     rationale: Optional[str] = None
+    ai_suggested: Optional[Dict[str, Any]] = None  # "Suggest with AI" values, if that was used
 
 
 class ReviewRequest(BaseModel):
