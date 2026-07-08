@@ -119,6 +119,13 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
       },
+      // Policy-as-Code / Controls-as-Code (pac_endpoints.py). The backend
+      // registers this router with prefix="/api" itself, so the path is
+      // already /api/pac/... on both sides — direct passthrough, no rewrite.
+      '/api/pac': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
     },
   },
   // vite preview (port 4173) needs its own proxy block — server.proxy is dev-only
@@ -156,6 +163,10 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
+      },
+      '/api/pac': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
       },
       '/auth/': {
         target: 'http://127.0.0.1:8001',
