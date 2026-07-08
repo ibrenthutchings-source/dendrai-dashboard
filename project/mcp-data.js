@@ -449,6 +449,12 @@ window.MCP = (function () {
     return _postAi('/ai/approval/recommend', { task_id: taskId });
   }
 
+  /** #1b — Draft a Rego module from a plain-language policy narrative (e.g. one
+   *  pulled in via the Policy-as-Code GitHub "Sync Now" button). Returns { rego_content }. */
+  function aiDraftRego(process, narrative) {
+    return _postAi('/ai/pac/draft-rego', { process, narrative });
+  }
+
   /** #3 — Item 1A / proxy narrative analysis. Returns emerging_risks, yoy_changes, summary. */
   function aiNarrative(ticker, runId = null, opts = {}) {
     return _postAi('/ai/narrative-analysis', {
@@ -614,6 +620,7 @@ window.MCP = (function () {
     aiGate1Recommend,
     aiGate2Recommend,
     aiApprovalRecommend,
+    aiDraftRego,
     aiNarrative,
     aiPersonaBrief,
     aiAuditReport,
