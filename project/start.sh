@@ -1,7 +1,12 @@
 #!/bin/sh
 set -e
-PORT=${PORT:-8080}
-echo "DIAGNOSTIC: resolved PORT=${PORT} (unset in env means the 8080 fallback was used)"
+# Railway's public networking for this service targets port 80 (confirmed in
+# Settings > Networking) but doesn't inject a PORT env var here — the old
+# ${PORT:-8080} fallback silently mismatched that, so nginx listened on 8080
+# while Railway's edge routed public traffic to 80, 502ing every request even
+# though the container itself was healthy. Default to 80 to match.
+PORT=${PORT:-80}
+echo "DIAGNOSTIC: resolved PORT=${PORT} (unset in env means the 80 fallback was used)"
 sed -i "s/listen 80;/listen ${PORT};/" /etc/nginx/conf.d/default.conf
 echo "DIAGNOSTIC: nginx listen directive after substitution:"
 grep -n "listen" /etc/nginx/conf.d/default.conf
