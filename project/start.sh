@@ -1,7 +1,10 @@
 #!/bin/sh
 set -e
 PORT=${PORT:-8080}
+echo "DIAGNOSTIC: resolved PORT=${PORT} (unset in env means the 8080 fallback was used)"
 sed -i "s/listen 80;/listen ${PORT};/" /etc/nginx/conf.d/default.conf
+echo "DIAGNOSTIC: nginx listen directive after substitution:"
+grep -n "listen" /etc/nginx/conf.d/default.conf
 cd /app/agentic-tools
 
 # Start uvicorn; capture its PID so we can detect crashes below.
@@ -34,5 +37,10 @@ if ! kill -0 ${UVICORN_PID} 2>/dev/null; then
   echo "ERROR: uvicorn died before nginx could start"
   exit 1
 fi
+
+# Validate the config explicitly so a bad `location` block fails loudly here
+# instead of nginx silently refusing to start (or restarting) later.
+echo "DIAGNOSTIC: running nginx -t"
+nginx -t
 
 exec nginx -g 'daemon off;'
