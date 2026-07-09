@@ -299,6 +299,11 @@ function App() {
         if (nr)                                          setNarrativeResult(nr);
         const os = s.openStages || s.open_stages;
         if (os)                                          setOpenStages(new Set(os));
+        // profile holds the actual chart data (forecasts.revenue/margin/eps/...)
+        // rendered by pipeline.jsx — without restoring it, stage/gate state comes
+        // back as "complete" but the charts silently show the hardcoded mock
+        // default profile instead of the last real run's data.
+        if (s.profile)                                   setProfile(s.profile);
       };
       try {
         const res = await fetch("/api/mcp/loop/last-state");
@@ -329,6 +334,7 @@ function App() {
       manualAudits,
       narrativeResult,
       openStages: [...openStages],
+      profile,
       savedAt: Date.now(),
     };
     // Write-through: localStorage for instant offline access, DB for persistence
@@ -338,7 +344,7 @@ function App() {
       headers: _authHeaders(),
       body: JSON.stringify(payload),
     }).catch(() => {});
-  }, [hasRun, output]);
+  }, [hasRun, output, profile]);
 
   const auth = window.useAuth ? window.useAuth() : null;
   const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
