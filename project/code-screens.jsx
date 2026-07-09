@@ -664,16 +664,26 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
 
   async function saveHook(type) {
     const config = type === "github" ? ghConfig : cfConfig;
-    const r = await fetch(`/api/pac/hooks/${type}`, {
-      method: "PUT", headers: _codeAuthHeaders(),
-      body: JSON.stringify({ config }),
-    });
-    if (r.ok) {
-      if (type === "github") setGhSaved(true); else setCfSaved(true);
-      setHookMsg(m => ({ ...m, [type]:"✓ Saved" }));
-      setTimeout(() => setHookMsg(m => ({ ...m, [type]:null })), 2000);
-    } else {
-      setHookMsg(m => ({ ...m, [type]:"Save failed" }));
+    try {
+      const r = await fetch(`/api/pac/hooks/${type}`, {
+        method: "PUT", headers: _codeAuthHeaders(),
+        body: JSON.stringify({ config }),
+      });
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (d.saved === false) {
+          setHookMsg(m => ({ ...m, [type]: d.note || "Save failed — database not configured" }));
+          return;
+        }
+        if (type === "github") setGhSaved(true); else setCfSaved(true);
+        setHookMsg(m => ({ ...m, [type]:"✓ Saved" }));
+        setTimeout(() => setHookMsg(m => ({ ...m, [type]:null })), 2000);
+      } else {
+        const d = await r.json().catch(() => ({}));
+        setHookMsg(m => ({ ...m, [type]: `Save failed (${r.status}) — ${d.detail || r.statusText}` }));
+      }
+    } catch (e) {
+      setHookMsg(m => ({ ...m, [type]: `Save failed — ${e.message}` }));
     }
   }
 
