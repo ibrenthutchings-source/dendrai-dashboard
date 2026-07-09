@@ -64,7 +64,7 @@ function PasswordModeFields({ mode, setMode, password, setPassword }) {
       </div>
       {mode === "manual" && (
         <>
-          <input type="text" className="fi-input" value={password} onChange={e => setPassword(e.target.value)}
+          <input type="password" className="fi-input" value={password} onChange={e => setPassword(e.target.value)}
             placeholder="Enter a password" autoComplete="new-password" />
           <PasswordStrengthRow pw={password} />
         </>
