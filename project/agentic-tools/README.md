@@ -90,14 +90,16 @@ Connects to the SEC EDGAR financial database — the authoritative source of pub
 
 ### FRED (`fred_tool.py` + `fred_mcp_server.py`)
 
-Identifies FRED macro leading indicators that correlate with a company's revenue.
+Identifies FRED macro leading indicators that correlate with a company's revenue, EPS, NetIncome, and EBITDA.
 
 **Functions:**
-- `run_analysis(ticker, api_key, min_r)` — correlation analysis across hundreds of FRED series
+- `run_analysis(ticker, api_key, min_r)` — correlation analysis across hundreds of FRED series, computing each series' `optimal_lag_quarters`
 
 **REST endpoint:** `POST /fred/correlations`
 
 **MCP server:** `fred_mcp_server.py`
+
+**Feeds forecasting, not just display**: when a live `FRED_API_KEY` is set, `predictive_analytics_tool.py`'s `_build_fred_feature_matrix()` turns the top-5 correlated indicators (by `|pearson_r|`) for each metric into lag-shifted feature arrays — each array position holds the macro reading from that series' own `optimal_lag_quarters` before the target quarter, so it's real, already-published data even when extended into the forecast horizon. These arrays feed the Random Forest leg of the Revenue/EPS/NetIncome/EBITDA ensemble forecasts (ARIMA/Prophet stay univariate). Without a key, forecasts are unchanged from the univariate baseline. The indicators actually used for a given forecast are reported back in `forecast.fred_features_used`.
 
 ---
 
@@ -340,6 +342,8 @@ Claude-powered analysis layers. All require `ANTHROPIC_API_KEY`; return HTTP 503
 Tracks input/output token counts and estimated USD cost per AI call, per run.
 
 **REST endpoints:** `GET /history/runs/{run_id}/token-cost`, `GET /history/runs/{run_id}/ai-analyses`
+
+**Token Usage screen** (`GET /token-usage/summary?days=N`, frontend `project/token-usage.jsx`): every LLM call made through `claude_client.py` (structured completions, free-form completions, the tool-use agent loops, and the chat streaming endpoint) is attributed to the authenticated caller and recorded to `token_usage_calls` with `user_id`/`username`, in addition to the existing `label`/`model`/token/cost columns. `label` is the "by feature/source" axis shown in the UI (`"chat"`, `"gate1"`, `"narrative"`, `"pac_draft_rego"`, etc.) — there's no separate per-MCP-server token cost, since MCP tool calls themselves are free function calls; only the orchestrating Claude call that decides to invoke them costs tokens. The endpoint also returns all-time calendar rollups (by month, month-to-date, by year, year-to-date) computed from `cost_usd` as stored at recording time, i.e. the pricing in effect when each call was actually made, not recomputed against current pricing. Calls made before this feature existed have no `user_id` and show as "Unknown". Nav-permission-gated like any other non-admin screen (`auth.screen_permissions`), not hardcoded admin-only, so an admin can grant/restrict it per user from User Configuration → Screen Access.
 
 ---
 
