@@ -1984,6 +1984,16 @@ function App() {
 
       </div>
 
+      {/* ---- AI disclaimer — persistent, present on every screen (outside the
+           per-screen activeScreen tree, so no per-screen wiring needed) ---- */}
+      <div className="ai-disclaimer">
+        <Icon name="spark" size={11} />
+        <span>
+          Dendrai combines deterministic financial models with AI-generated analysis, recommendations, and drafted content (Claude).
+          AI outputs may be inaccurate or incomplete — review before relying on them for decisions.
+        </span>
+      </div>
+
       {personaOpen && (
         <div className="pm-overlay" onClick={() => setPersonaOpen(false)}>
           <div className="pm-card" onClick={e => e.stopPropagation()}>
