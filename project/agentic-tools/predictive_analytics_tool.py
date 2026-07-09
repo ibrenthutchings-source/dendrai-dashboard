@@ -278,11 +278,22 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[
             om_vals = [p["value"] for p in op_margin]
             if len(om_vals) >= 8:
                 try:
-                    om_bt = walk_forward_backtest(om_vals)
-                    result["op_margin_forecast"] = compute_ensemble_forecast(
+                    # Op Margin = OperatingIncome / Revenue has no correlation
+                    # entry of its own (fred_tool.py only correlates raw XBRL
+                    # metrics) — borrow OperatingIncome's correlated indicators
+                    # and lags, aligned to op_margin's own quarter positions.
+                    fred_matrix = fred_meta = None
+                    if macro_info:
+                        fred_matrix, fred_meta = _build_fred_feature_matrix(
+                            op_margin, macro_info, "OperatingIncome", forecast_horizon)
+                    om_bt = walk_forward_backtest(om_vals, fred_matrix=fred_matrix)
+                    om_fc = compute_ensemble_forecast(
                         om_vals, horizon=4,
-                        weights=om_bt.get("calibrated_weights"),
+                        weights=om_bt.get("calibrated_weights"), fred_matrix=fred_matrix,
                     )
+                    if fred_meta:
+                        om_fc["fred_features_used"] = fred_meta
+                    result["op_margin_forecast"] = om_fc
                     result["op_margin_backtest"] = om_bt
                 except Exception:
                     pass
@@ -2011,11 +2022,21 @@ def run_full_analysis(
             gm_vals = [p["value"] for p in gm_history]
             if len(gm_vals) >= 8:
                 try:
-                    gm_bt = walk_forward_backtest(gm_vals)
-                    result["forecast"]["margin_forecast"] = compute_ensemble_forecast(
+                    # Gross Margin = GrossProfit / Revenue has no correlation
+                    # entry of its own — borrow GrossProfit's correlated
+                    # indicators/lags, aligned to gm_history's own quarters.
+                    gm_fred_matrix = gm_fred_meta = None
+                    if macro_info:
+                        gm_fred_matrix, gm_fred_meta = _build_fred_feature_matrix(
+                            gm_history, macro_info, "GrossProfit", forecast_horizon)
+                    gm_bt = walk_forward_backtest(gm_vals, fred_matrix=gm_fred_matrix)
+                    gm_fc = compute_ensemble_forecast(
                         gm_vals, horizon=forecast_horizon,
-                        weights=gm_bt.get("calibrated_weights"),
+                        weights=gm_bt.get("calibrated_weights"), fred_matrix=gm_fred_matrix,
                     )
+                    if gm_fred_meta:
+                        gm_fc["fred_features_used"] = gm_fred_meta
+                    result["forecast"]["margin_forecast"] = gm_fc
                     result["forecast"]["margin_backtest"] = gm_bt
                 except Exception:
                     pass
