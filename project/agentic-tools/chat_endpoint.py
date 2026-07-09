@@ -16,13 +16,14 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import claude_client
 import db
 from ai_endpoints import _embed_text  # shared OpenAI text-embedding-3-small helper
+from auth_endpoints import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -147,7 +148,7 @@ def _retrieve_context(query: str, ticker: str) -> list:
 
 # ── Claude streaming tool-use loop ────────────────────────────────────────────
 
-def _claude_stream(messages: list, system: str, tools: list, impls: dict):
+def _claude_stream(messages: list, system: str, tools: list, impls: dict, caller: Optional[dict] = None):
     """Generator yielding SSE-payload dicts for a Claude chat turn with tool use."""
     client = claude_client.get_client()
     if client is None:
@@ -162,6 +163,10 @@ def _claude_stream(messages: list, system: str, tools: list, impls: dict):
     system_blocks = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     accumulated_text = ""
     max_iterations = 8
+    # Usage isn't recorded per-message like complete_json/complete_text — each
+    # iteration of this tool-use loop is a separate API call, so tally across
+    # all of them and record one "chat" row for the whole turn at the end.
+    usage_totals = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}
 
     for iteration in range(1, max_iterations + 1):
         tool_uses_this_turn: list = []
@@ -191,6 +196,12 @@ def _claude_stream(messages: list, system: str, tools: list, impls: dict):
                     b for b in final_msg.content
                     if getattr(b, "type", None) == "tool_use"
                 ]
+                usage = getattr(final_msg, "usage", None)
+                if usage:
+                    usage_totals["in"] += getattr(usage, "input_tokens", 0) or 0
+                    usage_totals["out"] += getattr(usage, "output_tokens", 0) or 0
+                    usage_totals["cache_read"] += getattr(usage, "cache_read_input_tokens", 0) or 0
+                    usage_totals["cache_write"] += getattr(usage, "cache_creation_input_tokens", 0) or 0
 
         except Exception as exc:
             yield {"type": "error", "message": str(exc)[:600]}
@@ -222,6 +233,13 @@ def _claude_stream(messages: list, system: str, tools: list, impls: dict):
                 "content": json.dumps(output, default=str)[:10_000],
             })
         messages.append({"role": "user", "content": results})
+
+    if usage_totals["in"] or usage_totals["out"]:
+        claude_client.record_usage(
+            usage_totals["in"], usage_totals["out"],
+            usage_totals["cache_read"], usage_totals["cache_write"],
+            "chat", _MODEL_CHAT, caller,
+        )
 
     yield {"type": "done", "final_text": accumulated_text}
 
@@ -295,7 +313,7 @@ def _gemini_stream(messages: list, system: str, api_key: str):
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("/ai/chat/stream")
-def chat_stream(req: ChatRequest):
+def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming chat endpoint.
 
@@ -352,7 +370,7 @@ def chat_stream(req: ChatRequest):
         return StreamingResponse(_no_claude(), media_type="text/event-stream", headers=_headers)
 
     def _cl():
-        for evt in _claude_stream(messages, system, agent_tools.TOOLS, agent_tools.IMPLS):
+        for evt in _claude_stream(messages, system, agent_tools.TOOLS, agent_tools.IMPLS, caller=current_user):
             yield f"data: {json.dumps(evt, default=str)}\n\n"
 
     return StreamingResponse(_cl(), media_type="text/event-stream", headers=_headers)
