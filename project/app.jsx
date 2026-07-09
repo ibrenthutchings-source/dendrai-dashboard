@@ -274,6 +274,15 @@ function App() {
   const [adjustObjOpen, setAdjustObjOpen] = useState(false);
   const [adjustingObjId, setAdjustingObjId] = useState(null);
 
+  // ---- Company profile — built from EDGAR + FRED + RISK_ENGINE during run ----
+  // Declared here (ahead of its usual spot below) because the persistence
+  // effect's dependency array references it, and dependency arrays are
+  // evaluated synchronously during render — a `const` referenced there
+  // before its declaration line throws a TDZ ReferenceError, unlike a plain
+  // usage inside an effect *callback* body (which only runs after render).
+  const [profile, setProfile] = useState(() => RISK_ENGINE.buildProfile("ON", null, "3674", "Semiconductors"));
+  const profileRef = useRef(profile);
+
   // ---- Last loop persistence — DB primary, localStorage fallback ----
   useEffect(() => {
     (async () => {
@@ -374,9 +383,6 @@ function App() {
     });
   }, []);
 
-  // ---- Company profile — built from EDGAR + FRED + RISK_ENGINE during run ----
-  const [profile, setProfile] = useState(() => RISK_ENGINE.buildProfile("ON", null, "3674", "Semiconductors"));
-  const profileRef = useRef(profile);
   useEffect(() => { profileRef.current = profile; }, [profile]);
 
   // ---- HITL gates ----
