@@ -1616,7 +1616,7 @@ def save_last_loop_state(body: Dict[str, Any] = Body(...)):
 
     Accepts the complete loop blob from app.jsx (output, stageState, gateState,
     loopLog, livefacts, perRiskAppetite, riskApprovals, scopeApprovals, manualAudits,
-    narrativeResult, openStages). Stored as JSONB in app_config table.
+    narrativeResult, openStages, profile). Stored as JSONB in app_config table.
     Returns {saved: false} gracefully when the database is unavailable.
     """
     if not db.is_available():
