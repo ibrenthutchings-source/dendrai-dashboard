@@ -1100,13 +1100,17 @@ function SoxScopePanel({
     if (!forecasts || !risks) { setError("Run the pipeline first to generate forecasts and risk scores"); return; }
     setLoading(true); setError(null);
     try {
-      // Build forecast payload in backend format from frontend forecasts object
+      // Build forecast payload in backend format from frontend forecasts object.
+      // forecasts.revenue.forecast[].base/lo/hi are stored in $M (see app.jsx /
+      // risk-engine.js, both divide by 1e6 for chart display) — sox_scoping_tool.py
+      // expects raw dollars (it mixes revenue_fy with ratios.assets_now/cash_now,
+      // which come straight from EDGAR XBRL, unscaled), so convert back here.
       const fcPayload = {
         forecasts: (forecasts.revenue?.forecast || []).map((q, i) => ({
           horizon: i + 1,
-          point: q.base ?? q.v ?? 0,
-          ci_lower: q.low  ?? 0,
-          ci_upper: q.high ?? 0,
+          point: (q.base ?? q.v ?? 0) * 1e6,
+          ci_lower: (q.lo ?? q.base ?? q.v ?? 0) * 1e6,
+          ci_upper: (q.hi ?? q.base ?? q.v ?? 0) * 1e6,
         })),
         metric: "Revenue",
       };
