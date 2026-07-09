@@ -1819,7 +1819,7 @@ function App() {
               risks={output.s2?.risks || (hasRun ? profile.risks : [])}
               objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
               rssSignals={rssSignals}
-              ratios={profile.ratios || {}}
+              ratios={hasRun ? (profile.ratios || {}) : {}}
               industry={hasRun ? profile.entity?.industry : cfg.industry}
               ticker={cfg.ticker} />
           </div>
@@ -1862,7 +1862,7 @@ function App() {
               objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
               maps={output.s4?.maps || (hasRun ? profile.maps : null)}
               signals={output.s1?.signals || []}
-              ratios={profile.ratios || {}}
+              ratios={hasRun ? (profile.ratios || {}) : {}}
               ticker={cfg.ticker}
               industry={cfg.industry}
               period={cfg.periodEnd}
@@ -1888,11 +1888,11 @@ function App() {
           <ScreenAccessGate screenId="scenarios">
           <div className="panel active">
             <ScenariosPanel
-              scenarios={profile.scenarios}
-              greySwan={profile.greySwan}
-              reverseStress={profile.reverseStress}
-              historicalAnalogs={profile.historicalAnalogs}
-              governanceScenario={profile.governanceScenario} />
+              scenarios={hasRun ? profile.scenarios : null}
+              greySwan={hasRun ? profile.greySwan : null}
+              reverseStress={hasRun ? profile.reverseStress : null}
+              historicalAnalogs={hasRun ? profile.historicalAnalogs : null}
+              governanceScenario={hasRun ? profile.governanceScenario : null} />
           </div>
           </ScreenAccessGate>
           )}
@@ -1904,11 +1904,11 @@ function App() {
             <ScenarioAnalysisScreen
               ticker={cfg.ticker}
               hasRun={hasRun}
-              varCvar={profile.varCvar}
-              sensitivity={profile.sensitivity}
-              multiFactorStress={profile.multiFactorStress}
-              liquidityRunway={profile.liquidityRunway}
-              earlyWarning={profile.earlyWarning} />
+              varCvar={hasRun ? profile.varCvar : null}
+              sensitivity={hasRun ? profile.sensitivity : null}
+              multiFactorStress={hasRun ? profile.multiFactorStress : null}
+              liquidityRunway={hasRun ? profile.liquidityRunway : null}
+              earlyWarning={hasRun ? profile.earlyWarning : null} />
           </div>
           </ScreenAccessGate>
           )}
@@ -1920,9 +1920,9 @@ function App() {
             <SoxScopePanel
               ticker={cfg.ticker}
               runId={runIdRef.current}
-              forecasts={profile.forecasts}
+              forecasts={hasRun ? profile.forecasts : null}
               risks={output.s2?.risks || (hasRun ? profile.risks : []) || []}
-              ratios={profile.ratios || {}}
+              ratios={hasRun ? (profile.ratios || {}) : {}}
               hasRun={hasRun} />
           </div>
           </ScreenAccessGate>
