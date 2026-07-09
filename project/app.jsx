@@ -1691,7 +1691,7 @@ function App() {
                 onRemoveAudit={removeManualAudit}
                 narrativeResult={narrativeResult}
                 onNarrativeResult={setNarrativeResult}
-                forecasts={profile.forecasts}
+                forecasts={hasRun ? profile.forecasts : null}
                 ticker={cfg.ticker || ""}
                 liveMode={liveMode}
                 fredSeries={fredLive}
@@ -1701,10 +1701,10 @@ function App() {
                   setRssSignals(sigs);
                   log(`RSS ingestion complete — ${sigs.length} velocity signals graded`);
                 }}
-                flowMeta={profile.riskFlow}
+                flowMeta={hasRun ? profile.riskFlow : null}
                 onOpenMainFlow={() => setActiveScreen("flow")}
-                risks={output.s2?.risks || profile?.risks || []}
-                companyName={profile?.entity?.name || ""}
+                risks={output.s2?.risks || (hasRun ? profile?.risks : null) || []}
+                companyName={hasRun ? (profile?.entity?.name || "") : ""}
                 peerData={govPeerData} />
             )}
           </div>
