@@ -252,7 +252,7 @@ _GATE1_SCHEMA = {
 
 
 @router.post("/ai/gate1/recommend")
-def gate1_recommend(req: Gate1Request):
+def gate1_recommend(req: Gate1Request, current_user: dict = Depends(get_current_user)):
     _require_ai()
     risks_min = [
         {
@@ -277,6 +277,7 @@ def gate1_recommend(req: Gate1Request):
         result = claude_client.complete_json(
             _GATE1_SYSTEM, user, _GATE1_SCHEMA, label="gate1",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -334,7 +335,7 @@ _GATE2_SCHEMA = {
 
 
 @router.post("/ai/gate2/recommend")
-def gate2_recommend(req: Gate2Request):
+def gate2_recommend(req: Gate2Request, current_user: dict = Depends(get_current_user)):
     _require_ai()
     objs_min = [
         {
@@ -362,6 +363,7 @@ def gate2_recommend(req: Gate2Request):
         result = claude_client.complete_json(
             _GATE2_SYSTEM, user, _GATE2_SCHEMA, label="gate2",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -437,6 +439,7 @@ def approval_review_recommend(req: ApprovalReviewRequest, current_user: dict = D
         result = claude_client.complete_json(
             _APPROVAL_REVIEW_SYSTEM, user, _APPROVAL_REVIEW_SCHEMA, label="approval_review",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=1200,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -483,7 +486,7 @@ class DraftRegoRequest(BaseModel):
 
 
 @router.post("/ai/pac/draft-rego")
-def draft_rego(req: DraftRegoRequest):
+def draft_rego(req: DraftRegoRequest, current_user: dict = Depends(get_current_user)):
     """
     Convert a plain-language policy narrative (e.g. pulled in via the Policy-as-
     Code GitHub 'Sync Now' button) into an actual Rego module. The result only
@@ -503,6 +506,7 @@ def draft_rego(req: DraftRegoRequest):
         text = claude_client.complete_text(
             _DRAFT_REGO_SYSTEM, user, label="pac_draft_rego",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -577,7 +581,7 @@ _NARRATIVE_SCHEMA = {
 
 
 @router.post("/ai/narrative-analysis")
-def narrative_analysis(req: NarrativeRequest):
+def narrative_analysis(req: NarrativeRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
 
     # ── 1. Cache check — serve a recent result without re-fetching EDGAR ────────
@@ -628,6 +632,7 @@ def narrative_analysis(req: NarrativeRequest):
         result = claude_client.complete_json(
             _NARRATIVE_SYSTEM, user, _NARRATIVE_SCHEMA, label="narrative",
             model=_MODEL_STRUCTURED, effort="high", max_tokens=6000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -684,7 +689,7 @@ _PERSONA_SCHEMA = {
 
 
 @router.post("/ai/persona-brief")
-def persona_brief(req: PersonaRequest):
+def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
     persona = (req.persona or "CAE").upper()
     risks_min = [
@@ -703,6 +708,7 @@ def persona_brief(req: PersonaRequest):
         result = claude_client.complete_json(
             _PERSONA_SYSTEM, user, _PERSONA_SCHEMA, label="persona",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -730,7 +736,7 @@ report — findings, not marketing. Do not invent data beyond what is supplied."
 
 
 @router.post("/ai/audit-report")
-def audit_report(req: ReportRequest):
+def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
     payload = {
         "ticker": req.ticker,
@@ -747,6 +753,7 @@ def audit_report(req: ReportRequest):
         markdown = claude_client.complete_text(
             _REPORT_SYSTEM, user, label="report",
             model=_MODEL_STRUCTURED, effort="high", max_tokens=10_000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -764,7 +771,7 @@ def audit_report(req: ReportRequest):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/agent/investigate/stream")
-def investigate_stream(req: InvestigateRequest):
+def investigate_stream(req: InvestigateRequest, current_user: dict = Depends(get_current_user)):
     """
     Server-Sent Events version of /agent/investigate.
     Emits one JSON event per tool call/result, then a final 'done' event.
@@ -800,7 +807,7 @@ def investigate_stream(req: InvestigateRequest):
         for event in claude_client.run_tool_loop_streaming(
             _AGENT_SYSTEM, user, agent_tools.TOOLS, agent_tools.IMPLS,
             label="investigate_stream", model=_MODEL_AGENT, effort="high",
-            max_tokens=10_000, max_iterations=14,
+            max_tokens=10_000, max_iterations=14, caller=current_user,
         ):
             if event.get("type") == "tool_call":
                 all_tool_calls.append({"tool": event["tool"], "input": event["input"], "is_error": False})
@@ -896,7 +903,7 @@ class CalibrateRequest(BaseModel):
 
 
 @router.post("/ai/loop-calibrate")
-def loop_calibrate(req: CalibrateRequest):
+def loop_calibrate(req: CalibrateRequest, current_user: dict = Depends(get_current_user)):
     """Gate 3 — AI-assisted loop calibration recommendations for the next cycle."""
     _require_ai()
     risk_delta = []
@@ -926,6 +933,7 @@ def loop_calibrate(req: CalibrateRequest):
         result = claude_client.complete_json(
             _CALIBRATE_SYSTEM, user, _CALIBRATE_SCHEMA, label="loop_calibrate",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -956,7 +964,7 @@ the evidence for each, and a recommended audit focus. Be specific and cite figur
 
 
 @router.post("/agent/investigate")
-def investigate(req: InvestigateRequest):
+def investigate(req: InvestigateRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
     import agent_tools
 
@@ -986,7 +994,7 @@ def investigate(req: InvestigateRequest):
         result = claude_client.run_tool_loop(
             _AGENT_SYSTEM, user, agent_tools.TOOLS, agent_tools.IMPLS,
             label="investigate", model=_MODEL_AGENT, effort="high",
-            max_tokens=10_000, max_iterations=14,
+            max_tokens=10_000, max_iterations=14, caller=current_user,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI agent failed: {exc}")
