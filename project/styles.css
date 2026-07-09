@@ -720,6 +720,16 @@ a { color: inherit; text-decoration: none; }
 .pac-editor-split {
   display: flex; flex: 1; min-height: 0; overflow: hidden;
 }
+/* Evaluate accordion panel — a direct flex sibling of .pac-editor-split inside
+   the fixed-height .pac-shell column. Without a bounded height it grows to
+   fit its content (sample input + results), squeezing .pac-editor-split's
+   flex:1 down to near-nothing and clipping the Rego editor. flex-shrink:0
+   plus its own scroll keeps it from fighting the editor for space. */
+.pac-eval-panel {
+  flex-shrink: 0;
+  max-height: 280px;
+  overflow-y: auto;
+}
 .pac-meta-panel {
   width: 220px; flex-shrink: 0;
   border-right: 1px solid var(--line);
