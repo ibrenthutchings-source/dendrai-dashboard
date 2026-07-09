@@ -117,7 +117,7 @@ Select in the sidebar. Each mode changes what gets fetched during a run.
 
 ## Navigation & Layout
 
-The left nav routes the main canvas (Setup, Pipeline, Controls Monitor, MAPs, Notifications, Audit Scope, Risk-as-Code, Policy-as-Code, Governance Intelligence).
+The left nav routes the main canvas (Setup, Pipeline, Controls Monitor, MAPs, Notifications, Audit Scope, Risk-as-Code, Policy-as-Code, Governance Intelligence, Token Usage, User Configuration).
 
 The **Live Register rail** is a contextual right-hand pane that appears **only on the Pipeline screen, and only after a run has produced data** (`hasRun`). It is the single home for the risk-output views that used to be scattered as separate nav screens and pipeline sub-tabs — **Risk Register, Risk Flow, Forecasts, and Scenarios all live here now** (they are no longer separate left-nav items or sub-tabs). The main canvas widens to a third grid column (`.app-body.has-rail`) when the rail is shown.
 
@@ -212,7 +212,7 @@ Implemented in `project/agentic-tools/predictive_analytics_tool.py`. Activated v
 | 4 | **Scenario Analysis** | Bear / Base / Bull with revenue impact %, gross margin delta, liquidity rating, recovery horizon |
 | 5 | **Grey Swan Model** | 4-stage escalation cascade (T+0/+30/+60/+90) with probability, impact $M, catalysts, mitigations |
 | 6 | **FRED Macro Leading Indicators** | Pearson cross-correlation at lags 1–4 between FRED series and company revenue; selects top correlators |
-| 7 | **Time-Series Forecasting** | ARIMA, Prophet-like trend+seasonality, Random Forest (lags 1–4, rolling stats, FRED features), ensemble by inverse MAPE |
+| 7 | **Time-Series Forecasting** | ARIMA, Prophet-like trend+seasonality, Random Forest (lags 1–4, rolling stats, lag-aligned FRED leading-indicator features — Revenue/EPS/NetIncome/EBITDA, real `FRED_API_KEY` only), ensemble by inverse MAPE |
 | 8 | **Walk-Forward Backtesting** | MAPE, RMSE, R², directional accuracy F1 across rolling windows |
 | 9 | **RSS Signal Grading** | NLP-lite relevance × severity pipeline on industry RSS feeds; maps signals to affected risk IDs |
 | 10 | **QoQ Revenue Momentum / Sentiment** | Rolling 8-quarter momentum score, hedge ratio trend, deteriorating/stable/improving classification |
@@ -287,6 +287,7 @@ python api_server.py --port 8002  # custom port
 | POST | `/loop/hitl/risk-approvals` · `/loop/hitl/scope-approvals` · `/loop/persist` | Persist HITL decisions + loop completion |
 | GET | `/history/runs/{ticker}` · `/history/runs/{ticker}/{run_id}` | Run history |
 | GET | `/history/runs/{run_id}/ai-analyses` | Persisted AI outputs for a run |
+| GET | `/token-usage/summary` | Token usage by user and by feature/source (rolling window) + month/year, MTD/YTD rollups — powers the Token Usage screen |
 
 The `/ai/*` and `/agent/*` routes require `ANTHROPIC_API_KEY`; without it they return `503`. Interactive API docs available at `http://127.0.0.1:8001/docs`.
 
@@ -377,6 +378,8 @@ dendrai-dashboard/
 │   ├── tweaks.jsx                  # Tweaks panel hook + state
 │   ├── tweaks-panel.jsx            # Tweaks panel UI (accent, density, run speed)
 │   ├── data-config-modal.jsx       # Company/period config modal
+│   ├── user-config.jsx             # Admin: local accounts + per-user Screen Access matrix
+│   ├── token-usage.jsx             # Token usage by user / by feature / calendar rollups (MTD, YTD)
 │   ├── vite.config.js              # Vite config — CORS proxies (EDGAR, SEC, MCP, RSS)
 │   ├── data/
 │   │   └── fred_data.json          # Bundled FRED snapshot (Q1 2021 → Q1 2026)
