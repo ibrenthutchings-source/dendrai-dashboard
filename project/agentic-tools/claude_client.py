@@ -135,19 +135,25 @@ def _extract_json(text: str) -> Any:
     raise ValueError("no JSON object found in model response")
 
 
-def _record_cost(message: Any, label: str, model: str) -> None:
-    """Best-effort token-cost accounting into the token_usage_* tables."""
+def record_usage(in_tok: int, out_tok: int, cache_read: int, cache_write: int,
+                  label: str, model: str, caller: Optional[dict] = None) -> None:
+    """
+    Best-effort token-cost accounting into the token_usage_* tables, from
+    already-extracted usage numbers. Public so callers that don't go through
+    complete_json/complete_text/run_tool_loop — e.g. chat_endpoint.py, which
+    accumulates usage across a manual streaming tool-use loop — can still
+    record what they spent.
+
+    `caller`, when given (the authenticated session user — {"id", "username"}),
+    attributes the call for the Token Usage screen; omitted/unknown callers
+    are recorded with user_id/username left NULL ("Unknown" in the UI).
+    """
     if not _HAS_COST:
         return
     try:
         import db
-        usage = getattr(message, "usage", None)
-        if not usage or not db.is_available():
+        if not db.is_available():
             return
-        in_tok = getattr(usage, "input_tokens", 0) or 0
-        out_tok = getattr(usage, "output_tokens", 0) or 0
-        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cost_usd = None
         try:
             cost_usd = token_cost_tool.calculate_cost(
@@ -166,11 +172,27 @@ def _record_cost(message: Any, label: str, model: str) -> None:
                     "input_tokens": in_tok, "output_tokens": out_tok,
                     "cache_read_tokens": cache_read, "cache_write_tokens": cache_write,
                     "cost_usd": cost_usd,
+                    "user_id": (caller or {}).get("id"),
+                    "username": (caller or {}).get("username"),
                 },
                 {},  # running totals are recomputed elsewhere; per-call row is enough
             )
     except Exception as exc:  # never let accounting break a request
         logger.debug("cost accounting skipped: %s", exc)
+
+
+def _record_cost(message: Any, label: str, model: str, caller: Optional[dict] = None) -> None:
+    """Extracts usage from an SDK message object, then defers to record_usage()."""
+    usage = getattr(message, "usage", None)
+    if not usage:
+        return
+    record_usage(
+        getattr(usage, "input_tokens", 0) or 0,
+        getattr(usage, "output_tokens", 0) or 0,
+        getattr(usage, "cache_read_input_tokens", 0) or 0,
+        getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        label, model, caller,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -186,6 +208,7 @@ def complete_json(
     effort: str = "high",
     max_tokens: int = 8000,
     model: Optional[str] = None,
+    caller: Optional[dict] = None,
 ) -> dict:
     """
     Run a single structured-output completion and return parsed JSON.
@@ -232,7 +255,7 @@ def complete_json(
         }]
         message = client.messages.create(**guided)
 
-    _record_cost(message, label, model)
+    _record_cost(message, label, model, caller)
     return _extract_json(_text_of(message))
 
 
@@ -244,6 +267,7 @@ def complete_text(
     effort: str = "high",
     max_tokens: int = 8000,
     model: Optional[str] = None,
+    caller: Optional[dict] = None,
 ) -> str:
     """Run a single free-form completion and return the response text."""
     client = get_client()
@@ -257,7 +281,7 @@ def complete_text(
         system=_system_blocks(system),
         messages=[{"role": "user", "content": user}],
     )
-    _record_cost(message, label, model)
+    _record_cost(message, label, model, caller)
     return _text_of(message)
 
 
@@ -276,6 +300,7 @@ def run_tool_loop(
     max_tokens: int = 8000,
     max_iterations: int = 12,
     model: Optional[str] = None,
+    caller: Optional[dict] = None,
 ) -> dict:
     """
     Drive a manual agentic loop. Claude decides which of `tools` to call; we
@@ -309,7 +334,7 @@ def run_tool_loop(
             tools=cached_tools,
             messages=messages,
         )
-        _record_cost(message, f"{label}:{iterations}", model)
+        _record_cost(message, f"{label}:{iterations}", model, caller)
 
         if message.stop_reason == "pause_turn":
             messages.append({"role": "assistant", "content": message.content})
@@ -380,6 +405,7 @@ def run_tool_loop_streaming(
     max_tokens: int = 8000,
     max_iterations: int = 12,
     model: Optional[str] = None,
+    caller: Optional[dict] = None,
 ):
     """
     Like run_tool_loop but yields SSE-style JSON events as the agent progresses.
@@ -420,7 +446,7 @@ def run_tool_loop_streaming(
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
             return
-        _record_cost(message, f"{label}:{iterations}", model)
+        _record_cost(message, f"{label}:{iterations}", model, caller)
 
         if message.stop_reason == "pause_turn":
             messages.append({"role": "assistant", "content": message.content})
