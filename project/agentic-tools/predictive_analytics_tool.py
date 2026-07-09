@@ -48,7 +48,12 @@ except ImportError:
     _HAS_EDGAR = False
 
 try:
-    from fred_tool import run_analysis as _fred_run_analysis, FRED_SERIES
+    from fred_tool import (
+        run_analysis as _fred_run_analysis,
+        FRED_SERIES,
+        _add_quarters as _fred_add_quarters,
+        _date_to_quarter_end as _fred_date_to_qend,
+    )
     _HAS_FRED = True
 except ImportError:
     _HAS_FRED = False
@@ -220,12 +225,18 @@ def extract_quarterly_series(xbrl: dict, metric: str) -> list[dict]:
     return [{"quarter_end": p["end"], "value": p["val"], "start": p.get("start")} for p in pts_sorted]
 
 
-def compute_analyst_series(xbrl: dict, rev_q_series: list) -> dict:
+def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[dict] = None,
+                            forecast_horizon: int = 4) -> dict:
     """
     Compute analyst KPI quarterly time series from XBRL:
       eps, op_income, op_margin, net_income, fcf, ebitda
     Each entry: [{quarter_end, value}, ...]
-    Forecast keys (eps_forecast, eps_backtest) added when ≥8 quarters available.
+    Forecast keys (eps_forecast, eps_backtest, etc.) added when ≥8 quarters
+    available. `macro_info` is the live FRED result dict (correlation_results
+    + fred_macro_series) from get_macro_leading_indicators, when available —
+    used to feed lag-aligned FRED features into the Random Forest leg for
+    metrics fred_tool.py has correlation hits for (EPS_Diluted/EPS_Basic,
+    NetIncome, EBITDA).
     """
     result: dict = {}
     rev_map = {p["quarter_end"]: p["value"] for p in (rev_q_series or [])}
@@ -238,8 +249,15 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list) -> dict:
             vals = [p["value"] for p in eps_q]
             if len(vals) >= 8:
                 try:
-                    bt  = walk_forward_backtest(vals)
-                    fc  = compute_ensemble_forecast(vals, horizon=4, weights=bt.get("calibrated_weights"))
+                    fred_matrix = fred_meta = None
+                    if macro_info:
+                        fred_matrix, fred_meta = _build_fred_feature_matrix(
+                            eps_q, macro_info, eps_key, forecast_horizon)
+                    bt  = walk_forward_backtest(vals, fred_matrix=fred_matrix)
+                    fc  = compute_ensemble_forecast(vals, horizon=4, weights=bt.get("calibrated_weights"),
+                                                     fred_matrix=fred_matrix)
+                    if fred_meta:
+                        fc["fred_features_used"] = fred_meta
                     result["eps_forecast"] = fc
                     result["eps_backtest"] = bt
                 except Exception:
@@ -273,6 +291,22 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list) -> dict:
     ni_q = extract_quarterly_series(xbrl, "NetIncome")
     if ni_q:
         result["net_income"] = ni_q
+        ni_vals = [p["value"] for p in ni_q]
+        if len(ni_vals) >= 8:
+            try:
+                fred_matrix = fred_meta = None
+                if macro_info:
+                    fred_matrix, fred_meta = _build_fred_feature_matrix(
+                        ni_q, macro_info, "NetIncome", forecast_horizon)
+                ni_bt = walk_forward_backtest(ni_vals, fred_matrix=fred_matrix)
+                ni_fc = compute_ensemble_forecast(ni_vals, horizon=4, weights=ni_bt.get("calibrated_weights"),
+                                                   fred_matrix=fred_matrix)
+                if fred_meta:
+                    ni_fc["fred_features_used"] = fred_meta
+                result["net_income_forecast"] = ni_fc
+                result["net_income_backtest"] = ni_bt
+            except Exception:
+                pass
 
     # FCF = CFO − |CapEx|  (match by quarter_end)
     cfo_q   = extract_quarterly_series(xbrl, "OperatingCashFlow")
@@ -295,7 +329,24 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list) -> dict:
             for p in oi_q if p["quarter_end"] in dep_map
         ]
         if len(ebitda) >= 4:
-            result["ebitda"] = ebitda
+            ebitda_sorted = sorted(ebitda, key=lambda x: x["quarter_end"])
+            result["ebitda"] = ebitda_sorted
+            eb_vals = [p["value"] for p in ebitda_sorted]
+            if len(eb_vals) >= 8:
+                try:
+                    fred_matrix = fred_meta = None
+                    if macro_info:
+                        fred_matrix, fred_meta = _build_fred_feature_matrix(
+                            ebitda_sorted, macro_info, "EBITDA", forecast_horizon)
+                    eb_bt = walk_forward_backtest(eb_vals, fred_matrix=fred_matrix)
+                    eb_fc = compute_ensemble_forecast(eb_vals, horizon=4, weights=eb_bt.get("calibrated_weights"),
+                                                       fred_matrix=fred_matrix)
+                    if fred_meta:
+                        eb_fc["fred_features_used"] = fred_meta
+                    result["ebitda_forecast"] = eb_fc
+                    result["ebitda_backtest"] = eb_bt
+                except Exception:
+                    pass
 
     return result
 
@@ -1053,6 +1104,88 @@ def get_macro_leading_indicators(
         }
 
 
+def _build_fred_feature_matrix(
+    q_series: list[dict],
+    macro_info: dict,
+    metric: str,
+    horizon: int,
+    top_n: int = 5,
+) -> tuple[Optional[dict], list]:
+    """
+    Build lag-aligned FRED feature arrays for the Random Forest forecasting leg.
+
+    `macro_info` is the live `result` dict from fred_tool.run_analysis()
+    (correlation_results + fred_macro_series). For each of the top `top_n`
+    indicators correlated with `metric` (by |pearson_r|), returns an array of
+    length len(q_series) + horizon where position i holds the macro reading
+    from that indicator's own optimal_lag_quarters before position i's
+    quarter — i.e. data that was genuinely already published by the time it
+    would be used to predict that quarter. Missing/future readings fall back
+    to the nearest earlier known value.
+
+    Returns (fred_matrix, meta) — fred_matrix is None if nothing usable was
+    found (no key, no hits, or no series data), meta describes what was used.
+    """
+    if not _HAS_FRED or not q_series:
+        return None, []
+
+    hits = (macro_info.get("correlation_results") or {}).get(metric, [])
+    if not hits:
+        return None, []
+
+    selected = sorted(hits, key=lambda h: abs(h.get("pearson_r", 0)), reverse=True)[:top_n]
+    macro_series_map = macro_info.get("fred_macro_series") or {}
+
+    # Canonical quarter-end for every position: historical quarters, then
+    # `horizon` more extrapolated forward.
+    positions_q: list[str] = [_fred_date_to_qend(p["quarter_end"]) for p in q_series]
+    last_q = positions_q[-1] if positions_q else None
+    for h in range(1, horizon + 1):
+        positions_q.append(_fred_add_quarters(last_q, h) if last_q else None)
+
+    matrix: dict = {}
+    meta: list = []
+
+    for hit in selected:
+        sid = hit.get("series_id")
+        obs = (macro_series_map.get(sid) or {}).get("quarterly_observations", [])
+        if not obs:
+            continue
+        obs_map = {o["quarter_end"]: o["value"] for o in obs}
+        sorted_known_q = sorted(obs_map.keys())
+        if not sorted_known_q:
+            continue
+        lag = int(hit.get("optimal_lag_quarters", 0))
+
+        arr: list[float] = []
+        last_known = obs_map[sorted_known_q[0]]
+        for q in positions_q:
+            if q is None:
+                arr.append(last_known)
+                continue
+            shifted_q = _fred_add_quarters(q, -lag)
+            if shifted_q in obs_map:
+                last_known = obs_map[shifted_q]
+                arr.append(last_known)
+            else:
+                earlier = [k for k in sorted_known_q if k <= shifted_q]
+                if earlier:
+                    last_known = obs_map[earlier[-1]]
+                arr.append(last_known)
+
+        matrix[sid] = arr
+        meta.append({
+            "series_id":    sid,
+            "name":         hit.get("name", sid),
+            "lag_quarters": lag,
+            "pearson_r":    hit.get("pearson_r"),
+        })
+
+    if not matrix:
+        return None, []
+    return matrix, meta
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 7 — TIME-SERIES FORECASTING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1268,8 +1401,13 @@ def _build_tree(X, y, depth=0, max_depth=4):
     return node
 
 
-def _make_rf_features(y_hist: np.ndarray) -> np.ndarray:
-    """Build feature vector for the next forecast from history array."""
+def _make_rf_features(y_hist: np.ndarray, fred_matrix: Optional[dict] = None) -> np.ndarray:
+    """
+    Build feature vector for the next forecast from history array.
+    `len(y_hist)` doubles as the absolute position index into `fred_matrix`
+    (both the training loop and the forecast loop grow `y_hist` by exactly
+    one element per step, so this always lines up).
+    """
     n = len(y_hist)
     lags  = [y_hist[n - k - 1] if k < n else 0.0 for k in range(4)]
     win   = y_hist[-4:] if n >= 4 else y_hist
@@ -1277,14 +1415,20 @@ def _make_rf_features(y_hist: np.ndarray) -> np.ndarray:
     rstd  = float(np.std(win)) if len(win) > 1 else 0.0
     tidx  = float(n)
     qtr   = float((n % 4) + 1)
-    return np.array(lags + [rmean, rstd, tidx, qtr], dtype=float)
+    feats = lags + [rmean, rstd, tidx, qtr]
+    if fred_matrix:
+        for arr in fred_matrix.values():
+            feats.append(arr[n] if n < len(arr) else (arr[-1] if arr else 0.0))
+    return np.array(feats, dtype=float)
 
 
-def fit_random_forest(series: list[float], horizon: int = 4,
+def fit_random_forest(series: list[float], horizon: int = 4, fred_matrix: Optional[dict] = None,
                       n_trees: int = 25, max_depth: int = 4, seed: int = 42) -> dict:
     """
     Random Forest: 25 bootstrap trees, depth 4.
-    Features: lags 1–4, rolling mean/std (window 4), time index, quarter.
+    Features: lags 1–4, rolling mean/std (window 4), time index, quarter,
+    plus (when `fred_matrix` is given) one lag-aligned FRED reading per
+    selected indicator — see _build_fred_feature_matrix.
     Seeded for reproducibility. CI from tree prediction variance.
     """
     if not _HAS_NUMPY:
@@ -1298,7 +1442,7 @@ def fit_random_forest(series: list[float], horizon: int = 4,
     # Build supervised dataset: (features_at_t, y[t]) for t in [4, n-1]
     rows_X, rows_y = [], []
     for t in range(4, n):
-        rows_X.append(_make_rf_features(y[:t]))
+        rows_X.append(_make_rf_features(y[:t], fred_matrix))
         rows_y.append(y[t])
     X_all = np.array(rows_X)
     y_all = np.array(rows_y)
@@ -1317,7 +1461,7 @@ def fit_random_forest(series: list[float], horizon: int = 4,
     hist = list(y)
     forecasts = []
     for h in range(horizon):
-        feat  = _make_rf_features(np.array(hist))
+        feat  = _make_rf_features(np.array(hist), fred_matrix)
         preds = [t.predict(feat) for t in trees]
         point = float(np.mean(preds))
         sigma = float(np.std(preds)) if len(preds) > 1 else 1e-8
@@ -1338,14 +1482,17 @@ def fit_random_forest(series: list[float], horizon: int = 4,
 
 
 def compute_ensemble_forecast(series: list[float], horizon: int = 4,
-                              weights: Optional[dict] = None) -> dict:
+                              weights: Optional[dict] = None,
+                              fred_matrix: Optional[dict] = None) -> dict:
     """
     Equal-weight (1/3) blend of ARIMA, Prophet-like, Random Forest.
     After backtesting, weights are recalibrated by inverse-MAPE.
+    `fred_matrix`, when given, feeds lag-aligned FRED indicators into the
+    Random Forest leg only — ARIMA/Prophet-like remain univariate.
     """
     arima  = fit_arima(series, horizon=horizon)
     prophet = fit_prophet_like(series, horizon=horizon)
-    rf     = fit_random_forest(series, horizon=horizon)
+    rf     = fit_random_forest(series, horizon=horizon, fred_matrix=fred_matrix)
 
     models = [arima, prophet, rf]
     names  = ["ARIMA", "Prophet-like", "Random Forest"]
@@ -1432,13 +1579,14 @@ def _directional_metrics(actuals, preds):
     return {"precision": prec, "recall": recall, "f1": f1}
 
 
-def _backtest_model(series: list[float], model_fn, min_train: int = 8) -> dict:
+def _backtest_model(series: list[float], model_fn, min_train: int = 8,
+                     fred_matrix: Optional[dict] = None) -> dict:
     n       = len(series)
     actuals = []
     preds   = []
     for t in range(min_train, n):
         train = series[:t]
-        result = model_fn(train, horizon=1)
+        result = model_fn(train, horizon=1, fred_matrix=fred_matrix)
         fcs = result.get("forecasts", [])
         if fcs:
             preds.append(fcs[0]["point"])
@@ -1457,10 +1605,12 @@ def _backtest_model(series: list[float], model_fn, min_train: int = 8) -> dict:
     }
 
 
-def walk_forward_backtest(series: list[float]) -> dict:
+def walk_forward_backtest(series: list[float], fred_matrix: Optional[dict] = None) -> dict:
     """
     Expanding-window 1-step-ahead validation across ARIMA, Prophet-like, and RF.
     Returns per-model metrics + ensemble weights calibrated by inverse-MAPE.
+    `fred_matrix`, when given, is fed to the Random Forest leg only, so
+    calibrated weights reflect the FRED-augmented RF's real backtested MAPE.
     """
     if not _HAS_NUMPY:
         return {"error": "numpy required"}
@@ -1470,11 +1620,11 @@ def walk_forward_backtest(series: list[float]) -> dict:
 
     results = {}
     for name, fn in [
-        ("ARIMA",        lambda s, horizon: fit_arima(s, horizon=horizon)),
-        ("Prophet-like", lambda s, horizon: fit_prophet_like(s, horizon=horizon)),
-        ("Random Forest", lambda s, horizon: fit_random_forest(s, horizon=horizon)),
+        ("ARIMA",        lambda s, horizon, fred_matrix=None: fit_arima(s, horizon=horizon)),
+        ("Prophet-like", lambda s, horizon, fred_matrix=None: fit_prophet_like(s, horizon=horizon)),
+        ("Random Forest", lambda s, horizon, fred_matrix=None: fit_random_forest(s, horizon=horizon, fred_matrix=fred_matrix)),
     ]:
-        results[name] = _backtest_model(series, fn)
+        results[name] = _backtest_model(series, fn, fred_matrix=fred_matrix)
 
     # Calibrate ensemble weights by inverse-MAPE
     mapes = {name: r["mape"] for name, r in results.items() if r.get("mape") is not None}
@@ -1808,25 +1958,34 @@ def run_full_analysis(
     result["grey_swan"] = compute_grey_swan(risk_result, q_rev if q_rev > 0 else None)
 
     # ── 6. FRED Macro Indicators ──────────────────────────────────────────────
+    macro_info = None
     if include_fred:
         result["macro_leading_indicators"] = get_macro_leading_indicators(
             ticker, industry, api_key=fred_api_key,
         )
+        if result["macro_leading_indicators"].get("source") == "live_fred_analysis":
+            macro_info = result["macro_leading_indicators"].get("result")
 
     # ── 7 & 8. Time-Series Forecasting + Backtesting ─────────────────────────
     q_series = extract_quarterly_series(xbrl, forecast_metric)
     if q_series:
         vals = [p["value"] for p in q_series]
         if len(vals) >= 8:
-            bt = walk_forward_backtest(vals)
+            fred_matrix = fred_meta = None
+            if macro_info:
+                fred_matrix, fred_meta = _build_fred_feature_matrix(
+                    q_series, macro_info, forecast_metric, forecast_horizon)
+            bt = walk_forward_backtest(vals, fred_matrix=fred_matrix)
             result["backtest"] = bt
             calibrated_w = bt.get("calibrated_weights")
             result["forecast"] = compute_ensemble_forecast(
-                vals, horizon=forecast_horizon, weights=calibrated_w,
+                vals, horizon=forecast_horizon, weights=calibrated_w, fred_matrix=fred_matrix,
             )
             result["forecast"]["metric"]  = forecast_metric
             result["forecast"]["quarters"] = [p["quarter_end"] for p in q_series]
             result["forecast"]["history"]  = q_series  # raw quarterly values for JS chart
+            if fred_meta:
+                result["forecast"]["fred_features_used"] = fred_meta
         else:
             result["forecast"] = {
                 "note": f"Only {len(vals)} quarters available for {forecast_metric}; need ≥8",
@@ -1877,6 +2036,6 @@ def run_full_analysis(
         result["qoq_momentum"] = {"note": "No quarterly Revenue data available"}
 
     # ── 11. Analyst KPI Series (EPS, OpMargin, NetIncome, FCF, EBITDA) ───────
-    result["analyst_series"] = compute_analyst_series(xbrl, q_series or [])
+    result["analyst_series"] = compute_analyst_series(xbrl, q_series or [], macro_info, forecast_horizon)
 
     return result
