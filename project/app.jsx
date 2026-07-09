@@ -313,6 +313,15 @@ function App() {
         // back as "complete" but the charts silently show the hardcoded mock
         // default profile instead of the last real run's data.
         if (s.profile)                                   setProfile(s.profile);
+        // runId is a ref (not state) because it's mutated mid-run without
+        // needing a re-render — but that also means it was never part of the
+        // restore, so every runId-scoped fetch (SOX scope, approval status,
+        // etc.) silently got null on a fresh page load even though the rest
+        // of the run looked "restored". Mutating it here is safe before the
+        // setters above trigger their re-render — same pattern already used
+        // for loopLogRef/manualAuditsRef alongside their setState calls.
+        const rid = s.runId || s.run_id;
+        if (rid)                                          runIdRef.current = rid;
       };
       try {
         const res = await fetch("/api/mcp/loop/last-state");
@@ -344,6 +353,7 @@ function App() {
       narrativeResult,
       openStages: [...openStages],
       profile,
+      runId: runIdRef.current,
       savedAt: Date.now(),
     };
     // Write-through: localStorage for instant offline access, DB for persistence
