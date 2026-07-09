@@ -1398,20 +1398,39 @@ def is_available() -> bool:
 
 @contextmanager
 def _conn():
-    """Borrow a connection, commit on success, rollback on error, always return."""
+    """
+    Borrow a connection, commit on success, rollback on error, always return.
+
+    A connection whose underlying socket was silently killed while idle (e.g.
+    Railway's proxy dropping it) isn't detected by psycopg2 until the
+    connection is actually used — it surfaces as OperationalError/
+    InterfaceError on the first query, not as `conn.closed`. Without eviction,
+    `_pool.putconn(conn)` would hand that same dead connection straight back
+    out on the next borrow, so every caller keeps failing with "connection
+    already closed" until the process restarts. Detect that case and discard
+    the connection (close=True) so the pool opens a fresh one next time,
+    instead of recycling a corpse.
+    """
     if _pool is None:
         raise RuntimeError("Database not initialized")
     conn = _pool.getconn()
+    broken = False
     try:
         if _HAS_PGVECTOR:
             _pg_register_vector(conn)
         yield conn
         conn.commit()
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        broken = True
+        raise
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            broken = True
         raise
     finally:
-        _pool.putconn(conn)
+        _pool.putconn(conn, close=broken)
 
 
 get_conn = _conn   # public alias used by mcp_governance and github_endpoints
