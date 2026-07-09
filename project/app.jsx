@@ -1575,6 +1575,15 @@ function App() {
             </div>
           )}
 
+          {/* ---- Token Usage (LLM token/cost by user and by feature) ---- */}
+          {activeScreen === "tokenusage" && (
+          <ScreenAccessGate screenId="tokenusage">
+            <div className="panel active">
+              <TokenUsageScreen />
+            </div>
+          </ScreenAccessGate>
+          )}
+
           {/* ---- Pipeline (with action bar + sub-tabs) ---- */}
           {activeScreen === "pipeline" && (
           <ScreenAccessGate screenId="pipeline">

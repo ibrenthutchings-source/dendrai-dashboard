@@ -46,6 +46,7 @@ const NAV_SECTIONS = [
     items: [
       { id: "config",     icon: "gear",   l: "Setup" },
       { id: "uboconfig",  icon: "shield", l: "UBO Configuration" },
+      { id: "tokenusage", icon: "table",  l: "Token Usage" },
       { id: "userconfig", icon: "user",   l: "User Configuration", adminOnly: true },
     ],
   }
