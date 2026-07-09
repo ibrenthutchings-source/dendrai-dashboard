@@ -45,6 +45,8 @@ Endpoints:
     GET  /loop/last-state                    Retrieve last saved pipeline run state (for page-reload restoration)
     PUT  /loop/last-state                    Persist full pipeline run state to DB
 
+    GET  /token-usage/summary                Token usage by user/feature (window) + calendar rollups (month/year, MTD/YTD)
+
 MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
     /mcp/edgar/mcp              SEC EDGAR filings, financials, risk factors, 8-K events
     /mcp/fred/mcp               Federal Reserve macro economic indicators
@@ -1623,6 +1625,26 @@ def save_last_loop_state(body: Dict[str, Any] = Body(...)):
         return {"saved": False, "reason": "database not configured"}
     ok = db.set_app_config("last_loop_state", body)
     return {"saved": ok}
+
+
+@app.get("/token-usage/summary")
+def get_token_usage_summary_endpoint(
+    days: int = 30,
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """
+    Token Usage screen data: rolling by-user/by-feature breakdown for the
+    given window, plus all-time calendar rollups (by month, month-to-date,
+    by year, year-to-date). No admin gate beyond authentication — this
+    screen is nav-permission-gated (auth.screen_permissions) like every
+    other non-adminOnly screen, not hardcoded admin-only.
+    """
+    if not db.is_available():
+        return {"rows": [], "totals": {}, "by_month": [], "month_to_date": {}, "by_year": [], "year_to_date": {}}
+    return {
+        **db.get_token_usage_summary(days),
+        **db.get_token_usage_time_summary(),
+    }
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
