@@ -567,6 +567,11 @@ CREATE TABLE IF NOT EXISTS token_usage_sessions (
     total_cost_usd           NUMERIC(12,8) NOT NULL DEFAULT 0
 );
 
+-- user_id is a soft reference to auth.users(id) — no FK constraint, since
+-- db.init_db() runs before auth_db.init_auth_db() and auth.users may not
+-- exist yet when this table is first created (see approval_tasks above for
+-- the same pattern). username is denormalized alongside it so history
+-- survives a user being deleted later.
 CREATE TABLE IF NOT EXISTS token_usage_calls (
     id                 SERIAL PRIMARY KEY,
     session_id         INT         NOT NULL REFERENCES token_usage_sessions(id),
@@ -577,7 +582,9 @@ CREATE TABLE IF NOT EXISTS token_usage_calls (
     output_tokens      INT,
     cache_read_tokens  INT,
     cache_write_tokens INT,
-    cost_usd           NUMERIC(12,8)
+    cost_usd           NUMERIC(12,8),
+    user_id            BIGINT,
+    username           TEXT
 );
 
 -- AI-generated analyses (LLM provenance, kept distinct from human HITL decisions).
@@ -1009,6 +1016,11 @@ ALTER TABLE audit_objectives ADD COLUMN IF NOT EXISTS linked_risks TEXT[];
 -- are NULL when no AI suggestion was involved in that item.
 ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS ai_suggested JSONB;
 ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS ai_accepted BOOLEAN;
+
+-- Token Usage screen: attribute LLM calls to the authenticated user who
+-- triggered them (soft reference, see the comment on token_usage_calls above).
+ALTER TABLE token_usage_calls ADD COLUMN IF NOT EXISTS user_id  BIGINT;
+ALTER TABLE token_usage_calls ADD COLUMN IF NOT EXISTS username TEXT;
 
 -- forecasts.UNIQUE(run_id, metric, model, horizon_quarter) was added to the
 -- CREATE TABLE statement after some databases already had the table created
@@ -2941,14 +2953,14 @@ def save_token_call(session_id: int, call: dict, session_totals: dict) -> None:
                     """
                     INSERT INTO token_usage_calls
                         (session_id, called_at, model, label, input_tokens, output_tokens,
-                         cache_read_tokens, cache_write_tokens, cost_usd)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         cache_read_tokens, cache_write_tokens, cost_usd, user_id, username)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         session_id, call.get("timestamp"), call.get("model"),
                         call.get("label"), call.get("input_tokens"), call.get("output_tokens"),
                         call.get("cache_read_tokens"), call.get("cache_write_tokens"),
-                        call.get("cost_usd"),
+                        call.get("cost_usd"), call.get("user_id"), call.get("username"),
                     ),
                 )
                 cur.execute(
@@ -3077,6 +3089,115 @@ def get_run_token_cost(run_id: int) -> dict:
         "run_id": run_id, "total_cost_usd": 0.0,
         "total_input_tokens": 0, "total_output_tokens": 0, "by_kind": [],
     }
+
+
+def get_token_usage_summary(days: int = 30) -> dict:
+    """
+    Rolling-window token usage grouped by (user, label/feature, model), for
+    the Token Usage screen. Returns raw grouped rows plus overall totals —
+    the frontend re-aggregates by user or by label from the same row set
+    rather than issuing separate queries for each cut.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, username, label, model,
+                           SUM(input_tokens), SUM(output_tokens), SUM(cost_usd), COUNT(*)
+                    FROM token_usage_calls
+                    WHERE called_at >= NOW() - (%s || ' days')::INTERVAL
+                    GROUP BY user_id, username, label, model
+                    ORDER BY SUM(cost_usd) DESC NULLS LAST
+                    """,
+                    (days,),
+                )
+                rows = [
+                    {
+                        "user_id": r[0],
+                        "username": r[1] or "Unknown",
+                        "label": r[2] or "unlabeled",
+                        "model": r[3],
+                        "input_tokens": int(r[4] or 0),
+                        "output_tokens": int(r[5] or 0),
+                        "cost_usd": float(r[6] or 0),
+                        "calls": int(r[7] or 0),
+                    }
+                    for r in cur.fetchall()
+                ]
+                totals = {
+                    "input_tokens":  sum(r["input_tokens"] for r in rows),
+                    "output_tokens": sum(r["output_tokens"] for r in rows),
+                    "cost_usd":      sum(r["cost_usd"] for r in rows),
+                    "calls":         sum(r["calls"] for r in rows),
+                }
+                return {"days": days, "rows": rows, "totals": totals}
+    return _run(_do) or {"days": days, "rows": [], "totals": {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "calls": 0}}
+
+
+def get_token_usage_time_summary() -> dict:
+    """
+    Calendar-period rollups (all-time, independent of get_token_usage_summary's
+    rolling window) for the Token Usage screen: by-month / month-to-date /
+    by-year / year-to-date, in both tokens and USD. cost_usd is summed as
+    stored — it was computed at recording time against the pricing catalog
+    in effect then, so this reflects cost at the time incurred, not today's
+    pricing.
+    """
+    def _row(r) -> dict:
+        return {
+            "calls":          int(r[1] or 0),
+            "input_tokens":   int(r[2] or 0),
+            "output_tokens":  int(r[3] or 0),
+            "cost_usd":       float(r[4] or 0),
+        }
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT date_trunc('month', called_at) AS bucket,
+                           COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+                    FROM token_usage_calls
+                    WHERE called_at >= NOW() - INTERVAL '24 months'
+                    GROUP BY bucket ORDER BY bucket DESC
+                    """
+                )
+                by_month = [{"month": r[0].strftime("%Y-%m"), **_row(r)} for r in cur.fetchall()]
+
+                cur.execute(
+                    """
+                    SELECT NULL, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+                    FROM token_usage_calls WHERE called_at >= date_trunc('month', NOW())
+                    """
+                )
+                month_to_date = _row(cur.fetchone())
+
+                cur.execute(
+                    """
+                    SELECT date_trunc('year', called_at) AS bucket,
+                           COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+                    FROM token_usage_calls
+                    GROUP BY bucket ORDER BY bucket DESC
+                    """
+                )
+                by_year = [{"year": r[0].strftime("%Y"), **_row(r)} for r in cur.fetchall()]
+
+                cur.execute(
+                    """
+                    SELECT NULL, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+                    FROM token_usage_calls WHERE called_at >= date_trunc('year', NOW())
+                    """
+                )
+                year_to_date = _row(cur.fetchone())
+
+                return {
+                    "by_month": by_month, "month_to_date": month_to_date,
+                    "by_year": by_year, "year_to_date": year_to_date,
+                }
+    empty = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+    return _run(_do) or {"by_month": [], "month_to_date": empty, "by_year": [], "year_to_date": empty}
 
 
 def get_prior_investigation(ticker: str) -> Optional[dict]:
