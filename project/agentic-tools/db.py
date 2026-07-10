@@ -5632,11 +5632,14 @@ def list_pac_modules() -> list:
     return _run(_do) or []
 
 
-def upsert_control(control_id: str, name: str, description: Optional[str] = None,
-                    process: Optional[str] = None, source: str = "manual") -> bool:
-    """Insert or update a control_catalog entry. Used both by the one-time
+def upsert_catalog_control(control_id: str, name: str, description: Optional[str] = None,
+                            process: Optional[str] = None, source: str = "manual") -> bool:
+    """Insert or update a controls_catalog entry. Used both by the one-time
     startup seed and by cac_from_pac (self-registers newly generated CaC
-    controls that reuse a real PaC control_id)."""
+    controls that reuse a real PaC control_id).
+
+    Named distinctly from the pre-existing upsert_control(dict) (controls_library
+    table, used by risk_register_endpoints.py) to avoid shadowing it."""
     try:
         with _conn() as conn:
             with conn.cursor() as cur:

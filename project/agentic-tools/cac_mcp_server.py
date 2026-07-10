@@ -416,7 +416,7 @@ def cac_from_pac(process: str = "", ticker: str = "") -> str:
 
                     if db.is_available():
                         try:
-                            db.upsert_control(
+                            db.upsert_catalog_control(
                                 ctrl_ref,
                                 r["rule_name"],
                                 description=msg_snippet or None,
