@@ -42,6 +42,22 @@ _HTTP_SESSION_ID: str = str(uuid.uuid4())
 _SESSION_REGISTERED = False
 
 
+# ── Fire-and-forget task tracking ───────────────────────────────────────────────
+# asyncio.create_task()'s return value is the only strong reference keeping a
+# task alive — dropping it (as the original code did) risks the event loop's
+# garbage collector reclaiming an in-flight telemetry write before it
+# completes, per the standard asyncio pitfall. Hold a module-level set and
+# discard each task via its own done-callback once it finishes.
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 # ── Path helpers ────────────────────────────────────────────────────────────────
 
 # REST API prefixes served by api_server.py (nginx strips /api/mcp before forwarding)
@@ -120,11 +136,11 @@ def _ensure_session() -> None:
                     VALUES (%s, 'http-monitor', %s)
                     ON CONFLICT (session_id) DO NOTHING
                     """,
-                    (uuid.UUID(_HTTP_SESSION_ID), os.getpid()),
+                    (_HTTP_SESSION_ID, os.getpid()),
                 )
         _SESSION_REGISTERED = True
     except Exception as exc:
-        logger.debug("Session registration failed: %s", exc)
+        logger.warning("Session registration failed: %s", exc)
 
 
 def _db_write_telemetry(
@@ -155,7 +171,7 @@ def _db_write_telemetry(
                             %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        uuid.UUID(_HTTP_SESSION_ID),
+                        _HTTP_SESSION_ID,
                         message_id,
                         tool_name,
                         args_hash,
@@ -171,7 +187,7 @@ def _db_write_telemetry(
             server_name, tool_name, elapsed_ms, status, risk_flags,
         )
     except Exception as exc:
-        logger.debug("HTTP telemetry write failed: %s", exc)
+        logger.warning("HTTP telemetry write failed: %s", exc)
 
 
 # ── Async log helper (called as a fire-and-forget task) ────────────────────────
@@ -326,14 +342,10 @@ class MCPHttpTelemetryMiddleware:
             elapsed_ms  = (time.monotonic_ns() - start_ns) // 1_000_000
             server_name = _server_name_from_path(path)
             if path.startswith("/mcp/"):
-                asyncio.create_task(
-                    _log_tool_call(body, server_name, elapsed_ms, response_status[0])
-                )
+                _spawn(_log_tool_call(body, server_name, elapsed_ms, response_status[0]))
             else:
-                asyncio.create_task(
-                    _log_rest_call(
-                        body, server_name,
-                        _tool_name_from_rest_path(path),
-                        elapsed_ms, response_status[0],
-                    )
-                )
+                _spawn(_log_rest_call(
+                    body, server_name,
+                    _tool_name_from_rest_path(path),
+                    elapsed_ms, response_status[0],
+                ))
