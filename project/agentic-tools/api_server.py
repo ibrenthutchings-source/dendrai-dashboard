@@ -300,13 +300,13 @@ def _seed_controls_catalog() -> None:
         return
     count = 0
     for ctrl in pac_endpoints.extract_control_ids_from_defaults():
-        db.upsert_control(
+        db.upsert_catalog_control(
             ctrl["control_id"], ctrl["name"],
             process=ctrl.get("process"), source="pac_rego",
         )
         count += 1
     for ctrl in _rac_mcp._CTRL_MAP_LOCAL.values():
-        db.upsert_control(ctrl["ref"], ctrl["name"], source="manual")
+        db.upsert_catalog_control(ctrl["ref"], ctrl["name"], source="manual")
         count += 1
     logger.info("Seeded %d controls into controls_catalog", count)
 
