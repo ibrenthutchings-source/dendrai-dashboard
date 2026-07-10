@@ -206,6 +206,7 @@ def to_oscal(
             "status": "open" if rag in ("R", "A") else "closed",
             "characterizations": [characterization],
             "mitigating-factors": [],
+            "controls": risk.get("controls", []),
             "remediations": remediations,
             "risk-log": {
                 "entries": [{
@@ -449,6 +450,7 @@ def to_coso_erm(
             "velocity":       velocity,
             "velocity_label": _VELOCITY_LABEL.get(velocity, str(velocity)),
             "peer_benchmark": risk.get("peer", "in-line"),
+            "controls":       risk.get("controls", []),
 
             # COSO ERM component 3 — Risk Response
             "risk_response": {

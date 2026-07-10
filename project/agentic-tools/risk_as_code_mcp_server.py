@@ -861,6 +861,7 @@ def rac_from_review(
                     "ce":        scores_by_ref.get(s["risk_ref"], {}).get("control_env") or "ADEQUATE",
                     "peer":      scores_by_ref.get(s["risk_ref"], {}).get("peer_benchmark") or "in-line",
                     "narrative": s.get("current_wording") or "",
+                    "controls":  s.get("controls_assigned") or [],
                 }
                 for s in included
             ]
