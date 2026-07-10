@@ -76,6 +76,7 @@ from pac_endpoints import (
     VALID_PROCESSES,
     _REGO_DEFAULTS,
     _controls_to_rego,
+    _extract_control_id,
     evaluate_policy_event,
 )
 
@@ -387,10 +388,17 @@ def cac_from_pac(process: str = "", ticker: str = "") -> str:
                     if ref in seen:
                         continue
                     seen.add(ref)
-                    # Normalise rule name → control ref
-                    ctrl_ref = r["rule_name"].replace("deny_", "").replace("_event", "").replace("_", "-").upper()
+                    # Reuse the real control_id embedded in the rule's msg text
+                    # (msg := sprintf("<ID>: ...")) so the generated CaC control
+                    # shares an identifier with the PAC rule it came from.
+                    # Fall back to a mangled rule-name ref only if extraction fails.
+                    control_id = _extract_control_id(r["msg_pattern"])
+                    ctrl_ref = control_id or (
+                        f'{proc.upper()}-'
+                        + r["rule_name"].replace("deny_", "").replace("_event", "").replace("_", "-").upper()
+                    )
                     msg_snippet = r["msg_pattern"][:80].replace('"', '\\"') if r["msg_pattern"] else r["rule_name"]
-                    lines.append(f'control_active["{proc.upper()}-{ctrl_ref}"] := {{')
+                    lines.append(f'control_active["{ctrl_ref}"] := {{')
                     lines.append(f'    "name":        "{r["rule_name"]}",')
                     lines.append(f'    "framework":   "Oracle Fusion PaC",')
                     lines.append(f'    "process":     "{proc}",')
@@ -405,6 +413,18 @@ def cac_from_pac(process: str = "", ticker: str = "") -> str:
                     lines.append(f'    ]')
                     lines.append("}")
                     lines.append("")
+
+                    if db.is_available():
+                        try:
+                            db.upsert_control(
+                                ctrl_ref,
+                                r["rule_name"],
+                                description=msg_snippet or None,
+                                process=proc,
+                                source="pac_rego",
+                            )
+                        except Exception:
+                            pass  # catalog upsert is non-fatal to artifact generation
 
         content_rego = "\n".join(lines).rstrip() + "\n"
 
