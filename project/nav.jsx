@@ -12,8 +12,7 @@ const NAV_SECTIONS = [
       { id: "pipeline", icon: "flow",      l: "Assess Enterprise Risk" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
       { id: "scenarioanalysis", icon: "compass", l: "Scenario Analysis" },
-      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"},
-      { id: "rrreview",   icon: "list",     l: "Risks & Controls Register" }
+      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"}
      // { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" }
     ],
   },
@@ -22,13 +21,14 @@ const NAV_SECTIONS = [
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
+      { id: "scope",    icon: "grid",      l: "Audit Scope" },
+      { id: "rrreview",   icon: "list",     l: "Risks & Controls Register" },
+      { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
       { id: "approvals", icon: "check",    l: "Approval Inbox" },
       { id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "ubogov",   icon: "shield",    l: "UBO Governance Brain" },
       { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
-      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" },
-      { id: "scope",    icon: "grid",      l: "Audit Scope" },
-      { id: "policycode", icon: "shield",  l: "Policy-as-Code" }
+      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" }
     ],
   },
   {
@@ -47,6 +47,7 @@ const NAV_SECTIONS = [
       { id: "config",     icon: "gear",   l: "Setup" },
       { id: "uboconfig",  icon: "shield", l: "UBO Configuration" },
       { id: "tokenusage", icon: "table",  l: "Token Usage" },
+      { id: "modelhealth", icon: "trend", l: "Model Health" },
       { id: "userconfig", icon: "user",   l: "User Configuration", adminOnly: true },
     ],
   }

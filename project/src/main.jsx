@@ -40,6 +40,7 @@ import '../coverage-gap.jsx'
 import '../approval-inbox.jsx'
 import '../user-config.jsx'
 import '../token-usage.jsx'
+import '../model-health.jsx'
 import '../tweaks.jsx'
 
 import App from '../app.jsx'

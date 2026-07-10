@@ -46,6 +46,7 @@ Endpoints:
     PUT  /loop/last-state                    Persist full pipeline run state to DB
 
     GET  /token-usage/summary                Token usage by user/feature (window) + calendar rollups (month/year, MTD/YTD)
+    GET  /model-health/summary               Backtest accuracy trend + PSI drift (financial ratios, FRED macro regime)
 
 MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
     /mcp/edgar/mcp              SEC EDGAR filings, financials, risk factors, 8-K events
@@ -1644,6 +1645,38 @@ def get_token_usage_summary_endpoint(
     return {
         **db.get_token_usage_summary(days),
         **db.get_token_usage_time_summary(),
+    }
+
+
+@app.get("/model-health/summary")
+def get_model_health_summary(
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """
+    Model Health screen data: forecast backtest accuracy trend across recent
+    runs, cross-sectional PSI drift on financial ratios (has the population
+    of companies being analyzed shifted from what the risk-scoring templates
+    were calibrated against), and PSI regime-shift drift on a small set of
+    broad FRED macro indicators (empty when no FRED_API_KEY is configured).
+    On-demand only — computed live on each request, no background job.
+    Same nav-permission-gated convention as Token Usage, not admin-only.
+    """
+    import drift_tool
+
+    backtest_trend: list = []
+    ratio_drift: list = []
+    if db.is_available():
+        backtest_trend = db.get_backtest_trend()
+        ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
+
+    fred_api_key = os.environ.get("FRED_API_KEY", "")
+    fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key)
+
+    return {
+        "backtest_trend": backtest_trend,
+        "ratio_drift": ratio_drift,
+        "fred_drift": fred_drift,
+        "fred_configured": bool(fred_api_key),
     }
 
 

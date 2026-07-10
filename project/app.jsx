@@ -1600,6 +1600,15 @@ function App() {
           </ScreenAccessGate>
           )}
 
+          {/* ---- Model Health (backtest accuracy trend + PSI drift) ---- */}
+          {activeScreen === "modelhealth" && (
+          <ScreenAccessGate screenId="modelhealth">
+            <div className="panel active">
+              <ModelHealthScreen />
+            </div>
+          </ScreenAccessGate>
+          )}
+
           {/* ---- Pipeline (with action bar + sub-tabs) ---- */}
           {activeScreen === "pipeline" && (
           <ScreenAccessGate screenId="pipeline">
