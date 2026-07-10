@@ -199,8 +199,9 @@ function AddUserModal({ open, onClose, onCreated }) {
           <div className="ar-field" style={{ marginTop: 10 }}>
             <label className="ar-label">Role</label>
             <select className="fi-input" value={role} onChange={e => setRole(e.target.value)}>
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
+              {(roles.length ? roles : [{ name: "user" }, { name: "admin" }]).map(r => (
+                <option key={r.name} value={r.name}>{r.name}</option>
+              ))}
             </select>
           </div>
           <PasswordModeFields mode={pwMode} setMode={setPwMode} password={password} setPassword={setPassword} />
@@ -403,6 +404,7 @@ function UsersTab() {
   const auth = window.useAuth ? window.useAuth() : null;
 
   const [users, setUsers] = React.useState([]);
+  const [roles, setRoles] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const [addOpen, setAddOpen] = React.useState(false);
@@ -424,6 +426,15 @@ function UsersTab() {
   }, []);
 
   React.useEffect(() => { reload(); }, [reload]);
+
+  // Roles for the two role <select>s below (Add User modal + inline row
+  // editor) — fetched once here rather than by each, same list either way.
+  React.useEffect(() => {
+    fetch("/auth/admin/roles", { credentials: "include" })
+      .then(r => r.ok ? r.json() : { roles: [] })
+      .then(d => setRoles(d.roles || []))
+      .catch(() => {});
+  }, []);
 
   async function putAndParse(url, body) {
     const res = await fetch(url, {
@@ -507,7 +518,7 @@ function UsersTab() {
             <tbody>
               {users.map(u => (
                 <UserConfigRow
-                  key={u.id} u={u} users={users} isSelf={u.id === auth.user.id}
+                  key={u.id} u={u} users={users} roles={roles} isSelf={u.id === auth.user.id}
                   onSetManager={handleSetManager} onSetRole={handleSetRole} onSetActive={handleSetActive}
                   onEdit={setEditUser} onRemove={handleRemove}
                 />
@@ -517,7 +528,7 @@ function UsersTab() {
         </div>
       )}
 
-      <AddUserModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={handleCreated} />
+      <AddUserModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={handleCreated} roles={roles} />
       <EditUserModal
         open={!!editUser} user={editUser} onClose={() => setEditUser(null)}
         onSaved={handleSaved} onPasswordSet={(username, password) => setReveal({ username, password })}
@@ -609,43 +620,26 @@ function ScreenAccessSection({ section, perms, onToggleScreen, onToggleColumn })
   );
 }
 
-function ScreenAccessTab() {
-  const [users, setUsers] = React.useState([]);
-  const [usersLoading, setUsersLoading] = React.useState(true);
-  const [selectedUserId, setSelectedUserId] = React.useState(null);
-
-  const [perms, setPerms] = React.useState({});   // { screen_id: { can_read, can_edit } }
-  const [loading, setLoading] = React.useState(false);
+// Reusable Read/Edit matrix editor, pointed at either a per-user endpoint
+// (/auth/admin/screen-permissions/{userId}) or a per-role endpoint
+// (/auth/admin/roles/{roleId}/permissions) — both return/accept the same
+// {permissions: [...]} shape. Pass a `key` that changes with the selected
+// user/role so React remounts (and thus reloads) rather than needing an
+// extra effect keyed off an external id.
+function PermissionMatrixEditor({ permsUrl, disabled, disabledNote }) {
+  const [perms, setPerms] = React.useState({});
+  const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [saved, setSaved] = React.useState(false);
 
   const sections = React.useMemo(getPermissionSections, []);
 
-  // Admins always have full access and aren't configurable here.
-  React.useEffect(() => {
-    (async () => {
-      setUsersLoading(true);
-      try {
-        const res = await fetch("/auth/admin/users", { credentials: "include" });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        const nonAdmin = (data.users || []).filter(u => u.role !== "admin");
-        setUsers(nonAdmin);
-        setSelectedUserId(prev => prev ?? (nonAdmin[0]?.id ?? null));
-      } catch (e) {
-        setError(e.message);
-      } finally {
-        setUsersLoading(false);
-      }
-    })();
-  }, []);
-
-  const loadPerms = React.useCallback(async (userId) => {
-    if (!userId) { setPerms({}); return; }
+  const load = React.useCallback(async () => {
+    if (!permsUrl) { setPerms({}); setLoading(false); return; }
     setLoading(true); setError(null); setSaved(false);
     try {
-      const res = await fetch(`/auth/admin/screen-permissions/${userId}`, { credentials: "include" });
+      const res = await fetch(permsUrl, { credentials: "include" });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setPerms(data.permissions || {});
@@ -654,9 +648,9 @@ function ScreenAccessTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [permsUrl]);
 
-  React.useEffect(() => { loadPerms(selectedUserId); }, [selectedUserId, loadPerms]);
+  React.useEffect(() => { load(); }, [load]);
 
   function toggleScreen(screenId, field, value) {
     setSaved(false);
@@ -684,7 +678,7 @@ function ScreenAccessTab() {
   }
 
   async function save() {
-    if (!selectedUserId) return;
+    if (!permsUrl) return;
     setSaving(true); setError(null); setSaved(false);
     try {
       const permissions = sections.flatMap(sec => sec.screens.map(s => ({
@@ -692,7 +686,7 @@ function ScreenAccessTab() {
         can_read: perms[s.id]?.can_read !== false,
         can_edit: perms[s.id]?.can_edit !== false,
       })));
-      const res = await fetch(`/auth/admin/screen-permissions/${selectedUserId}`, {
+      const res = await fetch(permsUrl, {
         method: "PUT", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ permissions }),
@@ -708,12 +702,74 @@ function ScreenAccessTab() {
     }
   }
 
+  if (disabled) {
+    return <Empty>{disabledNote || "Not configurable."}</Empty>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 10 }}>
+        <button className="btn btn-sm" onClick={load} disabled={loading || saving}>
+          <Icon name="reset" size={11} /> Revert
+        </button>
+        <button className="btn btn-sm btn-primary" onClick={save} disabled={loading || saving}>
+          {saving ? "Saving…" : saved ? "Saved ✓" : "Save Changes"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4, marginBottom: 12 }}>{error}</div>
+      )}
+
+      {loading ? (
+        <div style={{ padding: "24px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 12 }}>Loading…</div>
+      ) : (
+        <div>
+          {sections.map(section => (
+            <ScreenAccessSection
+              key={section.label} section={section} perms={perms}
+              onToggleScreen={toggleScreen} onToggleColumn={toggleColumn}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScreenAccessTab() {
+  const [users, setUsers] = React.useState([]);
+  const [usersLoading, setUsersLoading] = React.useState(true);
+  const [selectedUserId, setSelectedUserId] = React.useState(null);
+
+  // Admins always have full access and aren't configurable here.
+  React.useEffect(() => {
+    (async () => {
+      setUsersLoading(true);
+      try {
+        const res = await fetch("/auth/admin/users", { credentials: "include" });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const nonAdmin = (data.users || []).filter(u => u.role !== "admin");
+        setUsers(nonAdmin);
+        setSelectedUserId(prev => prev ?? (nonAdmin[0]?.id ?? null));
+      } catch (e) {
+        // Surfaced inline below via the empty-state; no separate error UI needed here.
+      } finally {
+        setUsersLoading(false);
+      }
+    })();
+  }, []);
+
+  const selectedUser = users.find(u => u.id === selectedUserId);
+
   return (
     <div>
       <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.5, maxWidth: 760, marginBottom: 14 }}>
-        Read and Edit access per screen, defined individually for each user, grouped by nav section — check a
-        section's box to set every screen inside it, or set screens individually. Admins always have full
-        access and aren't listed here. A screen left unconfigured for a user stays visible/editable by default.
+        Per-user overrides on top of the user's role default (see the Roles tab). Check a section's box to set
+        every screen inside it, or set screens individually. Admins always have full access and aren't listed
+        here. A screen left unconfigured here falls back to the role's default, and if the role has no default
+        either, stays visible/editable — same as before roles existed.
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
@@ -726,31 +782,194 @@ function ScreenAccessTab() {
             <option key={u.id} value={u.id}>{u.display_name || u.username}{u.is_active ? "" : " (inactive)"}</option>
           ))}
         </select>
-        <div style={{ flex: 1 }} />
-        <button className="btn btn-sm" onClick={() => loadPerms(selectedUserId)} disabled={loading || saving || !selectedUserId}>
-          <Icon name="reset" size={11} /> Revert
-        </button>
-        <button className="btn btn-sm btn-primary" onClick={save} disabled={loading || saving || !selectedUserId}>
-          {saving ? "Saving…" : saved ? "Saved ✓" : "Save Changes"}
-        </button>
+        {selectedUser && (
+          <span className="mono" style={{ fontSize: 10, color: "var(--ink-4)" }}>
+            role: <strong>{selectedUser.role}</strong>
+          </span>
+        )}
       </div>
-
-      {error && (
-        <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4, marginBottom: 12 }}>{error}</div>
-      )}
 
       {!usersLoading && users.length === 0 ? (
         <Empty>No non-admin accounts yet — add one in the Users tab first.</Empty>
-      ) : loading ? (
-        <div style={{ padding: "24px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 12 }}>Loading…</div>
       ) : (
-        <div>
-          {sections.map(section => (
-            <ScreenAccessSection
-              key={section.label} section={section} perms={perms}
-              onToggleScreen={toggleScreen} onToggleColumn={toggleColumn}
+        <PermissionMatrixEditor
+          key={selectedUserId}
+          permsUrl={selectedUserId ? `/auth/admin/screen-permissions/${selectedUserId}` : null}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Roles tab ──────────────────────────────────────────────────────────────
+// A role carries a default screen permission set (same matrix editor as the
+// Screen Access tab, just pointed at a role instead of a user) — every user
+// assigned to a role inherits its defaults, unless they have their own
+// per-user override in the Screen Access tab.
+
+function RolesTab() {
+  const [roles, setRoles] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [selectedRoleId, setSelectedRoleId] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  const [addOpen, setAddOpen] = React.useState(false);
+  const [newName, setNewName] = React.useState("");
+  const [newDesc, setNewDesc] = React.useState("");
+  const [creating, setCreating] = React.useState(false);
+  const [createErr, setCreateErr] = React.useState(null);
+  const [deleteErr, setDeleteErr] = React.useState(null);
+
+  const loadRoles = React.useCallback(async (selectId) => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch("/auth/admin/roles", { credentials: "include" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const list = data.roles || [];
+      setRoles(list);
+      setSelectedRoleId(prev => selectId ?? prev ?? (list[0]?.id ?? null));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => { loadRoles(); }, [loadRoles]);
+
+  const selectedRole = roles.find(r => r.id === selectedRoleId);
+
+  async function createRole() {
+    setCreating(true); setCreateErr(null);
+    try {
+      const res = await fetch("/auth/admin/roles", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to create role");
+      setAddOpen(false); setNewName(""); setNewDesc("");
+      await loadRoles(data.role_id);
+    } catch (e) {
+      setCreateErr(e.message);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function deleteRole(role) {
+    if (!window.confirm(`Delete role "${role.name}"? This cannot be undone.`)) return;
+    setDeleteErr(null);
+    try {
+      const res = await fetch(`/auth/admin/roles/${role.id}`, { method: "DELETE", credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to delete role");
+      if (selectedRoleId === role.id) setSelectedRoleId(null);
+      await loadRoles();
+    } catch (e) {
+      setDeleteErr(e.message);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 24 }}>
+      <div style={{ width: 220, flexShrink: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div className="ar-label" style={{ marginBottom: 0 }}>Roles</div>
+          <button className="btn btn-sm" onClick={() => setAddOpen(true)}>+ Add</button>
+        </div>
+        {loading ? (
+          <div style={{ fontSize: 11, color: "var(--ink-3)" }}>Loading…</div>
+        ) : (
+          roles.map(r => (
+            <div key={r.id}
+              onClick={() => setSelectedRoleId(r.id)}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6,
+                padding: "7px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 3,
+                background: selectedRoleId === r.id ? "var(--surface-2, var(--surface))" : "transparent",
+                border: "1px solid " + (selectedRoleId === r.id ? "var(--line)" : "transparent"),
+              }}>
+              <div>
+                <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink)", display: "flex", alignItems: "center", gap: 5 }}>
+                  {r.name}
+                  {r.is_system && (
+                    <span className="mono" style={{
+                      fontSize: 8.5, fontWeight: 700, padding: "1px 5px", borderRadius: 999,
+                      background: "var(--surface-2)", color: "var(--ink-3)", border: "1px solid var(--line)",
+                    }}>system</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9.5, color: "var(--ink-4)" }}>{r.user_count} user{r.user_count !== 1 ? "s" : ""}</div>
+              </div>
+              {!r.is_system && (
+                <button className="btn btn-sm btn-ghost" title="Delete role"
+                  onClick={e => { e.stopPropagation(); deleteRole(r); }}>
+                  <Icon name="x" size={11} />
+                </button>
+              )}
+            </div>
+          ))
+        )}
+        {deleteErr && <div className="mono" style={{ fontSize: 10, color: "var(--red-ink)", marginTop: 6 }}>{deleteErr}</div>}
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.5, maxWidth: 620, marginBottom: 14 }}>
+          Each role's Read/Edit matrix is the default every assigned user inherits — set it once here instead of
+          configuring users one by one. A user's own Screen Access overrides (previous tab) still win over
+          their role's default when both are set for the same screen.
+        </div>
+        {error && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 12 }}>{error}</div>}
+        {!selectedRole ? <Empty>Select a role, or add a new one.</Empty> : (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{selectedRole.name}</div>
+              {selectedRole.description && <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>{selectedRole.description}</div>}
+            </div>
+            <PermissionMatrixEditor
+              key={selectedRole.id}
+              permsUrl={`/auth/admin/roles/${selectedRole.id}/permissions`}
+              disabled={selectedRole.name === "admin"}
+              disabledNote="Admins always have full access — this role's permission matrix has no effect and isn't configurable."
             />
-          ))}
+          </>
+        )}
+      </div>
+
+      {addOpen && (
+        <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) setAddOpen(false); }}>
+          <div className="modal-box" style={{ width: 400 }}>
+            <div className="modal-head">
+              <div className="modal-title">Add Role</div>
+              <button className="btn btn-sm btn-ghost" onClick={() => setAddOpen(false)}><Icon name="x" size={12} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="ar-field">
+                <label className="ar-label">Name</label>
+                <input type="text" className="fi-input" value={newName} onChange={e => setNewName(e.target.value)}
+                  placeholder="auditor" autoFocus />
+                <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 3 }}>
+                  Lowercase letters, numbers, underscore, hyphen. 2-32 characters.
+                </div>
+              </div>
+              <div className="ar-field" style={{ marginTop: 10 }}>
+                <label className="ar-label">Description</label>
+                <input type="text" className="fi-input" value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="Optional" />
+              </div>
+              {createErr && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 10 }}>{createErr}</div>}
+            </div>
+            <div className="modal-foot">
+              <span />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="btn btn-sm" onClick={() => setAddOpen(false)}>Cancel</button>
+                <button className="btn btn-sm btn-primary" disabled={!newName.trim() || creating} onClick={createRole}>
+                  {creating ? "Creating…" : "Create Role"}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -774,6 +993,7 @@ function UserConfigScreen() {
 
   const tabs = [
     { id: "users", label: "Users" },
+    { id: "roles", label: "Roles" },
     { id: "access", label: "Screen Access" },
   ];
 
@@ -784,7 +1004,7 @@ function UserConfigScreen() {
           <div className="kicker">Governance · Configuration</div>
           <div className="panel-title mt-8">User Configuration</div>
           <div className="panel-sub">
-            Add, change, or permanently remove local accounts, and control which screens the User role can see or edit.
+            Add, change, or permanently remove local accounts; define roles with default screen permissions; and set per-user overrides.
           </div>
         </div>
       </div>
@@ -803,7 +1023,7 @@ function UserConfigScreen() {
         ))}
       </div>
 
-      {tab === "users" ? <UsersTab /> : <ScreenAccessTab />}
+      {tab === "users" ? <UsersTab /> : tab === "roles" ? <RolesTab /> : <ScreenAccessTab />}
     </div>
   );
 }

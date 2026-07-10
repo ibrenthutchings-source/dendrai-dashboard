@@ -109,6 +109,34 @@ CREATE TABLE IF NOT EXISTS auth.screen_permissions (
     PRIMARY KEY (user_id, screen_id)
 );
 CREATE INDEX IF NOT EXISTS idx_screen_permissions_user ON auth.screen_permissions (user_id);
+
+-- RBAC: named roles, each carrying its own default screen permission set.
+-- auth.users.role stores the role NAME (already a free VARCHAR(32), no
+-- migration needed) — 'admin' and 'user' are seeded below as protected
+-- system roles matching the two values every existing account already has.
+-- This is purely additive to auth.screen_permissions above: a user's
+-- EFFECTIVE permission on a screen is their own per-user row (if any),
+-- else their role's default (if any), else allowed — see
+-- get_effective_screen_permissions(). Nothing about the existing per-user
+-- table's behavior changes; it simply becomes an override layer instead of
+-- the only source.
+CREATE TABLE IF NOT EXISTS auth.roles (
+    id          BIGSERIAL   PRIMARY KEY,
+    name        VARCHAR(32) NOT NULL UNIQUE,
+    description VARCHAR(255),
+    is_system   BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS auth.role_screen_permissions (
+    role_id     BIGINT      NOT NULL REFERENCES auth.roles(id) ON DELETE CASCADE,
+    screen_id   VARCHAR(64) NOT NULL,
+    can_read    BOOLEAN     NOT NULL DEFAULT TRUE,
+    can_edit    BOOLEAN     NOT NULL DEFAULT TRUE,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (role_id, screen_id)
+);
+CREATE INDEX IF NOT EXISTS idx_role_screen_permissions_role ON auth.role_screen_permissions (role_id);
 """
 
 PW_HISTORY_LIMIT  = 3
@@ -123,6 +151,18 @@ def init_auth_db() -> bool:
         with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(_AUTH_DDL)
+                # Seed the two system roles matching the values every existing
+                # auth.users.role already has — no data migration needed.
+                # ON CONFLICT DO NOTHING keeps this idempotent across restarts
+                # and safe if an admin has since edited the description.
+                cur.execute(
+                    """
+                    INSERT INTO auth.roles (name, description, is_system) VALUES
+                        ('admin', 'Full access — bypasses the screen permission matrix entirely.', TRUE),
+                        ('user',  'Default role for new accounts.', TRUE)
+                    ON CONFLICT (name) DO NOTHING
+                    """
+                )
             conn.commit()
         logger.info("Auth schema initialised")
         return True
@@ -194,7 +234,7 @@ def list_all_users() -> list:
 
 
 def set_role(user_id: int, role: str) -> bool:
-    if role not in ("user", "admin"):
+    if not role_exists(role):
         return False
     try:
         with db._conn() as conn:
@@ -205,6 +245,170 @@ def set_role(user_id: int, role: str) -> bool:
     except Exception as exc:
         logger.warning("set_role error: %s", exc)
         return False
+
+
+# ── Roles (RBAC) ─────────────────────────────────────────────────────────────
+# Named roles, each carrying a default screen permission set — see the DDL
+# comment on auth.roles/auth.role_screen_permissions above for the resolution
+# order. 'admin'/'user' are seeded, protected system roles (init_auth_db).
+
+def role_exists(name: str) -> bool:
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM auth.roles WHERE name = %s", (name,))
+                return cur.fetchone() is not None
+    except Exception as exc:
+        logger.warning("role_exists error: %s", exc)
+        return False
+
+
+def list_roles() -> list:
+    """Every role, with a live count of assigned users."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT r.id, r.name, r.description, r.is_system, r.created_at,
+                           (SELECT COUNT(*) FROM auth.users u WHERE u.role = r.name) AS user_count
+                    FROM auth.roles r
+                    ORDER BY r.is_system DESC, r.name ASC
+                    """
+                )
+                cols = ["id", "name", "description", "is_system", "created_at", "user_count"]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d["created_at"]:
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("list_roles error: %s", exc)
+        return []
+
+
+def create_role(name: str, description: Optional[str] = None) -> Optional[int]:
+    name = name.strip().lower()
+    if not re.match(r"^[a-z0-9_-]{2,32}$", name):
+        return None
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO auth.roles (name, description) VALUES (%s, %s) "
+                    "ON CONFLICT (name) DO NOTHING RETURNING id",
+                    (name, description),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.warning("create_role error: %s", exc)
+        return None
+
+
+def update_role(role_id: int, description: Optional[str]) -> bool:
+    """Description only — name and is_system are immutable after creation so
+    auth.users.role string references never silently point at a renamed role."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE auth.roles SET description = %s, updated_at = NOW() WHERE id = %s",
+                    (description, role_id),
+                )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("update_role error: %s", exc)
+        return False
+
+
+def delete_role(role_id: int) -> Optional[str]:
+    """Delete a role. Returns None on success, or an error message explaining
+    why it was refused (system role / still has assigned users) — the caller
+    surfaces this as a 409, since silently deleting either would leave users
+    with a dangling role string or destroy the built-in admin/user roles."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name, is_system FROM auth.roles WHERE id = %s", (role_id,))
+                row = cur.fetchone()
+                if not row:
+                    return "Role not found"
+                name, is_system = row
+                if is_system:
+                    return f"'{name}' is a system role and cannot be deleted"
+                cur.execute("SELECT COUNT(*) FROM auth.users WHERE role = %s", (name,))
+                (n,) = cur.fetchone()
+                if n > 0:
+                    return f"{n} user(s) still have this role — reassign them first"
+                cur.execute("DELETE FROM auth.roles WHERE id = %s", (role_id,))
+            conn.commit()
+        return None
+    except Exception as exc:
+        logger.warning("delete_role error: %s", exc)
+        return "Delete failed — see server logs"
+
+
+def get_role_screen_permissions(role_id: int) -> dict:
+    """{screen_id: {"can_read": bool, "can_edit": bool}} for a role's defaults."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT screen_id, can_read, can_edit FROM auth.role_screen_permissions WHERE role_id = %s",
+                    (role_id,),
+                )
+                return {r[0]: {"can_read": r[1], "can_edit": r[2]} for r in cur.fetchall()}
+    except Exception as exc:
+        logger.warning("get_role_screen_permissions error: %s", exc)
+        return {}
+
+
+def set_role_screen_permissions(role_id: int, perms: list) -> bool:
+    """Replace the full default permission set for a role. Same shape as
+    set_screen_permissions: list of {"screen_id", "can_read", "can_edit"}."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM auth.role_screen_permissions WHERE role_id = %s", (role_id,))
+                for p in perms:
+                    cur.execute(
+                        """
+                        INSERT INTO auth.role_screen_permissions (role_id, screen_id, can_read, can_edit)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (role_id, p["screen_id"], bool(p.get("can_read", True)), bool(p.get("can_edit", True))),
+                    )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("set_role_screen_permissions error: %s", exc)
+        return False
+
+
+def get_effective_screen_permissions(user_id: int, role_name: str) -> dict:
+    """
+    Resolution order: per-user override (auth.screen_permissions) beats the
+    user's role default (auth.role_screen_permissions) beats "allowed" (screen
+    absent from both — unchanged default from before roles existed).
+    """
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM auth.roles WHERE name = %s", (role_name,))
+                row = cur.fetchone()
+                role_id = row[0] if row else None
+    except Exception as exc:
+        logger.warning("get_effective_screen_permissions role lookup error: %s", exc)
+        role_id = None
+
+    role_perms = get_role_screen_permissions(role_id) if role_id else {}
+    user_perms = get_screen_permissions(user_id)
+    return {**role_perms, **user_perms}
 
 
 def set_active(user_id: int, is_active: bool) -> bool:

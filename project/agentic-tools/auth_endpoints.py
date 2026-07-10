@@ -21,8 +21,14 @@ PUT  /auth/admin/users/{id}/role     Promote/demote a user, admin only
 PUT  /auth/admin/users/{id}/active   Activate/deactivate a user, admin only
 PUT  /auth/admin/users/{id}/password Set/reset a user's password (manual or generated), admin only
 DELETE /auth/admin/users/{id}        Permanently remove a user, admin only
-GET  /auth/admin/screen-permissions/{user_id}  Get a user's screen access matrix, admin only
-PUT  /auth/admin/screen-permissions/{user_id}  Replace a user's screen access matrix, admin only
+GET  /auth/admin/screen-permissions/{user_id}  Get a user's screen access matrix (override layer), admin only
+PUT  /auth/admin/screen-permissions/{user_id}  Replace a user's screen access matrix (override layer), admin only
+GET  /auth/admin/roles                         List roles, admin only
+POST /auth/admin/roles                         Create a role, admin only
+PUT  /auth/admin/roles/{id}                    Update a role's description, admin only
+DELETE /auth/admin/roles/{id}                  Delete a role (blocked if system role or has assigned users), admin only
+GET  /auth/admin/roles/{id}/permissions        Get a role's default screen permissions, admin only
+PUT  /auth/admin/roles/{id}/permissions        Replace a role's default screen permissions, admin only
 
 Dependencies (pip install):
     passlib[bcrypt]     password hashing
@@ -335,7 +341,16 @@ class SetManagerRequest(BaseModel):
 
 
 class AdminSetRoleRequest(BaseModel):
-    role: str  # 'user' | 'admin'
+    role: str  # any name in auth.roles — 'user'/'admin' are the seeded system roles
+
+
+class CreateRoleRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class UpdateRoleRequest(BaseModel):
+    description: Optional[str] = None
 
 
 class AdminSetActiveRequest(BaseModel):
@@ -444,9 +459,11 @@ def logout(
 @router.get("/me", summary="Current authenticated user")
 def me(current_user: dict = Depends(get_current_user)):
     # Admins are never subject to the screen-permission matrix (never locked
-    # out); everyone else gets their own saved matrix so the frontend can
-    # gate nav + screens without a second round trip on every load.
-    perms = None if current_user.get("role") == "admin" else auth_db.get_screen_permissions(current_user["id"])
+    # out); everyone else gets their EFFECTIVE matrix — their role's default
+    # permissions with any per-user overrides layered on top — so the
+    # frontend can gate nav + screens without a second round trip on every load.
+    perms = None if current_user.get("role") == "admin" else \
+        auth_db.get_effective_screen_permissions(current_user["id"], current_user.get("role", "user"))
     return {"user": {**current_user, "screen_permissions": perms}}
 
 
@@ -504,8 +521,8 @@ def admin_set_manager(user_id: int, req: SetManagerRequest, current_user: dict =
 
 @router.put("/admin/users/{user_id}/role", summary="Set a user's role (admin)")
 def admin_set_role(user_id: int, req: AdminSetRoleRequest, current_user: dict = Depends(require_admin)):
-    if req.role not in ("user", "admin"):
-        raise HTTPException(status_code=400, detail="role must be 'user' or 'admin'")
+    if not auth_db.role_exists(req.role):
+        raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'")
     if user_id == current_user["id"] and req.role != "admin":
         raise HTTPException(status_code=400, detail="You cannot remove your own admin role")
     target = auth_db.get_user_by_id(user_id)
@@ -541,8 +558,8 @@ def admin_create_user(req: AdminCreateUserRequest, current_user: dict = Depends(
     username = req.username.strip().lower()
     if not _USERNAME_RE.match(username):
         raise HTTPException(status_code=422, detail="Username must be 3-64 characters: lowercase letters, numbers, dot, underscore, hyphen.")
-    if req.role not in ("user", "admin"):
-        raise HTTPException(status_code=400, detail="role must be 'user' or 'admin'")
+    if not auth_db.role_exists(req.role):
+        raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'")
     if auth_db.get_user_by_username(username):
         raise HTTPException(status_code=409, detail="Username already exists")
 
@@ -655,6 +672,58 @@ def admin_set_screen_permissions(user_id: int, req: SetScreenPermissionsRequest,
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to save screen permissions")
     return {"ok": True, "user_id": user_id, "permissions": auth_db.get_screen_permissions(user_id)}
+
+
+# ── Roles (RBAC) — Configuration > User Configuration > Roles ─────────────────
+# A role carries a default screen permission set (auth.role_screen_permissions)
+# that every user assigned to it inherits, unless they have their own per-user
+# override in auth.screen_permissions (see admin_get/set_screen_permissions
+# above — unchanged, now an override layer instead of the sole source).
+
+@router.get("/admin/roles", summary="List roles (admin)")
+def admin_list_roles(current_user: dict = Depends(require_admin)):
+    return {"roles": auth_db.list_roles()}
+
+
+@router.post("/admin/roles", summary="Create a role (admin)")
+def admin_create_role(req: CreateRoleRequest, current_user: dict = Depends(require_admin)):
+    name = req.name.strip().lower()
+    if not re.match(r"^[a-z0-9_-]{2,32}$", name):
+        raise HTTPException(status_code=422, detail="Role name must be 2-32 characters: lowercase letters, numbers, underscore, hyphen.")
+    if auth_db.role_exists(name):
+        raise HTTPException(status_code=409, detail="A role with this name already exists")
+    role_id = auth_db.create_role(name, req.description)
+    if not role_id:
+        raise HTTPException(status_code=500, detail="Failed to create role")
+    return {"ok": True, "role_id": role_id}
+
+
+@router.put("/admin/roles/{role_id}", summary="Update a role's description (admin)")
+def admin_update_role(role_id: int, req: UpdateRoleRequest, current_user: dict = Depends(require_admin)):
+    if not auth_db.update_role(role_id, req.description):
+        raise HTTPException(status_code=500, detail="Failed to update role")
+    return {"ok": True}
+
+
+@router.delete("/admin/roles/{role_id}", summary="Delete a role (admin)")
+def admin_delete_role(role_id: int, current_user: dict = Depends(require_admin)):
+    err = auth_db.delete_role(role_id)
+    if err:
+        raise HTTPException(status_code=409, detail=err)
+    return {"ok": True}
+
+
+@router.get("/admin/roles/{role_id}/permissions", summary="Get a role's default screen permissions (admin)")
+def admin_get_role_permissions(role_id: int, current_user: dict = Depends(require_admin)):
+    return {"role_id": role_id, "permissions": auth_db.get_role_screen_permissions(role_id)}
+
+
+@router.put("/admin/roles/{role_id}/permissions", summary="Replace a role's default screen permissions (admin)")
+def admin_set_role_permissions(role_id: int, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
+    ok = auth_db.set_role_screen_permissions(role_id, [p.model_dump() for p in req.permissions])
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save role permissions")
+    return {"ok": True, "role_id": role_id, "permissions": auth_db.get_role_screen_permissions(role_id)}
 
 
 @router.post("/change-password", summary="Change own password")

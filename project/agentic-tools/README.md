@@ -418,10 +418,12 @@ Default blocking tools: `shell, execute, bash, run_command, drop, truncate, dele
 Background service that consumes flagged telemetry rows and runs them through the full UBO medallion pipeline:
 
 ```
-Bronze → Silver (PaC) → Gold (risk score) → Council (Quant + Linguist + Graph Architect → Adjudicator)
+Bronze → Silver (heuristic policy checks) → Gold (risk score) → Council (Quant + Linguist + Graph Architect + real PaC/Rego → Adjudicator)
 ```
 
 Adjudication results are written to `observability.adjudicated_tool_calls`. Started automatically alongside `api_server.py`.
+
+**Real Policy-as-Code evaluation, not just Silver's heuristics**: Silver's own policy checks (`POL-CORE-*`/`POL-SAP-*`/`POL-GH-*`/etc., `UBO/pipeline/silver.py`) are a separate, hardcoded Python rule set — they were never connected to the actual saved Rego modules editable on the Policy-as-Code screen. `_evaluate_pac_policy()` (`mcp_governance.py`) closes that gap: every URO is additionally checked against the real Rego module (via `db.get_latest_pac_module`, falling back to the built-in defaults) for whichever PaC process its `source_system` maps to (`_SOURCE_SYSTEM_TO_PAC_PROCESS` — a starting default, e.g. GitHub → `itgc`, Oracle Fusion → `procure_to_pay`; adjust as real usage clarifies which process actually applies per system). Any fired deny rules are folded into `policy_violations` alongside Silver's own, and the evaluation appears as a distinct `"Policy-as-Code (Rego)"` voice in `council_votes` — same generic append pattern used for the optional LLM 4th-opinion voice, so the existing UI (`cem.jsx`) renders it with zero frontend changes. Uses the real `opa` binary when available, the same heuristic simulation as the Evaluate button otherwise — never blocks adjudication on failure (best-effort, like the rest of this pipeline's optional enrichments).
 
 **Verdict types:** `ESCALATE`, `MONITOR`, `CLEAR`, `INSUFFICIENT_DATA`  
 **Risk tiers:** `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`

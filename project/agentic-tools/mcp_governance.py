@@ -37,7 +37,7 @@ import sys
 import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -70,6 +70,7 @@ except ImportError as exc:
 
 import db  # project/agentic-tools/db.py — psycopg2 thread pool
 import claude_client  # optional 4th-opinion reviewer for conflicted/low-confidence UROs
+import pac_endpoints  # real Rego/OPA evaluation — see _evaluate_pac_policy below
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -305,6 +306,71 @@ def _fetch_unprocessed_system(batch_size: int) -> list[dict]:
         return []
 
 
+# Which PaC process's Rego module a URO gets checked against, keyed by
+# source_system. There is no real per-event process signal on a URO today
+# (Silver conformation doesn't tag one) — this is a reasonable starting
+# default (favoring ITGC — access/change-management controls — as the most
+# broadly applicable process for systems with no clearer business-process
+# affinity), not a definitive mapping. Adjust per-system as real usage shows
+# which process actually applies.
+_SOURCE_SYSTEM_TO_PAC_PROCESS = {
+    "GITHUB":           "itgc",              # code/access change management
+    "SAILPOINT":        "itgc",              # IAM — access governance
+    "ORACLE_FUSION":     "procure_to_pay",    # existing Oracle Fusion tool surface is procurement/controls-centric
+    "SAP":               "record_to_report",  # SAP is typically the financial-close system of record
+    "SYSTEM_TELEMETRY":  "itgc",
+    "MCP_PROXY":         "itgc",
+}
+_DEFAULT_PAC_PROCESS = "itgc"
+
+
+def _evaluate_pac_policy(uro: "URO") -> Optional[dict]:
+    """
+    Check a URO against the saved (or default) Rego PaC module for whatever
+    process its source system maps to. Best-effort: any failure (missing
+    module, OPA unavailable, malformed event) returns None rather than
+    breaking adjudication — this mirrors every other best-effort accounting
+    path in this codebase (e.g. claude_client._record_cost).
+
+    Returns {"process", "rules_fired": [...], "engine": "opa"|"heuristic"}
+    or None when there's nothing to report (no rules fired, or evaluation
+    couldn't run at all).
+    """
+    try:
+        source_system = uro.source_system.value if hasattr(uro.source_system, "value") else str(uro.source_system)
+        process = _SOURCE_SYSTEM_TO_PAC_PROCESS.get(source_system, _DEFAULT_PAC_PROCESS)
+
+        saved = db.get_latest_pac_module(process) if db.is_available() else None
+        rego_content = saved["rego_content"] if saved else pac_endpoints._REGO_DEFAULTS.get(process)
+        if not rego_content:
+            return None
+
+        cp = uro.conformed_payload
+        input_event = {
+            "event": {
+                "type":        uro.event_type.value if hasattr(uro.event_type, "value") else str(uro.event_type),
+                "resource":    cp.resource_id if cp else None,
+                "resource_type": cp.resource_type if cp else None,
+                "action":      cp.action if cp else None,
+                "outcome":     cp.outcome if cp else None,
+                **(cp.risk_indicators if cp and cp.risk_indicators else {}),
+            }
+        }
+
+        result = pac_endpoints.evaluate_policy_event(rego_content, input_event)
+        fired = result.get("rules_fired") or []
+        if not fired:
+            return None
+        return {
+            "process": process,
+            "rules_fired": fired,
+            "engine": "opa" if str(result.get("evaluation", "")).startswith("opa eval") else "heuristic",
+        }
+    except Exception as exc:
+        logger.debug("_evaluate_pac_policy skipped: %s", exc)
+        return None
+
+
 def _write_adjudication(
     source_id: int,
     origin: str,
@@ -341,6 +407,33 @@ def _write_adjudication(
         llm_eval = _llm_council_opinion(uro, adj)
         if llm_eval:
             council_votes_list.append(llm_eval)
+
+    # Real Rego/OPA policy check — a genuinely different kind of judgment
+    # (deterministic policy engine, not a heuristic/LLM agent vote), added
+    # as another council voice for visibility, with any fired deny rules
+    # also folded into policy_violations alongside the existing Silver-layer
+    # heuristic violations below.
+    pac_violations: list[str] = []
+    pac_result = _evaluate_pac_policy(uro)
+    if pac_result:
+        pac_violations = [
+            f"PAC-{pac_result['process'].upper()}: {r.get('rule', 'unknown_rule')}"
+            for r in pac_result["rules_fired"]
+        ]
+        council_votes_list.append({
+            "agent_name": "Policy-as-Code (Rego)",
+            "verdict": "ESCALATE" if pac_violations else "PROCEED",
+            "confidence": 1.0 if pac_result["engine"] == "opa" else 0.6,
+            "risk_delta": 0.0,
+            "reasoning": (
+                f"{len(pac_result['rules_fired'])} deny rule(s) fired against the "
+                f"{pac_result['process']} policy module ({pac_result['engine']})."
+            ),
+            "evidence": {"process": pac_result["process"], "engine": pac_result["engine"],
+                         "rules_fired": [r.get("rule") for r in pac_result["rules_fired"]]},
+            "evaluation_ms": None,
+        })
+
     council_votes = json.dumps(council_votes_list)
     telemetry_id        = source_id if origin == "mcp" else None
     system_telemetry_id  = source_id if origin == "system" else None
@@ -381,7 +474,7 @@ def _write_adjudication(
                         float(adj.ensemble_confidence) if adj else None,
                         adj.requires_human_review if adj else False,
                         [f.value for f in adj.conflict_flags] if adj else [],
-                        list(uro.silver_policy_violations),
+                        list(uro.silver_policy_violations) + pac_violations,
                         (adj.conflict_reasoning[:1000] if adj and adj.conflict_reasoning else None),
                         council_votes,
                     ),
