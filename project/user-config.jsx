@@ -124,7 +124,7 @@ function GeneratedPasswordReveal({ username, password, onClose }) {
   );
 }
 
-function AddUserModal({ open, onClose, onCreated }) {
+function AddUserModal({ open, onClose, onCreated, roles = [] }) {
   const [username, setUsername] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [displayName, setDisplayName] = React.useState("");
@@ -320,7 +320,7 @@ function EditUserModal({ open, user, onClose, onSaved, onPasswordSet }) {
   );
 }
 
-function UserConfigRow({ u, users, isSelf, onSetManager, onSetRole, onSetActive, onEdit, onRemove }) {
+function UserConfigRow({ u, users, roles = [], isSelf, onSetManager, onSetRole, onSetActive, onEdit, onRemove }) {
   const [busy, setBusy] = React.useState(null);
   const [err, setErr] = React.useState(null);
   const [confirmingRemove, setConfirmingRemove] = React.useState(false);
@@ -350,8 +350,9 @@ function UserConfigRow({ u, users, isSelf, onSetManager, onSetRole, onSetActive,
           value={u.role} disabled={busy === "role" || (isSelf && u.role === "admin")}
           onChange={e => run("role", () => onSetRole(u.id, e.target.value))}
         >
-          <option value="user">User</option>
-          <option value="admin">Admin</option>
+          {(roles.length ? roles : [{ name: u.role }]).map(r => (
+            <option key={r.name} value={r.name}>{r.name}</option>
+          ))}
         </select>
       </td>
       <td>
