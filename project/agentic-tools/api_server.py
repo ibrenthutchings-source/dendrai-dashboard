@@ -177,6 +177,7 @@ async def lifespan(application: FastAPI):
         risk_register_endpoints.seed_static_data()
         _seed_cem_templates()
         _seed_ticker_cik()
+        _seed_controls_catalog()
         logger.info("Static reference data seeded")
         # Auth schema + default users
         if auth_db.init_auth_db():
@@ -288,6 +289,26 @@ def _seed_ticker_cik() -> None:
     seeded = db.seed_ticker_cik_map(_TICKER_CIK_DEFAULT)
     if seeded:
         logger.info("Seeded %d ticker→CIK mappings into companies table", seeded)
+
+
+def _seed_controls_catalog() -> None:
+    """Idempotently register both control vocabularies into controls_catalog:
+    the 34 IDs embedded in PAC's Rego deny rules (source='pac_rego') and the
+    28 business-level controls used by RaC's manual Review UI (source='manual').
+    """
+    if not db.is_available():
+        return
+    count = 0
+    for ctrl in pac_endpoints.extract_control_ids_from_defaults():
+        db.upsert_control(
+            ctrl["control_id"], ctrl["name"],
+            process=ctrl.get("process"), source="pac_rego",
+        )
+        count += 1
+    for ctrl in _rac_mcp._CTRL_MAP_LOCAL.values():
+        db.upsert_control(ctrl["ref"], ctrl["name"], source="manual")
+        count += 1
+    logger.info("Seeded %d controls into controls_catalog", count)
 
 
 app = FastAPI(
