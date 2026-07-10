@@ -64,6 +64,8 @@ except ImportError as exc:
     logger.warning("UBO not importable — GitHub webhook events logged only: %s", exc)
 
 import db
+import mcp_governance  # reuse _evaluate_pac_policy / _llm_council_opinion — same council-voice
+                        # treatment as the mcp_telemetry/system_telemetry adjudication path
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -109,10 +111,57 @@ def _verify_signature(body: bytes, sig_header: str | None) -> bool:
 # ── DB write ───────────────────────────────────────────────────────────────────
 
 def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
-    """Write adjudication result to observability.adjudicated_tool_calls."""
+    """
+    Write adjudication result to observability.adjudicated_tool_calls.
+
+    Same council-voice treatment as mcp_governance._write_adjudication (the
+    mcp_telemetry/system_telemetry path): an optional LLM 4th opinion for
+    cases flagged for human review, and a real Rego/OPA PaC policy check —
+    GitHub events previously skipped both and never wrote council_votes at
+    all, so this was a second, thinner adjudication path than everything
+    else feeding this table.
+    """
     if not db.is_available():
         return
     adj = uro.adjudication
+    council_votes_list = [
+        {
+            "agent_name":    e.agent_name,
+            "verdict":       e.verdict.value,
+            "confidence":    float(e.confidence),
+            "risk_delta":    float(e.risk_delta),
+            "reasoning":     e.reasoning,
+            "evidence":      dict(e.evidence),
+            "evaluation_ms": e.evaluation_ms,
+        }
+        for e in (adj.evaluations if adj else [])
+    ]
+    if adj and adj.requires_human_review:
+        llm_eval = mcp_governance._llm_council_opinion(uro, adj)
+        if llm_eval:
+            council_votes_list.append(llm_eval)
+
+    pac_violations: list[str] = []
+    pac_result = mcp_governance._evaluate_pac_policy(uro)
+    if pac_result:
+        pac_violations = [
+            f"PAC-{pac_result['process'].upper()}: {r.get('rule', 'unknown_rule')}"
+            for r in pac_result["rules_fired"]
+        ]
+        council_votes_list.append({
+            "agent_name": "Policy-as-Code (Rego)",
+            "verdict": "ESCALATE" if pac_violations else "PROCEED",
+            "confidence": 1.0 if pac_result["engine"] == "opa" else 0.6,
+            "risk_delta": 0.0,
+            "reasoning": (
+                f"{len(pac_result['rules_fired'])} deny rule(s) fired against the "
+                f"{pac_result['process']} policy module ({pac_result['engine']})."
+            ),
+            "evidence": {"process": pac_result["process"], "engine": pac_result["engine"],
+                         "rules_fired": [r.get("rule") for r in pac_result["rules_fired"]]},
+            "evaluation_ms": None,
+        })
+
     try:
         with db.get_conn() as conn:
             with conn.cursor() as cur:
@@ -125,11 +174,13 @@ def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
                         final_verdict, ensemble_confidence,
                         requires_human_review, conflict_flags,
                         policy_violations, adjudicator_reasoning,
+                        council_votes,
                         source_system
                     ) VALUES (
                         NULL, %s,
                         %s, %s, %s, NULL,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s::jsonb,
                         'GITHUB'
                     )
                     """,
@@ -145,8 +196,9 @@ def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
                         float(adj.ensemble_confidence) if adj else None,
                         adj.requires_human_review if adj else False,
                         [f.value for f in adj.conflict_flags] if adj else [],
-                        list(uro.silver_policy_violations),
+                        list(uro.silver_policy_violations) + pac_violations,
                         adj.conflict_reasoning[:1000] if adj and adj.conflict_reasoning else None,
+                        json.dumps(council_votes_list),
                     ),
                 )
             conn.commit()
