@@ -145,7 +145,7 @@ def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
     pac_result = mcp_governance._evaluate_pac_policy(uro)
     if pac_result:
         pac_violations = [
-            f"PAC-{pac_result['process'].upper()}: {r.get('rule', 'unknown_rule')}"
+            r.get("control_id") or f"PAC-{pac_result['process'].upper()}: {r.get('rule', 'unknown_rule')}"
             for r in pac_result["rules_fired"]
         ]
         council_votes_list.append({
