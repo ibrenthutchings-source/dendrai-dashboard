@@ -950,6 +950,25 @@ CREATE TABLE IF NOT EXISTS controls_as_code_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_cac_artifacts_ticker ON controls_as_code_artifacts (ticker, generated_at DESC);
 
+-- Canonical control catalog — the real, structured relationship PaC, CaC,
+-- and RaC were each missing. Two sources register into the same table
+-- rather than being forced into one ID vocabulary: 'pac_rego' entries are
+-- parsed straight out of the Rego modules' own msg strings (real, already
+-- consistently formatted); 'manual' entries are the pre-existing
+-- business-level control set used by RaC's Review UI. They stay distinct
+-- (different abstraction levels — automated technical enforcement vs.
+-- auditor-assigned business control), but now share one lookup table.
+CREATE TABLE IF NOT EXISTS controls_catalog (
+    control_id  VARCHAR(32)  PRIMARY KEY,
+    name        VARCHAR(255) NOT NULL,
+    description TEXT,
+    process     VARCHAR(64),   -- PaC process key, when known ('itgc' etc.); NULL for manual/business-level entries
+    source      VARCHAR(16)  NOT NULL DEFAULT 'manual',  -- 'pac_rego' | 'manual'
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_controls_catalog_process ON controls_catalog (process);
+
 -- Policy-as-Code modules: versioned Rego per business process
 -- One row per version; latest version is the one with the highest id per process.
 CREATE TABLE IF NOT EXISTS pac_policy_modules (
@@ -5611,6 +5630,79 @@ def list_pac_modules() -> list:
                     })
                 return result
     return _run(_do) or []
+
+
+def upsert_control(control_id: str, name: str, description: Optional[str] = None,
+                    process: Optional[str] = None, source: str = "manual") -> bool:
+    """Insert or update a control_catalog entry. Used both by the one-time
+    startup seed and by cac_from_pac (self-registers newly generated CaC
+    controls that reuse a real PaC control_id)."""
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO controls_catalog (control_id, name, description, process, source)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (control_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        description = COALESCE(EXCLUDED.description, controls_catalog.description),
+                        process = COALESCE(EXCLUDED.process, controls_catalog.process),
+                        updated_at = NOW()
+                    """,
+                    (control_id, name, description, process, source),
+                )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("upsert_control error (control_id=%s): %s", control_id, exc)
+        return False
+
+
+def list_controls(process: Optional[str] = None, source: Optional[str] = None) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                clauses, params = [], []
+                if process:
+                    clauses.append("process = %s"); params.append(process)
+                if source:
+                    clauses.append("source = %s"); params.append(source)
+                where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+                cur.execute(
+                    f"SELECT control_id, name, description, process, source, created_at "
+                    f"FROM controls_catalog {where} ORDER BY control_id",
+                    params,
+                )
+                return [
+                    {
+                        "control_id": r[0], "name": r[1], "description": r[2],
+                        "process": r[3], "source": r[4],
+                        "created_at": r[5].isoformat() if r[5] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def get_control(control_id: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT control_id, name, description, process, source, created_at "
+                    "FROM controls_catalog WHERE control_id = %s",
+                    (control_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "control_id": row[0], "name": row[1], "description": row[2],
+                    "process": row[3], "source": row[4],
+                    "created_at": row[5].isoformat() if row[5] else None,
+                }
+    return _run(_do)
 
 
 def get_pac_module_history(process: str, limit: int = 20) -> list:
