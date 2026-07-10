@@ -3219,6 +3219,85 @@ def get_token_usage_time_summary() -> dict:
     return _run(_do) or {"by_month": [], "month_to_date": empty, "by_year": [], "year_to_date": empty}
 
 
+def get_backtest_trend(limit_runs: int = 30) -> list:
+    """
+    Forecast backtest accuracy across recent runs, for the Model Health
+    screen's accuracy-drift chart. backtest_metrics is write-only until now
+    (one row per model per run, never previously aggregated). Returns raw
+    rows — the frontend groups by model itself, mirroring the pattern used
+    by get_token_usage_summary.
+
+    Note: backtest_metrics.metric is always NULL (save_backtest_metrics
+    never populates it) — model is the only real grouping key.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH recent_runs AS (
+                        SELECT id, ticker, run_at FROM risk_loop_runs
+                        ORDER BY run_at DESC LIMIT %s
+                    )
+                    SELECT b.model, r.ticker, r.run_at, b.mape, b.rmse, b.r_squared, b.calibrated_weight
+                    FROM backtest_metrics b
+                    JOIN recent_runs r ON r.id = b.run_id
+                    ORDER BY r.run_at ASC
+                    """,
+                    (limit_runs,),
+                )
+                return [
+                    {
+                        "model": r[0], "ticker": r[1],
+                        "run_at": r[2].isoformat() if r[2] else None,
+                        "mape": float(r[3]) if r[3] is not None else None,
+                        "rmse": float(r[4]) if r[4] is not None else None,
+                        "r_squared": float(r[5]) if r[5] is not None else None,
+                        "calibrated_weight": float(r[6]) if r[6] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def get_financial_ratios_history(limit_runs: int = 200) -> list:
+    """
+    Financial ratios across all tickers/runs, for the Model Health screen's
+    cross-sectional PSI drift check. financial_ratios is write-only until
+    now (one row per run, never previously read back). Returns raw rows
+    across every ticker (not scoped to one) — drift here means "has the
+    population of companies we're analyzing shifted from what the industry
+    risk-scoring templates were calibrated against," not a single company's
+    own trend (which the existing forecast charts already cover per ticker).
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT r.ticker, r.run_at, f.revenue_growth, f.gross_margin, f.net_margin,
+                           f.fcf_margin, f.rd_intensity, f.sga_intensity, f.asset_growth, f.cash_ratio
+                    FROM financial_ratios f
+                    JOIN risk_loop_runs r ON r.id = f.run_id
+                    ORDER BY r.run_at DESC
+                    LIMIT %s
+                    """,
+                    (limit_runs,),
+                )
+                cols = ["ticker", "run_at", "revenue_growth", "gross_margin", "net_margin",
+                        "fcf_margin", "rd_intensity", "sga_intensity", "asset_growth", "cash_ratio"]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    d["run_at"] = d["run_at"].isoformat() if d["run_at"] else None
+                    for k in cols[2:]:
+                        d[k] = float(d[k]) if d[k] is not None else None
+                    rows.append(d)
+                rows.reverse()  # oldest-first, matching get_backtest_trend's ordering
+                return rows
+    return _run(_do) or []
+
+
 def get_prior_investigation(ticker: str) -> Optional[dict]:
     """Return the most recent agent_investigation memo for a ticker (cross-run memory)."""
     def _do():
