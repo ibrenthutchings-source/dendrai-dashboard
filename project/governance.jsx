@@ -3,6 +3,10 @@
    • GovernancePane  — bottom navigation slideout (bar + nav strip)
    • GovernanceView  — main-pane content (all tabs live here)
    ============================================================ */
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer,
+} from 'recharts';
 
 const GOV_TABS = [
   { id: "overview",  l: "Overview" },
@@ -54,6 +58,132 @@ function ProxySection({ text }) {
         <li key={i} className="gov-bullet-item">{item}</li>
       ))}
     </ul>
+  );
+}
+
+// ── Peer benchmarking time series chart ─────────────────────────────────────
+const _PEER_LINE_COLORS = ['var(--violet)', '#e8a838', '#4aad52', '#e05c5c', '#5bc4c4', '#9c6ade', '#3d8bd4', '#c77dff', '#57cc99', '#f4a261'];
+
+const _PEER_METRICS = [
+  { id: "gross_margin",   label: "Gross Margin" },
+  { id: "rd_intensity",   label: "R&D Intensity" },
+  { id: "revenue_growth", label: "Revenue Growth" },
+];
+
+function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
+  const [metric, setMetric] = useState("gross_margin");
+  const [hidden, setHidden] = useState(() => new Set());
+
+  const series = useMemo(() => {
+    const list = [];
+    if (subjectHistory?.length) {
+      list.push({
+        key: "__subject__", name: `${ticker?.toUpperCase() || "Company"} (You)`,
+        color: "var(--acc)", strokeWidth: 2.4, history: subjectHistory,
+      });
+    }
+    (peers || []).forEach((p, i) => {
+      if (p.history?.length) {
+        list.push({
+          key: p.ticker || `peer-${i}`, name: p.ticker || p.company_name || `Peer ${i + 1}`,
+          color: _PEER_LINE_COLORS[i % _PEER_LINE_COLORS.length], strokeWidth: 1.6, history: p.history,
+        });
+      }
+    });
+    return list;
+  }, [peers, subjectHistory, ticker]);
+
+  if (!series.length) return null;
+
+  const allPeriods = Array.from(new Set(series.flatMap(s => s.history.map(h => h.period)))).sort();
+  const data = allPeriods.map(period => {
+    const row = { period };
+    series.forEach(s => {
+      const pt = s.history.find(h => h.period === period);
+      row[s.key] = pt ? pt[metric] : null;
+    });
+    return row;
+  });
+
+  const fmtV = v => Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "—";
+
+  function ChartTooltip({ active, payload, label }) {
+    if (!active || !payload?.length) return null;
+    const vals = series
+      .map(s => ({ name: s.name, color: s.color, value: payload.find(p => p.dataKey === s.key)?.value }))
+      .filter(v => v.value != null && !hidden.has(v.name));
+    if (!vals.length) return null;
+    return (
+      <div style={{
+        background: 'var(--bg)', border: '1px solid var(--line-strong)', borderRadius: 6,
+        padding: '6px 10px', fontSize: 11, fontFamily: 'Geist Mono, monospace',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.12)', pointerEvents: 'none', maxHeight: 240, overflowY: 'auto',
+      }}>
+        <div style={{ color: 'var(--ink-3)', fontSize: 9, marginBottom: 4 }}>{label}</div>
+        {vals.map(v => (
+          <div key={v.name} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color, flexShrink: 0 }}/>
+            <span style={{ color: 'var(--ink-2)', flex: 1, fontSize: 10, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name}</span>
+            <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{fmtV(v.value)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function toggle(name) {
+    setHidden(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
+
+  return (
+    <div className="gov-peer-chart">
+      <div className="gov-picker">
+        {_PEER_METRICS.map(m => (
+          <button key={m.id}
+            className={"gov-pick-btn" + (metric === m.id ? " active" : "")}
+            onClick={() => setMetric(m.id)}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <ResponsiveContainer width="100%" height={240}>
+        <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false}/>
+          <XAxis dataKey="period"
+            tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
+            tickLine={false} axisLine={{ stroke: 'var(--line)' }}/>
+          <YAxis tickFormatter={fmtV}
+            tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
+            tickLine={false} axisLine={false} width={48}/>
+          <Tooltip content={<ChartTooltip/>} cursor={{ stroke: 'var(--line-strong)', strokeWidth: 1, strokeDasharray: '2 2' }}/>
+          {series.map(s => (
+            <Line key={s.key} type="monotone" dataKey={s.key}
+              stroke={s.color} strokeWidth={s.strokeWidth}
+              dot={{ r: 2, fill: s.color, strokeWidth: 0 }}
+              activeDot={{ r: 4, fill: s.color, strokeWidth: 0 }}
+              hide={hidden.has(s.name)}
+              connectNulls
+              isAnimationActive={false}
+              legendType="none"/>
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      <div className="gov-peer-legend">
+        {series.map(s => (
+          <button key={s.key}
+            className={"gov-peer-legend-item" + (hidden.has(s.name) ? " off" : "")}
+            onClick={() => toggle(s.name)}
+            title={hidden.has(s.name) ? "Click to show" : "Click to hide"}>
+            <span className="gov-peer-legend-swatch" style={{background: s.color}}/>
+            {s.name}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -331,6 +461,12 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
 
           {activeTab === "peers" && (
             <div className="gov-content">
+              <div className="gov-section-hd">Peer Trend — Gross Margin / R&amp;D Intensity / Revenue Growth</div>
+              <PeerTimeSeriesChart
+                peers={peerData?.peers}
+                subjectHistory={peerData?.subject_history}
+                ticker={ticker}/>
+              <div className="gov-section-hd" style={{marginTop: 16}}>Latest Snapshot</div>
               <PeerTable
                 peers={peerData?.peers}
                 sic={peerData?.sic}
