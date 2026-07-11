@@ -323,8 +323,22 @@ function App() {
         const rid = s.runId || s.run_id;
         if (rid)                                          runIdRef.current = rid;
       };
+      // Last-run state is saved per-ticker (see api_server.py's _loop_state_key)
+      // so restoring shows the last run for the ticker actually configured,
+      // not whichever ticker anyone last ran the loop for. The config-restore
+      // effect above sets React state asynchronously, so cfg.ticker isn't
+      // reliably readable here yet — resolve the ticker independently instead
+      // of racing that effect (this GET is cheap and idempotent).
+      let ticker = cfg.ticker;
       try {
-        const res = await fetch("/api/mcp/loop/last-state");
+        const cfgRes = await fetch("/api/mcp/config/pipeline");
+        if (cfgRes.ok) {
+          const cfgBody = await cfgRes.json();
+          ticker = cfgBody?.cfg?.ticker || ticker;
+        }
+      } catch {}
+      try {
+        const res = await fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(ticker)}`);
         if (res.ok) {
           applyLoop(await res.json());
           return;
@@ -332,7 +346,7 @@ function App() {
       } catch {}
       // Fallback to localStorage when API is unavailable
       try {
-        const raw = localStorage.getItem("dendrai.lastLoop");
+        const raw = localStorage.getItem(`dendrai.lastLoop:${ticker}`);
         if (raw) applyLoop(JSON.parse(raw));
       } catch {}
     })();
@@ -356,14 +370,15 @@ function App() {
       runId: runIdRef.current,
       savedAt: Date.now(),
     };
-    // Write-through: localStorage for instant offline access, DB for persistence
-    try { localStorage.setItem("dendrai.lastLoop", JSON.stringify(payload)); } catch {}
-    fetch("/api/mcp/loop/last-state", {
+    // Write-through: localStorage for instant offline access, DB for persistence.
+    // Keyed per-ticker — see the restore effect above for why.
+    try { localStorage.setItem(`dendrai.lastLoop:${cfg.ticker}`, JSON.stringify(payload)); } catch {}
+    fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(cfg.ticker)}`, {
       method: "PUT",
       headers: _authHeaders(),
       body: JSON.stringify(payload),
     }).catch(() => {});
-  }, [hasRun, output, profile]);
+  }, [hasRun, output, profile, cfg.ticker]);
 
   const auth = window.useAuth ? window.useAuth() : null;
   const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
@@ -1338,7 +1353,13 @@ function App() {
     setGovLoading(false);
     setGovFetchError(null);
     setAutoCodeYaml(null);
-    try { localStorage.removeItem("dendrai.lastLoop"); } catch {}
+    try { localStorage.removeItem(`dendrai.lastLoop:${cfg.ticker}`); } catch {}
+    // Clear the DB row too — otherwise the pre-reset run resurfaces on the
+    // next login even though the UI looks freshly reset right now.
+    fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(cfg.ticker)}`, {
+      method: "DELETE",
+      headers: _authHeaders(),
+    }).catch(() => {});
   }
 
   function downloadAutoYaml() {
