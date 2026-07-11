@@ -25,14 +25,14 @@ const NAV_SECTIONS = [
       { id: "rrreview",   icon: "list",     l: "Risks & Controls Register" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
       { id: "approvals", icon: "check",    l: "Approval Inbox" },
-      { id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "ubogov",   icon: "shield",    l: "UBO Governance Brain" },
-      { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
-      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" }
+      //{ id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
+      { id: "ubogov",   icon: "shield",    l: "Controls Monitor" }
+      //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
+      //{ id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" }
     ],
   },
   {
-    label: "Governance Intelligence",
+    label: "Board Intelligence",
     items: [
       { id: "gov", govTab: "overview",  icon: "compass", l: "Overview" },
       { id: "gov", govTab: "board",     icon: "user",    l: "Board & Audit Committee" },
