@@ -532,6 +532,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
   const [showApprove, setShowApprove] = useState(false);
   const [appName,     setAppName]     = useState("");
   const [appRole,     setAppRole]     = useState("");
+  const [appErr,       setAppErr]     = useState(null);
 
   // External sources
   const [ghConfig,     setGhConfig]     = useState({ repo_url:"", branch:"main", path_filter:"", pat:"" });
@@ -623,17 +624,30 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
   }
 
   async function handleApprove() {
-    if (!appName.trim() || !modMeta?.id) return;
-    const r = await fetch(`/api/pac/modules/${activeProcess}/approve`, {
-      method: "POST", headers: _codeAuthHeaders(),
-      body: JSON.stringify({ approver: appName.trim(), role: appRole.trim() || null }),
-    });
-    if (r.ok) {
-      setModMeta(m => ({
-        ...m,
-        approvers: [...(m?.approvers||[]), { approver:appName.trim(), role:appRole.trim()||null, approved_at:new Date().toISOString() }],
-      }));
-      setAppName(""); setAppRole(""); setShowApprove(false);
+    if (!appName.trim()) return;
+    if (!modMeta?.id) {
+      setAppErr("This module hasn't been saved yet — save a version before signing off.");
+      return;
+    }
+    setAppErr(null);
+    try {
+      const r = await fetch(`/api/pac/modules/${activeProcess}/approve`, {
+        method: "POST", headers: _codeAuthHeaders(),
+        body: JSON.stringify({ module_id: modMeta.id, approver: appName.trim(), role: appRole.trim() || null }),
+      });
+      if (r.ok) {
+        setModMeta(m => ({
+          ...m,
+          approvers: [...(m?.approvers||[]), { approver:appName.trim(), role:appRole.trim()||null, approved_at:new Date().toISOString() }],
+        }));
+        setAppName(""); setAppRole(""); setShowApprove(false);
+      } else {
+        let detail = r.statusText;
+        try { detail = (await r.json()).detail || detail; } catch {}
+        setAppErr(`Sign-off failed (${r.status}) — ${detail}`);
+      }
+    } catch (e) {
+      setAppErr(`Network error — ${e.message}`);
     }
   }
 
@@ -787,7 +801,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
               </div>
               <button className="btn btn-sm"
                 style={{ width:"100%", justifyContent:"center", marginBottom:12, fontSize:10 }}
-                onClick={() => setShowApprove(true)}
+                onClick={() => { setAppErr(null); setShowApprove(true); }}
                 disabled={!modMeta?.id || dirty}
                 title={dirty ? "Save first before signing off" : "Add a sign-off"}>
                 + Sign Off
@@ -1051,7 +1065,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
 
       {/* Approver modal */}
       {showApprove && (
-        <div className="pac-modal-overlay" onClick={() => setShowApprove(false)}>
+        <div className="pac-modal-overlay" onClick={() => { setShowApprove(false); setAppErr(null); }}>
           <div className="pac-modal" onClick={e => e.stopPropagation()}>
             <h4>Sign Off — {proc.label}</h4>
             <div className="pac-modal-row">
@@ -1064,8 +1078,9 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
               <input className="code-input" value={appRole} placeholder="IT Audit Manager"
                 onChange={e => setAppRole(e.target.value)} />
             </div>
+            {appErr && <div className="pac-modal-err">{appErr}</div>}
             <div className="pac-modal-actions">
-              <button className="btn btn-sm" onClick={() => setShowApprove(false)}>Cancel</button>
+              <button className="btn btn-sm" onClick={() => { setShowApprove(false); setAppErr(null); }}>Cancel</button>
               <button className="btn btn-sm btn-acc" onClick={handleApprove} disabled={!appName.trim()}>
                 Confirm Sign-Off
               </button>
