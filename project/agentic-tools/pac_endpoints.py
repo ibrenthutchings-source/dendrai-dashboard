@@ -21,6 +21,7 @@ Router prefix: /pac
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -37,6 +38,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import claude_client
 import db
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,17 @@ _PROCESS_LABELS = {
     "procure_to_pay":  "Procure to Pay",
     "receive_to_ship": "Receive to Ship",
     "record_to_report": "Record to Report",
+}
+
+# Control-ID prefix each process's deny rules embed in their sprintf message
+# (e.g. "ITGC-AC-01: ...", "R2S-P001: ..."). Used to steer the Markdown->Rego
+# LLM conversion so generated modules stay consistent with hand-authored ones.
+_PROCESS_ID_PREFIX = {
+    "itgc":            "ITGC",
+    "order_to_cash":   "OTC",
+    "procure_to_pay":  "P2P",
+    "receive_to_ship": "R2S",
+    "record_to_report": "R2R",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1153,6 +1166,100 @@ def _match_process(path: str) -> Optional[str]:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Markdown/prose -> Rego conversion (external-source sync)
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub sync pulls .rego/.md/.txt files verbatim. Rego files are Rego already;
+# Markdown/text policy documents need converting before they're usable by the
+# deny-rule parser (cac_mcp_server._parse_pac_deny_rules), the OPA evaluator
+# (evaluate_policy_event below), and the control_id extraction this file
+# already does for real Rego (_extract_control_id / extract_control_ids_from_defaults).
+
+def _looks_like_rego(content: str) -> bool:
+    """Heuristic: real Rego declares a package and has at least one deny_* rule."""
+    c = content.strip()
+    return bool(re.search(r'^package\s+[\w.]+', c, re.MULTILINE)) and "deny_" in c
+
+
+def _strip_code_fence(text: str) -> str:
+    """LLM completions often wrap code in ```rego ... ``` even when told not to."""
+    t = text.strip()
+    m = re.match(r'^```(?:rego)?\s*\n(.*?)\n```\s*$', t, re.DOTALL)
+    return m.group(1).strip() if m else t
+
+
+def _validate_rego_syntax(rego_content: str) -> tuple[bool, list[str]]:
+    """Real `opa check` syntax validation when the OPA binary is available;
+    a lightweight structural fallback otherwise. Mirrors the real-OPA vs.
+    heuristic split already used by _run_real_opa_eval/_heuristic_evaluate
+    for policy *evaluation* — this is the same idea applied to syntax *checking*
+    of freshly LLM-generated Rego before it's ever persisted."""
+    opa_bin = _find_opa_binary()
+    if opa_bin:
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".rego", delete=False, encoding="utf-8") as f:
+                f.write(rego_content)
+                path = f.name
+            proc = subprocess.run([opa_bin, "check", path], capture_output=True, text=True, timeout=10)
+            if proc.returncode == 0:
+                return True, []
+            return False, [(proc.stderr or proc.stdout).strip()[:500]]
+        except Exception as exc:
+            return False, [f"opa check failed to run: {exc}"]
+        finally:
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    errors: list[str] = []
+    content = rego_content.strip()
+    if not re.search(r'^package\s+[\w.]+', content, re.MULTILINE):
+        errors.append("Missing 'package' declaration")
+    if content.count("{") != content.count("}"):
+        errors.append("Unbalanced braces")
+    if not re.search(r'^deny_\w+\[msg\]', content, re.MULTILINE):
+        errors.append("No deny_*[msg] rules found")
+    return (len(errors) == 0), errors
+
+
+def _convert_markdown_to_rego(process: str, source_path: str, text_content: str) -> str:
+    """Ask Claude to translate a prose/Markdown policy document into a Rego
+    module matching the Dendrai deny_*[msg] / sprintf("<CONTROL_ID>: text", [...])
+    convention every other PaC module follows — control_id extraction
+    (_extract_control_id, cac_from_pac, mcp_governance adjudication) all
+    depend on that exact format, so the prompt spells it out with a real
+    worked example rather than describing it abstractly."""
+    prefix = _PROCESS_ID_PREFIX.get(process, process.upper())
+    example = _REGO_DEFAULTS.get("receive_to_ship", "")[:1400]
+    system = (
+        "You convert audit/compliance policy documents (Markdown or prose) into "
+        "Open Policy Agent Rego modules for Oracle Fusion ERP controls monitoring. "
+        "Output ONLY the Rego module text — no explanation, no markdown code fences.\n\n"
+        "Required structure (must match exactly — this is machine-parsed downstream):\n\n"
+        f"    package controls.oracle_fusion.{process}\n\n"
+        "    import future.keywords.in\n"
+        "    import future.keywords.if\n\n"
+        "    deny_<category>[msg] if {\n"
+        "        <one or more conditions on input.* fields inferred from the policy text>\n"
+        f'        msg := sprintf("{prefix}-<ID>: <human-readable violation description>", [<interpolated fields>])\n'
+        "    }\n\n"
+        f"Control IDs must start with '{prefix}-', be unique within the module, and be "
+        "the first token in the sprintf message string followed by a colon. Every "
+        "distinct control or requirement described in the source document should become "
+        "one or more deny_* rules. Infer reasonable input.* field names from the policy's "
+        "subject matter. Follow the style of this real example from another process:\n\n"
+        f"{example}"
+    )
+    user = f"Source file: {source_path}\nProcess: {process}\n\n---\n\n{text_content}"
+    return claude_client.complete_text(
+        system, user,
+        label="pac_markdown_to_rego", effort="high", max_tokens=8000,
+    )
+
+
 @router.post("/hooks/github/sync")
 async def sync_github():
     """
@@ -1163,6 +1270,11 @@ async def sync_github():
     files matching the same process are concatenated into one module, each
     section marked with its source path. Files that don't match a known
     process are reported back as skipped, not silently dropped.
+
+    Markdown/text policy documents are converted to Rego via Claude before
+    saving (matching the deny_*[msg]/sprintf("<ID>: ...") convention every
+    other module follows); a file whose conversion fails OPA syntax
+    validation is skipped rather than saved broken.
     """
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -1242,11 +1354,43 @@ async def sync_github():
         imported: List[Dict[str, Any]] = []
         for process, files in by_process.items():
             files.sort(key=lambda f: f["path"])
-            combined = "\n\n".join(f"# ─── {f['path']} ───\n\n{f['content']}" for f in files)
+            sections: List[str] = []
+            converted_any = False
+            for f in files:
+                if _looks_like_rego(f["content"]):
+                    sections.append(f"# ─── {f['path']} ───\n\n{f['content']}")
+                    continue
+                # Not Rego (Markdown/prose policy doc) — convert via LLM before
+                # it's ever persisted, so downstream deny-rule parsing, OPA
+                # evaluation, and control_id extraction keep working.
+                try:
+                    converted = await asyncio.to_thread(
+                        _convert_markdown_to_rego, process, f["path"], f["content"]
+                    )
+                except Exception as exc:
+                    skipped.append({"name": f["path"], "reason": f"Markdown→Rego conversion failed: {exc}"})
+                    continue
+                rego = _strip_code_fence(converted)
+                ok, errors = _validate_rego_syntax(rego)
+                if not ok:
+                    skipped.append({"name": f["path"], "reason": f"converted Rego failed validation: {'; '.join(errors)}"})
+                    continue
+                sections.append(f"# ─── {f['path']} (converted from Markdown by Claude) ───\n\n{rego}")
+                converted_any = True
+
+            if not sections:
+                skipped.append({"name": ", ".join(f["path"] for f in files), "reason": "no file in this process produced valid Rego"})
+                continue
+
+            combined = "\n\n".join(sections)
             module_name = f"controls.oracle_fusion.{process}"
-            module_id = db.save_pac_module(process, module_name, combined, "1.0")
+            source_format = "llm_converted" if converted_any else "rego"
+            module_id = db.save_pac_module(process, module_name, combined, "1.0", source_format=source_format)
             if module_id:
-                imported.append({"process": process, "module_name": module_name, "module_id": module_id, "file_count": len(files)})
+                imported.append({
+                    "process": process, "module_name": module_name, "module_id": module_id,
+                    "file_count": len(files), "source_format": source_format,
+                })
             else:
                 skipped.append({"name": ", ".join(f["path"] for f in files), "reason": "database save failed"})
 

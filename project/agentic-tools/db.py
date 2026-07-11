@@ -1085,6 +1085,12 @@ BEGIN
             UNIQUE (title, feed_name);
     END IF;
 END $$;
+
+-- Tracks whether a saved PaC module's rego_content was authored/synced as
+-- real Rego, or produced by the Markdown->Rego LLM conversion step in
+-- pac_endpoints.sync_github (external sources can supply prose policy docs,
+-- not just .rego files).
+ALTER TABLE pac_policy_modules ADD COLUMN IF NOT EXISTS source_format VARCHAR(16) NOT NULL DEFAULT 'rego';
 """
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
@@ -5539,7 +5545,8 @@ def get_latest_cac_artifact(ticker: Optional[str] = None) -> Optional[dict]:
 # Policy-as-Code modules
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_pac_module(process: str, module_name: str, rego_content: str, version: str = "1.0") -> Optional[int]:
+def save_pac_module(process: str, module_name: str, rego_content: str, version: str = "1.0",
+                     source_format: str = "rego") -> Optional[int]:
     """Insert a new versioned Rego module for a process. Returns the row id."""
     def _do():
         with _conn() as conn:
@@ -5547,11 +5554,11 @@ def save_pac_module(process: str, module_name: str, rego_content: str, version: 
                 cur.execute(
                     """
                     INSERT INTO pac_policy_modules
-                        (process, module_name, rego_content, version, last_revised_at)
-                    VALUES (%s, %s, %s, %s, NOW())
+                        (process, module_name, rego_content, version, source_format, last_revised_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
                     RETURNING id
                     """,
-                    (process, module_name, rego_content, version),
+                    (process, module_name, rego_content, version, source_format),
                 )
                 row = cur.fetchone()
                 return row[0] if row else None
@@ -5565,7 +5572,7 @@ def get_latest_pac_module(process: str) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, process, module_name, rego_content, version, last_revised_at, created_at
+                    SELECT id, process, module_name, rego_content, version, source_format, last_revised_at, created_at
                     FROM pac_policy_modules
                     WHERE process = %s
                     ORDER BY created_at DESC LIMIT 1
@@ -5587,9 +5594,9 @@ def get_latest_pac_module(process: str) -> Optional[dict]:
                 ]
                 return {
                     "id": module_id, "process": row[1], "module_name": row[2],
-                    "rego_content": row[3], "version": row[4],
-                    "last_revised_at": row[5].isoformat() if row[5] else None,
-                    "created_at": row[6].isoformat() if row[6] else None,
+                    "rego_content": row[3], "version": row[4], "source_format": row[5],
+                    "last_revised_at": row[6].isoformat() if row[6] else None,
+                    "created_at": row[7].isoformat() if row[7] else None,
                     "approvals": approvals,
                 }
     return _run(_do)
@@ -5603,7 +5610,7 @@ def list_pac_modules() -> list:
                 cur.execute(
                     """
                     SELECT DISTINCT ON (process)
-                        id, process, module_name, version, last_revised_at, created_at
+                        id, process, module_name, version, source_format, last_revised_at, created_at
                     FROM pac_policy_modules
                     ORDER BY process, created_at DESC
                     """
@@ -5623,9 +5630,9 @@ def list_pac_modules() -> list:
                     ]
                     result.append({
                         "id": module_id, "process": row[1], "module_name": row[2],
-                        "version": row[3],
-                        "last_revised_at": row[4].isoformat() if row[4] else None,
-                        "created_at": row[5].isoformat() if row[5] else None,
+                        "version": row[3], "source_format": row[4],
+                        "last_revised_at": row[5].isoformat() if row[5] else None,
+                        "created_at": row[6].isoformat() if row[6] else None,
                         "approvals": approvals,
                     })
                 return result
