@@ -1234,6 +1234,11 @@ def edgar_peers_saved(ticker: str):
     saved["peers"] = [p for p in peers if _peer_has_data(p)]
     saved["peer_source"] = "saved SIC peers"
     saved["named_competitors"] = []
+    try:
+        subject_xbrl = fetch_xbrl_facts(saved["cik"]) if saved.get("cik") else None
+        saved["subject_history"] = _build_ratio_history(subject_xbrl) if subject_xbrl else []
+    except Exception:
+        saved["subject_history"] = []
     return saved
 
 

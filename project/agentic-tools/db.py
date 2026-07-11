@@ -1617,13 +1617,13 @@ def get_sic_peers(ticker: str) -> Optional[dict]:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, company_name, sic, sic_description FROM companies WHERE ticker = %s",
+                    "SELECT id, company_name, sic, sic_description, cik FROM companies WHERE ticker = %s",
                     (ticker.upper(),),
                 )
                 comp = cur.fetchone()
                 if not comp:
                     return None
-                company_id, company_name, sic, sic_description = comp
+                company_id, company_name, sic, sic_description, cik = comp
                 cur.execute(
                     """
                     SELECT peer_ticker, peer_cik, peer_name, peer_state, sic
@@ -1642,6 +1642,7 @@ def get_sic_peers(ticker: str) -> Optional[dict]:
                     "company_name": company_name,
                     "sic": sic,
                     "sic_description": sic_description,
+                    "cik": cik,
                     "peers": peers,
                 }
     return _run(_do)
