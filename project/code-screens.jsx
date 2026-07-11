@@ -377,7 +377,8 @@ function ProcessFlowMap({ activeProcess }) {
       </div>
 
       <div className="pac-flow-svg-wrap">
-        <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", height:"auto", display:"block", overflow:"visible" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H}
+          style={{ width:"100%", height:"auto", display:"block", overflow:"visible" }}>
           {/* Row labels */}
           {ROW_LBL.map((lbl, ri) => (
             <text key={ri} x={3} y={ROW_Y[ri]} dominantBaseline="middle"
