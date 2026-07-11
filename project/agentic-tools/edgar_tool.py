@@ -104,18 +104,32 @@ def _get_safe(url: str, **kw) -> Optional[requests.Response]:
 
 
 def _strip_html(raw: str) -> str:
-    """Return plain text from an HTML string."""
+    """Return plain text from an HTML string, with paragraph structure preserved.
+
+    get_text(separator="\n") inserts a newline at *every* tag boundary — DEF
+    14A/10-K filings wrap running prose in many inline <span>/<b>/<font> tags
+    for formatting, so a single flowing paragraph fragmented into a dozen
+    inline tags came out as a dozen separate one-line "paragraphs" downstream
+    (each looking like a truncated, disconnected bullet on screen). Only
+    block-level tags get a paragraph break; everything else is joined with
+    spaces so sentences stay whole.
+    """
     if _BS4:
         soup = BeautifulSoup(raw, "lxml")
         for tag in soup(["script", "style", "table"]):
             tag.decompose()
-        text = soup.get_text(separator="\n")
+        for tag in soup.find_all(["p", "div", "tr", "li", "br",
+                                   "h1", "h2", "h3", "h4", "h5", "h6"]):
+            tag.append("\n\n")
+        text = soup.get_text(separator=" ")
     else:
         text = re.sub(r"<[^>]+>", " ", raw)
         text = html.unescape(text)
 
-    lines = [ln.strip() for ln in text.splitlines()]
-    return "\n".join(ln for ln in lines if ln)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return "\n".join(ln.strip() for ln in text.split("\n")).strip()
 
 
 def _extract_section(

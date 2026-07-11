@@ -1091,6 +1091,32 @@ END $$;
 -- pac_endpoints.sync_github (external sources can supply prose policy docs,
 -- not just .rego files).
 ALTER TABLE pac_policy_modules ADD COLUMN IF NOT EXISTS source_format VARCHAR(16) NOT NULL DEFAULT 'rego';
+
+-- edgar_proxy_filings had no uniqueness on (company_id, accession_number), so
+-- every live /edgar/proxy re-pull re-inserted the same 1-2 real filings as
+-- brand-new rows. get_edgar_proxy's "ORDER BY filing_date DESC LIMIT 5" then
+-- surfaced N duplicate rows of the same 1-2 filings instead of up to 5
+-- distinct ones — the Governance Intelligence screen's filing picker showed
+-- the same date repeated. Dedup existing rows (keep the newest id per
+-- filing) before adding the constraint so this heals current data, not just
+-- future inserts.
+DELETE FROM edgar_proxy_filings a USING edgar_proxy_filings b
+WHERE a.id < b.id
+  AND a.company_id = b.company_id
+  AND a.accession_number = b.accession_number
+  AND a.accession_number IS NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'edgar_proxy_filings_company_accession_key'
+          AND conrelid = 'edgar_proxy_filings'::regclass
+    ) THEN
+        ALTER TABLE edgar_proxy_filings ADD CONSTRAINT edgar_proxy_filings_company_accession_key
+            UNIQUE (company_id, accession_number);
+    END IF;
+END $$;
 """
 
 # pgvector DDL — kept separate so a missing extension never breaks the core schema.
@@ -1731,7 +1757,10 @@ def save_edgar_proxy(
     accession_number: str,
     sections: dict,
 ) -> None:
-    """Save DEF 14A proxy governance sections."""
+    """Save DEF 14A proxy governance sections. Upserts on
+    (company_id, accession_number) so re-pulling the same filing refreshes it
+    in place instead of piling up duplicate rows (see the edgar_proxy_filings
+    migration in _MIGRATIONS)."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -1742,6 +1771,12 @@ def save_edgar_proxy(
                          executive_compensation, board_of_directors,
                          say_on_pay, shareholder_proposals)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (company_id, accession_number) DO UPDATE SET
+                        filing_date            = EXCLUDED.filing_date,
+                        executive_compensation = EXCLUDED.executive_compensation,
+                        board_of_directors     = EXCLUDED.board_of_directors,
+                        say_on_pay              = EXCLUDED.say_on_pay,
+                        shareholder_proposals   = EXCLUDED.shareholder_proposals
                     """,
                     (
                         company_id, filing_date, accession_number,
