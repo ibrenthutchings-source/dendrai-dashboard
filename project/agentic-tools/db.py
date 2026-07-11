@@ -5243,6 +5243,16 @@ def set_app_config(key: str, value) -> bool:
     return _run(_do, default=False) or False
 
 
+def delete_app_config(key: str) -> bool:
+    """Remove a config key. Returns True on success (including if it never existed)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM app_config WHERE key = %s", (key,))
+        return True
+    return _run(_do, default=False) or False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Controls library (seed + query)
 # ─────────────────────────────────────────────────────────────────────────────
