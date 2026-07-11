@@ -377,8 +377,13 @@ function ProcessFlowMap({ activeProcess }) {
       </div>
 
       <div className="pac-flow-svg-wrap">
+        {/* height:"auto" here doesn't reliably derive from viewBox for an inline
+            <svg> — and even the width/height XML attrs below are overridden by
+            this same inline style anyway (CSS wins over SVG presentation attrs).
+            aspect-ratio is the one CSS property that actually locks the box to
+            the viewBox's proportions regardless of that precedence quirk. */}
         <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H}
-          style={{ width:"100%", height:"auto", display:"block", overflow:"visible" }}>
+          style={{ width:"100%", aspectRatio:`${W} / ${H}`, display:"block", overflow:"visible" }}>
           {/* Row labels */}
           {ROW_LBL.map((lbl, ri) => (
             <text key={ri} x={3} y={ROW_Y[ri]} dominantBaseline="middle"
