@@ -1051,9 +1051,51 @@ def edgar_8k_events(req: TickerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _annual_series_by_end(xbrl: dict, metric: str) -> Dict[str, float]:
+    """{fiscal_period_end: value} for a metric's 10-K/20-F annual data points,
+    deduped by period end (later filings — e.g. a 10-K/A restatement — win)."""
+    pts = [p for p in xbrl.get(metric, {}).get("data_points", [])
+           if p.get("form") in {"10-K", "20-F", "10-K/A"} and p.get("val") is not None and p.get("end")]
+    pts.sort(key=lambda p: p.get("filed", ""))  # earliest-filed first, so later filings overwrite in the dict below
+    return {p["end"]: p["val"] for p in pts}
+
+
+def _build_ratio_history(xbrl: dict, max_years: int = 6) -> list:
+    """Multi-year gross_margin/rd_intensity/revenue_growth series (oldest → newest),
+    for the peer-benchmarking time series chart. Reuses whatever periods Revenue
+    resolved for; a year with no Revenue point is dropped rather than guessed at."""
+    rev_by_end = _annual_series_by_end(xbrl, "Revenue")
+    gp_by_end  = _annual_series_by_end(xbrl, "GrossProfit")
+    rd_by_end  = _annual_series_by_end(xbrl, "ResearchAndDevelopment")
+    if not rev_by_end:
+        return []
+
+    # One extra year of bootstrap history so the earliest kept year still gets
+    # a revenue_growth value instead of starting the series with a null.
+    ends = sorted(rev_by_end.keys())[-(max_years + 1):]
+    history = []
+    for i, end in enumerate(ends):
+        rev = rev_by_end.get(end)
+        gp  = gp_by_end.get(end)
+        rd  = rd_by_end.get(end)
+        growth = None
+        if i > 0:
+            prev_rev = rev_by_end.get(ends[i - 1])
+            if rev and prev_rev:
+                growth = (rev - prev_rev) / prev_rev
+        history.append({
+            "period":          end,
+            "gross_margin":    (gp / rev) if (rev and gp is not None) else None,
+            "rd_intensity":    (rd / rev) if (rev and rd is not None) else None,
+            "revenue_growth":  growth,
+        })
+    return history[-max_years:]
+
+
 def _enrich_peer_financials(peer: dict) -> dict:
     """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity,
-    revenue_growth, and a simplified Beneish M-score for cross-peer benchmarking."""
+    revenue_growth, a simplified Beneish M-score for cross-peer benchmarking,
+    and a multi-year `history` series for the peer-benchmarking time series chart."""
     try:
         cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
         if not cik or cik == "0000000000":
@@ -1081,6 +1123,7 @@ def _enrich_peer_financials(peer: dict) -> dict:
         peer["gross_margin"]   = (gp  / rev) if rev and gp  is not None else None
         peer["rd_intensity"]   = (rd  / rev) if rev and rd  is not None else None
         peer["revenue_growth"] = ((rev - rev_prev) / rev_prev) if rev and rev_prev else None
+        peer["history"]        = _build_ratio_history(xbrl)
 
         # Simplified Beneish M-score (same 3-of-8-variable formula as risk-engine.js's
         # computeRatios(), with GMI/AQI/DEPI/SGAI/LVGI held at their neutral defaults)
@@ -1138,6 +1181,12 @@ def edgar_peers(req: TickerRequest):
         # 3) Remove all companies that have no data.
         peers = [p for p in peers if _peer_has_data(p)]
 
+        try:
+            subject_xbrl = fetch_xbrl_facts(meta["cik"])
+            subject_history = _build_ratio_history(subject_xbrl) if subject_xbrl else []
+        except Exception:
+            subject_history = []
+
         result = {
             "ticker": req.ticker.upper(),
             "company_name": meta["company_name"],
@@ -1146,6 +1195,7 @@ def edgar_peers(req: TickerRequest):
             "peer_source": peer_source,
             "named_competitors": named_competitors,
             "peers": peers,
+            "subject_history": subject_history,
         }
 
         if db.is_available():
