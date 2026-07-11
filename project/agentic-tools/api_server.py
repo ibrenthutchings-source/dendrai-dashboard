@@ -1601,9 +1601,18 @@ def save_pipeline_config(body: Dict[str, Any] = Body(...)):
 
 
 # ── Last loop state endpoints ─────────────────────────────────────────────────
+# Keyed per-ticker (not a single global blob) so restoring on login shows the
+# last run for the ticker actually selected, not whichever ticker anyone last
+# ran the loop for. Falls back to the legacy unscoped key only when no ticker
+# is supplied, for callers that predate this change.
+
+def _loop_state_key(ticker: Optional[str]) -> str:
+    t = (ticker or "").strip().upper()
+    return f"last_loop_state:{t}" if t else "last_loop_state"
+
 
 @app.get("/loop/last-state")
-def get_last_loop_state():
+def get_last_loop_state(ticker: Optional[str] = None):
     """Return the last persisted pipeline run state for restoration on page reload.
 
     Returns 503 when DATABASE_URL is not configured; 404 when no state has been saved yet.
@@ -1611,7 +1620,7 @@ def get_last_loop_state():
     """
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured — set DATABASE_URL")
-    state = db.get_app_config("last_loop_state")
+    state = db.get_app_config(_loop_state_key(ticker))
     if state is None:
         raise HTTPException(status_code=404, detail="No saved loop state")
     return state
@@ -1635,18 +1644,29 @@ def get_saved_audit_scope(ticker: str):
 
 
 @app.put("/loop/last-state", dependencies=[Depends(_require_api_key)])
-def save_last_loop_state(body: Dict[str, Any] = Body(...)):
+def save_last_loop_state(body: Dict[str, Any] = Body(...), ticker: Optional[str] = None):
     """Persist the full pipeline run state to the database for restoration on reload.
 
     Accepts the complete loop blob from app.jsx (output, stageState, gateState,
     loopLog, livefacts, perRiskAppetite, riskApprovals, scopeApprovals, manualAudits,
-    narrativeResult, openStages, profile). Stored as JSONB in app_config table.
-    Returns {saved: false} gracefully when the database is unavailable.
+    narrativeResult, openStages, profile). Stored as JSONB in app_config table,
+    keyed per-ticker — see _loop_state_key. Returns {saved: false} gracefully
+    when the database is unavailable.
     """
     if not db.is_available():
         return {"saved": False, "reason": "database not configured"}
-    ok = db.set_app_config("last_loop_state", body)
+    ok = db.set_app_config(_loop_state_key(ticker), body)
     return {"saved": ok}
+
+
+@app.delete("/loop/last-state", dependencies=[Depends(_require_api_key)])
+def clear_last_loop_state(ticker: Optional[str] = None):
+    """Clear the persisted pipeline run state for a ticker (used by 'Reset run'
+    so a reset doesn't leave a stale run to resurface on the next login)."""
+    if not db.is_available():
+        return {"deleted": False, "reason": "database not configured"}
+    ok = db.delete_app_config(_loop_state_key(ticker))
+    return {"deleted": ok}
 
 
 @app.get("/token-usage/summary")
