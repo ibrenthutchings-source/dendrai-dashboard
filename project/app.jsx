@@ -243,16 +243,23 @@ function App() {
   // retrying the other.
   useEffect(() => {
     if ((activeScreen !== "gov" && activeScreen !== "pipeline") || govLoading || !cfg.ticker) return;
-    if (govData && govPeerData) return;
-    const wantProxy = !govData;
-    const wantPeers = !govPeerData;
+    // Check ticker match, not just truthiness — cfg.ticker resolves asynchronously
+    // (the separate config-restore effect above), so this can fire once with the
+    // default ticker before the real saved ticker loads. A pure truthiness guard
+    // would then treat that first ticker's data as "already loaded" forever and
+    // never re-fetch for the real ticker once cfg.ticker updates (same class of
+    // bug fixed for last_loop_state — see that effect's comment).
+    const tickerU     = cfg.ticker.toUpperCase();
+    const proxyStale  = !govData || govData.ticker !== tickerU;
+    const peersStale  = !govPeerData || govPeerData.ticker !== tickerU;
+    if (!proxyStale && !peersStale) return;
     setGovLoading(true);
     Promise.allSettled([
-      wantProxy ? MCP.fetchSavedProxyData(cfg.ticker) : Promise.resolve(null),
-      wantPeers ? MCP.fetchSavedPeerBenchmarks(cfg.ticker) : Promise.resolve(null),
+      proxyStale ? MCP.fetchSavedProxyData(cfg.ticker) : Promise.resolve(null),
+      peersStale ? MCP.fetchSavedPeerBenchmarks(cfg.ticker) : Promise.resolve(null),
     ]).then(([proxyRes, peerRes]) => {
-      if (wantProxy && proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
-      if (wantPeers && peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
+      if (proxyStale && proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
+      if (peersStale && peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
       setGovLoading(false);
     });
   }, [activeScreen, cfg.ticker, govData, govPeerData]); // eslint-disable-line react-hooks/exhaustive-deps
