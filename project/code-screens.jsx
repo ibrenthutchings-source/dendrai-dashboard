@@ -581,7 +581,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
           version:        data.version || "1.0",
           last_revised_at:data.last_revised_at,
           module_name:    data.module_name || `controls.oracle_fusion.${process}`,
-          approvers:      data.approvers || [],
+          approvers:      data.approvals || [],
         });
       })
       .catch(() => {});
