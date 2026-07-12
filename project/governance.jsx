@@ -276,7 +276,7 @@ function GovernancePane({ open, onToggle, data, peerData, ticker, loading, activ
               <rect x="8" y="8" width="5" height="5" rx="1.2" fill="currentColor" opacity=".45"/>
             </svg>
           </div>
-          <span className="gov-bar-label">Governance Intelligence</span>
+          <span className="gov-bar-label">Board Intelligence</span>
           {data && (
             <span className="gov-bar-badge">
               {data.company_name || ticker}
@@ -332,7 +332,7 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
       <div className="panel-head">
         <div>
           <div className="kicker">Proxy Data · SEC EDGAR DEF 14A</div>
-          <div className="panel-title mt-8">Governance Intelligence</div>
+          <div className="panel-title mt-8">Board Intelligence</div>
           {data
             ? <div className="panel-sub">
                 {data.company_name || ticker} · {proxy.length} proxy filing{proxy.length !== 1 ? "s" : ""}
@@ -372,7 +372,7 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
               <rect x="18" y="18" width="11" height="11" rx="2.5" fill="var(--acc)" opacity=".2"/>
             </svg>
           </div>
-          <div className="gov-splash-title">Governance Intelligence</div>
+          <div className="gov-splash-title">Board Intelligence</div>
           <div className="gov-splash-desc">
             {govFetchError
               ? <>MCP server unreachable — start <code style={{fontFamily:"monospace",fontSize:11}}>api_server.py</code> before running in MCP mode.
