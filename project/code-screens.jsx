@@ -316,7 +316,12 @@ function RiskAsCodeScreen({ risks, baseRisks }) {
 
 // ---------- POLICY-AS-CODE (Rego / OPA) ----------
 
-const PAC_PROCESSES = [
+// Fallback shown before GET /api/pac/processes resolves (or if it fails) —
+// PolicyAsCodeScreen fetches the real, DB-backed list on mount and replaces
+// this, since processes are no longer a fixed 5 (sync_github auto-registers
+// new ones discovered in a synced repo; POST /api/pac/processes adds them
+// manually). Keeping this as the initial state avoids a blank flash.
+const _PAC_PROCESSES_FALLBACK = [
   { id:"itgc",             label:"ITGCs",            shortLabel:"ITGC", color:"#6366f1", bg:"rgba(99,102,241,0.12)",  icon:"🔒",
     desc:"IT General Controls — Oracle Fusion access provisioning, SOD, change management, audit logging via IDCS and Security Console." },
   { id:"order_to_cash",    label:"Order to Cash",    shortLabel:"O2C",  color:"#0ea5e9", bg:"rgba(14,165,233,0.12)",  icon:"💰",
@@ -328,6 +333,30 @@ const PAC_PROCESSES = [
   { id:"record_to_report", label:"Record to Report", shortLabel:"R2R",  color:"#ef4444", bg:"rgba(239,68,68,0.12)",   icon:"📊",
     desc:"Journal Entry → Sub-ledger → GL Close → Financial Statements — Oracle GL, SLA, FAH, Financial Reporting modules." },
 ];
+
+function _hexToRgba(hex, alpha) {
+  const h = (hex || "#6366f1").replace("#", "");
+  const n = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
+  const r = parseInt(n.slice(0, 2), 16) || 99, g = parseInt(n.slice(2, 4), 16) || 102, b = parseInt(n.slice(4, 6), 16) || 241;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// Maps GET /api/pac/processes' snake_case DB shape to what ProcessFlowMap /
+// the tab bar already expect (shortLabel/desc/bg) — auto-discovered processes
+// (sync_github) have no color/icon assigned by a human, so those get a
+// reasonable default rather than rendering blank.
+function _normalizeProcess(p) {
+  return {
+    id: p.id,
+    label: p.label,
+    shortLabel: p.short_label || p.id.toUpperCase().slice(0, 4),
+    color: p.color || "#8b5cf6",
+    bg: _hexToRgba(p.color, 0.12),
+    icon: p.icon || "📁",
+    desc: p.description || "",
+    source: p.source,
+  };
+}
 
 const _PROC_CONTROLS = {
   itgc:            ["AC-01","AC-02","AC-03","SI-01","AU-01","CA-01","CM-01","IA-01"],
@@ -354,7 +383,8 @@ const _PROC_NARRATIVES = {
 };
 
 // ── Animated Process Flow Map ─────────────────────────────────────────────
-function ProcessFlowMap({ activeProcess }) {
+function ProcessFlowMap({ activeProcess, processes }) {
+  const PAC_PROCESSES = processes && processes.length ? processes : _PAC_PROCESSES_FALLBACK;
   const [selected, setSelected] = useState(activeProcess || "itgc");
   useEffect(() => { setSelected(activeProcess || "itgc"); }, [activeProcess]);
 
@@ -582,6 +612,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
           last_revised_at:data.last_revised_at,
           module_name:    data.module_name || `controls.oracle_fusion.${process}`,
           approvers:      data.approvals || [],
+          rule_coverage:  data.rule_coverage || null,
         });
       })
       .catch(() => {});
@@ -601,6 +632,19 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
         if (!data) return;
         if (data.github)     { setGhConfig(c => ({ ...c, ...data.github }));     setGhSaved(true); }
         if (data.confluence) { setCfConfig(c => ({ ...c, ...data.confluence })); setCfSaved(true); }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Business processes are DB-backed, not a fixed 5 — sync_github can
+  // auto-register new ones. Fetched once on mount; _PAC_PROCESSES_FALLBACK
+  // covers the gap before this resolves.
+  const [processes, setProcesses] = useState(_PAC_PROCESSES_FALLBACK);
+  useEffect(() => {
+    fetch("/api/pac/processes", { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.processes?.length) setProcesses(data.processes.map(_normalizeProcess));
       })
       .catch(() => {});
   }, []);
@@ -725,7 +769,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
     }
   }
 
-  const proc = PAC_PROCESSES.find(p => p.id === activeProcess) || PAC_PROCESSES[0];
+  const proc = processes.find(p => p.id === activeProcess) || processes[0];
 
   const MAIN_TABS = [
     { id:"editor",    label:"Rego Editor" },
@@ -737,7 +781,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
     <div className="pac-shell">
       {/* Process selector tabs */}
       <div className="pac-process-bar">
-        {PAC_PROCESSES.map(p => (
+        {processes.map(p => (
           <button key={p.id}
             className={"pac-proc-tab" + (activeProcess === p.id ? " active" : "")}
             onClick={() => setActiveProcess(p.id)}
@@ -789,6 +833,19 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
                   ? new Date(modMeta.last_revised_at).toLocaleDateString("en-US",{ month:"short", day:"numeric", year:"numeric" })
                   : "—"}
               </div>
+
+              {modMeta?.rule_coverage && modMeta.rule_coverage.total > 0 && (
+                <>
+                  <div className="pac-meta-label">Control-ID Coverage</div>
+                  <div className="pac-meta-val" style={{ marginBottom:12 }}>
+                    <span className={"pac-coverage-badge" +
+                      (modMeta.rule_coverage.with_control_id === modMeta.rule_coverage.total ? " full" : " partial")}
+                      title="Deny rules whose sprintf message has an extractable <CONTROL-ID>: prefix — used to link this Rego module to Controls-as-Code and adjudication citations.">
+                      {modMeta.rule_coverage.with_control_id}/{modMeta.rule_coverage.total} rules
+                    </span>
+                  </div>
+                </>
+              )}
 
               <div className="pac-meta-sep" />
 
@@ -1065,7 +1122,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
               ))}
             </div>
           </div>
-          <ProcessFlowMap activeProcess={activeProcess} />
+          <ProcessFlowMap activeProcess={activeProcess} processes={processes} />
         </div>
       )}
 

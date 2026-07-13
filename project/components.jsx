@@ -229,6 +229,67 @@ function BBTermHeader({ section, title, status, liveMode, actions }) {
   );
 }
 
+// ---- Freshness indicators ----
+// Extracted from cem.jsx, which had this exact badge implemented twice
+// (BBTermHeader actions + RawFeedTab's compact form) — this is the one
+// definition both now use, plus the reused pattern for screens that
+// auto-poll (5s intervals, cheap DB queries).
+function LiveBadge({ lastRefresh, isPaused, onToggle, intervalLabel = "5s", compact = false }) {
+  if (compact) {
+    return isPaused
+      ? <span style={{fontSize:9,fontWeight:700,color:"var(--amber-ink)"}}>⏸ PAUSED</span>
+      : <span style={{fontSize:9,fontWeight:700,color:"var(--green-ink)",display:"flex",alignItems:"center",gap:3}}>
+          <span style={{width:5,height:5,borderRadius:"50%",background:"var(--green-ink)",
+            display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
+          LIVE
+        </span>;
+  }
+  return (
+    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+      {isPaused ? (
+        <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",padding:"2px 7px",borderRadius:4,background:"var(--amber-soft,#fff8e1)",color:"var(--amber-ink,#b45309)",fontWeight:700,letterSpacing:".04em"}}>
+          ⏸ PAUSED
+        </span>
+      ) : (
+        <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",padding:"2px 7px",borderRadius:4,background:"var(--green-soft,#e8f5e9)",color:"var(--green-ink,#166534)",fontWeight:700,letterSpacing:".04em",display:"flex",alignItems:"center",gap:4}}>
+          <span style={{width:6,height:6,borderRadius:"50%",background:"var(--green-ink,#166534)",display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
+          LIVE · {intervalLabel}
+        </span>
+      )}
+      {lastRefresh && (
+        <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
+          {lastRefresh.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}
+        </span>
+      )}
+      {onToggle && (
+        <button className="btn btn-sm" onClick={onToggle}>
+          {isPaused ? "▶ RESUME" : "⏸ PAUSE"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Manual-refresh variant for screens whose data comes from expensive external
+// calls (EDGAR, FRED, PSI drift computation) rather than cheap DB queries —
+// auto-polling those every few seconds would be wasteful/rate-limit-risky, so
+// this shows "as of HH:MM:SS" plus an explicit Refresh button instead of a
+// LIVE auto-poll badge.
+function RefreshBadge({ lastRefresh, onRefresh, loading }) {
+  return (
+    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+      {lastRefresh && (
+        <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
+          As of {lastRefresh.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}
+        </span>
+      )}
+      <button className="btn btn-sm" onClick={onRefresh} disabled={loading}>
+        {loading ? <span className="spin"/> : "↻"} Refresh
+      </button>
+    </div>
+  );
+}
+
 // Expose globally
 Object.assign(window, {
   Icon, Pill, RAGChip, VelocityPill, Sparkline,
@@ -236,5 +297,6 @@ Object.assign(window, {
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,
   Empty, SectionLabel, BBTermHeader,
+  LiveBadge, RefreshBadge,
   ScreenAccessGate,
 });

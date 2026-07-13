@@ -35,13 +35,61 @@ const PAC_PROVIDERS = [
   { id: "custom",     label: "Custom Git" },
 ];
 
-const PAC_PROCESSES = [
+// Fallback before GET /api/pac/processes resolves — processes are DB-backed
+// now (sync_github can auto-register new ones), not a fixed 5. "all" is a
+// synthetic option this screen adds itself, not a real process id.
+const PAC_PROCESSES_FALLBACK = [
   { id: "all",             label: "All processes" },
   { id: "itgc",            label: "ITGC" },
   { id: "order_to_cash",   label: "Order-to-Cash" },
   { id: "procure_to_pay",  label: "Procure-to-Pay" },
   { id: "receive_to_ship", label: "Receive-to-Ship" },
   { id: "record_to_report",label: "Record-to-Report" },
+];
+
+// Connector type metadata — drives the dynamic credential form in
+// ConnectorForm below. One entry per adapter registered in
+// connector_poller.py's _ADAPTERS.
+const CONNECTOR_TYPES = [
+  { id: "oracle_fusion", label: "Oracle Fusion ERP",
+    baseUrlPlaceholder: "https://mycompany.fa.us6.oraclecloud.com",
+    credentialFields: [
+      { key: "username", label: "Username", type: "text" },
+      { key: "password", label: "Password", type: "password" },
+      { key: "client_id", label: "OAuth Client ID (optional — overrides username/password)", type: "text" },
+      { key: "client_secret", label: "OAuth Client Secret", type: "password" },
+    ],
+    extraFields: [] },
+  { id: "sap_hana", label: "SAP HANA",
+    baseUrlPlaceholder: "myhana.example.com",
+    credentialFields: [
+      { key: "username", label: "Username", type: "text" },
+      { key: "password", label: "Password", type: "password" },
+    ],
+    extraFields: [ { key: "port", label: "Port", type: "text", placeholder: "30015" } ] },
+  { id: "sailpoint", label: "SailPoint Identity Security Cloud",
+    baseUrlPlaceholder: "https://mycompany.api.identitynow.com",
+    credentialFields: [
+      { key: "client_id", label: "Client ID", type: "text" },
+      { key: "client_secret", label: "Client Secret", type: "password" },
+    ],
+    extraFields: [] },
+  { id: "dynamics365", label: "Microsoft Dynamics 365",
+    baseUrlPlaceholder: "https://myorg.crm.dynamics.com",
+    credentialFields: [
+      { key: "client_id", label: "Client ID", type: "text" },
+      { key: "client_secret", label: "Client Secret", type: "password" },
+    ],
+    extraFields: [ { key: "tenant_id", label: "Azure AD Tenant ID", type: "text" } ] },
+  { id: "netsuite", label: "NetSuite",
+    baseUrlPlaceholder: "https://ACCOUNTID.suitetalk.api.netsuite.com",
+    credentialFields: [
+      { key: "consumer_key", label: "Consumer Key", type: "text" },
+      { key: "consumer_secret", label: "Consumer Secret", type: "password" },
+      { key: "token_id", label: "Token ID", type: "text" },
+      { key: "token_secret", label: "Token Secret", type: "password" },
+    ],
+    extraFields: [ { key: "account_id", label: "Account ID", type: "text", placeholder: "1234567 or 1234567_SB1" } ] },
 ];
 
 function _uboConfigBase() {
@@ -572,6 +620,342 @@ function MonitoredSystemsCard() {
   );
 }
 
+// ── Poll-Based Connectors ────────────────────────────────────────────────────
+// The inverse of Monitored Systems above: those are push-model (the external
+// system authenticates to us); these are pull-model (we authenticate to
+// them, so we hold — encrypted — their credentials). Configured entirely
+// here, no env vars; connector_poller.py's background loop polls whichever
+// of these are active on their own poll_interval_s.
+
+const CONNECTOR_BLANK = {
+  connector_type: "oracle_fusion",
+  display_name: "",
+  base_url: "",
+  poll_interval_s: 1800,
+  credentials: {},
+  extra_config: {},
+};
+
+function ConnectorForm({ initial, onSave, onCancel, saving }) {
+  const [form, setForm] = useState(initial
+    ? { ...initial, credentials: {}, extra_config: initial.extra_config || {} }
+    : CONNECTOR_BLANK);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setCred = (k, v) => setForm(f => ({ ...f, credentials: { ...f.credentials, [k]: v } }));
+  const setExtra = (k, v) => setForm(f => ({ ...f, extra_config: { ...f.extra_config, [k]: v } }));
+
+  const typeInfo = CONNECTOR_TYPES.find(t => t.id === form.connector_type) || CONNECTOR_TYPES[0];
+  const isEdit = !!initial?.id;
+  const valid = form.display_name.trim() && form.base_url.trim() &&
+    (isEdit || typeInfo.credentialFields.some(f => (form.credentials[f.key] || "").trim()));
+
+  function handleSave() {
+    if (!valid) return;
+    const hasAnyCred = Object.values(form.credentials).some(v => (v || "").trim());
+    onSave({
+      connector_type: form.connector_type,
+      display_name: form.display_name.trim(),
+      base_url: form.base_url.trim(),
+      auth_type: form.connector_type, // one auth scheme per connector type in this framework
+      poll_interval_s: Number(form.poll_interval_s) || 1800,
+      extra_config: form.extra_config,
+      // Omit credentials entirely on edit if the user left them blank —
+      // update_poll_connector keeps the existing encrypted value in that case.
+      ...(hasAnyCred ? { credentials: form.credentials } : {}),
+    });
+  }
+
+  return (
+    <div style={{ background: "var(--surface)", border: "1px solid var(--acc)", borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--acc-ink)", marginBottom: 2 }}>
+        {isEdit ? "Edit connector" : "Add connector"}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="field-label">System type</label>
+          <select className="input" value={form.connector_type}
+            onChange={e => set("connector_type", e.target.value)}>
+            {CONNECTOR_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </div>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="field-label">Display name *</label>
+          <input className="input" value={form.display_name}
+            onChange={e => set("display_name", e.target.value)}
+            placeholder="e.g. Oracle Fusion Production" />
+        </div>
+      </div>
+
+      <div className="field" style={{ marginBottom: 0 }}>
+        <label className="field-label">Base URL / host *</label>
+        <input className="input" value={form.base_url}
+          onChange={e => set("base_url", e.target.value)}
+          placeholder={typeInfo.baseUrlPlaceholder}
+          style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+      </div>
+
+      {typeInfo.extraFields.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${typeInfo.extraFields.length}, 1fr)`, gap: 10 }}>
+          {typeInfo.extraFields.map(f => (
+            <div className="field" key={f.key} style={{ marginBottom: 0 }}>
+              <label className="field-label">{f.label}</label>
+              <input className="input" value={form.extra_config[f.key] || ""}
+                onChange={e => setExtra(f.key, e.target.value)}
+                placeholder={f.placeholder || ""}
+                style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="field" style={{ marginBottom: 0 }}>
+        <label className="field-label">
+          Credentials {isEdit && <span style={{ fontWeight: 400 }}>— leave blank to keep the existing ones (never shown once saved)</span>}
+        </label>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {typeInfo.credentialFields.map(f => (
+            <input key={f.key} className="input" type={f.type} value={form.credentials[f.key] || ""}
+              onChange={e => setCred(f.key, e.target.value)}
+              placeholder={isEdit ? "•••• (unchanged)" : f.label}
+              style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+          ))}
+        </div>
+      </div>
+
+      <div className="field" style={{ marginBottom: 0, maxWidth: 220 }}>
+        <label className="field-label">Poll interval (seconds)</label>
+        <input className="input" type="number" min={60} value={form.poll_interval_s}
+          onChange={e => set("poll_interval_s", e.target.value)}
+          style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button className="btn btn-sm btn-ghost" onClick={onCancel}>Cancel</button>
+        <button className="btn btn-sm btn-primary" onClick={handleSave} disabled={!valid || saving}>
+          {saving ? "Saving…" : "Save connector"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConnectorRow({ conn, onEdit, onDelete, onToggle, onTest, testState }) {
+  const typeInfo = CONNECTOR_TYPES.find(t => t.id === conn.connector_type);
+  const age = conn.last_poll_at
+    ? (() => {
+        const ms = Date.now() - new Date(conn.last_poll_at).getTime();
+        if (ms < 60000) return `${Math.round(ms / 1000)}s ago`;
+        if (ms < 3600000) return `${Math.round(ms / 60000)}m ago`;
+        if (ms < 86400000) return `${Math.round(ms / 3600000)}h ago`;
+        return `${Math.round(ms / 86400000)}d ago`;
+      })()
+    : "never polled";
+
+  return (
+    <div style={{
+      display: "grid", gridTemplateColumns: "20px 1fr 130px 130px 150px",
+      alignItems: "start", gap: 10, padding: "10px 12px",
+      borderBottom: "1px solid var(--line)", fontSize: 12, opacity: conn.active ? 1 : 0.55,
+    }}>
+      <div style={{ paddingTop: 2 }}><StatusDot active={conn.active} /></div>
+      <div>
+        <div style={{ fontWeight: 600 }}>{conn.display_name}</div>
+        <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 1 }}>
+          <span style={{ fontFamily: "var(--mono, monospace)", background: "var(--acc-soft)", color: "var(--acc-ink)", padding: "1px 5px", borderRadius: 3, marginRight: 5 }}>
+            {typeInfo?.label || conn.connector_type}
+          </span>
+          {conn.base_url}
+        </div>
+      </div>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", fontFamily: "var(--mono, monospace)", paddingTop: 2 }}>
+        <div>every {Math.round((conn.poll_interval_s || 1800) / 60)}m</div>
+        <div style={{ color: conn.last_poll_status === "error" ? "var(--red-ink)" : "var(--ink-4)" }}>{age}</div>
+      </div>
+      <div style={{ fontSize: 10, paddingTop: 2 }}>
+        {testState?.testing ? (
+          <span className="spin" style={{ display: "inline-block", width: 11, height: 11, borderWidth: 2 }} />
+        ) : testState?.result ? (
+          <span style={{ color: testState.result.ok ? "var(--green-ink)" : "var(--red-ink)" }} title={testState.result.message}>
+            {testState.result.ok ? "✓ " : "✗ "}{(testState.result.message || "").slice(0, 40)}
+          </span>
+        ) : conn.last_poll_status === "error" ? (
+          <span style={{ color: "var(--red-ink)" }} title={conn.last_poll_error}>Last poll failed</span>
+        ) : conn.last_poll_status === "ok" ? (
+          <span style={{ color: "var(--green-ink)" }}>Last poll OK</span>
+        ) : (
+          <span style={{ color: "var(--ink-4)" }}>—</span>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 5, justifyContent: "flex-end", paddingTop: 2, flexWrap: "wrap" }}>
+        <button className="btn btn-sm btn-ghost" onClick={() => onTest(conn)} disabled={testState?.testing}
+          style={{ padding: "3px 7px", fontSize: 10 }}>
+          Test
+        </button>
+        <button className="btn btn-sm btn-ghost" onClick={() => onToggle(conn)}
+          title={conn.active ? "Deactivate" : "Activate"} style={{ padding: "3px 7px", fontSize: 10 }}>
+          {conn.active ? "Off" : "On"}
+        </button>
+        <button className="btn btn-sm btn-ghost" onClick={() => onEdit(conn)} style={{ padding: "3px 7px" }}>
+          <Icon name="edit" size={11}/>
+        </button>
+        <button className="btn btn-sm btn-ghost" onClick={() => onDelete(conn.id)} style={{ padding: "3px 7px", color: "var(--red-ink)" }}>
+          <Icon name="x" size={11}/>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PollConnectorsCard() {
+  const [connectors, setConnectors] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [testStates, setTestStates] = useState({}); // { [id]: { testing, result } }
+
+  async function load() {
+    setLoading(true);
+    try {
+      const res = await fetch(`${_uboConfigBase()}/connectors`);
+      if (res.ok) { const d = await res.json(); setConnectors(d.rows || []); }
+    } catch (e) {
+      setError("Could not reach api_server.py — ensure it is running.");
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function handleSave(payload) {
+    setSaving(true);
+    try {
+      const isEdit = !!editingId;
+      const url = isEdit ? `${_uboConfigBase()}/connectors/${editingId}` : `${_uboConfigBase()}/connectors`;
+      const res = await fetch(url, {
+        method: isEdit ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) { setAdding(false); setEditingId(null); await load(); }
+      else { const d = await res.json().catch(() => ({})); setError(d.detail || "Save failed."); }
+    } catch (e) {
+      setError("Save failed — check api_server.py logs.");
+    }
+    setSaving(false);
+  }
+
+  async function handleDelete(id) {
+    if (!confirm("Remove this connector? Its stored credentials will be permanently deleted.")) return;
+    try {
+      await fetch(`${_uboConfigBase()}/connectors/${id}`, { method: "DELETE" });
+      await load();
+    } catch (_) {}
+  }
+
+  async function handleToggle(conn) {
+    try {
+      await fetch(`${_uboConfigBase()}/connectors/${conn.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: !conn.active }),
+      });
+      await load();
+    } catch (_) {}
+  }
+
+  async function handleTest(conn) {
+    setTestStates(s => ({ ...s, [conn.id]: { testing: true, result: null } }));
+    try {
+      const res = await fetch(`${_uboConfigBase()}/connectors/${conn.id}/test`, { method: "POST" });
+      const d = await res.json().catch(() => ({ ok: false, message: `HTTP ${res.status}` }));
+      setTestStates(s => ({ ...s, [conn.id]: { testing: false, result: d } }));
+    } catch (e) {
+      setTestStates(s => ({ ...s, [conn.id]: { testing: false, result: { ok: false, message: e.message } } }));
+    }
+  }
+
+  const editingConn = editingId ? connectors.find(c => c.id === editingId) : null;
+
+  return (
+    <section className="cfg-card">
+      <div className="cfg-card-head">
+        <div>
+          <div className="cfg-card-title">Poll-Based Connectors</div>
+          <div className="cfg-card-sub">
+            Systems the Dendrai UBO™ Governance Brain polls on a schedule rather than receiving pushed
+            telemetry from — Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite. Credentials are
+            encrypted at rest and never shown again once saved.
+          </div>
+        </div>
+        <button className="btn btn-sm" onClick={() => { setAdding(true); setEditingId(null); }}>
+          <Icon name="plus" size={11}/> Add connector
+        </button>
+      </div>
+
+      {error && <div style={{ fontSize: 11, color: "var(--red-ink)", marginBottom: 10 }}>{error}</div>}
+
+      {adding && !editingId && (
+        <div style={{ marginBottom: 12 }}>
+          <ConnectorForm initial={null} onSave={handleSave} onCancel={() => setAdding(false)} saving={saving} />
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 20 }}>
+          <span className="spin" style={{ display: "inline-block", width: 16, height: 16, borderWidth: 2 }}/>
+        </div>
+      ) : connectors.length === 0 && !adding ? (
+        <EmptyState
+          icon="🔌"
+          title="No connectors configured"
+          sub="Add Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, or NetSuite to start pulling audit events into the Dendrai UBO™ Governance Brain on a schedule." />
+      ) : (
+        <>
+          {connectors.length > 0 && (
+            <div style={{
+              display: "grid", gridTemplateColumns: "20px 1fr 130px 130px 150px", gap: 10,
+              padding: "5px 12px 5px", fontSize: 10, color: "var(--ink-4)",
+              letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600,
+            }}>
+              <div/><div>Connector</div><div>Poll cadence</div><div>Last result</div><div/>
+            </div>
+          )}
+          <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
+            {connectors.map(conn => (
+              <React.Fragment key={conn.id}>
+                <ConnectorRow
+                  conn={conn}
+                  onEdit={(c) => { setEditingId(c.id); setAdding(false); }}
+                  onDelete={handleDelete}
+                  onToggle={handleToggle}
+                  onTest={handleTest}
+                  testState={testStates[conn.id]} />
+                {editingId === conn.id && (
+                  <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", background: "var(--surface-2)" }}>
+                    <ConnectorForm
+                      initial={editingConn}
+                      onSave={handleSave}
+                      onCancel={() => setEditingId(null)}
+                      saving={saving} />
+                  </div>
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="mono" style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 10, lineHeight: 1.5 }}>
+        Polled events are ingested the same way pushed telemetry is (via <code>observability.system_telemetry</code>),
+        so they're picked up by the same adjudication pipeline — no separate review flow.
+      </div>
+    </section>
+  );
+}
+
 // ── PAC Repositories ───────────────────────────────────────────────────────────
 
 const REPO_BLANK = {
@@ -585,7 +969,7 @@ const REPO_BLANK = {
   active: true,
 };
 
-function RepoForm({ initial, onSave, onCancel, saving }) {
+function RepoForm({ initial, onSave, onCancel, saving, processes }) {
   const [form, setForm] = useState(initial || REPO_BLANK);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const valid = form.display_name.trim() && form.repo_url.trim();
@@ -657,7 +1041,7 @@ function RepoForm({ initial, onSave, onCancel, saving }) {
         <div className="field" style={{ marginBottom: 0 }}>
           <label className="field-label">Linked process</label>
           <select className="input" value={form.process} onChange={e => set("process", e.target.value)}>
-            {PAC_PROCESSES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            {(processes || PAC_PROCESSES_FALLBACK).map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
         </div>
       </div>
@@ -699,9 +1083,9 @@ const PROVIDER_BADGE_COLORS = {
   custom:      { bg: "var(--surface-2)", ink: "var(--ink-3)" },
 };
 
-function RepoRow({ repo, onEdit, onDelete, onToggle }) {
+function RepoRow({ repo, onEdit, onDelete, onToggle, processes }) {
   const pColor = PROVIDER_BADGE_COLORS[repo.provider] || PROVIDER_BADGE_COLORS.custom;
-  const process = PAC_PROCESSES.find(p => p.id === repo.process)?.label || repo.process;
+  const process = (processes || PAC_PROCESSES_FALLBACK).find(p => p.id === repo.process)?.label || repo.process;
   const shortUrl = repo.repo_url.replace(/^https?:\/\//, "").replace(/\.git$/, "");
 
   return (
@@ -779,11 +1163,23 @@ function RepoRow({ repo, onEdit, onDelete, onToggle }) {
 
 function PacReposCard() {
   const [repos, setRepos] = useState([]);
+  const [processes, setProcesses] = useState(PAC_PROCESSES_FALLBACK);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/pac/processes")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.processes?.length) {
+          setProcesses([{ id: "all", label: "All processes" }, ...d.processes.map(p => ({ id: p.id, label: p.label }))]);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -874,7 +1270,8 @@ function PacReposCard() {
             initial={null}
             onSave={handleSave}
             onCancel={() => setAdding(false)}
-            saving={saving} />
+            saving={saving}
+            processes={processes} />
         </div>
       )}
 
@@ -911,14 +1308,16 @@ function PacReposCard() {
                   repo={repo}
                   onEdit={(r) => { setEditingId(r.id); setAdding(false); }}
                   onDelete={handleDelete}
-                  onToggle={handleToggle} />
+                  onToggle={handleToggle}
+                  processes={processes} />
                 {editingId === repo.id && (
                   <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", background: "var(--surface-2)" }}>
                     <RepoForm
                       initial={editInitial}
                       onSave={handleSave}
                       onCancel={() => setEditingId(null)}
-                      saving={saving} />
+                      saving={saving}
+                      processes={processes} />
                   </div>
                 )}
               </React.Fragment>
@@ -953,6 +1352,7 @@ function UboConfigScreen() {
 
       <div className="cfg-grid" style={{ gridTemplateColumns: "1fr" }}>
         <MonitoredSystemsCard />
+        <PollConnectorsCard />
         <PacReposCard />
       </div>
     </div>

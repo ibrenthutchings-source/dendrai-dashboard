@@ -248,6 +248,7 @@ const _UBO_VERDICT_STYLE = {
 };
 
 function UBOGovPanel() {
+  const LiveBadge = window.LiveBadge;
   const [adjudicated,  setAdjudicated]  = useState([]);
   const [humanReview,  setHumanReview]  = useState([]);
   const [latency,      setLatency]      = useState([]);
@@ -415,25 +416,8 @@ function UBOGovPanel() {
         status={`${counts.total} ADJUDICATED  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
         actions={
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            {/* Live / Paused badge */}
-            {isPaused ? (
-              <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",padding:"2px 7px",borderRadius:4,background:"var(--amber-soft,#fff8e1)",color:"var(--amber-ink,#b45309)",fontWeight:700,letterSpacing:".04em"}}>
-                ⏸ PAUSED
-              </span>
-            ) : (
-              <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",padding:"2px 7px",borderRadius:4,background:"var(--green-soft,#e8f5e9)",color:"var(--green-ink,#166534)",fontWeight:700,letterSpacing:".04em",display:"flex",alignItems:"center",gap:4}}>
-                <span style={{width:6,height:6,borderRadius:"50%",background:"var(--green-ink,#166534)",display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
-                LIVE · 5s
-              </span>
-            )}
-            {lastRefresh && (
-              <span style={{fontSize:10,color:"var(--ink-3)",fontFamily:"'Geist Mono',monospace"}}>
-                {lastRefresh.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false})}
-              </span>
-            )}
-            <button className="btn btn-sm" onClick={() => setIsPaused(p => !p)}>
-              {isPaused ? "▶ RESUME" : "⏸ PAUSE"}
-            </button>
+            <LiveBadge lastRefresh={lastRefresh} isPaused={isPaused}
+              onToggle={() => setIsPaused(p => !p)} intervalLabel="5s"/>
             <button className="btn btn-sm" onClick={refresh} disabled={loading}>
               <Icon name="bolt" size={12}/> REFRESH
             </button>
@@ -1179,6 +1163,7 @@ const _rowKey = r => `${r.origin || "mcp"}:${r.id}`;
 const _adjKey = a => `${(a.source_system === "SYSTEM_TELEMETRY") ? "system" : "mcp"}:${a.telemetry_id ?? a.system_telemetry_id}`;
 
 function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
+  const LiveBadge = window.LiveBadge;
   const [selectedKey, setSelectedKey] = useState(null);
 
   const adjByKey = useMemo(() => {
@@ -1215,14 +1200,7 @@ function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
         alignItems:"center", gap:8, flexShrink:0 }}>
         <span style={{ fontSize:9, fontWeight:700, color:"var(--ink-4)", fontFamily:"'Geist Mono',monospace",
           letterSpacing:".06em" }}>BRONZE FEED</span>
-        {isPaused
-          ? <span style={{fontSize:9,fontWeight:700,color:"var(--amber-ink)"}}>⏸ PAUSED</span>
-          : <span style={{fontSize:9,fontWeight:700,color:"var(--green-ink)",display:"flex",alignItems:"center",gap:3}}>
-              <span style={{width:5,height:5,borderRadius:"50%",background:"var(--green-ink)",
-                display:"inline-block",animation:"ubo-pulse 1.4s ease-in-out infinite"}}/>
-              LIVE
-            </span>
-        }
+        <LiveBadge isPaused={isPaused} compact/>
         <span style={{fontSize:9,color:"var(--ink-4)",marginLeft:"auto"}}>{rows.length} rows</span>
       </div>
 

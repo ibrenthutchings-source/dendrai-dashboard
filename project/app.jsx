@@ -211,6 +211,7 @@ function App() {
   const [govPeerData, setGovPeerData] = useState(null);
   const [govLoading, setGovLoading] = useState(false);
   const [govFetchError, setGovFetchError] = useState(null);
+  const [govLastRefresh, setGovLastRefresh] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
 
   // ---- Audit Scope: DB-backed fallback when Assess Enterprise Risk hasn't
@@ -260,9 +261,29 @@ function App() {
     ]).then(([proxyRes, peerRes]) => {
       if (proxyStale && proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
       if (peersStale && peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
+      setGovLastRefresh(new Date());
       setGovLoading(false);
     });
   }, [activeScreen, cfg.ticker, govData, govPeerData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Manual refresh for the Board Intelligence screen's RefreshBadge — re-pulls
+  // the saved (DB) proxy/peer data unconditionally, bypassing the staleness
+  // guard above (which only fires once per ticker match). A full live EDGAR
+  // re-pull already happens whenever the Risk Loop itself is re-run; this is
+  // just "did anything change in the DB since I loaded this screen."
+  const refreshGovData = useCallback(() => {
+    if (!cfg.ticker || govLoading) return;
+    setGovLoading(true);
+    Promise.allSettled([
+      MCP.fetchSavedProxyData(cfg.ticker),
+      MCP.fetchSavedPeerBenchmarks(cfg.ticker),
+    ]).then(([proxyRes, peerRes]) => {
+      if (proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
+      if (peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
+      setGovLastRefresh(new Date());
+      setGovLoading(false);
+    });
+  }, [cfg.ticker, govLoading]);
 
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
@@ -982,6 +1003,7 @@ function App() {
         ]).then(([proxyRes, peerRes]) => {
           if (proxyRes.status === "fulfilled") { setGovData(proxyRes.value); setGovFetchError(null); }
           if (peerRes.status  === "fulfilled") setGovPeerData(peerRes.value);
+          setGovLastRefresh(new Date());
           if (proxyRes.status === "rejected" && peerRes.status === "rejected") {
             setGovFetchError(proxyRes.reason?.message || "MCP server unreachable — ensure api_server.py is running");
             log(`MCP Governance: server unreachable — ${proxyRes.reason?.message || "connection refused"}`);
@@ -1637,6 +1659,15 @@ function App() {
           </ScreenAccessGate>
           )}
 
+          {/* ---- Continuous Monitoring (command center) ---- */}
+          {activeScreen === "continuousmonitoring" && (
+          <ScreenAccessGate screenId="continuousmonitoring">
+            <div className="panel active">
+              <ContinuousMonitoringScreen />
+            </div>
+          </ScreenAccessGate>
+          )}
+
           {/* ---- Pipeline (with action bar + sub-tabs) ---- */}
           {activeScreen === "pipeline" && (
           <ScreenAccessGate screenId="pipeline">
@@ -1976,7 +2007,9 @@ function App() {
               loading={govLoading}
               activeTab={activeGovTab}
               onTabChange={setActiveGovTab}
-              govFetchError={govFetchError} />
+              govFetchError={govFetchError}
+              lastRefresh={govLastRefresh}
+              onRefresh={refreshGovData} />
           </div>
           </ScreenAccessGate>
           )}
