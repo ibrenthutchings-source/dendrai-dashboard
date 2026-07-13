@@ -128,16 +128,21 @@ function MaterialityCard({ scope }) {
 
 // ── Inline detail/override editor (shared by accounts + processes) ───────────
 
-function DetailEditor({ form, setForm, scopeField }) {
+function DetailEditor({ form, setForm, scopeField, showExposure }) {
   return (
     <div onClick={e => e.stopPropagation()} style={{marginTop: 8, padding: "10px 12px", background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", borderRadius: 6}}>
       <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
         <input placeholder="Geography (comma-separated, e.g. US, EMEA, APAC)" value={form.geography}
           onChange={e => setForm(f => ({...f, geography: e.target.value}))}
           style={{flex: 1, minWidth: 160, fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
-        <input placeholder="Segments (comma-separated)" value={form.segments}
+        <input placeholder="Business unit (comma-separated)" value={form.segments}
           onChange={e => setForm(f => ({...f, segments: e.target.value}))}
           style={{flex: 1, minWidth: 160, fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
+        {showExposure && (
+          <input placeholder="Estimated $ exposure (e.g. annual txn volume)" value={form.estimated_exposure}
+            onChange={e => setForm(f => ({...f, estimated_exposure: e.target.value}))}
+            style={{flex: 1, minWidth: 160, fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
+        )}
       </div>
       <textarea placeholder="Notes / additional detail" value={form.notes} rows={2}
         onChange={e => setForm(f => ({...f, notes: e.target.value}))}
@@ -309,16 +314,19 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
       geography: (proc.geography || []).join(", "),
       segments: (proc.segments || []).join(", "),
       notes: proc.notes || "",
+      estimated_exposure: proc.estimated_exposure != null ? String(proc.estimated_exposure) : "",
       manual_coverage_level: proc.manual_override ? proc.coverage_level : "auto",
     }));
     const cov = COV_COLORS[proc.coverage_level] || {};
 
     async function handleSave() {
       setSaving(true); setErr(null);
+      const expNum = form.estimated_exposure.trim() === "" ? null : Number(form.estimated_exposure);
       const payload = {
         geography: form.geography.split(",").map(s => s.trim()).filter(Boolean),
         segments: form.segments.split(",").map(s => s.trim()).filter(Boolean),
         notes: form.notes.trim() || null,
+        estimated_exposure: Number.isFinite(expNum) ? expNum : null,
         manual_coverage_level: form.manual_coverage_level === "auto" ? null : form.manual_coverage_level,
       };
       try {
@@ -332,6 +340,7 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
           geography: payload.geography,
           segments: payload.segments,
           notes: payload.notes,
+          estimated_exposure: payload.estimated_exposure,
           manual_override: payload.manual_coverage_level !== null,
           coverage_level: payload.manual_coverage_level || proc.coverage_level,
         });
@@ -349,6 +358,9 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
           style={{display: "flex", alignItems: "center", gap: 8, padding: "7px 0", cursor: "pointer"}}>
           <Pill label={cov.label || proc.coverage_level} ink={cov.ink} soft={cov.soft}/>
           <span style={{flex: 1, fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{proc.process_name}</span>
+          {proc.estimated_exposure != null && (
+            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{fmtM(proc.estimated_exposure)}</span>
+          )}
           {proc.manual_override && <Pill label="MANUAL" ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}/>}
           {proc.always_in && <span className="mono" style={{fontSize: 9, color: "var(--acc-ink, var(--ink-3))"}}>REQUIRED</span>}
           <Icon name={open ? "chev-u" : "chev-d"} size={11} className="muted"/>
@@ -376,7 +388,7 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
                 <Icon name="edit" size={10}/> Edit detail
               </button>
             ) : (
-              <DetailEditor form={form} setForm={setForm} scopeField={
+              <DetailEditor form={form} setForm={setForm} showExposure scopeField={
                 <div onClick={e => e.stopPropagation()}>
                   <div style={{marginBottom: 8}}>
                     <select value={form.manual_coverage_level} onChange={e => setForm(f => ({...f, manual_coverage_level: e.target.value}))}
@@ -417,6 +429,124 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
               <span style={{flex: 1, fontSize: 11, color: "var(--ink-3)"}}>{p.process_name}</span>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── Business unit / geography breakdown (accounts + processes) ───────────────
+// "Business unit" reuses the existing `segments` field (business_segment) —
+// there's no separate business-unit dimension in the data model. Accounts
+// carry a computed `balance_estimate`; processes carry a manually-entered
+// `estimated_exposure` (see DetailEditor's showExposure field) since there's
+// no algorithmic dollar figure for a process the way there is for an account.
+// "Approvals required" = in-scope (in_scope for accounts, coverage_level !==
+// "Out" for processes) — any in-scope item requires SOX control-testing
+// sign-off; out-of-scope items don't. When an item carries more than one
+// geography/business-unit tag, its dollar amount is split evenly across
+// each tag it carries, so each breakdown's amounts sum to the group total.
+
+function _computeBreakdown(items, valueOf, inScopeOf, tagsOf) {
+  const groups = {};
+  let total = 0;
+  for (const item of items) {
+    const val = valueOf(item);
+    if (!val) continue;
+    total += val;
+    const inScope = inScopeOf(item);
+    const tags = (tagsOf(item) || []).filter(Boolean);
+    const bucket = tags.length ? tags : ["Unassigned"];
+    const share = val / bucket.length;
+    for (const tag of bucket) {
+      if (!groups[tag]) groups[tag] = { amount: 0, inScopeAmount: 0 };
+      groups[tag].amount += share;
+      if (inScope) groups[tag].inScopeAmount += share;
+    }
+  }
+  const rows = Object.entries(groups)
+    .map(([tag, g]) => ({
+      tag,
+      amount: g.amount,
+      pctOfTotal: total ? g.amount / total : 0,
+      pctApprovalRequired: g.amount ? g.inScopeAmount / g.amount : 0,
+    }))
+    .sort((a, b) => (a.tag === "Unassigned") - (b.tag === "Unassigned") || b.amount - a.amount);
+  return { rows, total };
+}
+
+function BreakdownTable({ title, rows, total }) {
+  if (!rows.length) {
+    return (
+      <div style={{flex: 1, minWidth: 260}}>
+        <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 8}}>{title}</div>
+        <div style={{fontSize: 10.5, color: "var(--ink-4)", padding: "8px 0"}}>No dollar figures tagged yet.</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{flex: 1, minWidth: 260}}>
+      <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 8}}>{title}</div>
+      <div style={{overflowX: "auto"}}>
+        <table style={{width: "100%", borderCollapse: "collapse", fontSize: 11}}>
+          <thead>
+            <tr style={{borderBottom: "2px solid var(--line)"}}>
+              {["Name", "Amount", "% of Total", "% Approval Req'd"].map(h => (
+                <th key={h} style={{
+                  textAlign: h === "Name" ? "left" : "right",
+                  padding: "4px 10px 5px 0",
+                  color: "var(--ink-4)", fontWeight: 400,
+                  fontFamily: "Geist Mono, monospace", fontSize: 9, whiteSpace: "nowrap",
+                }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} style={{borderBottom: "1px solid var(--line)", opacity: r.tag === "Unassigned" ? 0.55 : 1}}>
+                <td style={{padding: "7px 10px 7px 0", fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{r.tag}</td>
+                <td style={{textAlign: "right", padding: "7px 10px 7px 0", fontFamily: "Geist Mono, monospace"}}>{fmtM(r.amount)}</td>
+                <td style={{textAlign: "right", padding: "7px 10px 7px 0", fontFamily: "Geist Mono, monospace", color: "var(--ink-3)"}}>
+                  {(r.pctOfTotal * 100).toFixed(1)}%
+                </td>
+                <td style={{textAlign: "right", padding: "7px 10px 7px 0", fontFamily: "Geist Mono, monospace", color: r.pctApprovalRequired > 0 ? "var(--amber-ink)" : "var(--ink-4)"}}>
+                  {(r.pctApprovalRequired * 100).toFixed(1)}%
+                </td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{padding: "7px 10px 0 0", fontSize: 10, color: "var(--ink-4)"}}>Total</td>
+              <td style={{textAlign: "right", padding: "7px 10px 0 0", fontFamily: "Geist Mono, monospace", fontSize: 10, color: "var(--ink-4)"}}>{fmtM(total)}</td>
+              <td/><td/>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function BreakdownPanel({ items, valueOf, inScopeOf, valueLabel }) {
+  const [open, setOpen] = React.useState(false);
+  const byBU  = React.useMemo(() => _computeBreakdown(items, valueOf, inScopeOf, i => i.segments), [items, valueOf, inScopeOf]);
+  const byGeo = React.useMemo(() => _computeBreakdown(items, valueOf, inScopeOf, i => i.geography), [items, valueOf, inScopeOf]);
+
+  return (
+    <div style={{background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "12px 16px", marginBottom: 12}}>
+      <button className="cfg-link" style={{fontSize: 10, display: "flex", alignItems: "center", gap: 6}} onClick={() => setOpen(o => !o)}>
+        <Icon name={open ? "chev-u" : "chev-d"} size={11}/>
+        Breakdown by business unit &amp; geography ({valueLabel})
+      </button>
+      {open && (
+        <div style={{display: "flex", gap: 24, flexWrap: "wrap", marginTop: 12}}>
+          <BreakdownTable title="BY BUSINESS UNIT" rows={byBU.rows} total={byBU.total}/>
+          <BreakdownTable title="BY GEOGRAPHY" rows={byGeo.rows} total={byGeo.total}/>
+        </div>
+      )}
+      {open && (byBU.total === 0 && byGeo.total === 0) && (
+        <div style={{fontSize: 10.5, color: "var(--ink-4)", marginTop: 8}}>
+          No items have both a dollar amount and a business unit/geography tag yet — add them via "Edit detail" on each row.
         </div>
       )}
     </div>
@@ -1384,6 +1514,12 @@ function SoxScopePanel({
                 <>
                   <SoxGateBanner label="Gate S1 (Materiality & Accounts)" state={gateState.g1}/>
                   <AccountsTable accounts={displayScope.accounts_in_scope || []} ticker={ticker || ""} onUpdate={patchAccount}/>
+                  <BreakdownPanel
+                    items={displayScope.accounts_in_scope || []}
+                    valueOf={a => a.balance_estimate}
+                    inScopeOf={a => !!a.in_scope}
+                    valueLabel="balance"
+                  />
                 </>
               )
             )}
@@ -1404,6 +1540,12 @@ function SoxScopePanel({
                 <>
                   <SoxGateBanner label="Gate S2 (Process Coverage)" state={gateState.g2}/>
                   <ProcessesTable processes={displayScope.processes_in_scope || []} ticker={ticker || ""} onUpdate={patchProcess}/>
+                  <BreakdownPanel
+                    items={displayScope.processes_in_scope || []}
+                    valueOf={p => p.estimated_exposure}
+                    inScopeOf={p => p.coverage_level !== "Out"}
+                    valueLabel="estimated exposure"
+                  />
                 </>
               )
             )}
