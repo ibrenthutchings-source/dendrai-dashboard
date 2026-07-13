@@ -1480,13 +1480,25 @@ async def sync_github():
                 # the folder/file name rather than silently dropping the file.
                 # Idempotent (ON CONFLICT DO NOTHING) so re-syncing the same
                 # repo doesn't error on a process another file already registered.
-                db.create_pac_process(
-                    candidate, _label_from_key(candidate), candidate.upper()[:16],
-                    control_prefix=candidate.upper()[:16],
-                    color=_AUTO_PROCESS_COLORS[len(newly_registered) % len(_AUTO_PROCESS_COLORS)],
-                    icon="📁", source="github_discovered",
-                )
-                newly_registered.add(candidate)
+                # create_pac_process returns False both when the row already
+                # exists (fine) and when the insert genuinely failed (not
+                # fine) — re-check membership rather than trusting the return
+                # value, so a failed insert doesn't silently save an orphaned
+                # module under a process id that isn't actually registered.
+                if candidate not in newly_registered:
+                    db.create_pac_process(
+                        candidate, _label_from_key(candidate), candidate.upper()[:16],
+                        control_prefix=candidate.upper()[:16],
+                        color=_AUTO_PROCESS_COLORS[len(newly_registered) % len(_AUTO_PROCESS_COLORS)],
+                        icon="📁", source="github_discovered",
+                    )
+                    newly_registered.add(candidate)
+                if candidate not in _valid_processes():
+                    skipped.append({
+                        "name": item["path"],
+                        "reason": f"could not auto-register process '{candidate}' — database insert failed",
+                    })
+                    continue
                 process = candidate
                 logger.info("sync_github: auto-registered new PaC process '%s' from %s", candidate, item["path"])
             try:
