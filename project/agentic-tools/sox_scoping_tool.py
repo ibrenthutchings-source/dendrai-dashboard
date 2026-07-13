@@ -447,9 +447,12 @@ def scope_processes(risk_scores: dict, account_scope: list, process_overrides: O
     Out = no risk trigger and no material account linkage
 
     process_overrides: optional {process_id: {geography, segments, notes,
-    manual_coverage_level}} — user-supplied detail/overrides (see
-    db.get_sox_process_details). manual_coverage_level, when set, replaces
-    the computed coverage decision.
+    manual_coverage_level, estimated_exposure}} — user-supplied detail/
+    overrides (see db.get_sox_process_details). manual_coverage_level, when
+    set, replaces the computed coverage decision. estimated_exposure is a
+    manually-entered $ figure (e.g. annual transaction volume/spend) — unlike
+    accounts, processes have no balance in the underlying financial data, so
+    there's no algorithmic equivalent to balance_estimate here.
     """
     process_overrides = process_overrides or {}
     risks = risk_scores.get("risks", [])
@@ -531,6 +534,7 @@ def scope_processes(risk_scores: dict, account_scope: list, process_overrides: O
             "geography":     (override or {}).get("geography") or [],
             "segments":      (override or {}).get("segments") or [],
             "notes":         (override or {}).get("notes"),
+            "estimated_exposure": (override or {}).get("estimated_exposure"),
             "manual_override": manual_override,
         })
 

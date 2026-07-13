@@ -775,6 +775,7 @@ CREATE TABLE IF NOT EXISTS sox_process_details (
     segments               TEXT[],
     notes                  TEXT,
     manual_coverage_level  VARCHAR(8),
+    estimated_exposure     NUMERIC,
     updated_by             VARCHAR(128),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (company_id, process_id)
@@ -1048,6 +1049,7 @@ ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
 ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
 ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate3_status VARCHAR(16);
 ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate4_status VARCHAR(16);
+ALTER TABLE sox_process_details ADD COLUMN IF NOT EXISTS estimated_exposure NUMERIC;
 ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_objective_text TEXT;
 ALTER TABLE objective_approvals ADD COLUMN IF NOT EXISTS adjusted_controls TEXT[];
 ALTER TABLE audit_objectives ADD COLUMN IF NOT EXISTS linked_risks TEXT[];
@@ -3965,13 +3967,14 @@ def upsert_sox_process_detail(company_id: int, process_id: str, detail: dict) ->
                     """
                     INSERT INTO sox_process_details
                         (company_id, process_id, geography, segments, notes,
-                         manual_coverage_level, updated_by)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                         manual_coverage_level, estimated_exposure, updated_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (company_id, process_id) DO UPDATE SET
                         geography              = EXCLUDED.geography,
                         segments               = EXCLUDED.segments,
                         notes                  = EXCLUDED.notes,
                         manual_coverage_level  = EXCLUDED.manual_coverage_level,
+                        estimated_exposure     = EXCLUDED.estimated_exposure,
                         updated_by             = EXCLUDED.updated_by,
                         updated_at             = NOW()
                     RETURNING id
@@ -3982,6 +3985,7 @@ def upsert_sox_process_detail(company_id: int, process_id: str, detail: dict) ->
                         detail.get("segments") or [],
                         detail.get("notes"),
                         detail.get("manual_coverage_level"),
+                        detail.get("estimated_exposure"),
                         detail.get("updated_by"),
                     ),
                 )
@@ -3996,14 +4000,14 @@ def get_sox_process_details(company_id: int) -> dict:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT process_id, geography, segments, notes, manual_coverage_level, "
-                    "updated_at FROM sox_process_details WHERE company_id = %s",
+                    "estimated_exposure, updated_at FROM sox_process_details WHERE company_id = %s",
                     (company_id,),
                 )
                 return {
                     r[0]: {
                         "geography": r[1] or [], "segments": r[2] or [], "notes": r[3],
-                        "manual_coverage_level": r[4],
-                        "updated_at": r[5].isoformat() if r[5] else None,
+                        "manual_coverage_level": r[4], "estimated_exposure": float(r[5]) if r[5] is not None else None,
+                        "updated_at": r[6].isoformat() if r[6] else None,
                     }
                     for r in cur.fetchall()
                 }

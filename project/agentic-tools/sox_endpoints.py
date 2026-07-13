@@ -93,6 +93,7 @@ class SoxProcessDetailRequest(BaseModel):
     segments: List[str] = []
     notes: Optional[str] = None
     manual_coverage_level: Optional[str] = None
+    estimated_exposure: Optional[float] = None
     updated_by: Optional[str] = None
 
 
@@ -357,9 +358,10 @@ def list_sox_process_details(ticker: str):
 @router.post("/processes/{ticker}/{process_id}")
 def upsert_sox_process_detail(ticker: str, process_id: str, req: SoxProcessDetailRequest):
     """
-    Add or update geography, segment, notes, or a manual coverage-level
-    override (P1 | P2 | Out) for a SOX process. Applied on the next scoping
-    run (POST /sox/scope) — click "Rescope" to see the change reflected.
+    Add or update geography, segment, notes, estimated dollar exposure, or a
+    manual coverage-level override (P1 | P2 | Out) for a SOX process. Applied
+    on the next scoping run (POST /sox/scope) — click "Rescope" to see the
+    change reflected.
     """
     company_id = _resolve_company_id(ticker)
     if not company_id:
