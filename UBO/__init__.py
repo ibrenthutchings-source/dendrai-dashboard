@@ -1,5 +1,5 @@
 """
-UBO — Governance Brain
+Dendrai UBO — Governance Brain
 Universal Risk Object pipeline + Council of Agents.
 
 Data flow:

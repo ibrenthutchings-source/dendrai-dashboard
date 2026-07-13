@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS observability.adjudicated_tool_calls (
     risk_flags            TEXT[],
     execution_time_ms     INTEGER,
 
-    -- UBO Governance Brain output
+    -- Dendrai UBO Governance Brain output
     uro_id                VARCHAR(64)  NOT NULL,
     risk_score            NUMERIC(5,4),
     risk_tier             VARCHAR(16),
@@ -262,7 +262,7 @@ CREATE INDEX IF NOT EXISTS idx_adj_human_review
     WHERE requires_human_review = TRUE;
 
 COMMENT ON TABLE observability.adjudicated_tool_calls IS
-    'UBO Governance Brain output for MCP proxy events — one row per adjudicated URO.';
+    'Dendrai UBO Governance Brain output for MCP proxy events — one row per adjudicated URO.';
 COMMENT ON COLUMN observability.adjudicated_tool_calls.telemetry_id IS
     'FK to the originating mcp_telemetry row (which is stamped processed_at after insert).';
 COMMENT ON COLUMN observability.adjudicated_tool_calls.uro_id IS

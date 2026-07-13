@@ -1,5 +1,5 @@
 """
-Universal Risk Object (URO) — canonical data model for the Governance Brain.
+Universal Risk Object (URO) — canonical data model for the Dendrai UBO Governance Brain.
 
 Every event entering the system — regardless of origin (SAP, GitHub, SailPoint,
 FRED, SEC EDGAR) — is immediately mapped into this structure at the Bronze layer.
@@ -163,7 +163,7 @@ class ConformedPayload(BaseModel):
 
 class URO(BaseModel):
     """
-    Universal Risk Object — the atomic unit of analysis for the Governance Brain.
+    Universal Risk Object — the atomic unit of analysis for the Dendrai UBO Governance Brain.
 
     A URO is born at the Bronze layer (raw ingestion), enriched by the Silver layer
     (conformation + policy validation), scored by the Gold layer (risk metrics),

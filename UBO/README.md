@@ -1,4 +1,4 @@
-# UBO — Governance Brain
+# Dendrai UBO — Governance Brain
 
 A production-grade agentic governance system that turns raw security events from multiple source systems into adjudicated risk verdicts, routed through a Medallion pipeline and a Council of parallel AI agents.
 

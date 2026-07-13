@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Predictive Analytics MCP Server — Dendrai Risk Loop
+Predictive Analytics MCP Server — Dendrai Intelligenza
 
 Exposes 10 predictive analytics models as MCP tools for Claude Code / Claude Desktop.
 
@@ -103,7 +103,7 @@ def _get_xbrl(ticker: str):
 @mcp.tool()
 def predictive_financial_ratios(ticker: str) -> str:
     """
-    Compute Dendrai Risk Loop financial ratios from EDGAR XBRL filings.
+    Compute Dendrai Intelligenza financial ratios from EDGAR XBRL filings.
 
     Returns:
       Revenue growth (YoY), gross margin, R&D intensity, SGA intensity,
@@ -523,7 +523,7 @@ def predictive_full_analysis(
     include_fred: bool = True,
 ) -> str:
     """
-    Run all 10 Dendrai Risk Loop predictive analytics models in a single call.
+    Run all 10 Dendrai Intelligenza predictive analytics models in a single call.
 
     Returns a comprehensive JSON report including:
       1.  Financial ratios (revenue growth, margins, DSRI, TATA, SGI, GMI)

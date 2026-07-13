@@ -1,6 +1,6 @@
 # Dendrai Agentic Tools
 
-Python backend that powers the Dendrai Risk Loop dashboard. Exposes financial data, regulatory signals, risk analytics, and enterprise control data through two complementary interfaces:
+Python backend that powers the Dendrai Intelligenza dashboard. Exposes financial data, regulatory signals, risk analytics, and enterprise control data through two complementary interfaces:
 
 - **REST API** (`api_server.py`) — called by the React frontend via `http://localhost:8001`
 - **MCP servers** — individual `*_mcp_server.py` files that expose the same tools directly to Claude Code and Claude Desktop
@@ -55,9 +55,9 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `AUTH_SESSION_TTL_HOURS` | Authentication | JWT session lifetime (default `24`). |
 | `AUTH_COOKIE_SECURE` | Authentication | Set to `false` only for HTTP-only local dev (default `true`). |
 | `MCP_READ_ONLY` | PaC / CaC MCP servers | Set to `true` to block all write operations from the PAC and CaC MCP servers. |
-| `MCP_ALERT_WEBHOOK_URL` | UBO Governance Brain | Slack-compatible webhook URL. When set, ESCALATE verdicts POST a JSON alert payload. |
-| `MCP_GOV_POLL_INTERVAL_S` | UBO Governance Brain | Seconds between governance poll cycles (default `30`). |
-| `MCP_GOV_BATCH_SIZE` | UBO Governance Brain | Telemetry rows processed per poll cycle (default `20`). |
+| `MCP_ALERT_WEBHOOK_URL` | Dendrai UBO Governance Brain | Slack-compatible webhook URL. When set, ESCALATE verdicts POST a JSON alert payload. |
+| `MCP_GOV_POLL_INTERVAL_S` | Dendrai UBO Governance Brain | Seconds between governance poll cycles (default `30`). |
+| `MCP_GOV_BATCH_SIZE` | Dendrai UBO Governance Brain | Telemetry rows processed per poll cycle (default `20`). |
 | `PROXY_BLOCKING_TOOLS` | Telemetry Proxy | Comma-separated tool names that trigger pre-execution holds (default: `shell,execute,bash,run_command,drop,truncate,delete_file,exec_sql`). |
 | `PROXY_HOLD_TIMEOUT_S` | Telemetry Proxy | Seconds to wait for operator approval before expiring a hold (default `30`). |
 | `PROXY_HOLD_POLL_S` | Telemetry Proxy | Polling interval in seconds while waiting for hold resolution (default `1.0`). |
@@ -413,7 +413,7 @@ Default blocking tools: `shell, execute, bash, run_command, drop, truncate, dele
 
 ---
 
-### UBO Governance Brain (`mcp_governance.py`)
+### Dendrai UBO Governance Brain (`mcp_governance.py`)
 
 Background service that consumes flagged telemetry rows and runs them through the full UBO medallion pipeline:
 
@@ -476,7 +476,7 @@ Set `DATABASE_URL` to enable a PostgreSQL-backed schema covering:
 - **Authentication** (`auth.users`, `auth.password_history`, `auth.sso_identities`, `auth.sessions`)
 - **MCP observability** — `observability` schema:
   - `mcp_telemetry` — every JSON-RPC call logged by the proxy
-  - `adjudicated_tool_calls` — UBO Governance Brain verdicts
+  - `adjudicated_tool_calls` — Dendrai UBO Governance Brain verdicts
   - `tool_call_holds` — pre-execution holds (PENDING / APPROVED / DENIED / EXPIRED)
   - `tool_call_suppressions` — suppression allowlist rules
   - `tool_latency_summary` — materialized view: P50/P95/P99 per tool

@@ -165,8 +165,7 @@ function LoginScreen() {
             </svg>
           </div>
           <div>
-            <div className="auth-brand-name">Dendrai Intelligenza</div>
-            <div className="auth-brand-sub">Enterprise Risk Intelligence</div>
+            <div className="auth-brand-name">Dendrai Intelligenza™</div>
           </div>
         </div>
 

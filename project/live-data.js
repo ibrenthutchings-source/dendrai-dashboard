@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — live data helpers
+   Dendrai Intelligenza — live data helpers
    - EDGAR: direct fetch from data.sec.gov (CORS-friendly)
    - FRED: bundled JSON snapshot (Q1 2021 → Q1 2026)
    ============================================================ */

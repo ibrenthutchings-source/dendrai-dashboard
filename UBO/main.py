@@ -1,5 +1,5 @@
 """
-Governance Brain — end-to-end demonstration.
+Dendrai UBO — Governance Brain — end-to-end demonstration.
 
 Runs three synthetic events through the full Medallion pipeline and Council of Agents:
   1. A SailPoint privilege escalation (high blast radius, missing approval)

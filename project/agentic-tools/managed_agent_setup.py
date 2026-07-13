@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Managed Agents scheduled deployment for the Dendrai Risk Loop (recommendation #5).
+Managed Agents scheduled deployment for Dendrai Intelligenza (recommendation #5).
 
 Turns the Loop tab's copy-paste `/schedule` panel into a real autonomous agent.
 Anthropic runs the agent loop on a cron cadence; each firing re-investigates a

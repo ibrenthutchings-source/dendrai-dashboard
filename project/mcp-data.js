@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — Python MCP server client
+   Dendrai Intelligenza — Python MCP server client
    Calls the FastAPI bridge (api_server.py) via /api/mcp/ proxy.
 
    Start the bridge before running the Vite dev server:
@@ -158,7 +158,7 @@ window.MCP = (function () {
   }
 
   /**
-   * Convert MCP rss_signals section into Risk Loop signal objects.
+   * Convert MCP rss_signals section into Intelligenza signal objects.
    *
    * @param {object}   mcpResult      Full analysis result
    * @param {object[]} templateRisks  Template risks (with ids) for affectedRisks mapping

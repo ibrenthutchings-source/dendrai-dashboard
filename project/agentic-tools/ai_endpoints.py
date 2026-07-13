@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI-augmented endpoints for the Dendrai Risk Loop (recommendations #1–#5).
+AI-augmented endpoints for Dendrai Intelligenza (recommendations #1–#5).
 
 These are the first endpoints that actually put a language model in the loop.
 They sit alongside the existing deterministic /predictive/* pipeline and degrade

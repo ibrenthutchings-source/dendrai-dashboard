@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — CEM event templates (company-agnostic)
+   Dendrai Intelligenza — CEM event templates (company-agnostic)
    Company-specific risk profiles are now generated dynamically
    by RISK_ENGINE.buildProfile() in risk-engine.js.
    ============================================================ */

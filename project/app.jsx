@@ -1766,7 +1766,7 @@ function App() {
           </ScreenAccessGate>
           )}
 
-          {/* ---- UBO Governance Brain ---- */}
+          {/* ---- Dendrai UBO Governance Brain ---- */}
           {activeScreen === "ubogov" && (
           <ScreenAccessGate screenId="ubogov">
           <div className="panel active">
@@ -2124,7 +2124,7 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
     <header className="hdr">
       <div className="hdr-brand">
         <div className="hdr-logo">D</div>
-        <div className="hdr-name">Dendrai <span>Intelligenza</span></div>
+        <div className="hdr-name">Dendrai <span>Intelligenza™</span></div>
       </div>
       <div className="hdr-sep" />
       <div className="hdr-ctx">

@@ -1308,7 +1308,7 @@ window.RISK_ENGINE = (function () {
         'Board and audit committee briefing required; AI governance program credibility questioned',
       ],
       early_warnings: [
-        'Sensitive-tool call rate crosses baseline by >2x week-over-week (per UBO Governance Brain telemetry)',
+        'Sensitive-tool call rate crosses baseline by >2x week-over-week (per Dendrai UBO™ Governance Brain telemetry)',
         'Pending governance-hold queue depth exceeds reviewer throughput for >48 hours',
         'Repeated bypass-keyword flags from the same agent/session without escalation',
         'New MCP server or agent integration goes live without a documented governance-tier assignment',

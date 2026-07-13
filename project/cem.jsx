@@ -227,7 +227,7 @@ function CEMMeta({ l, v }) {
   );
 }
 
-// ── UBO Governance Brain panel ────────────────────────────────────────────────
+// ── Dendrai UBO Governance Brain panel ─────────────────────────────────────────
 
 const _CEM_API_KEY = import.meta.env.VITE_API_KEY || "";
 const _cemAuthHdr  = () => _CEM_API_KEY ? { "X-API-Key": _CEM_API_KEY } : {};
@@ -410,7 +410,7 @@ function UBOGovPanel() {
   return (
     <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{height:"calc(100% + 40px)", overflow:"hidden"}}>
       <BBTermHeader
-        section="UBO GOVERNANCE BRAIN"
+        section="DENDRAI UBO™ GOVERNANCE BRAIN"
         title="Medallion Pipeline · MCP Telemetry Adjudication"
         status={`${counts.total} ADJUDICATED  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
         actions={
@@ -470,7 +470,7 @@ function UBOGovPanel() {
             ? `⚠ Process queue error: ${processStatus.error}`
             : processStatus.adjudicated > 0
               ? `✓ Adjudicated ${processStatus.adjudicated} row${processStatus.adjudicated !== 1 ? "s" : ""}`
-              : `— Queue empty: no flagged MCP calls pending${processStatus.ubo_available === false ? " · UBO pipeline unavailable" : ""}`
+              : `— Queue empty: no flagged MCP calls pending${processStatus.ubo_available === false ? " · UBO™ pipeline unavailable" : ""}`
           }
           <button style={{marginLeft:"auto",fontSize:10,cursor:"pointer",background:"none",border:"none",color:"inherit",opacity:0.6}} onClick={() => setProcessStatus(null)}>✕</button>
         </div>
@@ -542,12 +542,12 @@ function UBOGovPanel() {
 
           {loading ? (
             <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
-              <span className="spin"/> Loading UBO governance data…
+              <span className="spin"/> Loading UBO™ governance data…
             </div>
           ) : filtered.length === 0 ? (
             <Empty>
               {counts.total === 0
-                ? "No adjudications yet. Click \"▶ PROCESS QUEUE\" to run the UBO pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
+                ? "No adjudications yet. Click \"▶ PROCESS QUEUE\" to run the UBO™ pipeline against flagged MCP telemetry, or wait for the 30-second polling cycle."
                 : "No events match this filter."}
             </Empty>
           ) : (
@@ -1059,7 +1059,7 @@ function SilverDetail({ row, adj }) {
   if (!row) return null;
   if (!adj) return (
     <div style={{ padding:"10px 12px", overflowY:"auto", flex:1 }}>
-      <div style={{ fontSize:10, color:"var(--ink-3)", marginBottom:6 }}>Not yet processed through UBO pipeline.</div>
+      <div style={{ fontSize:10, color:"var(--ink-3)", marginBottom:6 }}>Not yet processed through UBO™ pipeline.</div>
       <div style={{ fontSize:9.5, color:"var(--ink-4)", lineHeight:1.6 }}>
         {(row.risk_flags||[]).length > 0
           ? "This event has risk flags and is queued for conformation. Click ▶ PROCESS QUEUE or wait for the 30s auto-cycle."
@@ -1550,7 +1550,7 @@ function TimelineTab({ adjudicated, loading }) {
     <div style={{padding:"0 18px 8px"}}>
       {sessions.length === 0 ? (
         <div style={{fontSize:11,color:"var(--ink-4)",padding:"8px 0"}}>
-          No sessions with adjudicated calls yet. Sessions appear here once the UBO pipeline processes flagged telemetry.
+          No sessions with adjudicated calls yet. Sessions appear here once the UBO™ pipeline processes flagged telemetry.
         </div>
       ) : (
         <div className="cem-toolbar">
@@ -1659,7 +1659,7 @@ function SuppressionsTab({ suppressions, onAdd, onDelete }) {
 
       {active.length === 0 ? (
         <div style={{fontSize:11,color:"var(--ink-4)",padding:"8px 0"}}>
-          No active suppression rules. Add a rule to auto-clear matching flagged calls without running the UBO pipeline.
+          No active suppression rules. Add a rule to auto-clear matching flagged calls without running the UBO™ pipeline.
         </div>
       ) : (
         <table className="ubo-lat-table">

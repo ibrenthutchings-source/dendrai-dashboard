@@ -1,5 +1,5 @@
 """
-CouncilOrchestrator — the central nervous system of the Governance Brain.
+CouncilOrchestrator — the central nervous system of the Dendrai UBO Governance Brain.
 
 This is where the four agents come together. The orchestrator:
 

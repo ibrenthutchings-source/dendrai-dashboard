@@ -1,6 +1,6 @@
 # Dendrai Dashboard — Frontend
 
-React + Vite frontend for the Dendrai Risk Loop dashboard.
+React + Vite frontend for the Dendrai Intelligenza dashboard.
 
 ## Development
 
