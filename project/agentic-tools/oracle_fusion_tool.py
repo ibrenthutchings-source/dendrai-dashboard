@@ -773,3 +773,66 @@ def _today() -> str:
 def is_configured() -> bool:
     """Return True if ORACLE_FUSION_HOST is set."""
     return bool(os.environ.get("ORACLE_FUSION_HOST", ""))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# connector_poller adapter interface
+# ─────────────────────────────────────────────────────────────────────────────
+# Thin wrappers so this module (which predates the connector framework and is
+# also used standalone via /oracle-fusion/* REST endpoints + env-var config)
+# can be registered in connector_poller._ADAPTERS. UI-configured connectors
+# pass base_url/credentials explicitly rather than relying on
+# ORACLE_FUSION_HOST/USERNAME/PASSWORD env vars.
+#
+# pull_events() returns the UNIFORM shape every adapter must produce —
+# {event_id, event_type, actor, action, resource, severity, raw_payload} —
+# so connector_poller.py can hand any adapter's output to
+# mcp_governance._detect_system_flags/_ingest_system_event without knowing
+# each vendor's native field names.
+
+def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
+                 since: Optional[datetime]) -> list[dict]:
+    """Pull audit events created since `since`, normalized to the uniform
+    connector event shape (see module docstring above)."""
+    client = OracleFusionClient(
+        host=base_url,
+        username=credentials.get("username"),
+        password=credentials.get("password"),
+        client_id=credentials.get("client_id"),
+        client_secret=credentials.get("client_secret"),
+    )
+    date_from = since.strftime("%Y-%m-%dT%H:%M:%S") if since else ""
+    result = get_audit_events(date_from=date_from, max_items=500, client=client)
+    if result.get("error"):
+        raise RuntimeError(result["error"])
+    return [
+        {
+            "event_id":    str(e.get("event_id") or ""),
+            "event_type":  e.get("event_type") or "audit_event",
+            "actor":       e.get("username") or "",
+            "action":      e.get("event_type") or "",
+            "resource":    f"{e.get('module', '')}/{e.get('object_type', '')}/{e.get('object_id', '')}".strip("/"),
+            "severity":    "INFO",
+            "raw_payload": e,
+        }
+        for e in result.get("events", [])
+    ]
+
+
+def test_connection(base_url: Optional[str], credentials: dict, extra_config: dict) -> tuple[bool, str]:
+    """Verify connectivity/credentials with a minimal real call, without
+    pulling a full event batch."""
+    try:
+        client = OracleFusionClient(
+            host=base_url,
+            username=credentials.get("username"),
+            password=credentials.get("password"),
+            client_id=credentials.get("client_id"),
+            client_secret=credentials.get("client_secret"),
+        )
+        result = get_audit_events(max_items=1, client=client)
+        if result.get("error"):
+            return False, result["error"]
+        return True, f"Connected — {result.get('count', 0)} audit event(s) visible in test window"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"

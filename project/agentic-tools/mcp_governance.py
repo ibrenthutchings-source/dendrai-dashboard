@@ -103,6 +103,30 @@ def _get_pipeline():
 
 # ── Alert webhook ──────────────────────────────────────────────────────────────
 
+def _post_webhook_alert(text: str, fields: list[dict], *, color: str = "#c0392b") -> None:
+    """POST a Slack-compatible alert payload to MCP_ALERT_WEBHOOK_URL.
+    Shared by ESCALATE-verdict alerting (_dispatch_alert below) and Model
+    Health drift alerting (api_server.py's model_health_drift_watch) — the
+    only ESCALATE-specific thing about the old _dispatch_alert was its field
+    schema, not the POST mechanic itself, so this is the reusable half."""
+    if not _ALERT_WEBHOOK_URL:
+        return
+    try:
+        body = json.dumps({
+            "text": text,
+            "attachments": [{"color": color, "fields": fields}],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            _ALERT_WEBHOOK_URL,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5)
+        logger.info("Alert webhook dispatched")
+    except Exception as exc:
+        logger.warning("Alert webhook failed: %s", exc)
+
+
 def _dispatch_alert(
     *,
     tool_name: str,
@@ -113,35 +137,18 @@ def _dispatch_alert(
     reasoning: str,
 ) -> None:
     """POST a Slack-compatible alert payload for ESCALATE verdicts."""
-    if not _ALERT_WEBHOOK_URL:
-        return
-    try:
-        body = json.dumps({
-            "text": (
-                f"\U0001f6a8 *MCP GOVERNANCE ESCALATE* — `{tool_name}` "
-                f"(session {session_id[:8]}…)"
-            ),
-            "attachments": [{
-                "color": "#c0392b",
-                "fields": [
-                    {"title": "Tool",       "value": tool_name,            "short": True},
-                    {"title": "Risk Tier",  "value": risk_tier,            "short": True},
-                    {"title": "Risk Score", "value": f"{risk_score:.3f}",  "short": True},
-                    {"title": "Verdict",    "value": verdict,              "short": True},
-                    {"title": "Session",    "value": session_id[:8] + "…", "short": True},
-                    {"title": "Reasoning",  "value": (reasoning or "")[:300]},
-                ],
-            }],
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            _ALERT_WEBHOOK_URL,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=5)
-        logger.info("Alert dispatched for tool=%s verdict=%s", tool_name, verdict)
-    except Exception as exc:
-        logger.warning("Alert webhook failed: %s", exc)
+    _post_webhook_alert(
+        f"\U0001f6a8 *MCP GOVERNANCE ESCALATE* — `{tool_name}` (session {session_id[:8]}…)",
+        [
+            {"title": "Tool",       "value": tool_name,            "short": True},
+            {"title": "Risk Tier",  "value": risk_tier,            "short": True},
+            {"title": "Risk Score", "value": f"{risk_score:.3f}",  "short": True},
+            {"title": "Verdict",    "value": verdict,              "short": True},
+            {"title": "Session",    "value": session_id[:8] + "…", "short": True},
+            {"title": "Reasoning",  "value": (reasoning or "")[:300]},
+        ],
+    )
+    logger.info("Alert dispatched for tool=%s verdict=%s", tool_name, verdict)
 
 
 # ── LLM 4th-opinion reviewer ────────────────────────────────────────────────────
@@ -1516,7 +1523,9 @@ def _ingest_system_event(
     raw_payload: dict | None,
     source_ip: str | None,
 ) -> int | None:
-    """Insert a single event into system_telemetry. Returns new row id."""
+    """Insert a single event into system_telemetry. Returns new row id, or None
+    if the insert was skipped as a duplicate (server_name, event_id) — a poll
+    connector re-fetching an overlapping time window is expected to hit this."""
     if not db.is_available():
         return None
     try:
@@ -1529,6 +1538,7 @@ def _ingest_system_event(
                         (server_name, system_type, event_type, event_id, actor,
                          action, resource, severity, risk_flags, raw_payload, source_ip)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (server_name, event_id) DO NOTHING
                     RETURNING id
                     """,
                     (
@@ -1741,6 +1751,91 @@ async def delete_system(system_id: int):
     """Deactivate a monitored system (soft delete)."""
     ok = await asyncio.to_thread(_delete_system, system_id)
     return {"ok": ok, "id": system_id}
+
+
+# ── Poll-based connectors CRUD ──────────────────────────────────────────────────
+# The inverse of /systems above: /systems is push-model (external systems POST
+# to us with an issued ingest_api_key); these are pull-model connectors (we
+# poll them, holding their credentials — encrypted, see db.encrypt_credentials).
+# Configured entirely from the app UI, no env vars — see connector_poller.py
+# for the background dispatch loop that actually polls these.
+
+@router.get("/connectors")
+async def list_connectors():
+    """All poll-based connectors. Never includes credentials."""
+    rows = await asyncio.to_thread(db.list_poll_connectors)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.post("/connectors")
+async def create_connector(body: dict = Body(...)):
+    """Register a new poll connector. Body includes plaintext credentials —
+    encrypted before storage, never echoed back."""
+    try:
+        new_id = await asyncio.to_thread(
+            db.create_poll_connector,
+            str(body.get("connector_type") or "")[:32],
+            str(body.get("display_name") or "")[:128],
+            body.get("base_url"),
+            str(body.get("auth_type") or "")[:32],
+            dict(body.get("credentials") or {}),
+            body.get("extra_config"),
+            int(body.get("poll_interval_s") or 1800),
+            str(body.get("created_by") or "operator")[:128],
+        )
+    except db.EncryptionKeyMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"ok": new_id is not None, "id": new_id}
+
+
+@router.put("/connectors/{connector_id}")
+async def update_connector(connector_id: int, body: dict = Body(...)):
+    """Update a connector. Omit `credentials` to keep the existing encrypted value."""
+    try:
+        ok = await asyncio.to_thread(
+            db.update_poll_connector,
+            connector_id,
+            display_name=body.get("display_name"),
+            base_url=body.get("base_url"),
+            auth_type=body.get("auth_type"),
+            credentials=body.get("credentials"),
+            extra_config=body.get("extra_config"),
+            poll_interval_s=body.get("poll_interval_s"),
+            active=body.get("active"),
+        )
+    except db.EncryptionKeyMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"ok": ok, "id": connector_id}
+
+
+@router.delete("/connectors/{connector_id}")
+async def delete_connector(connector_id: int):
+    ok = await asyncio.to_thread(db.delete_poll_connector, connector_id)
+    return {"ok": ok, "id": connector_id}
+
+
+@router.post("/connectors/{connector_id}/test")
+async def test_connector(connector_id: int):
+    """Test a connector's credentials/connectivity without waiting for a full
+    poll cycle. Returns {ok, message} — never raises on a failed test, only
+    on a genuinely missing connector or a missing encryption key."""
+    try:
+        conn_row = await asyncio.to_thread(db.get_poll_connector, connector_id, True)
+    except db.EncryptionKeyMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not conn_row:
+        raise HTTPException(status_code=404, detail=f"No connector with id {connector_id}")
+    import connector_poller
+    adapter = connector_poller._ADAPTERS.get(conn_row["connector_type"])
+    if adapter is None:
+        raise HTTPException(status_code=400, detail=f"Unknown connector_type '{conn_row['connector_type']}'")
+    try:
+        ok, message = await asyncio.to_thread(
+            adapter.test_connection, conn_row["base_url"], conn_row["credentials"], conn_row["extra_config"] or {}
+        )
+    except Exception as exc:
+        ok, message = False, f"{type(exc).__name__}: {exc}"
+    return {"ok": ok, "message": message}
 
 
 # ── PAC repositories CRUD ──────────────────────────────────────────────────────
