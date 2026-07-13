@@ -46,6 +46,13 @@ try:
 except ImportError:
     pass
 
+_HAS_CRYPTOGRAPHY = False
+try:
+    from cryptography.fernet import Fernet, InvalidToken  # noqa: F811
+    _HAS_CRYPTOGRAPHY = True
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 _pool: Optional["pg_pool.ThreadedConnectionPool"] = None
 
@@ -969,6 +976,22 @@ CREATE TABLE IF NOT EXISTS controls_catalog (
 );
 CREATE INDEX IF NOT EXISTS idx_controls_catalog_process ON controls_catalog (process);
 
+-- Policy-as-Code business processes: was a hardcoded 5-entry Python set
+-- (VALID_PROCESSES); now a real table so sync_github() can register a new
+-- process discovered in a synced repo instead of silently skipping it.
+CREATE TABLE IF NOT EXISTS pac_processes (
+    id             VARCHAR(32)  PRIMARY KEY,
+    label          VARCHAR(128) NOT NULL,
+    short_label    VARCHAR(16)  NOT NULL,
+    control_prefix VARCHAR(16),
+    color          VARCHAR(16),
+    icon           VARCHAR(8),
+    description    TEXT,
+    is_builtin     BOOLEAN      NOT NULL DEFAULT FALSE,
+    source         VARCHAR(16)  NOT NULL DEFAULT 'manual',  -- builtin | github_discovered | manual
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 -- Policy-as-Code modules: versioned Rego per business process
 -- One row per version; latest version is the one with the highest id per process.
 CREATE TABLE IF NOT EXISTS pac_policy_modules (
@@ -1115,6 +1138,33 @@ BEGIN
     ) THEN
         ALTER TABLE edgar_proxy_filings ADD CONSTRAINT edgar_proxy_filings_company_accession_key
             UNIQUE (company_id, accession_number);
+    END IF;
+END $$;
+"""
+
+# observability.system_telemetry had no uniqueness on (server_name, event_id),
+# so a poll-based connector re-fetching an overlapping time window (or a
+# retried poll cycle) would re-insert the same external event as a brand-new
+# row every time — never adjudicated twice thanks to processed_at, but
+# silently duplicated in the raw telemetry and in any "24h event count" view.
+# Same fix as edgar_proxy_filings: dedup existing rows first, then add the
+# constraint so this heals current data, not just future inserts.
+_OBSERVABILITY_MIGRATIONS = """
+DELETE FROM observability.system_telemetry a USING observability.system_telemetry b
+WHERE a.id < b.id
+  AND a.server_name = b.server_name
+  AND a.event_id = b.event_id
+  AND a.event_id IS NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'system_telemetry_server_event_key'
+          AND conrelid = 'observability.system_telemetry'::regclass
+    ) THEN
+        ALTER TABLE observability.system_telemetry ADD CONSTRAINT system_telemetry_server_event_key
+            UNIQUE (server_name, event_id);
     END IF;
 END $$;
 """
@@ -1270,6 +1320,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_systems_server_name
 ALTER TABLE observability.monitored_systems
     ADD COLUMN IF NOT EXISTS ingest_api_key UUID NOT NULL DEFAULT gen_random_uuid();
 
+-- Poll-based connectors: the inverse of monitored_systems. monitored_systems
+-- is push-model (the external system authenticates to us with an
+-- ingest_api_key WE issue); poll_connectors is pull-model (WE authenticate
+-- to THEM, so we hold THEIR credentials — encrypted, see
+-- encrypt_credentials/decrypt_credentials below). Configured entirely from
+-- the app UI (Dendrai UBO Configuration screen), not env vars — that's the
+-- whole point of this table existing separately from the env-var-configured
+-- ORACLE_FUSION_* style connectors.
+CREATE TABLE IF NOT EXISTS observability.poll_connectors (
+    id                BIGSERIAL    PRIMARY KEY,
+    connector_type    VARCHAR(32)  NOT NULL,  -- oracle_fusion | sap_hana | sailpoint | dynamics365 | netsuite
+    display_name      VARCHAR(128) NOT NULL,
+    base_url          TEXT,
+    auth_type         VARCHAR(32)  NOT NULL,
+    credentials_enc   BYTEA        NOT NULL,  -- Fernet-encrypted JSON blob
+    extra_config      JSONB,
+    poll_interval_s   INTEGER      NOT NULL DEFAULT 1800,
+    active            BOOLEAN      NOT NULL DEFAULT TRUE,
+    last_poll_at      TIMESTAMPTZ,
+    last_poll_status  VARCHAR(16),            -- ok | error | never_run
+    last_poll_error   TEXT,
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by        VARCHAR(128)
+);
+CREATE INDEX IF NOT EXISTS idx_poll_connectors_active ON observability.poll_connectors (active);
+
 -- Generic system telemetry: any registered system pushes events here via REST.
 -- Enterprise systems (Saviynt, SAP, Oracle Fusion, ServiceNow, etc.) authenticate
 -- with their per-system ingest_api_key and POST structured events to /observability/telemetry/ingest.
@@ -1417,6 +1494,7 @@ def init_db() -> bool:
     try:
         with obs_conn.cursor() as cur:
             cur.execute(_OBSERVABILITY_DDL)
+            cur.execute(_OBSERVABILITY_MIGRATIONS)  # runs after DDL — targets tables _DDL/_OBSERVABILITY_DDL just created
         obs_conn.commit()
         logger.info("Observability schema ready (mcp_sessions, mcp_telemetry, adjudicated_tool_calls)")
     except Exception as exc:
@@ -5798,6 +5876,271 @@ def save_pac_approval(module_id: int, approver: str, role: Optional[str] = None)
                 row = cur.fetchone()
                 return row[0] if row else None
     return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Policy-as-Code business processes (formerly a hardcoded Python set)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The 5 processes this app shipped with, migrated into pac_processes on first
+# startup exactly as they were previously hardcoded (labels/colors/icons from
+# code-screens.jsx's PAC_PROCESSES array, prefixes from pac_endpoints.py's
+# _PROCESS_ID_PREFIX). Kept here (not in pac_endpoints.py) since seeding is a
+# db-layer concern, matching the controls_catalog seed pattern.
+_BUILTIN_PAC_PROCESSES = [
+    {"id": "itgc", "label": "ITGCs", "short_label": "ITGC", "control_prefix": "ITGC",
+     "color": "#6366f1", "icon": "🔒",
+     "description": "IT General Controls — Oracle Fusion access provisioning, SOD, change management, audit logging via IDCS and Security Console."},
+    {"id": "order_to_cash", "label": "Order to Cash", "short_label": "O2C", "control_prefix": "OTC",
+     "color": "#0ea5e9", "icon": "💰",
+     "description": "Order Management → AR Invoice → Revenue Recognition — Oracle OM, Configurator, AR, Revenue Management modules."},
+    {"id": "procure_to_pay", "label": "Procure to Pay", "short_label": "P2P", "control_prefix": "P2P",
+     "color": "#f59e0b", "icon": "📦",
+     "description": "Requisition → PO → Receipt → Invoice → Payment — Oracle Purchasing, iProcurement, AP, Payment modules."},
+    {"id": "receive_to_ship", "label": "Receive to Ship", "short_label": "R2S", "control_prefix": "R2S",
+     "color": "#10b981", "icon": "🚢",
+     "description": "Inbound Receipt → WMS Putaway → Pick/Pack/Ship → POD — Oracle WMS, Shipping Execution, Inventory modules."},
+    {"id": "record_to_report", "label": "Record to Report", "short_label": "R2R", "control_prefix": "R2R",
+     "color": "#ef4444", "icon": "📊",
+     "description": "Journal Entry → Sub-ledger → GL Close → Financial Statements — Oracle GL, SLA, FAH, Financial Reporting modules."},
+]
+
+
+def seed_builtin_pac_processes() -> int:
+    """Idempotently insert the 5 built-in processes. Returns count created."""
+    created = 0
+    for p in _BUILTIN_PAC_PROCESSES:
+        if create_pac_process(
+            p["id"], p["label"], p["short_label"],
+            control_prefix=p["control_prefix"], color=p["color"], icon=p["icon"],
+            description=p["description"], is_builtin=True, source="builtin",
+        ):
+            created += 1
+    return created
+
+
+def create_pac_process(process_id: str, label: str, short_label: str, *,
+                        control_prefix: Optional[str] = None, color: Optional[str] = None,
+                        icon: Optional[str] = None, description: Optional[str] = None,
+                        is_builtin: bool = False, source: str = "manual") -> bool:
+    """Insert a new PaC business process. Returns False (no-op) if the id already exists —
+    callers (e.g. sync_github's auto-register) should treat that as 'already there', not an error."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pac_processes
+                        (id, label, short_label, control_prefix, color, icon, description, is_builtin, source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    (process_id, label, short_label, control_prefix, color, icon, description, is_builtin, source),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def list_pac_processes() -> list:
+    """All registered PaC business processes, builtin first then by creation order."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, label, short_label, control_prefix, color, icon, description,
+                           is_builtin, source, created_at
+                    FROM pac_processes
+                    ORDER BY is_builtin DESC, created_at
+                    """
+                )
+                return [
+                    {
+                        "id": r[0], "label": r[1], "short_label": r[2], "control_prefix": r[3],
+                        "color": r[4], "icon": r[5], "description": r[6],
+                        "is_builtin": r[7], "source": r[8],
+                        "created_at": r[9].isoformat() if r[9] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def delete_pac_process(process_id: str) -> bool:
+    """Delete a non-builtin process. Refuses (returns False) for builtin ones."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM pac_processes WHERE id = %s AND is_builtin = FALSE", (process_id,))
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Connector credential encryption (Fernet, CONNECTOR_ENCRYPTION_KEY)
+# ─────────────────────────────────────────────────────────────────────────────
+# A stable key is required — unlike auth_endpoints.py's AUTH_JWT_SECRET (which
+# safely falls back to a random per-process value since sessions are meant to
+# expire anyway), a randomly-regenerated key here would silently make every
+# previously-encrypted connector credential permanently undecryptable on the
+# next restart. So there is deliberately NO insecure fallback: if the env var
+# isn't set, encrypt/decrypt raise instead of pretending to work.
+
+class EncryptionKeyMissing(RuntimeError):
+    """CONNECTOR_ENCRYPTION_KEY is not set — cannot encrypt/decrypt connector credentials."""
+
+
+def _fernet() -> "Fernet":
+    if not _HAS_CRYPTOGRAPHY:
+        raise EncryptionKeyMissing("cryptography package not installed — run: pip install cryptography")
+    key = os.environ.get("CONNECTOR_ENCRYPTION_KEY", "").strip()
+    if not key:
+        raise EncryptionKeyMissing(
+            "CONNECTOR_ENCRYPTION_KEY is not set — generate one with "
+            "`python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"` "
+            "and set it before saving connector credentials."
+        )
+    return Fernet(key.encode() if isinstance(key, str) else key)
+
+
+def encrypt_credentials(credentials: dict) -> bytes:
+    """Encrypt a credentials dict to an opaque Fernet token for storage in poll_connectors.credentials_enc."""
+    import json as _json
+    return _fernet().encrypt(_json.dumps(credentials).encode())
+
+
+def decrypt_credentials(token: bytes) -> dict:
+    """Decrypt a poll_connectors.credentials_enc value back to a plain dict."""
+    import json as _json
+    try:
+        return _json.loads(_fernet().decrypt(bytes(token)).decode())
+    except InvalidToken:
+        raise EncryptionKeyMissing(
+            "Could not decrypt connector credentials — CONNECTOR_ENCRYPTION_KEY has "
+            "changed since these were saved, or the value is corrupted."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Poll-based connectors (observability.poll_connectors)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_poll_connector(connector_type: str, display_name: str, base_url: Optional[str],
+                           auth_type: str, credentials: dict, extra_config: Optional[dict] = None,
+                           poll_interval_s: int = 1800, created_by: Optional[str] = None) -> Optional[int]:
+    """Create a poll connector. `credentials` is a plain dict — encrypted here before storage."""
+    enc = encrypt_credentials(credentials)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.poll_connectors
+                        (connector_type, display_name, base_url, auth_type, credentials_enc,
+                         extra_config, poll_interval_s, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (connector_type, display_name, base_url, auth_type, enc,
+                     Json(extra_config) if extra_config else None, poll_interval_s, created_by),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_poll_connectors(include_credentials: bool = False) -> list:
+    """List all connectors. Credentials are NEVER included unless explicitly requested
+    (only the polling loop itself should pass include_credentials=True)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cols = "id, connector_type, display_name, base_url, auth_type, extra_config, poll_interval_s, active, last_poll_at, last_poll_status, last_poll_error, created_at, updated_at, created_by"
+                if include_credentials:
+                    cols += ", credentials_enc"
+                cur.execute(f"SELECT {cols} FROM observability.poll_connectors ORDER BY created_at DESC")
+                rows = cur.fetchall()
+                out = []
+                for r in rows:
+                    d = {
+                        "id": r[0], "connector_type": r[1], "display_name": r[2], "base_url": r[3],
+                        "auth_type": r[4], "extra_config": r[5], "poll_interval_s": r[6], "active": r[7],
+                        "last_poll_at": r[8].isoformat() if r[8] else None,
+                        "last_poll_status": r[9], "last_poll_error": r[10],
+                        "created_at": r[11].isoformat() if r[11] else None,
+                        "updated_at": r[12].isoformat() if r[12] else None,
+                        "created_by": r[13],
+                    }
+                    if include_credentials:
+                        d["credentials"] = decrypt_credentials(r[14]) if r[14] else {}
+                    out.append(d)
+                return out
+    return _run(_do) or []
+
+
+def get_poll_connector(connector_id: int, include_credentials: bool = False) -> Optional[dict]:
+    rows = [c for c in list_poll_connectors(include_credentials=include_credentials) if c["id"] == connector_id]
+    return rows[0] if rows else None
+    # Simple filter over list_poll_connectors rather than a second query — connector
+    # counts are small (single digits to low tens), not worth a separate code path.
+
+
+def update_poll_connector(connector_id: int, *, display_name: Optional[str] = None,
+                           base_url: Optional[str] = None, auth_type: Optional[str] = None,
+                           credentials: Optional[dict] = None, extra_config: Optional[dict] = None,
+                           poll_interval_s: Optional[int] = None, active: Optional[bool] = None) -> bool:
+    """Update a connector. Any field left as None is unchanged — critically, omitting
+    `credentials` keeps the existing encrypted value rather than requiring re-entry."""
+    sets, params = [], []
+    for col, val in (("display_name", display_name), ("base_url", base_url), ("auth_type", auth_type),
+                      ("poll_interval_s", poll_interval_s), ("active", active)):
+        if val is not None:
+            sets.append(f"{col} = %s")
+            params.append(val)
+    if extra_config is not None:
+        sets.append("extra_config = %s")
+        params.append(Json(extra_config))
+    if credentials is not None:
+        sets.append("credentials_enc = %s")
+        params.append(encrypt_credentials(credentials))
+    if not sets:
+        return False
+    sets.append("updated_at = NOW()")
+    params.append(connector_id)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE observability.poll_connectors SET {', '.join(sets)} WHERE id = %s",
+                    params,
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def delete_poll_connector(connector_id: int) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM observability.poll_connectors WHERE id = %s", (connector_id,))
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def record_poll_result(connector_id: int, status: str, error: Optional[str] = None) -> None:
+    """Stamp the outcome of a poll cycle. status is 'ok' or 'error'."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.poll_connectors
+                    SET last_poll_at = NOW(), last_poll_status = %s, last_poll_error = %s
+                    WHERE id = %s
+                    """,
+                    (status, error, connector_id),
+                )
+    _run(_do)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
