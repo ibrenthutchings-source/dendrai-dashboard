@@ -346,12 +346,13 @@ function _hexToRgba(hex, alpha) {
 // (sync_github) have no color/icon assigned by a human, so those get a
 // reasonable default rather than rendering blank.
 function _normalizeProcess(p) {
+  const color = p.color || "#8b5cf6";
   return {
     id: p.id,
     label: p.label,
     shortLabel: p.short_label || p.id.toUpperCase().slice(0, 4),
-    color: p.color || "#8b5cf6",
-    bg: _hexToRgba(p.color, 0.12),
+    color,
+    bg: _hexToRgba(color, 0.12),
     icon: p.icon || "📁",
     desc: p.description || "",
     source: p.source,
@@ -435,7 +436,7 @@ function ProcessFlowMap({ activeProcess, processes }) {
           ))}
 
           {/* CaC horizontal link */}
-          <line x1={cx(0)} y1={ROW_Y[2]} x2={cx(4)} y2={ROW_Y[2]}
+          <line x1={cx(0)} y1={ROW_Y[2]} x2={cx(PAC_PROCESSES.length - 1)} y2={ROW_Y[2]}
             stroke="var(--line)" strokeWidth={1} strokeDasharray="3 5" opacity={0.4} />
 
           {/* Per-column edges + particles + nodes */}
