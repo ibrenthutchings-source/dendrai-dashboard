@@ -6143,6 +6143,29 @@ def record_poll_result(connector_id: int, status: str, error: Optional[str] = No
     _run(_do)
 
 
+def get_observability_24h_counts() -> dict:
+    """Rows adjudicated / escalated / PaC-violation-flagged in the last 24h —
+    none of the existing observability endpoints (/systems, /holds, /coverage)
+    are time-windowed, so this is the one new query the Continuous Monitoring
+    command-center screen needs that nothing else already provides."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS adjudicated,
+                        COUNT(*) FILTER (WHERE final_verdict = 'ESCALATE') AS escalated,
+                        COUNT(*) FILTER (WHERE policy_violations IS NOT NULL AND array_length(policy_violations, 1) > 0) AS pac_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE adjudicated_at > NOW() - INTERVAL '24 hours'
+                    """
+                )
+                row = cur.fetchone()
+                return {"adjudicated": row[0] or 0, "escalated": row[1] or 0, "pac_violations": row[2] or 0}
+    return _run(_do) or {"adjudicated": 0, "escalated": 0, "pac_violations": 0}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Policy-as-Code external hooks
 # ─────────────────────────────────────────────────────────────────────────────

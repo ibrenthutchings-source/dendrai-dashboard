@@ -73,10 +73,10 @@ from mcp_guards import (
 )
 import db
 from pac_endpoints import (
-    VALID_PROCESSES,
     _REGO_DEFAULTS,
     _controls_to_rego,
     _extract_control_id,
+    _valid_processes,
     evaluate_policy_event,
 )
 
@@ -327,8 +327,9 @@ def cac_from_pac(process: str = "", ticker: str = "") -> str:
 
     Args:
         process: ERP process to synthesise from — itgc | order_to_cash |
-                 procure_to_pay | receive_to_ship | record_to_report.
-                 Empty = synthesise from all five processes.
+                 procure_to_pay | receive_to_ship | record_to_report, or any
+                 process registered via POST /pac/processes.
+                 Empty = synthesise from every known process.
         ticker:  Optional ticker to tag the generated artifact (e.g. 'MSFT')
     """
     try:
@@ -337,14 +338,15 @@ def cac_from_pac(process: str = "", ticker: str = "") -> str:
         tok = validate_ticker(ticker) if ticker.strip() else None
         audit_log("cac_from_pac", process=process or "(all)", ticker=tok or "(none)")
 
+        valid = _valid_processes()
         procs: list[str]
         if process.strip():
             p = process.strip().lower().replace("-", "_").replace(" ", "_")
-            if p not in VALID_PROCESSES:
-                return f"Error: Unknown process '{process}'. Valid: {', '.join(sorted(VALID_PROCESSES))}"
+            if p not in valid:
+                return f"Error: Unknown process '{process}'. Valid: {', '.join(sorted(valid))}"
             procs = [p]
         else:
-            procs = sorted(VALID_PROCESSES)
+            procs = sorted(valid)
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         lines: list[str] = [

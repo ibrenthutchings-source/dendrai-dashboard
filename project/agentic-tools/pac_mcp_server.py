@@ -66,22 +66,21 @@ sys.path.insert(0, os.path.dirname(__file__))
 from mcp_guards import audit_log, cap_output, check_rate_limit, check_read_only, validate_enum
 import db
 from pac_endpoints import (
-    VALID_PROCESSES,
     _PROCESS_LABELS,
     _REGO_DEFAULTS,
+    _valid_processes,
 )
 
 mcp = FastMCP("policy-as-code")
-
-_VALID_PROCESSES_STR = ", ".join(sorted(VALID_PROCESSES))
 
 
 def _require_process(process: str) -> str:
     """Normalise and validate a process name; raises ValueError on unknown values."""
     p = process.strip().lower().replace("-", "_").replace(" ", "_")
-    if p not in VALID_PROCESSES:
+    valid = _valid_processes()
+    if p not in valid:
         raise ValueError(
-            f"Unknown process '{process}'. Valid values: {_VALID_PROCESSES_STR}"
+            f"Unknown process '{process}'. Valid values: {', '.join(sorted(valid))}"
         )
     return p
 
@@ -114,7 +113,7 @@ def pac_list_modules(process: str = "") -> str:
             for m in db.list_pac_modules():
                 saved[m["process"]] = m
 
-        procs = [filter_proc] if filter_proc else sorted(VALID_PROCESSES)
+        procs = [filter_proc] if filter_proc else sorted(_valid_processes())
         result = []
         for proc in procs:
             if proc in saved:

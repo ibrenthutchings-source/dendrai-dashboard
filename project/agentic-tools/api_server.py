@@ -70,6 +70,7 @@ import os
 import sys
 import tempfile
 from contextlib import asynccontextmanager, AsyncExitStack
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -158,6 +159,13 @@ except Exception:
     mcp_http_telemetry = None  # type: ignore[assignment]
     _HAS_HTTP_TELEMETRY = False
 
+try:
+    import connector_poller
+    _HAS_CONNECTOR_POLLER = True
+except Exception:
+    connector_poller = None  # type: ignore[assignment]
+    _HAS_CONNECTOR_POLLER = False
+
 import github_endpoints
 import auth_db
 import auth_endpoints
@@ -178,6 +186,7 @@ async def lifespan(application: FastAPI):
         _seed_cem_templates()
         _seed_ticker_cik()
         _seed_controls_catalog()
+        db.seed_builtin_pac_processes()
         logger.info("Static reference data seeded")
         # Auth schema + default users
         if auth_db.init_auth_db():
@@ -212,6 +221,24 @@ async def lifespan(application: FastAPI):
         elif _HAS_MCP_GOVERNANCE:
             logger.info("MCP governance available but DB not ready — polling not started")
 
+        # Poll-based connectors (Oracle Fusion / SAP HANA / SailPoint / Dynamics 365 /
+        # NetSuite) — dispatch loop only; which connectors actually poll is entirely
+        # UI-configured (observability.poll_connectors), not gated by env vars here.
+        _connector_task = None
+        if _HAS_CONNECTOR_POLLER and db.is_available():
+            _connector_task = asyncio.create_task(connector_poller.start_polling())
+            logger.info("Connector poller task started")
+        elif _HAS_CONNECTOR_POLLER:
+            logger.info("Connector poller available but DB not ready — polling not started")
+
+        # Model Health drift watch — periodic (not per-request) so alerting can't
+        # spam the webhook on every page view of the on-demand /model-health/summary
+        # endpoint. See model_health_drift_watch() below.
+        _drift_task = None
+        if db.is_available():
+            _drift_task = asyncio.create_task(model_health_drift_watch())
+            logger.info("Model Health drift watch task started")
+
         # Background DB reconnect loop — retries every 30 s if startup DB init failed.
         # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
         # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -230,6 +257,12 @@ async def lifespan(application: FastAPI):
                     if _HAS_MCP_GOVERNANCE and _gov_task is None:
                         asyncio.create_task(mcp_governance.start_polling())
                         logger.info("MCP governance polling started after DB reconnect")
+                    if _HAS_CONNECTOR_POLLER and _connector_task is None:
+                        asyncio.create_task(connector_poller.start_polling())
+                        logger.info("Connector poller started after DB reconnect")
+                    if _drift_task is None:
+                        asyncio.create_task(model_health_drift_watch())
+                        logger.info("Model Health drift watch started after DB reconnect")
 
         _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -237,12 +270,13 @@ async def lifespan(application: FastAPI):
             yield
         finally:
             _reconnect_task.cancel()
-            if _gov_task is not None:
-                _gov_task.cancel()
-                try:
-                    await _gov_task
-                except asyncio.CancelledError:
-                    pass
+            for _bg_task in (_gov_task, _connector_task, _drift_task):
+                if _bg_task is not None:
+                    _bg_task.cancel()
+                    try:
+                        await _bg_task
+                    except asyncio.CancelledError:
+                        pass
 
 
 _CEM_TEMPLATES_DEFAULT = [
@@ -1744,6 +1778,78 @@ def get_token_usage_summary_endpoint(
     }
 
 
+# ── Model Health drift watch (background) ───────────────────────────────────
+# get_model_health_summary (below) is on-demand only — computed live on every
+# request, no caching. Dispatching an alert from inside that handler would
+# spam the webhook on every page view, not just on genuine new drift. So
+# alerting runs from this separate periodic loop instead, using the exact
+# same compute calls the on-demand endpoint uses.
+
+_MODEL_HEALTH_CHECK_INTERVAL_S = float(os.environ.get("MODEL_HEALTH_CHECK_INTERVAL_S", "21600"))  # 6h
+_MODEL_HEALTH_ALERT_COOLDOWN_S = 24 * 3600  # don't re-alert the same ongoing drift more than once/day
+
+
+def _check_model_health_drift_once() -> list[dict]:
+    """One drift-check cycle. Returns the list of newly-alerted (metric, flag)
+    entries, for logging/testing. Never raises — all failures are caught and
+    logged, matching every other best-effort background path in this codebase."""
+    import drift_tool
+
+    alerted: list[dict] = []
+    if not db.is_available():
+        return alerted
+
+    ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
+    fred_api_key = os.environ.get("FRED_API_KEY", "")
+    fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key)
+
+    entries = (
+        [(r["ratio"], r) for r in ratio_drift] +
+        [(r["series_id"], r) for r in fred_drift]
+    )
+    for metric_key, entry in entries:
+        if entry.get("flag") != "drift":
+            continue
+        cooldown_key = f"model_health_alerted:{metric_key}"
+        last_alerted = db.get_app_config(cooldown_key)
+        if last_alerted:
+            last_dt = datetime.fromisoformat(last_alerted)
+            if (datetime.now(timezone.utc) - last_dt).total_seconds() < _MODEL_HEALTH_ALERT_COOLDOWN_S:
+                continue
+        if _HAS_MCP_GOVERNANCE:
+            mcp_governance._post_webhook_alert(
+                f"\U0001f4c9 *Model Health drift detected* — `{metric_key}`",
+                [
+                    {"title": "Metric", "value": metric_key, "short": True},
+                    {"title": "PSI",    "value": f"{entry.get('psi'):.3f}" if entry.get("psi") is not None else "n/a", "short": True},
+                    {"title": "n (baseline / current)", "value": f"{entry.get('n_baseline')} / {entry.get('n_current')}", "short": True},
+                ],
+                color="#d97706",
+            )
+        db.set_app_config(cooldown_key, datetime.now(timezone.utc).isoformat())
+        alerted.append({"metric": metric_key, **entry})
+        logger.info("Model Health: drift alert dispatched for %s", metric_key)
+    return alerted
+
+
+async def model_health_drift_watch() -> None:
+    """Infinite periodic loop. Started as an asyncio task in lifespan;
+    cancelled gracefully on shutdown. Mirrors mcp_governance.start_polling()'s
+    shape — errors are caught and logged, the loop never exits on its own."""
+    logger.info("Model Health drift watch started (interval=%.0fs)", _MODEL_HEALTH_CHECK_INTERVAL_S)
+    while True:
+        try:
+            await asyncio.sleep(_MODEL_HEALTH_CHECK_INTERVAL_S)
+            alerted = await asyncio.to_thread(_check_model_health_drift_once)
+            if alerted:
+                logger.info("Model Health drift watch: %d new alert(s)", len(alerted))
+        except asyncio.CancelledError:
+            logger.info("Model Health drift watch stopped")
+            break
+        except Exception as exc:
+            logger.warning("Model Health drift watch cycle error: %s", exc)
+
+
 @app.get("/model-health/summary")
 def get_model_health_summary(
     current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
@@ -1773,6 +1879,63 @@ def get_model_health_summary(
         "ratio_drift": ratio_drift,
         "fred_drift": fred_drift,
         "fred_configured": bool(fred_api_key),
+    }
+
+
+@app.get("/observability/command-center")
+def get_command_center(
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """
+    Continuous Monitoring command center: one call answering "what's being
+    watched right now, what fired recently, what's stale." Composes existing
+    observability building blocks (registered systems + poll connectors with
+    last-seen timestamps, pending holds, coverage blind spots) with two things
+    nothing else already provides — a 24h activity window, and a PaC coverage
+    + Model Health drift summary — rather than duplicating any of their logic.
+    Added directly here (not mcp_governance.py, whose router this augments)
+    since this file already imports mcp_governance, pac_endpoints, and the
+    drift_tool compute calls model-health uses.
+    """
+    if not db.is_available():
+        return {
+            "systems": [], "connectors": [], "pending_holds": 0, "coverage_blind_spots": 0,
+            "last_24h": {"adjudicated": 0, "escalated": 0, "pac_violations": 0},
+            "pac_processes": [], "model_health_drift": False,
+            "note": "Database not configured",
+        }
+
+    systems = mcp_governance._fetch_systems() if _HAS_MCP_GOVERNANCE else []
+    connectors = db.list_poll_connectors()
+    pending_holds = len(mcp_governance._fetch_pending_holds()) if _HAS_MCP_GOVERNANCE else 0
+    coverage_rows = mcp_governance._fetch_coverage() if _HAS_MCP_GOVERNANCE else []
+    coverage_blind_spots = sum(1 for r in coverage_rows if (r.get("flag_rate") or 0) == 0)
+    last_24h = db.get_observability_24h_counts()
+
+    pac_processes = []
+    for proc in db.list_pac_processes():
+        mod = db.get_latest_pac_module(proc["id"])
+        pac_processes.append({
+            "id": proc["id"],
+            "label": proc["label"],
+            "source": proc["source"],
+            "source_format": mod.get("source_format") if mod else "default",
+            "rule_coverage": pac_endpoints._rule_coverage(mod["rego_content"]) if mod else None,
+        })
+
+    import drift_tool
+    ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
+    fred_drift = drift_tool.compute_fred_regime_drift(os.environ.get("FRED_API_KEY", ""))
+    model_health_drift = any(r.get("flag") == "drift" for r in ratio_drift + fred_drift)
+
+    return {
+        "systems": systems,
+        "connectors": connectors,
+        "pending_holds": pending_holds,
+        "coverage_blind_spots": coverage_blind_spots,
+        "last_24h": last_24h,
+        "pac_processes": pac_processes,
+        "model_health_drift": model_health_drift,
     }
 
 

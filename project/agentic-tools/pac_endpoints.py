@@ -48,13 +48,31 @@ router = APIRouter(prefix="/pac", tags=["pac"])
 # Supported processes
 # ─────────────────────────────────────────────────────────────────────────────
 
-VALID_PROCESSES = {
+# The 5 processes below are the built-in defaults, seeded into the
+# `pac_processes` table on startup (api_server.py) via db.seed_builtin_pac_processes().
+# VALID_PROCESSES / _valid_processes() is now DB-backed so a process
+# discovered in a synced GitHub repo (sync_github's auto-register, below)
+# becomes valid immediately without a code change — this constant stays only
+# as the offline/DB-unavailable fallback.
+_BUILTIN_PROCESS_IDS = {
     "itgc",
     "order_to_cash",
     "procure_to_pay",
     "receive_to_ship",
     "record_to_report",
 }
+
+
+def _valid_processes() -> set[str]:
+    """Known PaC process ids — DB-backed so new ones (manually added or
+    discovered via sync_github) are valid immediately. Falls back to the 5
+    built-in ids if the DB is unavailable."""
+    if db.is_available():
+        rows = db.list_pac_processes()
+        if rows:
+            return {r["id"] for r in rows}
+    return set(_BUILTIN_PROCESS_IDS)
+
 
 _PROCESS_LABELS = {
     "itgc":            "IT General Controls",
@@ -63,6 +81,11 @@ _PROCESS_LABELS = {
     "receive_to_ship": "Receive to Ship",
     "record_to_report": "Record to Report",
 }
+
+# Assigned round-robin to processes auto-registered by sync_github (a folder
+# discovered in a synced repo that doesn't match any known process) — the 5
+# built-in processes keep their own hand-picked colors from db.py's seed.
+_AUTO_PROCESS_COLORS = ["#8b5cf6", "#14b8a6", "#f97316", "#3b82f6", "#ec4899", "#84cc16"]
 
 # Control-ID prefix each process's deny rules embed in their sprintf message
 # (e.g. "ITGC-AC-01: ...", "R2S-P001: ..."). Used to steer the Markdown->Rego
@@ -752,6 +775,28 @@ def extract_control_ids_from_defaults() -> list[dict]:
     return list(seen.values())
 
 
+# Deliberately duplicated from cac_mcp_server._parse_pac_deny_rules (~15 lines)
+# rather than imported — cac_mcp_server already does `from pac_endpoints import
+# (...)` at module level, so the reverse import would be circular.
+_DENY_RULE_RE = re.compile(r'^(deny_\w+)\[msg\]\s+if\s*\{([^}]+)\}', re.MULTILINE)
+
+
+def _rule_coverage(rego_content: str) -> dict:
+    """How many of a module's deny_*[msg] rules have an extractable control
+    ID in their message — surfaced on the Rego Editor as a coverage badge so
+    a partially-LLM-converted module's gap is visible, not silent."""
+    total = with_id = 0
+    for m in _DENY_RULE_RE.finditer(rego_content or ""):
+        body = m.group(2)
+        msg_match = re.search(r'msg\s*:=\s*sprintf\("([^"]+)"', body)
+        if not msg_match:
+            msg_match = re.search(r'msg\s*:=\s*"([^"]+)"', body)
+        total += 1
+        if msg_match and _extract_control_id(msg_match.group(1)):
+            with_id += 1
+    return {"total": total, "with_control_id": with_id}
+
+
 def _run_real_opa_eval(rego_content: str, input_event: dict) -> dict:
     """
     Run the actual OPA binary against a Rego module and input document.
@@ -988,6 +1033,69 @@ def _controls_to_rego(controls: list, ticker: Optional[str] = None) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Business process endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+# Replaces the formerly-hardcoded 5-entry VALID_PROCESSES set with a real,
+# UI/API-manageable catalog — see db.pac_processes and _valid_processes()
+# above. Both frontend PAC_PROCESSES arrays (code-screens.jsx, ubo-config.jsx)
+# fetch from GET /processes instead of hardcoding the list.
+
+class CreateProcessRequest(BaseModel):
+    id: str
+    label: str
+    short_label: str
+    control_prefix: Optional[str] = None
+    color: Optional[str] = None
+    icon: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.get("/processes")
+async def list_processes():
+    """All known PaC business processes — built-in + manually added +
+    GitHub-discovered. Powers both frontend process pickers."""
+    if not db.is_available():
+        return {"processes": [
+            {"id": p, "label": _PROCESS_LABELS.get(p, p), "short_label": p.upper()[:4],
+             "control_prefix": _PROCESS_ID_PREFIX.get(p), "color": None, "icon": None,
+             "description": None, "is_builtin": True, "source": "builtin"}
+            for p in sorted(_BUILTIN_PROCESS_IDS)
+        ]}
+    return {"processes": db.list_pac_processes()}
+
+
+@router.post("/processes")
+async def create_process(req: CreateProcessRequest):
+    """Manually register a new business process (the other path — automatic
+    registration from an unmatched synced folder — happens inside sync_github)."""
+    key = _norm_process_key(req.id)
+    if not key:
+        raise HTTPException(status_code=422, detail="id is required")
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.create_pac_process(
+        key, req.label.strip() or key, req.short_label.strip() or key.upper()[:16],
+        control_prefix=req.control_prefix, color=req.color, icon=req.icon,
+        description=req.description, is_builtin=False, source="manual",
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail=f"Process '{key}' already exists")
+    return {"created": True, "id": key}
+
+
+@router.delete("/processes/{process_id}")
+async def delete_process(process_id: str):
+    """Delete a non-builtin process. Built-in processes (the original 5)
+    cannot be removed this way."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.delete_pac_process(process_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Process not found or is a built-in process (cannot be deleted)")
+    return {"deleted": True, "id": process_id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Module endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -996,7 +1104,7 @@ async def list_modules():
     """Return latest module for every saved process, falling back to defaults for unsaved ones."""
     saved = {m["process"]: m for m in db.list_pac_modules()} if db.is_available() else {}
     result = []
-    for proc in sorted(VALID_PROCESSES):
+    for proc in sorted(_valid_processes()):
         if proc in saved:
             result.append(saved[proc])
         else:
@@ -1015,33 +1123,38 @@ async def list_modules():
 
 @router.get("/modules/{process}")
 async def get_module(process: str):
-    """Return the latest versioned Rego module for a process (with approvals)."""
-    if process not in VALID_PROCESSES:
-        raise HTTPException(status_code=400, detail=f"Unknown process '{process}'. Valid: {sorted(VALID_PROCESSES)}")
+    """Return the latest versioned Rego module for a process (with approvals
+    and a rule_coverage summary — how many deny rules have an extractable
+    control ID vs. not, so a partially-covered module isn't silently opaque)."""
+    if process not in _valid_processes():
+        raise HTTPException(status_code=400, detail=f"Unknown process '{process}'. Valid: {sorted(_valid_processes())}")
 
     if db.is_available():
         mod = db.get_latest_pac_module(process)
         if mod:
+            mod["rule_coverage"] = _rule_coverage(mod.get("rego_content", ""))
             return mod
 
     # Fall back to built-in default
+    default_content = _REGO_DEFAULTS.get(process, f"package controls.oracle_fusion.{process}\n")
     return {
         "id": None,
         "process": process,
         "module_name": f"controls.oracle_fusion.{process}",
-        "rego_content": _REGO_DEFAULTS.get(process, f"package controls.oracle_fusion.{process}\n"),
+        "rego_content": default_content,
         "version": "1.0",
         "last_revised_at": None,
         "created_at": None,
         "approvals": [],
         "is_default": True,
+        "rule_coverage": _rule_coverage(default_content),
     }
 
 
 @router.put("/modules/{process}")
 async def save_module(process: str, req: SaveModuleRequest):
     """Save a new version of a Rego module for a process."""
-    if process not in VALID_PROCESSES:
+    if process not in _valid_processes():
         raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
 
     if not req.rego_content.strip():
@@ -1073,7 +1186,7 @@ async def save_module(process: str, req: SaveModuleRequest):
 @router.get("/modules/{process}/history")
 async def get_module_history(process: str):
     """Return version history for a process (newest first, last 20 versions)."""
-    if process not in VALID_PROCESSES:
+    if process not in _valid_processes():
         raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
 
     if not db.is_available():
@@ -1085,7 +1198,7 @@ async def get_module_history(process: str):
 @router.post("/modules/{process}/approve")
 async def approve_module(process: str, req: ApproveModuleRequest):
     """Add an approver sign-off for a module version."""
-    if process not in VALID_PROCESSES:
+    if process not in _valid_processes():
         raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
 
     if not req.approver.strip():
@@ -1159,11 +1272,29 @@ def _match_process(path: str) -> Optional[str]:
     parts = path.split("/")
     filename = parts[-1]
     stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    valid = _valid_processes()
     for candidate in [stem] + parts[:-1]:
         key = _norm_process_key(candidate)
-        if key in VALID_PROCESSES:
+        if key in valid:
             return key
     return None
+
+
+def _process_key_from_path(path: str) -> str:
+    """Derive a candidate process id from a path when _match_process finds no
+    existing one — used by sync_github's auto-register path. Prefers the
+    containing folder name (a per-process folder layout) over the filename
+    stem, since a folder groups multiple files under one process while a
+    bare filename is more likely a one-off doc."""
+    parts = path.split("/")
+    candidate = parts[-2] if len(parts) > 1 else parts[-1].rsplit(".", 1)[0]
+    return _norm_process_key(candidate)
+
+
+def _label_from_key(key: str) -> str:
+    """'treasury_ops' -> 'Treasury Ops' — a readable default label for an
+    auto-registered process until someone edits it."""
+    return " ".join(w.capitalize() for w in key.split("_"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1332,12 +1463,32 @@ async def sync_github():
 
         by_process: Dict[str, List[Dict[str, str]]] = {}
         skipped: List[Dict[str, str]] = []
+        newly_registered: set[str] = set()
 
         for item in blobs:
             process = _match_process(item["path"])
             if not process:
-                skipped.append({"name": item["path"], "reason": f"doesn't match a known process ({', '.join(sorted(VALID_PROCESSES))})"})
-                continue
+                candidate = _process_key_from_path(item["path"])
+                if not candidate or not db.is_available():
+                    skipped.append({
+                        "name": item["path"],
+                        "reason": f"doesn't match a known process ({', '.join(sorted(_valid_processes()))})"
+                                  + ("" if db.is_available() else " — database unavailable, cannot auto-register"),
+                    })
+                    continue
+                # No known process matched this path — register a new one from
+                # the folder/file name rather than silently dropping the file.
+                # Idempotent (ON CONFLICT DO NOTHING) so re-syncing the same
+                # repo doesn't error on a process another file already registered.
+                db.create_pac_process(
+                    candidate, _label_from_key(candidate), candidate.upper()[:16],
+                    control_prefix=candidate.upper()[:16],
+                    color=_AUTO_PROCESS_COLORS[len(newly_registered) % len(_AUTO_PROCESS_COLORS)],
+                    icon="📁", source="github_discovered",
+                )
+                newly_registered.add(candidate)
+                process = candidate
+                logger.info("sync_github: auto-registered new PaC process '%s' from %s", candidate, item["path"])
             try:
                 br = await client.get(
                     f"https://api.github.com/repos/{owner}/{repo}/git/blobs/{item['sha']}",
@@ -1479,7 +1630,7 @@ async def evaluate_policy(req: EvaluateRequest):
 @router.get("/defaults/{process}")
 async def get_default_rego(process: str):
     """Return the built-in Rego default for a process (no DB required)."""
-    if process not in VALID_PROCESSES:
+    if process not in _valid_processes():
         raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
     return {
         "process": process,
