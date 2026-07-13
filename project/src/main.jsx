@@ -41,6 +41,7 @@ import '../approval-inbox.jsx'
 import '../user-config.jsx'
 import '../token-usage.jsx'
 import '../model-health.jsx'
+import '../continuous-monitoring.jsx'
 import '../tweaks.jsx'
 
 import App from '../app.jsx'

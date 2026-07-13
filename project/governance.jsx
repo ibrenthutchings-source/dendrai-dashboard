@@ -319,7 +319,8 @@ function GovernancePane({ open, onToggle, data, peerData, ticker, loading, activ
 
 // ── Main-pane Governance view ─────────────────────────────────────────────────
 // Rendered inside a .panel div in app.jsx. Contains all five sub-tab views.
-function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChange, govFetchError }) {
+function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChange, govFetchError, lastRefresh, onRefresh }) {
+  const RefreshBadge = window.RefreshBadge;
   const [filingIdx, setFilingIdx] = useState(0);
 
   const proxy    = data?.proxy_filings || [];
@@ -330,18 +331,21 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
     <div className="gov-view">
       {/* Header */}
       <div className="panel-head">
-        <div>
-          <div className="kicker">Proxy Data · SEC EDGAR DEF 14A</div>
-          <div className="panel-title mt-8">Board Intelligence</div>
-          {data
-            ? <div className="panel-sub">
-                {data.company_name || ticker} · {proxy.length} proxy filing{proxy.length !== 1 ? "s" : ""}
-                {peerData ? ` · ${peerData.peers?.length || 0} peers` : ""}
-              </div>
-            : <div className="panel-sub">
-                Board composition, exec compensation, shareholder proposals &amp; peer benchmarks from SEC EDGAR.
-              </div>
-          }
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div className="kicker">Proxy Data · SEC EDGAR DEF 14A</div>
+            <div className="panel-title mt-8">Board Intelligence</div>
+            {data
+              ? <div className="panel-sub">
+                  {data.company_name || ticker} · {proxy.length} proxy filing{proxy.length !== 1 ? "s" : ""}
+                  {peerData ? ` · ${peerData.peers?.length || 0} peers` : ""}
+                </div>
+              : <div className="panel-sub">
+                  Board composition, exec compensation, shareholder proposals &amp; peer benchmarks from SEC EDGAR.
+                </div>
+            }
+          </div>
+          {onRefresh && <RefreshBadge lastRefresh={lastRefresh} onRefresh={onRefresh} loading={loading} />}
         </div>
       </div>
 

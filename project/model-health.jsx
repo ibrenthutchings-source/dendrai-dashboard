@@ -103,24 +103,26 @@ function MHBacktestTable({ trend }) {
 }
 
 function ModelHealthScreen() {
+  const RefreshBadge = window.RefreshBadge;
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
+  const [lastRefresh, setLastRefresh] = React.useState(null);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  const load = React.useCallback(() => {
     setLoading(true);
     setError(null);
-    fetch("/api/mcp/model-health/summary", { credentials: "include" })
+    return fetch("/api/mcp/model-health/summary", { credentials: "include" })
       .then(res => {
         if (!res.ok) throw new Error(`Failed to load model health (${res.status})`);
         return res.json();
       })
-      .then(d => { if (!cancelled) setData(d); })
-      .catch(e => { if (!cancelled) setError(e.message); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .then(d => { setData(d); setLastRefresh(new Date()); })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
   }, []);
+
+  React.useEffect(() => { load(); }, [load]);
 
   const ratioDrift = data?.ratio_drift || [];
   const fredDrift = data?.fred_drift || [];
@@ -128,14 +130,17 @@ function ModelHealthScreen() {
   return (
     <div className="scope-screen" data-screen-label="Model Health">
       <div className="panel-head">
-        <div>
-          <div className="kicker">Governance · Configuration</div>
-          <div className="panel-title mt-8">Model Health</div>
-          <div className="panel-sub">
-            Forecast backtest accuracy over recent runs, and statistical drift (Population Stability Index) on the financial
-            ratios feeding risk scoring and on broad FRED macro regime indicators. Computed live on each load — this is a
-            visibility screen, not an alerting system.
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div className="kicker">Governance · Configuration</div>
+            <div className="panel-title mt-8">Model Health</div>
+            <div className="panel-sub">
+              Forecast backtest accuracy over recent runs, and statistical drift (Population Stability Index) on the financial
+              ratios feeding risk scoring and on broad FRED macro regime indicators. A background watch (every few hours)
+              alerts on newly-detected drift — this on-demand view recomputes live on every load/refresh, independent of that.
+            </div>
           </div>
+          <RefreshBadge lastRefresh={lastRefresh} onRefresh={load} loading={loading} />
         </div>
       </div>
 
