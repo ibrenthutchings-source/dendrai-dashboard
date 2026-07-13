@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SOX Scope Generator — Dendrai Risk Loop
+SOX Scope Generator — Dendrai Intelligenza
 
 Aligned with PCAOB AS2201 (ICFR) and AS2315 (materiality / tolerable misstatement).
 

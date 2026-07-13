@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — Statistical Forecasting Engine
+   Dendrai Intelligenza — Statistical Forecasting Engine
    Models: ARIMA, Prophet-like, Random Forest, Ensemble
    All pure JS, no dependencies, browser-safe.
    ============================================================ */

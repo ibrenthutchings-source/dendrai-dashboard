@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Shared Claude API client for the Dendrai Risk Loop agentic layer.
+Shared Claude API client for the Dendrai Intelligenza agentic layer.
 
 This is the single place where the app actually calls a language model. Every
 AI-augmented endpoint (HITL gate recommendations, narrative analysis, persona

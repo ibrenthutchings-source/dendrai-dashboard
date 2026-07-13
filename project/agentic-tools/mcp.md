@@ -80,7 +80,7 @@ Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project
 }
 ```
 
-**With telemetry proxy** (recommended — enables UBO Governance Brain, holds, and detection):
+**With telemetry proxy** (recommended — enables Dendrai UBO Governance Brain, holds, and detection):
 ```json
 {
   "mcpServers": {
@@ -190,7 +190,7 @@ Note: RSS feeds typically retain 20–100 articles. Full 12-month coverage depen
 **File:** `predictive_analytics_mcp_server.py`  
 **Requires:** `edgar_tool.py` in same directory. `FRED_API_KEY` optional (falls back to pre-computed benchmarks).
 
-10 predictive analytics models built on the Dendrai Risk Loop. All pull live data from EDGAR.
+10 predictive analytics models built on Dendrai Intelligenza. All pull live data from EDGAR.
 
 | Tool | Description |
 |---|---|

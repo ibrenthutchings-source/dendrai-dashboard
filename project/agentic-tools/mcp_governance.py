@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCP Governance — bridges the Telemetry Proxy to the UBO Governance Brain.
+MCP Governance — bridges the Telemetry Proxy to the Dendrai UBO Governance Brain.
 
 Polls observability.mcp_telemetry every POLL_INTERVAL_S seconds for rows that
 the proxy flagged (risk_flags IS NOT NULL) and have not yet been processed
@@ -1695,14 +1695,14 @@ async def list_system_telemetry(
 
 @router.get("/systems")
 async def list_systems():
-    """All monitored systems registered with the UBO Governance Brain."""
+    """All monitored systems registered with the Dendrai UBO Governance Brain."""
     rows = await asyncio.to_thread(_fetch_systems)
     return {"rows": rows, "count": len(rows)}
 
 
 @router.post("/systems")
 async def create_system(body: dict = Body(...)):
-    """Register a new system for UBO Governance Brain monitoring."""
+    """Register a new system for Dendrai UBO Governance Brain monitoring."""
     new_id = await asyncio.to_thread(
         _create_system,
         str(body.get("display_name") or "")[:128],

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PostgreSQL persistence layer — normalized schema for Dendrai Risk Loop.
+PostgreSQL persistence layer — normalized schema for Dendrai Intelligenza.
 
 28 tables covering company reference, EDGAR financial data, FRED macro data,
 risk loop analytics, RSS signals, HITL decisions, audit plan, and token usage.

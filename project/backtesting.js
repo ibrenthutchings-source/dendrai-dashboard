@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — Backtesting Engine
+   Dendrai Intelligenza — Backtesting Engine
    Walk-forward validation: MAPE · RMSE · R² · Precision · Recall · F1
    ============================================================ */
 

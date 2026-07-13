@@ -1,6 +1,6 @@
 # Integrations
 
-How the UBO Governance Brain connects to external systems and dashboards.
+How the Dendrai UBO Governance Brain connects to external systems and dashboards.
 
 ---
 

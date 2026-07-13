@@ -1,6 +1,6 @@
 # Data Models
 
-The two model files define every type used throughout the Governance Brain. No other layer imports from outside this package — data flows only as UROs.
+The two model files define every type used throughout the Dendrai UBO Governance Brain. No other layer imports from outside this package — data flows only as UROs.
 
 ---
 

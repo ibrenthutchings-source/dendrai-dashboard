@@ -825,7 +825,7 @@ def industry_from_sic(sic: str = Query(..., description="SIC code as string (e.g
 @app.post("/predictive/full-analysis")
 def predictive_full_analysis(req: FullAnalysisRequest):
     """
-    Run all 10 Dendrai Risk Loop predictive analytics models and persist
+    Run all 10 Dendrai Intelligenza predictive analytics models and persist
     the full result to the normalized DB schema.
     """
     try:

@@ -45,7 +45,7 @@ const NAV_SECTIONS = [
     label: "Configuration",
     items: [
       { id: "config",     icon: "gear",   l: "Setup" },
-      { id: "uboconfig",  icon: "shield", l: "UBO Configuration" },
+      { id: "uboconfig",  icon: "shield", l: "Dendrai UBO™ Configuration" },
       { id: "tokenusage", icon: "table",  l: "Token Usage" },
       { id: "modelhealth", icon: "trend", l: "Model Health" },
       { id: "userconfig", icon: "user",   l: "User Configuration", adminOnly: true },

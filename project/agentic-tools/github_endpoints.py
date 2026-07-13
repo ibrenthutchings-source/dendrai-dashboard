@@ -2,7 +2,7 @@
 """
 GitHub Webhook Listener
 
-Receives GitHub webhook events and feeds them through the UBO Governance Brain.
+Receives GitHub webhook events and feeds them through the Dendrai UBO Governance Brain.
 
 POST /github/webhook
     Verifies X-Hub-Signature-256 HMAC, runs the payload through the full
@@ -223,7 +223,7 @@ async def github_webhook(
     x_github_delivery: str | None = Header(default=None),
 ):
     """
-    Receive a GitHub webhook event and run it through the UBO Governance Brain.
+    Receive a GitHub webhook event and run it through the Dendrai UBO Governance Brain.
 
     Returns the adjudication result synchronously so GitHub's webhook dashboard
     shows the risk tier and verdict for every delivery.

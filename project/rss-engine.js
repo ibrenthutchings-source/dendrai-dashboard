@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — RSS Ingestion + Grading Engine
+   Dendrai Intelligenza — RSS Ingestion + Grading Engine
    Fetch → parse → keyword-relevance grade → velocity delta
 
    Fetch path:

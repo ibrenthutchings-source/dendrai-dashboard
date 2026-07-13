@@ -1,4 +1,4 @@
-# Dendrai Risk Loop — Dashboard
+# Dendrai Intelligenza — Dashboard
 
 A React/Vite risk governance dashboard implementing a six-stage continuous audit loop with live signal ingestion, AI-assisted risk scoring, HITL gate review, and scenario planning.
 

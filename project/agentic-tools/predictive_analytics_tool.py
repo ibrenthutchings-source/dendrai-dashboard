@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Predictive Analytics Tool — Dendrai Risk Loop
+Predictive Analytics Tool — Dendrai Intelligenza
 
 Implements:
   1.  Financial Ratio Analysis        (EDGAR XBRL)
@@ -120,7 +120,7 @@ def _safe_div(n, d):
 
 def compute_financial_ratios(xbrl: dict) -> dict:
     """
-    Compute all Dendrai Risk Loop financial ratios from EDGAR XBRL data.
+    Compute all Dendrai Intelligenza financial ratios from EDGAR XBRL data.
     Returns dict of ratio names → float | None.
     """
     def _a(m): return _annual_pts(xbrl.get(m, {}))
@@ -1919,7 +1919,7 @@ def run_full_analysis(
     include_fred: bool = True,
 ) -> dict:
     """
-    Run all 10 Dendrai Risk Loop models for a given ticker.
+    Run all 10 Dendrai Intelligenza models for a given ticker.
 
     Returns a structured dict with all model outputs ready for JSON serialization.
     """

@@ -1,6 +1,6 @@
 /* ============================================================
-   UBO Configuration screen
-   Manage systems monitored by the UBO Governance Brain and
+   Dendrai UBO Configuration screen
+   Manage systems monitored by the Dendrai UBO Governance Brain and
    Policy-as-Code source repositories.
    ============================================================ */
 
@@ -445,7 +445,7 @@ function MonitoredSystemsCard() {
   }
 
   async function handleDelete(id) {
-    if (!confirm("Remove this system from UBO monitoring?")) return;
+    if (!confirm("Remove this system from UBO™ monitoring?")) return;
     try {
       await fetch(`${_uboConfigBase()}/systems/${id}`, { method: "DELETE" });
       await load();
@@ -484,7 +484,7 @@ function MonitoredSystemsCard() {
         <div>
           <div className="cfg-card-title">Monitored Systems</div>
           <div className="cfg-card-sub">
-            Any system can send telemetry to the UBO Governance Brain — Saviynt, SAP, Oracle Fusion,
+            Any system can send telemetry to the Dendrai UBO™ Governance Brain — Saviynt, SAP, Oracle Fusion,
             ServiceNow, Workday, Entra ID, GitHub, or any custom system. Each non-MCP system receives
             a unique ingest API key for <code style={{fontSize:10}}>POST /observability/telemetry/ingest</code>.
             MCP servers use the telemetry proxy instead.
@@ -517,7 +517,7 @@ function MonitoredSystemsCard() {
         <EmptyState
           icon="🛡"
           title="No systems registered"
-          sub="Add any system — Saviynt, SAP, Oracle Fusion, ServiceNow, Workday, Entra ID, GitHub, or an MCP server — to start receiving UBO Governance Brain coverage." />
+          sub="Add any system — Saviynt, SAP, Oracle Fusion, ServiceNow, Workday, Entra ID, GitHub, or an MCP server — to start receiving Dendrai UBO™ Governance Brain coverage." />
       ) : (
         <>
           {systems.length > 0 && (
@@ -943,9 +943,9 @@ function UboConfigScreen() {
       <div className="panel-head">
         <div>
           <div className="kicker">Configuration</div>
-          <div className="panel-title mt-8">UBO Configuration</div>
+          <div className="panel-title mt-8">Dendrai UBO™ Configuration</div>
           <div className="panel-sub">
-            Register the systems monitored by the UBO Governance Brain and the Policy-as-Code repositories
+            Register the systems monitored by the Dendrai UBO™ Governance Brain and the Policy-as-Code repositories
             that are the authoritative source of Rego policy modules.
           </div>
         </div>

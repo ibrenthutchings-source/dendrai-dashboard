@@ -1,4 +1,4 @@
-# Dendrai Risk Loop
+# Dendrai Intelligenza
 
 A six-stage, AI-augmented internal audit and risk governance platform built in React. It derives live risk profiles from SEC EDGAR filings, FRED macro data, and industry RSS signals, runs them through a human-in-the-loop (HITL) review pipeline, and produces a Management Action Plan (MAP) register with quarterly projections and a closing loop calibration.
 
