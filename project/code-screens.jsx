@@ -1056,7 +1056,12 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
                   <>
                     Found {ghSyncResult.files_found} file{ghSyncResult.files_found === 1 ? "" : "s"} (.rego/.md/.txt) in {ghSyncResult.repo}@{ghSyncResult.branch}:{ghSyncResult.path}
                     {ghSyncResult.imported?.length > 0 && (
-                      <div>✓ Imported: {ghSyncResult.imported.map(m => `${m.process} (${m.file_count} file${m.file_count === 1 ? "" : "s"})`).join(", ")}</div>
+                      <div>✓ Imported: {ghSyncResult.imported.map(m => `${m.process}${ghSyncResult.newly_registered?.includes(m.process) ? " (new tab)" : ""} (${m.file_count} file${m.file_count === 1 ? "" : "s"})`).join(", ")}</div>
+                    )}
+                    {ghSyncResult.newly_registered?.length > 0 && (
+                      <div style={{ color: "var(--acc-ink)" }}>
+                        + {ghSyncResult.newly_registered.length} new process tab{ghSyncResult.newly_registered.length === 1 ? "" : "s"} added: {ghSyncResult.newly_registered.join(", ")}
+                      </div>
                     )}
                     {ghSyncResult.skipped?.length > 0 && (
                       <div style={{ color:"var(--amber-ink, #b45309)" }}>

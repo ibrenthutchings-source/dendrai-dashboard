@@ -48,51 +48,21 @@ function Icon({ name, size = 14, className = "" }) {
   }
 }
 
-// ---- Brand mark — neural-network tree: trunk/roots/branches all one
-// uniform ochre line (matching the brand sheet, which uses brown
-// throughout the whole tree, not just the roots), with a denser two-tier
-// radial canopy of glowing leaf-green node dots. Same shape used for the
-// nav/header logo chip and for public/favicon.svg — keep them in sync if
-// this is ever redrawn. Colors are fixed brand constants (not theme-
-// reactive) so the mark reads correctly on its own dark chip in both
-// light and dark app themes. ----
-function TreeLogo({ size = 16 }) {
+// ---- Brand mark — bold gold "D" monogram on the tile (replaces the
+// earlier tree icon per brand sheet update). Rendered as real text with a
+// vertical gold-to-bronze gradient fill (background-clip:text) rather than
+// a hand-drawn glyph, so it uses the actual font's "D" letterform and
+// stays crisp at any size. Same mark used for the nav/header logo chip and
+// public/favicon.svg — keep them in sync if this is ever redrawn. ----
+function DendraiMark({ size = 16 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <g stroke="#A08C52" strokeWidth="1.3" strokeLinecap="round">
-        {/* Roots */}
-        <path d="M16 22 L11 27"/>
-        <path d="M16 22 L16 28"/>
-        <path d="M16 22 L21 27"/>
-        {/* Trunk */}
-        <path d="M16 22 L16 14"/>
-        {/* Hub → tier 1 */}
-        <path d="M16 14 L16 9"/>
-        <path d="M16 14 L11.7 11.5"/>
-        <path d="M16 14 L20.3 11.5"/>
-        <path d="M16 14 L11.3 15.7"/>
-        <path d="M16 14 L20.7 15.7"/>
-        {/* Tier 1 → tier 2 (outer canopy ring) */}
-        <path d="M16 9 L16 4.7"/>
-        <path d="M11.7 11.5 L7.95 9.35"/>
-        <path d="M20.3 11.5 L24.05 9.35"/>
-        <path d="M11.3 15.7 L7.3 17.2"/>
-        <path d="M20.7 15.7 L24.7 17.2"/>
-      </g>
-      <g fill="#4CAF59">
-        <circle cx="16" cy="14" r="1.7"/>
-        <circle cx="16" cy="9" r="1.5"/>
-        <circle cx="11.7" cy="11.5" r="1.5"/>
-        <circle cx="20.3" cy="11.5" r="1.5"/>
-        <circle cx="11.3" cy="15.7" r="1.5"/>
-        <circle cx="20.7" cy="15.7" r="1.5"/>
-        <circle cx="16" cy="4.7" r="1.6"/>
-        <circle cx="7.95" cy="9.35" r="1.6"/>
-        <circle cx="24.05" cy="9.35" r="1.6"/>
-        <circle cx="7.3" cy="17.2" r="1.6"/>
-        <circle cx="24.7" cy="17.2" r="1.6"/>
-      </g>
-    </svg>
+    <span aria-hidden="true" style={{
+      fontFamily: "'Geist', sans-serif", fontWeight: 700, fontSize: size * 1.3,
+      lineHeight: 1, display: "inline-block",
+      background: "linear-gradient(180deg, #D4B483 0%, #A08C52 55%, #7A6438 100%)",
+      WebkitBackgroundClip: "text", backgroundClip: "text",
+      color: "transparent", WebkitTextFillColor: "transparent",
+    }}>D</span>
   );
 }
 
@@ -365,7 +335,7 @@ function RefreshBadge({ lastRefresh, onRefresh, loading }) {
 
 // Expose globally
 Object.assign(window, {
-  Icon, TreeLogo, DendraiWordmark, Pill, RAGChip, VelocityPill, Sparkline,
+  Icon, DendraiMark, DendraiWordmark, Pill, RAGChip, VelocityPill, Sparkline,
   scoreColor, scoreColorInk, ragFromScore,
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,
