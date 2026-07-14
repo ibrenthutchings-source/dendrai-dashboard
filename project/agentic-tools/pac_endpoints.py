@@ -1565,6 +1565,7 @@ async def sync_github():
         "files_found": len(blobs),
         "imported": imported,
         "skipped": skipped,
+        "newly_registered": sorted(newly_registered),
     }
 
 

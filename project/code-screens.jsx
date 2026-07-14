@@ -638,17 +638,20 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
   }, []);
 
   // Business processes are DB-backed, not a fixed 5 — sync_github can
-  // auto-register new ones. Fetched once on mount; _PAC_PROCESSES_FALLBACK
-  // covers the gap before this resolves.
+  // auto-register new ones (one per unmatched repo folder). Fetched on
+  // mount, and re-fetched after every "Sync Now" so newly-discovered
+  // processes show up as tabs immediately rather than needing a reload.
+  // _PAC_PROCESSES_FALLBACK covers the gap before the first fetch resolves.
   const [processes, setProcesses] = useState(_PAC_PROCESSES_FALLBACK);
-  useEffect(() => {
-    fetch("/api/pac/processes", { headers: _codeAuthHeaders() })
+  const refreshProcesses = useCallback(() => {
+    return fetch("/api/pac/processes", { headers: _codeAuthHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.processes?.length) setProcesses(data.processes.map(_normalizeProcess));
       })
       .catch(() => {});
   }, []);
+  useEffect(() => { refreshProcesses(); }, [refreshProcesses]);
 
   async function handleSave() {
     if (!rego.trim()) return;
@@ -762,6 +765,10 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
       const d = await r.json();
       if (!r.ok) { setGhSyncResult({ error: d.detail || "Sync failed" }); return; }
       setGhSyncResult(d);
+      // Newly-discovered processes (auto-registered from unmatched repo
+      // folders) need the tab list refreshed, not just the active module —
+      // otherwise a brand-new process only shows up after a page reload.
+      await refreshProcesses();
       await loadModule(activeProcess);
     } catch (e) {
       setGhSyncResult({ error: e.message || "Network error" });
