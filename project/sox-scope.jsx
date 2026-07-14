@@ -139,7 +139,7 @@ function DetailEditor({ form, setForm, scopeField, showExposure }) {
           onChange={e => setForm(f => ({...f, segments: e.target.value}))}
           style={{flex: 1, minWidth: 160, fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
         {showExposure && (
-          <input placeholder="Estimated $ exposure (e.g. annual txn volume)" value={form.estimated_exposure}
+          <input placeholder="Override $ exposure (blank = auto-derived from linked accounts)" value={form.estimated_exposure}
             onChange={e => setForm(f => ({...f, estimated_exposure: e.target.value}))}
             style={{flex: 1, minWidth: 160, fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
         )}
@@ -340,7 +340,13 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
           geography: payload.geography,
           segments: payload.segments,
           notes: payload.notes,
-          estimated_exposure: payload.estimated_exposure,
+          // A cleared override falls back to the derived value server-side,
+          // which we can't recompute here (needs linked-account balances) —
+          // only patch these optimistically when a manual value was entered;
+          // otherwise leave the previously-shown figure until "Rescope".
+          ...(payload.estimated_exposure != null
+            ? { estimated_exposure: payload.estimated_exposure, estimated_exposure_source: "manual" }
+            : {}),
           manual_override: payload.manual_coverage_level !== null,
           coverage_level: payload.manual_coverage_level || proc.coverage_level,
         });
@@ -359,7 +365,10 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
           <Pill label={cov.label || proc.coverage_level} ink={cov.ink} soft={cov.soft}/>
           <span style={{flex: 1, fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{proc.process_name}</span>
           {proc.estimated_exposure != null && (
-            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{fmtM(proc.estimated_exposure)}</span>
+            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}
+              title={proc.estimated_exposure_source === "derived" ? "Derived from linked accounts' projected balances" : "Manually entered"}>
+              {proc.estimated_exposure_source === "derived" ? "≈ " : ""}{fmtM(proc.estimated_exposure)}
+            </span>
           )}
           {proc.manual_override && <Pill label="MANUAL" ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}/>}
           {proc.always_in && <span className="mono" style={{fontSize: 9, color: "var(--acc-ink, var(--ink-3))"}}>REQUIRED</span>}
