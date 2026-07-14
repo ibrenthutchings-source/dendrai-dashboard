@@ -1850,7 +1850,9 @@ def _fetch_pac_repos() -> list[dict]:
                     """
                     SELECT id, display_name, provider, repo_url, branch,
                            rego_path, process, description, active,
-                           created_at, updated_at, created_by
+                           created_at, updated_at, created_by,
+                           (token_enc IS NOT NULL) AS has_token,
+                           last_synced_at, last_sync_status, last_sync_error
                     FROM observability.pac_repositories
                     ORDER BY active DESC, display_name ASC
                     """
@@ -1859,7 +1861,7 @@ def _fetch_pac_repos() -> list[dict]:
                 rows = []
                 for row in cur.fetchall():
                     d = dict(zip(cols, row))
-                    for tf in ("created_at", "updated_at"):
+                    for tf in ("created_at", "updated_at", "last_synced_at"):
                         if d.get(tf) and hasattr(d[tf], "isoformat"):
                             d[tf] = d[tf].isoformat()
                     rows.append(d)
@@ -1879,18 +1881,20 @@ def _create_pac_repo(
     description: str | None,
     active: bool,
     created_by: str = "operator",
+    token: str | None = None,
 ) -> int | None:
     if not db.is_available():
         return None
     try:
+        token_enc = db.encrypt_credentials({"token": token}) if token else None
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO observability.pac_repositories
                         (display_name, provider, repo_url, branch, rego_path,
-                         process, description, active, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         process, description, active, created_by, token_enc)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -1903,6 +1907,7 @@ def _create_pac_repo(
                         description or None,
                         active,
                         created_by[:128],
+                        token_enc,
                     ),
                 )
                 row = cur.fetchone()
@@ -1923,31 +1928,32 @@ def _update_pac_repo(
     process: str,
     description: str | None,
     active: bool,
+    token: str | None = None,
 ) -> bool:
     if not db.is_available():
         return False
     try:
+        # token is write-only and optional on update — omit it (None) to
+        # keep whatever's already saved rather than clobbering it, matching
+        # observability.poll_connectors' "send only if replacing" convention.
+        sets = [
+            "display_name = %s", "provider = %s", "repo_url = %s",
+            "branch = %s", "rego_path = %s", "process = %s",
+            "description = %s", "active = %s", "updated_at = NOW()",
+        ]
+        params: list = [
+            display_name[:128], provider[:32], repo_url, branch[:128],
+            rego_path[:256], process[:64], description or None, active,
+        ]
+        if token:
+            sets.append("token_enc = %s")
+            params.append(db.encrypt_credentials({"token": token}))
+        params.append(repo_id)
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    UPDATE observability.pac_repositories
-                    SET display_name = %s, provider = %s, repo_url = %s,
-                        branch = %s, rego_path = %s, process = %s,
-                        description = %s, active = %s, updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (
-                        display_name[:128],
-                        provider[:32],
-                        repo_url,
-                        branch[:128],
-                        rego_path[:256],
-                        process[:64],
-                        description or None,
-                        active,
-                        repo_id,
-                    ),
+                    f"UPDATE observability.pac_repositories SET {', '.join(sets)} WHERE id = %s",
+                    tuple(params),
                 )
                 updated = cur.rowcount
             conn.commit()
@@ -1955,6 +1961,56 @@ def _update_pac_repo(
     except Exception as exc:
         logger.warning("_update_pac_repo error (id=%s): %s", repo_id, exc)
         return False
+
+
+def _fetch_pac_repo_with_token(repo_id: int) -> tuple[dict, str | None] | None:
+    """Load one repo row plus its decrypted token (if any) — used only by
+    the sync endpoint, never by the general list/CRUD responses."""
+    if not db.is_available():
+        return None
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, display_name, provider, repo_url, branch,
+                           rego_path, process, description, active, token_enc
+                    FROM observability.pac_repositories
+                    WHERE id = %s
+                    """,
+                    (repo_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        cols = ["id", "display_name", "provider", "repo_url", "branch",
+                "rego_path", "process", "description", "active", "token_enc"]
+        d = dict(zip(cols, row))
+        token_enc = d.pop("token_enc")
+        token = db.decrypt_credentials(token_enc).get("token") if token_enc else None
+        return d, token
+    except Exception as exc:
+        logger.warning("_fetch_pac_repo_with_token error (id=%s): %s", repo_id, exc)
+        return None
+
+
+def _record_pac_repo_sync(repo_id: int, status: str, error: str | None = None) -> None:
+    if not db.is_available():
+        return
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.pac_repositories
+                    SET last_synced_at = NOW(), last_sync_status = %s, last_sync_error = %s
+                    WHERE id = %s
+                    """,
+                    (status[:16], (error or None), repo_id),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("_record_pac_repo_sync error (id=%s): %s", repo_id, exc)
 
 
 def _delete_pac_repo(repo_id: int) -> bool:
@@ -1996,6 +2052,7 @@ async def create_pac_repo(body: dict = Body(...)):
         body.get("description"),
         bool(body.get("active", True)),
         str(body.get("created_by") or "operator")[:128],
+        (str(body.get("token")).strip() or None) if body.get("token") else None,
     )
     return {"ok": new_id is not None, "id": new_id}
 
@@ -2014,6 +2071,7 @@ async def update_pac_repo(repo_id: int, body: dict = Body(...)):
         str(body.get("process") or "all")[:64],
         body.get("description"),
         bool(body.get("active", True)),
+        (str(body.get("token")).strip() or None) if body.get("token") else None,
     )
     return {"ok": ok, "id": repo_id}
 
@@ -2023,3 +2081,53 @@ async def delete_pac_repo(repo_id: int):
     """Deactivate a PAC repository (soft delete)."""
     ok = await asyncio.to_thread(_delete_pac_repo, repo_id)
     return {"ok": ok, "id": repo_id}
+
+
+@router.post("/pac-repos/{repo_id}/sync")
+async def sync_pac_repo(repo_id: int):
+    """
+    Pull the latest policy files from a registered repository and import
+    them as Policy-as-Code modules — the actual sync action behind the
+    repository registry (list/CRUD only otherwise). Reuses the same
+    GitHub-pull-and-import logic as the legacy single-hook sync
+    (pac_endpoints._sync_github_repo), just sourced from this repo's own
+    saved URL/branch/path/token instead of the one global hook.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    loaded = await asyncio.to_thread(_fetch_pac_repo_with_token, repo_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo, token = loaded
+
+    if repo["provider"] != "github":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sync isn't implemented yet for '{repo['provider']}' — only GitHub repositories can be synced today.",
+        )
+    if not token:
+        raise HTTPException(status_code=400, detail="No Personal Access Token saved for this repository — edit it and add one.")
+
+    try:
+        owner, repo_name = pac_endpoints._parse_github_repo(repo["repo_url"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    process_hint = repo.get("process") if repo.get("process") not in (None, "all") else None
+    path_filter = (repo.get("rego_path") or "").strip().strip("/")
+
+    try:
+        result = await pac_endpoints._sync_github_repo(
+            owner, repo_name, repo.get("branch") or "main", path_filter, token,
+            process_hint=process_hint,
+        )
+    except HTTPException as exc:
+        await asyncio.to_thread(_record_pac_repo_sync, repo_id, "error", str(exc.detail))
+        raise
+    except Exception as exc:
+        await asyncio.to_thread(_record_pac_repo_sync, repo_id, "error", str(exc))
+        raise HTTPException(status_code=502, detail=f"Sync failed: {exc}")
+
+    await asyncio.to_thread(_record_pac_repo_sync, repo_id, "ok", None)
+    return result

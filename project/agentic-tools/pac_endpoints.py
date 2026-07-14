@@ -1434,6 +1434,25 @@ async def sync_github():
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    return await _sync_github_repo(owner, repo, branch, path_filter, token)
+
+
+async def _sync_github_repo(
+    owner: str, repo: str, branch: str, path_filter: str, token: str,
+    process_hint: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Shared GitHub-pull-and-import logic behind both the single legacy GitHub
+    hook (/hooks/github/sync) and the multi-repository registry
+    (POST /observability/pac-repos/{id}/sync in mcp_governance.py). Identical
+    behavior either way; only the source of (owner, repo, branch, path_filter,
+    token) differs.
+
+    process_hint: when set (a repo registered against one specific process
+    rather than "all"), a file that doesn't match any known process by name
+    is filed under process_hint instead of auto-registering a brand-new
+    process — lets a repo's "Linked process" field actually mean something.
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -1472,6 +1491,8 @@ async def sync_github():
 
         for item in blobs:
             process = _match_process(item["path"])
+            if not process and process_hint and process_hint in _valid_processes():
+                process = process_hint
             if not process:
                 candidate = _process_key_from_path(item["path"])
                 if not candidate or not db.is_available():

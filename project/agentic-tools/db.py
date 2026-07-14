@@ -1409,6 +1409,13 @@ CREATE TABLE IF NOT EXISTS observability.pac_repositories (
     updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     created_by   VARCHAR(128)
 );
+-- token_enc holds a Fernet-encrypted {"token": "..."} blob (same
+-- CONNECTOR_ENCRYPTION_KEY scheme as observability.poll_connectors) so a
+-- registered repo can actually be synced, not just listed as metadata.
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS token_enc        BYTEA;
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_synced_at   TIMESTAMPTZ;
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_status VARCHAR(16);
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_error  TEXT;
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
