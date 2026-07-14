@@ -48,10 +48,10 @@ import uuid
 from base64 import urlsafe_b64encode
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -439,6 +439,7 @@ async def local_login(req: LoginRequest, request: Request, response: Response):
             "role":          user["role"],
             "display_name":  user.get("display_name"),
             "must_change_pw": user["must_change_pw"],
+            "preferences":   user.get("preferences"),
         },
     }
 
@@ -494,6 +495,20 @@ def set_my_manager(req: SetManagerRequest, current_user: dict = Depends(get_curr
     if not ok:
         raise HTTPException(status_code=400, detail="Could not set manager (cannot be yourself)")
     return {"ok": True, "manager_id": req.manager_id}
+
+
+@router.put("/users/me/preferences", summary="Save your own appearance preferences (self-service)")
+def set_my_preferences(prefs: Dict[str, Any] = Body(...), current_user: dict = Depends(get_current_user)):
+    """
+    Self-service accent/density/color-scheme persistence — so appearance
+    follows the account across browsers and machines instead of resetting
+    to defaults on every reload. Merged (not replaced) into any existing
+    preferences; send only the keys that changed.
+    """
+    ok = auth_db.set_preferences(current_user["id"], prefs)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not save preferences")
+    return {"ok": True, "preferences": prefs}
 
 
 # ── Admin workflow configuration (Phase 2) ────────────────────────────────────

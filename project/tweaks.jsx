@@ -13,6 +13,7 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
             { label: "Emerald", value: "emerald" },
             { label: "Indigo",  value: "indigo" },
             { label: "Slate",   value: "slate" },
+            { label: "Dendrai Forest Green", value: "forest" },
           ]}
           onChange={(v) => setTweak("accent", v)}
         />
