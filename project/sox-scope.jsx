@@ -185,6 +185,7 @@ function AccountsTable({ accounts, ticker, onUpdate }) {
       try {
         const res = await fetch(`/api/mcp/sox/accounts/${encodeURIComponent(ticker)}/${acc.account_id}`, {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
@@ -332,6 +333,7 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
       try {
         const res = await fetch(`/api/mcp/sox/processes/${encodeURIComponent(ticker)}/${proc.process_id}`, {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
@@ -591,6 +593,7 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
     try {
       const res = await fetch(`/api/mcp/sox/systems/${encodeURIComponent(ticker)}`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
@@ -608,7 +611,7 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
 
   async function handleRemove(sys) {
     if (!confirm(`Remove ${sys.system_name} from SOX registry?`)) return;
-    await fetch(`/api/mcp/sox/systems/${encodeURIComponent(ticker)}/${sys.id}`, { method: "DELETE" });
+    await fetch(`/api/mcp/sox/systems/${encodeURIComponent(ticker)}/${sys.id}`, { method: "DELETE", credentials: "include" });
     onRemove && onRemove(sys.id);
   }
 
@@ -799,7 +802,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
     if (!ticker || !fiscalYear) return;
     setLoading(true); setError(null);
     try {
-      const r = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/${encodeURIComponent(fiscalYear)}`);
+      const r = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/${encodeURIComponent(fiscalYear)}`, { credentials: "include" });
       if (r.ok) {
         const data = await r.json();
         setSegments(data.segments || []);
@@ -819,6 +822,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
     try {
       const res = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ segments: [segFormToPayload(addForm)], fiscal_year: fiscalYear }),
       });
@@ -838,6 +842,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
     try {
       const res = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ segments: [segFormToPayload(editForm)], fiscal_year: fiscalYear }),
       });
@@ -854,7 +859,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
   async function handleDelete(seg) {
     if (!confirm(`Delete segment "${seg.segment_name}"?`)) return;
     try {
-      await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/${seg.id}`, { method: "DELETE" });
+      await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/${seg.id}`, { method: "DELETE", credentials: "include" });
       await reload();
     } catch (e) {
       setError(e.message);
@@ -1220,7 +1225,7 @@ function SoxScopePanel({
     (async () => {
       try {
         const [scopeRes, statusRes] = await Promise.all([
-          fetch(`/api/mcp/sox/scope/${runId}`),
+          fetch(`/api/mcp/sox/scope/${runId}`, { credentials: "include" }),
           fetch(`/approvals/status/${runId}`, { credentials: "include" }),
         ]);
         let tasks = [];
@@ -1266,10 +1271,17 @@ function SoxScopePanel({
 
       const res = await fetch(`/api/mcp/sox/scope`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        // Prefer FastAPI's {"detail": "..."} shape over dumping the raw
+        // response body — a bare 401 body is just {"detail":"Not authenticated"},
+        // which read as a confusing raw-JSON error banner otherwise.
+        const errBody = await res.json().catch(() => null);
+        throw new Error(errBody?.detail || `Scoping failed (HTTP ${res.status})`);
+      }
       const data = await res.json();
       setLocalScope(data);
       setLocalSystems(data.systems_in_scope || []);
