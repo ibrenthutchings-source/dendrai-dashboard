@@ -547,8 +547,8 @@ function ProcessFlowMap({ activeProcess, processes }) {
 }
 
 // ── PolicyAsCodeScreen ────────────────────────────────────────────────────
-function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5 }) {
-  const [activeProcess, setActiveProcess] = useState("itgc");
+function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, initialProcess }) {
+  const [activeProcess, setActiveProcess] = useState(initialProcess || "itgc");
   const [mainTab,       setMainTab]       = useState("editor");
 
   // Editor state
