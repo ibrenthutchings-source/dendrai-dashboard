@@ -81,7 +81,7 @@ function DendraiWordmark({ size = 13.5 }) {
       <span style={{ position: "relative", display: "inline-block", color: "#A08C52" }}>
         i
         <svg width={size * 0.48} height={size * 0.48} viewBox="0 0 16 16" style={{
-          position: "absolute", right: "-58%", top: "-52%", transform: "rotate(18deg)",
+          position: "absolute", right: "-58%", top: "-22%", transform: "rotate(18deg)",
         }} aria-hidden="true">
           <path d="M8 1.5C4.5 1.5 2 4.3 2 8c0 3 2 5 6 6.2C12 13 14 11 14 8c0-3.7-2.5-6.5-6-6.5z" fill="#4CAF59"/>
           <path d="M8 2v11.8" stroke="#2E7D32" strokeWidth="0.8" strokeLinecap="round"/>
