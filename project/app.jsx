@@ -424,6 +424,30 @@ function App() {
   const auth = window.useAuth ? window.useAuth() : null;
   const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
 
+  // ---- Appearance persistence (accent/density/colorScheme, per-user via
+  // auth.users.preferences — follows the account across browsers/machines,
+  // not just this one). Hydrate once the user is known, then start saving
+  // on change; the ref guard stops the initial DEFAULT_TWEAKS render from
+  // overwriting whatever's already saved server-side before hydration runs. ----
+  const prefsHydratedRef = useRef(false);
+  useEffect(() => {
+    if (auth?.user === undefined) return; // still loading session
+    if (auth?.user?.preferences && Object.keys(auth.user.preferences).length) {
+      setTweak(auth.user.preferences);
+    }
+    prefsHydratedRef.current = true;
+  }, [auth?.user]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!prefsHydratedRef.current || !auth?.user) return;
+    fetch("/users/me/preferences", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accent: tweaks.accent, density: tweaks.density, colorScheme: tweaks.colorScheme }),
+    }).catch(() => {});
+  }, [tweaks.accent, tweaks.density, tweaks.colorScheme]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---- Logging helper ----
   const log = useCallback((msg) => {
     const entry = { ts: new Date().toISOString(), msg };
@@ -1635,7 +1659,9 @@ function App() {
                 aiChatCfg={aiChatCfg}
                 setAiChatCfg={setAiChatCfg}
                 colorScheme={tweaks.colorScheme || "system"}
-                setColorScheme={(v) => setTweak("colorScheme", v)} />
+                setColorScheme={(v) => setTweak("colorScheme", v)}
+                accent={tweaks.accent}
+                setAccent={(v) => setTweak("accent", v)} />
             </div>
             </ScreenAccessGate>
           )}

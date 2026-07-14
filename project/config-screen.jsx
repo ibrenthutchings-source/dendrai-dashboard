@@ -129,6 +129,7 @@ function ConfigScreen({
   lastSaved, rssEnabledFeeds, setRssEnabledFeeds,
   aiChatCfg, setAiChatCfg,
   colorScheme, setColorScheme,
+  accent, setAccent,
 }) {
   const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
 
@@ -378,8 +379,8 @@ function ConfigScreen({
         </ConfigCard>
 
         {/* ---- Appearance ---- */}
-        <ConfigCard title="Appearance" sub="Color scheme for the dashboard.">
-          <div className="field" style={{ marginBottom: 0 }}>
+        <ConfigCard title="Appearance" sub="Color scheme and accent for the dashboard — saved to your account and follows you across browsers and machines.">
+          <div className="field">
             <label className="field-label">Color scheme</label>
             <div style={{ display: "flex", gap: 6 }}>
               {[
@@ -400,6 +401,24 @@ function ConfigScreen({
                 ? "Follows your OS dark/light setting automatically."
                 : colorScheme === "dark" ? "Always uses dark theme."
                 : "Always uses light theme."}
+            </div>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="field-label">Accent color</label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[
+                { value: "emerald", label: "Emerald" },
+                { value: "indigo",  label: "Indigo" },
+                { value: "slate",   label: "Slate" },
+                { value: "forest",  label: "Dendrai Forest Green" },
+              ].map(opt => (
+                <button key={opt.value}
+                  className={`btn btn-sm${accent === opt.value ? " btn-primary" : ""}`}
+                  style={{ flex: "1 1 auto" }}
+                  onClick={() => setAccent(opt.value)}>
+                  {opt.label}
+                </button>
+              ))}
             </div>
           </div>
         </ConfigCard>

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS auth.users (
     password_hash   TEXT,
     sso_only        BOOLEAN      NOT NULL DEFAULT FALSE,
     manager_id      BIGINT       REFERENCES auth.users(id),
+    preferences     JSONB,
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     last_login_at   TIMESTAMPTZ
 );
@@ -74,6 +75,10 @@ CREATE TABLE IF NOT EXISTS auth.sessions (
 -- Retrofit for auth.users created before manager_id existed — CREATE TABLE IF
 -- NOT EXISTS above never adds columns to an already-existing table.
 ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS manager_id BIGINT REFERENCES auth.users(id);
+-- Per-user appearance settings (accent/density/colorScheme) — synced via
+-- PUT /users/me/preferences so they follow the account across browsers and
+-- machines, unlike the tweaks panel's prior in-memory-only state.
+ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS preferences JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user
     ON auth.sessions (user_id, expires_at);
@@ -188,7 +193,7 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, username, email, display_name, role, is_active, "
-                    "must_change_pw, sso_only, manager_id, last_login_at "
+                    "must_change_pw, sso_only, manager_id, preferences, last_login_at "
                     "FROM auth.users WHERE id = %s",
                     (user_id,),
                 )
@@ -501,6 +506,24 @@ def set_manager(user_id: int, manager_id: Optional[int]) -> bool:
         return False
 
 
+def set_preferences(user_id: int, prefs: dict) -> bool:
+    """Merge (not replace) appearance preferences (accent/density/colorScheme)
+    into the user's stored JSONB blob, so a partial update — e.g. just the
+    accent changing — doesn't clobber previously-saved keys."""
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE auth.users SET preferences = COALESCE(preferences, '{}'::jsonb) || %s::jsonb WHERE id = %s",
+                    (db.Json(prefs), user_id),
+                )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logger.warning("set_preferences error: %s", exc)
+        return False
+
+
 def get_manager_of(user_id: int) -> Optional[dict]:
     """The resolved manager (id, username, display_name) for a user, or None if unset."""
     try:
@@ -528,7 +551,7 @@ def get_user_by_username(username: str) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, username, email, display_name, role, is_active, "
-                    "must_change_pw, sso_only, password_hash "
+                    "must_change_pw, sso_only, password_hash, preferences "
                     "FROM auth.users WHERE username = %s",
                     (username.strip().lower(),),
                 )

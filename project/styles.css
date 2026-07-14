@@ -96,6 +96,15 @@
   --acc-soft:   oklch(94% 0.012 230);
   --acc-ink:    oklch(26% 0.020 230);
 }
+/* Dendrai Forest Green — the brand's own deep forest hue (~152, same family
+   as --brand-forest), deliberately darker/richer than the default emerald
+   accent so it reads as "forest" rather than "bright leaf." */
+[data-accent="forest"] {
+  --acc:        oklch(32% 0.07 152);
+  --acc-2:      oklch(25% 0.07 152);
+  --acc-soft:   oklch(92% 0.035 152);
+  --acc-ink:    oklch(22% 0.07 152);
+}
 
 /* Dark-mode accent overrides — brighter than their light-mode counterparts */
 [data-theme="dark"][data-accent="indigo"] {
@@ -109,6 +118,12 @@
   --acc-2:      oklch(52% 0.040 230);
   --acc-soft:   oklch(22% 0.020 230);
   --acc-ink:    oklch(80% 0.048 230);
+}
+[data-theme="dark"][data-accent="forest"] {
+  --acc:        oklch(52% 0.12 152);
+  --acc-2:      oklch(43% 0.12 152);
+  --acc-soft:   oklch(18% 0.05 152);
+  --acc-ink:    oklch(74% 0.16 152);
 }
 
 [data-theme="dark"] {
