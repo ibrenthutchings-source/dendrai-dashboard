@@ -12,20 +12,34 @@ function _cmBase() {
   return (window.MCP_API_BASE || "/api/mcp") + "/observability";
 }
 
-function CMTile({ label, value, sub, tone = "neutral" }) {
+function CMTile({ label, value, sub, tone = "neutral", onClick }) {
   const toneColor = {
     neutral: "var(--ink)",
     good: "var(--green-ink)",
     warn: "var(--amber-ink)",
     bad: "var(--red-ink)",
   }[tone] || "var(--ink)";
+  const clickable = !!onClick;
   return (
-    <div style={{
-      flex: "1 1 160px", minWidth: 160, border: "1px solid var(--line)", borderRadius: 8,
-      padding: "12px 14px", background: "var(--surface)",
-    }}>
-      <div style={{ fontSize: 10, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
-        {label}
+    <div
+      onClick={onClick}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e => { if (e.key === "Enter") onClick(e); }) : undefined}
+      style={{
+        flex: "1 1 160px", minWidth: 160, border: "1px solid var(--line)", borderRadius: 8,
+        padding: "12px 14px", background: "var(--surface)",
+        cursor: clickable ? "pointer" : "default",
+        transition: "border-color .12s, background .12s",
+      }}
+      onMouseEnter={clickable ? (e => { e.currentTarget.style.borderColor = "var(--acc)"; e.currentTarget.style.background = "var(--hover)"; }) : undefined}
+      onMouseLeave={clickable ? (e => { e.currentTarget.style.borderColor = "var(--line)"; e.currentTarget.style.background = "var(--surface)"; }) : undefined}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ fontSize: 10, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+          {label}
+        </div>
+        {clickable && <Icon name="chev-r" size={10} className="muted"/>}
       </div>
       <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: toneColor, marginTop: 4 }}>
         {value}

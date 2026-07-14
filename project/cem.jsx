@@ -247,7 +247,7 @@ const _UBO_VERDICT_STYLE = {
   INSUFFICIENT_DATA: { bg: "var(--surface-2)",   ink: "var(--ink-3)"     },
 };
 
-function UBOGovPanel() {
+function UBOGovPanel({ initialTab } = {}) {
   const LiveBadge = window.LiveBadge;
   const [adjudicated,  setAdjudicated]  = useState([]);
   const [humanReview,  setHumanReview]  = useState([]);
@@ -262,7 +262,7 @@ function UBOGovPanel() {
   const [expanded,     setExpanded]     = useState(new Set());
   const [lastRefresh,  setLastRefresh]  = useState(null);
   const [fetchErr,       setFetchErr]       = useState(null);
-  const [tab,            setTab]            = useState("adjudications");
+  const [tab,            setTab]            = useState(initialTab || "adjudications");
   const [processStatus,  setProcessStatus]  = useState(null);
   const [isPaused,       setIsPaused]       = useState(false);
   const [newIds,         setNewIds]         = useState(new Set());

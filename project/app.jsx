@@ -205,6 +205,19 @@ function App() {
   const [cemExpanded, setCemExpanded] = useState(new Set());
   const [notifLog, setNotifLog] = useState([]);
   const [unreadCEM, setUnreadCEM] = useState(0);
+  // Deep-link targets for click-through from Continuous Monitoring — only
+  // read as each target screen's *initial* tab/process on mount, so a
+  // stale value can't stick around: the plain left-nav onNavigate below
+  // always clears both, and only navigateToScreen (used by Continuous
+  // Monitoring's click-throughs) sets them.
+  const [cemInitialTab, setCemInitialTab] = useState(null);
+  const [pacInitialProcess, setPacInitialProcess] = useState(null);
+  const navigateToScreen = useCallback((screen, opts = {}) => {
+    if (opts.cemTab) setCemInitialTab(opts.cemTab);
+    if (opts.pacProcess) setPacInitialProcess(opts.pacProcess);
+    if (screen === "ubogov") setUnreadCEM(0);
+    setActiveScreen(screen);
+  }, []);
 
   // ---- Governance Intelligence pane ----
   const [govData, setGovData] = useState(null);     // proxy data from DEF 14A
@@ -1591,6 +1604,8 @@ function App() {
             setActiveScreen(screen);
             if (govTab) setActiveGovTab(govTab);
             if (screen === "controls") setUnreadCEM(0);
+            setCemInitialTab(null);
+            setPacInitialProcess(null);
           }}
           counts={{
             controls: events.length,
@@ -1663,7 +1678,7 @@ function App() {
           {activeScreen === "continuousmonitoring" && (
           <ScreenAccessGate screenId="continuousmonitoring">
             <div className="panel active">
-              <ContinuousMonitoringScreen />
+              <ContinuousMonitoringScreen onNavigate={navigateToScreen} />
             </div>
           </ScreenAccessGate>
           )}
@@ -1801,7 +1816,7 @@ function App() {
           {activeScreen === "ubogov" && (
           <ScreenAccessGate screenId="ubogov">
           <div className="panel active">
-            <UBOGovPanel />
+            <UBOGovPanel initialTab={cemInitialTab} />
           </div>
           </ScreenAccessGate>
           )}
@@ -1946,7 +1961,8 @@ function App() {
               events={events}
               maps={railMaps}
               risks={railRisks}
-              appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5} />
+              appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
+              initialProcess={pacInitialProcess} />
           </div>
           </ScreenAccessGate>
           )}
