@@ -48,59 +48,75 @@ function Icon({ name, size = 14, className = "" }) {
   }
 }
 
-// ---- Brand mark — neural-network tree (roots+trunk in ochre, canopy
-// branches in cream, node glow in leaf green). Same shape used for the
+// ---- Brand mark — neural-network tree: trunk/roots/branches all one
+// uniform ochre line (matching the brand sheet, which uses brown
+// throughout the whole tree, not just the roots), with a denser two-tier
+// radial canopy of glowing leaf-green node dots. Same shape used for the
 // nav/header logo chip and for public/favicon.svg — keep them in sync if
 // this is ever redrawn. Colors are fixed brand constants (not theme-
 // reactive) so the mark reads correctly on its own dark chip in both
-// light and dark app themes, matching the brand sheet. ----
+// light and dark app themes. ----
 function TreeLogo({ size = 16 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <g stroke="#A08C52" strokeWidth="1.5" strokeLinecap="round">
-        <path d="M16 20 L11 26"/>
-        <path d="M16 20 L16 27.5"/>
-        <path d="M16 20 L21 26"/>
-        <path d="M16 20 L16 13.5"/>
-      </g>
-      <g stroke="#E8E9D8" strokeWidth="1.1" strokeLinecap="round">
-        <path d="M16 13.5 L10 9"/>
-        <path d="M16 13.5 L16 6.5"/>
-        <path d="M16 13.5 L22 9"/>
-        <path d="M10 9 L5.5 6"/>
-        <path d="M10 9 L11 4.5"/>
-        <path d="M22 9 L26.5 6"/>
-        <path d="M22 9 L21 4.5"/>
+      <g stroke="#A08C52" strokeWidth="1.3" strokeLinecap="round">
+        {/* Roots */}
+        <path d="M16 22 L11 27"/>
+        <path d="M16 22 L16 28"/>
+        <path d="M16 22 L21 27"/>
+        {/* Trunk */}
+        <path d="M16 22 L16 14"/>
+        {/* Hub → tier 1 */}
+        <path d="M16 14 L16 9"/>
+        <path d="M16 14 L11.7 11.5"/>
+        <path d="M16 14 L20.3 11.5"/>
+        <path d="M16 14 L11.3 15.7"/>
+        <path d="M16 14 L20.7 15.7"/>
+        {/* Tier 1 → tier 2 (outer canopy ring) */}
+        <path d="M16 9 L16 4.7"/>
+        <path d="M11.7 11.5 L7.95 9.35"/>
+        <path d="M20.3 11.5 L24.05 9.35"/>
+        <path d="M11.3 15.7 L7.3 17.2"/>
+        <path d="M20.7 15.7 L24.7 17.2"/>
       </g>
       <g fill="#4CAF59">
-        <circle cx="16" cy="13.5" r="1.7"/>
-        <circle cx="10" cy="9" r="1.6"/>
-        <circle cx="22" cy="9" r="1.6"/>
-        <circle cx="16" cy="6.5" r="1.6"/>
-        <circle cx="5.5" cy="6" r="1.5"/>
-        <circle cx="11" cy="4.5" r="1.5"/>
-        <circle cx="26.5" cy="6" r="1.5"/>
-        <circle cx="21" cy="4.5" r="1.5"/>
+        <circle cx="16" cy="14" r="1.7"/>
+        <circle cx="16" cy="9" r="1.5"/>
+        <circle cx="11.7" cy="11.5" r="1.5"/>
+        <circle cx="20.3" cy="11.5" r="1.5"/>
+        <circle cx="11.3" cy="15.7" r="1.5"/>
+        <circle cx="20.7" cy="15.7" r="1.5"/>
+        <circle cx="16" cy="4.7" r="1.6"/>
+        <circle cx="7.95" cy="9.35" r="1.6"/>
+        <circle cx="24.05" cy="9.35" r="1.6"/>
+        <circle cx="7.3" cy="17.2" r="1.6"/>
+        <circle cx="24.7" cy="17.2" r="1.6"/>
       </g>
     </svg>
   );
 }
 
-// ---- Wordmark — "Dendr" + "ai" in brand ochre + a small leaf accent,
-// echoing the brand sheet's gold "AI" callout with a leaf-topped í. ----
+// ---- Wordmark — bold all-caps "DENDR" + gold "AI", with a small leaf
+// perched atop the "I" (per the brand sheet's logotype — not a dot
+// replacement this time, since a capital I has no dot to begin with; the
+// leaf sits beside/above the stroke instead). Real lowercase text plus
+// CSS text-transform:uppercase, rather than hardcoded capital letters, so
+// the actual DOM text stays "Dendrai" (correct for copy/paste and screen
+// readers) while still rendering as the all-caps logotype visually. ----
 function DendraiWordmark({ size = 13.5 }) {
-  // Explicit margins rather than flex `gap` — a bare text node mixed with
-  // element children as flex items renders gap inconsistently across
-  // different parent flex contexts (nav pane vs. header looked different
-  // for identical markup until this was pinned down with margins instead).
   return (
-    <span style={{ fontWeight: 600, fontSize: size, letterSpacing: "-0.01em", color: "var(--ink)", display: "inline-flex", alignItems: "center" }}>
+    <span style={{ fontWeight: 700, fontSize: size, letterSpacing: "0.01em", textTransform: "uppercase", color: "var(--ink)", display: "inline-flex", alignItems: "baseline" }}>
       <span>Dendr</span>
-      <span style={{ color: "#A08C52", marginLeft: 1 }}>ai</span>
-      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 16 16" fill="none" style={{ marginLeft: 2, marginBottom: size * 0.28, flexShrink: 0 }} aria-hidden="true">
-        <path d="M8 14C3 14 2 9 2 5c5 0 9 1.5 9 6.5 0 .8-.1 1.5-.3 2.1" stroke="#4CAF59" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M2 5c4 1 6.5 3.5 7.5 9" stroke="#4CAF59" strokeWidth="1.1" strokeLinecap="round"/>
-      </svg>
+      <span style={{ color: "#A08C52" }}>a</span>
+      <span style={{ position: "relative", display: "inline-block", color: "#A08C52" }}>
+        i
+        <svg width={size * 0.48} height={size * 0.48} viewBox="0 0 16 16" style={{
+          position: "absolute", right: "-58%", top: "-52%", transform: "rotate(18deg)",
+        }} aria-hidden="true">
+          <path d="M8 1.5C4.5 1.5 2 4.3 2 8c0 3 2 5 6 6.2C12 13 14 11 14 8c0-3.7-2.5-6.5-6-6.5z" fill="#4CAF59"/>
+          <path d="M8 2v11.8" stroke="#2E7D32" strokeWidth="0.8" strokeLinecap="round"/>
+        </svg>
+      </span>
     </span>
   );
 }
