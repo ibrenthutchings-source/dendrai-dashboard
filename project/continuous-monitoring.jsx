@@ -58,10 +58,21 @@ function _ageLabel(ts) {
   return `${Math.round(ms / 86400000)}d ago`;
 }
 
-function CMLiveFeedTable({ title, rows, columns, emptyLabel }) {
+function CMLiveFeedTable({ title, rows, columns, emptyLabel, onTitleClick }) {
   return (
     <div>
-      <div className="kicker" style={{ marginBottom: 8 }}>{title}</div>
+      <div
+        className="kicker"
+        onClick={onTitleClick}
+        style={{
+          marginBottom: 8, display: "flex", alignItems: "center", gap: 5,
+          cursor: onTitleClick ? "pointer" : "default",
+          color: onTitleClick ? "var(--acc-ink)" : undefined,
+        }}
+      >
+        {title}
+        {onTitleClick && <Icon name="chev-r" size={9}/>}
+      </div>
       {!rows.length ? <Empty>{emptyLabel}</Empty> : (
         <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
           {rows.map((r, i) => (
@@ -81,8 +92,9 @@ function CMLiveFeedTable({ title, rows, columns, emptyLabel }) {
   );
 }
 
-function ContinuousMonitoringScreen() {
+function ContinuousMonitoringScreen({ onNavigate } = {}) {
   const LiveBadge = window.LiveBadge;
+  const goTo = (screen, opts) => onNavigate && onNavigate(screen, opts);
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
@@ -143,27 +155,36 @@ function ContinuousMonitoringScreen() {
         <>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24 }}>
             <CMTile label="Systems live (1h)" value={`${liveSystemsCount} / ${systems.length}`}
-              sub="Pushed telemetry, seen in the last hour" tone={liveSystemsCount > 0 ? "good" : "neutral"} />
+              sub="Pushed telemetry, seen in the last hour" tone={liveSystemsCount > 0 ? "good" : "neutral"}
+              onClick={() => goTo("uboconfig")} />
             <CMTile label="Connectors active" value={`${activeConnectorsCount} / ${connectors.length}`}
               sub={erroringConnectorsCount > 0 ? `${erroringConnectorsCount} erroring` : "Polling on schedule"}
-              tone={erroringConnectorsCount > 0 ? "bad" : "good"} />
-            <CMTile label="Adjudicated (24h)" value={last24h.adjudicated} sub="Tool calls reviewed" />
+              tone={erroringConnectorsCount > 0 ? "bad" : "good"}
+              onClick={() => goTo("uboconfig")} />
+            <CMTile label="Adjudicated (24h)" value={last24h.adjudicated} sub="Tool calls reviewed"
+              onClick={() => goTo("ubogov", { cemTab: "adjudications" })} />
             <CMTile label="Escalated (24h)" value={last24h.escalated}
-              tone={last24h.escalated > 0 ? "warn" : "good"} sub="Sent to human hold" />
+              tone={last24h.escalated > 0 ? "warn" : "good"} sub="Sent to human hold"
+              onClick={() => goTo("ubogov", { cemTab: "adjudications" })} />
             <CMTile label="PaC violations (24h)" value={last24h.pac_violations}
-              tone={last24h.pac_violations > 0 ? "bad" : "good"} />
+              tone={last24h.pac_violations > 0 ? "bad" : "good"}
+              onClick={() => goTo("policycode")} />
             <CMTile label="Pending holds" value={data?.pending_holds ?? 0}
-              tone={(data?.pending_holds ?? 0) > 0 ? "warn" : "good"} sub="Awaiting human decision" />
+              tone={(data?.pending_holds ?? 0) > 0 ? "warn" : "good"} sub="Awaiting human decision"
+              onClick={() => goTo("ubogov", { cemTab: "holds" })} />
             <CMTile label="Coverage blind spots" value={data?.coverage_blind_spots ?? 0}
-              tone={(data?.coverage_blind_spots ?? 0) > 0 ? "warn" : "good"} sub="Tools with zero flag history" />
+              tone={(data?.coverage_blind_spots ?? 0) > 0 ? "warn" : "good"} sub="Tools with zero flag history"
+              onClick={() => goTo("ubogov", { cemTab: "coverage" })} />
             <CMTile label="Model Health drift" value={data?.model_health_drift ? "Drift" : "Stable"}
-              tone={data?.model_health_drift ? "bad" : "good"} sub="Ratio + FRED regime PSI" />
+              tone={data?.model_health_drift ? "bad" : "good"} sub="Ratio + FRED regime PSI"
+              onClick={() => goTo("modelhealth")} />
           </div>
 
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
             <div style={{ flex: 2, minWidth: 380 }}>
               <CMLiveFeedTable
                 title="Registered systems"
+                onTitleClick={() => goTo("uboconfig")}
                 rows={systems}
                 emptyLabel="No systems registered yet — add one in Dendrai UBO™ Configuration."
                 columns={[
@@ -177,6 +198,7 @@ function ContinuousMonitoringScreen() {
 
               <CMLiveFeedTable
                 title="Poll-based connectors"
+                onTitleClick={() => goTo("uboconfig")}
                 rows={connectors}
                 emptyLabel="No poll connectors configured — add Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, or NetSuite in Dendrai UBO™ Configuration."
                 columns={[
@@ -198,17 +220,29 @@ function ContinuousMonitoringScreen() {
             </div>
 
             <div style={{ flex: 1, minWidth: 300 }}>
-              <div className="kicker" style={{ marginBottom: 8 }}>Policy-as-Code coverage</div>
+              <div
+                className="kicker"
+                onClick={() => goTo("policycode")}
+                style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: "var(--acc-ink)" }}
+              >
+                Policy-as-Code coverage
+                <Icon name="chev-r" size={9}/>
+              </div>
               {!pacProcesses.length ? <Empty>No PaC processes registered yet.</Empty> : (
                 <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
                   {pacProcesses.map(p => {
                     const cov = p.rule_coverage;
                     const pct = cov && cov.total > 0 ? Math.round((cov.with_control_id / cov.total) * 100) : null;
                     return (
-                      <div key={p.id} style={{
-                        display: "flex", alignItems: "center", justifyContent: "space-between",
-                        padding: "8px 12px", fontSize: 11.5, borderBottom: "1px solid var(--line)", gap: 8,
-                      }}>
+                      <div key={p.id}
+                        onClick={() => goTo("policycode", { pacProcess: p.id })}
+                        onMouseEnter={e => { e.currentTarget.style.background = "var(--hover)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                        style={{
+                          display: "flex", alignItems: "center", justifyContent: "space-between",
+                          padding: "8px 12px", fontSize: 11.5, borderBottom: "1px solid var(--line)", gap: 8,
+                          cursor: "pointer", transition: "background .12s",
+                        }}>
                         <div>
                           <div style={{ fontWeight: 600 }}>{p.label}</div>
                           <div style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 1 }}>
