@@ -2159,7 +2159,7 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
     <header className="hdr">
       <div className="hdr-brand">
         <div className="hdr-logo"><TreeLogo size={19}/></div>
-        <div className="hdr-name"><DendraiWordmark size={14}/> <span>Intelligenza™</span></div>
+        <div className="hdr-name"><DendraiWordmark size={14}/> <span className="hdr-subname">Intelligenza™</span></div>
       </div>
       <div className="hdr-sep" />
       <div className="hdr-ctx">
