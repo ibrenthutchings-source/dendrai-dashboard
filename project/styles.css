@@ -49,6 +49,14 @@
   --violet-soft:  oklch(95% 0.05 295);
   --violet-ink:   oklch(36% 0.14 295);
 
+  /* Brand constants — fixed, not theme-reactive (the tree mark's chip
+     background stays deep forest green in both light and dark mode,
+     matching the brand sheet rather than following --ink like a generic
+     tile would). */
+  --brand-forest: oklch(22% 0.06 152);
+  --brand-ochre:  #A08C52;
+  --brand-leaf:   #4CAF59;
+
   /* Radii */
   --r-1: 4px;
   --r-2: 8px;
@@ -106,12 +114,15 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Surfaces */
-  --bg:           oklch(14% 0.008 80);
-  --surface:      oklch(18% 0.010 80);
-  --surface-2:    oklch(21% 0.010 80);
-  --surface-3:    oklch(24% 0.010 80);
-  --hover:        oklch(26% 0.010 80);
+  /* Surfaces — subtle forest-green tint (was neutral warm tan, hue 80)
+     to match the brand sheet's Forest Green (#003A12) instead of a
+     generic dark-grey theme. Lightness steps unchanged from before, only
+     hue/chroma shifted, so existing contrast ratios still hold. */
+  --bg:           oklch(14% 0.014 152);
+  --surface:      oklch(18% 0.016 152);
+  --surface-2:    oklch(21% 0.016 152);
+  --surface-3:    oklch(24% 0.016 152);
+  --hover:        oklch(26% 0.016 152);
 
   /* Text — slight chroma bump for warmth */
   --ink:          oklch(93% 0.012 80);
@@ -129,11 +140,12 @@
   --shadow:    0 1px 2px oklch(0% 0 0 / 0.25), 0 4px 12px oklch(0% 0 0 / 0.20);
   --shadow-lg: 0 2px 4px oklch(0% 0 0 / 0.30), 0 12px 32px oklch(0% 0 0 / 0.35);
 
-  /* Accent (emerald default) — brighter on dark bg */
-  --acc:          oklch(66% 0.17 162);
-  --acc-2:        oklch(57% 0.17 162);
-  --acc-soft:     oklch(20% 0.06 162);
-  --acc-ink:      oklch(79% 0.19 162);
+  /* Accent (leaf green default, hue tuned to brand sheet's #4CAF59 —
+     was hue 162/teal-emerald) — brighter on dark bg */
+  --acc:          oklch(66% 0.17 150);
+  --acc-2:        oklch(57% 0.17 150);
+  --acc-soft:     oklch(20% 0.06 150);
+  --acc-ink:      oklch(79% 0.19 150);
 
   /* Red — vivid coral-red */
   --red:          oklch(66% 0.22 22);
@@ -232,12 +244,12 @@ a { color: inherit; text-decoration: none; }
   padding: 14px 16px 12px;
 }
 .lnav-logo {
-  width: 24px; height: 24px; border-radius: 7px;
-  background: var(--ink); color: var(--surface);
+  width: 26px; height: 26px; border-radius: 7px;
+  background: var(--brand-forest);
   display: grid; place-items: center;
-  font-weight: 600; font-size: 12px; letter-spacing: -0.02em;
+  flex-shrink: 0;
 }
-.lnav-brand-name { font-weight: 600; font-size: 13.5px; letter-spacing: -0.01em; color: var(--ink); }
+.lnav-brand-name { display: flex; align-items: center; }
 .lnav-scroll { flex: 1; overflow-y: auto; padding: 4px 10px 16px; }
 .lnav-section { margin-top: 14px; }
 .lnav-section:first-child { margin-top: 4px; }
@@ -301,14 +313,12 @@ a { color: inherit; text-decoration: none; }
 }
 .hdr-brand { display: flex; align-items: center; gap: 10px; }
 .hdr-logo {
-  width: 26px; height: 26px; border-radius: 7px;
-  background: var(--ink);
-  color: var(--surface);
+  width: 28px; height: 28px; border-radius: 7px;
+  background: var(--brand-forest);
   display: grid; place-items: center;
-  font-weight: 600; font-size: 12px;
-  letter-spacing: -0.02em;
+  flex-shrink: 0;
 }
-.hdr-name { font-weight: 600; letter-spacing: -0.01em; font-size: 14px; }
+.hdr-name { display: flex; align-items: center; font-weight: 600; letter-spacing: -0.01em; font-size: 14px; }
 .hdr-name span { color: var(--ink-3); font-weight: 400; margin-left: 8px; }
 .hdr-sep { width: 1px; height: 22px; background: var(--line); }
 .hdr-ctx {
