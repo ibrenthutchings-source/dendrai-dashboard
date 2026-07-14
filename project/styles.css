@@ -311,7 +311,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
-.hdr-brand { display: flex; align-items: center; gap: 10px; }
+.hdr-brand { display: flex; align-items: center; gap: 9px; }
 .hdr-logo {
   width: 28px; height: 28px; border-radius: 7px;
   background: var(--brand-forest);

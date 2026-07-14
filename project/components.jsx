@@ -89,11 +89,15 @@ function TreeLogo({ size = 16 }) {
 // ---- Wordmark — "Dendr" + "ai" in brand ochre + a small leaf accent,
 // echoing the brand sheet's gold "AI" callout with a leaf-topped í. ----
 function DendraiWordmark({ size = 13.5 }) {
+  // Explicit margins rather than flex `gap` — a bare text node mixed with
+  // element children as flex items renders gap inconsistently across
+  // different parent flex contexts (nav pane vs. header looked different
+  // for identical markup until this was pinned down with margins instead).
   return (
-    <span style={{ fontWeight: 600, fontSize: size, letterSpacing: "-0.01em", color: "var(--ink)", display: "inline-flex", alignItems: "center", gap: 1 }}>
-      Dendr
-      <span style={{ color: "#A08C52" }}>ai</span>
-      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 16 16" fill="none" style={{ marginLeft: 1, marginBottom: size * 0.28 }} aria-hidden="true">
+    <span style={{ fontWeight: 600, fontSize: size, letterSpacing: "-0.01em", color: "var(--ink)", display: "inline-flex", alignItems: "center" }}>
+      <span>Dendr</span>
+      <span style={{ color: "#A08C52", marginLeft: 1 }}>ai</span>
+      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 16 16" fill="none" style={{ marginLeft: 2, marginBottom: size * 0.28, flexShrink: 0 }} aria-hidden="true">
         <path d="M8 14C3 14 2 9 2 5c5 0 9 1.5 9 6.5 0 .8-.1 1.5-.3 2.1" stroke="#4CAF59" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
         <path d="M2 5c4 1 6.5 3.5 7.5 9" stroke="#4CAF59" strokeWidth="1.1" strokeLinecap="round"/>
       </svg>
