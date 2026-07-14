@@ -43,6 +43,107 @@ function SaTooltip({ active, payload, label, formatter }) {
   );
 }
 
+// ── Plain-English metric guides — meaning / impact / next steps per tab ────
+// Static reference content (not derived from `data`), shown between the
+// chart and the ASSUMPTIONS & METHODOLOGY block: chart → what it means →
+// how it's computed.
+
+const _VAR_GUIDE = [
+  { metric: "VaR 95%", meaning: "The revenue decline you should expect not to exceed in 95% of simulated outcomes — there's roughly a 1-in-20 chance the actual decline is worse than this.",
+    impact: "Sizes the \"reasonably possible\" downside for budgeting and covenant stress testing.",
+    action: "Compare against the cash starting position on the Liquidity tab — if VaR 95 regularly exceeds available cash headroom, that's a structural liquidity gap, not just a tail-risk curiosity." },
+  { metric: "CVaR 95% (Expected Shortfall)", meaning: "The average decline across just the worst 5% of simulated outcomes — \"if things do go bad, how bad on average.\"",
+    impact: "CVaR is always worse than VaR at the same confidence level; the size of the gap between them shows how severe the tail is, not just how likely.",
+    action: "A CVaR far worse than VaR means the downside is fat-tailed — prioritize downside protection (hedging, diversification, covenant headroom) over routine monitoring." },
+  { metric: "VaR 99% / CVaR 99%", meaning: "The same two measures at the more extreme 1-in-100 tail — the truly rare, severe scenarios.",
+    impact: "Relevant for board-level risk appetite and going-concern discussions, not day-to-day forecasting.",
+    action: "Feed into enterprise risk appetite statements and severe-scenario contingency planning rather than quarterly management reporting." },
+  { metric: "Prob. Decline", meaning: "The share of all simulated paths that end below today's revenue — how likely any decline is, independent of how severe.",
+    impact: "A high probability of decline even with a modest VaR points to a structurally weak growth outlook, not just tail risk.",
+    action: "If this is elevated (well above ~30-40%), revisit the underlying growth assumptions feeding the forecast, not just the tail-risk hedges." },
+];
+
+const _SENS_GUIDE = [
+  { metric: "Baseline portfolio score", meaning: "The current total risk score across the whole register — the starting point every shock in this tab is measured against.",
+    impact: "Doesn't change per row; it's the anchor for every Δ Score in the table.",
+    action: "Track this number across pipeline reruns over time — the tornado only shows sensitivity around this point, not whether the point itself is improving or worsening." },
+  { metric: "Downside / Upside shock (Δ Score)", meaning: "How much the total risk score would move if one financial ratio alone moved unfavorably or favorably by a fixed amount, holding everything else constant.",
+    impact: "Factors with a large downside delta are where the portfolio is most fragile — a small realistic move in that one ratio meaningfully worsens overall risk.",
+    action: "Prioritize monitoring and controls on the top 1-2 factors by delta size — these are the highest-leverage risk drivers, not necessarily the highest-scored individual risks today." },
+  { metric: "Swing", meaning: "The combined sensitivity range for a factor (|downside| + |upside|) — one number ranking how much that factor matters overall, in either direction.",
+    impact: "Determines the tornado chart's ordering; the factor at the top is the single most consequential input to the risk score.",
+    action: "Concentrate scenario-planning effort on the highest-swing factors; factors with near-zero swing are safe to deprioritize." },
+];
+
+const _STRESS_GUIDE = [
+  { metric: "Rev. Decline / Margin Compression", meaning: "The combined revenue and margin shocks assumed for that named scenario (Base/Stress/Severe) — inputs, not outputs, describing how bad the scenario is.",
+    impact: "Defines what \"stress\" and \"severe\" concretely mean for this company's numbers.",
+    action: "Sanity-check these shock sizes against real historical downturns for the industry (e.g. 2008, 2020) to confirm the scenarios are realistically calibrated, not arbitrary." },
+  { metric: "Revenue at Risk", meaning: "The dollar amount of revenue exposed under that scenario.",
+    impact: "Translates an abstract percentage shock into a concrete figure finance and the board can act on.",
+    action: "Compare against the planning/performance materiality thresholds on SOX Scope to judge whether this scenario alone would be a reportable, audit-relevant event." },
+  { metric: "Stressed FCF Margin / Headroom", meaning: "The free-cash-flow margin after the shock, and how much room remains before the going-concern trigger.",
+    impact: "Headroom is the single most important number on this tab — the buffer between \"stressed but survivable\" and \"breach.\"",
+    action: "For any scenario with headroom under roughly 2-3 points, treat it as an active watch item and model management levers (cost cuts, capex deferral, financing) that could restore headroom before it becomes plausible." },
+  { metric: "Status (BREACH / OK)", meaning: "Whether the stressed FCF margin falls below the going-concern trigger threshold.",
+    impact: "A BREACH is a binary, board-relevant flag — it means this scenario, if realized, would raise going-concern questions from auditors.",
+    action: "Route any BREACH scenario directly into the Risk Register as a tracked risk with an owner and mitigation plan, rather than leaving it in this table." },
+  { metric: "Top contributing risks", meaning: "The highest-scored register risks most associated with this scenario's underlying theme.",
+    impact: "Connects the abstract stress number back to concrete, already-tracked risks.",
+    action: "Cross-check these risk IDs in the Risks & Controls Register to confirm mitigations are weighted toward the scenario most likely to actually occur." },
+];
+
+const _LIQ_GUIDE = [
+  { metric: "Per-scenario runway (Q# or \"Clear\")", meaning: "The quarter in which cash would run out or a covenant would be breached under that FCF-margin path — or \"Clear\" if neither happens within the horizon.",
+    impact: "A hard, dated exposure rather than a soft risk score — \"Q3\" means a real cash or covenant event by that quarter if the scenario plays out.",
+    action: "For any scenario showing a specific quarter, treasury should have a financing or refinancing conversation in motion well before that quarter arrives, not after." },
+  { metric: "Covenant breach vs. cash depletion (\"*\")", meaning: "The asterisk marks a covenant threshold breach (a contractual trigger with lenders) as distinct from actually running out of cash — different severities.",
+    impact: "A covenant breach is typically a technical default that's renegotiable; cash depletion is an operational crisis with no ability to pay obligations.",
+    action: "For covenant-breach scenarios, engage lenders proactively for a waiver or amendment before breach; for cash-depletion scenarios, prioritize immediate liquidity actions — credit facility draw, asset sales, or a capital raise." },
+  { metric: "Starting cash / base FCF margin", meaning: "The actual cash position and current FCF margin the projections start from.",
+    impact: "Sanity-checks whether the runway numbers are proportionate — a thin starting cash balance makes even a mild stress scenario dangerous.",
+    action: "If starting cash looks thin relative to the burn rate in the Stress/Severe paths, build cash reserves now, during the current benign period, rather than waiting for a downturn to start." },
+];
+
+const _EWI_GUIDE = [
+  { metric: "Composite Score / Level", meaning: "A single blended 0-100 score combining risk velocity, revenue momentum, earnings quality, and macro backdrop into one early-warning read, banded into GREEN / AMBER / RED.",
+    impact: "The \"check this first\" number — RED means several independent signals are flashing at once, which is a materially different situation than any single bad metric in isolation.",
+    action: "Treat a move from GREEN/AMBER into RED as a trigger for an off-cycle risk review — don't wait for the next scheduled pipeline run, since it signals the underlying picture has changed, not just one input." },
+  { metric: "Historical Trend", meaning: "How the composite score has moved over recent periods, with reference lines at the AMBER (40) and RED (65) thresholds.",
+    impact: "A steadily rising trend is itself a warning even while still technically GREEN — trajectory matters as much as the current level.",
+    action: "If the trend is climbing within GREEN, investigate which component is driving the climb now, rather than waiting for a threshold crossing to act." },
+  { metric: "Component Breakdown", meaning: "The four weighted inputs behind the composite score — Risk Velocity (30%), Revenue Momentum (25%), Earnings Quality (25%), Macro Backdrop (20%) — each with its own 0-100 sub-score.",
+    impact: "Identifies which underlying driver is responsible for the overall read; two companies can land on the same composite score for very different reasons.",
+    action: "Focus the next risk review on whichever component scores highest individually — that's the actual root cause, and mitigations should target it specifically rather than treating the composite as one monolithic problem." },
+];
+
+function MetricGuide({ items }) {
+  if (!items?.length) return null;
+  return (
+    <div style={{ marginTop: 18, padding: "14px 16px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--line)" }}>
+      <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 10 }}>WHAT THIS MEANS</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {items.map((it, i) => (
+          <div key={i} style={{ paddingBottom: i < items.length - 1 ? 12 : 0, borderBottom: i < items.length - 1 ? "1px solid var(--line)" : "none" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)", marginBottom: 3 }}>{it.metric}</div>
+            <div style={{ fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.55, marginBottom: 5 }}>{it.meaning}</div>
+            <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <span className="mono" style={{ fontSize: 9, color: "var(--ink-4)", fontWeight: 600, letterSpacing: "0.03em" }}>IMPACT </span>
+                <span style={{ fontSize: 11, color: "var(--ink-3)", lineHeight: 1.5 }}>{it.impact}</span>
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <span className="mono" style={{ fontSize: 9, color: "var(--acc-ink)", fontWeight: 600, letterSpacing: "0.03em" }}>NEXT STEPS </span>
+                <span style={{ fontSize: 11, color: "var(--ink-3)", lineHeight: 1.5 }}>{it.action}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AssumptionsBlock({ items }) {
   if (!items?.length) return null;
   return (
@@ -116,6 +217,7 @@ function VarCvarTab({ data }) {
         <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--red)", marginRight: 5, opacity: 0.75 }} />Worst 5% of outcomes (VaR 95 tail)</span>
         <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--acc)", marginRight: 5, opacity: 0.75 }} />Simulated outcome distribution</span>
       </div>
+      <MetricGuide items={_VAR_GUIDE} />
       <AssumptionsBlock items={data.assumptions} />
     </TabCard>
   );
@@ -170,6 +272,7 @@ function SensitivityTab({ data }) {
           </tbody>
         </table>
       </div>
+      <MetricGuide items={_SENS_GUIDE} />
       <AssumptionsBlock items={data.assumptions} />
     </TabCard>
   );
@@ -231,6 +334,7 @@ function MultiFactorStressTab({ data }) {
           ))}
         </div>
       )}
+      <MetricGuide items={_STRESS_GUIDE} />
       <AssumptionsBlock items={data.assumptions} />
     </TabCard>
   );
@@ -281,6 +385,7 @@ function LiquidityRunwayTab({ data }) {
           ))}
         </LineChart>
       </ResponsiveContainer>
+      <MetricGuide items={_LIQ_GUIDE} />
       <AssumptionsBlock items={data.assumptions} />
     </TabCard>
   );
@@ -338,6 +443,7 @@ function EarlyWarningTab({ data }) {
           </div>
         ))}
       </div>
+      <MetricGuide items={_EWI_GUIDE} />
       <AssumptionsBlock items={data.assumptions} />
     </TabCard>
   );
