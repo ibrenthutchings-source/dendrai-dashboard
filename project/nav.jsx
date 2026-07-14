@@ -70,7 +70,7 @@ function NavIcon({ name, size = 14 }) {
 
 function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null }) {
   const [collapsed, setCollapsed] = React.useState({});
-  const TreeLogo = window.TreeLogo;
+  const DendraiMark = window.DendraiMark;
   const DendraiWordmark = window.DendraiWordmark;
 
   function isActive(item) {
@@ -96,7 +96,7 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
   return (
     <nav className="lnav" data-screen-label="Navigation">
       <div className="lnav-brand">
-        <div className="lnav-logo"><TreeLogo size={17}/></div>
+        <div className="lnav-logo"><DendraiMark size={17}/></div>
         <div className="lnav-brand-name"><DendraiWordmark size={13.5}/></div>
       </div>
 
