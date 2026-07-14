@@ -438,7 +438,12 @@ def scope_accounts(
 
 # ── Process Scoping ────────────────────────────────────────────────────────────
 
-def scope_processes(risk_scores: dict, account_scope: list, process_overrides: Optional[dict] = None) -> list:
+def scope_processes(
+    risk_scores: dict,
+    account_scope: list,
+    process_overrides: Optional[dict] = None,
+    seg_coverage: Optional[list] = None,
+) -> list:
     """
     Assign coverage level to each SOX process based on risk scores and account scope.
 
@@ -449,14 +454,26 @@ def scope_processes(risk_scores: dict, account_scope: list, process_overrides: O
     process_overrides: optional {process_id: {geography, segments, notes,
     manual_coverage_level, estimated_exposure}} — user-supplied detail/
     overrides (see db.get_sox_process_details). manual_coverage_level, when
-    set, replaces the computed coverage decision. estimated_exposure is a
-    manually-entered $ figure (e.g. annual transaction volume/spend) — unlike
-    accounts, processes have no balance in the underlying financial data, so
-    there's no algorithmic equivalent to balance_estimate here.
+    set, replaces the computed coverage decision.
+
+    estimated_exposure is DERIVED by default from the balance_estimate of
+    each process's linked_accounts (see SOX_PROCESSES) — the same EDGAR-
+    XBRL-projected figures already computed per account, summed across
+    whichever of a process's linked accounts exist in SOX_ACCOUNTS.
+    financial_close (linked_accounts == ["all"]) uses the sum across every
+    account; segment_reporting has no linked accounts in SOX_ACCOUNTS and
+    instead sums in-scope segment revenue from seg_coverage. itgc has no
+    financial-statement linkage at all (it's a cross-cutting IT-controls
+    process, not a balance-sheet item) and is left unset unless overridden.
+    A manual estimated_exposure override always wins over the derived value.
     """
     process_overrides = process_overrides or {}
     risks = risk_scores.get("risks", [])
     in_scope_accs = {a["account_id"] for a in account_scope if a["in_scope"]}
+
+    acc_balance = {a["account_id"]: a.get("balance_estimate") for a in account_scope}
+    total_balance = sum(v for v in acc_balance.values() if v) or None
+    total_seg_revenue = sum((s.get("revenue") or 0) for s in (seg_coverage or []) if s.get("revenue")) or None
 
     # Risk name/category → RAG lookup
     cat_rag: dict[str, str] = {}
@@ -523,6 +540,28 @@ def scope_processes(risk_scores: dict, account_scope: list, process_overrides: O
             coverage = override["manual_coverage_level"]
             rationale = f"Manually overridden by user — {rationale}"
 
+        linked = proc.get("linked_accounts") or []
+        if linked == ["all"]:
+            derived_exposure = total_balance
+        elif proc["id"] == "segment_reporting":
+            derived_exposure = total_seg_revenue
+        elif linked:
+            vals = [acc_balance[a] for a in linked if acc_balance.get(a)]
+            derived_exposure = round(sum(vals)) if vals else None
+        else:
+            derived_exposure = None  # e.g. itgc — no financial-statement linkage
+
+        manual_exposure = (override or {}).get("estimated_exposure")
+        if manual_exposure is not None:
+            estimated_exposure = manual_exposure
+            exposure_source = "manual"
+        elif derived_exposure is not None:
+            estimated_exposure = derived_exposure
+            exposure_source = "derived"
+        else:
+            estimated_exposure = None
+            exposure_source = None
+
         result.append({
             "process_id":    proc["id"],
             "process_name":  proc["name"],
@@ -534,7 +573,8 @@ def scope_processes(risk_scores: dict, account_scope: list, process_overrides: O
             "geography":     (override or {}).get("geography") or [],
             "segments":      (override or {}).get("segments") or [],
             "notes":         (override or {}).get("notes"),
-            "estimated_exposure": (override or {}).get("estimated_exposure"),
+            "estimated_exposure": estimated_exposure,
+            "estimated_exposure_source": exposure_source,
             "manual_override": manual_override,
         })
 
@@ -709,14 +749,15 @@ def run_sox_scoping(
     # 3. Account scoping
     accounts = scope_accounts(mat, projections, ratios, risk_scores, segments, account_overrides)
 
-    # 4. Process scoping
-    processes = scope_processes(risk_scores, accounts, process_overrides)
-
-    # 5. System scoping
-    systems_out = scope_systems(systems_registry or [], processes)
-
-    # 6. Segment coverage
+    # 4. Segment coverage (computed before process scoping — segment_reporting's
+    #    derived estimated_exposure sums in-scope segment revenue from this)
     seg_coverage = scope_segments(segments or [], mat, risk_scores)
+
+    # 5. Process scoping
+    processes = scope_processes(risk_scores, accounts, process_overrides, seg_coverage)
+
+    # 6. System scoping
+    systems_out = scope_systems(systems_registry or [], processes)
 
     # 7. Summary stats
     accs_in   = sum(1 for a in accounts  if a["in_scope"])
