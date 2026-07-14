@@ -48,6 +48,59 @@ function Icon({ name, size = 14, className = "" }) {
   }
 }
 
+// ---- Brand mark — neural-network tree (roots+trunk in ochre, canopy
+// branches in cream, node glow in leaf green). Same shape used for the
+// nav/header logo chip and for public/favicon.svg — keep them in sync if
+// this is ever redrawn. Colors are fixed brand constants (not theme-
+// reactive) so the mark reads correctly on its own dark chip in both
+// light and dark app themes, matching the brand sheet. ----
+function TreeLogo({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <g stroke="#A08C52" strokeWidth="1.5" strokeLinecap="round">
+        <path d="M16 20 L11 26"/>
+        <path d="M16 20 L16 27.5"/>
+        <path d="M16 20 L21 26"/>
+        <path d="M16 20 L16 13.5"/>
+      </g>
+      <g stroke="#E8E9D8" strokeWidth="1.1" strokeLinecap="round">
+        <path d="M16 13.5 L10 9"/>
+        <path d="M16 13.5 L16 6.5"/>
+        <path d="M16 13.5 L22 9"/>
+        <path d="M10 9 L5.5 6"/>
+        <path d="M10 9 L11 4.5"/>
+        <path d="M22 9 L26.5 6"/>
+        <path d="M22 9 L21 4.5"/>
+      </g>
+      <g fill="#4CAF59">
+        <circle cx="16" cy="13.5" r="1.7"/>
+        <circle cx="10" cy="9" r="1.6"/>
+        <circle cx="22" cy="9" r="1.6"/>
+        <circle cx="16" cy="6.5" r="1.6"/>
+        <circle cx="5.5" cy="6" r="1.5"/>
+        <circle cx="11" cy="4.5" r="1.5"/>
+        <circle cx="26.5" cy="6" r="1.5"/>
+        <circle cx="21" cy="4.5" r="1.5"/>
+      </g>
+    </svg>
+  );
+}
+
+// ---- Wordmark — "Dendr" + "ai" in brand ochre + a small leaf accent,
+// echoing the brand sheet's gold "AI" callout with a leaf-topped í. ----
+function DendraiWordmark({ size = 13.5 }) {
+  return (
+    <span style={{ fontWeight: 600, fontSize: size, letterSpacing: "-0.01em", color: "var(--ink)", display: "inline-flex", alignItems: "center", gap: 1 }}>
+      Dendr
+      <span style={{ color: "#A08C52" }}>ai</span>
+      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 16 16" fill="none" style={{ marginLeft: 1, marginBottom: size * 0.28 }} aria-hidden="true">
+        <path d="M8 14C3 14 2 9 2 5c5 0 9 1.5 9 6.5 0 .8-.1 1.5-.3 2.1" stroke="#4CAF59" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M2 5c4 1 6.5 3.5 7.5 9" stroke="#4CAF59" strokeWidth="1.1" strokeLinecap="round"/>
+      </svg>
+    </span>
+  );
+}
+
 // ---- Pill / tag ----
 function Pill({ tone = "neutral", mono = true, children }) {
   const cls = `pill pill-${tone}` + (mono ? " mono" : "");
@@ -292,7 +345,7 @@ function RefreshBadge({ lastRefresh, onRefresh, loading }) {
 
 // Expose globally
 Object.assign(window, {
-  Icon, Pill, RAGChip, VelocityPill, Sparkline,
+  Icon, TreeLogo, DendraiWordmark, Pill, RAGChip, VelocityPill, Sparkline,
   scoreColor, scoreColorInk, ragFromScore,
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,

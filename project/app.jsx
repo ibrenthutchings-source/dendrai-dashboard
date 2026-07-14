@@ -2122,6 +2122,8 @@ function App() {
 function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName,
                   aiChatLabel, chatOpen, onChatToggle }) {
   const auth = window.useAuth ? window.useAuth() : null;
+  const TreeLogo = window.TreeLogo;
+  const DendraiWordmark = window.DendraiWordmark;
   const [userMenuOpen, setUserMenuOpen] = React.useState(false);
   const [orgUsers, setOrgUsers] = React.useState([]);
   const [managerId, setManagerId] = React.useState(auth?.user?.manager_id ?? "");
@@ -2156,8 +2158,8 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
   return (
     <header className="hdr">
       <div className="hdr-brand">
-        <div className="hdr-logo">D</div>
-        <div className="hdr-name">Dendrai <span>Intelligenza™</span></div>
+        <div className="hdr-logo"><TreeLogo size={19}/></div>
+        <div className="hdr-name"><DendraiWordmark size={14}/> <span>Intelligenza™</span></div>
       </div>
       <div className="hdr-sep" />
       <div className="hdr-ctx">
