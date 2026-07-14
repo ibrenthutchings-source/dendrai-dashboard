@@ -1282,13 +1282,18 @@ def _match_process(path: str) -> Optional[str]:
 
 def _process_key_from_path(path: str) -> str:
     """Derive a candidate process id from a path when _match_process finds no
-    existing one — used by sync_github's auto-register path. Prefers the
-    containing folder name (a per-process folder layout) over the filename
-    stem, since a folder groups multiple files under one process while a
-    bare filename is more likely a one-off doc."""
+    existing one — used by sync_github's auto-register path. Uses the
+    filename stem, not the containing folder: each policy document
+    (fixed-assets.md, payroll.md, ...) is typically its own independently-
+    owned, independently-approved policy, even when several are grouped
+    under one category folder (business_cycles/, compliance/, security/) —
+    folder-level grouping would merge distinct policies with different
+    owners into a single Rego module, losing the ability to version and
+    sign off on each one separately."""
     parts = path.split("/")
-    candidate = parts[-2] if len(parts) > 1 else parts[-1].rsplit(".", 1)[0]
-    return _norm_process_key(candidate)
+    filename = parts[-1]
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    return _norm_process_key(stem)
 
 
 def _label_from_key(key: str) -> str:
