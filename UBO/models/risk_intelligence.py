@@ -62,6 +62,12 @@ class ConflictFlag(str, Enum):
     LOW_CONFIDENCE       = "LOW_CONFIDENCE"         # Mean confidence below threshold
     MISSING_EVALUATIONS  = "MISSING_EVALUATIONS"   # One or more agents returned INSUFFICIENT_DATA
     ANOMALOUS_RISK_DELTA = "ANOMALOUS_RISK_DELTA"  # Risk delta swing is extreme
+    # Set outside the Adjudicator itself, by mcp_governance._write_adjudication,
+    # when a downstream check overrides the Council's ensemble verdict — kept
+    # here (not a bespoke string) so every conflict_flags consumer has one enum
+    # to check against regardless of which stage raised it.
+    POLICY_VIOLATION        = "POLICY_VIOLATION"         # A deterministic Rego/OPA deny rule fired
+    LLM_ESCALATION_OVERRIDE = "LLM_ESCALATION_OVERRIDE"  # The 4th-opinion LLM escalated past the ensemble
 
 
 class AdjudicationResult(BaseModel):

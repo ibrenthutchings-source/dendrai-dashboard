@@ -1275,6 +1275,15 @@ CREATE INDEX IF NOT EXISTS idx_adj_session
 CREATE INDEX IF NOT EXISTS idx_adj_source
     ON observability.adjudicated_tool_calls (source_system, adjudicated_at DESC);
 
+-- ai_final_verdict is a snapshot of the AI system's own verdict, stamped once
+-- at insert and never touched again — human_review_adjudication overwrites
+-- final_verdict (the "current/effective" verdict) but previously had no way
+-- to preserve what the AI originally said, which is what per-agent
+-- calibration (agent said ESCALATE -> did a human confirm it?) requires.
+ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS ai_final_verdict  VARCHAR(32);
+ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS human_verdict      VARCHAR(32);
+ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS human_reviewed_at  TIMESTAMPTZ;
+
 DROP VIEW IF EXISTS observability.tool_latency_summary;
 CREATE OR REPLACE VIEW observability.tool_latency_summary AS
 SELECT

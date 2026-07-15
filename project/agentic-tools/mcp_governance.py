@@ -63,6 +63,7 @@ try:
     from UBO.pipeline.gold import GoldAggregationLayer
     from UBO.council.orchestrator import CouncilOrchestrator
     from UBO.models.uro import SourceSystem as UBOSourceSystem, URO
+    from UBO.models.risk_intelligence import AgentVerdict, ConflictFlag
     _HAS_UBO = True
     logger.info("UBO Governance Brain loaded successfully")
 except ImportError as exc:
@@ -414,12 +415,39 @@ def _write_adjudication(
         llm_eval = _llm_council_opinion(uro, adj)
         if llm_eval:
             council_votes_list.append(llm_eval)
+            # The LLM only ever runs on cases already flagged for human review,
+            # so it can't invent a NEW escalation from nothing — but if it
+            # independently reaches ESCALATE while the deterministic ensemble
+            # landed on MONITOR/CLEAR, that disagreement is real signal, not
+            # narration to discard. We only ever move the verdict UP
+            # (toward ESCALATE), never let the LLM talk the case back down
+            # from what the ensemble already decided — a false negative from
+            # trusting the LLM's downgrade is a worse failure mode than an
+            # extra human review.
+            if llm_eval["verdict"] == "ESCALATE" and adj.final_verdict != AgentVerdict.ESCALATE:
+                adj = adj.model_copy(update={
+                    "final_verdict": AgentVerdict.ESCALATE,
+                    "requires_human_review": True,
+                    "conflict_flags": list(adj.conflict_flags) + [ConflictFlag.LLM_ESCALATION_OVERRIDE],
+                    "conflict_reasoning": (
+                        (adj.conflict_reasoning + " ") if adj.conflict_reasoning else ""
+                    ) + (
+                        f"LLM 4th opinion independently reached ESCALATE "
+                        f"(confidence={llm_eval['confidence']:.2f}) against the ensemble's "
+                        f"original verdict — verdict raised to ESCALATE."
+                    ),
+                })
 
     # Real Rego/OPA policy check — a genuinely different kind of judgment
-    # (deterministic policy engine, not a heuristic/LLM agent vote), added
-    # as another council voice for visibility, with any fired deny rules
-    # also folded into policy_violations alongside the existing Silver-layer
-    # heuristic violations below.
+    # (deterministic policy engine, not a heuristic/LLM agent vote). A fired
+    # deny rule is a human-authored, approved control being violated in real
+    # time — that is not advisory the way a keyword-matching heuristic is, so
+    # unlike the original design this is NOT just appended as an extra council
+    # voice for visibility: it forces human review and (mirroring the existing
+    # single-agent high-confidence veto in TheAdjudicator._resolve_verdict)
+    # vetoes the ensemble verdict to ESCALATE. Fired rules are still folded
+    # into policy_violations alongside the existing Silver-layer heuristic
+    # violations below, for the audit record either way.
     pac_violations: list[str] = []
     pac_result = _evaluate_pac_policy(uro)
     if pac_result:
@@ -440,6 +468,19 @@ def _write_adjudication(
                          "rules_fired": [r.get("rule") for r in pac_result["rules_fired"]]},
             "evaluation_ms": None,
         })
+        if adj and pac_violations:
+            adj = adj.model_copy(update={
+                "final_verdict": AgentVerdict.ESCALATE,
+                "requires_human_review": True,
+                "conflict_flags": list(adj.conflict_flags) + [ConflictFlag.POLICY_VIOLATION],
+                "conflict_reasoning": (
+                    (adj.conflict_reasoning + " ") if adj.conflict_reasoning else ""
+                ) + (
+                    f"Policy-as-Code veto: {len(pac_violations)} deny rule(s) fired against the "
+                    f"{pac_result['process']} module ({pac_result['engine']}) — verdict forced to "
+                    f"ESCALATE regardless of the heuristic ensemble's score."
+                ),
+            })
 
     council_votes = json.dumps(council_votes_list)
     telemetry_id        = source_id if origin == "mcp" else None
@@ -455,13 +496,13 @@ def _write_adjudication(
                         telemetry_id, system_telemetry_id, session_id, source_system,
                         target_tool, server_name, risk_flags, execution_time_ms,
                         uro_id, risk_score, risk_tier,
-                        final_verdict, ensemble_confidence,
+                        final_verdict, ai_final_verdict, ensemble_confidence,
                         requires_human_review, conflict_flags,
                         policy_violations, adjudicator_reasoning,
                         council_votes
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s::jsonb
                     )
                     """,
@@ -477,6 +518,11 @@ def _write_adjudication(
                         uro.id,
                         float(uro.risk_score) if uro.risk_score is not None else None,
                         uro.risk_tier,
+                        adj.final_verdict.value if adj else None,
+                        # ai_final_verdict is a permanent snapshot of what the AI system
+                        # (ensemble + PaC veto + LLM escalation, all applied above) actually
+                        # decided — final_verdict above is the "current/effective" one and
+                        # can later be overwritten by a human reviewer; this one never is.
                         adj.final_verdict.value if adj else None,
                         float(adj.ensemble_confidence) if adj else None,
                         adj.requires_human_review if adj else False,
@@ -761,8 +807,19 @@ def _fetch_raw_telemetry(limit: int) -> list[dict]:
 def _human_review_adjudication(row_id: int, human_verdict: str, notes: str) -> bool:
     """
     Mark an adjudicated_tool_calls row as human-reviewed.
-    Clears requires_human_review, optionally overrides final_verdict,
-    and appends the reviewer note to adjudicator_reasoning.
+    Clears requires_human_review, optionally overrides final_verdict (the
+    "current/effective" verdict), and appends the reviewer note to
+    adjudicator_reasoning.
+
+    Also stamps human_verdict/human_reviewed_at, distinct from the
+    final_verdict overwrite above, and never touches ai_final_verdict (the
+    frozen snapshot of what the AI decided) — so per-agent calibration can
+    compare what each agent voted against what the human actually decided,
+    which the destructive final_verdict overwrite alone can't answer once a
+    row's been reviewed. human_verdict may be the literal string "APPROVE"
+    (the UI's "confirm the AI's verdict" action, not one of the four
+    canonical AgentVerdict values) — calibration reads that as "agrees with
+    ai_final_verdict".
     """
     if not db.is_available():
         return False
@@ -775,14 +832,17 @@ def _human_review_adjudication(row_id: int, human_verdict: str, notes: str) -> b
                     """
                     UPDATE observability.adjudicated_tool_calls
                     SET requires_human_review = FALSE,
-                        final_verdict = CASE WHEN %s <> '' THEN %s ELSE final_verdict END,
+                        final_verdict = CASE WHEN %s <> '' AND %s <> 'APPROVE' THEN %s ELSE final_verdict END,
+                        human_verdict = CASE WHEN %s <> '' THEN %s ELSE human_verdict END,
+                        human_reviewed_at = NOW(),
                         adjudicator_reasoning = COALESCE(adjudicator_reasoning, '')
                             || E'\\n\\n[HUMAN REVIEW ' || to_char(NOW(), 'YYYY-MM-DD HH24:MI') || '] '
                             || CASE WHEN %s <> '' THEN 'verdict=' || %s || ' ' ELSE '' END
                             || CASE WHEN %s <> '' THEN 'notes=' || %s ELSE '' END
                     WHERE id = %s
                     """,
-                    (safe_verdict, safe_verdict,
+                    (safe_verdict, safe_verdict, safe_verdict,
+                     safe_verdict, safe_verdict,
                      safe_verdict, safe_verdict,
                      safe_notes,  safe_notes,
                      row_id),
