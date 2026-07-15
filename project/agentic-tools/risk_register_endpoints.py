@@ -80,6 +80,14 @@ _DEFAULT_CONTROLS: List[Dict[str, Any]] = [
     {"ref": "AI-04", "framework": "ISO/IEC 42001", "name": "AI Transparency & Explainability",  "category": "AI Governance",   "domain": "Technology", "description": "Mechanisms to explain AI outputs and decisions to relevant stakeholders"},
     {"ref": "AI-05", "framework": "ISO/IEC 42001", "name": "Third-Party AI Tool Assessment",    "category": "AI Governance",   "domain": "Technology", "description": "Due diligence and ongoing monitoring for externally-sourced AI services"},
     {"ref": "AI-06", "framework": "ISO/IEC 42001", "name": "Human Oversight of AI Systems",     "category": "AI Governance",   "domain": "Technology", "description": "Defined human review points and override mechanisms for AI-assisted decisions"},
+    # NIST AI RMF (Govern / Map / Measure / Manage) — distinct from ISO/IEC 42001 above:
+    # 42001 is a certifiable AI management-system standard, NIST AI RMF is the dominant
+    # US voluntary framework AI-governance committees report against. Both belong in the
+    # library since GRC and AI-governance buyers ask for different ones.
+    {"ref": "AI-07", "framework": "NIST AI RMF", "name": "AI System Inventory & Risk Tiering", "category": "Map",     "domain": "Technology", "description": "Maintained register of AI systems and use cases with assigned risk tier, data sensitivity, and owner"},
+    {"ref": "AI-08", "framework": "NIST AI RMF", "name": "AI Governance Accountability",       "category": "Govern",   "domain": "Technology", "description": "Documented AI risk policies, roles, and executive accountability for AI risk tolerance decisions"},
+    {"ref": "AI-09", "framework": "NIST AI RMF", "name": "AI Performance & Bias Measurement",  "category": "Measure",  "domain": "Technology", "description": "Testing of AI system performance, fairness, and drift against validated baselines prior to and during deployment"},
+    {"ref": "AI-10", "framework": "NIST AI RMF", "name": "AI Incident Response & Human Override","category": "Manage", "domain": "Technology", "description": "Defined incident response procedures and human-in-the-loop override mechanisms for AI system failures"},
 ]
 
 # Map default refs for quick lookup (used in fallback and AI prompts built at import time)
@@ -196,11 +204,24 @@ _DEFAULT_FRAMEWORK_CATALOGS: Dict[str, List[Dict[str, Any]]] = {
         {"id": "AI42-A.9.1",  "name": "Unvetted third-party AI tools introduce unmanaged model and data supply-chain risk",  "category": "Third-Party AI",        "source_framework": "ISO/IEC 42001", "control_family": "A.9",  "score": None, "rag": None},
         {"id": "AI42-A.10.1", "name": "Insufficient human oversight enables unchecked AI decision-making in high-stakes contexts", "category": "Human Oversight", "source_framework": "ISO/IEC 42001", "control_family": "A.10", "score": None, "rag": None},
     ],
+    # NIST AI RMF's four functions — GOVERN, MAP, MEASURE, MANAGE — the crosswalk an
+    # AI-governance committee reporting against the US framework (rather than, or
+    # alongside, ISO/IEC 42001) expects to see. Two risk statements per function.
+    "NIST AI RMF": [
+        {"id": "NISTAI-GV-1", "name": "Absence of AI governance policy and accountability structures leaves AI risk decisions undocumented and unowned", "category": "AI Governance",      "source_framework": "NIST AI RMF", "control_family": "GOVERN",  "score": None, "rag": None},
+        {"id": "NISTAI-GV-2", "name": "Undefined AI risk tolerance allows high-risk model deployments to proceed without executive sign-off",              "category": "AI Risk Tolerance",  "source_framework": "NIST AI RMF", "control_family": "GOVERN",  "score": None, "rag": None},
+        {"id": "NISTAI-MP-1", "name": "Unmaintained inventory of AI systems and use cases leaves organization-wide AI risk exposure unmeasured",           "category": "AI Inventory",       "source_framework": "NIST AI RMF", "control_family": "MAP",     "score": None, "rag": None},
+        {"id": "NISTAI-MP-2", "name": "Unassessed context and intended use of an AI system produces controls mismatched to its actual risk",              "category": "Context & Use",      "source_framework": "NIST AI RMF", "control_family": "MAP",     "score": None, "rag": None},
+        {"id": "NISTAI-MS-1", "name": "Untested AI system performance and fairness metrics allow degraded or biased outputs to reach production",         "category": "AI Testing & Metrics","source_framework": "NIST AI RMF", "control_family": "MEASURE", "score": None, "rag": None},
+        {"id": "NISTAI-MS-2", "name": "Absence of ongoing drift monitoring lets AI system behavior silently diverge from its validated baseline",          "category": "AI Monitoring",      "source_framework": "NIST AI RMF", "control_family": "MEASURE", "score": None, "rag": None},
+        {"id": "NISTAI-MG-1", "name": "Undefined incident response procedures for AI failures delay containment and stakeholder notification",            "category": "AI Incident Response","source_framework": "NIST AI RMF", "control_family": "MANAGE",  "score": None, "rag": None},
+        {"id": "NISTAI-MG-2", "name": "Missing human-in-the-loop controls for high-risk AI decisions allow unchecked automated actions to proceed",        "category": "Human Oversight",    "source_framework": "NIST AI RMF", "control_family": "MANAGE",  "score": None, "rag": None},
+    ],
 }
 
 # Default matrix / preset framework config (seeds app_config on first startup)
-_DEFAULT_MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "ISO/IEC 42001", "SOC 2", "NIST SP 800-53", "CIS Controls", "COSO ERM"]
-_DEFAULT_PRESET_FRAMEWORKS  = ["NIST SP 800-53", "ISO/IEC 27001", "ISO/IEC 42001", "CIS Controls", "SOC 2"]
+_DEFAULT_MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "ISO/IEC 42001", "NIST AI RMF", "SOC 2", "NIST SP 800-53", "CIS Controls", "COSO ERM"]
+_DEFAULT_PRESET_FRAMEWORKS  = ["NIST SP 800-53", "ISO/IEC 27001", "ISO/IEC 42001", "NIST AI RMF", "CIS Controls", "SOC 2"]
 
 
 def seed_static_data() -> None:
@@ -243,9 +264,11 @@ _AUTO_MAP_RULES = [
     (["incident", "response", "detection", "monitoring", "log"],
      ["SC-03", "SC-04"]),
     (["artificial intelligence", "machine learning", "llm", "generative", "algorithm", "model bias", "explainab", "oversight of ai", "training data", "ai system", "ai risk"],
-     ["AI-01", "AI-02", "AI-03", "AI-04", "AI-06"]),
+     ["AI-01", "AI-02", "AI-03", "AI-04", "AI-06", "AI-07", "AI-08", "AI-09", "AI-10"]),
     (["third-party ai", "ai vendor", "ai tool", "ai service", "ai supply"],
      ["AI-05", "VM-01"]),
+    (["ai drift", "ai incident", "ai governance", "ai inventory", "human-in-the-loop", "human in the loop"],
+     ["AI-07", "AI-09", "AI-10"]),
 ]
 
 

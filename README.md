@@ -164,6 +164,32 @@ POST /oracle-fusion/audit-events    — transaction audit trail
 
 See `project/agentic-tools/README.md` for the complete backend reference.
 
+## Governing non-MCP AI agents
+
+The Dendrai UBO™ Governance Brain's adjudication pipeline (Bronze → Silver → Gold → Council, see `project/cem.jsx`
+and `project/agentic-tools/mcp_governance.py`) is **not MCP-only**. MCP tool calls reach it via the telemetry
+proxy, but any other AI agent framework — LangChain, OpenAI function calling, a custom agent loop, or any
+non-MCP system — can report tool calls to the same generic ingestion endpoint and receive the identical
+Council review, risk scoring, and HITL escalation as MCP traffic:
+
+```bash
+curl -X POST https://<host>/observability/telemetry/ingest \
+  -H "Authorization: Bearer <ingest_api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "server_name": "langchain-finance-agent",
+    "event_type":  "tool_call",
+    "action":      "modify_permissions",
+    "resource":    "erp.accounts_payable.vendor_master",
+    "severity":    "HIGH",
+    "payload":     {"tool": "update_vendor_bank_details", "args": {"vendor_id": "V-4471"}}
+  }'
+```
+
+The `ingest_api_key` is issued per registered system in **Dendrai UBO™ Configuration → Monitored Systems**.
+A LangChain callback handler or an OpenAI function-calling wrapper needs only to POST its tool-call events
+here — no MCP server required.
+
 ## Authentication
 
 The dashboard is protected by a JWT-based auth system integrated into `api_server.py`.

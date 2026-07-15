@@ -42,6 +42,7 @@ import '../user-config.jsx'
 import '../token-usage.jsx'
 import '../model-health.jsx'
 import '../continuous-monitoring.jsx'
+import '../ai-inventory.jsx'
 import '../tweaks.jsx'
 
 import App from '../app.jsx'

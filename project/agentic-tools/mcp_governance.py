@@ -1294,6 +1294,7 @@ def _fetch_systems() -> list[dict]:
                         s.blocking_tools, s.alert_webhook,
                         s.created_at, s.updated_at, s.created_by,
                         s.ingest_api_key,
+                        s.risk_tier, s.data_sensitivity, s.system_owner,
                         COALESCE(mt.total_calls,   0) + COALESCE(st.total_calls,   0) AS total_calls,
                         COALESCE(mt.flagged_calls, 0) + COALESCE(st.flagged_calls, 0) AS flagged_calls,
                         GREATEST(mt.last_seen, st.last_seen) AS last_seen
@@ -1346,6 +1347,9 @@ def _create_system(
     blocking_tools: list[str] | None,
     alert_webhook: str | None,
     created_by: str = "operator",
+    risk_tier: str | None = None,
+    data_sensitivity: str | None = None,
+    system_owner: str | None = None,
 ) -> int | None:
     if not db.is_available():
         return None
@@ -1356,8 +1360,9 @@ def _create_system(
                     """
                     INSERT INTO observability.monitored_systems
                         (display_name, server_name, server_type, description, active,
-                         governance_tiers, blocking_tools, alert_webhook, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         governance_tiers, blocking_tools, alert_webhook, created_by,
+                         risk_tier, data_sensitivity, system_owner)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -1370,6 +1375,9 @@ def _create_system(
                         blocking_tools or None,
                         (alert_webhook or None),
                         created_by[:128],
+                        (risk_tier or None),
+                        (data_sensitivity or None),
+                        (system_owner[:128] if system_owner else None),
                     ),
                 )
                 row = cur.fetchone()
@@ -1390,6 +1398,9 @@ def _update_system(
     governance_tiers: list[str],
     blocking_tools: list[str] | None,
     alert_webhook: str | None,
+    risk_tier: str | None = None,
+    data_sensitivity: str | None = None,
+    system_owner: str | None = None,
 ) -> bool:
     if not db.is_available():
         return False
@@ -1407,6 +1418,9 @@ def _update_system(
                         governance_tiers = %s,
                         blocking_tools   = %s,
                         alert_webhook    = %s,
+                        risk_tier        = %s,
+                        data_sensitivity = %s,
+                        system_owner     = %s,
                         updated_at       = NOW()
                     WHERE id = %s
                     """,
@@ -1419,6 +1433,9 @@ def _update_system(
                         governance_tiers or ["CRITICAL", "HIGH", "MEDIUM"],
                         blocking_tools or None,
                         (alert_webhook or None),
+                        (risk_tier or None),
+                        (data_sensitivity or None),
+                        (system_owner[:128] if system_owner else None),
                         system_id,
                     ),
                 )
@@ -1724,6 +1741,9 @@ async def create_system(body: dict = Body(...)):
         list(body.get("blocking_tools") or []) or None,
         body.get("alert_webhook"),
         str(body.get("created_by") or "operator")[:128],
+        body.get("risk_tier"),
+        body.get("data_sensitivity"),
+        body.get("system_owner"),
     )
     return {"ok": new_id is not None, "id": new_id}
 
@@ -1742,6 +1762,9 @@ async def update_system(system_id: int, body: dict = Body(...)):
         list(body.get("governance_tiers") or ["CRITICAL", "HIGH", "MEDIUM"]),
         list(body.get("blocking_tools") or []) or None,
         body.get("alert_webhook"),
+        body.get("risk_tier"),
+        body.get("data_sensitivity"),
+        body.get("system_owner"),
     )
     return {"ok": ok, "id": system_id}
 
@@ -1782,6 +1805,9 @@ async def create_connector(body: dict = Body(...)):
             body.get("extra_config"),
             int(body.get("poll_interval_s") or 1800),
             str(body.get("created_by") or "operator")[:128],
+            body.get("risk_tier"),
+            body.get("data_sensitivity"),
+            body.get("system_owner"),
         )
     except db.EncryptionKeyMissing as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -1802,6 +1828,9 @@ async def update_connector(connector_id: int, body: dict = Body(...)):
             extra_config=body.get("extra_config"),
             poll_interval_s=body.get("poll_interval_s"),
             active=body.get("active"),
+            risk_tier=body.get("risk_tier"),
+            data_sensitivity=body.get("data_sensitivity"),
+            system_owner=body.get("system_owner"),
         )
     except db.EncryptionKeyMissing as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -1836,6 +1865,109 @@ async def test_connector(connector_id: int):
     except Exception as exc:
         ok, message = False, f"{type(exc).__name__}: {exc}"
     return {"ok": ok, "message": message}
+
+
+_RISK_TIERS = ("critical", "high", "medium", "low")
+_DATA_SENSITIVITIES = ("pii", "financial", "confidential", "internal", "public")
+
+
+def _update_system_classification(system_id: int, risk_tier: str | None, data_sensitivity: str | None,
+                                    system_owner: str | None) -> bool:
+    """Partial update of just the inventory classification fields on a
+    monitored (push) system — unlike _update_system above, this never
+    touches display_name/server_name/governance_tiers/etc., so the
+    inventory screen's inline editor can't accidentally blank out a
+    system's other configuration."""
+    if not db.is_available():
+        return False
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.monitored_systems
+                    SET risk_tier = %s, data_sensitivity = %s, system_owner = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (risk_tier or None, data_sensitivity or None,
+                     (system_owner[:128] if system_owner else None), system_id),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as exc:
+        logger.warning("_update_system_classification error (id=%s): %s", system_id, exc)
+        return False
+
+
+@router.put("/systems/{system_id}/classification")
+async def update_system_classification(system_id: int, body: dict = Body(...)):
+    """Set only risk_tier / data_sensitivity / system_owner on a push system —
+    used by the AI System Inventory screen's inline editor."""
+    ok = await asyncio.to_thread(
+        _update_system_classification, system_id,
+        body.get("risk_tier"), body.get("data_sensitivity"), body.get("system_owner"),
+    )
+    return {"ok": ok, "id": system_id}
+
+
+@router.put("/connectors/{connector_id}/classification")
+async def update_connector_classification(connector_id: int, body: dict = Body(...)):
+    """Set only risk_tier / data_sensitivity / system_owner on a poll
+    connector — used by the AI System Inventory screen's inline editor."""
+    ok = await asyncio.to_thread(
+        db.update_poll_connector, connector_id,
+        risk_tier=body.get("risk_tier"), data_sensitivity=body.get("data_sensitivity"),
+        system_owner=body.get("system_owner"),
+    )
+    return {"ok": ok, "id": connector_id}
+
+
+@router.get("/ai-inventory")
+async def ai_inventory():
+    """
+    Unified AI/agent system register across both connection models —
+    push-based monitored_systems and pull-based poll_connectors — each
+    tagged with risk tier, data sensitivity, and owner. This is the
+    inventory artifact NIST AI RMF's "Map" function and the EU AI Act's
+    system register both start from: what AI-adjacent systems exist, what
+    do they touch, how risky are they, who's accountable. Classification
+    fields are edited via the existing PUT /systems/{id} and
+    PUT /connectors/{id} endpoints (risk_tier/data_sensitivity/system_owner
+    body fields) — this endpoint only reads and merges.
+    """
+    systems, connectors = await asyncio.gather(
+        asyncio.to_thread(_fetch_systems),
+        asyncio.to_thread(db.list_poll_connectors),
+    )
+    rows = []
+    for s in systems:
+        rows.append({
+            "id": s["id"], "kind": "push", "display_name": s["display_name"],
+            "type": s["server_type"], "active": s["active"],
+            "risk_tier": s.get("risk_tier"), "data_sensitivity": s.get("data_sensitivity"),
+            "system_owner": s.get("system_owner"),
+            "last_activity": s.get("last_seen"), "total_calls": s.get("total_calls"),
+            "flagged_calls": s.get("flagged_calls"),
+        })
+    for c in connectors:
+        rows.append({
+            "id": c["id"], "kind": "poll", "display_name": c["display_name"],
+            "type": c["connector_type"], "active": c["active"],
+            "risk_tier": c.get("risk_tier"), "data_sensitivity": c.get("data_sensitivity"),
+            "system_owner": c.get("system_owner"),
+            "last_activity": c.get("last_poll_at"), "total_calls": None,
+            "flagged_calls": None,
+        })
+    def _tier_rank(r):
+        tier = r["risk_tier"]
+        return _RISK_TIERS.index(tier) if tier in _RISK_TIERS else len(_RISK_TIERS)
+    rows.sort(key=lambda r: (_tier_rank(r), r["display_name"] or ""))
+    untiered = sum(1 for r in rows if not r["risk_tier"])
+    return {
+        "rows": rows, "count": len(rows), "untiered_count": untiered,
+        "risk_tiers": list(_RISK_TIERS), "data_sensitivities": list(_DATA_SENSITIVITIES),
+    }
 
 
 # ── PAC repositories CRUD ──────────────────────────────────────────────────────

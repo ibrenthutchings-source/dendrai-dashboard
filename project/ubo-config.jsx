@@ -533,9 +533,10 @@ function MonitoredSystemsCard() {
           <div className="cfg-card-title">Monitored Systems</div>
           <div className="cfg-card-sub">
             Any system can send telemetry to the Dendrai UBO™ Governance Brain — Saviynt, SAP, Oracle Fusion,
-            ServiceNow, Workday, Entra ID, GitHub, or any custom system. Each non-MCP system receives
-            a unique ingest API key for <code style={{fontSize:10}}>POST /observability/telemetry/ingest</code>.
-            MCP servers use the telemetry proxy instead.
+            ServiceNow, Workday, Entra ID, GitHub, a non-MCP AI agent framework (LangChain, OpenAI function
+            calling, a custom agent loop), or any other custom system. Each receives a unique ingest API key
+            for <code style={{fontSize:10}}>POST /observability/telemetry/ingest</code> and is adjudicated by
+            the same Council pipeline as MCP tool calls. MCP servers use the telemetry proxy instead.
           </div>
         </div>
         <button className="btn btn-sm" onClick={() => { setAdding(true); setEditingId(null); }}>

@@ -1709,6 +1709,15 @@ function App() {
           </ScreenAccessGate>
           )}
 
+          {/* ---- AI System Inventory ---- */}
+          {activeScreen === "aiinventory" && (
+          <ScreenAccessGate screenId="aiinventory">
+            <div className="panel active">
+              <AiInventoryScreen onNavigate={navigateToScreen} />
+            </div>
+          </ScreenAccessGate>
+          )}
+
           {/* ---- Pipeline (with action bar + sub-tabs) ---- */}
           {activeScreen === "pipeline" && (
           <ScreenAccessGate screenId="pipeline">
