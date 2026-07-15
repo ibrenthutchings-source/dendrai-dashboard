@@ -603,7 +603,7 @@ function UBOGovPanel({ initialTab } = {}) {
         )}
 
         {tab === "coverage" && (
-          <CoverageTab coverage={coverage} loading={loading} />
+          <CoverageTab coverage={coverage} loading={loading} onSuppress={addSuppression} />
         )}
 
         {tab === "timeline" && (
@@ -1448,34 +1448,91 @@ function HoldsTab({ holds, onResolve }) {
 
 // ── Coverage Report tab ───────────────────────────────────────────────────────
 
-function CoverageTab({ coverage, loading }) {
+function CoverageSuppressRow({ row, onSuppress, onDone }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!reason.trim()) return;
+    setBusy(true);
+    const ok = await onSuppress({
+      server_name: row.server_name,
+      target_tool: row.target_tool,
+      reason: reason.trim(),
+      created_by: "operator",
+    });
+    setBusy(false);
+    if (ok) onDone();
+  }
+
+  if (!open) {
+    return (
+      <button className="btn btn-sm" style={{fontSize:9.5,padding:"2px 8px"}} onClick={() => setOpen(true)}>
+        Suppress…
+      </button>
+    );
+  }
+  return (
+    <div style={{display:"flex",gap:4,alignItems:"center"}}>
+      <input
+        className="code-input mono" style={{fontSize:10,width:150}}
+        placeholder="reason (required)"
+        value={reason} onChange={e => setReason(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter") submit(); if (e.key === "Escape") setOpen(false); }}
+        autoFocus
+      />
+      <button className="btn btn-sm btn-acc" style={{fontSize:9.5,padding:"2px 8px"}} disabled={busy || !reason.trim()} onClick={submit}>
+        {busy ? "…" : "✓"}
+      </button>
+      <button className="btn btn-sm" style={{fontSize:9.5,padding:"2px 8px"}} onClick={() => setOpen(false)}>✕</button>
+    </div>
+  );
+}
+
+function CoverageTab({ coverage, loading, onSuppress }) {
+  const [justSuppressed, setJustSuppressed] = useState(new Set());
+
   if (loading && coverage.length === 0) return (
     <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
       <span className="spin"/> Loading coverage…
     </div>
   );
-  const blindSpots = coverage.filter(r => (r.flag_rate || 0) === 0).length;
+  const visible = coverage.filter((r, i) => !justSuppressed.has(`${r.server_name}::${r.target_tool}`));
+  const blindSpots = visible.filter(r => (r.flag_rate || 0) === 0).length;
+  const mcpCount = visible.filter(r => r.kind === "mcp").length;
+  const systemCount = visible.filter(r => r.kind === "system").length;
   return (<>
     <div className="bb-section-sep">
-      <span>TOOL COVERAGE REPORT</span>
-      <span>{coverage.length} TOOLS · {blindSpots > 0 ? <span style={{color:"var(--amber-ink)"}}>{blindSpots} BLIND SPOTS</span> : "ALL COVERED"}</span>
+      <span>TOOL COVERAGE REPORT · {mcpCount} MCP · {systemCount} SYSTEM</span>
+      <span>{visible.length} TOOLS · {blindSpots > 0 ? <span style={{color:"var(--amber-ink)"}}>{blindSpots} BLIND SPOTS</span> : "ALL COVERED"}</span>
     </div>
-    {coverage.length === 0 ? (
-      <Empty>No tool calls recorded yet. Coverage data appears once MCP tool calls flow through the telemetry proxy.</Empty>
+    {visible.length === 0 ? (
+      <Empty>No tool calls recorded yet. Coverage data appears once MCP tool calls or system_telemetry events (GitHub, SAP, Saviynt, any registered non-MCP system) flow through governance.</Empty>
     ) : (
       <div style={{padding:"0 18px 18px",overflowX:"auto"}}>
         <table className="ubo-lat-table">
           <thead>
             <tr>
-              <th>Server</th><th>Tool</th><th>Calls</th>
-              <th>Flagged</th><th>Flag %</th><th>Status</th>
+              <th>Source</th><th>Server</th><th>Tool / Action</th><th>Calls</th>
+              <th>Flagged</th><th>Flag %</th><th>Status</th><th></th>
             </tr>
           </thead>
           <tbody>
-            {coverage.map((r, i) => {
+            {visible.map((r, i) => {
               const isBlind = (r.flag_rate || 0) === 0;
+              const rowKey = `${r.server_name}::${r.target_tool}`;
               return (
                 <tr key={i}>
+                  <td>
+                    <span style={{
+                      fontSize:9,fontWeight:600,padding:"1px 6px",borderRadius:999,
+                      background: r.kind === "mcp" ? "var(--surface-2)" : "var(--acc-soft)",
+                      color: r.kind === "mcp" ? "var(--ink-3)" : "var(--acc-ink)",
+                    }}>
+                      {r.kind === "mcp" ? "MCP" : "SYSTEM"}
+                    </span>
+                  </td>
                   <td className="mono">{r.server_name || "—"}</td>
                   <td className="mono">{r.target_tool || "—"}</td>
                   <td>{r.call_count}</td>
@@ -1489,15 +1546,24 @@ function CoverageTab({ coverage, loading }) {
                       : <span style={{color:"var(--green-ink)",fontSize:10,fontWeight:700,fontFamily:"'Geist Mono',monospace"}}>✓ COVERED</span>
                     }
                   </td>
+                  <td>
+                    {isBlind && onSuppress && (
+                      <CoverageSuppressRow row={r} onSuppress={onSuppress}
+                        onDone={() => setJustSuppressed(prev => new Set(prev).add(rowKey))} />
+                    )}
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
         <div style={{fontSize:10,color:"var(--ink-4)",marginTop:10,lineHeight:1.6}}>
-          <strong>Blind spot</strong> = tool has been called but no governance rule has ever flagged it.
-          Add targeted rules to <code>_RISK_CHECKS</code> in mcp_telemetry_proxy.py or create a suppression
-          if the tool is intentionally low-risk.
+          <strong>Blind spot</strong> = this tool/action has been called but no governance rule has ever flagged it —
+          it may be genuinely low-risk, or it may mean no detection rule covers it at all. Click <strong>Suppress…</strong>
+          to record a reviewed, documented decision that it's safe to ignore (adds it to the Suppressions tab with a
+          reason, and auto-clears future calls without adjudicating them). If it's actually a gap, add a detection rule
+          instead — MCP tools: <code>_RISK_CHECKS</code> in mcp_telemetry_proxy.py; any other system: <code>_detect_system_flags</code>
+          in mcp_governance.py.
         </div>
       </div>
     )}
