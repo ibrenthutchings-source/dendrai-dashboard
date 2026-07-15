@@ -102,6 +102,127 @@ function MHBacktestTable({ trend }) {
   );
 }
 
+const _MH_INCIDENT_STATUS_STYLE = {
+  open:         { bg: "var(--red-soft)",   ink: "var(--red-ink)",   label: "Open" },
+  acknowledged: { bg: "var(--amber-soft)", ink: "var(--amber-ink)", label: "Acknowledged" },
+  resolved:     { bg: "var(--green-soft)", ink: "var(--green-ink)", label: "Resolved" },
+};
+
+function DriftIncidentRow({ incident, onUpdate, saving }) {
+  const [owner, setOwner] = React.useState(incident.owner || "");
+  const [notes, setNotes] = React.useState(incident.notes || "");
+  const st = _MH_INCIDENT_STATUS_STYLE[incident.status] || _MH_INCIDENT_STATUS_STYLE.open;
+
+  React.useEffect(() => { setOwner(incident.owner || ""); }, [incident.owner]);
+  React.useEffect(() => { setNotes(incident.notes || ""); }, [incident.notes]);
+
+  return (
+    <div style={{
+      border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px", marginBottom: 8,
+      background: "var(--surface)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="mono" style={{
+            fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+            background: st.bg, color: st.ink,
+          }}>{st.label}</span>
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>{incident.metric_key}</span>
+          <span style={{ fontSize: 9.5, color: "var(--ink-4)" }}>
+            {incident.metric_kind === "ratio" ? "Financial ratio" : "FRED macro series"}
+          </span>
+        </div>
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>
+          {incident.psi != null ? `PSI ${incident.psi.toFixed(3)}` : ""} · detected {new Date(incident.detected_at).toLocaleDateString()}
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 8 }}>
+        <input className="code-input" style={{ fontSize: 11 }} placeholder="Owner (unassigned)"
+          value={owner} onChange={e => setOwner(e.target.value)}
+          onBlur={() => owner !== (incident.owner || "") && onUpdate(incident.id, { owner })} />
+        <input className="code-input" style={{ fontSize: 11 }} placeholder="Notes"
+          value={notes} onChange={e => setNotes(e.target.value)}
+          onBlur={() => notes !== (incident.notes || "") && onUpdate(incident.id, { notes })} />
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {incident.status !== "acknowledged" && incident.status !== "resolved" && (
+          <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(incident.id, { status: "acknowledged" })}>Acknowledge</button>
+        )}
+        {incident.status !== "resolved" && (
+          <button className="btn btn-sm btn-acc" disabled={saving} onClick={() => onUpdate(incident.id, { status: "resolved" })}>Resolve</button>
+        )}
+        {incident.status === "resolved" && (
+          <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(incident.id, { status: "open" })}>Reopen</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DriftIncidentsPanel() {
+  const [incidents, setIncidents] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [savingId, setSavingId] = React.useState(null);
+  const [showResolved, setShowResolved] = React.useState(false);
+
+  const load = React.useCallback(() => {
+    return fetch("/api/mcp/model-health/drift-incidents", { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setIncidents(d.rows || []); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  async function handleUpdate(id, fields) {
+    setSavingId(id);
+    setIncidents(rows => rows.map(r => r.id === id ? { ...r, ...fields } : r));
+    try {
+      await fetch(`/api/mcp/model-health/drift-incidents/${id}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields),
+      });
+    } catch (_) {}
+    await load();
+    setSavingId(null);
+  }
+
+  const visible = showResolved ? incidents : incidents.filter(i => i.status !== "resolved");
+  const openCount = incidents.filter(i => i.status === "open").length;
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div className="kicker">
+          Drift Incidents{openCount > 0 && (
+            <span className="mono" style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "var(--red-soft)", color: "var(--red-ink)" }}>
+              {openCount} OPEN
+            </span>
+          )}
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--ink-3)", cursor: "pointer" }}>
+          <input type="checkbox" checked={showResolved} onChange={e => setShowResolved(e.target.checked)} />
+          Show resolved
+        </label>
+      </div>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", marginBottom: 10 }}>
+        Every drift detection the background watch (every few hours) finds becomes a tracked incident here —
+        assign an owner, acknowledge, and resolve, so there's a governed record of what happened, not just a
+        webhook ping. Re-alerting only stops once an incident is resolved.
+      </div>
+      {loading ? <Empty>Loading…</Empty> : !visible.length ? (
+        <Empty>{incidents.length ? "No open incidents — everything's resolved." : "No drift ever detected."}</Empty>
+      ) : (
+        visible.map(inc => (
+          <DriftIncidentRow key={inc.id} incident={inc} onUpdate={handleUpdate} saving={savingId === inc.id} />
+        ))
+      )}
+    </div>
+  );
+}
+
 function ModelHealthScreen() {
   const RefreshBadge = window.RefreshBadge;
   const [data, setData] = React.useState(null);
@@ -149,6 +270,8 @@ function ModelHealthScreen() {
       )}
 
       {loading ? <Empty>Loading…</Empty> : (
+        <>
+        <DriftIncidentsPanel />
         <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 340 }}>
             <div className="kicker" style={{ marginBottom: 8 }}>Backtest Accuracy Trend</div>
@@ -185,6 +308,7 @@ function ModelHealthScreen() {
             )}
           </div>
         </div>
+        </>
       )}
     </div>
   );

@@ -412,7 +412,7 @@ function UBOGovPanel({ initialTab } = {}) {
     <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{height:"calc(100% + 40px)", overflow:"hidden"}}>
       <BBTermHeader
         section="DENDRAI UBO™ GOVERNANCE BRAIN"
-        title="Medallion Pipeline · MCP Telemetry Adjudication"
+        title="Medallion Pipeline · MCP + Any-Agent Telemetry Adjudication"
         status={`${counts.total} ADJUDICATED  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
         actions={
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -634,6 +634,42 @@ function UBOReviewRow({ row }) {
   );
 }
 
+// Builds a self-contained, portable record of "why was this escalated" — the
+// full reasoning trail (verdict, policy violations, adjudicator synthesis,
+// per-agent council votes) as one JSON file, so an AI-governance leader can
+// attach a specific decision to an incident ticket or an oversight-committee
+// packet without screenshotting the UI.
+function _exportAdjudicationRecord(row) {
+  const record = {
+    exported_at: new Date().toISOString(),
+    adjudication_id: row.id,
+    adjudicated_at: row.adjudicated_at,
+    tool: row.target_tool,
+    server: row.server_name,
+    source_system: row.source_system,
+    session_id: row.session_id,
+    risk_tier: row.risk_tier,
+    risk_score: row.risk_score,
+    final_verdict: row.final_verdict,
+    ensemble_confidence: row.ensemble_confidence,
+    requires_human_review: row.requires_human_review,
+    risk_flags: row.risk_flags || [],
+    conflict_flags: row.conflict_flags || [],
+    policy_violations: row.policy_violations || [],
+    adjudicator_reasoning: row.adjudicator_reasoning || null,
+    council_votes: row.council_votes || [],
+  };
+  const blob = new Blob([JSON.stringify(record, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `dendrai-adjudication-${row.id ?? "record"}-${(row.adjudicated_at || new Date().toISOString()).slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function UBOAdjRow({ row, expanded, onToggle, isNew, onReview }) {
   const tier    = row.risk_tier     || "LOW";
   const verdict = row.final_verdict || "CLEAR";
@@ -684,6 +720,12 @@ function UBOAdjRow({ row, expanded, onToggle, isNew, onReview }) {
       </div>
       {expanded && (
         <div className="ubo-adj-body">
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:6}}>
+            <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); _exportAdjudicationRecord(row); }}
+              title="Download the full reasoning trail for this decision as a JSON record">
+              ⬇ Export audit record
+            </button>
+          </div>
           <div className="cem-meta">
             <CEMMeta l="Session ID"    v={row.session_id ? row.session_id.slice(0, 8) + "…" : "—"} />
             <CEMMeta l="Confidence"    v={row.ensemble_confidence != null ? `${(row.ensemble_confidence * 100).toFixed(0)}%` : "—"} />
@@ -702,6 +744,27 @@ function UBOAdjRow({ row, expanded, onToggle, isNew, onReview }) {
             <>
               <div className="cem-section-lbl">Adjudicator reasoning</div>
               <div className="rca-box">{row.adjudicator_reasoning}</div>
+            </>
+          )}
+          {(row.council_votes || []).length > 0 && (
+            <>
+              <div className="cem-section-lbl">Council votes ({row.council_votes.length})</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:4}}>
+                {row.council_votes.map((vote, vi) => {
+                  const vvs = _UBO_VERDICT_STYLE[vote.verdict] || _UBO_VERDICT_STYLE.CLEAR;
+                  return (
+                    <div key={vi} style={{
+                      display:"flex", alignItems:"baseline", gap:8, fontSize:10.5,
+                      padding:"5px 8px", borderRadius:4, background:"var(--surface-1)", border:"1px solid var(--line)",
+                    }}>
+                      <span style={{fontWeight:700,fontFamily:"'Geist Mono',monospace",minWidth:120}}>{vote.agent_name}</span>
+                      <span className="ubo-verdict-badge" style={{background:vvs.bg,color:vvs.ink,fontSize:9,padding:"1px 5px",flexShrink:0}}>{vote.verdict}</span>
+                      <span style={{color:"var(--ink-3)",flexShrink:0}}>{(vote.confidence*100).toFixed(0)}% conf</span>
+                      <span style={{color:"var(--ink-2)",lineHeight:1.4}}>{vote.reasoning}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </>
           )}
 

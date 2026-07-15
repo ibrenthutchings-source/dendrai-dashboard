@@ -22,6 +22,7 @@ const NAV_SECTIONS = [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Monitoring" },
+      { id: "aiinventory", icon: "list", l: "AI System Inventory" },
       { id: "scope",    icon: "grid",      l: "Audit Scope" },
       { id: "rrreview",   icon: "list",     l: "Risks & Controls Register" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code" },

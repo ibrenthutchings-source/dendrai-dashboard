@@ -993,6 +993,32 @@ CREATE TABLE IF NOT EXISTS pac_processes (
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- Model Health drift incidents: turns a drift-detection webhook ping into a
+-- tracked record with an owner, status, and closure note — the process trail
+-- an AI-governance committee expects, not just an ephemeral alert. Replaces
+-- the old timestamp-cooldown app_config key: "don't re-alert" now means
+-- "there's already an OPEN incident for this metric," which re-alerts
+-- correctly if drift recurs after a prior incident was resolved.
+CREATE TABLE IF NOT EXISTS model_health_drift_incidents (
+    id              BIGSERIAL    PRIMARY KEY,
+    metric_key      VARCHAR(128) NOT NULL,
+    metric_kind     VARCHAR(16)  NOT NULL,   -- ratio | fred_series
+    psi             NUMERIC,
+    n_baseline      INTEGER,
+    n_current       INTEGER,
+    detail          JSONB,
+    status          VARCHAR(16)  NOT NULL DEFAULT 'open',  -- open | acknowledged | resolved
+    owner           VARCHAR(128),
+    notes           TEXT,
+    detected_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    acknowledged_at TIMESTAMPTZ,
+    resolved_at     TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_open
+    ON model_health_drift_incidents (metric_key)
+    WHERE status != 'resolved';
+
 -- Policy-as-Code modules: versioned Rego per business process
 -- One row per version; latest version is the one with the highest id per process.
 CREATE TABLE IF NOT EXISTS pac_policy_modules (
@@ -1322,6 +1348,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_systems_server_name
 ALTER TABLE observability.monitored_systems
     ADD COLUMN IF NOT EXISTS ingest_api_key UUID NOT NULL DEFAULT gen_random_uuid();
 
+-- AI system inventory / risk-tiering (idempotent) — the classification fields
+-- a NIST AI RMF "Map" inventory or EU AI Act system register expects: how
+-- risky is this system, what does it touch, who owns it. Mirrored onto
+-- poll_connectors below so the unified inventory view covers both push- and
+-- pull-model systems.
+ALTER TABLE observability.monitored_systems ADD COLUMN IF NOT EXISTS risk_tier        VARCHAR(16);
+ALTER TABLE observability.monitored_systems ADD COLUMN IF NOT EXISTS data_sensitivity VARCHAR(32);
+ALTER TABLE observability.monitored_systems ADD COLUMN IF NOT EXISTS system_owner     VARCHAR(128);
+
 -- Poll-based connectors: the inverse of monitored_systems. monitored_systems
 -- is push-model (the external system authenticates to us with an
 -- ingest_api_key WE issue); poll_connectors is pull-model (WE authenticate
@@ -1348,6 +1383,9 @@ CREATE TABLE IF NOT EXISTS observability.poll_connectors (
     created_by        VARCHAR(128)
 );
 CREATE INDEX IF NOT EXISTS idx_poll_connectors_active ON observability.poll_connectors (active);
+ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS risk_tier        VARCHAR(16);
+ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS data_sensitivity VARCHAR(32);
+ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS system_owner     VARCHAR(128);
 
 -- Generic system telemetry: any registered system pushes events here via REST.
 -- Enterprise systems (Saviynt, SAP, Oracle Fusion, ServiceNow, etc.) authenticate
@@ -5988,6 +6026,116 @@ def delete_pac_process(process_id: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Model Health drift incidents
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_open_drift_incident(metric_key: str) -> Optional[dict]:
+    """The one thing the drift-check loop actually needs: is there already an
+    unresolved incident for this metric? If so, don't create a duplicate or
+    re-alert — that's the job the old timestamp cooldown used to do."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id FROM model_health_drift_incidents
+                    WHERE metric_key = %s AND status != 'resolved'
+                    ORDER BY detected_at DESC LIMIT 1
+                    """,
+                    (metric_key,),
+                )
+                row = cur.fetchone()
+                return {"id": row[0]} if row else None
+    return _run(_do)
+
+
+def create_drift_incident(metric_key: str, metric_kind: str, psi: Optional[float],
+                           n_baseline: Optional[int], n_current: Optional[int],
+                           detail: Optional[dict] = None) -> Optional[int]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO model_health_drift_incidents
+                        (metric_key, metric_kind, psi, n_baseline, n_current, detail)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (metric_key[:128], metric_kind[:16], psi, n_baseline, n_current,
+                     Json(detail) if detail else None),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_drift_incidents(status: Optional[str] = None) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cols = ("id, metric_key, metric_kind, psi, n_baseline, n_current, detail, "
+                        "status, owner, notes, detected_at, acknowledged_at, resolved_at, updated_at")
+                if status:
+                    cur.execute(
+                        f"SELECT {cols} FROM model_health_drift_incidents WHERE status = %s ORDER BY detected_at DESC",
+                        (status,),
+                    )
+                else:
+                    cur.execute(f"SELECT {cols} FROM model_health_drift_incidents ORDER BY detected_at DESC")
+                out = []
+                for r in cur.fetchall():
+                    out.append({
+                        "id": r[0], "metric_key": r[1], "metric_kind": r[2],
+                        "psi": float(r[3]) if r[3] is not None else None,
+                        "n_baseline": r[4], "n_current": r[5], "detail": r[6],
+                        "status": r[7], "owner": r[8], "notes": r[9],
+                        "detected_at": r[10].isoformat() if r[10] else None,
+                        "acknowledged_at": r[11].isoformat() if r[11] else None,
+                        "resolved_at": r[12].isoformat() if r[12] else None,
+                        "updated_at": r[13].isoformat() if r[13] else None,
+                    })
+                return out
+    return _run(_do) or []
+
+
+def update_drift_incident(incident_id: int, *, status: Optional[str] = None,
+                           owner: Optional[str] = None, notes: Optional[str] = None) -> bool:
+    """Any field left as None is unchanged. A transition to 'acknowledged' or
+    'resolved' stamps the matching timestamp; moving back to 'open' clears both,
+    so re-opening a previously-resolved incident (drift recurred) reads cleanly."""
+    sets, params = ["updated_at = NOW()"], []
+    if status is not None:
+        sets.append("status = %s")
+        params.append(status)
+        if status == "acknowledged":
+            sets.append("acknowledged_at = NOW()")
+        elif status == "resolved":
+            sets.append("resolved_at = NOW()")
+        elif status == "open":
+            sets.append("acknowledged_at = NULL")
+            sets.append("resolved_at = NULL")
+    if owner is not None:
+        sets.append("owner = %s")
+        params.append(owner[:128])
+    if notes is not None:
+        sets.append("notes = %s")
+        params.append(notes)
+    if len(sets) == 1:  # only updated_at — nothing real to change
+        return False
+    params.append(incident_id)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE model_health_drift_incidents SET {', '.join(sets)} WHERE id = %s",
+                    tuple(params),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Connector credential encryption (Fernet, CONNECTOR_ENCRYPTION_KEY)
 # ─────────────────────────────────────────────────────────────────────────────
 # A stable key is required — unlike auth_endpoints.py's AUTH_JWT_SECRET (which
@@ -6038,7 +6186,9 @@ def decrypt_credentials(token: bytes) -> dict:
 
 def create_poll_connector(connector_type: str, display_name: str, base_url: Optional[str],
                            auth_type: str, credentials: dict, extra_config: Optional[dict] = None,
-                           poll_interval_s: int = 1800, created_by: Optional[str] = None) -> Optional[int]:
+                           poll_interval_s: int = 1800, created_by: Optional[str] = None,
+                           risk_tier: Optional[str] = None, data_sensitivity: Optional[str] = None,
+                           system_owner: Optional[str] = None) -> Optional[int]:
     """Create a poll connector. `credentials` is a plain dict — encrypted here before storage."""
     enc = encrypt_credentials(credentials)
     def _do():
@@ -6048,12 +6198,14 @@ def create_poll_connector(connector_type: str, display_name: str, base_url: Opti
                     """
                     INSERT INTO observability.poll_connectors
                         (connector_type, display_name, base_url, auth_type, credentials_enc,
-                         extra_config, poll_interval_s, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         extra_config, poll_interval_s, created_by,
+                         risk_tier, data_sensitivity, system_owner)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (connector_type, display_name, base_url, auth_type, enc,
-                     Json(extra_config) if extra_config else None, poll_interval_s, created_by),
+                     Json(extra_config) if extra_config else None, poll_interval_s, created_by,
+                     risk_tier, data_sensitivity, (system_owner[:128] if system_owner else None)),
                 )
                 row = cur.fetchone()
                 return row[0] if row else None
@@ -6066,7 +6218,7 @@ def list_poll_connectors(include_credentials: bool = False) -> list:
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                cols = "id, connector_type, display_name, base_url, auth_type, extra_config, poll_interval_s, active, last_poll_at, last_poll_status, last_poll_error, created_at, updated_at, created_by"
+                cols = "id, connector_type, display_name, base_url, auth_type, extra_config, poll_interval_s, active, last_poll_at, last_poll_status, last_poll_error, created_at, updated_at, created_by, risk_tier, data_sensitivity, system_owner"
                 if include_credentials:
                     cols += ", credentials_enc"
                 cur.execute(f"SELECT {cols} FROM observability.poll_connectors ORDER BY created_at DESC")
@@ -6081,9 +6233,10 @@ def list_poll_connectors(include_credentials: bool = False) -> list:
                         "created_at": r[11].isoformat() if r[11] else None,
                         "updated_at": r[12].isoformat() if r[12] else None,
                         "created_by": r[13],
+                        "risk_tier": r[14], "data_sensitivity": r[15], "system_owner": r[16],
                     }
                     if include_credentials:
-                        d["credentials"] = decrypt_credentials(r[14]) if r[14] else {}
+                        d["credentials"] = decrypt_credentials(r[17]) if r[17] else {}
                     out.append(d)
                 return out
     return _run(_do) or []
@@ -6099,12 +6252,16 @@ def get_poll_connector(connector_id: int, include_credentials: bool = False) -> 
 def update_poll_connector(connector_id: int, *, display_name: Optional[str] = None,
                            base_url: Optional[str] = None, auth_type: Optional[str] = None,
                            credentials: Optional[dict] = None, extra_config: Optional[dict] = None,
-                           poll_interval_s: Optional[int] = None, active: Optional[bool] = None) -> bool:
+                           poll_interval_s: Optional[int] = None, active: Optional[bool] = None,
+                           risk_tier: Optional[str] = None, data_sensitivity: Optional[str] = None,
+                           system_owner: Optional[str] = None) -> bool:
     """Update a connector. Any field left as None is unchanged — critically, omitting
     `credentials` keeps the existing encrypted value rather than requiring re-entry."""
     sets, params = [], []
     for col, val in (("display_name", display_name), ("base_url", base_url), ("auth_type", auth_type),
-                      ("poll_interval_s", poll_interval_s), ("active", active)):
+                      ("poll_interval_s", poll_interval_s), ("active", active),
+                      ("risk_tier", risk_tier), ("data_sensitivity", data_sensitivity),
+                      ("system_owner", system_owner)):
         if val is not None:
             sets.append(f"{col} = %s")
             params.append(val)

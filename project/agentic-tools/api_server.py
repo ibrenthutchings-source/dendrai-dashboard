@@ -1786,13 +1786,20 @@ def get_token_usage_summary_endpoint(
 # same compute calls the on-demand endpoint uses.
 
 _MODEL_HEALTH_CHECK_INTERVAL_S = float(os.environ.get("MODEL_HEALTH_CHECK_INTERVAL_S", "21600"))  # 6h
-_MODEL_HEALTH_ALERT_COOLDOWN_S = 24 * 3600  # don't re-alert the same ongoing drift more than once/day
 
 
 def _check_model_health_drift_once() -> list[dict]:
-    """One drift-check cycle. Returns the list of newly-alerted (metric, flag)
+    """One drift-check cycle. Returns the list of newly-opened (metric, flag)
     entries, for logging/testing. Never raises — all failures are caught and
-    logged, matching every other best-effort background path in this codebase."""
+    logged, matching every other best-effort background path in this codebase.
+
+    Each newly-detected drift becomes a persisted model_health_drift_incidents
+    row (status=open) rather than just a webhook ping — the governed process
+    trail an AI-governance committee expects (owner, status, closure), not
+    just an ephemeral alert. "Don't re-alert" is now "there's already an open
+    incident for this metric" instead of a blind 24h timestamp cooldown, so a
+    metric that drifts again *after* a prior incident was resolved correctly
+    opens a new one instead of staying silent."""
     import drift_tool
 
     alerted: list[dict] = []
@@ -1804,18 +1811,18 @@ def _check_model_health_drift_once() -> list[dict]:
     fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key)
 
     entries = (
-        [(r["ratio"], r) for r in ratio_drift] +
-        [(r["series_id"], r) for r in fred_drift]
+        [(r["ratio"], "ratio", r) for r in ratio_drift] +
+        [(r["series_id"], "fred_series", r) for r in fred_drift]
     )
-    for metric_key, entry in entries:
+    for metric_key, metric_kind, entry in entries:
         if entry.get("flag") != "drift":
             continue
-        cooldown_key = f"model_health_alerted:{metric_key}"
-        last_alerted = db.get_app_config(cooldown_key)
-        if last_alerted:
-            last_dt = datetime.fromisoformat(last_alerted)
-            if (datetime.now(timezone.utc) - last_dt).total_seconds() < _MODEL_HEALTH_ALERT_COOLDOWN_S:
-                continue
+        if db.get_open_drift_incident(metric_key):
+            continue  # already a tracked, unresolved incident for this metric
+        incident_id = db.create_drift_incident(
+            metric_key, metric_kind, entry.get("psi"),
+            entry.get("n_baseline"), entry.get("n_current"), detail=entry,
+        )
         if _HAS_MCP_GOVERNANCE:
             mcp_governance._post_webhook_alert(
                 f"\U0001f4c9 *Model Health drift detected* — `{metric_key}`",
@@ -1823,12 +1830,12 @@ def _check_model_health_drift_once() -> list[dict]:
                     {"title": "Metric", "value": metric_key, "short": True},
                     {"title": "PSI",    "value": f"{entry.get('psi'):.3f}" if entry.get("psi") is not None else "n/a", "short": True},
                     {"title": "n (baseline / current)", "value": f"{entry.get('n_baseline')} / {entry.get('n_current')}", "short": True},
+                    {"title": "Incident", "value": f"#{incident_id}" if incident_id else "not persisted (db unavailable)", "short": True},
                 ],
                 color="#d97706",
             )
-        db.set_app_config(cooldown_key, datetime.now(timezone.utc).isoformat())
-        alerted.append({"metric": metric_key, **entry})
-        logger.info("Model Health: drift alert dispatched for %s", metric_key)
+        alerted.append({"metric": metric_key, "incident_id": incident_id, **entry})
+        logger.info("Model Health: drift incident #%s opened for %s", incident_id, metric_key)
     return alerted
 
 
@@ -1880,6 +1887,35 @@ def get_model_health_summary(
         "fred_drift": fred_drift,
         "fred_configured": bool(fred_api_key),
     }
+
+
+@app.get("/model-health/drift-incidents")
+def list_model_health_drift_incidents(
+    status: str = Query(None, description="Filter: open | acknowledged | resolved"),
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """The governed process trail behind Model Health drift alerts — each
+    detected drift is a tracked incident here, not just a webhook that fired
+    and was forgotten."""
+    rows = db.list_drift_incidents(status=status) if db.is_available() else []
+    return {"rows": rows, "count": len(rows), "open_count": sum(1 for r in rows if r["status"] != "resolved")}
+
+
+@app.put("/model-health/drift-incidents/{incident_id}")
+def update_model_health_drift_incident(
+    incident_id: int,
+    body: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """Assign an owner, change status (open/acknowledged/resolved), or add
+    notes on a drift incident. Any field omitted from the body is left
+    unchanged."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.update_drift_incident(
+        incident_id, status=body.get("status"), owner=body.get("owner"), notes=body.get("notes"),
+    )
+    return {"ok": ok, "id": incident_id}
 
 
 @app.get("/observability/command-center")
