@@ -173,7 +173,7 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
               tone={(data?.pending_holds ?? 0) > 0 ? "warn" : "good"} sub="Awaiting human decision"
               onClick={() => goTo("ubogov", { cemTab: "holds" })} />
             <CMTile label="Coverage blind spots" value={data?.coverage_blind_spots ?? 0}
-              tone={(data?.coverage_blind_spots ?? 0) > 0 ? "warn" : "good"} sub="Tools with zero flag history"
+              tone={(data?.coverage_blind_spots ?? 0) > 0 ? "warn" : "good"} sub="MCP + system tools with zero flag history"
               onClick={() => goTo("ubogov", { cemTab: "coverage" })} />
             <CMTile label="Model Health drift" value={data?.model_health_drift ? "Drift" : "Stable"}
               tone={data?.model_health_drift ? "bad" : "good"} sub="Ratio + FRED regime PSI"
