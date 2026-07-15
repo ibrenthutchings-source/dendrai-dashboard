@@ -1,6 +1,8 @@
 # Dendrai UBO — Governance Brain
 
-A production-grade agentic governance system that turns raw security events from multiple source systems into adjudicated risk verdicts, routed through a Medallion pipeline and a Council of parallel AI agents.
+A production-grade governance system that turns raw security events from multiple source systems into adjudicated risk verdicts, routed through a Medallion pipeline and a Council of Agents.
+
+**On the name**: The Quant, The Linguist, and The Graph Architect are deterministic rule engines (statistical thresholds, regex/keyword matching, and temporal/actor correlation respectively) — not independent AI models. They all read the same event fields and run concurrently for latency, not because they're statistically independent judgments; think of them as one hand-authored ruleset split into three files for audit-trail clarity, not three separate models. The one genuine AI model call in this pipeline is the LLM 4th opinion (`mcp_governance._llm_council_opinion`, in `project/agentic-tools/`) — a real Claude call, but only for cases the deterministic ensemble already flagged for human review, and its verdict can only ever escalate the case further, never downgrade it. A fired Policy-as-Code (Rego) deny rule works the same way: it forces human review and vetoes the ensemble to ESCALATE, exactly like the existing single-agent high-confidence veto. Accurate description: "a deterministic policy and risk-scoring engine with LLM-assisted review for ambiguous, human-escalated cases."
 
 ---
 
@@ -172,7 +174,11 @@ vote_i = verdict_weight(verdict_i) × confidence_i
 ensemble_score = mean(votes)     # ∈ [−1, +1]
 ```
 
-A single agent with confidence ≥ 0.85 and verdict ESCALATE can veto the ensemble (hard override).
+A single agent with confidence ≥ 0.85 and verdict ESCALATE can veto the ensemble (hard override) — this happens inside `TheAdjudicator` itself, before this URO ever leaves the UBO package.
+
+Two more veto paths exist one layer up, in `project/agentic-tools/mcp_governance.py::_write_adjudication` (not in `TheAdjudicator` — they run after the Council returns, using `AdjudicationResult.model_copy` to produce an adjusted result):
+- **Policy-as-Code veto**: a fired Rego deny rule forces `requires_human_review=True` and the final verdict to ESCALATE, unconditionally — a human-authored, approved control being violated outranks the heuristic ensemble's score.
+- **LLM escalation override**: the 4th-opinion LLM call (only made when the ensemble already required human review) can raise the verdict to ESCALATE if it independently disagrees with a lower verdict, but can never downgrade one — avoiding a false negative from trusting an LLM's talk-down is treated as worse than an extra human review.
 
 ---
 
