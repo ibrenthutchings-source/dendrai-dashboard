@@ -482,6 +482,7 @@ def _write_adjudication(
                 ),
             })
 
+    logger.warning("DEBUG_PROBE adj.final_verdict=%s pac_violations=%s", adj.final_verdict if adj else None, pac_violations)
     council_votes = json.dumps(council_votes_list)
     telemetry_id        = source_id if origin == "mcp" else None
     system_telemetry_id  = source_id if origin == "system" else None
