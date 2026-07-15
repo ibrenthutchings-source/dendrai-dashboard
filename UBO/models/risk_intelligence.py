@@ -140,7 +140,7 @@ class RiskIntelligenceReport(BaseModel):
 
     # Composite scores
     enterprise_risk_score:       float   # 0.0–1.0 weighted mean across all UROs
-    cascading_failure_probability: float  # Bayesian P(cascade | current signals)
+    cascading_failure_probability: float  # cross-system correlation ratio scaled by mean risk score — see gold.py's _compute_cascade_probability; not an actual Bayesian update
 
     # Breakdown by source
     risk_by_source:  dict[str, float]   # {SourceSystem → mean_risk_score}
