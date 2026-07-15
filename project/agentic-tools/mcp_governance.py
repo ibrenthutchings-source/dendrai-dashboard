@@ -568,10 +568,17 @@ def _write_adjudication(
 
 
 def _check_suppressed(row: dict) -> bool:
-    """Return True if this telemetry row matches an active suppression rule."""
+    """
+    Return True if this telemetry row matches an active suppression rule.
+    Works for both origins: MCP rows match on target_tool, system_telemetry
+    rows have no target_tool column so action (the closest analog — the verb
+    performed) is used instead, matching how _fetch_coverage and _add_suppression
+    both already treat the two interchangeably.
+    """
     if not db.is_available():
         return False
     try:
+        tool_value = row.get("target_tool") or row.get("action")
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -583,7 +590,7 @@ def _check_suppressed(row: dict) -> bool:
                       AND (tool_args_hash IS NULL OR tool_args_hash = %s)
                     LIMIT 1
                     """,
-                    (row.get("target_tool"), row.get("server_name"), row.get("tool_args_hash")),
+                    (tool_value, row.get("server_name"), row.get("tool_args_hash")),
                 )
                 return cur.fetchone() is not None
     except Exception as exc:
@@ -591,20 +598,22 @@ def _check_suppressed(row: dict) -> bool:
         return False
 
 
-def _stamp_processed_suppressed(telemetry_id: int) -> None:
-    """Stamp processed_at on a suppressed row without writing an adjudication."""
+def _stamp_processed_suppressed(telemetry_id: int, origin: str = "mcp") -> None:
+    """Stamp processed_at on a suppressed row without writing an adjudication —
+    correct table per origin, same as _write_adjudication's own stamping."""
     if not db.is_available():
         return
+    table = "observability.mcp_telemetry" if origin == "mcp" else "observability.system_telemetry"
     try:
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE observability.mcp_telemetry SET processed_at = NOW() WHERE id = %s",
+                    f"UPDATE {table} SET processed_at = NOW() WHERE id = %s",
                     (telemetry_id,),
                 )
             conn.commit()
     except Exception as exc:
-        logger.warning("_stamp_processed_suppressed error (id=%s): %s", telemetry_id, exc)
+        logger.warning("_stamp_processed_suppressed error (id=%s origin=%s): %s", telemetry_id, origin, exc)
 
 
 # ── Read helpers ───────────────────────────────────────────────────────────────
@@ -956,7 +965,17 @@ def _fetch_session_timeline(session_id: str) -> list[dict]:
 # ── Coverage report ────────────────────────────────────────────────────────────
 
 def _fetch_coverage() -> list[dict]:
-    """Per-tool flag rate; 0% = potential blind spot (never triggered a governance rule)."""
+    """
+    Per-tool flag rate; 0% = potential blind spot (never triggered a governance
+    rule). Unions BOTH telemetry paths — mcp_telemetry (MCP tool calls) and
+    system_telemetry (the generic REST-ingest path any other system or non-MCP
+    AI agent uses) — a coverage report that only looked at MCP traffic would
+    itself be a blind spot: GitHub, SAP, Saviynt, and any non-MCP agent's
+    calls would be invisible here even though they're adjudicated by the same
+    Council. system_telemetry has no target_tool column — action is its
+    closest analog (the verb performed) and is reported under the same
+    'target_tool' key so the UI/suppression matching can treat both uniformly.
+    """
     if not db.is_available():
         return []
     try:
@@ -964,9 +983,7 @@ def _fetch_coverage() -> list[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT
-                        server_name,
-                        target_tool,
+                    SELECT 'mcp' AS kind, server_name, target_tool,
                         COUNT(*) AS call_count,
                         COUNT(*) FILTER (
                             WHERE risk_flags IS NOT NULL
@@ -982,6 +999,20 @@ def _fetch_coverage() -> list[dict]:
                     WHERE direction = 'response'
                       AND target_tool IS NOT NULL
                     GROUP BY server_name, target_tool
+
+                    UNION ALL
+
+                    SELECT 'system' AS kind, server_name, action AS target_tool,
+                        COUNT(*) AS call_count,
+                        COUNT(*) FILTER (WHERE array_length(risk_flags, 1) > 0) AS flagged_count,
+                        ROUND(
+                            100.0 * COUNT(*) FILTER (WHERE array_length(risk_flags, 1) > 0)
+                            / NULLIF(COUNT(*), 0), 1
+                        ) AS flag_rate
+                    FROM observability.system_telemetry
+                    WHERE action IS NOT NULL
+                    GROUP BY server_name, action
+
                     ORDER BY flagged_count DESC, call_count DESC
                     """
                 )
@@ -1093,9 +1124,9 @@ def _delete_suppression(suppression_id: int) -> bool:
 async def _process_one(row: dict) -> bool:
     """
     Run one telemetry row through the full UBO pipeline and persist the result.
-    Suppressed rows are auto-cleared without entering the pipeline (MCP-origin only —
-    the suppression allowlist is keyed on target_tool/tool_args_hash, which don't
-    apply to generic system_telemetry events).
+    Suppressed rows are auto-cleared without entering the pipeline — applies to
+    both origins; system_telemetry rows have no target_tool column, so
+    _check_suppressed falls back to action (the closest analog) for those.
     Returns True on success, False if any stage fails.
     """
     source_id = row["id"]
@@ -1103,11 +1134,11 @@ async def _process_one(row: dict) -> bool:
     session_id = row.get("session_id") if origin == "mcp" else None
     ubo_source = UBOSourceSystem.MCP_PROXY if origin == "mcp" else UBOSourceSystem.SYSTEM_TELEMETRY
 
-    if origin == "mcp" and await asyncio.to_thread(_check_suppressed, row):
-        await asyncio.to_thread(_stamp_processed_suppressed, source_id)
+    if await asyncio.to_thread(_check_suppressed, row):
+        await asyncio.to_thread(_stamp_processed_suppressed, source_id, origin)
         logger.info(
-            "Suppressed telemetry %d: tool=%s server=%s — auto-cleared",
-            source_id, row.get("target_tool"), row.get("server_name"),
+            "Suppressed %s telemetry %d: tool=%s server=%s — auto-cleared",
+            origin, source_id, row.get("target_tool") or row.get("action"), row.get("server_name"),
         )
         return True
 
