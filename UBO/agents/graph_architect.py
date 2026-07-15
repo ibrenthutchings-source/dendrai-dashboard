@@ -4,17 +4,25 @@ The Graph Architect — evaluates systemic dependencies and cascading failure pa
 Analytical lens: no event is an island. Every actor, resource, and system
 is a node in a dependency graph, and risk propagates along edges.
 
-The Graph Architect looks for:
-  - Blast radius: how many downstream systems/users are affected if this node fails?
-  - Single-point-of-failure (SPoF) actors: identities with outsized reach
-  - Bridging nodes: resources that connect otherwise isolated system clusters
-  - Multi-hop compromise paths: can attacker A reach critical asset B in ≤3 hops?
-  - Temporal clustering: multiple high-risk events on the same node within a time window
-    indicate an active, coordinated attack rather than an isolated incident
+What's genuinely implemented today:
+  - Blast radius: an arithmetic estimate (role_count/entitlement_count ×
+    per-event-type amplifier — see _estimate_blast), not a graph traversal
+  - Single-point-of-failure (SPoF) actors: a role-count threshold check
+  - Critical asset targeting: a fixed-set substring match on resource_id
+  - Temporal/actor correlation: REAL relational logic — this agent maintains
+    a rolling window of recently-seen UROs (shared with the orchestrator) and
+    checks it for same-actor and same-correlation-id clustering, which is
+    genuinely different from what The Quant/Linguist do (they only ever see
+    the current event in isolation)
 
-In production, this agent would query a live graph database (Neo4j, Amazon Neptune,
-or a purpose-built CMDB graph). Here, it works from the URO's conformed_payload
-and the correlation window passed in at construction.
+What this agent does NOT do, despite the "Graph Architect" name: there is no
+graph database, no multi-hop path traversal, and no bridging-node analysis.
+"Blast radius" and "multi-hop compromise paths" are aspirational framing for
+a real graph store (Neo4j, Amazon Neptune, or a purpose-built CMDB graph)
+this codebase doesn't have — if that capability becomes a real requirement,
+build it against real topology data rather than extending the arithmetic
+estimate further; padding the estimate function won't make it a graph
+analysis.
 """
 
 from __future__ import annotations

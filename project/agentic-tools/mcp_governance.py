@@ -482,7 +482,6 @@ def _write_adjudication(
                 ),
             })
 
-    logger.warning("DEBUG_PROBE adj.final_verdict=%s pac_violations=%s", adj.final_verdict if adj else None, pac_violations)
     council_votes = json.dumps(council_votes_list)
     telemetry_id        = source_id if origin == "mcp" else None
     system_telemetry_id  = source_id if origin == "system" else None
@@ -1982,6 +1981,81 @@ async def update_connector_classification(connector_id: int, body: dict = Body(.
         system_owner=body.get("system_owner"),
     )
     return {"ok": ok, "id": connector_id}
+
+
+def _fetch_agent_calibration() -> dict:
+    """
+    Per-agent calibration: of the cases each Council member (or the LLM 4th
+    opinion, or Policy-as-Code) voted ESCALATE on, what fraction did a human
+    reviewer actually confirm? This is the evidence a skeptical AI-governance
+    buyer will ask for — it turns "author-chosen confidence formula" into
+    something empirically checkable, using human_verdict/ai_final_verdict
+    (see _human_review_adjudication) rather than the old final_verdict-only
+    trail that a review would have already overwritten.
+
+    "APPROVE" (the UI's "confirm the AI's verdict" click) reads as agreement
+    with ai_final_verdict — every other human_verdict value is compared
+    directly against each agent's own vote.
+    """
+    if not db.is_available():
+        return {"agents": [], "reviewed_count": 0}
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ai_final_verdict, human_verdict, council_votes
+                    FROM observability.adjudicated_tool_calls
+                    WHERE human_reviewed_at IS NOT NULL
+                      AND human_verdict IS NOT NULL
+                      AND council_votes IS NOT NULL
+                    """
+                )
+                rows = cur.fetchall()
+    except Exception as exc:
+        logger.warning("_fetch_agent_calibration error: %s", exc)
+        return {"agents": [], "reviewed_count": 0}
+
+    stats: dict[str, dict[str, int]] = {}
+    for ai_final_verdict, human_verdict, council_votes in rows:
+        effective_human = ai_final_verdict if human_verdict == "APPROVE" else human_verdict
+        for vote in (council_votes or []):
+            name = vote.get("agent_name")
+            verdict = vote.get("verdict")
+            if not name or not verdict:
+                continue
+            s = stats.setdefault(name, {
+                "total_votes": 0, "agreements": 0,
+                "escalate_calls": 0, "escalate_confirmed": 0,
+            })
+            s["total_votes"] += 1
+            if verdict == effective_human:
+                s["agreements"] += 1
+            if verdict == "ESCALATE":
+                s["escalate_calls"] += 1
+                if effective_human == "ESCALATE":
+                    s["escalate_confirmed"] += 1
+
+    agents = []
+    for name, s in stats.items():
+        agents.append({
+            "agent_name": name,
+            "total_votes": s["total_votes"],
+            "overall_agreement_rate": round(s["agreements"] / s["total_votes"], 3) if s["total_votes"] else None,
+            "escalate_calls": s["escalate_calls"],
+            "escalate_confirmed": s["escalate_confirmed"],
+            "escalate_confirmation_rate": (
+                round(s["escalate_confirmed"] / s["escalate_calls"], 3) if s["escalate_calls"] else None
+            ),
+        })
+    agents.sort(key=lambda a: a["total_votes"], reverse=True)
+    return {"agents": agents, "reviewed_count": len(rows)}
+
+
+@router.get("/agent-calibration")
+async def agent_calibration():
+    """See _fetch_agent_calibration."""
+    return await asyncio.to_thread(_fetch_agent_calibration)
 
 
 @router.get("/ai-inventory")

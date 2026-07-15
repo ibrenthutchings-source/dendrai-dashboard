@@ -198,7 +198,10 @@ class GoldAggregationLayer(GoldLayerBase):
 
     def _compute_cascade_probability(self, uros: list[URO]) -> float:
         """
-        Bayesian estimate: P(cascade) based on cross-system correlation clusters.
+        Cross-system correlation ratio, scaled by mean risk score — NOT a
+        Bayesian update (no prior distribution is maintained or revised; this
+        is (multi_system_cluster_ratio) × (0.5 + mean_score), a single-pass
+        arithmetic estimate that happens to be labeled "probability").
 
         If ≥2 different source systems appear in the same correlation_id group,
         that cluster is treated as a confirmed multi-system cascade signal.

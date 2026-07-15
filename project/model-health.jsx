@@ -223,6 +223,66 @@ function DriftIncidentsPanel() {
   );
 }
 
+function AgentCalibrationBar({ label, pct, sample }) {
+  const tone = pct == null ? "var(--ink-4)" : pct >= 0.7 ? "var(--green-ink)" : pct >= 0.4 ? "var(--amber-ink)" : "var(--red-ink)";
+  const barBg = pct == null ? "var(--surface-2)" : pct >= 0.7 ? "var(--green-soft)" : pct >= 0.4 ? "var(--amber-soft)" : "var(--red-soft)";
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+        <span style={{ fontWeight: 600 }}>{label}</span>
+        <span className="mono" style={{ color: tone, fontWeight: 700 }}>
+          {pct == null ? "no data yet" : `${(pct * 100).toFixed(0)}%`}
+          {sample != null && <span style={{ color: "var(--ink-4)", fontWeight: 400 }}> (n={sample})</span>}
+        </span>
+      </div>
+      <div style={{ height: 6, borderRadius: 3, background: "var(--surface-2)", overflow: "hidden" }}>
+        {pct != null && <div style={{ height: "100%", width: `${Math.round(pct * 100)}%`, background: barBg, borderLeft: `2px solid ${tone}` }} />}
+      </div>
+    </div>
+  );
+}
+
+function AgentCalibrationPanel() {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    fetch("/api/mcp/observability/agent-calibration", { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setData(d); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const agents = data?.agents || [];
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div className="kicker" style={{ marginBottom: 4 }}>Agent Calibration</div>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", marginBottom: 12 }}>
+        Of the cases each Council member (or the Policy-as-Code check, or the LLM 4th opinion) voted
+        ESCALATE on, what fraction did a human reviewer actually confirm? This is measured from real
+        human-review outcomes, not author-chosen confidence formulas — it only fills in as review volume
+        accumulates.
+      </div>
+      {loading ? <Empty>Loading…</Empty> : !agents.length ? (
+        <Empty>No reviewed adjudications yet — calibration fills in once human reviewers confirm or override AI verdicts in Controls Monitor.</Empty>
+      ) : (
+        <div style={{ maxWidth: 480 }}>
+          {agents.map(a => (
+            <AgentCalibrationBar key={a.agent_name}
+              label={`${a.agent_name} — ESCALATE confirmation rate`}
+              pct={a.escalate_confirmation_rate} sample={a.escalate_calls} />
+          ))}
+          <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 2 }}>
+            Based on {data.reviewed_count} human-reviewed adjudication{data.reviewed_count === 1 ? "" : "s"}.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModelHealthScreen() {
   const RefreshBadge = window.RefreshBadge;
   const [data, setData] = React.useState(null);
@@ -272,6 +332,7 @@ function ModelHealthScreen() {
       {loading ? <Empty>Loading…</Empty> : (
         <>
         <DriftIncidentsPanel />
+        <AgentCalibrationPanel />
         <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 340 }}>
             <div className="kicker" style={{ marginBottom: 8 }}>Backtest Accuracy Trend</div>
