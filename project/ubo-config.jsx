@@ -967,10 +967,11 @@ const REPO_BLANK = {
   process: "all",
   description: "",
   active: true,
+  token: "",
 };
 
 function RepoForm({ initial, onSave, onCancel, saving, processes }) {
-  const [form, setForm] = useState(initial || REPO_BLANK);
+  const [form, setForm] = useState(initial ? { ...initial, token: "" } : REPO_BLANK);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const valid = form.display_name.trim() && form.repo_url.trim();
 
@@ -983,6 +984,7 @@ function RepoForm({ initial, onSave, onCancel, saving, processes }) {
       branch: form.branch.trim() || "main",
       rego_path: form.rego_path.trim() || "policies/",
       description: form.description.trim() || null,
+      token: form.token.trim(), // blank = keep whatever's already saved (write-only field)
     });
   }
 
@@ -1021,6 +1023,18 @@ function RepoForm({ initial, onSave, onCancel, saving, processes }) {
           onChange={e => set("repo_url", e.target.value)}
           placeholder="https://github.com/org/repo"
           style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+      </div>
+
+      <div className="field" style={{ marginBottom: 0 }}>
+        <label className="field-label">Personal Access Token {form.provider !== "github" && "(GitHub only, for now)"}</label>
+        <input className="input" type="password" value={form.token}
+          onChange={e => set("token", e.target.value)}
+          disabled={form.provider !== "github"}
+          placeholder={initial?.has_token ? "•••• saved — leave blank to keep" : "ghp_••••••••••••••••"}
+          style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+        <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 3 }}>
+          Required to use "Sync Now" on this repository. Stored encrypted server-side; never displayed again.
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
@@ -1083,21 +1097,21 @@ const PROVIDER_BADGE_COLORS = {
   custom:      { bg: "var(--surface-2)", ink: "var(--ink-3)" },
 };
 
-function RepoRow({ repo, onEdit, onDelete, onToggle, processes }) {
+function RepoRow({ repo, onEdit, onDelete, onToggle, onSync, syncing, syncResult, processes }) {
   const pColor = PROVIDER_BADGE_COLORS[repo.provider] || PROVIDER_BADGE_COLORS.custom;
   const process = (processes || PAC_PROCESSES_FALLBACK).find(p => p.id === repo.process)?.label || repo.process;
   const shortUrl = repo.repo_url.replace(/^https?:\/\//, "").replace(/\.git$/, "");
+  const syncable = repo.provider === "github";
 
   return (
+    <div style={{ borderBottom: "1px solid var(--line)", opacity: repo.active ? 1 : 0.55 }}>
     <div style={{
       display: "grid",
       gridTemplateColumns: "20px 1fr 110px 140px 130px 90px",
       alignItems: "center",
       gap: 10,
       padding: "8px 12px",
-      borderBottom: "1px solid var(--line)",
       fontSize: 12,
-      opacity: repo.active ? 1 : 0.55,
     }}>
       <StatusDot active={repo.active} />
       <div>
@@ -1158,6 +1172,54 @@ function RepoRow({ repo, onEdit, onDelete, onToggle, processes }) {
         </button>
       </div>
     </div>
+
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8,
+      padding: "0 12px 8px 42px", fontSize: 10, color: "var(--ink-3)",
+    }}>
+      {syncable ? (
+        <>
+          <button className="btn btn-sm" disabled={syncing || !repo.has_token}
+            onClick={() => onSync(repo)}
+            title={repo.has_token ? "Pull the latest policy files from this repo" : "Add a Personal Access Token first (Edit)"}
+            style={{ padding: "2px 8px", fontSize: 10 }}>
+            {syncing ? "Syncing…" : "Sync Now"}
+          </button>
+          {!repo.has_token && <span>No token saved — click Edit to add one</span>}
+          {repo.has_token && repo.last_sync_status === "ok" && repo.last_synced_at && (
+            <span style={{ color: "var(--acc-ink)" }}>✓ Last synced {new Date(repo.last_synced_at).toLocaleString()}</span>
+          )}
+          {repo.last_sync_status === "error" && (
+            <span style={{ color: "var(--red-ink)" }} title={repo.last_sync_error}>✗ Last sync failed</span>
+          )}
+          {repo.has_token && !repo.last_synced_at && <span>Never synced</span>}
+        </>
+      ) : (
+        <span>Sync isn't supported yet for {PAC_PROVIDERS.find(p => p.id === repo.provider)?.label || repo.provider} — GitHub only for now</span>
+      )}
+    </div>
+    {syncResult && (
+      <div className="mono" style={{
+        fontSize: 10, lineHeight: 1.6, margin: "0 12px 10px 42px", padding: "6px 9px", borderRadius: 6,
+        background: syncResult.error ? "var(--red-soft, rgba(239,68,68,0.08))" : "var(--surface-2, var(--surface))",
+        border: "1px solid var(--line)", color: syncResult.error ? "var(--red)" : "var(--ink-2)",
+      }}>
+        {syncResult.error ? (
+          <>Sync failed: {syncResult.error}</>
+        ) : (
+          <>
+            Found {syncResult.files_found} file{syncResult.files_found === 1 ? "" : "s"} in {syncResult.repo}@{syncResult.branch}:{syncResult.path}
+            {syncResult.imported?.length > 0 && (
+              <div>✓ Imported: {syncResult.imported.map(m => `${m.process}${syncResult.newly_registered?.includes(m.process) ? " (new tab)" : ""} (${m.file_count} file${m.file_count === 1 ? "" : "s"})`).join(", ")}</div>
+            )}
+            {syncResult.skipped?.length > 0 && (
+              <div style={{ color: "var(--amber-ink, #b45309)" }}>Skipped: {syncResult.skipped.map(s => `${s.name} (${s.reason})`).join("; ")}</div>
+            )}
+          </>
+        )}
+      </div>
+    )}
+    </div>
   );
 }
 
@@ -1169,6 +1231,8 @@ function PacReposCard() {
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [syncingId, setSyncingId] = useState(null);
+  const [syncResults, setSyncResults] = useState({}); // { [repoId]: { ...result } | { error } }
 
   useEffect(() => {
     fetch("/api/pac/processes")
@@ -1226,6 +1290,24 @@ function PacReposCard() {
       await fetch(`${_uboConfigBase()}/pac-repos/${id}`, { method: "DELETE" });
       await load();
     } catch (_) {}
+  }
+
+  async function handleSync(repo) {
+    setSyncingId(repo.id);
+    setSyncResults(r => ({ ...r, [repo.id]: null }));
+    try {
+      const res = await fetch(`${_uboConfigBase()}/pac-repos/${repo.id}/sync`, { method: "POST" });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) {
+        setSyncResults(r => ({ ...r, [repo.id]: { error: d?.detail || `Sync failed (HTTP ${res.status})` } }));
+      } else {
+        setSyncResults(r => ({ ...r, [repo.id]: d }));
+      }
+      await load();
+    } catch (e) {
+      setSyncResults(r => ({ ...r, [repo.id]: { error: e.message || "Network error" } }));
+    }
+    setSyncingId(null);
   }
 
   async function handleToggle(repo) {
@@ -1309,6 +1391,9 @@ function PacReposCard() {
                   onEdit={(r) => { setEditingId(r.id); setAdding(false); }}
                   onDelete={handleDelete}
                   onToggle={handleToggle}
+                  onSync={handleSync}
+                  syncing={syncingId === repo.id}
+                  syncResult={syncResults[repo.id]}
                   processes={processes} />
                 {editingId === repo.id && (
                   <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", background: "var(--surface-2)" }}>
