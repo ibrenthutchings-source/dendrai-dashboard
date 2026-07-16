@@ -56,6 +56,84 @@ function InvTile({ label, value, sub, tone = "neutral" }) {
   );
 }
 
+const _TIER_ORDER = ["critical", "high", "medium", "low"];
+const _SENS_ORDER = ["pii", "financial", "confidential", "internal", "public"];
+
+// Where does AI risk actually concentrate — the tier×sensitivity cross-tab a
+// NIST AI RMF Map review asks for directly. A flat list can't show this;
+// a matrix answers "which combination of risk and data exposure has the
+// most systems" in one look, with darker cells calling out the count.
+function ConcentrationMatrix({ rows, onCellClick }) {
+  const counts = {};
+  let max = 0;
+  for (const r of rows) {
+    const t = _TIER_ORDER.includes(r.risk_tier) ? r.risk_tier : "untiered";
+    const s = _SENS_ORDER.includes(r.data_sensitivity) ? r.data_sensitivity : "unclassified";
+    const key = `${t}::${s}`;
+    counts[key] = (counts[key] || 0) + 1;
+    if (counts[key] > max) max = counts[key];
+  }
+  const tierRows = [..._TIER_ORDER, "untiered"];
+  const sensCols = [..._SENS_ORDER, "unclassified"];
+
+  function cellStyle(n) {
+    if (!n) return { background: "var(--surface-2)", color: "var(--ink-4)" };
+    const pct = max ? n / max : 0;
+    return {
+      background: `color-mix(in oklab, var(--acc) ${Math.round(10 + pct * 65)}%, var(--surface))`,
+      color: pct > 0.45 ? "var(--acc-ink)" : "var(--ink-2)",
+      fontWeight: 700,
+    };
+  }
+
+  return (
+    <div style={{ marginBottom: 20, overflowX: "auto" }}>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", marginBottom: 8 }}>
+        Concentration — risk tier × data sensitivity. Darker cells have more systems.
+      </div>
+      <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+        <thead>
+          <tr>
+            <th style={{ padding: "4px 8px", textAlign: "left" }}></th>
+            {sensCols.map(s => (
+              <th key={s} style={{ padding: "4px 8px", fontSize: 9.5, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 600 }}>
+                {_SENSITIVITY_LABELS[s] || "Unclassified"}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {tierRows.map(t => (
+            <tr key={t}>
+              <td style={{ padding: "4px 8px", fontSize: 9.5, color: "var(--ink-4)", fontWeight: 600, whiteSpace: "nowrap" }}>
+                {_RISK_TIER_META[t]?.label || "Untiered"}
+              </td>
+              {sensCols.map(s => {
+                const n = counts[`${t}::${s}`] || 0;
+                return (
+                  <td key={s} style={{ padding: 0 }}>
+                    <div
+                      onClick={() => n > 0 && onCellClick && onCellClick(t, s)}
+                      style={{
+                        ...cellStyle(n), width: 46, height: 30, display: "flex", alignItems: "center",
+                        justifyContent: "center", fontFamily: "var(--mono, monospace)", fontSize: 11,
+                        borderRadius: 3, margin: 2, cursor: n > 0 && onCellClick ? "pointer" : "default",
+                      }}
+                      title={`${_RISK_TIER_META[t]?.label || "Untiered"} × ${_SENSITIVITY_LABELS[s] || "Unclassified"}: ${n} system${n === 1 ? "" : "s"}`}
+                    >
+                      {n || ""}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function InvRow({ row, onSave, savingKey }) {
   const [riskTier, setRiskTier] = React.useState(row.risk_tier || "");
   const [sensitivity, setSensitivity] = React.useState(row.data_sensitivity || "");
@@ -222,6 +300,8 @@ function AiInventoryScreen({ onNavigate } = {}) {
             <InvTile label="Critical tier" value={criticalCount} tone={criticalCount > 0 ? "bad" : "neutral"} />
             <InvTile label="High tier" value={highCount} tone={highCount > 0 ? "warn" : "neutral"} />
           </div>
+
+          <ConcentrationMatrix rows={rows} onCellClick={(tier) => setFilterTier(tier === "untiered" ? "all" : tier)} />
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Filter:</span>

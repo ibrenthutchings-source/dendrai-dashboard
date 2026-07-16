@@ -1871,10 +1871,11 @@ def get_token_usage_summary_endpoint(
     other non-adminOnly screen, not hardcoded admin-only.
     """
     if not db.is_available():
-        return {"rows": [], "totals": {}, "by_month": [], "month_to_date": {}, "by_year": [], "year_to_date": {}}
+        return {"rows": [], "totals": {}, "by_month": [], "month_to_date": {}, "by_year": [], "year_to_date": {}, "by_month_by_label": []}
     return {
         **db.get_token_usage_summary(days),
         **db.get_token_usage_time_summary(),
+        "by_month_by_label": db.get_token_usage_by_month_by_label(),
     }
 
 
