@@ -48,6 +48,54 @@ function _tuFmtUsd(n) {
   return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Fixed palette (not hue-random per render) so a label keeps the same color
+// across reloads and matches its Legend entry consistently.
+const _TU_PALETTE = [
+  "var(--acc)", "var(--blue)", "var(--amber)", "var(--green)", "var(--red)",
+  "var(--violet-ink, #7c3aed)", "var(--ink-3)", "var(--acc-2, var(--acc))",
+];
+
+// Cost composition over time — the by-month totals already shown answer
+// "how much"; this answers "on what," and whether a feature's cost is
+// growing or flat is invisible in a bar-per-month view.
+function TUCostTrendChart({ byMonthByLabel }) {
+  const { series, pivoted } = React.useMemo(() => {
+    const labelSet = new Map(); // normalized label -> total cost (for top-N + legend order)
+    const byMonth = new Map();  // month -> { month, [label]: cost }
+    for (const r of (byMonthByLabel || [])) {
+      const label = _tuLabel(r.label);
+      labelSet.set(label, (labelSet.get(label) || 0) + r.cost_usd);
+      const row = byMonth.get(r.month) || { month: r.month };
+      row[label] = (row[label] || 0) + r.cost_usd;
+      byMonth.set(r.month, row);
+    }
+    const series = [...labelSet.entries()].sort((a, b) => b[1] - a[1]).map(([label]) => label);
+    const pivoted = [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month));
+    return { series, pivoted };
+  }, [byMonthByLabel]);
+
+  if (!pivoted.length) return null;
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div className="kicker" style={{ marginBottom: 8 }}>Cost Composition Over Time</div>
+      <ResponsiveContainer width="100%" height={220}>
+        <AreaChart data={pivoted} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+          <XAxis dataKey="month" tick={{ fontSize: 10, fill: "var(--ink-3)" }} />
+          <YAxis tick={{ fontSize: 10, fill: "var(--ink-3)" }} tickFormatter={v => `$${v}`} width={48} />
+          <Tooltip formatter={(v) => _tuFmtUsd(v)} contentStyle={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, fontSize: 11 }} />
+          <Legend wrapperStyle={{ fontSize: 10 }} />
+          {series.map((label, i) => (
+            <Area key={label} type="monotone" dataKey={label} stackId="cost"
+              stroke={_TU_PALETTE[i % _TU_PALETTE.length]} fill={_TU_PALETTE[i % _TU_PALETTE.length]} fillOpacity={0.45} />
+          ))}
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 function TUStatCard({ label, tokens, cost, calls, accent }) {
   return (
     <div style={{
@@ -162,6 +210,8 @@ function TokenUsageScreen() {
           tokens={(data?.year_to_date?.input_tokens || 0) + (data?.year_to_date?.output_tokens || 0)}
           cost={data?.year_to_date?.cost_usd} calls={data?.year_to_date?.calls} />
       </div>
+
+      <TUCostTrendChart byMonthByLabel={data?.by_month_by_label} />
 
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 24 }}>
         <div style={{ flex: 1, minWidth: 320 }}>
