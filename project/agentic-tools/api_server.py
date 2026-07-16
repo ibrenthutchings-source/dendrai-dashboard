@@ -1115,6 +1115,23 @@ def edgar_8k_events(req: TickerRequest):
                     ev for ev in events
                     if ev.get("is_material") and ev.get("accession_number") in new_accessions
                 ]
+                if new_material_events and _HAS_MCP_GOVERNANCE:
+                    for ev in new_material_events:
+                        cls = ev.get("classification") or {}
+                        try:
+                            mcp_governance._post_webhook_alert(
+                                f"\U0001f4c8 *New material corporate event* — {meta['company_name']} ({req.ticker.upper()})",
+                                [
+                                    {"title": "Filed", "value": ev.get("date", ""), "short": True},
+                                    {"title": "Item(s)", "value": ev.get("items", ""), "short": True},
+                                    {"title": "Type", "value": cls.get("action_type", "unclassified"), "short": True},
+                                    {"title": "Summary", "value": cls.get("summary") or "; ".join((ev.get("item_descriptions") or {}).values()), "short": False},
+                                ],
+                                color="#2563eb",
+                            )
+                        except Exception as exc:
+                            logger.warning("Corporate event alert dispatch failed: %s", exc)
+                    db.mark_corporate_events_alerted([ev["accession_number"] for ev in new_material_events])
 
         result["new_material_events"] = new_material_events
         return result
@@ -1122,6 +1139,50 @@ def edgar_8k_events(req: TickerRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/edgar/corporate-events")
+def list_corporate_events(
+    ticker: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """
+    The tracked record behind material 8-K detection — every acquisition,
+    divestiture, restructuring, bankruptcy, impairment, restatement, or
+    change-of-control event, with a governed status (new/reviewing/assessed/
+    dismissed), owner, and notes, not just a filing that silently sat there.
+    """
+    if not db.is_available():
+        return {"rows": [], "count": 0, "new_count": 0}
+    company_id = None
+    if ticker:
+        try:
+            meta, _sub = get_company_info(ticker)
+            company_id = db.upsert_company({
+                "ticker": ticker, "company_name": meta["company_name"],
+                "cik": meta.get("cik", ""), "sic": meta.get("sic", ""),
+            })
+        except Exception:
+            pass
+    rows = db.list_corporate_events(company_id=company_id, status=status)
+    return {"rows": rows, "count": len(rows), "new_count": sum(1 for r in rows if r["status"] == "new")}
+
+
+@app.put("/edgar/corporate-events/{event_id}")
+def update_corporate_event_endpoint(
+    event_id: int,
+    body: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """Assign an owner, change status, or add notes on a detected corporate
+    event. Any field omitted from the body is left unchanged."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.update_corporate_event(
+        event_id, status=body.get("status"), owner=body.get("owner"), notes=body.get("notes"),
+    )
+    return {"ok": ok, "id": event_id}
 
 
 def _annual_series_by_end(xbrl: dict, metric: str) -> Dict[str, float]:

@@ -158,6 +158,19 @@ CREATE TABLE IF NOT EXISTS edgar_8k_events (
 ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS accession_number VARCHAR(20);
 ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS is_material       BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS classification    JSONB;
+-- Turns a detected material event into a governed, trackable record instead
+-- of a row that just sits there — same "detect -> tracked incident, not just
+-- an alert" shape already used for Model Health drift (see
+-- model_health_drift_incidents). status is only meaningful for is_material
+-- rows; non-material rows stay NULL/untracked.
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS status      VARCHAR(16);  -- new | reviewing | assessed | dismissed
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS owner       VARCHAR(128);
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS notes       TEXT;
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS alerted_at  TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_edgar_8k_events_open
+    ON edgar_8k_events (company_id)
+    WHERE is_material AND status != 'dismissed' AND status != 'assessed';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_edgar_8k_events_accession
     ON edgar_8k_events (company_id, accession_number)
     WHERE accession_number IS NOT NULL;
@@ -1877,12 +1890,13 @@ def save_edgar_8k_events(company_id: int, events: list) -> list[str]:
                         continue
                     accession = ev.get("accession_number") or None
                     if accession:
+                        is_material = bool(ev.get("is_material"))
                         cur.execute(
                             """
                             INSERT INTO edgar_8k_events
                                 (company_id, event_date, items, item_descriptions,
-                                 accession_number, is_material, classification)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                 accession_number, is_material, classification, status)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (company_id, accession_number) WHERE accession_number IS NOT NULL
                             DO NOTHING
                             RETURNING id
@@ -1891,8 +1905,9 @@ def save_edgar_8k_events(company_id: int, events: list) -> list[str]:
                              ev.get("items") or ev.get("form"),
                              Json(ev.get("item_descriptions") or {}),
                              accession,
-                             bool(ev.get("is_material")),
-                             Json(ev.get("classification")) if ev.get("classification") else None),
+                             is_material,
+                             Json(ev.get("classification")) if ev.get("classification") else None,
+                             "new" if is_material else None),
                         )
                         if cur.fetchone() is not None:
                             new_accessions.append(accession)
@@ -1908,6 +1923,96 @@ def save_edgar_8k_events(company_id: int, events: list) -> list[str]:
                         )
     _run(_do)
     return new_accessions
+
+
+def list_corporate_events(company_id: Optional[int] = None, status: Optional[str] = None) -> list:
+    """Material 8-K events (acquisitions, divestitures, restructuring, etc.),
+    with their tracked review status. Only is_material rows are returned —
+    routine 8-Ks (director changes, Reg FD disclosures) aren't part of this
+    trail."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                filters = ["e.is_material"]
+                params: list = []
+                if company_id is not None:
+                    filters.append("e.company_id = %s")
+                    params.append(company_id)
+                if status is not None:
+                    filters.append("e.status = %s")
+                    params.append(status)
+                cur.execute(
+                    f"""
+                    SELECT e.id, e.company_id, c.ticker, c.company_name, e.event_date,
+                           e.items, e.item_descriptions, e.accession_number, e.classification,
+                           e.status, e.owner, e.notes, e.reviewed_at, e.alerted_at, e.created_at
+                    FROM edgar_8k_events e
+                    JOIN companies c ON c.id = e.company_id
+                    WHERE {' AND '.join(filters)}
+                    ORDER BY e.event_date DESC
+                    """,
+                    params,
+                )
+                cols = ["id", "company_id", "ticker", "company_name", "event_date",
+                        "items", "item_descriptions", "accession_number", "classification",
+                        "status", "owner", "notes", "reviewed_at", "alerted_at", "created_at"]
+                out = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("event_date", "reviewed_at", "alerted_at", "created_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    out.append(d)
+                return out
+    return _run(_do) or []
+
+
+def update_corporate_event(event_id: int, *, status: Optional[str] = None,
+                            owner: Optional[str] = None, notes: Optional[str] = None) -> bool:
+    """Any field left as None is unchanged. A transition to 'assessed' or
+    'dismissed' stamps reviewed_at."""
+    sets, params = [], []
+    if status is not None:
+        sets.append("status = %s")
+        params.append(status)
+        if status in ("assessed", "dismissed"):
+            sets.append("reviewed_at = NOW()")
+        elif status == "new":
+            sets.append("reviewed_at = NULL")
+    if owner is not None:
+        sets.append("owner = %s")
+        params.append(owner[:128])
+    if notes is not None:
+        sets.append("notes = %s")
+        params.append(notes)
+    if not sets:
+        return False
+    params.append(event_id)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE edgar_8k_events SET {', '.join(sets)} WHERE id = %s AND is_material",
+                    tuple(params),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def mark_corporate_events_alerted(accession_numbers: list[str]) -> None:
+    """Stamp alerted_at so the same material event doesn't re-alert on every
+    subsequent pipeline run — mirrors the drift-incident dedup idea, just
+    keyed by accession_number instead of an open/closed status."""
+    if not accession_numbers:
+        return
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE edgar_8k_events SET alerted_at = NOW() WHERE accession_number = ANY(%s) AND alerted_at IS NULL",
+                    (accession_numbers,),
+                )
+    _run(_do)
 
 
 def save_edgar_risk_factors(
