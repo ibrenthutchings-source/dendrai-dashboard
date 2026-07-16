@@ -188,7 +188,10 @@ function App() {
       if (!signalSet.has("industry")) return;
       setRssRefreshing(true);
       try {
-        const ingestResult = await RSS_ENGINE.ingestAll({ enabledFeedIds: rssEnabledFeeds, ticker: cfg.ticker });
+        const ingestResult = await RSS_ENGINE.ingestAll({
+          enabledFeedIds: rssEnabledFeeds, ticker: cfg.ticker,
+          companyName: profileRef.current?.entity?.name || cfg.ticker,
+        });
         const freshSigs = RSS_ENGINE.toSignals(ingestResult);
         setRssSignals(freshSigs);
         setRssLastUpdated(Date.now());
@@ -1079,6 +1082,7 @@ function App() {
           const ingestResult = await RSS_ENGINE.ingestAll({
             enabledFeedIds: rssEnabledFeeds,
             ticker: cfg.ticker,
+            companyName: profileRef.current?.entity?.name || cfg.ticker,
             onProgress: (msg, feedId, done) => {
               if (done && feedId) feedsDoneRef.push(feedId);
               setRssRunProgress({ msg, feedsDone: [...feedsDoneRef] });

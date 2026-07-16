@@ -512,6 +512,94 @@ def annotate_8k(filing: dict) -> dict:
     return filing
 
 
+# Item codes worth the cost of fetching + classifying the actual filing body —
+# these are the ones that can represent a genuine change in risk exposure
+# (M&A, divestiture/exit, distress, control, or accounting-integrity events),
+# as opposed to routine/procedural items (Reg FD disclosures, exhibit lists,
+# shareholder-vote mechanics) that are common, low-signal, and not worth an
+# LLM call every time. This is a judgment call, not an SEC-defined category —
+# revisit if a real customer's risk model needs a wider or narrower net.
+_MATERIAL_8K_ITEMS = {
+    "1.01",  # Entry into a Material Definitive Agreement — often the FIRST signal
+             # of an announced-but-not-yet-closed acquisition/divestiture
+    "1.03",  # Bankruptcy or Receivership
+    "1.05",  # Material Cybersecurity Incidents
+    "2.01",  # Completion of Acquisition or Disposition of Assets
+    "2.05",  # Costs Associated with Exit or Disposal Activities — e.g. closing/selling a facility
+    "2.06",  # Material Impairments
+    "4.01",  # Change in Registrant's Certifying Accountant
+    "4.02",  # Non-Reliance on Previously Issued Financial Statements (restatement)
+    "5.01",  # Changes in Control of Registrant
+}
+
+
+def has_material_item(filing: dict) -> bool:
+    """True if this 8-K's item codes intersect _MATERIAL_8K_ITEMS."""
+    raw_items = filing.get("items", "")
+    item_list = {i.strip() for i in re.split(r"[,\s]+", raw_items) if i.strip()}
+    return bool(item_list & _MATERIAL_8K_ITEMS)
+
+
+_8K_CLASSIFY_SYSTEM = """You are a risk analyst reading a single SEC Form 8-K filing. \
+Extract exactly what the filing states — do not infer or speculate beyond the text. \
+If the filing does not actually describe a corporate action (acquisition, divestiture, \
+restructuring, bankruptcy, impairment, accounting restatement, or change of control), \
+set is_corporate_action to false and leave the other fields null. Numbers/dates must be \
+copied verbatim from the text, not estimated."""
+
+_8K_CLASSIFY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "is_corporate_action": {"type": "boolean"},
+        "action_type": {
+            "type": "string",
+            "enum": ["acquisition", "divestiture", "restructuring", "bankruptcy",
+                     "impairment", "auditor_change", "restatement", "change_of_control",
+                     "cybersecurity_incident", "other", "none"],
+        },
+        "counterparty": {"type": ["string", "null"]},
+        "assets_or_business_description": {"type": ["string", "null"]},
+        "consideration": {"type": ["string", "null"]},
+        "expected_close_or_effective_date": {"type": ["string", "null"]},
+        "rationale": {"type": ["string", "null"]},
+        "summary": {"type": "string"},
+    },
+    "required": ["is_corporate_action", "action_type", "summary"],
+}
+
+
+def classify_8k_event(item_descriptions: dict, filing_text: str) -> Optional[dict]:
+    """
+    LLM-based structured extraction of a material 8-K's actual content —
+    counterparty, consideration, what was acquired/sold, stated rationale.
+    Returns None on any failure (missing API key, empty text, malformed
+    response) rather than raising — this must never break the ingestion run,
+    matching every other best-effort path in this codebase.
+    """
+    if not filing_text or not filing_text.strip():
+        return None
+    try:
+        import claude_client
+    except ImportError:
+        return None
+    if not claude_client.is_available():
+        return None
+    try:
+        items_line = "; ".join(f"Item {k}: {v}" for k, v in (item_descriptions or {}).items())
+        user = (
+            f"Filed items: {items_line}\n\n"
+            f"Filing text (truncated to 20,000 chars):\n{filing_text[:20_000]}"
+        )
+        result = claude_client.complete_json(
+            _8K_CLASSIFY_SYSTEM, user, _8K_CLASSIFY_SCHEMA,
+            label="edgar_8k_classify", effort="medium", max_tokens=1000,
+        )
+        return result
+    except Exception:
+        return None
+
+
 # ── SIC peer lookup ────────────────────────────────────────────────────────────
 
 def _cik_to_ticker_map() -> dict[str, str]:

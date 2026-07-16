@@ -71,6 +71,8 @@ FEEDS: list[dict] = [
         "domains": ["ESG"],
         "risks": ["R-07"],
         "weight": 0.8,
+        "companyGated": True,  # enforcement-action feed covering every regulated company —
+                                # without gating, any company's ESG violation shows up in every other company's feed
     },
 ]
 
@@ -199,10 +201,34 @@ def _article_id(feed_id: str, title: str) -> str:
     return f"{feed_id}-{h}"
 
 
-def grade_article(entry: dict, feed: dict) -> dict:
+# Corporate-suffix words too generic to use as a company-name match term
+# (matching on "group" or "inc" alone would defeat the gate entirely).
+# Mirrors rss-engine.js's _COMPANY_NAME_STOPWORDS exactly — keep in sync.
+_COMPANY_NAME_STOPWORDS = {"corp", "inc", "ltd", "llc", "group", "holdings"}
+
+
+def _company_name_terms(company_name: str) -> list[str]:
+    words = re.split(r"\W+", (company_name or "").lower())
+    return [w for w in words if len(w) >= 4 and w not in _COMPANY_NAME_STOPWORDS]
+
+
+def grade_article(entry: dict, feed: dict, company_name: str = "") -> Optional[dict]:
+    """
+    Returns None (not just velocity=0) when a company-gated feed's article
+    doesn't actually mention the subject company — e.g. an EPA enforcement
+    release about Nike or Conagra has nothing to do with an unrelated
+    company's risk profile and shouldn't appear in that company's feed at
+    all. Mirrors rss-engine.js's gradeArticle exactly — keep both in sync.
+    """
     title = (entry.get("title") or "").strip()
     description = (entry.get("summary") or entry.get("description") or "").strip()
     text = f"{title} {description}"
+
+    if feed.get("companyGated") and company_name:
+        terms = _company_name_terms(company_name)
+        t = _tokenize(text)
+        if terms and not any(term in t for term in terms):
+            return None
 
     relevance = score_relevance(text, feed["domains"])
     severity = score_severity(text)
@@ -305,7 +331,9 @@ def fetch_and_grade_peer_filings(ticker: str, feed: dict) -> dict:
                 "published": _parse_date(entry),
                 "link": getattr(entry, "link", "") or "",
             }
-            graded.append(grade_article(article, feed))
+            graded_article = grade_article(article, feed)
+            if graded_article is not None:
+                graded.append(graded_article)
 
     if not graded:
         return fetch_and_grade(feed)
@@ -313,7 +341,7 @@ def fetch_and_grade_peer_filings(ticker: str, feed: dict) -> dict:
     return {"feed": feed, "articles": graded, "fetchStatus": "ok"}
 
 
-def fetch_and_grade(feed: dict) -> dict:
+def fetch_and_grade(feed: dict, company_name: str = "") -> dict:
     """Fetch a single feed via feedparser, grade all entries, return result dict."""
     raw = _fetch_raw(feed["url"])
     if raw is None:
@@ -332,7 +360,9 @@ def fetch_and_grade(feed: dict) -> dict:
             "published":   _parse_date(entry),
             "link":        getattr(entry, "link",    "") or "",
         }
-        graded.append(grade_article(article, feed))
+        graded_article = grade_article(article, feed, company_name)
+        if graded_article is not None:
+            graded.append(graded_article)
 
     return {"feed": feed, "articles": graded, "fetchStatus": "ok"}
 
@@ -378,6 +408,7 @@ def ingest_feeds(
     force_refresh: bool = False,
     ttl_minutes: int = 30,
     ticker: Optional[str] = None,
+    company_name: Optional[str] = None,
 ) -> dict:
     """
     Fetch and grade the requested feeds. Returns results shaped identically to
@@ -388,9 +419,21 @@ def ingest_feeds(
         force_refresh:  Bypass cache and re-fetch even within TTL.
         ttl_minutes:    Cache TTL in minutes (default: 30).
         ticker:         Active ticker; enables peer-aware EDGAR filing fetch.
+        company_name:   Resolved automatically from ticker if not supplied —
+                         required for company-gated feeds (CISA, EPA) to
+                         suppress articles about unrelated companies.
     """
     ttl_seconds = ttl_minutes * 60
     ticker_key = ticker.upper() if ticker else ""
+
+    if not company_name and ticker:
+        try:
+            from edgar_tool import get_company_info
+            meta, _sub = get_company_info(ticker)
+            company_name = meta.get("company_name", "")
+        except Exception:
+            company_name = ""
+    company_name = company_name or ""
 
     feeds = (
         [FEEDS_BY_ID[fid] for fid in feed_ids if fid in FEEDS_BY_ID]
@@ -400,8 +443,12 @@ def ingest_feeds(
 
     results = []
     for feed in feeds:
-        # Peer-aware feeds are keyed by ticker so each company gets its own cache slot.
-        cache_key = f"{feed['id']}:{ticker_key}" if (feed.get("type") == "edgar-peers" and ticker_key) else feed["id"]
+        # Peer-aware and company-gated feeds are keyed by ticker so each
+        # company gets its own cache slot — without this, company A's
+        # already-gated CISA/EPA results would get served back for company B
+        # within the TTL window.
+        ticker_scoped = feed.get("type") == "edgar-peers" or feed.get("companyGated")
+        cache_key = f"{feed['id']}:{ticker_key}" if (ticker_scoped and ticker_key) else feed["id"]
         cached = None if force_refresh else _get_cached(cache_key, ttl_seconds)
         if cached is not None:
             results.append({**cached, "cached": True})
@@ -409,7 +456,7 @@ def ingest_feeds(
             if feed.get("type") == "edgar-peers" and ticker:
                 result = fetch_and_grade_peer_filings(ticker, feed)
             else:
-                result = fetch_and_grade(feed)
+                result = fetch_and_grade(feed, company_name)
             _set_cached(cache_key, result)
             results.append({**result, "cached": False})
 
