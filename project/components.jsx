@@ -333,6 +333,18 @@ function RefreshBadge({ lastRefresh, onRefresh, loading }) {
   );
 }
 
+// Shown in the screen-switch Suspense boundary while a lazily-loaded
+// screen chunk is being fetched on first navigation.
+function ScreenLoadingFallback() {
+  return (
+    <div className="panel active" style={{display:"flex", alignItems:"center", justifyContent:"center", minHeight:300}}>
+      <div style={{display:"flex", alignItems:"center", gap:10, color:"var(--ink-3)", fontSize:12}}>
+        <span className="spin"/> Loading…
+      </div>
+    </div>
+  );
+}
+
 // Expose globally
 Object.assign(window, {
   Icon, DendraiMark, DendraiWordmark, Pill, RAGChip, VelocityPill, Sparkline,
@@ -341,5 +353,5 @@ Object.assign(window, {
   clamp, fmt2, fmt$M,
   Empty, SectionLabel, BBTermHeader,
   LiveBadge, RefreshBadge,
-  ScreenAccessGate,
+  ScreenAccessGate, ScreenLoadingFallback,
 });
