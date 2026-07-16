@@ -545,7 +545,15 @@ Extract exactly what the filing states — do not infer or speculate beyond the 
 If the filing does not actually describe a corporate action (acquisition, divestiture, \
 restructuring, bankruptcy, impairment, accounting restatement, or change of control), \
 set is_corporate_action to false and leave the other fields null. Numbers/dates must be \
-copied verbatim from the text, not estimated."""
+copied verbatim from the text, not estimated.
+
+If is_corporate_action is true, also write suggested_risk_note: one or two plain-English \
+sentences telling an internal auditor what to actually go check in the risk register or \
+scenario models as a result — not a restatement of the summary. Be specific to what changed \
+(e.g. "This closes the previously-flagged pending acquisition — confirm integration risk and \
+purchase-price/goodwill exposure are reflected" or "This divestiture removes a segment — the \
+liquidity/covenant runway model's revenue base should be re-checked"). This is a suggestion for \
+a human to act on, not an instruction you're executing — never claim the register was updated."""
 
 _8K_CLASSIFY_SCHEMA = {
     "type": "object",
@@ -564,6 +572,7 @@ _8K_CLASSIFY_SCHEMA = {
         "expected_close_or_effective_date": {"type": ["string", "null"]},
         "rationale": {"type": ["string", "null"]},
         "summary": {"type": "string"},
+        "suggested_risk_note": {"type": ["string", "null"]},
     },
     "required": ["is_corporate_action", "action_type", "summary"],
 }

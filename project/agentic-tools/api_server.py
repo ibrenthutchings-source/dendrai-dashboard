@@ -1126,7 +1126,7 @@ def edgar_8k_events(req: TickerRequest):
                                     {"title": "Item(s)", "value": ev.get("items", ""), "short": True},
                                     {"title": "Type", "value": cls.get("action_type", "unclassified"), "short": True},
                                     {"title": "Summary", "value": cls.get("summary") or "; ".join((ev.get("item_descriptions") or {}).values()), "short": False},
-                                ],
+                                ] + ([{"title": "Suggested next step", "value": cls["suggested_risk_note"], "short": False}] if cls.get("suggested_risk_note") else []),
                                 color="#2563eb",
                             )
                         except Exception as exc:

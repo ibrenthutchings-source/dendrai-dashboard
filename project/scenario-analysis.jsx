@@ -451,6 +451,163 @@ function EarlyWarningTab({ data }) {
 
 // ── Main screen ─────────────────────────────────────────────────────────────
 
+const _CE_STATUS_STYLE = {
+  new:        { bg: "var(--red-soft)",   ink: "var(--red-ink)",   label: "New" },
+  reviewing:  { bg: "var(--amber-soft)", ink: "var(--amber-ink)", label: "Reviewing" },
+  assessed:   { bg: "var(--green-soft)", ink: "var(--green-ink)", label: "Assessed" },
+  dismissed:  { bg: "var(--surface-2)",  ink: "var(--ink-4)",     label: "Dismissed" },
+};
+
+const _CE_TYPE_LABEL = {
+  acquisition: "Acquisition", divestiture: "Divestiture", restructuring: "Restructuring",
+  bankruptcy: "Bankruptcy", impairment: "Impairment", auditor_change: "Auditor Change",
+  restatement: "Restatement", change_of_control: "Change of Control",
+  cybersecurity_incident: "Cybersecurity Incident", other: "Other",
+};
+
+function CorporateEventRow({ event, onUpdate, saving }) {
+  const [owner, setOwner] = React.useState(event.owner || "");
+  const [notes, setNotes] = React.useState(event.notes || "");
+  const [expanded, setExpanded] = React.useState(false);
+  const st = _CE_STATUS_STYLE[event.status] || _CE_STATUS_STYLE.new;
+  const cls = event.classification || {};
+
+  React.useEffect(() => { setOwner(event.owner || ""); }, [event.owner]);
+  React.useEffect(() => { setNotes(event.notes || ""); }, [event.notes]);
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px", marginBottom: 8, background: "var(--surface)" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, cursor: "pointer" }}
+        onClick={() => setExpanded(e => !e)}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: st.bg, color: st.ink }}>
+            {st.label}
+          </span>
+          {cls.action_type && cls.action_type !== "none" && (
+            <span style={{ fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "var(--acc-soft)", color: "var(--acc-ink)" }}>
+              {_CE_TYPE_LABEL[cls.action_type] || cls.action_type}
+            </span>
+          )}
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>
+            {cls.summary ? cls.summary.slice(0, 100) + (cls.summary.length > 100 ? "…" : "") : (Object.values(event.item_descriptions || {}).join(", ") || "8-K event")}
+          </span>
+        </div>
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", flexShrink: 0 }}>{event.event_date}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 10 }}>
+          {cls.summary && <div style={{ fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.5, marginBottom: 8 }}>{cls.summary}</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 10.5, marginBottom: 10 }}>
+            {cls.counterparty && <div><b>Counterparty:</b> {cls.counterparty}</div>}
+            {cls.consideration && <div><b>Consideration:</b> {cls.consideration}</div>}
+            {cls.assets_or_business_description && <div style={{ gridColumn: "1 / -1" }}><b>Assets/business:</b> {cls.assets_or_business_description}</div>}
+            {cls.expected_close_or_effective_date && <div><b>Effective date:</b> {cls.expected_close_or_effective_date}</div>}
+            {cls.rationale && <div style={{ gridColumn: "1 / -1" }}><b>Stated rationale:</b> {cls.rationale}</div>}
+          </div>
+          {cls.suggested_risk_note && (
+            <div style={{
+              fontSize: 10.5, lineHeight: 1.5, padding: "8px 10px", borderRadius: 6, marginBottom: 10,
+              background: "var(--acc-soft)", color: "var(--acc-ink)", borderLeft: "3px solid var(--acc)",
+            }}>
+              <b>Suggested next step:</b> {cls.suggested_risk_note}
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 8 }}>
+            <input className="code-input" style={{ fontSize: 11 }} placeholder="Owner (unassigned)"
+              value={owner} onChange={e => setOwner(e.target.value)}
+              onBlur={() => owner !== (event.owner || "") && onUpdate(event.id, { owner })}
+              onClick={e => e.stopPropagation()} />
+            <input className="code-input" style={{ fontSize: 11 }} placeholder="Notes / assessment"
+              value={notes} onChange={e => setNotes(e.target.value)}
+              onBlur={() => notes !== (event.notes || "") && onUpdate(event.id, { notes })}
+              onClick={e => e.stopPropagation()} />
+          </div>
+          <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+            {event.status !== "reviewing" && event.status !== "assessed" && event.status !== "dismissed" && (
+              <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(event.id, { status: "reviewing" })}>Start Review</button>
+            )}
+            {event.status !== "assessed" && (
+              <button className="btn btn-sm btn-acc" disabled={saving} onClick={() => onUpdate(event.id, { status: "assessed" })}>Mark Assessed</button>
+            )}
+            {event.status !== "dismissed" && (
+              <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(event.id, { status: "dismissed" })}>Dismiss</button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CorporateEventsPanel({ ticker }) {
+  const [events, setEvents] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [savingId, setSavingId] = React.useState(null);
+  const [showClosed, setShowClosed] = React.useState(false);
+
+  const load = React.useCallback(() => {
+    if (!ticker) { setLoading(false); return Promise.resolve(); }
+    return fetch(`/api/mcp/edgar/corporate-events?ticker=${encodeURIComponent(ticker)}`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setEvents(d.rows || []); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [ticker]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  async function handleUpdate(id, fields) {
+    setSavingId(id);
+    setEvents(rows => rows.map(r => r.id === id ? { ...r, ...fields } : r));
+    try {
+      await fetch(`/api/mcp/edgar/corporate-events/${id}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields),
+      });
+    } catch (_) {}
+    await load();
+    setSavingId(null);
+  }
+
+  if (!ticker) return null;
+
+  const visible = showClosed ? events : events.filter(e => e.status !== "assessed" && e.status !== "dismissed");
+  const newCount = events.filter(e => e.status === "new").length;
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <div className="kicker">
+          Corporate Events{newCount > 0 && (
+            <span className="mono" style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "var(--red-soft)", color: "var(--red-ink)" }}>
+              {newCount} NEW
+            </span>
+          )}
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--ink-3)", cursor: "pointer" }}>
+          <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} />
+          Show assessed/dismissed
+        </label>
+      </div>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", marginBottom: 10 }}>
+        Material 8-K filings — acquisitions, divestitures, restructuring, impairments, restatements, change of
+        control — detected from real SEC filing content, not just item-code labels. These are exactly the kind of
+        discrete, event-driven signals the scenario models below don't capture on their own; review each one and
+        assess whether it changes the risk picture.
+      </div>
+      {loading ? <Empty>Loading…</Empty> : !visible.length ? (
+        <Empty>{events.length ? "No open corporate events — everything's been assessed or dismissed." : "No material corporate events detected yet."}</Empty>
+      ) : (
+        visible.map(ev => (
+          <CorporateEventRow key={ev.id} event={ev} onUpdate={handleUpdate} saving={savingId === ev.id} />
+        ))
+      )}
+    </div>
+  );
+}
+
 function ScenarioAnalysisScreen({ ticker, hasRun, varCvar, sensitivity, multiFactorStress, liquidityRunway, earlyWarning }) {
   const [activeTab, setActiveTab] = React.useState("var");
   const hasData = !!(varCvar || sensitivity || multiFactorStress || liquidityRunway || earlyWarning);
@@ -467,6 +624,8 @@ function ScenarioAnalysisScreen({ ticker, hasRun, varCvar, sensitivity, multiFac
           </div>
         </div>
       </div>
+
+      <CorporateEventsPanel ticker={ticker} />
 
       <div className="pipe-sub-tabs" style={{ marginTop: 4 }}>
         {SCEN_TABS.map(t => (
