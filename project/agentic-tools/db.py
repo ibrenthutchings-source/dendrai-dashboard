@@ -3568,6 +3568,35 @@ def get_token_usage_time_summary() -> dict:
     return _run(_do) or {"by_month": [], "month_to_date": empty, "by_year": [], "year_to_date": empty}
 
 
+def get_token_usage_by_month_by_label(months: int = 12) -> list:
+    """
+    Cost per month, split by feature/label — the composition behind
+    get_token_usage_time_summary's by_month totals (that's cost over time;
+    this is cost over time by WHAT). Feeds the Token Usage screen's stacked
+    cost trend. Raw grouped rows, oldest month first — the frontend pivots
+    into a per-label series itself, same convention as get_token_usage_summary.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT date_trunc('month', called_at) AS bucket, COALESCE(label, 'unlabeled'),
+                           SUM(cost_usd)
+                    FROM token_usage_calls
+                    WHERE called_at >= NOW() - (%s || ' months')::INTERVAL
+                    GROUP BY bucket, COALESCE(label, 'unlabeled')
+                    ORDER BY bucket ASC
+                    """,
+                    (months,),
+                )
+                return [
+                    {"month": r[0].strftime("%Y-%m"), "label": r[1], "cost_usd": float(r[2] or 0)}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 def get_backtest_trend(limit_runs: int = 30) -> list:
     """
     Forecast backtest accuracy across recent runs, for the Model Health

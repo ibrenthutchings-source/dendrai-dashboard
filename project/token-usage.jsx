@@ -13,6 +13,8 @@
    effect then), never recomputed against today's pricing.
    ============================================================ */
 
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+
 const _TU_LABELS = {
   chat: "AI Chat",
   gate1: "Gate 1 Recommend",
