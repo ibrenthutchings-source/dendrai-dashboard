@@ -34,7 +34,37 @@ function MHFlagBadge({ flag }) {
   );
 }
 
-function MHDriftRow({ label, psi, flag, nBaseline, nCurrent }) {
+// Baseline-vs-current bucket overlay — PSI alone says THAT a distribution
+// shifted; this shows WHERE. Bars: outlined = baseline share, filled =
+// current share, same bucket edges the PSI computation itself used.
+function MHDistributionSparkline({ histogram, flag }) {
+  if (!histogram) return null;
+  const { baseline_pct, current_pct } = histogram;
+  const W = 130, H = 40, gap = 1.5;
+  const n = baseline_pct.length;
+  const barW = (W - gap * (n - 1)) / n;
+  const maxPct = Math.max(0.01, ...baseline_pct, ...current_pct);
+  const color = flag === "drift" ? "var(--red)" : flag === "watch" ? "var(--amber)" : "var(--green)";
+
+  return (
+    <svg width={W} height={H} style={{ flexShrink: 0 }}>
+      {baseline_pct.map((bp, i) => {
+        const x = i * (barW + gap);
+        const cp = current_pct[i] || 0;
+        const bh = (bp / maxPct) * (H - 4);
+        const ch = (cp / maxPct) * (H - 4);
+        return (
+          <g key={i}>
+            <rect x={x} y={H - bh} width={barW} height={bh} fill="none" stroke="var(--ink-4)" strokeWidth={1} opacity={0.6} />
+            <rect x={x} y={H - ch} width={barW} height={ch} fill={color} opacity={0.55} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function MHDriftRow({ label, psi, flag, nBaseline, nCurrent, histogram }) {
   return (
     <div style={{
       display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -46,7 +76,10 @@ function MHDriftRow({ label, psi, flag, nBaseline, nCurrent }) {
           {psi != null ? `PSI ${psi.toFixed(3)}` : "PSI —"} · baseline n={nBaseline} · current n={nCurrent}
         </div>
       </div>
-      <MHFlagBadge flag={flag} />
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <MHDistributionSparkline histogram={histogram} flag={flag} />
+        <MHFlagBadge flag={flag} />
+      </div>
     </div>
   );
 }
@@ -350,7 +383,7 @@ function ModelHealthScreen() {
             {!ratioDrift.length ? <Empty>No ratio history yet.</Empty> : (
               ratioDrift.map(r => (
                 <MHDriftRow key={r.ratio} label={_MH_RATIO_LABELS[r.ratio] || r.ratio}
-                  psi={r.psi} flag={r.flag} nBaseline={r.n_baseline} nCurrent={r.n_current} />
+                  psi={r.psi} flag={r.flag} nBaseline={r.n_baseline} nCurrent={r.n_current} histogram={r.histogram} />
               ))
             )}
 

@@ -2047,6 +2047,7 @@ def get_command_center(
     coverage_rows = mcp_governance._fetch_coverage() if _HAS_MCP_GOVERNANCE else []
     coverage_blind_spots = sum(1 for r in coverage_rows if (r.get("flag_rate") or 0) == 0)
     last_24h = db.get_observability_24h_counts()
+    hourly = db.get_observability_hourly_series()
 
     pac_processes = []
     for proc in db.list_pac_processes():
@@ -2070,6 +2071,7 @@ def get_command_center(
         "pending_holds": pending_holds,
         "coverage_blind_spots": coverage_blind_spots,
         "last_24h": last_24h,
+        "hourly": hourly,
         "pac_processes": pac_processes,
         "model_health_drift": model_health_drift,
     }

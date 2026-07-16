@@ -6497,6 +6497,43 @@ def get_observability_24h_counts() -> dict:
     return _run(_do) or {"adjudicated": 0, "escalated": 0, "pac_violations": 0}
 
 
+def get_observability_hourly_series() -> dict:
+    """
+    24 hourly buckets (oldest first) of adjudicated/escalated counts — the
+    per-tile trend behind the Continuous Monitoring command-center's static
+    24h totals. generate_series fills hours with zero activity so the series
+    has no gaps (a real requirement for a sparkline, not a nice-to-have —
+    a gapped series reads as a data problem, not as "nothing happened").
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        h.hour,
+                        COALESCE(COUNT(a.id), 0) AS adjudicated,
+                        COALESCE(COUNT(a.id) FILTER (WHERE a.final_verdict = 'ESCALATE'), 0) AS escalated
+                    FROM generate_series(
+                        date_trunc('hour', NOW() - INTERVAL '23 hours'),
+                        date_trunc('hour', NOW()),
+                        INTERVAL '1 hour'
+                    ) AS h(hour)
+                    LEFT JOIN observability.adjudicated_tool_calls a
+                        ON date_trunc('hour', a.adjudicated_at) = h.hour
+                    GROUP BY h.hour
+                    ORDER BY h.hour
+                    """
+                )
+                rows = cur.fetchall()
+                return {
+                    "hours": [r[0].isoformat() for r in rows],
+                    "adjudicated": [int(r[1]) for r in rows],
+                    "escalated": [int(r[2]) for r in rows],
+                }
+    return _run(_do) or {"hours": [], "adjudicated": [], "escalated": []}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Policy-as-Code external hooks
 # ─────────────────────────────────────────────────────────────────────────────

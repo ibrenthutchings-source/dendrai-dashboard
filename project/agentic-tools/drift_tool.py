@@ -102,6 +102,50 @@ def compute_psi(baseline: list[float], current: list[float], buckets: int = 10,
     return round(sum((c - b) * math.log(c / b) for b, c in zip(base_pct, cur_pct)), 4)
 
 
+def bucket_distributions(baseline: list[float], current: list[float], buckets: int = 10,
+                          min_bucket_samples: int = _MIN_BUCKET_SAMPLES) -> Optional[dict]:
+    """
+    Same quantile binning as compute_psi(), but returns the bucket edges and
+    each sample's actual per-bucket share instead of reducing it to one PSI
+    number — this is the data behind the "what actually drifted" small-
+    multiples view on Model Health (PSI alone tells you THAT something
+    shifted, not which part of the distribution moved).
+
+    Deliberately NOT reusing compute_psi()'s _bucket_pcts floor (max(c/total,
+    1e-4)) — that floor exists only to keep the PSI log term finite, and
+    would make a genuinely-empty bucket show as a fake sliver in a chart.
+    """
+    baseline = [v for v in baseline if v is not None and not math.isnan(v)]
+    current = [v for v in current if v is not None and not math.isnan(v)]
+    n = min(len(baseline), len(current))
+    if n < buckets * min_bucket_samples:
+        return None
+
+    sorted_base = sorted(baseline)
+    edges = sorted(set(
+        sorted_base[int(round(i * (len(sorted_base) - 1) / buckets))]
+        for i in range(buckets + 1)
+    ))
+    if len(edges) < 3:
+        return None
+
+    def _bucket_pcts(sample: list[float]) -> list[float]:
+        counts = [0] * (len(edges) - 1)
+        for v in sample:
+            idx = 0
+            while idx < len(edges) - 2 and v > edges[idx + 1]:
+                idx += 1
+            counts[idx] += 1
+        total = len(sample) or 1
+        return [round(c / total, 4) for c in counts]
+
+    return {
+        "edges": [round(e, 4) for e in edges],
+        "baseline_pct": _bucket_pcts(baseline),
+        "current_pct": _bucket_pcts(current),
+    }
+
+
 def compute_ratio_drift(rows: list[dict], split_last_n: int = 8) -> list[dict]:
     """
     rows: output of db.get_financial_ratios_history() — oldest-first, one
@@ -134,6 +178,7 @@ def compute_ratio_drift(rows: list[dict], split_last_n: int = 8) -> list[dict]:
             "flag": _flag(psi),
             "n_baseline": len(baseline_vals),
             "n_current": len(current_vals),
+            "histogram": bucket_distributions(baseline_vals, current_vals) if baseline_vals else None,
         })
     return results
 
