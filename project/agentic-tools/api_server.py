@@ -99,6 +99,8 @@ from edgar_tool import (
     parse_filings,
     fetch_filing_text,
     annotate_8k,
+    has_material_item,
+    classify_8k_event,
 )
 from rss_tool import run_rss_analysis
 from rss_ingest_service import (
@@ -1055,13 +1057,45 @@ def rss_feeds_status():
     }
 
 
+_8K_CLASSIFY_MAX_PER_CALL = 10  # bounds per-request latency/LLM cost — see comment below
+
+
 @app.post("/edgar/8k-events")
 def edgar_8k_events(req: TickerRequest):
-    """Return annotated 8-K material events and save to edgar_8k_events."""
+    """
+    Return annotated 8-K events and save to edgar_8k_events. Filings whose
+    item codes intersect the "material" set (acquisitions, divestitures,
+    bankruptcy, impairments, restatements, change of control — see
+    edgar_tool._MATERIAL_8K_ITEMS) get their actual filing body fetched and
+    classified by an LLM into structured content: counterparty, consideration,
+    what was acquired/sold, stated rationale. Previously these item codes were
+    only ever surfaced as a bare label ("Completion of Acquisition or
+    Disposition of Assets") with no indication of WHAT was acquired or from
+    whom — this is what actually answers that question.
+
+    Classification is capped at the _8K_CLASSIFY_MAX_PER_CALL most recent
+    material filings per call to bound latency and LLM cost; the rest are
+    still returned with is_material=True but classification=None.
+    """
     try:
         meta, sub = get_company_info(req.ticker)
+        cik = meta["cik"]
         filings = parse_filings(sub, {"8-K"})["8-K"][:30]
         events = [annotate_8k(dict(f)) for f in filings]
+
+        classified_count = 0
+        new_material_events = []
+        for ev in events:
+            ev["is_material"] = has_material_item(ev)
+            ev["classification"] = None
+            if ev["is_material"] and classified_count < _8K_CLASSIFY_MAX_PER_CALL:
+                classified_count += 1
+                try:
+                    text = fetch_filing_text(cik, ev)
+                    ev["classification"] = classify_8k_event(ev.get("item_descriptions"), text) if text else None
+                except Exception:
+                    ev["classification"] = None
+
         result = {
             "ticker": req.ticker.upper(),
             "company_name": meta["company_name"],
@@ -1076,8 +1110,13 @@ def edgar_8k_events(req: TickerRequest):
                 "sic": meta.get("sic", ""),
             })
             if company_id:
-                db.save_edgar_8k_events(company_id, events)
+                new_accessions = set(db.save_edgar_8k_events(company_id, events))
+                new_material_events = [
+                    ev for ev in events
+                    if ev.get("is_material") and ev.get("accession_number") in new_accessions
+                ]
 
+        result["new_material_events"] = new_material_events
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

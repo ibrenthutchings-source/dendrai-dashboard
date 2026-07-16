@@ -147,6 +147,20 @@ CREATE TABLE IF NOT EXISTS edgar_8k_events (
     item_descriptions JSONB,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- accession_number is the SEC's own unique filing identifier — without it,
+-- re-running the same ticker re-inserts duplicate rows for the same filing
+-- on every pipeline run, and there's no reliable way to tell "have we
+-- already seen and classified this specific 8-K" (the basis for real
+-- change-detection: a NEW accession_number here is a genuinely new event).
+-- classification holds the LLM-extracted structured content (counterparty,
+-- consideration, what was acquired/sold, rationale) for material items only
+-- — see edgar_tool.classify_8k_event.
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS accession_number VARCHAR(20);
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS is_material       BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS classification    JSONB;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edgar_8k_events_accession
+    ON edgar_8k_events (company_id, accession_number)
+    WHERE accession_number IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS edgar_risk_factor_filings (
     id               SERIAL PRIMARY KEY,
@@ -1840,8 +1854,20 @@ def save_xbrl_data_points(series_id: int, data_points: list) -> None:
     _run(_do)
 
 
-def save_edgar_8k_events(company_id: int, events: list) -> None:
-    """Save annotated 8-K events."""
+def save_edgar_8k_events(company_id: int, events: list) -> list[str]:
+    """
+    Save annotated 8-K events, keyed by (company_id, accession_number) so
+    re-running the same ticker never creates duplicate rows for a filing
+    already seen. Returns the accession_numbers that were genuinely new this
+    call — the basis for change-detection: a non-empty return means new
+    material corporate events since the last time this ran.
+
+    Events with no accession_number (legacy callers, or a filing whose
+    accession number wasn't available) fall back to a plain insert, same as
+    the old behavior — they just won't be deduplicated.
+    """
+    new_accessions: list[str] = []
+
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -1849,16 +1875,39 @@ def save_edgar_8k_events(company_id: int, events: list) -> None:
                     filing_date = ev.get("date") or ev.get("filing_date")
                     if not filing_date:
                         continue
-                    cur.execute(
-                        """
-                        INSERT INTO edgar_8k_events (company_id, event_date, items, item_descriptions)
-                        VALUES (%s, %s, %s, %s)
-                        """,
-                        (company_id, filing_date,
-                         ev.get("items") or ev.get("form"),
-                         Json(ev.get("item_descriptions") or {})),
-                    )
+                    accession = ev.get("accession_number") or None
+                    if accession:
+                        cur.execute(
+                            """
+                            INSERT INTO edgar_8k_events
+                                (company_id, event_date, items, item_descriptions,
+                                 accession_number, is_material, classification)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (company_id, accession_number) WHERE accession_number IS NOT NULL
+                            DO NOTHING
+                            RETURNING id
+                            """,
+                            (company_id, filing_date,
+                             ev.get("items") or ev.get("form"),
+                             Json(ev.get("item_descriptions") or {}),
+                             accession,
+                             bool(ev.get("is_material")),
+                             Json(ev.get("classification")) if ev.get("classification") else None),
+                        )
+                        if cur.fetchone() is not None:
+                            new_accessions.append(accession)
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO edgar_8k_events (company_id, event_date, items, item_descriptions)
+                            VALUES (%s, %s, %s, %s)
+                            """,
+                            (company_id, filing_date,
+                             ev.get("items") or ev.get("form"),
+                             Json(ev.get("item_descriptions") or {})),
+                        )
     _run(_do)
+    return new_accessions
 
 
 def save_edgar_risk_factors(

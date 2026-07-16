@@ -66,6 +66,8 @@ window.RSS_ENGINE = (function () {
       risks: ["R-07"],
       weight: 0.8,
       icon: "compass",
+      companyGated: true,  // this is an enforcement-action feed covering every regulated company —
+                            // without gating, any company's ESG violation shows up in every other company's feed
     },
   ];
 
@@ -203,22 +205,35 @@ window.RSS_ENGINE = (function () {
     return Math.round(Math.max(0, Math.min(5, raw)));
   }
 
+  // Corporate-suffix words too generic to use as a company-name match term
+  // (e.g. matching on "group" or "inc" alone would defeat the gate entirely).
+  const _COMPANY_NAME_STOPWORDS = new Set(['corp', 'inc', 'ltd', 'llc', 'group', 'holdings']);
+
+  function _companyNameTerms(companyName) {
+    return (companyName || "").toLowerCase().split(/\W+/)
+      .filter(w => w.length >= 4 && !_COMPANY_NAME_STOPWORDS.has(w));
+  }
+
+  // Returns null (not just velocity=0) when a company-gated feed's article
+  // doesn't actually mention the subject company — an EPA enforcement release
+  // about Nike or Conagra has nothing to do with an unrelated company's risk
+  // profile and shouldn't appear in that company's feed at all, not just be
+  // down-ranked to a green/non-signal entry that still clutters the list.
   function gradeArticle(article, feed, risks = [], companyName = "") {
     const text = `${article.title || ""} ${article.description || article.summary || ""}`;
+
+    if (feed.companyGated && companyName) {
+      const terms = _companyNameTerms(companyName);
+      if (terms.length && !terms.some(term => tokenize(text).includes(term))) {
+        return null;
+      }
+    }
+
     const relevance = scoreRelevance(text, feed.domains);
     const severity  = article.severity_hint != null
       ? Math.min(1, article.severity_hint / 3)
       : scoreSeverity(text);
-    let velocity    = velocityFromScores(relevance, severity, feed.weight);
-
-    // Company-gated feeds: suppress articles that don't mention the company.
-    // CISA ICS advisories cover all vendors — only surface ones relevant to this company.
-    if (feed.companyGated && companyName) {
-      const t = tokenize(text);
-      const STOP = new Set(['corp', 'inc', 'ltd', 'llc', 'group', 'holdings']);
-      const terms = companyName.toLowerCase().split(/\W+/).filter(w => w.length >= 4 && !STOP.has(w));
-      if (terms.length && !terms.some(term => t.includes(term))) velocity = 0;
-    }
+    const velocity  = velocityFromScores(relevance, severity, feed.weight);
 
     const rag = velocity >= 3 ? "R" : velocity >= 2 ? "A" : "G";
 
@@ -380,7 +395,9 @@ window.RSS_ENGINE = (function () {
         rawArticles = await fetchFeed(feed);
       }
       const fetchStatus = rawArticles ? "ok" : "failed";
-      const graded = (rawArticles || []).map(a => gradeArticle(a, feed, risks, companyName));
+      const graded = (rawArticles || [])
+        .map(a => gradeArticle(a, feed, risks, companyName))
+        .filter(Boolean); // drop company-gated articles that didn't match
       results.push({ feed, articles: graded, fetchStatus });
       onProgress?.(`${feed.name} fetched`, feed.id, true);
     }
