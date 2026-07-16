@@ -545,6 +545,9 @@ function CorporateEventsPanel({ ticker }) {
   const [loading, setLoading] = React.useState(true);
   const [savingId, setSavingId] = React.useState(null);
   const [showClosed, setShowClosed] = React.useState(false);
+  const [checking, setChecking] = React.useState(false);
+  const [checkResult, setCheckResult] = React.useState(null); // { newCount } | { error }
+  const [lastChecked, setLastChecked] = React.useState(null);
 
   const load = React.useCallback(() => {
     if (!ticker) { setLoading(false); return Promise.resolve(); }
@@ -571,6 +574,34 @@ function CorporateEventsPanel({ ticker }) {
     setSavingId(null);
   }
 
+  // Runs the real 8-K fetch + classification directly, regardless of Data
+  // Mode (Mock/Live/MCP) — the pipeline only calls this in Live/MCP mode, so
+  // this is the way to check for new filings without switching modes and
+  // re-running the whole pipeline.
+  async function handleCheckNow() {
+    if (!ticker) return;
+    setChecking(true);
+    setCheckResult(null);
+    try {
+      const res = await fetch("/api/mcp/edgar/8k-events", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) {
+        setCheckResult({ error: d?.detail || `Check failed (HTTP ${res.status})` });
+      } else {
+        setCheckResult({ newCount: (d.new_material_events || []).length });
+        await load();
+      }
+    } catch (e) {
+      setCheckResult({ error: e.message || "Network error" });
+    }
+    setLastChecked(new Date());
+    setChecking(false);
+  }
+
   if (!ticker) return null;
 
   const visible = showClosed ? events : events.filter(e => e.status !== "assessed" && e.status !== "dismissed");
@@ -578,7 +609,7 @@ function CorporateEventsPanel({ ticker }) {
 
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
         <div className="kicker">
           Corporate Events{newCount > 0 && (
             <span className="mono" style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "var(--red-soft)", color: "var(--red-ink)" }}>
@@ -586,19 +617,39 @@ function CorporateEventsPanel({ ticker }) {
             </span>
           )}
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--ink-3)", cursor: "pointer" }}>
-          <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} />
-          Show assessed/dismissed
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--ink-3)", cursor: "pointer" }}>
+            <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} />
+            Show assessed/dismissed
+          </label>
+          <button className="btn btn-sm" disabled={checking} onClick={handleCheckNow}
+            title="Fetch and classify this company's 8-K filings right now, independent of Data Mode">
+            {checking ? "Checking…" : "Check for new filings"}
+          </button>
+        </div>
       </div>
       <div style={{ fontSize: 10, color: "var(--ink-4)", marginBottom: 10 }}>
         Material 8-K filings — acquisitions, divestitures, restructuring, impairments, restatements, change of
         control — detected from real SEC filing content, not just item-code labels. These are exactly the kind of
         discrete, event-driven signals the scenario models below don't capture on their own; review each one and
-        assess whether it changes the risk picture.
+        assess whether it changes the risk picture. Populated automatically when the pipeline runs in Live or MCP
+        data mode — use "Check for new filings" to pull the latest without a full pipeline run.
       </div>
+      {checkResult && (
+        <div className="mono" style={{
+          fontSize: 10.5, padding: "6px 10px", borderRadius: 6, marginBottom: 10,
+          background: checkResult.error ? "var(--red-soft)" : "var(--surface-2)",
+          color: checkResult.error ? "var(--red-ink)" : "var(--ink-2)",
+        }}>
+          {checkResult.error
+            ? `Check failed: ${checkResult.error}`
+            : checkResult.newCount > 0
+              ? `✓ Found ${checkResult.newCount} new material event${checkResult.newCount === 1 ? "" : "s"}`
+              : `✓ Checked — no new material filings since last check${lastChecked ? ` (${lastChecked.toLocaleTimeString()})` : ""}`}
+        </div>
+      )}
       {loading ? <Empty>Loading…</Empty> : !visible.length ? (
-        <Empty>{events.length ? "No open corporate events — everything's been assessed or dismissed." : "No material corporate events detected yet."}</Empty>
+        <Empty>{events.length ? "No open corporate events — everything's been assessed or dismissed." : "No material corporate events detected yet — click \"Check for new filings\" to pull real EDGAR data for this company."}</Empty>
       ) : (
         visible.map(ev => (
           <CorporateEventRow key={ev.id} event={ev} onUpdate={handleUpdate} saving={savingId === ev.id} />
