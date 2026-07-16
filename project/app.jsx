@@ -4,6 +4,33 @@
    data mode (mock/live), tweaks.
    ============================================================ */
 
+import { lazyGlobal } from './src/lazy-screen.js';
+
+// Screens reachable only through the activeScreen switch below are
+// code-split: each chunk is fetched on first navigation, not at startup.
+// (code-screens.jsx backs "policycode", "riskcode", and "frameworks";
+// sox-scope.jsx needs sox-hitl.jsx loaded alongside it since it renders
+// SoxGate1Review/SoxGate2Review/SoxGateBanner unguarded. cem.jsx and
+// risk-register-review.jsx are NOT split, despite backing their own
+// screens too — see the note in src/main.jsx for why.)
+const ConfigScreenLazy = lazyGlobal(() => import('./config-screen.jsx'), 'ConfigScreen');
+const UboConfigScreenLazy = lazyGlobal(() => import('./ubo-config.jsx'), 'UboConfigScreen');
+const UserConfigScreenLazy = lazyGlobal(() => import('./user-config.jsx'), 'UserConfigScreen');
+const TokenUsageScreenLazy = lazyGlobal(() => import('./token-usage.jsx'), 'TokenUsageScreen');
+const ModelHealthScreenLazy = lazyGlobal(() => import('./model-health.jsx'), 'ModelHealthScreen');
+const ContinuousMonitoringScreenLazy = lazyGlobal(() => import('./continuous-monitoring.jsx'), 'ContinuousMonitoringScreen');
+const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
+const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
+const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
+const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
+const RiskAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RiskAsCodeScreen');
+const PolicyAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'PolicyAsCodeScreen');
+const RisksAsCodeLiveScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RisksAsCodeLiveScreen');
+const ScenariosPanelLazy = lazyGlobal(() => import('./scenarios.jsx'), 'ScenariosPanel');
+const ScenarioAnalysisScreenLazy = lazyGlobal(() => import('./scenario-analysis.jsx'), 'ScenarioAnalysisScreen');
+const SoxScopePanelLazy = lazyGlobal(() => Promise.all([import('./sox-scope.jsx'), import('./sox-hitl.jsx')]), 'SoxScopePanel');
+const GovernanceViewLazy = lazyGlobal(() => import('./governance.jsx'), 'GovernanceView');
+
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { err: null }; }
   static getDerivedStateFromError(err) { return { err }; }
@@ -71,8 +98,8 @@ function App() {
     ticker: "ON",
     industry: "Semiconductors",
     focus: ["Revenue Recognition"],
-    periodBegin: "Q1 2025",
-    periodEnd: "Q4 2025",
+    periodBegin: `Q1 ${new Date().getFullYear()}`,
+    periodEnd: `Q4 ${new Date().getFullYear()}`,
     appetiteLevel: "AMBER",
   });
   const [signalSet, setSignalSet] = useState(new Set(["edgar", "peers", "industry", "internal", "fred", "incidents"]));
@@ -1643,12 +1670,13 @@ function App() {
           }} />
 
         <main className="main" data-screen-label="Main canvas">
+        <React.Suspense fallback={<ScreenLoadingFallback/>}>
 
           {/* ---- Configuration / Setup ---- */}
           {activeScreen === "config" && (
             <ScreenAccessGate screenId="config">
             <div className="panel active">
-              <ConfigScreen
+              <ConfigScreenLazy
                 cfg={cfg} setCfg={setCfg}
                 signalSet={signalSet} setSignalSet={setSignalSet}
                 velocity={velocity} setVelocity={setVelocity}
@@ -1674,7 +1702,7 @@ function App() {
           {activeScreen === "uboconfig" && (
             <ScreenAccessGate screenId="uboconfig">
             <div className="panel active">
-              <UboConfigScreen />
+              <UboConfigScreenLazy />
             </div>
             </ScreenAccessGate>
           )}
@@ -1682,7 +1710,7 @@ function App() {
           {/* ---- User Configuration (add/change/remove local accounts + per-role screen access) ---- */}
           {activeScreen === "userconfig" && (
             <div className="panel active">
-              <UserConfigScreen />
+              <UserConfigScreenLazy />
             </div>
           )}
 
@@ -1690,7 +1718,7 @@ function App() {
           {activeScreen === "tokenusage" && (
           <ScreenAccessGate screenId="tokenusage">
             <div className="panel active">
-              <TokenUsageScreen />
+              <TokenUsageScreenLazy />
             </div>
           </ScreenAccessGate>
           )}
@@ -1699,7 +1727,7 @@ function App() {
           {activeScreen === "modelhealth" && (
           <ScreenAccessGate screenId="modelhealth">
             <div className="panel active">
-              <ModelHealthScreen />
+              <ModelHealthScreenLazy />
             </div>
           </ScreenAccessGate>
           )}
@@ -1708,7 +1736,7 @@ function App() {
           {activeScreen === "continuousmonitoring" && (
           <ScreenAccessGate screenId="continuousmonitoring">
             <div className="panel active">
-              <ContinuousMonitoringScreen onNavigate={navigateToScreen} />
+              <ContinuousMonitoringScreenLazy onNavigate={navigateToScreen} />
             </div>
           </ScreenAccessGate>
           )}
@@ -1717,7 +1745,7 @@ function App() {
           {activeScreen === "aiinventory" && (
           <ScreenAccessGate screenId="aiinventory">
             <div className="panel active">
-              <AiInventoryScreen onNavigate={navigateToScreen} />
+              <AiInventoryScreenLazy onNavigate={navigateToScreen} />
             </div>
           </ScreenAccessGate>
           )}
@@ -1863,7 +1891,7 @@ function App() {
           {/* ---- Risk Flow ---- */}
           {activeScreen === "flow" && (
           <div className="panel active">
-            <FlowPanel
+            <FlowPanelLazy
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
               maps={output.s4?.maps || (hasRun ? profile.maps : null)}
               flowMeta={hasRun ? profile.riskFlow : null}
@@ -1913,7 +1941,7 @@ function App() {
           {activeScreen === "scope" && (
           <ScreenAccessGate screenId="scope">
           <div className="panel active">
-            <AuditScopeScreen
+            <AuditScopeScreenLazy
               objectives={output.s3?.objectives?.length ? output.s3.objectives
                 : savedAuditScope?.objectives?.length ? savedAuditScope.objectives
                 : (hasRun ? profile.objectives : [])}
@@ -1929,7 +1957,7 @@ function App() {
           {activeScreen === "approvals" && (
           <ScreenAccessGate screenId="approvals">
           <div className="panel active">
-            <ApprovalInboxScreen />
+            <ApprovalInboxScreenLazy />
           </div>
           </ScreenAccessGate>
           )}
@@ -1950,7 +1978,7 @@ function App() {
           {/* ---- Risk-as-Code ---- */}
           {activeScreen === "riskcode" && (
           <div className="panel active">
-            <RiskAsCodeScreen
+            <RiskAsCodeScreenLazy
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
               baseRisks={profile.risks} />
           </div>
@@ -1979,7 +2007,7 @@ function App() {
           {/* ---- Risks as Code (Industry Frameworks) ---- */}
           {activeScreen === "frameworks" && (
           <div className="panel active">
-            <RisksAsCodeLiveScreen
+            <RisksAsCodeLiveScreenLazy
               risks={output.s2?.risks || (hasRun ? profile.risks : null)}
               objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
               maps={output.s4?.maps || (hasRun ? profile.maps : null)}
@@ -1996,7 +2024,7 @@ function App() {
           {activeScreen === "policycode" && (
           <ScreenAccessGate screenId="policycode">
           <div className="panel active">
-            <PolicyAsCodeScreen
+            <PolicyAsCodeScreenLazy
               events={events}
               maps={railMaps}
               risks={railRisks}
@@ -2010,7 +2038,7 @@ function App() {
           {activeScreen === "scenarios" && (
           <ScreenAccessGate screenId="scenarios">
           <div className="panel active">
-            <ScenariosPanel
+            <ScenariosPanelLazy
               scenarios={hasRun ? profile.scenarios : null}
               greySwan={hasRun ? profile.greySwan : null}
               reverseStress={hasRun ? profile.reverseStress : null}
@@ -2024,7 +2052,7 @@ function App() {
           {activeScreen === "scenarioanalysis" && (
           <ScreenAccessGate screenId="scenarioanalysis">
           <div className="panel active">
-            <ScenarioAnalysisScreen
+            <ScenarioAnalysisScreenLazy
               ticker={cfg.ticker}
               hasRun={hasRun}
               varCvar={hasRun ? profile.varCvar : null}
@@ -2040,7 +2068,7 @@ function App() {
           {activeScreen === "sox" && (
           <ScreenAccessGate screenId="sox">
           <div className="panel active" style={{overflow: "auto"}}>
-            <SoxScopePanel
+            <SoxScopePanelLazy
               ticker={cfg.ticker}
               runId={runIdRef.current}
               forecasts={hasRun ? profile.forecasts : null}
@@ -2055,7 +2083,7 @@ function App() {
           {activeScreen === "gov" && (
           <ScreenAccessGate screenId="gov">
           <div className="panel gov-panel active">
-            <GovernanceView
+            <GovernanceViewLazy
               data={govData}
               peerData={govPeerData}
               ticker={cfg.ticker}
@@ -2068,6 +2096,7 @@ function App() {
           </div>
           </ScreenAccessGate>
           )}
+        </React.Suspense>
         </main>
 
         {/* ---- Live Register rail — Pipeline screen, visible from Stage 2 onward ---- */}

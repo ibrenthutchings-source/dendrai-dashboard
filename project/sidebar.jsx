@@ -72,10 +72,24 @@ async function resolveIndustryFromSec(raw) {
   }
 }
 
+function quarterDateRange(year, q) {
+  const startMonth = (q - 1) * 3;
+  const start = new Date(Date.UTC(year, startMonth, 1));
+  const end = new Date(Date.UTC(year, startMonth + 3, 0));
+  const fmt = d => d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
+// Preceding fiscal year, current fiscal year, and two future fiscal years —
+// recomputed from today's date so the list never goes stale.
 function genFiscalQuarters() {
+  const currentYear = new Date().getFullYear();
+  const years = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
   const qtrs = [];
-  for (let yr = 2022; yr <= 2027; yr++) {
-    for (let q = 1; q <= 4; q++) qtrs.push(`Q${q} ${yr}`);
+  for (const yr of years) {
+    for (let q = 1; q <= 4; q++) {
+      qtrs.push({ value: `Q${q} ${yr}`, label: `Q${q} ${yr} (${quarterDateRange(yr, q)})` });
+    }
   }
   return qtrs;
 }
@@ -177,14 +191,14 @@ function Sidebar({
         <div className="field" style={{marginBottom:0}}>
           <label className="field-label">Audit Period</label>
           <div style={{display:"flex", gap:6, alignItems:"center"}}>
-            <select className="input" style={{flex:1}} value={cfg.periodBegin || "Q1 2025"}
+            <select className="input" style={{flex:1}} value={cfg.periodBegin || FISCAL_QUARTERS[4].value}
               onChange={e => setCfg({...cfg, periodBegin: e.target.value})}>
-              {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+              {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
             </select>
             <span className="mono" style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>→</span>
-            <select className="input" style={{flex:1}} value={cfg.periodEnd || "Q4 2025"}
+            <select className="input" style={{flex:1}} value={cfg.periodEnd || FISCAL_QUARTERS[7].value}
               onChange={e => setCfg({...cfg, periodEnd: e.target.value})}>
-              {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+              {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
             </select>
           </div>
           <div className="mono" style={{fontSize:10,color:"var(--ink-3)",marginTop:3}}>Beginning → Ending fiscal quarter</div>

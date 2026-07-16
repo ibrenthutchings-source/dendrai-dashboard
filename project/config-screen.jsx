@@ -192,14 +192,14 @@ function ConfigScreen({
           <div className="field" style={{marginBottom:0}}>
             <label className="field-label">Audit Period</label>
             <div style={{display:"flex", gap:6, alignItems:"center"}}>
-              <select className="input" style={{flex:1}} value={cfg.periodBegin || "Q1 2025"}
+              <select className="input" style={{flex:1}} value={cfg.periodBegin || FISCAL_QUARTERS[4].value}
                 onChange={e => setCfg({...cfg, periodBegin: e.target.value})}>
-                {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+                {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
               </select>
               <span className="mono" style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>→</span>
-              <select className="input" style={{flex:1}} value={cfg.periodEnd || "Q4 2025"}
+              <select className="input" style={{flex:1}} value={cfg.periodEnd || FISCAL_QUARTERS[7].value}
                 onChange={e => setCfg({...cfg, periodEnd: e.target.value})}>
-                {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+                {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
               </select>
             </div>
           </div>

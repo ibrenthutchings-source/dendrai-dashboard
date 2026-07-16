@@ -15,35 +15,37 @@ import '../components.jsx'
 import '../charts.jsx'
 import '../sidebar.jsx'
 import '../pipeline.jsx'
-import '../cem.jsx'
 import '../forecasts.jsx'
-import '../scenarios.jsx'
-import '../scenario-analysis.jsx'
-import '../flow.jsx'
 import '../rail.jsx'
-import '../governance.jsx'
-import '../report.jsx'
 import '../risk-approval.jsx'
 import '../rss.jsx'
 import '../audit-scope-review.jsx'
-import '../nav.jsx'
-import '../config-screen.jsx'
-import '../ubo-config.jsx'
-import '../ai-chat-panel.jsx'
-import '../audit-scope.jsx'
-import '../auth.jsx'
-import '../code-screens.jsx'
-import '../risk-register-review.jsx'
-import '../sox-hitl.jsx'
-import '../sox-scope.jsx'
+import '../report.jsx'
 import '../coverage-gap.jsx'
-import '../approval-inbox.jsx'
-import '../user-config.jsx'
-import '../token-usage.jsx'
-import '../model-health.jsx'
-import '../continuous-monitoring.jsx'
-import '../ai-inventory.jsx'
+import '../risk-register-review.jsx'
+import '../cem.jsx'
+import '../nav.jsx'
+import '../ai-chat-panel.jsx'
+import '../auth.jsx'
 import '../tweaks.jsx'
+
+// The remaining screen-level files (scenarios, scenario-analysis, flow,
+// governance, config-screen, ubo-config, audit-scope, code-screens,
+// sox-hitl, sox-scope, approval-inbox, user-config, token-usage,
+// model-health, continuous-monitoring, ai-inventory) are no longer
+// imported here — they are lazy-loaded on first navigation via
+// React.lazy() in app.jsx (see src/lazy-screen.js).
+//
+// Everything above stays eager because it's reachable outside the
+// activeScreen Suspense boundary (pipeline.jsx is the landing screen and
+// unconditionally/guardedly renders Rail, RSSPanel, CoverageGapPanel;
+// app.jsx renders OverrideModal, AdjustRiskModal, AdjustObjectiveModal
+// unconditionally at the root; audit-scope-review.jsx and risk-approval.jsx
+// read window.MASTER_CONTROLS / window.FW_MOCK_RISKS from
+// risk-register-review.jsx during the core Gate 1/2 HITL flow; app.jsx's
+// live-mode 8-K event ingestion uses cem.jsx's TIERS/notifMsgFor directly,
+// unguarded, independent of which screen is active) — verified via direct
+// grep, not assumed.
 
 import App from '../app.jsx'
 
