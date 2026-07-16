@@ -4,6 +4,8 @@
    and Stage 2 risk scores (AS2201 / AS2315 aligned).
    ============================================================ */
 
+import { hierarchy, treemap, treemapSquarify } from 'd3-hierarchy';
+
 // ── Utility helpers ────────────────────────────────────────────────────────────
 
 function fmtM(v) {
@@ -487,6 +489,92 @@ function _computeBreakdown(items, valueOf, inScopeOf, tagsOf) {
   return { rows, total };
 }
 
+// Materiality scoping is inherently spatial — a rectangle per segment sized
+// by dollar amount, colored by how much of it is in-scope. Real squarified
+// layout via d3-hierarchy (already a transitive dep of the d3 package this
+// codebase already uses for risk-sankey.jsx), not a hand-rolled grid.
+function SegmentTreemap({ title, rows, valueLabel }) {
+  if (!rows.length) return null;
+  const W = 420, H = 190;
+  const root = hierarchy({ children: rows }).sum(d => d.amount || 0);
+  treemap().tile(treemapSquarify).size([W, H]).paddingInner(2).round(true)(root);
+  const leaves = root.leaves();
+
+  function scopeColor(pct) {
+    if (pct >= 0.66) return "var(--green)";
+    if (pct >= 0.33) return "var(--amber)";
+    return "var(--ink-4)";
+  }
+
+  return (
+    <div style={{ flex: 1, minWidth: 300 }}>
+      <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 8 }}>{title}</div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMin meet" style={{ maxWidth: W }}>
+        {leaves.map(leaf => {
+          const w = leaf.x1 - leaf.x0, h = leaf.y1 - leaf.y0;
+          const d = leaf.data;
+          const color = scopeColor(d.pctApprovalRequired);
+          const showLabel = w > 46 && h > 18;
+          const showAmt = w > 46 && h > 34;
+          return (
+            <g key={d.tag} transform={`translate(${leaf.x0},${leaf.y0})`}>
+              <rect width={w} height={h} fill={color} opacity={d.tag === "Unassigned" ? 0.35 : 0.72} rx={2} />
+              <rect width={w} height={h} fill="none" stroke="var(--surface)" strokeWidth={1.5} rx={2} />
+              {showLabel && (
+                <text x={6} y={15} fontSize={9.5} fontWeight={700} fill="#fff"
+                  style={{ paintOrder: "stroke", stroke: "rgba(0,0,0,0.45)", strokeWidth: 2.5 }}>
+                  {d.tag.length > Math.floor(w / 6) ? d.tag.slice(0, Math.floor(w / 6) - 1) + "…" : d.tag}
+                </text>
+              )}
+              {showAmt && (
+                <text x={6} y={29} fontSize={8.5} fill="#fff" opacity={0.9}
+                  style={{ paintOrder: "stroke", stroke: "rgba(0,0,0,0.45)", strokeWidth: 2.5 }}>
+                  {fmtM(d.amount)} · {fmtPct(d.pctOfTotal)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 9, color: "var(--ink-4)" }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--green)", opacity: 0.72, marginRight: 4 }} />≥66% in scope</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--amber)", opacity: 0.72, marginRight: 4 }} />33–66%</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "var(--ink-4)", opacity: 0.72, marginRight: 4 }} />&lt;33%</span>
+      </div>
+    </div>
+  );
+}
+
+// Total → in-scope → residual against the materiality threshold, in one bar —
+// the actual argument for "why is this in scope" an auditor wants to see.
+function CoverageWaterfall({ total, inScopeTotal, materiality, valueLabel }) {
+  if (!total) return null;
+  const inPct = Math.max(0, Math.min(1, inScopeTotal / total));
+  const matPct = materiality != null ? Math.max(0, Math.min(1, materiality / total)) : null;
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 8 }}>
+        COVERAGE VS. MATERIALITY ({valueLabel})
+      </div>
+      <div style={{ position: "relative", height: 26, borderRadius: 5, overflow: "hidden", background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)" }}>
+        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${inPct * 100}%`, background: "var(--green)", opacity: 0.75 }} />
+        {matPct != null && (
+          <div style={{ position: "absolute", left: `${matPct * 100}%`, top: -3, bottom: -3, width: 2, background: "var(--red-ink)" }} title={`Planning materiality: ${fmtM(materiality)}`} />
+        )}
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", padding: "0 8px", fontSize: 10, fontWeight: 700, color: "var(--ink)", fontFamily: "var(--mono)" }}>
+          {fmtM(inScopeTotal)} in scope · {fmtPct(inPct)} of {fmtM(total)}
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "var(--ink-4)", marginTop: 4 }}>
+        <span>$0</span>
+        {matPct != null && <span style={{ color: "var(--red-ink)" }}>▲ materiality {fmtM(materiality)}</span>}
+        <span>{fmtM(total)}</span>
+      </div>
+    </div>
+  );
+}
+
 function BreakdownTable({ title, rows, total }) {
   if (!rows.length) {
     return (
@@ -538,27 +626,46 @@ function BreakdownTable({ title, rows, total }) {
   );
 }
 
-function BreakdownPanel({ items, valueOf, inScopeOf, valueLabel }) {
-  const [open, setOpen] = React.useState(false);
+function BreakdownPanel({ items, valueOf, inScopeOf, valueLabel, materiality }) {
+  const [showTable, setShowTable] = React.useState(false);
   const byBU  = React.useMemo(() => _computeBreakdown(items, valueOf, inScopeOf, i => i.segments), [items, valueOf, inScopeOf]);
   const byGeo = React.useMemo(() => _computeBreakdown(items, valueOf, inScopeOf, i => i.geography), [items, valueOf, inScopeOf]);
 
+  const grandTotal = items.reduce((a, i) => a + (valueOf(i) || 0), 0);
+  const inScopeTotal = items.reduce((a, i) => a + (inScopeOf(i) ? (valueOf(i) || 0) : 0), 0);
+
+  const hasData = byBU.total > 0 || byGeo.total > 0;
+
   return (
     <div style={{background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "12px 16px", marginBottom: 12}}>
-      <button className="cfg-link" style={{fontSize: 10, display: "flex", alignItems: "center", gap: 6}} onClick={() => setOpen(o => !o)}>
-        <Icon name={open ? "chev-u" : "chev-d"} size={11}/>
-        Breakdown by business unit &amp; geography ({valueLabel})
-      </button>
-      {open && (
-        <div style={{display: "flex", gap: 24, flexWrap: "wrap", marginTop: 12}}>
-          <BreakdownTable title="BY BUSINESS UNIT" rows={byBU.rows} total={byBU.total}/>
-          <BreakdownTable title="BY GEOGRAPHY" rows={byGeo.rows} total={byGeo.total}/>
-        </div>
-      )}
-      {open && (byBU.total === 0 && byGeo.total === 0) && (
-        <div style={{fontSize: 10.5, color: "var(--ink-4)", marginTop: 8}}>
+      <div style={{display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: hasData ? 10 : 0}}>
+        <div style={{fontSize: 12, fontWeight: 600, color: "var(--ink)"}}>Scope by business unit &amp; geography ({valueLabel})</div>
+        {hasData && (
+          <button className="cfg-link" style={{fontSize: 10, display: "flex", alignItems: "center", gap: 6}} onClick={() => setShowTable(o => !o)}>
+            <Icon name={showTable ? "chev-u" : "chev-d"} size={11}/>
+            {showTable ? "Hide" : "Show"} detail table
+          </button>
+        )}
+      </div>
+
+      {!hasData ? (
+        <div style={{fontSize: 10.5, color: "var(--ink-4)"}}>
           No items have both a dollar amount and a business unit/geography tag yet — add them via "Edit detail" on each row.
         </div>
+      ) : (
+        <>
+          <div style={{display: "flex", gap: 24, flexWrap: "wrap"}}>
+            <SegmentTreemap title="BY BUSINESS UNIT" rows={byBU.rows} valueLabel={valueLabel} />
+            <SegmentTreemap title="BY GEOGRAPHY" rows={byGeo.rows} valueLabel={valueLabel} />
+          </div>
+          <CoverageWaterfall total={grandTotal} inScopeTotal={inScopeTotal} materiality={materiality} valueLabel={valueLabel} />
+          {showTable && (
+            <div style={{display: "flex", gap: 24, flexWrap: "wrap", marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--line)"}}>
+              <BreakdownTable title="BY BUSINESS UNIT" rows={byBU.rows} total={byBU.total}/>
+              <BreakdownTable title="BY GEOGRAPHY" rows={byGeo.rows} total={byGeo.total}/>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1540,6 +1647,7 @@ function SoxScopePanel({
                     valueOf={a => a.balance_estimate}
                     inScopeOf={a => !!a.in_scope}
                     valueLabel="balance"
+                    materiality={displayScope.planning_materiality}
                   />
                 </>
               )
@@ -1566,6 +1674,7 @@ function SoxScopePanel({
                     valueOf={p => p.estimated_exposure}
                     inScopeOf={p => p.coverage_level !== "Out"}
                     valueLabel="estimated exposure"
+                    materiality={displayScope.planning_materiality}
                   />
                 </>
               )

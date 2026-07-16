@@ -465,10 +465,56 @@ const _CE_TYPE_LABEL = {
   cybersecurity_incident: "Cybersecurity Incident", other: "Other",
 };
 
-function CorporateEventRow({ event, onUpdate, saving }) {
+const _CE_TYPE_COLOR = {
+  acquisition: "var(--green)", divestiture: "var(--blue)", restructuring: "var(--amber)",
+  bankruptcy: "var(--red)", impairment: "var(--red)", auditor_change: "var(--amber)",
+  restatement: "var(--red)", change_of_control: "var(--acc)",
+  cybersecurity_incident: "var(--red)", other: "var(--ink-4)",
+};
+
+// Horizontal date-axis timeline — event clustering (multiple material filings
+// in a short window) is invisible in a card list but jumps out here. Click a
+// dot to expand that event in the list below.
+function CorporateEventsTimeline({ events, onSelect }) {
+  const dated = events
+    .filter(e => e.event_date)
+    .map(e => ({ ...e, t: new Date(e.event_date).getTime() }))
+    .sort((a, b) => a.t - b.t);
+
+  if (dated.length < 2) return null;
+
+  const W = 900, H = 64, PAD = 16;
+  const tMin = dated[0].t, tMax = dated[dated.length - 1].t;
+  const tSpan = Math.max(1, tMax - tMin);
+  const x = t => PAD + ((t - tMin) / tSpan) * (W - PAD * 2);
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMin meet" style={{ maxWidth: W }}>
+        <line x1={PAD} x2={W - PAD} y1={H / 2} y2={H / 2} stroke="var(--line)" strokeWidth={1.5} />
+        {dated.map((ev, i) => {
+          const cls = ev.classification || {};
+          const color = _CE_TYPE_COLOR[cls.action_type] || "var(--ink-4)";
+          const isMaterialAction = cls.action_type && cls.action_type !== "none";
+          return (
+            <g key={ev.id ?? i} transform={`translate(${x(ev.t)},${H / 2})`} style={{ cursor: "pointer" }} onClick={() => onSelect && onSelect(ev)}>
+              <line y1={0} y2={i % 2 === 0 ? -16 : 16} stroke={color} strokeWidth={1} opacity={0.5} />
+              <circle r={isMaterialAction ? 5 : 3.5} fill={color} opacity={0.85} stroke="var(--surface)" strokeWidth={1.5} />
+              <text y={i % 2 === 0 ? -20 : 28} textAnchor="middle" fontSize={8} fill="var(--ink-4)">
+                {new Date(ev.t).toLocaleDateString(undefined, { month: "short", year: "2-digit" })}
+              </text>
+              <title>{`${ev.event_date} — ${_CE_TYPE_LABEL[cls.action_type] || "8-K event"}${cls.summary ? ": " + cls.summary.slice(0, 80) : ""}`}</title>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function CorporateEventRow({ event, onUpdate, saving, expanded, onToggle, highlight }) {
   const [owner, setOwner] = React.useState(event.owner || "");
   const [notes, setNotes] = React.useState(event.notes || "");
-  const [expanded, setExpanded] = React.useState(false);
   const st = _CE_STATUS_STYLE[event.status] || _CE_STATUS_STYLE.new;
   const cls = event.classification || {};
 
@@ -476,9 +522,12 @@ function CorporateEventRow({ event, onUpdate, saving }) {
   React.useEffect(() => { setNotes(event.notes || ""); }, [event.notes]);
 
   return (
-    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px", marginBottom: 8, background: "var(--surface)" }}>
+    <div id={`ce-row-${event.id}`} style={{
+      border: highlight ? "1px solid var(--acc)" : "1px solid var(--line)", borderRadius: 6, padding: "10px 12px",
+      marginBottom: 8, background: highlight ? "var(--acc-soft)" : "var(--surface)", transition: "background .6s, border-color .6s",
+    }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, cursor: "pointer" }}
-        onClick={() => setExpanded(e => !e)}>
+        onClick={onToggle}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: st.bg, color: st.ink }}>
             {st.label}
@@ -548,6 +597,17 @@ function CorporateEventsPanel({ ticker }) {
   const [checking, setChecking] = React.useState(false);
   const [checkResult, setCheckResult] = React.useState(null); // { newCount } | { error }
   const [lastChecked, setLastChecked] = React.useState(null);
+  const [expandedIds, setExpandedIds] = React.useState(new Set());
+  const [highlightId, setHighlightId] = React.useState(null);
+
+  function selectFromTimeline(ev) {
+    setExpandedIds(prev => new Set(prev).add(ev.id));
+    setHighlightId(ev.id);
+    setTimeout(() => {
+      document.getElementById(`ce-row-${ev.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 30);
+    setTimeout(() => setHighlightId(null), 2000);
+  }
 
   const load = React.useCallback(() => {
     if (!ticker) { setLoading(false); return Promise.resolve(); }
@@ -651,9 +711,18 @@ function CorporateEventsPanel({ ticker }) {
       {loading ? <Empty>Loading…</Empty> : !visible.length ? (
         <Empty>{events.length ? "No open corporate events — everything's been assessed or dismissed." : "No material corporate events detected yet — click \"Check for new filings\" to pull real EDGAR data for this company."}</Empty>
       ) : (
-        visible.map(ev => (
-          <CorporateEventRow key={ev.id} event={ev} onUpdate={handleUpdate} saving={savingId === ev.id} />
-        ))
+        <>
+          <CorporateEventsTimeline events={visible} onSelect={selectFromTimeline} />
+          {visible.map(ev => (
+            <CorporateEventRow key={ev.id} event={ev} onUpdate={handleUpdate} saving={savingId === ev.id}
+              expanded={expandedIds.has(ev.id)} highlight={highlightId === ev.id}
+              onToggle={() => setExpandedIds(prev => {
+                const next = new Set(prev);
+                next.has(ev.id) ? next.delete(ev.id) : next.add(ev.id);
+                return next;
+              })} />
+          ))}
+        </>
       )}
     </div>
   );

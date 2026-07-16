@@ -247,6 +247,203 @@ const _UBO_VERDICT_STYLE = {
   INSUFFICIENT_DATA: { bg: "var(--surface-2)",   ink: "var(--ink-3)"     },
 };
 
+// ── Adjudication funnel — proportional SVG flow (same hand-rolled banded-path
+// technique as charts.jsx's RiskFlowSankey, not the d3-sankey library) telling
+// the governance story in one glance: how much traffic, how much gets caught,
+// what the Council decided, how often humans agreed. Built entirely from data
+// the screen already has loaded — no extra fetch. Counts are windowed to
+// whatever the underlying queries already cap at (raw feed ~200, adjudicated
+// ~100), so this reads as "recent activity," not an all-time total — labeled
+// accordingly rather than implying a false precision.
+function AdjudicationFunnel({ rawRows, adjudicated }) {
+  const flagged  = rawRows.filter(r => (r.risk_flags || []).length > 0);
+  const clean    = rawRows.length - flagged.length;
+
+  const verdictOrder = ["CLEAR", "MONITOR", "ESCALATE", "INSUFFICIENT_DATA"];
+  const verdictCounts = {};
+  verdictOrder.forEach(v => { verdictCounts[v] = 0; });
+  adjudicated.forEach(r => {
+    const v = r.final_verdict || "INSUFFICIENT_DATA";
+    if (verdictCounts[v] == null) verdictCounts[v] = 0;
+    verdictCounts[v]++;
+  });
+
+  // Human-review outcome: rows that either still need review, or carry the
+  // "[HUMAN REVIEW" marker _human_review_adjudication appends to
+  // adjudicator_reasoning once reviewed. Confirmed/Overridden is a proxy
+  // (verdict still ESCALATE after review = confirmed) using only fields this
+  // screen already fetches — Model Health's Agent Calibration panel has the
+  // exact ai_final_verdict-vs-human_verdict comparison if precision matters.
+  const reviewed = adjudicated.filter(r => (r.adjudicator_reasoning || "").includes("[HUMAN REVIEW"));
+  const pending  = adjudicated.filter(r => r.requires_human_review);
+  const confirmed = reviewed.filter(r => r.final_verdict === "ESCALATE").length;
+  const overridden = reviewed.length - confirmed;
+
+  if (!rawRows.length && !adjudicated.length) return null;
+
+  const W = 900, H = 168, PAD_T = 30, PAD_B = 14;
+  const plotH = H - PAD_T - PAD_B;
+  const cols = [40, 260, 500, 760]; // x centers of the 4 stage columns
+  const nodeW = 10;
+
+  const stageA = [{ key: "ingested", label: "Telemetry", n: rawRows.length, color: "var(--ink-3)" }];
+  const stageB = [
+    { key: "flagged", label: "Flagged", n: flagged.length, color: "var(--amber)" },
+    { key: "clean",   label: "Clean",   n: clean,           color: "var(--ink-4)" },
+  ].filter(s => s.n > 0);
+  const stageC = [
+    { key: "CLEAR",             label: "Clear",     n: verdictCounts.CLEAR,             color: "var(--green)" },
+    { key: "MONITOR",           label: "Monitor",   n: verdictCounts.MONITOR,           color: "var(--amber)" },
+    { key: "ESCALATE",          label: "Escalate",  n: verdictCounts.ESCALATE,          color: "var(--red)" },
+    { key: "INSUFFICIENT_DATA", label: "Insuff.",   n: verdictCounts.INSUFFICIENT_DATA, color: "var(--ink-4)" },
+  ].filter(s => s.n > 0);
+  const stageD = [
+    { key: "confirmed",  label: "Confirmed",  n: confirmed,          color: "var(--green)" },
+    { key: "overridden", label: "Overridden", n: overridden,         color: "var(--blue)" },
+    { key: "pending",    label: "Pending",    n: pending.length,     color: "var(--amber)" },
+  ].filter(s => s.n > 0);
+
+  function layoutCol(stage, x) {
+    const total = stage.reduce((a, s) => a + s.n, 0) || 1;
+    const gap = 6;
+    const usable = plotH - gap * Math.max(0, stage.length - 1);
+    let y = PAD_T;
+    return stage.map(s => {
+      const h = Math.max(3, (s.n / total) * usable);
+      const node = { ...s, x, y, h };
+      y += h + gap;
+      return node;
+    });
+  }
+
+  const nodesA = layoutCol(stageA, cols[0]);
+  const nodesB = layoutCol(stageB, cols[1]);
+  const nodesC = layoutCol(stageC, cols[2]);
+  const nodesD = layoutCol(stageD, cols[3]);
+
+  // Straight-proportional band between two adjacent-column node sets, split
+  // by relative weight (good enough for a 2-4 node funnel; no crossing-
+  // minimization needed at this node count).
+  function bands(fromNodes, toNodes) {
+    if (!fromNodes.length || !toNodes.length) return [];
+    const totalFrom = fromNodes.reduce((a, n) => a + n.n, 0) || 1;
+    const totalTo   = toNodes.reduce((a, n) => a + n.n, 0) || 1;
+    const out = [];
+    let curTo = toNodes[0] ? toNodes[0].y : PAD_T;
+    const toCursor = {};
+    toNodes.forEach(n => { toCursor[n.key] = n.y; });
+    fromNodes.forEach(fn => {
+      let curFrom = fn.y;
+      // Distribute this "from" node's flow across "to" nodes proportional to their share.
+      toNodes.forEach(tn => {
+        const w = (fn.n / totalFrom) * (tn.n / totalTo) * Math.min(totalFrom, totalTo);
+        if (w <= 0.01) return;
+        const fromH = (w / fn.n) * fn.h;
+        const toH   = (w / tn.n) * tn.h;
+        out.push({
+          x1: fn.x + nodeW, y1: curFrom, h1: fromH,
+          x2: tn.x,         y2: toCursor[tn.key], h2: toH,
+          color: tn.color,
+        });
+        curFrom += fromH;
+        toCursor[tn.key] += toH;
+      });
+    });
+    return out;
+  }
+
+  function Band({ x1, y1, h1, x2, y2, h2, color }) {
+    const mid = (x1 + x2) / 2;
+    const d = `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2} L${x2},${y2 + h2} C${mid},${y2 + h2} ${mid},${y1 + h1} ${x1},${y1 + h1} Z`;
+    return <path d={d} fill={color} opacity={0.16} />;
+  }
+
+  function Node({ n }) {
+    return (
+      <g>
+        <rect x={n.x} y={n.y} width={nodeW} height={n.h} fill={n.color} rx={2} />
+        <text x={n.x + nodeW + 6} y={n.y + n.h / 2 - 5} fontSize={9.5} fontWeight={700} fill="var(--ink-2)">
+          {n.label}
+        </text>
+        <text x={n.x + nodeW + 6} y={n.y + n.h / 2 + 8} fontSize={10.5} fontWeight={700} fontFamily="'Geist Mono',monospace" fill={n.color}>
+          {n.n}
+        </text>
+      </g>
+    );
+  }
+
+  const colHeaders = [
+    { x: cols[0], label: "TELEMETRY" },
+    { x: cols[1], label: "TRIAGE" },
+    { x: cols[2], label: "VERDICT" },
+    { x: cols[3], label: "HUMAN REVIEW" },
+  ];
+
+  return (
+    <div style={{ padding: "8px 18px 4px", borderBottom: "1px solid var(--line)" }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", marginBottom: 2 }}>
+        ADJUDICATION FUNNEL · RECENT WINDOW
+      </div>
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMin meet" style={{ maxWidth: 900 }}>
+        {colHeaders.map(c => (
+          <text key={c.label} x={c.x} y={14} fontSize={8.5} fontWeight={700} letterSpacing="0.08em" fill="var(--ink-4)">{c.label}</text>
+        ))}
+        {bands(nodesA, nodesB).map((b, i) => <Band key={`ab-${i}`} {...b} />)}
+        {bands(nodesB, nodesC).map((b, i) => <Band key={`bc-${i}`} {...b} />)}
+        {bands(nodesC, nodesD).map((b, i) => <Band key={`cd-${i}`} {...b} />)}
+        {nodesA.map(n => <Node key={n.key} n={n} />)}
+        {nodesB.map(n => <Node key={n.key} n={n} />)}
+        {nodesC.map(n => <Node key={n.key} n={n} />)}
+        {nodesD.map(n => <Node key={n.key} n={n} />)}
+      </svg>
+    </div>
+  );
+}
+
+// ── Risk-pulse timeline — scatter of adjudicated risk_score over time,
+// colored by tier. Bursts/attack windows are invisible in a sortable table
+// but jump out immediately here. Click a point to jump straight to that row
+// in the Adjudications tab.
+function RiskPulseTimeline({ adjudicated, onSelect }) {
+  const pts = adjudicated
+    .filter(r => r.adjudicated_at && r.risk_score != null)
+    .map(r => ({ ...r, t: new Date(r.adjudicated_at).getTime() }))
+    .sort((a, b) => a.t - b.t);
+
+  if (pts.length < 2) return null;
+
+  const W = 900, H = 90, PAD_L = 8, PAD_R = 8, PAD_T = 14, PAD_B = 8;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const tMin = pts[0].t, tMax = pts[pts.length - 1].t;
+  const tSpan = Math.max(1, tMax - tMin);
+
+  const x = t => PAD_L + ((t - tMin) / tSpan) * plotW;
+  const y = score => PAD_T + (1 - Math.max(0, Math.min(1, score))) * plotH;
+
+  return (
+    <div style={{ padding: "8px 18px 10px", borderBottom: "1px solid var(--line)" }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", marginBottom: 2 }}>
+        RISK PULSE · {pts.length} ADJUDICATIONS OVER TIME
+      </div>
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMin meet" style={{ maxWidth: 900 }}>
+        <line x1={PAD_L} x2={W - PAD_R} y1={y(0.85)} y2={y(0.85)} stroke="var(--red)" strokeOpacity={0.25} strokeDasharray="3 3" />
+        <line x1={PAD_L} x2={W - PAD_R} y1={y(0.65)} y2={y(0.65)} stroke="var(--amber)" strokeOpacity={0.25} strokeDasharray="3 3" />
+        {pts.map((p, i) => {
+          const ts = _UBO_TIER_STYLE[p.risk_tier] || _UBO_TIER_STYLE.LOW;
+          return (
+            <circle key={p.id ?? i} cx={x(p.t)} cy={y(p.risk_score)} r={p.requires_human_review ? 3.4 : 2.4}
+              fill={ts.ink} opacity={0.85} stroke={p.requires_human_review ? ts.ink : "none"} strokeWidth={p.requires_human_review ? 1.5 : 0}
+              style={{ cursor: onSelect ? "pointer" : "default" }}
+              onClick={() => onSelect && onSelect(p)}>
+              <title>{`${p.target_tool || "?"} · ${p.risk_tier} · score=${Number(p.risk_score).toFixed(3)} · ${new Date(p.t).toLocaleString()}`}</title>
+            </circle>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function UBOGovPanel({ initialTab } = {}) {
   const LiveBadge = window.LiveBadge;
   const [adjudicated,  setAdjudicated]  = useState([]);
@@ -442,6 +639,13 @@ function UBOGovPanel({ initialTab } = {}) {
           ⚠ API unavailable: {fetchErr} — ensure api_server.py is running
         </div>
       )}
+
+      <AdjudicationFunnel rawRows={rawRows} adjudicated={adjudicated} />
+      <RiskPulseTimeline adjudicated={adjudicated} onSelect={(row) => {
+        setTab("adjudications");
+        setFilter("all");
+        setExpanded(prev => new Set(prev).add(row.id));
+      }} />
 
       {processStatus && (
         <div style={{
