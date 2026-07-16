@@ -12,7 +12,7 @@ function _cmBase() {
   return (window.MCP_API_BASE || "/api/mcp") + "/observability";
 }
 
-function CMTile({ label, value, sub, tone = "neutral", onClick }) {
+function CMTile({ label, value, sub, tone = "neutral", onClick, trend }) {
   const toneColor = {
     neutral: "var(--ink)",
     good: "var(--green-ink)",
@@ -41,8 +41,13 @@ function CMTile({ label, value, sub, tone = "neutral", onClick }) {
         </div>
         {clickable && <Icon name="chev-r" size={10} className="muted"/>}
       </div>
-      <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: toneColor, marginTop: 4 }}>
-        {value}
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
+        <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: toneColor }}>
+          {value}
+        </div>
+        {trend && trend.some(v => v > 0) && (
+          <Sparkline data={trend} w={54} h={20} color={toneColor} />
+        )}
       </div>
       {sub && <div style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 3 }}>{sub}</div>}
     </div>
@@ -123,6 +128,7 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
   const connectors = data?.connectors || [];
   const pacProcesses = data?.pac_processes || [];
   const last24h = data?.last_24h || { adjudicated: 0, escalated: 0, pac_violations: 0 };
+  const hourly = data?.hourly || { hours: [], adjudicated: [], escalated: [] };
 
   const liveSystemsCount = systems.filter(s => s.last_seen && (Date.now() - new Date(s.last_seen).getTime()) < 3600000).length;
   const activeConnectorsCount = connectors.filter(c => c.active).length;
@@ -162,10 +168,10 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
               tone={erroringConnectorsCount > 0 ? "bad" : "good"}
               onClick={() => goTo("uboconfig")} />
             <CMTile label="Adjudicated (24h)" value={last24h.adjudicated} sub="Tool calls reviewed"
-              onClick={() => goTo("ubogov", { cemTab: "adjudications" })} />
+              trend={hourly.adjudicated} onClick={() => goTo("ubogov", { cemTab: "adjudications" })} />
             <CMTile label="Escalated (24h)" value={last24h.escalated}
               tone={last24h.escalated > 0 ? "warn" : "good"} sub="Sent to human hold"
-              onClick={() => goTo("ubogov", { cemTab: "adjudications" })} />
+              trend={hourly.escalated} onClick={() => goTo("ubogov", { cemTab: "adjudications" })} />
             <CMTile label="PaC violations (24h)" value={last24h.pac_violations}
               tone={last24h.pac_violations > 0 ? "bad" : "good"}
               onClick={() => goTo("policycode")} />
