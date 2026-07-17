@@ -348,7 +348,7 @@ function SoxGate1Review({
     <div className="rar sxa" data-screen-label="HITL · SOX Gate S1">
       <div className="rar-head">
         <div className="rar-head-l">
-          <div className="rar-pill"><span className="dot"/>HITL · SOX GATE S1</div>
+          <div className="rar-pill"><span className="dot"/>HUMAN REVIEW · SOX GATE S1</div>
           <div className="rar-title">SOX Scope · Materiality &amp; Significant Accounts</div>
           <div className="rar-sub">
             Approve the materiality basis and each significant account as computed, or adjust with rationale.
@@ -551,7 +551,7 @@ function SoxGate2Review({
     <div className="rar sxp" data-screen-label="HITL · SOX Gate S2">
       <div className="rar-head">
         <div className="rar-head-l">
-          <div className="rar-pill sar-pill"><span className="dot"/>HITL · SOX GATE S2</div>
+          <div className="rar-pill sar-pill"><span className="dot"/>HUMAN REVIEW · SOX GATE S2</div>
           <div className="rar-title">SOX Scope · Process Coverage</div>
           <div className="rar-sub">
             Approve each process's coverage level as computed, or adjust with rationale.

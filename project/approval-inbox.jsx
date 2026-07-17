@@ -193,7 +193,7 @@ function ApprovalInboxScreen() {
           <div className="kicker">Governance · My Queue</div>
           <div className="panel-title mt-8">Approval Inbox</div>
           <div className="panel-sub">
-            HITL gate adjustments from Enterprise Risk and SOX Risk Assessment awaiting your review as manager.
+            Gate adjustments from Enterprise Risk and SOX Risk Assessment awaiting your review as manager.
             Plain approvals-as-scored don't appear here — only overrides that need a second set of eyes.
           </div>
         </div>

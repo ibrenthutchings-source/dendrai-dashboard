@@ -55,17 +55,17 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
 
       <TweakSection label="Run configuration">
         <TweakToggle
-          label="HITL · Risk assessment gate"
+          label="Human review · Risk assessment gate"
           value={!!hitl.risk}
           onChange={(v) => setHitl({ ...hitl, risk: v })}
         />
         <TweakToggle
-          label="HITL · Audit scope gate"
+          label="Human review · Audit scope gate"
           value={!!hitl.scope}
           onChange={(v) => setHitl({ ...hitl, scope: v })}
         />
         <TweakToggle
-          label="HITL · MAP generation gate"
+          label="Human review · Action plan generation gate"
           value={!!hitl.map}
           onChange={(v) => setHitl({ ...hitl, map: v })}
         />

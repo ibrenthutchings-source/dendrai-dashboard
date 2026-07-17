@@ -550,7 +550,7 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
           ? `Risk appetite breached — ${appetite.breaching.length} risk${appetite.breaching.length !== 1 ? "s" : ""} exceed ${appetite.level} threshold`
           : `All risks within ${appetite.level} appetite tolerance`,
         detail: appetite.breaching?.length > 0
-          ? `HITL Gate 1 triggered — auditor review required before Stage 3 scoping`
+          ? `Gate 1 human review triggered — required before Stage 3 scoping`
           : `No appetite breaches detected at ${s2Extra?.appetiteLevel || appetite.level} threshold`,
         children: (appetite.breaching || []).slice(0, 5).map(id => {
           const r = risks.find(x => x.id === id);
@@ -1011,7 +1011,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             )}
             <div style={{marginTop:2, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
               <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Stage 2 residual formula: </span>
-              <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>score = inherent + FRED_adj + RSS_adj + 8K_adj + industry_adj − CE_discount</span>
+              <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>score = inherent + macro adj. + industry-signal adj. + 8-K adj. + industry adj. − control-effectiveness discount</span>
             </div>
           </div>
         </div>
@@ -1453,7 +1453,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11, color:"var(--ink-2)"}}>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Residual score: </span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + FRED_adj + RSS_adj + 8K_adj + industry_adj − CE_discount</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + macro adj. + industry-signal adj. + 8-K adj. + industry adj. − control-effectiveness discount</span>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:12}}>8K_adj: P1 +0.5 · P2 +0.25 · P3 +0.10 per category match (cap +1.5)</span>
           </div>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
@@ -1481,7 +1481,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
               <thead>
                 <tr style={{borderBottom:"1px solid var(--line)"}}>
                   <th style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>RISK</th>
-                  <th style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>CE</th>
+                  <th title="Control Effectiveness" style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>CE</th>
                   <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>NOW</th>
                   <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+1</th>
                   <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+2</th>
@@ -1902,7 +1902,7 @@ function S6Body({ output }) {
           </div>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Signal weights recalibrated: </span>
-            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>velocity decay factors and CE multipliers updated from observed outcomes — fed back to Stage 1 on next run</span>
+            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>velocity decay factors and control-effectiveness multipliers updated from observed outcomes — fed back to Stage 1 on next run</span>
           </div>
           {l.next_trigger_days > 0 && (
             <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>

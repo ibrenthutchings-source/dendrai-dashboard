@@ -72,7 +72,7 @@ function ScopeApprovalReview({
       <div className="rar-head">
         <div className="rar-head-l">
           <div className="rar-pill sar-pill">
-            <span className="dot"/>HITL · GATE 2
+            <span className="dot"/>HUMAN REVIEW · GATE 2
           </div>
           <div className="rar-title">Audit Scope · Per-Objective Review</div>
           <div className="rar-sub">

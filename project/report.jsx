@@ -221,7 +221,7 @@ function ReportModal({ open, onClose, payload }) {
             <div className="rep-section">
               <h3>Changes to Risks &amp; Audit Plan</h3>
               <div style={{fontSize:12, color:"var(--ink-3)", marginBottom:12, lineHeight:1.55}}>
-                The following items were modified by auditors through HITL gate review.
+                The following items were modified by auditors through gate review.
                 All changes are captured verbatim in the audit trail below.
               </div>
 
@@ -655,7 +655,7 @@ function PipelineStagesReport({ stageState, stageOutput }) {
               <div style={{padding:"8px 14px", fontSize:11, color:"var(--ink-4)"}}>Stage did not run in this loop.</div>
             )}
             {status === "waiting" && (
-              <div style={{padding:"8px 14px", fontSize:11, color:"var(--amber-ink)"}}>Awaiting HITL gate approval.</div>
+              <div style={{padding:"8px 14px", fontSize:11, color:"var(--amber-ink)"}}>Awaiting gate approval.</div>
             )}
           </div>
         );
