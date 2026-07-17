@@ -54,7 +54,7 @@ function RiskApprovalReview({
       <div className="rar-head">
         <div className="rar-head-l">
           <div className="rar-pill">
-            <span className="dot"/>HITL · GATE 1
+            <span className="dot"/>HUMAN REVIEW · GATE 1
           </div>
           <div className="rar-title">Risk Assessment · Per-Risk Review</div>
           <div className="rar-sub">

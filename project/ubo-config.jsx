@@ -274,7 +274,7 @@ function SystemForm({ initial, onSave, onCancel, saving }) {
         </div>
         <div className="field" style={{ marginBottom: 0 }}>
           <label className="field-label">
-            {form.server_type === UBO_MCP_TYPE ? "Server tag * — matches proxy --name" : "System identifier *"}
+            {form.server_type === UBO_MCP_TYPE ? "Server tag * — must match the connector's configured name" : "System identifier *"}
           </label>
           <input className="input" value={form.server_name}
             onChange={e => set("server_name", e.target.value)}
@@ -533,10 +533,10 @@ function MonitoredSystemsCard() {
           <div className="cfg-card-title">Monitored Systems</div>
           <div className="cfg-card-sub">
             Any system can send telemetry to the Dendrai UBO™ Governance Brain — Saviynt, SAP, Oracle Fusion,
-            ServiceNow, Workday, Entra ID, GitHub, a non-MCP AI agent framework (LangChain, OpenAI function
-            calling, a custom agent loop), or any other custom system. Each receives a unique ingest API key
-            for <code style={{fontSize:10}}>POST /observability/telemetry/ingest</code> and is adjudicated by
-            the same Council pipeline as MCP tool calls. MCP servers use the telemetry proxy instead.
+            ServiceNow, Workday, Entra ID, GitHub, an AI agent framework (LangChain, OpenAI function calling,
+            a custom agent loop), or any other custom system. Each receives a unique ingest API key and is
+            adjudicated by the same review pipeline as MCP tool calls. MCP servers use the telemetry proxy
+            instead.
           </div>
         </div>
         <button className="btn btn-sm" onClick={() => { setAdding(true); setEditingId(null); }}>
@@ -613,9 +613,8 @@ function MonitoredSystemsCard() {
       )}
 
       <div className="mono" style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 10, lineHeight: 1.5 }}>
-        Activity counts combine <code>observability.mcp_telemetry</code> (MCP proxy) and
-        <code> observability.system_telemetry</code> (REST ingest). Non-MCP systems push events to{" "}
-        <code>POST /api/mcp/observability/telemetry/ingest</code> using their ingest API key as a Bearer token.
+        Activity counts combine MCP proxy events with events pushed directly by other systems using their
+        ingest API key.
       </div>
     </section>
   );

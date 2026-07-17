@@ -725,7 +725,7 @@ function App() {
         return { ...prev, s2: { ...(prev.s2||{}), risks: merged } };
       });
       const adjusted = Object.values(riskApprovals).filter(a => a.status !== "approved" && isResolved(a)).length;
-      log(`HITL Gate ${n}: CONFIRMED — ${Object.values(riskApprovals).filter(a=>a.status==="approved").length} accepted, ${adjusted} adjusted and routed for review`);
+      log(`Gate ${n} review: CONFIRMED — ${Object.values(riskApprovals).filter(a=>a.status==="approved").length} accepted, ${adjusted} adjusted and routed for review`);
     } else if (n === 2) {
       setOutput(prev => {
         const orig = prev.s3?.objectives || [];
@@ -739,9 +739,9 @@ function App() {
         return { ...prev, s3: { ...(prev.s3||{}), objectives: merged } };
       });
       const adjObjs = Object.values(scopeApprovals).filter(a => a.status !== "approved" && isResolved(a)).length;
-      log(`HITL Gate 2: CONFIRMED — ${Object.values(scopeApprovals).filter(a=>a.status==="approved").length} objectives accepted, ${adjObjs} adjusted and routed for review`);
+      log(`Gate 2 review: CONFIRMED — ${Object.values(scopeApprovals).filter(a=>a.status==="approved").length} objectives accepted, ${adjObjs} adjusted and routed for review`);
     } else {
-      log(`HITL Gate ${n}: APPROVED`);
+      log(`Gate ${n} review: APPROVED`);
     }
     setGateState((prev) => ({ ...prev, [`g${n}`]: "approved" }));
     const res = gateResRef.current[n];
@@ -753,7 +753,7 @@ function App() {
   };
   const confirmOverride = (reason) => {
     const n = overrideGateNum;
-    log(`HITL Gate ${n}: OVERRIDDEN — ${reason}`);
+    log(`Gate ${n} review: OVERRIDDEN — ${reason}`);
     setGateState((prev) => ({ ...prev, [`g${n}`]: "overridden" }));
     setOverrideOpen(false);
     const res = gateResRef.current[n];
@@ -1593,16 +1593,16 @@ function App() {
         ...risksCur.filter(r => (r.velocity || 0) >= 3).map(r =>
           `High-velocity risk: ${r.name} (${r.id}, v+${r.velocity}, ${r.rag}) — downstream audit scope expanded.`),
         ...(riskAppetiteResult?.status === "BREACHED"
-          ? [`Risk appetite BREACHED: ${riskAppetiteResult.breaching?.length || 0} risk(s) exceed the ${cfg.appetiteLevel} threshold (≥${riskAppetiteResult.threshold}). HITL Gate 1 triggered for mandatory review.`]
+          ? [`Risk appetite BREACHED: ${riskAppetiteResult.breaching?.length || 0} risk(s) exceed the ${cfg.appetiteLevel} threshold (≥${riskAppetiteResult.threshold}). Gate 1 mandatory review triggered.`]
           : []),
         ...(!liveMode
           ? ["Live data mode disabled — EDGAR companyfacts unavailable; all EDGAR-sourced signals derived from mock register."]
           : []),
         ...(adjRiskCount > 0
-          ? [`${adjRiskCount} risk${adjRiskCount !== 1 ? "s" : ""} adjusted through HITL Gate 1 — auditor-revised scores and RAG ratings applied to final register.`]
+          ? [`${adjRiskCount} risk${adjRiskCount !== 1 ? "s" : ""} adjusted through Gate 1 review — auditor-revised scores and RAG ratings applied to final register.`]
           : []),
         ...(adjObjCount > 0
-          ? [`${adjObjCount} audit objective${adjObjCount !== 1 ? "s" : ""} adjusted through HITL Gate 2 — revised priorities and sprint allocations reflected in plan.`]
+          ? [`${adjObjCount} audit objective${adjObjCount !== 1 ? "s" : ""} adjusted through Gate 2 review — revised priorities and sprint allocations reflected in plan.`]
           : []),
       ],
     };
@@ -1774,7 +1774,7 @@ function App() {
               <div>
                 <div className="kicker">Risk → Audit closed loop</div>
                 <div className="panel-title mt-8">Six-stage continuous governance chain</div>
-                <div className="panel-sub">Each stage feeds structured output to the next. HITL gates pause for human review.</div>
+                <div className="panel-sub">Each stage feeds structured output to the next, pausing at review gates for human sign-off.</div>
               </div>
               {hasRun &&
                 <div className="mono" style={{ display: "flex", gap: 12, alignItems: "center", color: "var(--ink-3)", fontSize: 11 }}>
@@ -2318,7 +2318,7 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
                   ))}
                 </select>
                 <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginBottom: 12, lineHeight: 1.4 }}>
-                  HITL adjustments you submit for Enterprise Risk and SOX gates route to this person for review.
+                  Adjustments you submit for Enterprise Risk and SOX gates route to this person for review.
                 </div>
                 <button className="btn btn-sm" style={{ width: "100%" }} onClick={auth.logout}>
                   <Icon name="logout" size={11} /> Sign out

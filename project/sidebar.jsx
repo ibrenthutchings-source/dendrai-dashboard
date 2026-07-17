@@ -320,7 +320,7 @@ function Sidebar({
             <span className="cfg-val mono">{velocity.toFixed(1)}</span>
           </div>
           <div className="cfg-row">
-            <span className="cfg-lab">HITL gates</span>
+            <span className="cfg-lab">Review gates</span>
             <span className="cfg-val mono">
               <span className={hitl.risk ? "on" : "off"} title="Risk assessment">R</span>
               <span className={hitl.scope ? "on" : "off"} title="Audit scope">S</span>
@@ -351,7 +351,7 @@ function Sidebar({
           </div>
         </div>
         <div className="cfg-hint">
-          Velocity threshold, HITL gates, and risk appetite level configure the loop. Appetite level marks residual risks that breach tolerance on the Sankey. Edit velocity and gates in Tweaks.
+          Velocity threshold, review gates, and risk appetite level configure the loop. Appetite level marks residual risks that breach tolerance on the Sankey. Edit velocity and gates in Tweaks.
         </div>
       </div>
 

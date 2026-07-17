@@ -293,7 +293,7 @@ function ConfigScreen({
           </div>
 
           <div className="field">
-            <label className="field-label">HITL Gates</label>
+            <label className="field-label">Review Gates</label>
             <div className="hitl-toggle-row">
               {[
                 { k: "risk",  l: "Risk assessment" },

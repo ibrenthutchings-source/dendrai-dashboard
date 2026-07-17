@@ -609,7 +609,7 @@ function UBOGovPanel({ initialTab } = {}) {
     <div data-screen-label="UBO Governance Brain" className="bb-panel" style={{height:"calc(100% + 40px)", overflow:"hidden"}}>
       <BBTermHeader
         section="DENDRAI UBO™ GOVERNANCE BRAIN"
-        title="Medallion Pipeline · MCP + Any-Agent Telemetry Adjudication"
+        title="Telemetry Adjudication Pipeline · MCP + Any-Agent Events"
         status={`${counts.total} ADJUDICATED  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
         actions={
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1765,9 +1765,8 @@ function CoverageTab({ coverage, loading, onSuppress }) {
           <strong>Blind spot</strong> = this tool/action has been called but no governance rule has ever flagged it —
           it may be genuinely low-risk, or it may mean no detection rule covers it at all. Click <strong>Suppress…</strong>
           to record a reviewed, documented decision that it's safe to ignore (adds it to the Suppressions tab with a
-          reason, and auto-clears future calls without adjudicating them). If it's actually a gap, add a detection rule
-          instead — MCP tools: <code>_RISK_CHECKS</code> in mcp_telemetry_proxy.py; any other system: <code>_detect_system_flags</code>
-          in mcp_governance.py.
+          reason, and auto-clears future calls without adjudicating them). If it's actually a gap, ask your platform
+          team to add a detection rule for it.
         </div>
       </div>
     )}

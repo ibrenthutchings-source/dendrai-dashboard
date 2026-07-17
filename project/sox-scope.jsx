@@ -1583,10 +1583,10 @@ function SoxScopePanel({
             {displayScope && <RescopingBadge scoped_at={displayScope.scoped_at} trigger_reason={displayScope.trigger_reason}/>}
             <div style={{display: "flex", gap: 10}}>
               <label style={{display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--ink-3)", cursor: "pointer"}}>
-                <input type="checkbox" checked={hitlSox.accounts} onChange={e => setHitlSox(h => ({...h, accounts: e.target.checked}))}/> HITL Gate S1
+                <input type="checkbox" checked={hitlSox.accounts} onChange={e => setHitlSox(h => ({...h, accounts: e.target.checked}))}/> Gate S1 review
               </label>
               <label style={{display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--ink-3)", cursor: "pointer"}}>
-                <input type="checkbox" checked={hitlSox.coverage} onChange={e => setHitlSox(h => ({...h, coverage: e.target.checked}))}/> HITL Gate S2
+                <input type="checkbox" checked={hitlSox.coverage} onChange={e => setHitlSox(h => ({...h, coverage: e.target.checked}))}/> Gate S2 review
               </label>
             </div>
           </div>

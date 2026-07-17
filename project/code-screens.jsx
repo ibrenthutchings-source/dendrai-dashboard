@@ -1189,7 +1189,7 @@ const RAC_FRAMEWORKS = [
     label: "COSO ERM / ISO 31000",
     sub:   "COSO ERM 2017 · ISO 31000:2018",
     badge: "ERM",
-    desc:  "Enterprise Risk Management framework aligned to COSO's five components and ISO 31000's risk treatment clauses (6.4–6.5). Includes HITL-approved scores, MAPs, and governance statement.",
+    desc:  "Enterprise Risk Management framework aligned to COSO's five components and ISO 31000's risk treatment clauses (6.4–6.5). Includes human-approved scores, management action plans, and governance statement.",
     ext:   "yaml",
   },
 ];
