@@ -1540,6 +1540,11 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         const topRisk = [...risks].sort((a, b) => b.score - a.score)[0];
         if (!topRisk) return null;
         const qs = forecastRisk(topRisk, 4);
+        // Same per-risk-override-over-overall-appetite precedence used by the
+        // control list above (line ~1317) — the tolerance line should match
+        // whichever threshold this specific risk is actually held to.
+        const topLevel = perRiskAppetite[topRisk.id] || appetiteLevel;
+        const topThreshold = APPETITE_THRESHOLDS[topLevel] ?? overallThreshold;
         // Dynamic quarter labels from today's date — avoids hardcoded year drift
         const now = new Date();
         const curQ = Math.ceil((now.getMonth() + 1) / 3);
@@ -1560,13 +1565,15 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           <div className="stage-detail">
             <h5>Top-risk 4Q projection · {topRisk.name}</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Current score {topRisk.score.toFixed(1)} ({topRisk.rag}) with 4-quarter velocity-dampened projection. Dashed line = forecast used by Stage 3 to prioritise audit objectives. Confidence band ±1.5 pts.
+              Current score {topRisk.score.toFixed(1)} ({topRisk.rag}) with 4-quarter velocity-dampened projection. Dashed line = forecast used by Stage 3 to prioritise audit objectives. Confidence band ±1.5 pts. Red threshold = risk tolerance ({topLevel}, {topThreshold.toFixed(1)}).
             </div>
             <FC
               history={hist}
               forecast={fcast}
               unit="score"
               color={topRisk.rag === "R" ? "var(--red)" : topRisk.rag === "A" ? "var(--amber)" : "var(--green)"}
+              referenceValue={topThreshold}
+              referenceLabel="Risk tolerance"
             />
           </div>
         );

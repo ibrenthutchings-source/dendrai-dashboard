@@ -310,7 +310,7 @@ const ANALYST_CONSENSUS_DB = {
 };
 
 function getAnalystConsensus(industry, ticker, data) {
-  const tmpl = ANALYST_CONSENSUS_DB[industry] || ANALYST_CONSENSUS_DB['Generic'];
+  const tmpl = ANALYST_CONSENSUS_DB[RISK_ENGINE.normalizeIndustry(industry)] || ANALYST_CONSENSUS_DB['Generic'];
   const sv = id => seededVal(ticker, 'ac-' + id, 0, 1);
   const jitter = n => Math.max(0, Math.round(n + (sv('j' + n) - 0.5) * 3));
   const ratings = {};
@@ -334,7 +334,7 @@ function getAnalystConsensus(industry, ticker, data) {
 }
 
 function IndustryKPISection({ industry, data, livefacts, ticker }) {
-  const defs = INDUSTRY_KPI_DEFS[industry] || INDUSTRY_KPI_DEFS['Generic'];
+  const defs = INDUSTRY_KPI_DEFS[RISK_ENGINE.normalizeIndustry(industry)] || INDUSTRY_KPI_DEFS['Generic'];
   const ragColor = { G: 'var(--green)', A: 'var(--amber)', R: 'var(--red)' };
   const ragInk   = { G: 'var(--green-ink)', A: 'var(--amber-ink)', R: 'var(--red-ink)' };
 
@@ -1340,7 +1340,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
       .finally(() => setLoading(false));
   }, [ticker]);
 
-  const ind = industry || 'Generic';
+  const ind = RISK_ENGINE.normalizeIndustry(industry) || 'Generic';
 
   // Consolidated base values
   const consRevAnnualM = (data?.revenue?.history?.slice(-1)[0]?.v ?? 0) * 4;
@@ -1411,7 +1411,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
         }
 
         // Rebuild minimal rows locally to avoid stale closure issues
-        const ind_l = industry || 'Generic';
+        const ind_l = RISK_ENGINE.normalizeIndustry(industry) || 'Generic';
         const consGM_l = consMgHist[consMgHist.length - 1].v;
 
         function makeDefaultRows(defaultMap) {

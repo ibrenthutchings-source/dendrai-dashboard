@@ -1276,8 +1276,13 @@ def _enrich_peer_financials(peer: dict) -> dict:
 
 
 def _peer_has_data(peer: dict) -> bool:
-    """A peer is kept only if at least one financial benchmark resolved."""
-    return any(peer.get(k) is not None for k in ("gross_margin", "rd_intensity", "revenue_growth"))
+    """A peer is kept only if at least one financial benchmark resolved.
+    m_score is computed from a different set of XBRL fields (revenue,
+    receivables, net income, cash flow, assets) than the other three
+    (gross profit, R&D, prior-year revenue) — a peer can have a valid
+    m_score with none of the others, and must not be dropped before it
+    reaches the Beneish M-Score gauge's peer comparison."""
+    return any(peer.get(k) is not None for k in ("gross_margin", "rd_intensity", "revenue_growth", "m_score"))
 
 
 @app.post("/edgar/peers")

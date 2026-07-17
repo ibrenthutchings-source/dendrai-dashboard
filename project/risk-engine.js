@@ -75,6 +75,27 @@ window.RISK_ENGINE = (function () {
     return 'Generic';
   }
 
+  // ── Industry label → canonical taxonomy key ────────────────
+  // cfg.industry (the Setup screen's dropdown, and TICKER_META's autofill)
+  // uses a more granular label set than the risk/forecast templates below
+  // are keyed by. Without this, any manually-selected or autofilled industry
+  // label fails every TEMPLATES/GREY_SWAN_EVENTS/FRED_BY_INDUSTRY/
+  // INDUSTRY_KPI_DEFS/ANALYST_CONSENSUS_DB/_GEO_DEFAULTS/_SEG_DEFAULTS lookup
+  // and silently falls back to 'Generic' — sic2industry()'s output already
+  // matches this taxonomy, only the dropdown labels need mapping.
+  const INDUSTRY_ALIASES = {
+    'Analog Semiconductors':      'Semiconductors',
+    'Digital Semiconductors':     'Semiconductors',
+    'Semiconductor Equipment':    'Semiconductors',
+    'Memory Semiconductors':      'Semiconductors',
+    'Industrial / Manufacturing': 'Industrial & Manufacturing',
+    'Energy / Utilities':         'Energy & Resources',
+    'Retail':                     'Retail & Consumer',
+  };
+  function normalizeIndustry(industry) {
+    return INDUSTRY_ALIASES[industry] || industry;
+  }
+
   // ── Ratio Computation ──────────────────────────────────────
   function computeRatios(fin) {
     if (!fin) return {};
@@ -1768,7 +1789,8 @@ window.RISK_ENGINE = (function () {
 
   // ── Main: buildProfile ───────────────────────────────────────
   function buildProfile(ticker, fin, sic, industryHint) {
-    const industry = industryHint || sic2industry(sic) || 'Generic';
+    const industryLabel = industryHint || sic2industry(sic) || 'Generic';
+    const industry = normalizeIndustry(industryLabel);
     const ratios   = computeRatios(fin);
     const risks    = buildRisks(industry, ratios, ticker);
     const objectives = buildObjectives(risks, industry);
@@ -1783,7 +1805,7 @@ window.RISK_ENGINE = (function () {
     const signals    = buildSignals(ratios, ticker, industry);
     const closure    = buildClosure(risks);
     const loop       = buildLoop(risks);
-    const entity     = buildEntity(ticker, fin, industry);
+    const entity     = buildEntity(ticker, fin, industryLabel);
     const eventTemplates = window.MOCK?.eventTemplates || [];
     const varCvar          = buildVarCvar(ratios, forecasts, ticker);
     const sensitivity       = buildSensitivity(ratios, ticker, industry);
@@ -1798,7 +1820,7 @@ window.RISK_ENGINE = (function () {
              varCvar, sensitivity, multiFactorStress, liquidityRunway, earlyWarning };
   }
 
-  return { buildProfile, buildLoop, computeRatios, sic2industry, quarterBoundaries: _quarterBoundaries,
+  return { buildProfile, buildLoop, computeRatios, sic2industry, normalizeIndustry, quarterBoundaries: _quarterBoundaries,
            buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator };
 
 })();
