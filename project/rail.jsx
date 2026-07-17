@@ -53,6 +53,12 @@ function Rail({
 // ---------- RISKS ----------
 function RiskTable({ risks, selectedId, onSelect }) {
   if (!risks?.length) return <Empty>Risks populate after Stage 2.</Empty>;
+  // Shared scale across every row's trend sparkline, so a flat line reads
+  // as genuinely flat and slope is comparable risk-to-risk instead of each
+  // sparkline auto-scaling to its own (possibly tiny) range.
+  const allHist = risks.flatMap(r => r.hist || []);
+  const histMin = allHist.length ? Math.min(...allHist) : 0;
+  const histMax = allHist.length ? Math.max(...allHist) : 1;
   return (
     <>
       <SectionLabel right={<span className="mono" style={{fontSize:10, color:"var(--ink-3)"}}>{risks.length} total</span>}>Risk Register</SectionLabel>
@@ -79,7 +85,7 @@ function RiskTable({ risks, selectedId, onSelect }) {
                 </td>
                 <td><span className="mono" style={{color: scoreColorInk(r.score), fontWeight: 500}}>{fmt2(r.score)}</span></td>
                 <td><VelocityPill v={r.velocity}/></td>
-                <td><Sparkline data={r.hist} w={62} h={16} color={scoreColor(r.score)}/></td>
+                <td><Sparkline data={r.hist} w={62} h={16} color={scoreColor(r.score)} min={histMin} max={histMax}/></td>
                 <td><span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{r.ce}</span></td>
               </tr>
             );

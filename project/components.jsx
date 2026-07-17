@@ -110,9 +110,12 @@ function VelocityPill({ v }) {
 }
 
 // ---- Sparkline ----
-function Sparkline({ data, w = 60, h = 18, color }) {
+function Sparkline({ data, w = 60, h = 18, color, min: minProp, max: maxProp }) {
   if (!data || !data.length) return null;
-  const min = Math.min(...data), max = Math.max(...data);
+  // min/max default to this row's own data (unchanged standalone behavior),
+  // but callers rendering many sparklines side by side for comparison can
+  // pass a shared min/max so a flat line actually reads as flat across rows.
+  const min = minProp ?? Math.min(...data), max = maxProp ?? Math.max(...data);
   const range = max - min || 1;
   const step = w / (data.length - 1);
   const pts = data.map((v, i) => `${(i * step).toFixed(1)},${(h - ((v - min) / range) * (h - 2) - 1).toFixed(1)}`).join(" ");
