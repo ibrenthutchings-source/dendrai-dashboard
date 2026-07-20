@@ -1215,6 +1215,18 @@ function App() {
             setUnreadCEM(u => u + cemEvs.length);
           }
         } catch(e) { /* 8-K fetch optional in Live mode — requires MCP bridge */ }
+
+        // Peer benchmarks via MCP bridge (Live mode — opportunistic). This is
+        // the only source of the peer comparison shown on the M-Score/Z-Score
+        // gauges — 10-K named-competitor extraction and SIC-peer resolution
+        // are Python-backend-only (no client-side equivalent), so without
+        // this call govPeerData only ever gets populated by a prior MCP-mode
+        // run's saved DB entry (or stays empty, showing zero peer ticks).
+        try {
+          const peerBench = await MCP.fetchPeerBenchmarks(cfg.ticker);
+          setGovPeerData(peerBench);
+          log(`Peers: ${peerBench?.peers?.length || 0} peers with data (${peerBench?.peer_source || "SIC peers"})`);
+        } catch(e) { /* peer benchmarks optional in Live mode — requires MCP bridge */ }
       }
     }
 
