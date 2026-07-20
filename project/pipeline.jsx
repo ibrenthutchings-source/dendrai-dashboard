@@ -294,20 +294,20 @@ function ForecastChartsInline({ forecasts, livefacts }) {
       {rev?.history?.length > 0 && (
         <div>
           <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue · Quarterly ($M)</div>
+            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue Growth Risk ($M)</div>
             {revDelta != null && (
               <div style={{fontSize:10, fontFamily:"var(--mono)", color: revDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {revDelta >= 0 ? "▲" : "▼"}{Math.abs(revDelta).toFixed(1)}% · 4Q forecast ${fcRev?.toFixed(0)}M
+                {revDelta >= 0 ? "▲" : "▼"}{Math.abs(revDelta).toFixed(1)}% · 4Q forecast ${fcRev?.toFixed(2)}M
               </div>
             )}
           </div>
-          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={0}/>
+          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)"/>
         </div>
       )}
       {mg?.history?.length > 0 && (
         <div>
           <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Gross Margin (%)</div>
+            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Margin Compression Risk (%)</div>
             {mgDelta != null && (
               <div style={{fontSize:10, fontFamily:"var(--mono)", color: mgDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
                 {mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps · 4Q forecast {fcMg?.toFixed(2)}%
@@ -1024,7 +1024,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         if (!MSG) return null;
         return (
           <div className="stage-detail">
-            <h5>Beneish M-Score · financial reporting risk</h5>
+            <h5>Earnings Manipulation Risk — is revenue recognition or accruals quality deteriorating? (pairs with Z''-Score below)</h5>
             <MSG m={ms.m} peers={peerData?.peers}/>
             <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
               <div style={{display:"flex", gap:10}}>
@@ -1056,7 +1056,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         if (!ZSG) return null;
         return (
           <div className="stage-detail">
-            <h5>Altman Z''-Score · solvency &amp; going-concern risk</h5>
+            <h5>Solvency Risk — is the balance sheet strong enough to avoid distress? (pairs with M-Score above)</h5>
             <ZSG z={zs.z} peers={peerData?.peers}/>
             <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
               <div style={{display:"flex", gap:10}}>
@@ -1087,7 +1087,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         if (!FC) return null;
         return (
           <div className="stage-detail">
-            <h5>Revenue forecast · quarterly · used in Stage 2 risk scoring</h5>
+            <h5>Revenue Growth Risk — is growth decelerating, reversing, or masking concentration?</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
             </div>
@@ -1110,7 +1110,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         if (!FC) return null;
         return (
           <div className="stage-detail">
-            <h5>Gross margin forecast · quarterly</h5>
+            <h5>Margin Compression Risk — cost pressure and earnings-quality flag (pairs with M-Score above)</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
             </div>
@@ -1127,7 +1127,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         const lastF = forecasts.eps.forecast.slice(-1)[0]?.base;
         return (
           <div className="stage-detail">
-            <h5>EPS · Diluted · quarterly $/share</h5>
+            <h5>Earnings Trend Risk — compression signals reporting and liquidity stress</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
               Persistent EPS compression raises financial-reporting and liquidity risk scores.
@@ -1144,7 +1144,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         const lastF = forecasts.opMargin.forecast.slice(-1)[0]?.base;
         return (
           <div className="stage-detail">
-            <h5>Operating margin forecast · quarterly %</h5>
+            <h5>Operating Efficiency Risk — contraction signals cost or competitive pressure</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               EBIT ÷ Revenue. Forecast: {lastF?.toFixed(2)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
             </div>
@@ -1160,7 +1160,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         const lastF = forecasts.ebitda.forecast.slice(-1)[0]?.base;
         return (
           <div className="stage-detail">
-            <h5>EBITDA · quarterly $M</h5>
+            <h5>Debt-Covenant Risk — leverage service capacity (pairs with Free Cash Flow below)</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
             </div>
@@ -1176,7 +1176,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         const lastF = forecasts.netIncome.forecast.slice(-1)[0]?.base;
         return (
           <div className="stage-detail">
-            <h5>Net Income · quarterly $M</h5>
+            <h5>Profitability Risk — net-loss quarters signal liquidity stress (compare with FCF below)</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
             </div>
@@ -1192,7 +1192,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         const lastF = forecasts.fcf.forecast.slice(-1)[0]?.base;
         return (
           <div className="stage-detail">
-            <h5>Free Cash Flow · quarterly $M</h5>
+            <h5>Liquidity Risk — negative cash-flow streaks signal cash-runway stress (compare with Net Income above)</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
             </div>
@@ -1595,7 +1595,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         }));
         return (
           <div className="stage-detail">
-            <h5>Top-risk 4Q projection · {topRisk.name}</h5>
+            <h5>{topRisk.name} — on track to breach risk tolerance?</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Current score {topRisk.score.toFixed(1)} ({topRisk.rag}) with 4-quarter velocity-dampened projection. Dashed line = forecast used by Stage 3 to prioritise audit objectives. Confidence band ±1.5 pts. Red threshold = risk tolerance ({topLevel}, {topThreshold.toFixed(1)}).
             </div>

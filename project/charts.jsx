@@ -151,7 +151,9 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
 function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", decimals, chartMetrics, referenceValue, referenceLabel }) {
   if (!history?.length || !forecast?.length) return null;
 
-  const dp = decimals ?? (unit === "$M" ? 0 : 2);
+  // Always at least 2 decimal places on the y-axis and hover tooltip —
+  // $M charts used to default to 0dp, which hid meaningful sub-$1M movement.
+  const dp = decimals ?? 2;
 
   const fmtV = v => {
     if (v == null || !Number.isFinite(v)) return '—';
