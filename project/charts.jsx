@@ -516,6 +516,123 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22, peers = 
   );
 }
 
+// ---------- Altman Z''-Score gauge ----------
+// peers: [{ ticker, z_score }] — peer benchmarking data from /edgar/peers.
+// Same visual pattern as MScoreGauge, but polarity is inverted: for Z'',
+// LOWER is worse (distress), so the gauge's numeric scale runs from a
+// high, safe value (min, left/green) down to a low, distressed value
+// (max, right/red) — min > max on purpose, reusing angleOf() unchanged.
+function ZScoreGauge({ z, distressThreshold = 1.1, greyThreshold = 2.6, peers = [] }) {
+  const min = 8, max = -3;
+  const band = z <= distressThreshold ? "DISTRESS" : z <= greyThreshold ? "GRAY ZONE" : "SAFE";
+  const bandColor = band === "DISTRESS" ? "var(--red)" : band === "GRAY ZONE" ? "var(--amber)" : "var(--green)";
+  const bandInk   = band === "DISTRESS" ? "var(--red-ink)" : band === "GRAY ZONE" ? "var(--amber-ink)" : "var(--green-ink)";
+
+  const peerScores = (peers || [])
+    .filter(p => p.z_score != null && Number.isFinite(p.z_score))
+    .map(p => ({ ticker: p.ticker || p.name || p.company_name || "?", z: p.z_score }));
+
+  let peerStats = null;
+  if (peerScores.length > 0) {
+    const sorted = [...peerScores].sort((a, b) => b.z - a.z); // highest (safest) first
+    const combined = [...sorted.map(p => p.z), z].sort((a, b) => b - a);
+    const rank = combined.indexOf(z) + 1; // 1 = safest of the group
+    const mid = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 === 1
+      ? sorted[mid].z
+      : (sorted[mid - 1].z + sorted[mid].z) / 2;
+    peerStats = { sorted, rank, total: combined.length, median };
+  }
+
+  const angleOf = v => 180 - clamp((v - min) / (max - min), 0, 1) * 180;
+  const toXY = (angleDeg, r, cx, cy) => {
+    const rad = (angleDeg * Math.PI) / 180;
+    return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+  };
+
+  const W = 280, H = 160;
+  const cx = W / 2, cy = H - 16;
+  const rOuter = 108, rInner = 80;
+  const needleLen = rInner - 6;
+  const tickInner = rOuter + 3, tickOuter = rOuter + 11;
+  const labelR = rOuter + 14;
+
+  const bandData = [
+    { name: "SAFE",     value: min - greyThreshold,               color: "var(--green)" },
+    { name: "GRAY ZONE", value: greyThreshold - distressThreshold, color: "var(--amber)" },
+    { name: "DISTRESS", value: distressThreshold - max,           color: "var(--red)" },
+  ];
+
+  const needleTip = toXY(angleOf(z), needleLen, cx, cy);
+
+  return (
+    <div>
+      <div style={{position:"relative", width: "100%", maxWidth: W, margin: "0 auto"}}>
+        <PieChart width={W} height={H}>
+          <Pie
+            data={bandData}
+            dataKey="value"
+            cx={cx} cy={cy}
+            startAngle={180} endAngle={0}
+            innerRadius={rInner} outerRadius={rOuter}
+            stroke="none"
+            isAnimationActive={false}
+          >
+            {bandData.map((d, i) => <Cell key={i} fill={d.color} fillOpacity={0.30}/>)}
+          </Pie>
+        </PieChart>
+        <svg width={W} height={H} style={{position:"absolute", top:0, left:0, pointerEvents:"none"}}>
+          {/* Peer tick marks — same scale, muted, hoverable */}
+          {peerStats && peerStats.sorted.map((p, i) => {
+            const a = angleOf(p.z);
+            const p1 = toXY(a, tickInner, cx, cy);
+            const p2 = toXY(a, tickOuter, cx, cy);
+            return (
+              <line key={i} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+                stroke="var(--ink-3)" strokeWidth="2.5" strokeLinecap="round" opacity="0.65">
+                <title>{`${p.ticker}: ${p.z.toFixed(2)}`}</title>
+              </line>
+            );
+          })}
+          {/* Needle */}
+          <line x1={cx} y1={cy} x2={needleTip.x} y2={needleTip.y}
+            stroke="var(--ink)" strokeWidth="3" strokeLinecap="round"/>
+          <circle cx={cx} cy={cy} r="5.5" fill="var(--ink)"/>
+          {/* Threshold labels along the arc */}
+          {[min, greyThreshold, distressThreshold, max].map((v, i) => {
+            const p = toXY(angleOf(v), labelR, cx, cy);
+            return (
+              <text key={i} x={p.x} y={p.y} textAnchor="middle" fontSize="9"
+                fontFamily="Geist Mono, monospace" fill="var(--ink-3)">
+                {v.toFixed(2)}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+      <div style={{display:"flex", alignItems:"baseline", gap: 8, marginTop: -4, flexWrap:"wrap", justifyContent:"center"}}>
+        <span className="mono" style={{fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em"}}>{z.toFixed(2)}</span>
+        <span className="rag-chip" style={{background: `color-mix(in oklch, ${bandColor} 14%, transparent)`, color: bandInk}}>{band}</span>
+        {peerStats && (
+          <span style={{fontSize: 10.5, color: "var(--ink-3)"}}>
+            vs {peerStats.total - 1} peer{peerStats.total - 1 !== 1 ? "s" : ""} · rank {peerStats.rank}/{peerStats.total} (1 = safest) · peer median {peerStats.median.toFixed(2)}
+          </span>
+        )}
+      </div>
+      {peerStats && (
+        <div style={{display:"flex", flexWrap:"wrap", gap:4, marginTop:8}}>
+          {peerStats.sorted.map((p, i) => (
+            <span key={i} className="mono" style={{fontSize:9.5, padding:"2px 6px", borderRadius:4,
+              background:"var(--surface-2,var(--surface))", border:"1px solid var(--line)", color:"var(--ink-2)"}}>
+              {p.ticker} {p.z.toFixed(2)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- RISK FLOW SANKEY (audit closed loop) ----------
 // 3-column sankey: each KEY RISK fans out to the business areas
 // it impacts and to the audit/control work addressing it. Hovering
@@ -948,4 +1065,4 @@ function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reduction
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
-Object.assign(window, { Heatmap, ForecastChart, MultiSeriesForecastChart, MScoreGauge, RiskFlowSankey, truncate });
+Object.assign(window, { Heatmap, ForecastChart, MultiSeriesForecastChart, MScoreGauge, ZScoreGauge, RiskFlowSankey, truncate });

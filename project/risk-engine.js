@@ -122,6 +122,12 @@ window.RISK_ENGINE = (function () {
     const ni     = getV(fin.netIncome);
     const cfo    = getV(fin.cfo);
     const capex  = getV(fin.capex);
+    const currentAssets      = getV(fin.currentAssets);
+    const currentLiabilities = getV(fin.currentLiabilities);
+    const liabilities        = getV(fin.liabilities);
+    const stockholdersEquity = getV(fin.stockholdersEquity);
+    const retainedEarnings   = getV(fin.retainedEarnings);
+    const operatingIncome    = getV(fin.operatingIncome);
 
     const revGrowth    = yoy(rev, revP);
     const grossMargin  = (rev && cogs) ? (rev - cogs) / rev
@@ -145,9 +151,22 @@ window.RISK_ENGINE = (function () {
       return -4.84 + 0.920 * d + 0.528 * 1.0 + 0.892 * s + 4.679 * t;
     })();
 
+    // Altman Z''-Score (general/non-manufacturer variant, book equity in
+    // place of market equity — this app has no stock-price data source).
+    // Missing sub-terms held at neutral 0, same resilience as mscore above.
+    const workingCapital = (currentAssets != null && currentLiabilities != null) ? currentAssets - currentLiabilities : null;
+    const zscore = (() => {
+      const x1 = div(workingCapital, assets) ?? 0.0;
+      const x2 = div(retainedEarnings, assets) ?? 0.0;
+      const x3 = div(operatingIncome, assets) ?? 0.0;
+      const x4 = div(stockholdersEquity, liabilities) ?? 0.0;
+      return 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4;
+    })();
+
     return { rev, revP, revGrowth, grossMargin, rdIntensity, sgaIntensity,
              niMargin, assetGrowth, cashRatio, fcf, fcfMargin, tata, dsri, sgi,
-             mscore, cash, assets, ar, ni, cfo, capex };
+             mscore, zscore, workingCapital, liabilities, stockholdersEquity,
+             cash, assets, ar, ni, cfo, capex };
   }
 
   // ── Industry Risk Templates ─────────────────────────────────
@@ -583,8 +602,8 @@ window.RISK_ENGINE = (function () {
         mapOwner:'CFO', mapSuccessCriteria:'Quarterly margin bridge delivered; pricing policy published; operating leverage KPI in GRC', reductionPct:14 },
 
       { id:'R-04', name:'Liquidity & Cash Flow Adequacy', category:'Financial Reporting', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.fcfMargin,0,[v=>v<-0.10,3.0],[v=>v<0,1.5],[v=>v>0.15,-0.5]) + tier(r.cashRatio,0,[v=>v<0.05,2.0],[v=>v<0.10,1.0]),
-        narrative: (r,t) => `FCF margin ${pct(r.fcfMargin)}, cash/assets ${pct(r.cashRatio)}. ${r.fcfMargin!=null&&r.fcfMargin<0?'Negative FCF — liquidity runway and covenant headroom require immediate IA review.':r.cashRatio!=null&&r.cashRatio<0.08?'Low cash ratio warrants liquidity stress testing.':'Liquidity and cash generation within acceptable range.'}`,
+        delta: r => tier(r.fcfMargin,0,[v=>v<-0.10,3.0],[v=>v<0,1.5],[v=>v>0.15,-0.5]) + tier(r.cashRatio,0,[v=>v<0.05,2.0],[v=>v<0.10,1.0]) + tier(r.zscore,0,[v=>v<=1.1,2.5],[v=>v<=2.6,1.0]),
+        narrative: (r,t) => `FCF margin ${pct(r.fcfMargin)}, cash/assets ${pct(r.cashRatio)}, Altman Z''-score ${fmt(r.zscore,2)} (distress ≤1.1, grey ≤2.6). ${r.zscore!=null&&r.zscore<=1.1?'Z\'\'-score in distress zone — going-concern assessment and covenant headroom require immediate IA review.':r.fcfMargin!=null&&r.fcfMargin<0?'Negative FCF — liquidity runway and covenant headroom require immediate IA review.':r.cashRatio!=null&&r.cashRatio<0.08?'Low cash ratio warrants liquidity stress testing.':'Liquidity and cash generation within acceptable range.'}`,
         obj:'Stress-test FCF adequacy at -20% and -40% revenue scenarios and review covenant compliance headroom',
         controls:['LIQ-401 FCF stress model','LIQ-405 Covenant headroom monitoring','LIQ-410 Liquidity buffer adequacy'],
         mapFinding:'FCF stress test not reviewed by IA; covenant headroom not formally reported to IA on quarterly cadence',
@@ -1413,6 +1432,10 @@ window.RISK_ENGINE = (function () {
       const band = ratios.mscore > -1.78 ? 'ELEVATED' : ratios.mscore > -2.22 ? 'GRAY ZONE' : 'NORMAL';
       sigs.push({ src:'EDGAR 10-K', label:`M-score ${ratios.mscore.toFixed(2)} — ${band} (${ratios.mscore>-1.78?'likely manipulator threshold exceeded':ratios.mscore>-2.22?'gray zone':'within normal range'})`, delta:'financial reporting', velocity:ratios.mscore>-1.78?3:ratios.mscore>-2.22?2:0, cat:'Filing' });
     }
+    if (ratios.zscore != null) {
+      const band = ratios.zscore <= 1.1 ? 'DISTRESS' : ratios.zscore <= 2.6 ? 'GRAY ZONE' : 'SAFE';
+      sigs.push({ src:'EDGAR 10-K', label:`Altman Z''-score ${ratios.zscore.toFixed(2)} — ${band} (${ratios.zscore<=1.1?'distress zone, going-concern risk elevated':ratios.zscore<=2.6?'gray zone':'within safe range'})`, delta:'liquidity', velocity:ratios.zscore<=1.1?3:ratios.zscore<=2.6?2:0, cat:'Filing' });
+    }
     if (ratios.fcfMargin != null) {
       const flag = ratios.fcfMargin < -0.05 ? 'negative FCF — liquidity flag' : ratios.fcfMargin > 0.15 ? 'strong FCF generation' : 'modest FCF';
       sigs.push({ src:'EDGAR 10-K', label:`FCF margin ${(ratios.fcfMargin*100).toFixed(1)}% — ${flag}`, delta:ratios.fcfMargin<0?'contractionary':'neutral', velocity:ratios.fcfMargin<-0.05?3:1, cat:'Filing' });
@@ -1712,6 +1735,12 @@ window.RISK_ENGINE = (function () {
         key_driver: ratios.dsri!=null&&ratios.dsri>1.15 ? 'DSRI (receivables quality)' : ratios.tata!=null&&ratios.tata>0.04 ? 'TATA (accrual quality)' : 'SGI (sales growth)',
         thresholds: { red:-1.78, amber:-2.22 },
         vars: { DSRI: ratios.dsri??1.0, GMI:1.0, AQI:1.0, SGI:ratios.sgi??1.0, DEPI:1.0, SGAI:1.0, LVGI:1.0, TATA:ratios.tata??0.0 },
+      },
+      zscore: {
+        z: ratios.zscore ?? 1.8,
+        band: ratios.zscore!=null ? (ratios.zscore<=1.1?'DISTRESS':ratios.zscore<=2.6?'GRAY ZONE':'SAFE') : 'GRAY ZONE',
+        key_driver: ratios.workingCapital!=null&&ratios.assets&&(ratios.workingCapital/ratios.assets)<0 ? 'X1 (working capital deficit)' : ratios.stockholdersEquity!=null&&ratios.stockholdersEquity<0 ? 'X4 (negative book equity)' : 'X3 (operating profitability)',
+        thresholds: { distress:1.1, grey:2.6 },
       },
     };
   }

@@ -64,6 +64,7 @@ XBRL_METRICS = {
     "CurrentLiabilities": ["LiabilitiesCurrent"],
     "TotalLiabilities": ["Liabilities"],
     "StockholdersEquity": ["StockholdersEquity", "StockholdersEquityAttributableToParent"],
+    "RetainedEarnings": ["RetainedEarningsAccumulatedDeficit"],
     "Cash": [
         "CashAndCashEquivalentsAtCarryingValue",
         "CashCashEquivalentsAndShortTermInvestments",

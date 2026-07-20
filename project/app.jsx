@@ -978,6 +978,30 @@ function App() {
           }
         }
 
+        // Override placeholder M-Score/Z''-Score with real values computed
+        // server-side from live EDGAR data (buildProfile was called with
+        // fin=null above, so ratios.mscore/zscore are neutral placeholders
+        // until overridden here).
+        const _bm = mcpResult.beneish_mscore;
+        if (_bm?.m_score != null) {
+          templateProfile.forecasts.mscore = {
+            m: _bm.m_score,
+            band: _bm.rag_status === "Red" ? "ELEVATED" : _bm.rag_status === "Amber" ? "GRAY ZONE" : "NORMAL",
+            key_driver: _bm.inputs?.dsri > 1.15 ? "DSRI (receivables quality)" : _bm.inputs?.tata > 0.04 ? "TATA (accrual quality)" : "SGI (sales growth)",
+            thresholds: { red: -1.78, amber: -2.22 },
+            vars: { DSRI: _bm.inputs?.dsri ?? 1.0, GMI: _bm.inputs?.gmi ?? 1.0, AQI: 1.0, SGI: _bm.inputs?.sgi ?? 1.0, DEPI: 1.0, SGAI: 1.0, LVGI: 1.0, TATA: _bm.inputs?.tata ?? 0.0 },
+          };
+        }
+        const _az = mcpResult.altman_zscore;
+        if (_az?.z_score != null) {
+          templateProfile.forecasts.zscore = {
+            z: _az.z_score,
+            band: _az.rag_status === "Red" ? "DISTRESS" : _az.rag_status === "Amber" ? "GRAY ZONE" : "SAFE",
+            key_driver: _az.inputs?.x1 < 0 ? "X1 (working capital deficit)" : _az.inputs?.x4 < 0.3 ? "X4 (negative book equity)" : "X3 (operating profitability)",
+            thresholds: { distress: 1.1, grey: 2.6 },
+          };
+        }
+
         // Overlay MCP-computed scores onto template risks
         const mergedRisks = MCP.mergeRiskScores(templateProfile.risks, mcpResult.risk_scores);
 

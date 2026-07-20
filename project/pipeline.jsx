@@ -1049,6 +1049,38 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         );
       })()}
 
+      {/* Altman Z''-Score gauge */}
+      {forecasts?.zscore != null && (() => {
+        const ZSG = window.ZScoreGauge;
+        const zs = forecasts.zscore;
+        if (!ZSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Altman Z''-Score · solvency &amp; going-concern risk</h5>
+            <ZSG z={zs.z} peers={peerData?.peers}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>Z'' = {zs.z?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: zs.z <= 1.1 ? "var(--red-soft)" : zs.z <= 2.6 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      zs.z <= 1.1 ? "var(--red-ink)"  : zs.z <= 2.6 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{zs.band || (zs.z <= 1.1 ? "DISTRESS" : zs.z <= 2.6 ? "GRAY ZONE" : "SAFE")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≤ 1.10 · DISTRESS</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>1.10 to 2.60 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>&gt; 2.60 · SAFE</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                General/non-manufacturer variant (book equity, no market-cap dependency): working capital, retained earnings, and EBIT relative to total assets, plus book equity to total liabilities — computed from EDGAR 10-K.
+                {zs.z <= 1.1 ? " Distress zone — going-concern assessment and covenant headroom warrant immediate IA review." : zs.z <= 2.6 ? " Gray zone — liquidity and solvency monitoring recommended." : " Score within safe range — no elevated solvency risk detected."}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Revenue forecast chart */}
       {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
         const FC = window.ForecastChart;
