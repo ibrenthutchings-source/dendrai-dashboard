@@ -30,7 +30,8 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     liveMode = false, fredSeries = null, industry = "",
                     enabledFeedIds = [], onRssSignalsReady = null,
                     flowMeta = null, onOpenMainFlow = null,
-                    risks = [], companyName = "", peerData = null }) {
+                    risks = [], companyName = "", peerData = null,
+                    ratios = {}, events = [] }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s1Extra = {
     rssRunProgress,
@@ -190,6 +191,8 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                           risks={output.s2?.risks || []}
                           objectives={output.s3?.objectives || []}
                           rssSignals={liveRssSignals}
+                          events={events}
+                          ratios={ratios}
                           industry={industry}
                           ticker={pipelineTicker}
                         />
