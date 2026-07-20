@@ -1002,6 +1002,29 @@ function App() {
           };
         }
 
+        // Same placeholder problem as mscore/zscore above — templateProfile.ratios
+        // is {} (buildProfile was called with fin=null), which silently breaks any
+        // consumer keyed on it (e.g. Coverage Gap Analysis's quant-model-gap check).
+        // Map the backend's snake_case financial_ratios onto risk-engine.js's
+        // camelCase field names.
+        const _fr = mcpResult.financial_ratios;
+        if (_fr) {
+          templateProfile.ratios = {
+            ...templateProfile.ratios,
+            revGrowth:    _fr.revenue_growth,
+            grossMargin:  _fr.gross_margin,
+            rdIntensity:  _fr.rd_intensity,
+            sgaIntensity: _fr.sga_intensity,
+            niMargin:     _fr.net_margin,
+            assetGrowth:  _fr.asset_growth,
+            cashRatio:    _fr.cash_ratio,
+            fcfMargin:    _fr.fcf_margin,
+            tata:         _fr.tata,
+            dsri:         _fr.dsri,
+            sgi:          _fr.sgi,
+          };
+        }
+
         // Overlay MCP-computed scores onto template risks
         const mergedRisks = MCP.mergeRiskScores(templateProfile.risks, mcpResult.risk_scores);
 
@@ -1891,7 +1914,9 @@ function App() {
                 onOpenMainFlow={() => setActiveScreen("flow")}
                 risks={output.s2?.risks || (hasRun ? profile?.risks : null) || []}
                 companyName={hasRun ? (profile?.entity?.name || "") : ""}
-                peerData={govPeerData} />
+                peerData={govPeerData}
+                ratios={hasRun ? (profile?.ratios || {}) : {}}
+                events={events} />
             )}
           </div>
           </ScreenAccessGate>
@@ -2005,6 +2030,7 @@ function App() {
               risks={output.s2?.risks || (hasRun ? profile.risks : [])}
               objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
               rssSignals={rssSignals}
+              events={events}
               ratios={hasRun ? (profile.ratios || {}) : {}}
               industry={hasRun ? profile.entity?.industry : cfg.industry}
               ticker={cfg.ticker} />

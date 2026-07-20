@@ -49,7 +49,7 @@ function ScoreCard({ label, value, sub, ok }) {
   );
 }
 
-function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], ratios = {}, industry = '', ticker = '' }) {
+function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events = [], ratios = {}, industry = '', ticker = '' }) {
 
   // ── 1. Register ↔ Scope alignment ────────────────────────────
   const coverageRows = risks.map(r => {
@@ -96,10 +96,25 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], ratios
 
   // ── 3. 8-K signal coverage ───────────────────────────────────
   const eightKFindings = React.useMemo(() => {
-    // In live/MCP mode, rssSignals may carry 8-K item data.
-    // Parse for known item patterns in headlines; also apply synthetic coverage check.
     const detected = {};
 
+    // Primary source: structured 8-K item codes from real EDGAR filings,
+    // already parsed into CEM events (see MCP.map8kToCemEvents) — each
+    // event's `items` array carries every item code on that filing, not
+    // just the highest-severity one used for the event's own category.
+    (events || []).forEach(ev => {
+      (ev.items || []).forEach(item => {
+        const rule = ITEM_RISK_MAP.find(r => r.items.includes(item));
+        if (!rule) return;
+        const key = rule.riskId || item;
+        if (!detected[key]) detected[key] = { ...rule, signals: [] };
+        detected[key].signals.push(ev);
+      });
+    });
+
+    // Secondary source: industry RSS articles that mention an item code
+    // directly in their headline/summary text (rare, but a real news hit
+    // is still a valid signal even without a parsed EDGAR filing).
     rssSignals.forEach(s => {
       const text = `${s.title || ''} ${s.summary || ''}`.toLowerCase();
       ITEM_RISK_MAP.forEach(rule => {
@@ -113,8 +128,9 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], ratios
       });
     });
 
-    // If in mock mode (no RSS data), apply the gap analysis findings for semiconductors
-    if (!rssSignals.length && (industry || '').toLowerCase().includes('semi')) {
+    // If in mock mode (no real 8-K or RSS data at all), apply the gap
+    // analysis findings for semiconductors
+    if (!Object.keys(detected).length && !events.length && !rssSignals.length && (industry || '').toLowerCase().includes('semi')) {
       return [
         { riskId:'R-10', label:'Material obligation / equity event (Items 1.01, 2.03, 3.02)',
           rag:'A', signals:[], source:'8-K pattern', covered: !!risks.find(r => r.id === 'R-10') },
@@ -126,9 +142,9 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], ratios
     return Object.values(detected).map(d => ({
       ...d,
       covered: d.riskId ? !!risks.find(r => r.id === d.riskId) : false,
-      source: `${d.signals.length} RSS signal${d.signals.length !== 1 ? 's' : ''}`,
+      source: `${d.signals.length} signal${d.signals.length !== 1 ? 's' : ''}`,
     }));
-  }, [rssSignals, risks, industry]);
+  }, [events, rssSignals, risks, industry]);
 
   const uncoveredSignals = eightKFindings.filter(f => !f.covered);
 
