@@ -807,7 +807,13 @@ def rss_proxy(url: str = Query(..., description="RSS feed URL to fetch server-si
         raise HTTPException(status_code=400, detail="Only http/https URLs are allowed")
     _validate_rss_host(url)
 
-    _headers = {"User-Agent": "Mozilla/5.0 (compatible; DendraiRSSProxy/1.0)"}
+    # SEC.gov rejects any User-Agent that doesn't declare a company + contact
+    # per its fair-access policy (https://www.sec.gov/os/webmaster-faq#developers)
+    # — a generic "Mozilla/5.0 (compatible; ...)" string gets a 200 response
+    # whose body is actually an HTML block page ("Undeclared Automated Tool"),
+    # not the requested feed. This format satisfies SEC while remaining a
+    # normal identifiable UA for every other feed source.
+    _headers = {"User-Agent": "Dendrai Intelligenza research@dendrai.ai"}
     current_url = url
     try:
         for _ in range(6):  # max 5 redirects

@@ -15,7 +15,10 @@ const rssProxyPlugin = {
       try {
         const upstream = await fetch(feedUrl, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; DendraiBot/1.0; +https://dendrai.ai)',
+            // SEC.gov requires a company + contact UA (fair-access policy) or it
+            // serves an HTML block page instead of the feed — see api_server.py's
+            // rss_proxy() for the matching production-path header.
+            'User-Agent': 'Dendrai Intelligenza research@dendrai.ai',
             'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
           },
           signal: AbortSignal.timeout(10000),
