@@ -186,6 +186,12 @@ window.LIVE = (function () {
       sga: pickConcept(facts, ["SellingGeneralAndAdministrativeExpense"], "USD"),
       cogs: pickConcept(facts, ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"], "USD"),
       grossProfit: pickConcept(facts, ["GrossProfit"], "USD"),
+      currentAssets: pickConcept(facts, ["AssetsCurrent"], "USD"),
+      currentLiabilities: pickConcept(facts, ["LiabilitiesCurrent"], "USD"),
+      liabilities: pickConcept(facts, ["Liabilities"], "USD"),
+      stockholdersEquity: pickConcept(facts, ["StockholdersEquity", "StockholdersEquityAttributableToParent"], "USD"),
+      retainedEarnings: pickConcept(facts, ["RetainedEarningsAccumulatedDeficit"], "USD"),
+      operatingIncome: pickConcept(facts, ["OperatingIncomeLoss"], "USD"),
     };
     // Derive headline ratios from latest annual fact for each
     const ttmRev = out.revenue && out.revenue.latestAnnual;

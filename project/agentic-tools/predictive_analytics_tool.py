@@ -136,6 +136,11 @@ def compute_financial_ratios(xbrl: dict) -> dict:
     assets_a = _a("TotalAssets")
     cash_a   = _a("Cash")
     ar_a     = _a("AccountsReceivable")
+    cur_assets_a = _a("CurrentAssets")
+    cur_liab_a   = _a("CurrentLiabilities")
+    tot_liab_a   = _a("TotalLiabilities")
+    equity_a     = _a("StockholdersEquity")
+    retained_a   = _a("RetainedEarnings")
 
     rev_now   = _latest(rev_a)
     rev_prev  = _prev(rev_a)
@@ -151,6 +156,11 @@ def compute_financial_ratios(xbrl: dict) -> dict:
     cash_now  = _latest(cash_a)
     ar_now    = _latest(ar_a)
     ar_prev   = _prev(ar_a)
+    cur_assets_now = _latest(cur_assets_a)
+    cur_liab_now   = _latest(cur_liab_a)
+    tot_liab_now   = _latest(tot_liab_a)
+    equity_now     = _latest(equity_a)
+    retained_now   = _latest(retained_a)
 
     # SGA ≈ GrossProfit - OperatingIncome
     sga_now = (gp_now - op_now) if (gp_now is not None and op_now is not None) else None
@@ -187,6 +197,14 @@ def compute_financial_ratios(xbrl: dict) -> dict:
     # GMI = GrossMargin_prev / GrossMargin_now  (rising GMI → deteriorating margin)
     gmi = _safe_div(gross_margin_p, gross_margin)
 
+    # Altman Z''-Score inputs (general/non-manufacturer variant, book equity —
+    # no market-cap dependency)
+    working_capital = (cur_assets_now - cur_liab_now) if (cur_assets_now is not None and cur_liab_now is not None) else None
+    zscore_x1 = _safe_div(working_capital, assets_now)
+    zscore_x2 = _safe_div(retained_now, assets_now)
+    zscore_x3 = _safe_div(op_now, assets_now)
+    zscore_x4 = _safe_div(equity_now, tot_liab_now)
+
     return {
         "revenue_now":        rev_now,
         "revenue_prev":       rev_prev,
@@ -207,6 +225,10 @@ def compute_financial_ratios(xbrl: dict) -> dict:
         "cash_now":           cash_now,
         "net_income_now":     ni_now,
         "operating_cashflow": cfo_now,
+        "zscore_x1":          zscore_x1,
+        "zscore_x2":          zscore_x2,
+        "zscore_x3":          zscore_x3,
+        "zscore_x4":          zscore_x4,
     }
 
 
@@ -415,6 +437,65 @@ def compute_beneish_mscore(ratios: dict) -> dict:
                            "sgi":  round(sgi, 4),  "tata": round(tata, 4)},
         "missing_inputs": missing,
         "formula":        "M = -4.84 + 0.920·DSRI + 0.528·GMI + 0.892·SGI + 4.679·TATA",
+    }
+
+
+def compute_altman_zscore(ratios: dict) -> dict:
+    """
+    Altman Z''-Score (Altman 1995) — general/non-manufacturer variant, using
+    book value of equity in place of market value of equity (this app has no
+    stock-price data source, so the classic Z-Score's market-cap term is not
+    computable).
+
+    Z'' = 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4
+      X1 = Working Capital / Total Assets
+      X2 = Retained Earnings / Total Assets
+      X3 = EBIT / Total Assets
+      X4 = Book Value of Equity / Total Liabilities
+
+    Zones:
+      Z'' > 2.6   → safe               (Green)
+      Z'' > 1.1   → gray zone          (Amber)
+      Z'' ≤ 1.1   → distress           (Red)
+    """
+    x1 = ratios.get("zscore_x1")
+    x2 = ratios.get("zscore_x2")
+    x3 = ratios.get("zscore_x3")
+    x4 = ratios.get("zscore_x4")
+
+    missing = [k for k, v in {"X1": x1, "X2": x2, "X3": x3, "X4": x4}.items() if v is None]
+
+    if len(missing) > 2:
+        return {
+            "z_score": None,
+            "interpretation": "insufficient_data",
+            "missing_inputs": missing,
+        }
+
+    # Neutral defaults for single missing inputs
+    x1 = x1 if x1 is not None else 0.0
+    x2 = x2 if x2 is not None else 0.0
+    x3 = x3 if x3 is not None else 0.0
+    x4 = x4 if x4 is not None else 0.0
+
+    z = 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4
+
+    if z <= 1.1:
+        interp, rag = "distress", "Red"
+    elif z <= 2.6:
+        interp, rag = "gray_zone", "Amber"
+    else:
+        interp, rag = "safe", "Green"
+
+    return {
+        "z_score":        round(z, 3),
+        "interpretation": interp,
+        "rag_status":     rag,
+        "thresholds":     {"distress_at_or_below": 1.1, "gray_zone_at_or_below": 2.6},
+        "inputs":         {"x1": round(x1, 4), "x2": round(x2, 4),
+                           "x3": round(x3, 4), "x4": round(x4, 4)},
+        "missing_inputs": missing,
+        "formula":        "Z'' = 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4",
     }
 
 
@@ -1956,6 +2037,9 @@ def run_full_analysis(
 
     # ── 2. Beneish M-Score ────────────────────────────────────────────────────
     result["beneish_mscore"] = compute_beneish_mscore(ratios)
+
+    # ── 2b. Altman Z''-Score ──────────────────────────────────────────────────
+    result["altman_zscore"] = compute_altman_zscore(ratios)
 
     # ── 3. Risk Scores ────────────────────────────────────────────────────────
     risk_result = compute_risk_scores(ratios, industry)

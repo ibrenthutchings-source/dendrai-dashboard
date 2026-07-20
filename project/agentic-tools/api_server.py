@@ -1228,8 +1228,9 @@ def _build_ratio_history(xbrl: dict, max_years: int = 6) -> list:
 
 def _enrich_peer_financials(peer: dict) -> dict:
     """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity,
-    revenue_growth, a simplified Beneish M-score for cross-peer benchmarking,
-    and a multi-year `history` series for the peer-benchmarking time series chart."""
+    revenue_growth, a simplified Beneish M-score and Altman Z''-Score for
+    cross-peer benchmarking, and a multi-year `history` series for the
+    peer-benchmarking time series chart."""
     try:
         cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
         if not cik or cik == "0000000000":
@@ -1253,6 +1254,12 @@ def _enrich_peer_financials(peer: dict) -> dict:
         ni,     _        = latest_two_annual("NetIncome")
         cfo,    _        = latest_two_annual("OperatingCashFlow")
         assets, _        = latest_two_annual("TotalAssets")
+        cur_assets, _    = latest_two_annual("CurrentAssets")
+        cur_liab, _      = latest_two_annual("CurrentLiabilities")
+        tot_liab, _      = latest_two_annual("TotalLiabilities")
+        equity, _        = latest_two_annual("StockholdersEquity")
+        retained, _      = latest_two_annual("RetainedEarnings")
+        ebit, _          = latest_two_annual("OperatingIncome")
 
         peer["gross_margin"]   = (gp  / rev) if rev and gp  is not None else None
         peer["rd_intensity"]   = (rd  / rev) if rev and rd  is not None else None
@@ -1270,6 +1277,24 @@ def _enrich_peer_financials(peer: dict) -> dict:
             t = tata if tata is not None else 0.0
             s = sgi  if sgi  is not None else 1.0
             peer["m_score"] = -4.84 + 0.920 * d + 0.528 * 1.0 + 0.892 * s + 4.679 * t
+
+        # Altman Z''-Score (general/non-manufacturer variant, book equity in
+        # place of market equity — same formula as risk-engine.js's
+        # computeRatios(), coefficients per Altman 1995). Missing sub-terms
+        # are held at a neutral 0 rather than nulling the whole score, same
+        # resilience pattern as m_score above.
+        wc   = (cur_assets - cur_liab) if (cur_assets is not None and cur_liab is not None) else None
+        x1   = (wc / assets) if (wc is not None and assets) else None
+        x2   = (retained / assets) if (retained is not None and assets) else None
+        x3   = (ebit / assets) if (ebit is not None and assets) else None
+        x4   = (equity / tot_liab) if (equity is not None and tot_liab) else None
+        if x1 is not None or x2 is not None or x3 is not None or x4 is not None:
+            peer["z_score"] = (
+                6.56 * (x1 if x1 is not None else 0.0)
+                + 3.26 * (x2 if x2 is not None else 0.0)
+                + 6.72 * (x3 if x3 is not None else 0.0)
+                + 1.05 * (x4 if x4 is not None else 0.0)
+            )
     except Exception:
         pass
     return peer
@@ -1277,12 +1302,13 @@ def _enrich_peer_financials(peer: dict) -> dict:
 
 def _peer_has_data(peer: dict) -> bool:
     """A peer is kept only if at least one financial benchmark resolved.
-    m_score is computed from a different set of XBRL fields (revenue,
-    receivables, net income, cash flow, assets) than the other three
-    (gross profit, R&D, prior-year revenue) — a peer can have a valid
-    m_score with none of the others, and must not be dropped before it
-    reaches the Beneish M-Score gauge's peer comparison."""
-    return any(peer.get(k) is not None for k in ("gross_margin", "rd_intensity", "revenue_growth", "m_score"))
+    m_score and z_score are each computed from their own distinct sets of
+    XBRL fields, different from the other ratios and from each other — a
+    peer can have a valid m_score or z_score with none of the others, and
+    must not be dropped before it reaches the corresponding gauge's peer
+    comparison."""
+    return any(peer.get(k) is not None for k in
+               ("gross_margin", "rd_intensity", "revenue_growth", "m_score", "z_score"))
 
 
 @app.post("/edgar/peers")
