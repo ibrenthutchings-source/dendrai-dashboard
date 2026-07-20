@@ -414,6 +414,7 @@ _AUTH_EXEMPT = (
     "/mcp",           # MCP Streamable-HTTP — Claude authenticates separately
     "/github/",       # GitHub webhook uses its own HMAC verification
     "/rss/feeds",                    # read-only feed registry, fetched at JS module init time
+    "/rss-proxy",                    # server-side CORS bypass for feed XML — no user data, SSRF-guarded
     "/scoring/config",               # read-only scoring vocabulary, fetched at JS module init time
     "/observability/telemetry/ingest", # external systems auth via per-system Bearer key
 )
