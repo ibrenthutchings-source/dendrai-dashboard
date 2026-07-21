@@ -1194,6 +1194,7 @@ function App() {
         try {
           const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
           const extracted = LIVE.extractFinancials(facts);
+          extracted.ticker = cfg.ticker; // extractFinancials doesn't echo the ticker itself — needed so the header can verify livefacts still belongs to the active ticker
           edgarFin = extracted;
           edgarSic = facts?.sic ?? null;
           setLivefacts(extracted);
@@ -1721,6 +1722,7 @@ function App() {
         liveMode={liveMode} mcpMode={mcpMode} livefacts={livefacts}
         running={running} hasRun={hasRun}
         entityName={profile.entity.name}
+        entityTicker={profile.entity.ticker}
         aiChatLabel={aiChatCfg.buttonLabel || "Ask Claude"}
         chatOpen={chatOpen}
         onChatToggle={() => setChatOpen(v => !v)} />
@@ -2283,7 +2285,7 @@ function App() {
 }
 
 // ---- Header ----
-function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName,
+function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName, entityTicker,
                   aiChatLabel, chatOpen, onChatToggle }) {
   const auth = window.useAuth ? window.useAuth() : null;
   const DendraiMark = window.DendraiMark;
@@ -2329,7 +2331,19 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
       <div className="hdr-ctx">
         <span className="hdr-ctx-tkr">{cfg.ticker}</span>
         <span className="muted">·</span>
-        <span style={{ fontSize: 11.5 }}>{livefacts?.entity || cfg.company || entityName}</span>
+        {(() => {
+          // livefacts and profile.entity are only refreshed when a run
+          // completes for the *currently typed* ticker — until then they
+          // still hold whatever company was last run. Showing either one
+          // next to cfg.ticker without checking its own ticker pairs the
+          // new ticker with a stale company name (e.g. "ENTG · International
+          // Business Machines Corp" after typing ENTG but before re-running).
+          const tkr = (cfg.ticker || "").toUpperCase();
+          const factsMatch  = livefacts?.ticker?.toUpperCase() === tkr;
+          const entityMatch = entityTicker?.toUpperCase() === tkr;
+          const name = factsMatch ? livefacts.entity : entityMatch ? entityName : null;
+          return <span style={{ fontSize: 11.5 }}>{name || cfg.company || "—"}</span>;
+        })()}
         {(() => {
           const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
           if (!focusList.length) return null;
