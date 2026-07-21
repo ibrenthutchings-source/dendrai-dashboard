@@ -1850,6 +1850,7 @@ window.RISK_ENGINE = (function () {
   }
 
   return { buildProfile, buildLoop, computeRatios, sic2industry, normalizeIndustry, quarterBoundaries: _quarterBoundaries,
-           buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator };
+           buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator,
+           buildGreySwan, buildScenarios };
 
 })();

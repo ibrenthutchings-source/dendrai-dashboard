@@ -1325,6 +1325,24 @@ function App() {
     await runStage("s2", { risks: adjustedRisks, riskAppetite: riskAppetiteResult, trace: stage2Trace }, 1500);
     setActiveRailTab("rr");
 
+    // Rebuild Scenario Analysis + Grey Swan from the live signal-adjusted risk
+    // register. buildProfile() computes both once, early, from the baseline
+    // risk register — before RSS/8-K/FRED Stage 2 adjustments are applied —
+    // and nothing ever recomputed them afterward, so they silently went stale
+    // relative to what the risk register actually shows by the end of a run
+    // (in MCP mode the backend computes a fresh scenario_analysis/grey_swan
+    // per call too, but the frontend never even read those fields).
+    {
+      const _gsIndustry = RISK_ENGINE.normalizeIndustry(profileRef.current.entity?.focus || cfg.industry);
+      const _liveRatios = profileRef.current.ratios || {};
+      profileRef.current = {
+        ...profileRef.current,
+        scenarios: RISK_ENGINE.buildScenarios(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry),
+        greySwan:  RISK_ENGINE.buildGreySwan(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry),
+      };
+      setProfile(profileRef.current);
+    }
+
     // GATE 1 — Risk assessment
     if (hitl.risk) {
       setStageState((prev) => ({ ...prev, s3: "waiting", s4: "waiting", s5: "waiting", s6: "waiting" }));
