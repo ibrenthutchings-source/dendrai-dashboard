@@ -1445,6 +1445,24 @@ function App() {
           manual_audits: manualAuditsRef.current,
         }),
       }).catch(() => {});
+
+      // Auto-generate + persist OSCAL / COSO ERM Risks-as-Code artifacts so
+      // they exist as soon as the loop completes, instead of only being
+      // generated on-demand by visiting the Frameworks screen.
+      fetch('/api/risks-as-code/generate', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          ticker:     cfg.ticker,
+          run_id:     runIdRef.current,
+          risks:      adjustedRisks,
+          objectives: stage3Objectives,
+          maps:       stage4Maps,
+          ratios:     profileRef.current?.ratios || {},
+          signals:    sigsList,
+          industry:   cfg.industry,
+          period:     cfg.periodEnd,
+        }),
+      }).catch(() => {});
     }
 
     setRunning(false);
