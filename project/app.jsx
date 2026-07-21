@@ -1134,6 +1134,11 @@ function App() {
 
         profileRef.current = { ...templateProfile, risks: enrichedRisks };
         setProfile(profileRef.current);
+        // Forecasts/ratios/riskFlow are already fully computed at this point —
+        // flip hasRun here (not at loop end) so Stage 1 charts and HITL 1
+        // (which fires after Stage 2, long before the loop finishes) actually
+        // have data to show instead of rendering blank until Stage 6 completes.
+        setHasRun(true);
         log(`Profile: ${templateProfile.entity.name} · ${industry} · ${enrichedRisks.length} risks (MCP-scored)`);
 
       } catch (e) {
@@ -1142,6 +1147,7 @@ function App() {
         const fallback = RISK_ENGINE.buildProfile(cfg.ticker, null, null, cfg.industry);
         profileRef.current = fallback;
         setProfile(fallback);
+        setHasRun(true);
       }
 
     } else {
@@ -1214,6 +1220,7 @@ function App() {
         const builtProfile = RISK_ENGINE.buildProfile(cfg.ticker, edgarFin, edgarSic, industry);
         profileRef.current = builtProfile;
         setProfile(builtProfile);
+        setHasRun(true); // see MCP-mode comment above — data's ready well before loop end
         log(`Profile: ${builtProfile.entity.name} · ${industry} · ${builtProfile.risks.length} risks derived`);
       }
 
