@@ -1808,7 +1808,12 @@ def get_sic_peers(ticker: str) -> Optional[dict]:
                     (company_id,),
                 )
                 peers = [
-                    {"ticker": r[0], "cik": r[1], "name": r[2], "state": r[3], "sic": r[4]}
+                    # "company_name" (not "name") to match the field every other
+                    # peer object in the codebase uses — PeerTable/PeerTimeSeriesChart
+                    # and _enrich_peer_financials() all read p.company_name, so a
+                    # "name"-keyed dict here silently rendered as a blank company
+                    # column and a "Peer N" chart legend fallback.
+                    {"ticker": r[0], "cik": r[1], "company_name": r[2], "state": r[3], "sic": r[4]}
                     for r in cur.fetchall()
                 ]
                 if not peers:

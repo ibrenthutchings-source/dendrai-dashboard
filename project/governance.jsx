@@ -85,7 +85,7 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
     (peers || []).forEach((p, i) => {
       if (p.history?.length) {
         list.push({
-          key: p.ticker || `peer-${i}`, name: p.ticker || p.company_name || `Peer ${i + 1}`,
+          key: p.ticker || `peer-${i}`, name: p.company_name || p.ticker || `Peer ${i + 1}`,
           color: _PEER_LINE_COLORS[i % _PEER_LINE_COLORS.length], strokeWidth: 1.6, history: p.history,
         });
       }
