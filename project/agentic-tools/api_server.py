@@ -1162,8 +1162,16 @@ def list_corporate_events(
     """
     if not db.is_available():
         return {"rows": [], "count": 0, "new_count": 0}
-    company_id = None
-    if ticker:
+    if not ticker:
+        rows = db.list_corporate_events(status=status)
+        return {"rows": rows, "count": len(rows), "new_count": sum(1 for r in rows if r["status"] == "new")}
+
+    # DB-first lookup — this endpoint is hit on every Scenario Analysis page
+    # load, so it must not depend on a live EDGAR round-trip just to resolve
+    # a ticker that was almost certainly already ingested earlier. A live
+    # lookup is only attempted as a fallback for a genuinely new ticker.
+    company_id = db.get_company_id_by_ticker(ticker)
+    if company_id is None:
         try:
             meta, _sub = get_company_info(ticker)
             company_id = db.upsert_company({
@@ -1171,7 +1179,15 @@ def list_corporate_events(
                 "cik": meta.get("cik", ""), "sic": meta.get("sic", ""),
             })
         except Exception:
-            pass
+            company_id = None
+
+    if company_id is None:
+        # A ticker was explicitly requested — if it can't be resolved (unknown
+        # ticker, or a transient EDGAR failure like a 429), returning every
+        # company's events instead would leak other companies' material
+        # corporate events onto this ticker's Scenario Analysis page.
+        return {"rows": [], "count": 0, "new_count": 0}
+
     rows = db.list_corporate_events(company_id=company_id, status=status)
     return {"rows": rows, "count": len(rows), "new_count": sum(1 for r in rows if r["status"] == "new")}
 
