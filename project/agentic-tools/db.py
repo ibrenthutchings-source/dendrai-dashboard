@@ -1692,6 +1692,21 @@ def _run(fn, default=None):
 # Company
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_company_id_by_ticker(ticker: str) -> Optional[int]:
+    """DB-only ticker → company_id lookup, no live EDGAR round-trip. Used to
+    scope per-company reads (e.g. corporate events) without needing to
+    re-resolve the ticker on every request — a live EDGAR lookup on every
+    page load is both wasteful and, under SEC rate-limiting, a failure mode
+    that must not be treated as "no company filter"."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM companies WHERE ticker = %s", (ticker.upper(),))
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
 def upsert_company(meta: dict) -> Optional[int]:
     """Insert or update a company record. Returns company_id."""
     def _do():
