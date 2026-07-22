@@ -26,7 +26,7 @@ const NAV_SECTIONS = [
       { id: "scope",    icon: "grid",      l: "Scope Builder" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
-      { id: "approvals", icon: "check",    l: "Approval Inbox" },
+      { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse" },
       //{ id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "ubogov",   icon: "shield",    l: "Control Tower" }
       //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
