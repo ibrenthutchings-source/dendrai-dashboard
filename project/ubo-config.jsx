@@ -1263,6 +1263,7 @@ function PacReposCard() {
 
   async function handleSave(payload) {
     setSaving(true);
+    setError(null);
     try {
       const isEdit = !!editingId;
       const url = isEdit
@@ -1273,10 +1274,19 @@ function PacReposCard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (res.ok) {
+      // POST/PUT /pac-repos always return HTTP 200, even when the DB write
+      // itself failed (_create_pac_repo/_update_pac_repo swallow exceptions
+      // and return None/False, encoded as {ok:false} in the body) — checking
+      // only res.ok made a silent DB failure look identical to success: the
+      // form appeared to do nothing and no row ever showed up, with no error
+      // surfaced anywhere.
+      const d = await res.json().catch(() => null);
+      if (res.ok && d?.ok !== false) {
         setAdding(false);
         setEditingId(null);
         await load();
+      } else {
+        setError(d?.detail || "Save failed — the repository was not persisted. Check api_server.py logs.");
       }
     } catch (_) {
       setError("Save failed — check api_server.py logs.");
@@ -1412,8 +1422,9 @@ function PacReposCard() {
       )}
 
       <div className="mono" style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 10, lineHeight: 1.5 }}>
-        Repository registration is for tracking and reference. Push-on-save integration uses the
-        GitHub hook configured under <b>Policy-as-Code → Hooks</b>.
+        Click <b>Sync Now</b> on a repository row to pull its .rego/.md/.txt files into the Rego
+        Editor — each registered repo syncs independently of the single legacy GitHub hook under
+        <b> Policy-as-Code Engine → External Sources</b>.
       </div>
     </section>
   );
