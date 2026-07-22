@@ -2243,6 +2243,7 @@ function App() {
               activeTab={activeGovTab}
               onTabChange={setActiveGovTab}
               govFetchError={govFetchError}
+              peerFetchError={govPeerError}
               lastRefresh={govLastRefresh}
               onRefresh={refreshGovData} />
           </div>
