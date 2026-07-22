@@ -1147,12 +1147,13 @@ function App() {
         // Proxy data + peer benchmarks → Governance pane (fire and forget, non-blocking)
         setGovLoading(true);
         setGovFetchError(null);
+        setGovPeerError(null);
         Promise.allSettled([
           MCP.fetchProxyData(cfg.ticker),
           MCP.fetchPeerBenchmarks(cfg.ticker),
         ]).then(([proxyRes, peerRes]) => {
           if (proxyRes.status === "fulfilled") { setGovData(proxyRes.value); setGovFetchError(null); }
-          if (peerRes.status  === "fulfilled") setGovPeerData(peerRes.value);
+          if (peerRes.status  === "fulfilled") { setGovPeerData(peerRes.value); setGovPeerError(null); }
           setGovLastRefresh(new Date());
           if (proxyRes.status === "rejected" && peerRes.status === "rejected") {
             setGovFetchError(proxyRes.reason?.message || "MCP server unreachable — ensure api_server.py is running");
@@ -1160,8 +1161,13 @@ function App() {
           } else if (peerRes.status === "rejected") {
             // Peer fetch alone can fail (10-K competitor extraction + per-peer XBRL
             // enrichment is slow) without tripping the "both failed" branch above —
-            // log it separately so a partial failure isn't silent.
-            log(`MCP Peers: fetch failed — ${peerRes.reason?.message || "unknown error"}`);
+            // log it AND surface it on the Peer Benchmarking tab itself (govPeerError)
+            // — previously this was only ever visible in the loop log, so the tab
+            // looked identical whether the fetch was never attempted or attempted
+            // and failed, which is what actually reads as "nothing happens."
+            const peerErrMsg = peerRes.reason?.message || "unknown error";
+            log(`MCP Peers: fetch failed — ${peerErrMsg}`);
+            setGovPeerError(peerErrMsg);
           }
           setGovLoading(false);
           if (proxyRes.status === "fulfilled") log(`MCP Governance: proxy data loaded`);
@@ -1588,6 +1594,7 @@ function App() {
     setGovPeerData(null);
     setGovLoading(false);
     setGovFetchError(null);
+    setGovPeerError(null);
     setAutoCodeYaml(null);
     try { localStorage.removeItem(`dendrai.lastLoop:${cfg.ticker}`); } catch {}
     // Clear the DB row too — otherwise the pre-reset run resurfaces on the
