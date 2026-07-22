@@ -319,7 +319,7 @@ function GovernancePane({ open, onToggle, data, peerData, ticker, loading, activ
 
 // ── Main-pane Governance view ─────────────────────────────────────────────────
 // Rendered inside a .panel div in app.jsx. Contains all five sub-tab views.
-function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChange, govFetchError, lastRefresh, onRefresh }) {
+function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChange, govFetchError, peerFetchError, lastRefresh, onRefresh }) {
   const RefreshBadge = window.RefreshBadge;
   const [filingIdx, setFilingIdx] = useState(0);
 
@@ -465,6 +465,17 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
 
           {activeTab === "peers" && (
             <div className="gov-content">
+              {peerFetchError && !peerData?.peers?.length && (
+                <div style={{
+                  fontSize: 11, color: "var(--red-ink)", background: "var(--red-soft)",
+                  padding: "8px 12px", borderRadius: 6, marginBottom: 12, lineHeight: 1.5,
+                }}>
+                  Peer fetch failed — proxy data loaded fine, but the peer benchmarking request errored or timed out
+                  separately (10-K competitor extraction + per-peer XBRL enrichment is the slow part). This is why
+                  it may look like nothing happened rather than showing a generic "no data" message.
+                  <div className="mono" style={{ marginTop: 4, fontSize: 10.5 }}>{peerFetchError}</div>
+                </div>
+              )}
               <div className="gov-section-hd">Peer Trend — Gross Margin / R&amp;D Intensity / Revenue Growth</div>
               <PeerTimeSeriesChart
                 peers={peerData?.peers}

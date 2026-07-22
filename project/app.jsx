@@ -277,6 +277,11 @@ function App() {
   const [govPeerData, setGovPeerData] = useState(null);
   const [govLoading, setGovLoading] = useState(false);
   const [govFetchError, setGovFetchError] = useState(null);
+  // Separate from govFetchError — proxy and peer fetches run independently
+  // (Promise.allSettled) and a peer-only failure was previously silent: no
+  // error state was ever set for it, so the Peer Benchmarking tab looked
+  // identical whether the fetch was never attempted or attempted and failed.
+  const [govPeerError, setGovPeerError] = useState(null);
   const [govLastRefresh, setGovLastRefresh] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
 
@@ -326,7 +331,11 @@ function App() {
       peersStale ? MCP.fetchSavedPeerBenchmarks(cfg.ticker) : Promise.resolve(null),
     ]).then(([proxyRes, peerRes]) => {
       if (proxyStale && proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
-      if (peersStale && peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
+      if (peersStale && peerRes.status  === "fulfilled") {
+        if (peerRes.value) { setGovPeerData(peerRes.value); setGovPeerError(null); }
+      } else if (peersStale && peerRes.status === "rejected") {
+        setGovPeerError(peerRes.reason?.message || "Saved peer data fetch failed");
+      }
       setGovLastRefresh(new Date());
       setGovLoading(false);
     });
@@ -345,7 +354,11 @@ function App() {
       MCP.fetchSavedPeerBenchmarks(cfg.ticker),
     ]).then(([proxyRes, peerRes]) => {
       if (proxyRes.status === "fulfilled" && proxyRes.value) setGovData(proxyRes.value);
-      if (peerRes.status  === "fulfilled" && peerRes.value)  setGovPeerData(peerRes.value);
+      if (peerRes.status  === "fulfilled") {
+        if (peerRes.value) { setGovPeerData(peerRes.value); setGovPeerError(null); }
+      } else {
+        setGovPeerError(peerRes.reason?.message || "Saved peer data fetch failed");
+      }
       setGovLastRefresh(new Date());
       setGovLoading(false);
     });
