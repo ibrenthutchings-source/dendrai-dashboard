@@ -459,7 +459,13 @@ app.include_router(sox_endpoints.router)
 app.include_router(risk_register_endpoints.router)
 
 # Policy-as-Code & Controls-as-Code: Rego module management, approvals, external hooks.
-app.include_router(pac_endpoints.router, prefix="/api")
+# No extra prefix here — pac_endpoints.router already declares prefix="/pac", and
+# nginx's /api/ catch-all strips "/api/" before forwarding to uvicorn (mirroring
+# every other router below). The extra "/api" here doubled it to /api/pac/... on
+# the FastAPI side, which nginx-stripped requests to /api/pac/... could never
+# reach — every /api/pac/* route (hooks, processes, modules, evaluate, the
+# legacy GitHub sync) has been 404ing in production as a result.
+app.include_router(pac_endpoints.router)
 
 # MCP Governance: telemetry observability + adjudicated governance events.
 if _HAS_MCP_GOVERNANCE:
