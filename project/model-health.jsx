@@ -141,6 +141,104 @@ const _MH_INCIDENT_STATUS_STYLE = {
   resolved:     { bg: "var(--green-soft)", ink: "var(--green-ink)", label: "Resolved" },
 };
 
+// Incidents only ever get created at PSI >= 0.20 (the standard "drift"
+// threshold) — this sub-bands that range so "how bad" reads as more than a
+// bare number. Bands are a heuristic layered on top of the same convention
+// documented in drift_tool.py, not a separate standard.
+const _MH_MAGNITUDE_STYLE = {
+  severe:   { label: "Severe drift",   ink: "var(--red-ink)",   min: 0.50 },
+  major:    { label: "Major drift",    ink: "var(--red-ink)",   min: 0.30 },
+  moderate: { label: "Moderate drift", ink: "var(--amber-ink)", min: 0.20 },
+};
+
+function _mhMagnitude(psi) {
+  if (psi == null) return null;
+  if (psi >= 0.50) return "severe";
+  if (psi >= 0.30) return "major";
+  if (psi >= 0.20) return "moderate";
+  return "moderate"; // persisted incidents are only ever created at psi >= 0.20
+}
+
+// PSI alone says THAT a distribution shifted; this reconstructs roughly
+// HOW using the same per-bucket histogram already captured in detail.histogram
+// (bucket_distributions() in drift_tool.py) — a weighted mean over bucket
+// midpoints, baseline vs current.
+function _mhHistogramShift(histogram) {
+  if (!histogram?.edges?.length) return null;
+  const { edges, baseline_pct, current_pct } = histogram;
+  const mids = edges.slice(0, -1).map((e, i) => (e + edges[i + 1]) / 2);
+  const wMean = (pcts) => mids.reduce((sum, m, i) => sum + m * (pcts[i] || 0), 0);
+  const baselineMean = wMean(baseline_pct || []);
+  const currentMean = wMean(current_pct || []);
+  return { baselineMean, currentMean, delta: currentMean - baselineMean };
+}
+
+// What actually drifted, in the metric's own units — ratio fields are
+// fractions (revenue_growth 0.05 = 5%) so render as percentage points;
+// FRED series have no histogram (2-bucket regime check, too coarse to
+// bin) so fall back to the baseline_mean/current_mean drift_tool.py now
+// also captures for exactly this purpose.
+function _mhShiftText(incident) {
+  const d = incident.detail;
+  if (!d) return null;
+  if (incident.metric_kind === "ratio") {
+    const shift = _mhHistogramShift(d.histogram);
+    if (!shift) return null;
+    const b = shift.baselineMean * 100, c = shift.currentMean * 100, delta = shift.delta * 100;
+    return `Population-average shifted from ${b.toFixed(1)}% (baseline) to ${c.toFixed(1)}% (current) — ${delta > 0 ? "+" : ""}${delta.toFixed(1)}pt.`;
+  }
+  if (d.baseline_mean != null && d.current_mean != null) {
+    const delta = d.current_mean - d.baseline_mean;
+    return `Series average moved from ${d.baseline_mean.toFixed(2)} (baseline) to ${d.current_mean.toFixed(2)} (current) — ${delta > 0 ? "+" : ""}${delta.toFixed(2)}.`;
+  }
+  return null;
+}
+
+function _mhNextSteps(incident) {
+  const magnitude = _mhMagnitude(incident.psi);
+  if (incident.metric_kind === "ratio") {
+    const label = _MH_RATIO_LABELS[incident.metric_key] || incident.metric_key;
+    if (magnitude === "severe") {
+      return `Treat risk scores that key off ${label} with caution until reviewed — a shift this large usually means the risk-scoring template's calibration no longer matches the population being analyzed. Pull the tickers driving the shift, confirm it's a real market change and not a data-quality issue, then re-baseline the template's ${label} thresholds if it holds up.`;
+    }
+    if (magnitude === "major") {
+      return `Spot-check recent runs where ${label} is a key risk driver — confirm the shift reflects genuine conditions rather than an upstream data issue, and flag it to whoever owns risk-template calibration for this ratio.`;
+    }
+    return `Monitor on the next drift cycle — if ${label} keeps drifting in the same direction, plan a template re-calibration rather than treating this as a one-off.`;
+  }
+  const name = incident.detail?.name || incident.metric_key;
+  if (magnitude === "severe" || magnitude === "major") {
+    return `${name} has moved into a materially different regime. Re-validate FRED-correlated forecasts (EPS, Net Income, EBITDA feature weights) that depend on this series — the historical correlation used to derive those weights may no longer hold.`;
+  }
+  return `Monitor — if ${name} keeps drifting, re-run backtests once enough post-shift data accumulates to confirm whether FRED-correlated forecast weights need recalibration.`;
+}
+
+function DriftIncidentDetail({ incident }) {
+  const magnitude = _mhMagnitude(incident.psi);
+  const mStyle = _MH_MAGNITUDE_STYLE[magnitude];
+  const shiftText = _mhShiftText(incident);
+  const histogram = incident.detail?.histogram;
+  return (
+    <div style={{
+      background: "var(--surface-2,var(--surface))", border: "1px solid var(--line)",
+      borderRadius: 5, padding: "8px 10px", marginBottom: 8, display: "flex", gap: 10, alignItems: "flex-start",
+    }}>
+      {histogram && <MHDistributionSparkline histogram={histogram} flag="drift" />}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, marginBottom: 4 }}>
+          <span className="mono" style={{ fontWeight: 700, color: mStyle?.ink }}>{mStyle?.label || "Drift"}</span>
+          <span className="mono" style={{ color: "var(--ink-4)" }}> · PSI {incident.psi != null ? incident.psi.toFixed(3) : "—"}</span>
+        </div>
+        {shiftText && <div style={{ fontSize: 10.5, color: "var(--ink-2)", marginBottom: 6 }}>{shiftText}</div>}
+        <div style={{ fontSize: 10.5, color: "var(--ink-2)" }}>
+          <span style={{ fontWeight: 600, color: "var(--ink-3)" }}>Recommended next steps: </span>
+          {_mhNextSteps(incident)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DriftIncidentRow({ incident, onUpdate, saving }) {
   const [owner, setOwner] = React.useState(incident.owner || "");
   const [notes, setNotes] = React.useState(incident.notes || "");
@@ -160,7 +258,9 @@ function DriftIncidentRow({ incident, onUpdate, saving }) {
             fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
             background: st.bg, color: st.ink,
           }}>{st.label}</span>
-          <span style={{ fontSize: 11.5, fontWeight: 600 }}>{incident.metric_key}</span>
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>
+            {incident.metric_kind === "ratio" ? (_MH_RATIO_LABELS[incident.metric_key] || incident.metric_key) : (incident.detail?.name || incident.metric_key)}
+          </span>
           <span style={{ fontSize: 9.5, color: "var(--ink-4)" }}>
             {incident.metric_kind === "ratio" ? "Financial ratio" : "FRED macro series"}
           </span>
@@ -169,6 +269,7 @@ function DriftIncidentRow({ incident, onUpdate, saving }) {
           {incident.psi != null ? `PSI ${incident.psi.toFixed(3)}` : ""} · detected {new Date(incident.detected_at).toLocaleDateString()}
         </span>
       </div>
+      <DriftIncidentDetail incident={incident} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 8 }}>
         <input className="code-input" style={{ fontSize: 11 }} placeholder="Owner (unassigned)"
           value={owner} onChange={e => setOwner(e.target.value)}
