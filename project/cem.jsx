@@ -499,7 +499,45 @@ function HumanReviewQueuePane({ humanReview, onMoveUp, onMoveDown, canMoveUp, ca
   );
 }
 
-const UBO_PANE_DEFAULT_ORDER = ["humanReview", "funnel", "timeline"];
+// Funnel + Risk Pulse Timeline merged into one collapsible pane, closed by
+// default — they're diagnostic/exploratory, not action items, and having
+// both open by default was most of what pushed the adjudications table (the
+// thing you're actually there to work with) out of the visible viewport.
+function AnalyticsPane({ rawRows, adjudicated, onSelect, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
+  const [open, setOpen] = useState(false);
+  if (!rawRows.length && !adjudicated.length) return null;
+
+  const flagged = rawRows.filter(r => (r.risk_flags || []).length > 0).length;
+  const escalated = adjudicated.filter(r => r.final_verdict === "ESCALATE").length;
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--line)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 18px", cursor: "pointer" }}
+        onClick={() => setOpen(o => !o)}>
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
+          strokeLinecap="round" strokeLinejoin="round"
+          style={{ color: "var(--ink-4)", flexShrink: 0, transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .1s" }}>
+          <path d="M2 4l3 3 3-3" />
+        </svg>
+        <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)" }}>
+          ANALYTICS · FUNNEL &amp; RISK PULSE
+        </span>
+        <span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
+          {rawRows.length} telemetry · {flagged} flagged · {escalated} escalated{!open ? " — click to expand" : ""}
+        </span>
+        <PaneMoveButtons onMoveUp={onMoveUp} onMoveDown={onMoveDown} canMoveUp={canMoveUp} canMoveDown={canMoveDown} />
+      </div>
+      {open && (
+        <>
+          <AdjudicationFunnel rawRows={rawRows} adjudicated={adjudicated} />
+          <RiskPulseTimeline adjudicated={adjudicated} onSelect={onSelect} />
+        </>
+      )}
+    </div>
+  );
+}
+
+const UBO_PANE_DEFAULT_ORDER = ["humanReview", "analytics"];
 
 function UBOGovPanel({ initialTab } = {}) {
   const LiveBadge = window.LiveBadge;
@@ -740,9 +778,8 @@ function UBOGovPanel({ initialTab } = {}) {
           canMoveUp: i > 0, canMoveDown: i < paneOrder.length - 1,
         };
         if (key === "humanReview") return <HumanReviewQueuePane key={key} humanReview={humanReview} {...moveProps} />;
-        if (key === "funnel") return <AdjudicationFunnel key={key} rawRows={rawRows} adjudicated={adjudicated} {...moveProps} />;
-        if (key === "timeline") return (
-          <RiskPulseTimeline key={key} adjudicated={adjudicated} onSelect={(row) => {
+        if (key === "analytics") return (
+          <AnalyticsPane key={key} rawRows={rawRows} adjudicated={adjudicated} onSelect={(row) => {
             setTab("adjudications");
             setFilter("all");
             setExpanded(prev => new Set(prev).add(row.id));
@@ -784,30 +821,33 @@ function UBOGovPanel({ initialTab } = {}) {
           <button className={"cem-filter" + (tab === "timeline" ? " active" : "")} onClick={() => setTab("timeline")}>Timeline</button>
           <button className={"cem-filter" + (tab === "suppressions" ? " active" : "")} onClick={() => { setTab("suppressions"); refreshSuppressions(); }}>Suppressions</button>
         </div>
+        {/* Filter row lives outside .cem-event-list (stays visible while the
+            table scrolls, instead of scrolling away with it) — was previously
+            nested inside the scrollable area, so it disappeared the moment
+            you scrolled the adjudications table at all. */}
+        {tab === "adjudications" && (
+          <div className="cem-toolbar">
+            {[
+              { id:"all",      l:"All" },
+              { id:"CRITICAL", l:"Critical" },
+              { id:"HIGH",     l:"High" },
+              { id:"MEDIUM",   l:"Medium" },
+              { id:"LOW",      l:"Low" },
+              { id:"review",   l:"Needs Review" },
+              { id:"GITHUB",   l:"GitHub" },
+              { id:"MCP_PROXY",l:"MCP" },
+              { id:"SYSTEM_TELEMETRY", l:"Systems" },
+            ].map(f => (
+              <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
+                {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="cem-event-list">
         {tab === "adjudications" && (<>
-          <div style={{padding:"0 18px"}}>
-            <div className="cem-toolbar">
-              {[
-                { id:"all",      l:"All" },
-                { id:"CRITICAL", l:"Critical" },
-                { id:"HIGH",     l:"High" },
-                { id:"MEDIUM",   l:"Medium" },
-                { id:"LOW",      l:"Low" },
-                { id:"review",   l:"Needs Review" },
-                { id:"GITHUB",   l:"GitHub" },
-                { id:"MCP_PROXY",l:"MCP" },
-                { id:"SYSTEM_TELEMETRY", l:"Systems" },
-              ].map(f => (
-                <button key={f.id} className={"cem-filter" + (filter === f.id ? " active" : "")} onClick={() => setFilter(f.id)}>
-                  {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
-                </button>
-              ))}
-            </div>
-          </div>
-
           <div className="bb-section-sep">
             <span>ADJUDICATION LOG</span>
             <span>{filtered.length} EVENTS SHOWN</span>
