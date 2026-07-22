@@ -1016,9 +1016,13 @@ CREATE TABLE IF NOT EXISTS pac_processes (
     icon           VARCHAR(8),
     description    TEXT,
     is_builtin     BOOLEAN      NOT NULL DEFAULT FALSE,
-    source         VARCHAR(16)  NOT NULL DEFAULT 'manual',  -- builtin | github_discovered | manual
+    source         VARCHAR(32)  NOT NULL DEFAULT 'manual',  -- builtin | github_discovered | manual
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+-- 'github_discovered' (17 chars) always exceeded the original VARCHAR(16),
+-- so every sync_github auto-registration failed the INSERT unconditionally —
+-- widen for databases created before this fix.
+ALTER TABLE pac_processes ALTER COLUMN source TYPE VARCHAR(32);
 
 -- Model Health drift incidents: turns a drift-detection webhook ping into a
 -- tracked record with an owner, status, and closure note — the process trail
