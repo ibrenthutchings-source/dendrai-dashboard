@@ -230,6 +230,7 @@ function LoopTab({ loop, ticker = "", risks = [], loopStats = {}, runId = null }
   const [copied, setCopied]       = useState(false);
   const [schedState, setSchedState] = useState({ loading: false, error: null, result: null });
   const [runNowState, setRunNowState] = useState({ loading: false, error: null, result: null });
+  const [statusState, setStatusState] = useState({ loading: false, error: null, result: null });
   const [calibState, setCalibState] = useState({ loading: false, error: null, result: null });
   const [costData, setCostData]     = useState(null);
   const aiAvailableCalib = typeof window !== "undefined" && window.MCP?.aiLoopCalibrate;
@@ -242,6 +243,19 @@ function LoopTab({ loop, ticker = "", risks = [], loopStats = {}, runId = null }
       .then(d => setCostData(d))
       .catch(() => {});
   }, [runId]);
+
+  // Check whether a Managed Agent deployment already exists for this ticker
+  // whenever the schedule panel opens — agentScheduleStatus was already
+  // built into mcp-data.js but never actually called anywhere, so opening
+  // this panel always looked like a blank slate even for a ticker that was
+  // provisioned in an earlier session.
+  React.useEffect(() => {
+    if (!schedOpen || !ticker || typeof window === "undefined" || !window.MCP?.agentScheduleStatus) return;
+    setStatusState({ loading: true, error: null, result: null });
+    window.MCP.agentScheduleStatus(ticker)
+      .then(res => setStatusState({ loading: false, error: null, result: res }))
+      .catch(e => setStatusState({ loading: false, error: e.message || "Status check failed", result: null }));
+  }, [schedOpen, ticker]);
 
   if (!loop || !loop.risk_reduction_pct) return <Empty>Loop calibration populates after Stage 6.</Empty>;
 
@@ -469,13 +483,22 @@ function LoopTab({ loop, ticker = "", risks = [], loopStats = {}, runId = null }
             {/* Provision via MCP bridge (primary) or copy CLI command (fallback) */}
             {mcpAvailable ? (
               <>
+                {statusState.loading && (
+                  <div className="mono" style={{fontSize:10, color:"var(--ink-3)", marginBottom:8}}>Checking existing schedule…</div>
+                )}
+                {!statusState.loading && statusState.result?.status === "ok" && (
+                  <div className="mono" style={{fontSize:10, color:"var(--acc-ink)", marginBottom:8, lineHeight:1.55}}>
+                    Already provisioned for {ticker} · {(statusState.result.runs || []).length} recent run{(statusState.result.runs || []).length !== 1 ? "s" : ""}
+                    {statusState.result.runs?.[0]?.created_at && ` · last ${new Date(statusState.result.runs[0].created_at).toLocaleString()}`}
+                  </div>
+                )}
                 <div style={{display:"flex", gap: 6, marginBottom: 8}}>
                   <button className="btn btn-sm btn-primary" style={{flex: 1}}
                     onClick={provisionAgent} disabled={schedState.loading || !ticker}>
                     <Icon name="bolt" size={11}/>
-                    {schedState.loading ? "Provisioning…" : schedState.result ? "Re-provision" : "Provision agent"}
+                    {schedState.loading ? "Provisioning…" : (schedState.result || statusState.result?.status === "ok") ? "Re-provision" : "Provision agent"}
                   </button>
-                  {schedState.result && (
+                  {(schedState.result || statusState.result?.status === "ok") && (
                     <button className="btn btn-sm" style={{flex: 1}}
                       onClick={runNow} disabled={runNowState.loading}>
                       <Icon name="spark" size={11}/>
@@ -705,60 +728,7 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
   );
 }
 
-// ---------- SCHEDULE BUILDER (extracted so Config screen can reuse it) ----------
-function ScheduleBuilder({ focusText: focusTextProp }) {
-  const [cadence, setCadence] = useState("monthly");
-  const [copied, setCopied]   = useState(false);
-
-  const sel = LOOP_CADENCES.find(c => c.id === cadence);
-  const focusText = focusTextProp || "Re-run Dendrai risk loop, re-score all risks, flag velocity-3 breaches and RAG changes, post summary.";
-  const schedCmd  = `/schedule "${focusText}" --cron "${sel.cron}"`;
-
-  function copyCmd() {
-    navigator.clipboard?.writeText(schedCmd).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  return (
-    <div style={{background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius: 9, padding: 12}}>
-      <div style={{display:"flex", gap: 5, marginBottom: 10}}>
-        {LOOP_CADENCES.map(c => (
-          <button key={c.id}
-            className={"btn btn-sm" + (cadence === c.id ? "" : " btn-ghost")}
-            style={{flex: 1, fontSize: 10.5}}
-            onClick={() => setCadence(c.id)}>
-            {c.label}
-          </button>
-        ))}
-      </div>
-      <div className="mono" style={{fontSize: 10, color:"var(--ink-3)", marginBottom: 10}}>
-        {sel.desc} · cron <span style={{color:"var(--acc-ink)"}}>{sel.cron}</span>
-      </div>
-      <div style={{fontSize: 10.5, color:"var(--ink-2)", padding:"7px 9px",
-        background:"var(--surface)", border:"1px solid var(--line)", borderRadius: 6,
-        lineHeight: 1.55, marginBottom: 10}}>
-        <span style={{fontSize: 10, color:"var(--ink-3)", display:"block", marginBottom: 3}}>FOCUS (auto-filled from loop output)</span>
-        {focusText}
-      </div>
-      <div className="mono" style={{fontSize: 9.5, color:"var(--ink-3)",
-        padding:"6px 9px", background:"var(--surface)", border:"1px solid var(--line)",
-        borderRadius: 6, wordBreak:"break-all", lineHeight: 1.65, marginBottom: 10}}>
-        {schedCmd}
-      </div>
-      <button className="btn btn-sm" style={{width:"100%"}} onClick={copyCmd}>
-        <Icon name={copied ? "check" : "download"} size={11}/>
-        {copied ? "Copied to clipboard" : "Copy /schedule command"}
-      </button>
-      <div style={{fontSize: 10.5, color:"var(--ink-3)", marginTop: 10, lineHeight: 1.55}}>
-        Paste into the Claude Code terminal to register a recurring cloud agent that re-runs the loop automatically.
-      </div>
-    </div>
-  );
-}
-
 Object.assign(window, {
   Rail, RAIL_TABS,
   RiskTable, HeatmapTab, MapsTab, LoopTab, NotifTab, FlowMiniTab, PersonaTab,
-  ScheduleBuilder,
 });
