@@ -630,9 +630,14 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
     fetch("/api/pac/hooks", { headers: _codeAuthHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (!data) return;
-        if (data.github)     { setGhConfig(c => ({ ...c, ...data.github }));     setGhSaved(true); }
-        if (data.confluence) { setCfConfig(c => ({ ...c, ...data.confluence })); setCfSaved(true); }
+        // GET /pac/hooks nests configs under "hooks" ({hooks: {github: {...}}}),
+        // not at the top level — reading data.github directly here always saw
+        // undefined, so ghSaved/cfSaved never got restored on page load/reload,
+        // silently re-disabling "Sync Now" every time despite a real saved hook.
+        const hooks = data?.hooks;
+        if (!hooks) return;
+        if (hooks.github)     { setGhConfig(c => ({ ...c, ...hooks.github }));     setGhSaved(true); }
+        if (hooks.confluence) { setCfConfig(c => ({ ...c, ...hooks.confluence })); setCfSaved(true); }
       })
       .catch(() => {});
   }, []);
