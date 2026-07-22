@@ -144,8 +144,8 @@ function ConfigScreen({
       <div className="panel-head">
         <div>
           <div className="kicker">Configuration</div>
-          <div className="panel-title mt-8">Setup</div>
-          <div className="panel-sub">Entity, signal sources, run configuration, and recurring schedule. Changes save automatically.</div>
+          <div className="panel-title mt-8">Mission Control</div>
+          <div className="panel-sub">Entity, signal sources, and run configuration. Changes save automatically. Recurring runs are provisioned from the Loop tab after your first run.</div>
         </div>
         <div className="cfg-saved mono">
           <span className="live-dot on" /> {lastSaved ? `Saved ${new Date(lastSaved).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}` : "Autosave on"}
@@ -421,11 +421,6 @@ function ConfigScreen({
               ))}
             </div>
           </div>
-        </ConfigCard>
-
-        {/* ---- Recurring Schedule ---- */}
-        <ConfigCard title="Recurring Schedule" sub="Register a cloud agent to re-run the loop on a cadence.">
-          <ScheduleBuilder focusText={`Re-run Dendrai risk loop for ${cfg.ticker || "entity"}, re-score all risks, flag velocity breaches and RAG changes, post summary.`} />
         </ConfigCard>
 
         {/* ---- AI Chat Assistant ---- */}
