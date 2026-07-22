@@ -255,7 +255,28 @@ const _UBO_VERDICT_STYLE = {
 // whatever the underlying queries already cap at (raw feed ~200, adjudicated
 // ~100), so this reads as "recent activity," not an all-time total — labeled
 // accordingly rather than implying a false precision.
-function AdjudicationFunnel({ rawRows, adjudicated }) {
+// Up/down reorder controls shared by every pane in UBOGovPanel's
+// user-customizable pane order (Human Review Queue / Adjudication Funnel /
+// Risk Pulse Timeline). No "arrow-down" in the shared Icon set, so the down
+// button reuses "arrow-up" rotated 180deg rather than adding a near-duplicate
+// icon just for this.
+function PaneMoveButtons({ onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
+  if (!onMoveUp && !onMoveDown) return null;
+  return (
+    <div style={{ display: "flex", gap: 2, marginLeft: "auto" }}>
+      <button className="btn btn-sm btn-ghost" style={{ padding: "2px 5px" }} disabled={!canMoveUp}
+        onClick={onMoveUp} title="Move pane up">
+        <Icon name="arrow-up" size={11} />
+      </button>
+      <button className="btn btn-sm btn-ghost" style={{ padding: "2px 5px" }} disabled={!canMoveDown}
+        onClick={onMoveDown} title="Move pane down">
+        <span style={{ display: "inline-flex", transform: "rotate(180deg)" }}><Icon name="arrow-up" size={11} /></span>
+      </button>
+    </div>
+  );
+}
+
+function AdjudicationFunnel({ rawRows, adjudicated, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
   const flagged  = rawRows.filter(r => (r.risk_flags || []).length > 0);
   const clean    = rawRows.length - flagged.length;
 
@@ -381,8 +402,9 @@ function AdjudicationFunnel({ rawRows, adjudicated }) {
 
   return (
     <div style={{ padding: "8px 18px 4px", borderBottom: "1px solid var(--line)" }}>
-      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", marginBottom: 2 }}>
+      <div style={{ display: "flex", alignItems: "center", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", marginBottom: 2 }}>
         ADJUDICATION FUNNEL · RECENT WINDOW
+        <PaneMoveButtons onMoveUp={onMoveUp} onMoveDown={onMoveDown} canMoveUp={canMoveUp} canMoveDown={canMoveDown} />
       </div>
       <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMin meet" style={{ maxWidth: 900 }}>
         {colHeaders.map(c => (
@@ -404,7 +426,7 @@ function AdjudicationFunnel({ rawRows, adjudicated }) {
 // colored by tier. Bursts/attack windows are invisible in a sortable table
 // but jump out immediately here. Click a point to jump straight to that row
 // in the Adjudications tab.
-function RiskPulseTimeline({ adjudicated, onSelect }) {
+function RiskPulseTimeline({ adjudicated, onSelect, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
   const pts = adjudicated
     .filter(r => r.adjudicated_at && r.risk_score != null)
     .map(r => ({ ...r, t: new Date(r.adjudicated_at).getTime() }))
@@ -422,8 +444,9 @@ function RiskPulseTimeline({ adjudicated, onSelect }) {
 
   return (
     <div style={{ padding: "8px 18px 10px", borderBottom: "1px solid var(--line)" }}>
-      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", marginBottom: 2 }}>
+      <div style={{ display: "flex", alignItems: "center", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", marginBottom: 2 }}>
         RISK PULSE · {pts.length} ADJUDICATIONS OVER TIME
+        <PaneMoveButtons onMoveUp={onMoveUp} onMoveDown={onMoveDown} canMoveUp={canMoveUp} canMoveDown={canMoveDown} />
       </div>
       <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMin meet" style={{ maxWidth: 900 }}>
         <line x1={PAD_L} x2={W - PAD_R} y1={y(0.85)} y2={y(0.85)} stroke="var(--red)" strokeOpacity={0.25} strokeDasharray="3 3" />
@@ -444,6 +467,40 @@ function RiskPulseTimeline({ adjudicated, onSelect }) {
   );
 }
 
+// Extracted out of the Adjudications tab body (where it used to live buried
+// below the tab switcher) so it can sit alongside AdjudicationFunnel/
+// RiskPulseTimeline as a reorderable top-level pane, visible regardless of
+// which tab is active — it's the one thing on this screen that actually
+// needs a human to act on it.
+function HumanReviewQueuePane({ humanReview, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
+  if (!humanReview.length) return null;
+  return (
+    <div style={{ borderBottom: "1px solid var(--line)" }}>
+      <div className="bb-section-sep">
+        <span style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--red-ink)" }}>
+          ⚠ HUMAN REVIEW QUEUE
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {humanReview.length} REQUIRING ATTENTION
+          <PaneMoveButtons onMoveUp={onMoveUp} onMoveDown={onMoveDown} canMoveUp={canMoveUp} canMoveDown={canMoveDown} />
+        </span>
+      </div>
+      <div style={{ padding: "0 18px 10px" }}>
+        {humanReview.slice(0, 5).map((r, i) => (
+          <UBOReviewRow key={i} row={r} />
+        ))}
+        {humanReview.length > 5 && (
+          <div style={{ fontSize: 11, color: "var(--ink-3)", padding: "4px 0" }}>
+            + {humanReview.length - 5} more — set filter to "Needs Review" to see all
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const UBO_PANE_DEFAULT_ORDER = ["humanReview", "funnel", "timeline"];
+
 function UBOGovPanel({ initialTab } = {}) {
   const LiveBadge = window.LiveBadge;
   const [adjudicated,  setAdjudicated]  = useState([]);
@@ -463,9 +520,46 @@ function UBOGovPanel({ initialTab } = {}) {
   const [processStatus,  setProcessStatus]  = useState(null);
   const [isPaused,       setIsPaused]       = useState(false);
   const [newIds,         setNewIds]         = useState(new Set());
+  const [paneOrder,      setPaneOrder]      = useState(UBO_PANE_DEFAULT_ORDER);
 
   const knownIdsRef       = useRef(new Set());
   const highlightTimerRef = useRef(null);
+  const paneOrderHydratedRef = useRef(false);
+
+  // Pane order is a per-user preference, stored the same way appearance
+  // settings are (auth.users.preferences JSONB, merged not replaced — see
+  // app.jsx's tweaks hydration for the identical pattern). Hydrate once the
+  // session resolves; ignore a saved order that doesn't match today's set of
+  // panes (e.g. a pane was added/removed later) rather than silently
+  // dropping a pane from view.
+  const auth = window.useAuth ? window.useAuth() : null;
+  useEffect(() => {
+    if (auth?.user === undefined) return;
+    const saved = auth?.user?.preferences?.uboPaneOrder;
+    if (Array.isArray(saved) && saved.length === UBO_PANE_DEFAULT_ORDER.length &&
+        UBO_PANE_DEFAULT_ORDER.every(k => saved.includes(k))) {
+      setPaneOrder(saved);
+    }
+    paneOrderHydratedRef.current = true;
+  }, [auth?.user]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function movePane(key, dir) {
+    setPaneOrder(prev => {
+      const idx = prev.indexOf(key);
+      const swapIdx = idx + dir;
+      if (idx === -1 || swapIdx < 0 || swapIdx >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+      if (paneOrderHydratedRef.current) {
+        fetch("/users/me/preferences", {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uboPaneOrder: next }),
+        }).catch(() => {});
+      }
+      return next;
+    });
+  }
 
   async function refresh() {
     const base = _uboBase();
@@ -640,12 +734,22 @@ function UBOGovPanel({ initialTab } = {}) {
         </div>
       )}
 
-      <AdjudicationFunnel rawRows={rawRows} adjudicated={adjudicated} />
-      <RiskPulseTimeline adjudicated={adjudicated} onSelect={(row) => {
-        setTab("adjudications");
-        setFilter("all");
-        setExpanded(prev => new Set(prev).add(row.id));
-      }} />
+      {paneOrder.map((key, i) => {
+        const moveProps = {
+          onMoveUp: () => movePane(key, -1), onMoveDown: () => movePane(key, 1),
+          canMoveUp: i > 0, canMoveDown: i < paneOrder.length - 1,
+        };
+        if (key === "humanReview") return <HumanReviewQueuePane key={key} humanReview={humanReview} {...moveProps} />;
+        if (key === "funnel") return <AdjudicationFunnel key={key} rawRows={rawRows} adjudicated={adjudicated} {...moveProps} />;
+        if (key === "timeline") return (
+          <RiskPulseTimeline key={key} adjudicated={adjudicated} onSelect={(row) => {
+            setTab("adjudications");
+            setFilter("all");
+            setExpanded(prev => new Set(prev).add(row.id));
+          }} {...moveProps} />
+        );
+        return null;
+      })}
 
       {processStatus && (
         <div style={{
@@ -684,25 +788,6 @@ function UBOGovPanel({ initialTab } = {}) {
 
       <div className="cem-event-list">
         {tab === "adjudications" && (<>
-          {humanReview.length > 0 && (
-            <>
-              <div className="bb-section-sep">
-                <span style={{color:"var(--red-ink)"}}>⚠ HUMAN REVIEW QUEUE</span>
-                <span>{humanReview.length} REQUIRING ATTENTION</span>
-              </div>
-              <div style={{padding:"0 18px 10px"}}>
-                {humanReview.slice(0, 5).map((r, i) => (
-                  <UBOReviewRow key={i} row={r} />
-                ))}
-                {humanReview.length > 5 && (
-                  <div style={{fontSize:11,color:"var(--ink-3)",padding:"4px 0"}}>
-                    + {humanReview.length - 5} more — set filter to "Needs Review" to see all
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-
           <div style={{padding:"0 18px"}}>
             <div className="cem-toolbar">
               {[
