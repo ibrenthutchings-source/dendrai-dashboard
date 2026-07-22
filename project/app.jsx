@@ -235,6 +235,29 @@ function App() {
   const [cemExpanded, setCemExpanded] = useState(new Set());
   const [notifLog, setNotifLog] = useState([]);
   const [unreadCEM, setUnreadCEM] = useState(0);
+  // Approval Inbox badge — combines gate items routed to this user with the
+  // broadcast UBO™ telemetry human-review queue (visible to everyone, first
+  // reviewer resolves it for all). Polls independently of which screen is
+  // open, unlike Control Tower's own 5s poll which only runs while that
+  // screen is mounted — this is the point of a nav badge.
+  const [approvalInboxCount, setApprovalInboxCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    async function pollApprovals() {
+      try {
+        const [gateRes, telRes] = await Promise.all([
+          fetch("/approvals/inbox", { credentials: "include" }),
+          fetch(`${window.MCP_API_BASE || "/api/mcp"}/observability/telemetry/human-review`, { credentials: "include" }),
+        ]);
+        const gateCount = gateRes.ok ? ((await gateRes.json()).items || []).length : 0;
+        const telCount  = telRes.ok  ? ((await telRes.json()).count ?? 0) : 0;
+        if (!cancelled) setApprovalInboxCount(gateCount + telCount);
+      } catch { /* best-effort — badge just stays at its last known value */ }
+    }
+    pollApprovals();
+    const t = setInterval(pollApprovals, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
   // Deep-link targets for click-through from Continuous Monitoring — only
   // read as each target screen's *initial* tab/process on mount, so a
   // stale value can't stick around: the plain left-nav onNavigate below
@@ -1771,6 +1794,8 @@ function App() {
             controlsPulse: unreadCEM > 0,
             maps: output.s4?.maps?.length || 0,
             notifs: notifLog.length,
+            approvals: approvalInboxCount,
+            approvalsPulse: approvalInboxCount > 0,
           }} />
 
         <main className="main" data-screen-label="Main canvas">
