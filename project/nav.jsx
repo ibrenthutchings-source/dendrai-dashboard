@@ -9,10 +9,10 @@ const NAV_SECTIONS = [
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
-      { id: "pipeline", icon: "flow",      l: "Assess Enterprise Risk" },
+      { id: "pipeline", icon: "flow",      l: "Risk Radar" },
       { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
-      { id: "scenarioanalysis", icon: "compass", l: "Scenario Analysis" },
-      { id: "sox",        icon: "grid",    l: "SOX Risk Assessment"}
+      { id: "scenarioanalysis", icon: "compass", l: "Scenario Sandbox" },
+      { id: "sox",        icon: "grid",    l: "SOX Control Pulse"}
      // { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" }
     ],
   },
@@ -21,14 +21,14 @@ const NAV_SECTIONS = [
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
-      { id: "continuousmonitoring", icon: "compass", l: "Continuous Monitoring" },
-      { id: "aiinventory", icon: "list", l: "AI System Inventory" },
-      { id: "scope",    icon: "grid",      l: "Audit Scope" },
-      { id: "rrreview",   icon: "list",     l: "Risks & Controls Register" },
-      { id: "policycode", icon: "shield",  l: "Policy-as-Code" },
+      { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch" },
+      { id: "aiinventory", icon: "list", l: "AI System Ledger" },
+      { id: "scope",    icon: "grid",      l: "Scope Builder" },
+      { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
+      { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
       { id: "approvals", icon: "check",    l: "Approval Inbox" },
       //{ id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "ubogov",   icon: "shield",    l: "Controls Monitor" }
+      { id: "ubogov",   icon: "shield",    l: "Control Tower" }
       //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       //{ id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" }
     ],
@@ -36,21 +36,21 @@ const NAV_SECTIONS = [
   {
     label: "Board Intelligence",
     items: [
-      { id: "gov", govTab: "overview",  icon: "compass", l: "Overview" },
+      { id: "gov", govTab: "overview",  icon: "compass", l: "Boardroom Pulse" },
       { id: "gov", govTab: "board",     icon: "user",    l: "Board & Audit Committee" },
-      { id: "gov", govTab: "comp",      icon: "doc",     l: "Exec Compensation" },
+      { id: "gov", govTab: "comp",      icon: "doc",     l: "Pay & Performance" },
       { id: "gov", govTab: "proposals", icon: "list",    l: "Shareholder Proposals" },
-      { id: "gov", govTab: "peers",     icon: "table",   l: "Peer Benchmarking" },
+      { id: "gov", govTab: "peers",     icon: "table",   l: "Peer Lens" },
     ],
   },
   {
     label: "Configuration",
     items: [
-      { id: "config",     icon: "gear",   l: "Setup" },
+      { id: "config",     icon: "gear",   l: "Mission Control" },
       { id: "uboconfig",  icon: "shield", l: "Dendrai UBO™ Configuration" },
-      { id: "tokenusage", icon: "table",  l: "Token Usage" },
-      { id: "modelhealth", icon: "trend", l: "Model Health" },
-      { id: "userconfig", icon: "user",   l: "User Configuration", adminOnly: true },
+      { id: "tokenusage", icon: "table",  l: "Usage Meter" },
+      { id: "modelhealth", icon: "trend", l: "Model Vitals" },
+      { id: "userconfig", icon: "user",   l: "Team & Access", adminOnly: true },
     ],
   }
 ];
