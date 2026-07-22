@@ -1318,9 +1318,14 @@ def _looks_like_rego(content: str) -> bool:
 
 
 def _strip_code_fence(text: str) -> str:
-    """LLM completions often wrap code in ```rego ... ``` even when told not to."""
+    """LLM completions often wrap code in ```rego ... ``` even when told not to.
+    Searches anywhere in the text, not just an exact whole-string match — a
+    leading disclaimer/preamble sentence before the fence (a common deviation
+    even under "output only the code" instructions) made the old anchored
+    ^...$ regex fail to match at all, silently falling through to validating
+    the prose+fence text as-is instead of the actual Rego inside it."""
     t = text.strip()
-    m = re.match(r'^```(?:rego)?\s*\n(.*?)\n```\s*$', t, re.DOTALL)
+    m = re.search(r'```(?:rego)?\s*\n(.*?)\n```', t, re.DOTALL)
     return m.group(1).strip() if m else t
 
 
@@ -1386,13 +1391,21 @@ def _convert_markdown_to_rego(process: str, source_path: str, text_content: str)
         "the first token in the sprintf message string followed by a colon. Every "
         "distinct control or requirement described in the source document should become "
         "one or more deny_* rules. Infer reasonable input.* field names from the policy's "
-        "subject matter. Follow the style of this real example from another process:\n\n"
+        "subject matter. This includes reference/crosswalk-style documents (control "
+        "catalogs, framework requirement lists, mappings between standards) that have no "
+        "explicit prohibition text — for those, write deny rules that check whether each "
+        "listed control/requirement/mapping is present and implemented, e.g. "
+        f'deny_missing_control[msg] if {{ not input.controls[\"<id>\"].implemented; '
+        f'msg := sprintf("{prefix}-<ID>: <control> is not marked implemented", []) }}. '
+        "Every document must produce at least one deny_* rule — never respond with an "
+        "explanation of why the document doesn't fit the format. "
+        "Follow the style of this real example from another process:\n\n"
         f"{example}"
     )
     user = f"Source file: {source_path}\nProcess: {process}\n\n---\n\n{text_content}"
     return claude_client.complete_text(
         system, user,
-        label="pac_markdown_to_rego", effort="high", max_tokens=8000,
+        label="pac_markdown_to_rego", effort="high", max_tokens=16000,
     )
 
 
@@ -1565,6 +1578,14 @@ async def _sync_github_repo(
             rego = _strip_code_fence(converted)
             ok, errors = _validate_rego_syntax(rego)
             if not ok:
+                # The API response only ever showed the validation errors, never
+                # what the model actually returned — made failures like these
+                # impossible to diagnose without guessing. Log a preview so the
+                # raw completion is visible in server logs on the next failure.
+                logger.warning(
+                    "pac_markdown_to_rego validation failed for %s (%d chars): %s | preview: %r",
+                    f["path"], len(converted), "; ".join(errors), converted[:400],
+                )
                 return "error", f"converted Rego failed validation: {'; '.join(errors)}"
             return "ok", rego
 
