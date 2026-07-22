@@ -220,5 +220,10 @@ def compute_fred_regime_drift(api_key: str, series_ids: Optional[list[str]] = No
             "flag": _flag(psi),
             "n_baseline": len(baseline_vals),
             "n_current": len(current_vals),
+            # No histogram is computed for FRED series (2-bucket regime check,
+            # too coarse to plot) — these means are the "what actually moved"
+            # signal for a FRED incident's detail panel instead.
+            "baseline_mean": round(sum(baseline_vals) / len(baseline_vals), 4) if baseline_vals else None,
+            "current_mean":  round(sum(current_vals) / len(current_vals), 4) if current_vals else None,
         })
     return results
