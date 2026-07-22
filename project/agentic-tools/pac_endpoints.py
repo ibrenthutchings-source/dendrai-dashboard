@@ -1494,7 +1494,13 @@ async def _sync_github_repo(
             if not process and process_hint and process_hint in _valid_processes():
                 process = process_hint
             if not process:
-                candidate = _process_key_from_path(item["path"])
+                # pac_processes.id is VARCHAR(32) — an un-truncated candidate
+                # (e.g. a long descriptive filename stem) made create_pac_process
+                # fail on every such file with "value too long for type
+                # character varying", logged but never surfaced to the sync
+                # response, so these files silently piled up as "database
+                # insert failed" skips.
+                candidate = _process_key_from_path(item["path"])[:32]
                 if not candidate or not db.is_available():
                     skipped.append({
                         "name": item["path"],
@@ -1540,31 +1546,56 @@ async def _sync_github_repo(
                 continue
             by_process.setdefault(process, []).append({"path": item["path"], "content": content})
 
-        imported: List[Dict[str, Any]] = []
+        # Convert every non-Rego file across all processes concurrently. This
+        # used to be a sequential await-per-file loop — one Claude call per
+        # Markdown/text policy doc — so a repo with several such files easily
+        # pushed the whole request past Railway's edge-gateway timeout, which
+        # returns a bare 502 to the browser (nginx's own 600s proxy_read_timeout
+        # never even comes into play) long before the request actually
+        # finishes server-side. Running the conversions concurrently bounds
+        # the added time to roughly the slowest single file instead of the
+        # sum of all of them.
+        async def _convert_one(process: str, f: Dict[str, str]) -> tuple[str, str]:
+            try:
+                converted = await asyncio.to_thread(
+                    _convert_markdown_to_rego, process, f["path"], f["content"]
+                )
+            except Exception as exc:
+                return "error", f"Markdown→Rego conversion failed: {exc}"
+            rego = _strip_code_fence(converted)
+            ok, errors = _validate_rego_syntax(rego)
+            if not ok:
+                return "error", f"converted Rego failed validation: {'; '.join(errors)}"
+            return "ok", rego
+
+        to_convert: List[tuple[str, Dict[str, str]]] = []
         for process, files in by_process.items():
             files.sort(key=lambda f: f["path"])
+            for f in files:
+                if not _looks_like_rego(f["content"]):
+                    to_convert.append((process, f))
+
+        conversion_results = (
+            await asyncio.gather(*[_convert_one(process, f) for process, f in to_convert])
+            if to_convert else []
+        )
+        converted_map: Dict[str, tuple[str, str]] = {
+            f["path"]: result for (process, f), result in zip(to_convert, conversion_results)
+        }
+
+        imported: List[Dict[str, Any]] = []
+        for process, files in by_process.items():
             sections: List[str] = []
             converted_any = False
             for f in files:
                 if _looks_like_rego(f["content"]):
                     sections.append(f"# ─── {f['path']} ───\n\n{f['content']}")
                     continue
-                # Not Rego (Markdown/prose policy doc) — convert via LLM before
-                # it's ever persisted, so downstream deny-rule parsing, OPA
-                # evaluation, and control_id extraction keep working.
-                try:
-                    converted = await asyncio.to_thread(
-                        _convert_markdown_to_rego, process, f["path"], f["content"]
-                    )
-                except Exception as exc:
-                    skipped.append({"name": f["path"], "reason": f"Markdown→Rego conversion failed: {exc}"})
+                kind, payload = converted_map[f["path"]]
+                if kind == "error":
+                    skipped.append({"name": f["path"], "reason": payload})
                     continue
-                rego = _strip_code_fence(converted)
-                ok, errors = _validate_rego_syntax(rego)
-                if not ok:
-                    skipped.append({"name": f["path"], "reason": f"converted Rego failed validation: {'; '.join(errors)}"})
-                    continue
-                sections.append(f"# ─── {f['path']} (converted from Markdown by Claude) ───\n\n{rego}")
+                sections.append(f"# ─── {f['path']} (converted from Markdown by Claude) ───\n\n{payload}")
                 converted_any = True
 
             if not sections:
