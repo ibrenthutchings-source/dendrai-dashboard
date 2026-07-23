@@ -480,6 +480,16 @@ window.MCP = (function () {
   }
 
   /**
+   * #1b — Council investigation: financial / operational-cyber /
+   * compliance-regulatory analysts run in parallel, then a synthesis pass.
+   * Returns { ticker, perspectives: [{key, label, memo, tool_calls, iterations, stopped}, ...],
+   *           synthesis: {headline, convergent_findings, divergent_findings} }.
+   */
+  function agentInvestigateCouncil(ticker, focus = '', runId = null) {
+    return _postAi('/agent/investigate/council', { ticker, run_id: runId, focus });
+  }
+
+  /**
    * #1b — Streaming investigation agent via SSE.
    * Calls onEvent(event) for each SSE event:
    *   { type: "tool_call",   tool, input, iteration }
@@ -627,6 +637,7 @@ window.MCP = (function () {
     aiLoopCalibrate,
     agentInvestigate,
     agentInvestigateStream,
+    agentInvestigateCouncil,
     fetchAiAnalyses,
     fetchRunTokenCost,
     // Scheduled Managed Agent (#2b)

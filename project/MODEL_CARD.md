@@ -33,6 +33,7 @@ Model: `claude-sonnet-4-6` (override via `DENDRAI_CLAUDE_MODEL`), adaptive think
 | `POST /ai/audit-report` | Full board-ready Markdown audit report | **Ungated — fully automated**, no review step before it reaches the user; same ~20% after-the-fact spot-check queue as persona-brief | Risks, objectives, MAPs, loop data |
 | `POST /ai/loop-calibrate` | Gate 3 next-cycle calibration recommendations | **Gated** — presented at Gate 3 for review | Score deltas, HITL override rate, lessons learned |
 | `POST /agent/investigate` (+ `/stream`) | Free-form investigation memo (autonomous tool-use loop) | **Advisory memo** — a human auditor reads it; nothing is auto-applied | Ticker, prior memo, deterministic quant tool outputs |
+| `POST /agent/investigate/council` (added 2026-07-23) | 3-perspective ensemble (financial / operational-cyber / compliance-regulatory analysts run in parallel, same tool access, different lens) + a synthesis pass reporting convergent vs. single-analyst findings | **Advisory memo** — same as above, ×3 perspectives; the synthesis explicitly does not resolve disagreements, only labels them | Ticker, prior memo, deterministic quant tool outputs |
 
 Every AI output is persisted with provenance (model, effort, tokens, cost) in `ai_analyses`, readable via `GET /history/runs/{run_id}/ai-analyses`.
 

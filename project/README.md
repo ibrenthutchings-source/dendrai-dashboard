@@ -233,6 +233,7 @@ See [MODEL_CARD.md](MODEL_CARD.md) for the human-oversight level of each feature
 | **Persona brief** | "Generate with AI" on the Persona tab | `POST /ai/persona-brief` | Role-tailored briefing from the scored register — by function (CAE / CFO / COO) or by audience layer (Technical Executive / Non-Technical Executive / Board). |
 | **Audit report** | "Generate AI report" in the Loop Report modal | `POST /ai/audit-report` | Board-ready Markdown report from the full run output. |
 | **Investigation agent** | "Run investigation" card on the Setup screen | `POST /agent/investigate` | Tool-use agent that decides its own path — pulls financials, follows anomalies into filings, benchmarks peers, runs the quant models — and writes an investigation memo. |
+| **Council investigation** | "Run council" card on the Setup screen | `POST /agent/investigate/council` | Three independent analysts (financial, operational/cyber, compliance/regulatory) investigate the same ticker in parallel over the same tools, then a synthesis pass reports convergent (multi-analyst) vs. single-analyst findings — the same independent-voters-then-reconciliation pattern as the MCP governance adjudication ensemble, applied to investigation instead of tool-call risk. |
 
 Every AI output is persisted with provenance (model, effort, tokens, cost) to the `ai_analyses` table and is readable via `GET /history/runs/{run_id}/ai-analyses`.
 
@@ -285,7 +286,7 @@ python api_server.py --port 8002  # custom port
 | POST | `/ai/gate1/recommend` · `/ai/gate2/recommend` | AI-assisted HITL gate dispositions |
 | POST | `/ai/narrative-analysis` | Item 1A / proxy narrative extraction |
 | POST | `/ai/persona-brief` · `/ai/audit-report` | Persona brief / Markdown audit report |
-| POST | `/agent/investigate` | Tool-use investigation agent |
+| POST | `/agent/investigate` · `/agent/investigate/council` | Tool-use investigation agent (single or 3-perspective ensemble) |
 | POST | `/loop/hitl/risk-approvals` · `/loop/hitl/scope-approvals` · `/loop/persist` | Persist HITL decisions + loop completion |
 | GET | `/history/runs/{ticker}` · `/history/runs/{ticker}/{run_id}` | Run history |
 | GET | `/history/runs/{run_id}/ai-analyses` | Persisted AI outputs for a run |

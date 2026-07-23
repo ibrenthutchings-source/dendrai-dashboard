@@ -19,6 +19,7 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
     GET  /ai/review-queue        sampled ungated-narrative generations awaiting human spot-check
     POST /ai/review-queue/{id}/review  mark a sampled generation as reviewed
     POST /agent/investigate      #1  tool-use investigation agent
+    POST /agent/investigate/council  #1b 3-perspective (financial/cyber/compliance) ensemble + synthesis
     POST /agent/schedule         #5  provision Managed Agent + scheduled deployment
     POST /agent/schedule/run-now #5  trigger an immediate deployment run
     GET  /agent/schedule/status  #5  list recent deployment runs
@@ -26,6 +27,7 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1078,6 +1080,190 @@ def investigate(req: InvestigateRequest, current_user: dict = Depends(get_curren
         summary=f"{result['iterations']} iterations, {len(result['tool_calls'])} tool calls",
     )
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #1b — Council investigation: the same multi-perspective ensemble pattern
+# mcp_governance.py's adjudication ensemble already uses (independent voters,
+# then reconciliation) applied to /agent/investigate. Three specialized
+# angles run in parallel over the SAME tool access (agent_tools.TOOLS) —
+# they differ by system-prompt lens, not by what data they can reach — then
+# a lightweight synthesis pass surfaces where they agree (higher-confidence,
+# triangulated findings) vs. where only one angle flagged something (still
+# worth noting, just not cross-validated). Deliberately does NOT let one
+# perspective override another — same "show disagreement, don't hide it"
+# principle as the Council's own reconciliation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PERSPECTIVES = [
+    {
+        "key": "financial",
+        "label": "Financial Analyst",
+        "system": """You are a financial-statement risk analyst on an internal-audit \
+investigation team. Given a company ticker, focus exclusively on financial-statement \
+risk: revenue quality and concentration, margin trends, liquidity and cash generation, \
+manipulation risk (Beneish M-score), and going-concern indicators (Altman Z''-score). \
+Pull financials and run the quant models — cite their numbers, never recompute by hand. \
+Ignore cyber, operational, and regulatory matters unless they have a direct, material \
+financial-statement consequence. Stop and write a concise memo: the 3-5 most material \
+financial risks, the evidence for each, and a recommended audit focus.""",
+    },
+    {
+        "key": "operational_cyber",
+        "label": "Operational & Cyber Risk Analyst",
+        "system": """You are an operational and cybersecurity risk analyst on an \
+internal-audit investigation team. Given a company ticker, focus exclusively on \
+operational and technology risk: cybersecurity incidents and IT control language (8-Ks, \
+Item 1A), supply-chain and execution risk, business continuity, and technology/vendor \
+concentration. Pull 8-K events and risk-factor text — cite specific incidents and \
+language, don't speculate. Ignore pure financial-statement or regulatory/litigation \
+matters unless they stem directly from an operational or cyber event. Stop and write a \
+concise memo: the 3-5 most material operational/cyber risks, the evidence for each, and \
+a recommended audit focus.""",
+    },
+    {
+        "key": "compliance_regulatory",
+        "label": "Compliance & Regulatory Analyst",
+        "system": """You are a compliance and regulatory risk analyst on an internal-audit \
+investigation team. Given a company ticker, focus exclusively on regulatory, legal, and \
+governance risk: litigation and regulatory-action disclosures, industry-specific \
+regulatory exposure, disclosure-control language, and governance/board matters. Pull \
+risk-factor text and recent 8-Ks — cite the company's own disclosed language, don't \
+speculate about matters it hasn't disclosed. Ignore pure financial-statement or \
+operational/cyber matters unless they carry a direct regulatory or legal consequence. \
+Stop and write a concise memo: the 3-5 most material compliance/regulatory risks, the \
+evidence for each, and a recommended audit focus.""",
+    },
+]
+
+_COUNCIL_SYNTHESIS_SYSTEM = """You reconcile three independent investigation memos — \
+financial, operational/cyber, and compliance/regulatory — written by separate analysts \
+who investigated the same company without seeing each other's work. Identify findings \
+that multiple analysts converged on independently (these are higher-confidence, \
+triangulated signals) versus findings only one analyst raised (still worth noting, just \
+not cross-validated — do not discard or downgrade them, only label them accurately). Do \
+not resolve disagreements by picking a side; report them as-is. Write one headline \
+sentence summarizing the overall picture."""
+
+_COUNCIL_SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "headline": {"type": "string"},
+        "convergent_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "finding": {"type": "string"},
+                    "perspectives": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["finding", "perspectives"],
+            },
+        },
+        "divergent_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "finding": {"type": "string"},
+                    "perspective": {"type": "string"},
+                },
+                "required": ["finding", "perspective"],
+            },
+        },
+    },
+    "required": ["headline", "convergent_findings", "divergent_findings"],
+}
+
+
+async def _run_perspective(perspective: dict, user: str, current_user: dict) -> dict:
+    import agent_tools
+    result = await asyncio.to_thread(
+        claude_client.run_tool_loop,
+        perspective["system"], user, agent_tools.TOOLS, agent_tools.IMPLS,
+        label=f"investigate:{perspective['key']}", model=_MODEL_AGENT, effort="high",
+        max_tokens=10_000, max_iterations=14, caller=current_user,
+    )
+    return {"key": perspective["key"], "label": perspective["label"], **result}
+
+
+@router.post("/agent/investigate/council")
+async def investigate_council(req: InvestigateRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Multi-perspective investigation: the financial, operational/cyber, and
+    compliance/regulatory analysts run in parallel over the same ticker, then
+    a synthesis pass reports where they converged vs. where only one flagged
+    something. Costs ~3x a single /agent/investigate call in tokens — use
+    when triangulation matters, not as the default for every cycle.
+    """
+    _require_ai()
+
+    prior_context = ""
+    if db.is_available():
+        prior = db.get_prior_investigation(req.ticker)
+        if prior:
+            memo = (prior.get("content") or {}).get("memo", prior.get("summary", ""))
+            if memo:
+                prior_context = (
+                    f"\n\n--- Prior cycle findings ({prior['created_at']}) ---\n"
+                    f"{memo[:4000]}\n"
+                    "--- End of prior findings ---\n\n"
+                    "Compare the current state against these prior findings within your lens."
+                )
+
+    focus = f"\n\nSpecific focus from the auditor: {req.focus}" if req.focus else ""
+    user = (
+        f"Investigate the risk posture of {req.ticker.upper()} within your assigned lens "
+        f"and produce an investigation memo.{prior_context}{focus}"
+    )
+
+    try:
+        perspective_results = await asyncio.gather(
+            *[_run_perspective(p, user, current_user) for p in _PERSPECTIVES]
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI council investigation failed: {exc}")
+
+    for pr in perspective_results:
+        db.save_ai_analysis(
+            "agent_investigation", {"memo": pr["final_text"], "tool_calls": pr["tool_calls"],
+                                     "iterations": pr["iterations"], "stopped": pr["stopped"]},
+            run_id=req.run_id, ticker=req.ticker, subject_ref=pr["key"],
+            model=_MODEL_AGENT, effort="high",
+            summary=f"[{pr['label']}] {pr['iterations']} iterations, {len(pr['tool_calls'])} tool calls",
+        )
+
+    synthesis_input = "\n\n".join(
+        f"=== {pr['label']} ===\n{pr['final_text']}" for pr in perspective_results
+    )
+    try:
+        synthesis = claude_client.complete_json(
+            _COUNCIL_SYNTHESIS_SYSTEM, synthesis_input, _COUNCIL_SYNTHESIS_SCHEMA,
+            label="investigate_council_synthesis", model=_MODEL_STRUCTURED, effort="medium",
+            max_tokens=3000, caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    db.save_ai_analysis(
+        "agent_investigation_council", synthesis,
+        run_id=req.run_id, ticker=req.ticker,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=synthesis.get("headline", "")[:500],
+    )
+
+    return {
+        "ticker": req.ticker,
+        "perspectives": [
+            {"key": pr["key"], "label": pr["label"], "memo": pr["final_text"],
+             "tool_calls": pr["tool_calls"], "iterations": pr["iterations"], "stopped": pr["stopped"]}
+            for pr in perspective_results
+        ],
+        "synthesis": synthesis,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
