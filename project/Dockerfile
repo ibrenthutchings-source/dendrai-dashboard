@@ -6,6 +6,19 @@ RUN npm install
 COPY project/ .
 RUN npm run build
 
+# OPA static binary — fetched in a throwaway stage so curl/ca-certificates
+# never end up in the runtime image. Policy-as-Code evaluation/validation
+# (pac_endpoints.py's _find_opa_binary/_run_real_opa_eval/_validate_rego_syntax)
+# uses the real OPA binary when present on PATH, silently falling back to a
+# Python heuristic approximation otherwise — this stage is what makes the
+# real path the one that actually runs in production.
+FROM debian:bookworm-slim AS opa-fetch
+ARG OPA_VERSION=0.69.0
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSL -o /opa "https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_amd64_static" \
+    && chmod +x /opa
+
 # Production stage — Python 3.12 + nginx (Debian slim)
 # Uses Debian so that scipy/numpy pre-built wheels install without compilation.
 FROM python:3.12-slim AS runner
@@ -15,6 +28,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nginx \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/default
+
+# Install the real OPA binary fetched above.
+COPY --from=opa-fetch /opa /usr/local/bin/opa
+RUN /usr/local/bin/opa version
 
 # Install Python API dependencies
 WORKDIR /app/agentic-tools
