@@ -217,7 +217,7 @@ def test_pac_processes_source_column_wide_enough_for_known_values():
     every GitHub-discovered process sync to fail with a DB insert error.
     Guards against that regressing silently.
     """
-    m = re.search(r"CREATE TABLE IF NOT EXISTS pac_processes.*?\)", db._DDL, re.DOTALL)
+    m = re.search(r"CREATE TABLE IF NOT EXISTS pac_processes\s*\(.*?\);", db._DDL, re.DOTALL)
     assert m, "pac_processes table definition not found in db._DDL"
     table_def = m.group(0)
     col_m = re.search(r"\bsource\s+VARCHAR\((\d+)\)", table_def)
