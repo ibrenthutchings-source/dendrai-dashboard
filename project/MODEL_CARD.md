@@ -13,7 +13,7 @@ This document inventories every algorithmic and AI-driven component in the platf
 - [Adjudication Ensemble (MCP Governance)](#adjudication-ensemble-mcp-governance)
 - [Ongoing Monitoring — Current State](#ongoing-monitoring--current-state)
 - [Known Limitations & Bias Findings](#known-limitations--bias-findings)
-- [Recommended Next Steps (Not Yet Implemented)](#recommended-next-steps-not-yet-implemented)
+- [Recommended Next Steps](#recommended-next-steps)
 - [Versioning](#versioning)
 
 ---
@@ -29,14 +29,14 @@ Model: `claude-sonnet-4-6` (override via `DENDRAI_CLAUDE_MODEL`), adaptive think
 | `POST /ai/approval/recommend` | Manager-facing approve/reject suggestion on a preparer's override | **Gated** — "purely advisory... never auto-decides" (endpoint docstring); manager still clicks Approve/Reject | Gate type, adjustments, preparer rationale |
 | `POST /ai/pac/draft-rego` | Draft OPA/Rego policy module from a plain-language narrative | **Gated** — not persisted until the user clicks Save | Policy narrative text |
 | `POST /ai/narrative-analysis` | Emerging risks / YoY language shifts from 10-K & proxy text | **Ungated** — displayed directly, cached 30 days | EDGAR Item 1A + proxy text |
-| `POST /ai/persona-brief` | Role-tailored briefing narrative — CAE/CFO/COO by function, or Technical Executive (CTO/CIO/CISO) / Non-Technical Executive (CFO/COO/CEO) / Board by audience layer | **Ungated — fully automated**, no review step before it reaches the user | Scored risk register + loop stats |
-| `POST /ai/audit-report` | Full board-ready Markdown audit report | **Ungated — fully automated**, no review step | Risks, objectives, MAPs, loop data |
+| `POST /ai/persona-brief` | Role-tailored briefing narrative — CAE/CFO/COO by function, or Technical Executive (CTO/CIO/CISO) / Non-Technical Executive (CFO/COO/CEO) / Board by audience layer | **Ungated — fully automated**, no review step before it reaches the user; ~20% of generations queued for after-the-fact human spot-check (`GET /ai/review-queue`) | Scored risk register + loop stats |
+| `POST /ai/audit-report` | Full board-ready Markdown audit report | **Ungated — fully automated**, no review step before it reaches the user; same ~20% after-the-fact spot-check queue as persona-brief | Risks, objectives, MAPs, loop data |
 | `POST /ai/loop-calibrate` | Gate 3 next-cycle calibration recommendations | **Gated** — presented at Gate 3 for review | Score deltas, HITL override rate, lessons learned |
 | `POST /agent/investigate` (+ `/stream`) | Free-form investigation memo (autonomous tool-use loop) | **Advisory memo** — a human auditor reads it; nothing is auto-applied | Ticker, prior memo, deterministic quant tool outputs |
 
 Every AI output is persisted with provenance (model, effort, tokens, cost) in `ai_analyses`, readable via `GET /history/runs/{run_id}/ai-analyses`.
 
-**The two "ungated" rows are the ones that matter most for oversight**: `persona-brief` and `audit-report` generate narrative that can reach a CFO or the board with zero built-in human check, unlike every gated feature above them. See [Recommended Next Steps](#recommended-next-steps-not-yet-implemented).
+**The two "ungated" rows are still the ones that matter most for oversight**: `persona-brief` and `audit-report` generate narrative that can reach a CFO or the board with no check *before* delivery, unlike every gated feature above them. The sampling-based review queue (added 2026-07-23) catches roughly 1 in 5 after the fact — a real improvement over zero, but still not a gate. See [Recommended Next Steps](#recommended-next-steps).
 
 ---
 
@@ -95,15 +95,19 @@ Concrete findings from direct inspection, not hypothetical concerns:
 
 ---
 
-## Recommended Next Steps (Not Yet Implemented)
+## Recommended Next Steps
 
-Ordered by cost-to-value, cheapest first — none of this is built yet:
+**Implemented 2026-07-23** (were items 1, 2, and 4 in this list — see [Ongoing Monitoring](#ongoing-monitoring--current-state) for what each actually covers and its limits):
+- ~~Break down `get_ai_acceptance_stats` by risk category and industry~~ → `by_category`/`by_industry` in the endpoint response.
+- ~~Extend drift monitoring to AI-recommendation output~~ → `drift_tool.compute_ai_acceptance_drift`, feeding the same `model_health_drift_incidents` table.
+- ~~Sampling-based human review for the two ungated narrative endpoints~~ → `GET/POST /ai/review-queue`, ~20% sample rate.
 
-1. **Break down `get_ai_acceptance_stats` by risk category and industry**, not just `gate_type`. The data (`ai_suggested`/`ai_accepted` on `approval_tasks`) already exists — this is a `GROUP BY` change, not new instrumentation, and it's the single highest-value fairness signal available today.
-2. **Extend `drift_tool.py` / `model_health_drift_incidents` to track AI-recommendation drift** (e.g., PSI on acceptance rate over time, by category), not just financial/macro population drift — reuse the existing incident-tracking infrastructure rather than building a parallel system.
-3. **Periodic (quarterly) manual review of industry-template asymmetries** — starting with the Automotive OEM `ceBase` finding above — and of forecasting-ensemble weight drift over time.
-4. **Lightweight sampling-based human review for the two ungated narrative endpoints** (`persona-brief`, `audit-report`) — even a periodic spot-check, since no review happens today before those reach an executive or the board.
-5. **Document the LLM-escalate-only design explicitly as intentional** (already true — this card does it), and periodically audit whether it's over-triggering for particular tool/session patterns using the reconciliation data that already exists.
+**Still open — process, not code, so nothing here can be "implemented" away:**
+
+1. **Periodic (quarterly) manual review of industry-template asymmetries** — starting with the Automotive OEM `ceBase` finding — and of forecasting-ensemble weight drift over time. Needs an owner and a calendar reminder, not a feature; a code-based reminder system would be process theater for a check that requires human judgment on whether an asymmetry is still justified.
+2. **Document the LLM-escalate-only design explicitly as intentional** (already true — this card does it), and periodically audit whether it's over-triggering for particular tool/session patterns using the `human_verdict`-vs-`ai_final_verdict` reconciliation data that already exists.
+3. **Act on the new fairness signals once there's real volume behind them** — the acceptance-stats breakdown and the AI-acceptance drift check (both added this session) are instrumentation; nobody has looked at their output in production yet. The first real review of these numbers is the actual next step, not more code.
+4. **Decide whether 20% is the right sample rate** for the ungated-narrative review queue (`ai_endpoints._UNGATED_REVIEW_SAMPLE_RATE`) once there's a sense of reviewer bandwidth and how often spot-checks actually surface issues — a policy decision, not something to over-engineer in advance of evidence.
 
 ---
 

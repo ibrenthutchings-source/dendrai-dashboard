@@ -16,6 +16,8 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
     POST /ai/persona-brief       #4  role-tailored summary (CAE / CFO / COO)
     POST /ai/audit-report        #4  full markdown audit report
     POST /ai/loop-calibrate      #4b loop calibration recommendations (Gate 3)
+    GET  /ai/review-queue        sampled ungated-narrative generations awaiting human spot-check
+    POST /ai/review-queue/{id}/review  mark a sampled generation as reviewed
     POST /agent/investigate      #1  tool-use investigation agent
     POST /agent/schedule         #5  provision Managed Agent + scheduled deployment
     POST /agent/schedule/run-now #5  trigger an immediate deployment run
