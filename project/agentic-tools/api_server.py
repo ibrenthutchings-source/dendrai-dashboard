@@ -1639,6 +1639,18 @@ def history_token_cost(run_id: int):
     return db.get_run_token_cost(run_id)
 
 
+@app.get("/history/runs/{ticker}/posture-trend")
+def history_posture_trend(
+    ticker: str,
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Completed-run risk-posture snapshots for a ticker, oldest first (Feature 4)."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
+    rows = db.get_posture_trend(ticker, limit=limit)
+    return {"ticker": ticker.upper(), "count": len(rows), "runs": rows}
+
+
 @app.get("/history/runs/{ticker}/{run_id}")
 def history_run_detail(ticker: str, run_id: int):
     """Full detail for a single run including risk scores and Beneish M-Score."""

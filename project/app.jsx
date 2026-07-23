@@ -367,6 +367,7 @@ function App() {
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
   const [evidencePackOpen, setEvidencePackOpen] = useState(false);
+  const [postureTrendOpen, setPostureTrendOpen] = useState(false);
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideGateNum, setOverrideGateNum] = useState(null);
 
@@ -1915,6 +1916,10 @@ function App() {
                 <Icon name="shield" size={11}/> Evidence Pack
               </button>
               <button className="btn" disabled={!hasRun} onClick={() => setPersonaOpen(true)}><Icon name="user" size={11}/> Persona</button>
+              <button className="btn" disabled={!hasRun || !runIdRef.current} onClick={() => setPostureTrendOpen(true)}
+                title={hasRun && !runIdRef.current ? "Posture Trend requires DB-persisted runs (MCP mode)" : ""}>
+                <Icon name="trend" size={11}/> Posture Trend
+              </button>
               {autoCodeYaml && (
                 <button className="btn btn-acc" onClick={downloadAutoYaml} title="Download auto-generated Risk-as-Code YAML">
                   <Icon name="download" size={11}/> Risk-as-Code
@@ -2325,6 +2330,8 @@ function App() {
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
       <EvidencePackModal open={evidencePackOpen} onClose={() => setEvidencePackOpen(false)}
         runId={runIdRef.current} ticker={cfg.ticker || ""} />
+      <PostureTrendModal open={postureTrendOpen} onClose={() => setPostureTrendOpen(false)}
+        ticker={cfg.ticker || ""} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
       <AdjustRiskModal
         open={adjustOpen}
