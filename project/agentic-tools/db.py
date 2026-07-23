@@ -46,6 +46,17 @@ try:
 except ImportError:
     pass
 
+# _HAS_PGVECTOR only means "the pgvector Python package is installed" — it
+# says nothing about whether the `vector` extension actually exists on the
+# connected Postgres server (e.g. a plain postgres:16 image, as used by CI,
+# has no pgvector extension at all). init_db()'s pgvector setup block sets
+# this True only after `CREATE EXTENSION IF NOT EXISTS vector` actually
+# succeeds; _conn() must gate register_vector() on this, not _HAS_PGVECTOR,
+# or every single connection checkout raises psycopg2.ProgrammingError
+# ("vector type not found in the database") on a server without the
+# extension — breaking all persistence, not just embedding features.
+_PGVECTOR_READY = False
+
 _HAS_CRYPTOGRAPHY = False
 try:
     from cryptography.fernet import Fernet, InvalidToken  # noqa: F811
@@ -1636,12 +1647,14 @@ def init_db() -> bool:
         _pool.putconn(obs_conn)
 
     # pgvector extension + embeddings table — optional; logged as warning if absent.
+    global _PGVECTOR_READY
     vec_conn = _pool.getconn()
     try:
         with vec_conn.cursor() as cur:
             cur.execute(_PGVECTOR_DDL_TEMPLATE.format(dim=EMBEDDING_DIM))
             cur.execute(_PGVECTOR_MIGRATIONS)
         vec_conn.commit()
+        _PGVECTOR_READY = True
         logger.info("pgvector extension ready (EMBEDDING_DIM=%d)", EMBEDDING_DIM)
     except Exception as exc:
         vec_conn.rollback()
@@ -1677,7 +1690,7 @@ def _conn():
     conn = _pool.getconn()
     broken = False
     try:
-        if _HAS_PGVECTOR:
+        if _PGVECTOR_READY:
             _pg_register_vector(conn)
         yield conn
         conn.commit()
