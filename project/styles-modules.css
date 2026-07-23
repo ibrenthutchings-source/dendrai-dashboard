@@ -623,6 +623,8 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .notif .ts { font-family: "Geist Mono", monospace; font-size: 10px; color: var(--ink-3); margin-top: 3px; }
 
 /* persona report card */
+.persona-pick-group { margin-bottom: 10px; }
+.persona-pick-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin-bottom: 5px; }
 .persona-pick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
 .persona-pick .pp {
   padding: 5px 10px; font-size: 11px;

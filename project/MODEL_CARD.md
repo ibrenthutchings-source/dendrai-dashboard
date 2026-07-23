@@ -29,7 +29,7 @@ Model: `claude-sonnet-4-6` (override via `DENDRAI_CLAUDE_MODEL`), adaptive think
 | `POST /ai/approval/recommend` | Manager-facing approve/reject suggestion on a preparer's override | **Gated** — "purely advisory... never auto-decides" (endpoint docstring); manager still clicks Approve/Reject | Gate type, adjustments, preparer rationale |
 | `POST /ai/pac/draft-rego` | Draft OPA/Rego policy module from a plain-language narrative | **Gated** — not persisted until the user clicks Save | Policy narrative text |
 | `POST /ai/narrative-analysis` | Emerging risks / YoY language shifts from 10-K & proxy text | **Ungated** — displayed directly, cached 30 days | EDGAR Item 1A + proxy text |
-| `POST /ai/persona-brief` | CAE/CFO/COO executive briefing narrative | **Ungated — fully automated**, no review step before it reaches the user | Scored risk register + loop stats |
+| `POST /ai/persona-brief` | Role-tailored briefing narrative — CAE/CFO/COO by function, or Technical Executive (CTO/CIO/CISO) / Non-Technical Executive (CFO/COO/CEO) / Board by audience layer | **Ungated — fully automated**, no review step before it reaches the user | Scored risk register + loop stats |
 | `POST /ai/audit-report` | Full board-ready Markdown audit report | **Ungated — fully automated**, no review step | Risks, objectives, MAPs, loop data |
 | `POST /ai/loop-calibrate` | Gate 3 next-cycle calibration recommendations | **Gated** — presented at Gate 3 for review | Score deltas, HITL override rate, lessons learned |
 | `POST /agent/investigate` (+ `/stream`) | Free-form investigation memo (autonomous tool-use loop) | **Advisory memo** — a human auditor reads it; nothing is auto-applied | Ticker, prior memo, deterministic quant tool outputs |

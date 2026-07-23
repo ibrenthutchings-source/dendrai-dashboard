@@ -196,7 +196,7 @@ CE multipliers: `NONE → 1.20 × | WEAK → 1.10 × | ADEQUATE → 0.95 × | ST
 - **Forecasts** — revenue and gross margin history + 4-quarter forecast with confidence band
 - **FRED signals** — 5 industry-relevant macro series with correlation, lead time, and direction
 - **Risk Flow** — impact area mapping, control catalogue, audit cadence by velocity tier
-- **Personas** — CAE, CFO, COO role-filtered summaries
+- **Personas** — CAE, CFO, COO role-filtered summaries, plus AI-generated audience-layer briefs (Technical Executive, Non-Technical Executive, Board)
 
 ---
 
@@ -230,7 +230,7 @@ See [MODEL_CARD.md](MODEL_CARD.md) for the human-oversight level of each feature
 | **AI-assisted HITL — Gate 1** | "Suggest with AI" in the Adjust Risk modal | `POST /ai/gate1/recommend` | Drafts a per-risk disposition (approve / adjust RAG·score·velocity·CE) with a cited rationale; the auditor accepts or overrides. |
 | **AI-assisted HITL — Gate 2** | "Suggest with AI" in the Adjust Objective modal | `POST /ai/gate2/recommend` | Drafts per-objective scope (priority, sprint, hours, linked risks) justified against the linked risks. |
 | **Narrative analysis** | — (server) | `POST /ai/narrative-analysis` | Extracts emerging risks and year-over-year language shifts from Item 1A / DEF 14A text the app already downloads, mapped to register categories. |
-| **Persona brief** | "Generate with AI" on the Persona tab | `POST /ai/persona-brief` | Role-tailored CAE / CFO / COO briefing from the scored register. |
+| **Persona brief** | "Generate with AI" on the Persona tab | `POST /ai/persona-brief` | Role-tailored briefing from the scored register — by function (CAE / CFO / COO) or by audience layer (Technical Executive / Non-Technical Executive / Board). |
 | **Audit report** | "Generate AI report" in the Loop Report modal | `POST /ai/audit-report` | Board-ready Markdown report from the full run output. |
 | **Investigation agent** | "Run investigation" card on the Setup screen | `POST /agent/investigate` | Tool-use agent that decides its own path — pulls financials, follows anomalies into filings, benchmarks peers, runs the quant models — and writes an investigation memo. |
 
