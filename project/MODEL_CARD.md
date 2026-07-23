@@ -49,6 +49,7 @@ None of these are machine-learned — they're hand-authored formulas and rule ta
 - **Beneish M-score** (`risk-engine.js`, `computeRatios`) — simplified 5-of-8-variable formula; missing variables held at neutral defaults. Applied with the same coefficients regardless of industry.
 - **Altman Z''-score** (`risk-engine.js`, adjacent to M-score) — book-equity variant (no market-price data source exists in this app).
 - **Velocity-dampened quarterly projection** — `base + (velocity × CE_mult × 1.0 × 0.85^(q−1))`, capped at 25.0. `CE_mult` is driven by the same per-industry control-effectiveness seed as the risk templates above, so an industry's structural assumption compounds forward through every quarterly projection, not just the initial score.
+- **Policy-as-Code evaluation/validation** (`agentic-tools/pac_endpoints.py`) — `POST /pac/evaluate` and Rego syntax validation run against the real [Open Policy Agent](https://www.openpolicyagent.org/) binary (`opa eval` / `opa check`), embedded directly in the production container (`project/Dockerfile`, OPA 0.69.0) as of 2026-07-23. A Python heuristic pattern-matcher exists as a fallback for environments without the binary (e.g. local dev without `OPA_BINARY` set); its output is explicitly labelled `"evaluation": "simulation (Python heuristic — not authoritative OPA)"` rather than presented as equivalent. Before this date, production had no OPA binary installed and silently ran the heuristic path for every evaluation and syntax check.
 
 ---
 
