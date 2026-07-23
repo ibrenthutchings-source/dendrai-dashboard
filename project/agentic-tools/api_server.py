@@ -120,6 +120,7 @@ import sox_endpoints
 import risk_register_endpoints
 import pac_endpoints
 import approvals_endpoints
+import evidence_pack_endpoints
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -478,6 +479,9 @@ logger.info("Auth router registered at /auth")
 
 # Approval workflow: real 2-stage preparer -> manager review for HITL gates.
 app.include_router(approvals_endpoints.router)
+
+# Audit Evidence Pack: one-shot assembly of everything defensible about a run.
+app.include_router(evidence_pack_endpoints.router)
 
 # GitHub Webhook: receive repo events and run them through the UBO pipeline.
 app.include_router(github_endpoints.router)
