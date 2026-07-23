@@ -183,6 +183,25 @@ def compute_ratio_drift(rows: list[dict], split_last_n: int = 8) -> list[dict]:
     return results
 
 
+def _binary_psi(baseline_vals: list[float], current_vals: list[float], min_samples: int = 10) -> Optional[float]:
+    """
+    PSI between two samples of a strictly binary (0.0/1.0) variable, computed
+    directly on the accepted-vs-overridden proportion rather than through
+    compute_psi()'s quantile-edge bucketing. compute_psi() derives bucket
+    edges from the baseline's own quantiles, which needs >=3 distinct values
+    to form 2 buckets — a binary variable often has only 2 distinct values
+    (0.0, 1.0), so that edge-finding silently collapses to "insufficient
+    data" almost regardless of sample size. Proportions avoid that entirely.
+    """
+    if len(baseline_vals) < min_samples or len(current_vals) < min_samples:
+        return None
+    p_base = sum(baseline_vals) / len(baseline_vals)
+    p_cur = sum(current_vals) / len(current_vals)
+    base_pct = [max(p_base, 1e-4), max(1 - p_base, 1e-4)]
+    cur_pct = [max(p_cur, 1e-4), max(1 - p_cur, 1e-4)]
+    return round(sum((c - b) * math.log(c / b) for b, c in zip(base_pct, cur_pct)), 4)
+
+
 def compute_ai_acceptance_drift(rows: list[dict], split_last_n: int = 30) -> list[dict]:
     """
     PSI on the binary AI-suggestion accept/override outcome, per gate_type —
@@ -193,9 +212,7 @@ def compute_ai_acceptance_drift(rows: list[dict], split_last_n: int = 30) -> lis
     {'gate_type', 'ai_accepted'} events. Split by *count* (most recent
     split_last_n events = "current") rather than a fixed time window, since
     approval events arrive at an uneven, low-volume cadence unlike the
-    per-run financial ratios compute_ratio_drift() splits by. A 2-bucket
-    accepted-vs-overridden PSI (mirroring compute_fred_regime_drift()'s
-    coarse-sample handling) is the natural fit for a binary outcome.
+    per-run financial ratios compute_ratio_drift() splits by.
     """
     by_gate: dict[str, list[float]] = {}
     for r in rows:
@@ -211,7 +228,7 @@ def compute_ai_acceptance_drift(rows: list[dict], split_last_n: int = 30) -> lis
         else:
             baseline_vals = vals[:-split_last_n]
             current_vals = vals[-split_last_n:]
-        psi = compute_psi(baseline_vals, current_vals, buckets=2, min_bucket_samples=5) if baseline_vals else None
+        psi = _binary_psi(baseline_vals, current_vals) if baseline_vals else None
         results.append({
             "gate_type": gate_type,
             "psi": psi,

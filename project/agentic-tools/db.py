@@ -1217,6 +1217,21 @@ BEGIN
             UNIQUE (company_id, accession_number);
     END IF;
 END $$;
+
+-- Sampling-based human review for the two fully-automated, ungated narrative
+-- endpoints (persona_brief, audit_report) — MODEL_CARD.md "Recommended Next
+-- Steps" #4. A subset of generations is flagged sampled_for_review at save
+-- time (see ai_endpoints.py); reviewers work the queue via
+-- GET/POST /ai/review-queue. Applies only to the two ungated kinds — every
+-- other AI endpoint already has a human gate before its output takes effect.
+ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS sampled_for_review BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS review_status      VARCHAR(16);
+ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS reviewed_by        BIGINT;
+ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS reviewed_by_name   VARCHAR(128);
+ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS reviewed_at        TIMESTAMPTZ;
+ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS review_note        TEXT;
+CREATE INDEX IF NOT EXISTS idx_ai_analyses_review_queue
+    ON ai_analyses (created_at DESC) WHERE sampled_for_review AND review_status IS DISTINCT FROM 'reviewed';
 """
 
 # observability.system_telemetry had no uniqueness on (server_name, event_id),
@@ -3549,8 +3564,16 @@ def save_ai_analysis(
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
     cost_usd: Optional[float] = None,
+    sampled_for_review: bool = False,
 ) -> Optional[int]:
-    """Persist a single AI/LLM output with provenance. Returns the row id."""
+    """Persist a single AI/LLM output with provenance. Returns the row id.
+
+    sampled_for_review: set by callers for the ungated narrative endpoints
+    (persona_brief, audit_report) per MODEL_CARD.md "Recommended Next Steps"
+    #4 — every other kind leaves this False, since every other AI endpoint
+    already has a human gate before its output takes effect.
+    """
+    review_status = "pending" if sampled_for_review else None
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -3558,18 +3581,68 @@ def save_ai_analysis(
                     """
                     INSERT INTO ai_analyses
                         (run_id, ticker, kind, subject_ref, model, effort,
-                         content, summary, input_tokens, output_tokens, cost_usd)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         content, summary, input_tokens, output_tokens, cost_usd,
+                         sampled_for_review, review_status)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     RETURNING id
                     """,
                     (
                         run_id, (ticker or None) and ticker.upper(), kind, subject_ref,
                         model, effort, Json(content), summary,
                         input_tokens, output_tokens, cost_usd,
+                        sampled_for_review, review_status,
                     ),
                 )
                 return cur.fetchone()[0]
     return _run(_do)
+
+
+def list_ai_review_queue(status: Optional[str] = "pending", limit: int = 50) -> list:
+    """Sampled ungated-narrative generations awaiting (or having received)
+    human spot-check review, newest first."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, run_id, ticker, kind, subject_ref, model, summary,
+                           review_status, reviewed_by_name, reviewed_at, review_note, created_at
+                    FROM ai_analyses
+                    WHERE sampled_for_review = TRUE
+                      AND (%s IS NULL OR review_status = %s)
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (status, status, limit),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+                for r in rows:
+                    r["created_at"] = r["created_at"].isoformat() if r["created_at"] else None
+                    r["reviewed_at"] = r["reviewed_at"].isoformat() if r["reviewed_at"] else None
+                return rows
+    return _run(_do) or []
+
+
+def mark_ai_analysis_reviewed(analysis_id: int, reviewer_id: int, reviewer_name: str,
+                               note: Optional[str] = None) -> bool:
+    """Record that a human spot-checked a sampled ungated-narrative generation."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE ai_analyses SET
+                        review_status = 'reviewed', reviewed_by = %s,
+                        reviewed_by_name = %s, reviewed_at = NOW(), review_note = %s
+                    WHERE id = %s AND sampled_for_review = TRUE
+                    """,
+                    (reviewer_id, reviewer_name, note, analysis_id),
+                )
+                updated = cur.rowcount > 0
+            conn.commit()
+            return updated
+    return _run(_do) or False
 
 
 def get_ai_analyses(run_id: int, kind: Optional[str] = None, limit: int = 50) -> list:
