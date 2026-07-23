@@ -656,14 +656,26 @@ def narrative_analysis(req: NarrativeRequest, current_user: dict = Depends(get_c
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PERSONA_SYSTEM = """You write role-tailored executive briefings from a completed \
-internal-audit risk loop. Given a target persona (CAE, CFO, or COO), the scored risk \
-register, and loop statistics, write a brief that speaks to that role's priorities:
+internal-audit risk loop. Given a target persona, the scored risk register, and loop \
+statistics, write a brief that speaks to that audience's priorities and vocabulary:
+
 - CAE: assurance coverage, residual risk, sign-off exposure, audit plan adequacy.
 - CFO: financial-statement risk, margin/liquidity exposure, disclosure and reporting.
 - COO: operational, supply-chain, execution, and people risks.
+- TECH_EXEC (Technical Executive — CTO / CIO / CISO): technology, cyber, data, and \
+IT-control risk; be specific about the control environment (automated/policy-enforced \
+vs. manual controls), system resilience, and technical remediation feasibility. \
+Technical vocabulary is appropriate for this audience.
+- NONTECH_EXEC (Non-Technical Executive — CFO / COO / CEO): translate risk into \
+business, financial, and operational impact — no technical jargon. Focus on what \
+decision or resource ask this creates for leadership.
+- BOARD (Board / Audit Committee): governance framing only — top risks relative to \
+risk appetite, trend vs. the prior cycle (better/worse/unchanged), and whether \
+management's response looks adequate. Assume the reader has 90 seconds: keep the \
+whole brief under ~200 words and limit it to 2-3 short sections.
 
-Lead with the single most important thing for that role. Be specific and cite scores \
-and RAG bands. Avoid generic filler."""
+Lead with the single most important thing for that audience. Be specific and cite \
+scores and RAG bands. Avoid generic filler."""
 
 _PERSONA_SCHEMA = {
     "type": "object",

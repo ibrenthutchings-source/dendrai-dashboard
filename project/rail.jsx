@@ -645,10 +645,20 @@ function FlowMiniTab({ risks, maps, flowMeta, selectedId, onSelect, onOpenMain }
   );
 }
 
+// #6 (roadmap item 3) — audience-layer briefs: same underlying risk data, written
+// for readers outside the audit function. AI-generated only — no static template,
+// unlike the CAE/CFO/COO function personas below.
+const AUDIENCE_LAYERS = [
+  { key: "TECH_EXEC", label: "Technical Executive", sub: "CTO · CIO · CISO" },
+  { key: "NONTECH_EXEC", label: "Non-Technical Executive", sub: "CFO · COO · CEO" },
+  { key: "BOARD", label: "Board", sub: "Audit Committee" },
+];
+
 // ---------- PERSONA ----------
 function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopStats = {}, runId }) {
   if (!personas) return <Empty>Persona reports populate after the loop completes.</Empty>;
   const names = Object.keys(personas);
+  const layer = AUDIENCE_LAYERS.find(l => l.key === selected);
   const cur = personas[selected];
 
   // #4 — AI-generated persona briefs replace the template when requested.
@@ -677,10 +687,22 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
           <Icon name="spark" size={10}/> {ai.loading ? "Generating…" : aiBrief ? "Regenerate" : "Generate with AI"}
         </button>
       ) : null}>Persona Report</SectionLabel>
-      <div className="persona-pick">
-        {names.map(n => (
-          <button key={n} className={"pp" + (selected === n ? " active" : "")} onClick={() => setSelected(n)}>{n}</button>
-        ))}
+      <div className="persona-pick-group">
+        <div className="persona-pick-label">By function</div>
+        <div className="persona-pick">
+          {names.map(n => (
+            <button key={n} className={"pp" + (selected === n ? " active" : "")} onClick={() => setSelected(n)}>{n}</button>
+          ))}
+        </div>
+      </div>
+      <div className="persona-pick-group">
+        <div className="persona-pick-label">By audience layer <span style={{opacity: 0.6}}>· AI-generated</span></div>
+        <div className="persona-pick">
+          {AUDIENCE_LAYERS.map(l => (
+            <button key={l.key} className={"pp" + (selected === l.key ? " active" : "")}
+              onClick={() => setSelected(l.key)} title={l.sub}>{l.label}</button>
+          ))}
+        </div>
       </div>
       {ai.error && (
         <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", margin: "4px 0"}}>
@@ -709,6 +731,14 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
             </div>
           )}
         </>
+      ) : layer ? (
+        <div className="persona-card">
+          <div className="kicker" style={{marginBottom: 6}}>{layer.label} ({layer.sub})</div>
+          <div className="persona-summary">
+            Audience-layer briefs are AI-generated only — no static template.
+            Click "Generate with AI" above to produce the {layer.label.toLowerCase()} brief for this run.
+          </div>
+        </div>
       ) : (
         <>
           <div className="persona-card">
