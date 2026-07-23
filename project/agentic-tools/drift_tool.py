@@ -183,6 +183,47 @@ def compute_ratio_drift(rows: list[dict], split_last_n: int = 8) -> list[dict]:
     return results
 
 
+def compute_ai_acceptance_drift(rows: list[dict], split_last_n: int = 30) -> list[dict]:
+    """
+    PSI on the binary AI-suggestion accept/override outcome, per gate_type —
+    MODEL_CARD.md "Recommended Next Steps" #2: extend drift monitoring to
+    AI-recommendation output, not just financial/macro population drift.
+
+    rows: db.get_ai_acceptance_history()'s output — oldest-first
+    {'gate_type', 'ai_accepted'} events. Split by *count* (most recent
+    split_last_n events = "current") rather than a fixed time window, since
+    approval events arrive at an uneven, low-volume cadence unlike the
+    per-run financial ratios compute_ratio_drift() splits by. A 2-bucket
+    accepted-vs-overridden PSI (mirroring compute_fred_regime_drift()'s
+    coarse-sample handling) is the natural fit for a binary outcome.
+    """
+    by_gate: dict[str, list[float]] = {}
+    for r in rows:
+        if r.get("ai_accepted") is None:
+            continue
+        by_gate.setdefault(r["gate_type"], []).append(1.0 if r["ai_accepted"] else 0.0)
+
+    results = []
+    for gate_type, vals in sorted(by_gate.items()):
+        if len(vals) <= split_last_n:
+            baseline_vals: list[float] = []
+            current_vals = vals
+        else:
+            baseline_vals = vals[:-split_last_n]
+            current_vals = vals[-split_last_n:]
+        psi = compute_psi(baseline_vals, current_vals, buckets=2, min_bucket_samples=5) if baseline_vals else None
+        results.append({
+            "gate_type": gate_type,
+            "psi": psi,
+            "flag": _flag(psi),
+            "n_baseline": len(baseline_vals),
+            "n_current": len(current_vals),
+            "baseline_acceptance_rate": round(sum(baseline_vals) / len(baseline_vals), 4) if baseline_vals else None,
+            "current_acceptance_rate": round(sum(current_vals) / len(current_vals), 4) if current_vals else None,
+        })
+    return results
+
+
 def compute_fred_regime_drift(api_key: str, series_ids: Optional[list[str]] = None) -> list[dict]:
     """
     Regime-shift PSI on a small set of broad macro indicators, comparing
