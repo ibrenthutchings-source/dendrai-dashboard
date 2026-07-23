@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +45,19 @@ router = APIRouter()
 # Model routing: Sonnet for all tasks; Opus reserved for absolute necessity.
 _MODEL_STRUCTURED = "claude-sonnet-4-6"
 _MODEL_AGENT = "claude-sonnet-4-6"
+
+# Sampling-based human review for the two fully-automated, ungated narrative
+# endpoints (persona_brief, audit_report) — MODEL_CARD.md "Recommended Next
+# Steps" #4. Every other AI endpoint already has a human gate before its
+# output takes effect; these two reach an executive/the board with none, so
+# a random spot-check sample gets queued for after-the-fact human review
+# instead. Stateless (no per-kind counter query needed) at the cost of exact
+# cadence — over any reasonable volume this converges to ~1-in-5.
+_UNGATED_REVIEW_SAMPLE_RATE = 0.20
+
+
+def _should_sample_for_review() -> bool:
+    return random.random() < _UNGATED_REVIEW_SAMPLE_RATE
 
 # ── Embedding helpers ─────────────────────────────────────────────────────────
 # Used by narrative_analysis to chunk and index EDGAR text so that future calls
@@ -730,6 +744,7 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
         run_id=req.run_id, ticker=req.ticker, subject_ref=persona,
         model=_MODEL_STRUCTURED, effort="medium",
         summary=result.get("headline", "")[:500],
+        sampled_for_review=_should_sample_for_review(),
     )
     return result
 
@@ -774,8 +789,50 @@ def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_us
         "audit_report", {"markdown": markdown},
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=f"{len(markdown)} char report",
+        sampled_for_review=_should_sample_for_review(),
     )
     return {"ticker": req.ticker, "markdown": markdown}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ungated-narrative review queue (MODEL_CARD.md "Recommended Next Steps" #4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ReviewDecisionRequest(BaseModel):
+    note: Optional[str] = None
+
+
+@router.get("/ai/review-queue")
+def get_review_queue(
+    status: Optional[str] = "pending",
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user),
+):
+    """Sampled persona_brief/audit_report generations awaiting (or having
+    received) human spot-check review. status='pending'|'reviewed'|None (all)."""
+    if not db.is_available():
+        return {"items": [], "count": 0}
+    items = db.list_ai_review_queue(status=status, limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/ai/review-queue/{analysis_id}/review")
+def review_sampled_analysis(
+    analysis_id: int,
+    req: ReviewDecisionRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mark a sampled ungated-narrative generation as human-reviewed."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.mark_ai_analysis_reviewed(
+        analysis_id, current_user["id"],
+        current_user.get("display_name") or current_user.get("username", ""),
+        note=req.note,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Analysis not found or not sampled for review")
+    return {"ok": True}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

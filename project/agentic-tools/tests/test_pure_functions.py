@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pac_endpoints
 import db
+import drift_tool
 from predictive_analytics_tool import compute_grey_swan
 from api_server import _build_digest_payload, _DIGEST_INTERVALS
 
@@ -228,3 +229,56 @@ def test_pac_processes_source_column_wide_enough_for_known_values():
             f"pac_processes.source VARCHAR({width}) too narrow for {known_value!r} "
             f"({len(known_value)} chars)"
         )
+
+
+# ── drift_tool.compute_ai_acceptance_drift (MODEL_CARD.md next-step #2) ────
+
+def _events(gate_type, outcomes):
+    return [{"gate_type": gate_type, "ai_accepted": o} for o in outcomes]
+
+
+def test_ai_acceptance_drift_insufficient_data_below_threshold():
+    # 2 buckets x min_bucket_samples(5) = 10 needed per side; fewer than that
+    # must report insufficient_data, not a misleading PSI number.
+    rows = _events("risk", [True, False, True] * 3)  # 9 events total
+    result = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=3)
+    assert len(result) == 1
+    assert result[0]["flag"] == "insufficient_data"
+    assert result[0]["psi"] is None
+
+
+def test_ai_acceptance_drift_stable_when_rate_unchanged():
+    rows = _events("objective", ([True, False] * 20))  # 40 events, steady 50%
+    result = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=10)
+    r = result[0]
+    assert r["gate_type"] == "objective"
+    assert r["flag"] == "stable"
+    assert r["baseline_acceptance_rate"] == 0.5
+    assert r["current_acceptance_rate"] == 0.5
+
+
+def test_ai_acceptance_drift_flags_drift_on_rate_collapse():
+    # Baseline: mostly accepted. Current: mostly overridden — a real shift.
+    baseline = [True] * 25 + [False] * 5
+    current = [False] * 9 + [True] * 1
+    rows = _events("risk", baseline + current)
+    result = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=10)
+    r = result[0]
+    assert r["n_current"] == 10
+    assert r["current_acceptance_rate"] == 0.1
+    assert r["flag"] in ("watch", "drift")  # PSI-dependent, but must not read "stable"
+
+
+def test_ai_acceptance_drift_groups_by_gate_type_independently():
+    rows = _events("risk", [True] * 20) + _events("objective", [False] * 20)
+    result = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=5)
+    by_gate = {r["gate_type"]: r for r in result}
+    assert set(by_gate) == {"risk", "objective"}
+    assert by_gate["risk"]["current_acceptance_rate"] == 1.0
+    assert by_gate["objective"]["current_acceptance_rate"] == 0.0
+
+
+def test_ai_acceptance_drift_ignores_none_outcomes():
+    rows = _events("risk", [True, False, None, True, None])
+    result = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=2)
+    assert result[0]["n_baseline"] + result[0]["n_current"] == 3  # the two Nones excluded
