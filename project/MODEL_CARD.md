@@ -104,13 +104,16 @@ Concrete findings from direct inspection, not hypothetical concerns:
 - ~~Break down `get_ai_acceptance_stats` by risk category and industry~~ → `by_category`/`by_industry` in the endpoint response.
 - ~~Extend drift monitoring to AI-recommendation output~~ → `drift_tool.compute_ai_acceptance_drift`, feeding the same `model_health_drift_incidents` table.
 - ~~Sampling-based human review for the two ungated narrative endpoints~~ → `GET/POST /ai/review-queue`, ~20% sample rate.
+- ~~Give drift incidents a correction mechanism, not just status tracking~~ → two additions, same day: (a) **structured correction logging** — `PUT /model-health/drift-incidents/{id}` now accepts `correction_action` (rebaselined / recalibrated / escalated_for_review / false_positive / no_action_needed) + who/when, distinct from `status`; (b) **baseline reset** — `POST /model-health/baseline-reset` marks "now" as the new floor for a metric, and `drift_tool.py`'s three `compute_*_drift` functions now accept `baseline_resets` and exclude pre-reset data from the baseline window, so a corrected drift stops being perpetually re-flagged against pre-shift data. Reset only applies meaningfully to `ratio`/`fred_series` metrics — `ai_acceptance` is already a rolling window.
+- ~~Second application of the Council ensemble pattern~~ → `POST /agent/investigate/council` (financial / operational-cyber / compliance-regulatory analysts in parallel + synthesis). See [Adjudication Ensemble](#adjudication-ensemble-mcp-governance).
 
 **Still open — process, not code, so nothing here can be "implemented" away:**
 
 1. **Periodic (quarterly) manual review of industry-template asymmetries** — starting with the Automotive OEM `ceBase` finding — and of forecasting-ensemble weight drift over time. Needs an owner and a calendar reminder, not a feature; a code-based reminder system would be process theater for a check that requires human judgment on whether an asymmetry is still justified.
 2. **Document the LLM-escalate-only design explicitly as intentional** (already true — this card does it), and periodically audit whether it's over-triggering for particular tool/session patterns using the `human_verdict`-vs-`ai_final_verdict` reconciliation data that already exists.
-3. **Act on the new fairness signals once there's real volume behind them** — the acceptance-stats breakdown and the AI-acceptance drift check (both added this session) are instrumentation; nobody has looked at their output in production yet. The first real review of these numbers is the actual next step, not more code.
+3. **Act on the new fairness signals once there's real volume behind them** — the acceptance-stats breakdown and the AI-acceptance drift check are instrumentation; nobody has looked at their output in production yet. The first real review of these numbers is the actual next step, not more code.
 4. **Decide whether 20% is the right sample rate** for the ungated-narrative review queue (`ai_endpoints._UNGATED_REVIEW_SAMPLE_RATE`) once there's a sense of reviewer bandwidth and how often spot-checks actually surface issues — a policy decision, not something to over-engineer in advance of evidence.
+5. **Watch for correction-action misuse** — `false_positive`/`no_action_needed` and a baseline reset both make an incident stop recurring; nothing currently distinguishes "genuinely reviewed and dismissed" from "dismissed to clear the queue." Worth a periodic audit of who's logging which correction_action once there's volume, same as item 3.
 
 ---
 
