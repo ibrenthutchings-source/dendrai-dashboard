@@ -491,6 +491,21 @@ cd project/agentic-tools
 DATABASE_URL=postgresql://… python integration_test.py
 ```
 
+### Automated tests + CI
+
+`project/agentic-tools/tests/` is a pytest suite, split in two:
+
+- `test_pure_functions.py` — fast, DB-free unit tests for regex/parsing/formatting helpers (Rego code-fence stripping, control-ID extraction, RAG-band boundaries, digest delta math), including regression guards for bugs this codebase has actually hit in production (e.g. a `VARCHAR` column too narrow for a real value).
+- `test_db_integration.py` — a pytest port of `integration_test.py`'s live-Postgres round-trip checks, `skip`ped automatically when `DATABASE_URL` isn't set.
+
+```bash
+cd project/agentic-tools
+python -m pytest tests -v                                    # pure-function tests only (no DB needed)
+DATABASE_URL=postgresql://… python -m pytest tests -v         # full suite, including DB integration tests
+```
+
+`.github/workflows/ci.yml` runs the full suite (with a throwaway `postgres:16` service container) on every push and pull request to `main`.
+
 ---
 
 ## Supported Tickers (Live JS mode — pre-seeded CIK map)
