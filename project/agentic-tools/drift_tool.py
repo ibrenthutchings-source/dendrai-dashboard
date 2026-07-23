@@ -146,12 +146,18 @@ def bucket_distributions(baseline: list[float], current: list[float], buckets: i
     }
 
 
-def compute_ratio_drift(rows: list[dict], split_last_n: int = 8) -> list[dict]:
+def compute_ratio_drift(rows: list[dict], split_last_n: int = 8,
+                         baseline_resets: Optional[dict[str, str]] = None) -> list[dict]:
     """
     rows: output of db.get_financial_ratios_history() — oldest-first, one
     dict per (ticker, run) with the _RATIO_FIELDS. Splits into baseline
     (everything before the last `split_last_n` distinct run timestamps) vs
     current (the last `split_last_n`), per ratio field.
+
+    baseline_resets: {ratio_field: reset_at_iso}, from db.get_baseline_resets()
+    — a human-corrected drift incident's "this is the new normal" marker.
+    When set for a field, baseline_vals excludes any row before reset_at,
+    so a resolved drift doesn't keep getting flagged against pre-shift data.
     """
     if not rows:
         return []
@@ -163,13 +169,19 @@ def compute_ratio_drift(rows: list[dict], split_last_n: int = 8) -> list[dict]:
     else:
         cutoff = distinct_run_ats[-split_last_n]
 
+    baseline_resets = baseline_resets or {}
     results = []
     for field in _RATIO_FIELDS:
+        reset_at = baseline_resets.get(field)
         if cutoff is None:
             baseline_vals: list[float] = []
             current_vals = [r[field] for r in rows if r.get(field) is not None]
         else:
-            baseline_vals = [r[field] for r in rows if r.get("run_at") and r["run_at"] < cutoff and r.get(field) is not None]
+            baseline_vals = [
+                r[field] for r in rows
+                if r.get("run_at") and r["run_at"] < cutoff and r.get(field) is not None
+                and (reset_at is None or r["run_at"] >= reset_at)
+            ]
             current_vals = [r[field] for r in rows if r.get("run_at") and r["run_at"] >= cutoff and r.get(field) is not None]
         psi = compute_psi(baseline_vals, current_vals) if baseline_vals else None
         results.append({
@@ -202,32 +214,42 @@ def _binary_psi(baseline_vals: list[float], current_vals: list[float], min_sampl
     return round(sum((c - b) * math.log(c / b) for b, c in zip(base_pct, cur_pct)), 4)
 
 
-def compute_ai_acceptance_drift(rows: list[dict], split_last_n: int = 30) -> list[dict]:
+def compute_ai_acceptance_drift(rows: list[dict], split_last_n: int = 30,
+                                 baseline_resets: Optional[dict[str, str]] = None) -> list[dict]:
     """
     PSI on the binary AI-suggestion accept/override outcome, per gate_type —
     MODEL_CARD.md "Recommended Next Steps" #2: extend drift monitoring to
     AI-recommendation output, not just financial/macro population drift.
 
     rows: db.get_ai_acceptance_history()'s output — oldest-first
-    {'gate_type', 'ai_accepted'} events. Split by *count* (most recent
-    split_last_n events = "current") rather than a fixed time window, since
-    approval events arrive at an uneven, low-volume cadence unlike the
+    {'gate_type', 'ai_accepted', 'event_at'} events. Split by *count* (most
+    recent split_last_n events = "current") rather than a fixed time window,
+    since approval events arrive at an uneven, low-volume cadence unlike the
     per-run financial ratios compute_ratio_drift() splits by.
+
+    baseline_resets: {"ai_acceptance_<gate_type>": reset_at_iso}, from
+    db.get_baseline_resets() — matches the metric_key format
+    api_server.py's drift-check loop uses when opening an incident for this
+    metric_kind. Events before reset_at are excluded from baseline entirely.
     """
-    by_gate: dict[str, list[float]] = {}
+    baseline_resets = baseline_resets or {}
+    by_gate: dict[str, list[tuple[str, float]]] = {}
     for r in rows:
         if r.get("ai_accepted") is None:
             continue
-        by_gate.setdefault(r["gate_type"], []).append(1.0 if r["ai_accepted"] else 0.0)
+        by_gate.setdefault(r["gate_type"], []).append((r.get("event_at") or "", 1.0 if r["ai_accepted"] else 0.0))
 
     results = []
-    for gate_type, vals in sorted(by_gate.items()):
+    for gate_type, events in sorted(by_gate.items()):
+        reset_at = baseline_resets.get(f"ai_acceptance_{gate_type}")
+        vals = [v for _, v in events]
         if len(vals) <= split_last_n:
             baseline_vals: list[float] = []
             current_vals = vals
         else:
-            baseline_vals = vals[:-split_last_n]
-            current_vals = vals[-split_last_n:]
+            baseline_events = events[:-split_last_n]
+            current_vals = [v for _, v in events[-split_last_n:]]
+            baseline_vals = [v for t, v in baseline_events if reset_at is None or t >= reset_at]
         psi = _binary_psi(baseline_vals, current_vals) if baseline_vals else None
         results.append({
             "gate_type": gate_type,
@@ -241,15 +263,22 @@ def compute_ai_acceptance_drift(rows: list[dict], split_last_n: int = 30) -> lis
     return results
 
 
-def compute_fred_regime_drift(api_key: str, series_ids: Optional[list[str]] = None) -> list[dict]:
+def compute_fred_regime_drift(api_key: str, series_ids: Optional[list[str]] = None,
+                               baseline_resets: Optional[dict[str, str]] = None) -> list[dict]:
     """
     Regime-shift PSI on a small set of broad macro indicators, comparing
     each series' own earlier quarters to its most recent quarters. Returns
     [] immediately if no api_key or fred_tool isn't importable.
+
+    baseline_resets: {series_id: reset_at_iso}, from db.get_baseline_resets().
+    Quarters are keyed by quarter-end date string (YYYY-MM-DD); compared
+    against reset_at's date portion, which sorts/compares correctly as
+    plain ISO strings.
     """
     if not api_key or not _HAS_FRED:
         return []
 
+    baseline_resets = baseline_resets or {}
     results = []
     for sid in (series_ids or _REGIME_SERIES):
         info = FRED_SERIES.get(sid)
@@ -264,7 +293,9 @@ def compute_fred_regime_drift(api_key: str, series_ids: Optional[list[str]] = No
         quarters = sorted(series.keys())
         n = len(quarters)
         split = max(1, n - 4)  # last 4 quarters = "current"; rest = baseline
-        baseline_vals = [series[q] for q in quarters[:split]]
+        reset_at = baseline_resets.get(sid)
+        reset_date = reset_at[:10] if reset_at else None
+        baseline_vals = [series[q] for q in quarters[:split] if reset_date is None or q >= reset_date]
         current_vals = [series[q] for q in quarters[split:]]
         # Only 4 "current" quarters by design (a genuinely small sample) —
         # a 2-bucket (above/below baseline median) PSI with a relaxed

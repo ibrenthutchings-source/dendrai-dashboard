@@ -282,3 +282,37 @@ def test_ai_acceptance_drift_ignores_none_outcomes():
     rows = _events("risk", [True, False, None, True, None])
     result = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=2)
     assert result[0]["n_baseline"] + result[0]["n_current"] == 3  # the two Nones excluded
+
+
+def test_ai_acceptance_drift_respects_baseline_reset():
+    # 20 False events, then 10 True, then 10 more True (the "current" window).
+    rows = (
+        [{"gate_type": "risk", "ai_accepted": False, "event_at": "2026-01-01T00:00:00"} for _ in range(20)] +
+        [{"gate_type": "risk", "ai_accepted": True, "event_at": "2026-03-01T00:00:00"} for _ in range(10)] +
+        [{"gate_type": "risk", "ai_accepted": True, "event_at": "2026-05-01T00:00:00"} for _ in range(10)]
+    )
+    no_reset = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=10)[0]
+    assert no_reset["n_baseline"] == 30
+
+    resets = {"ai_acceptance_risk": "2026-02-01T00:00:00"}
+    with_reset = drift_tool.compute_ai_acceptance_drift(rows, split_last_n=10, baseline_resets=resets)[0]
+    assert with_reset["n_baseline"] == 10  # the 20 pre-reset False events excluded
+    assert with_reset["baseline_acceptance_rate"] == 1.0
+
+
+# ── drift_tool.compute_ratio_drift baseline_resets (correction feature) ────
+
+def test_ratio_drift_respects_baseline_reset():
+    rows = (
+        [{"run_at": f"2026-01-{i:02d}T00:00:00", "revenue_growth": 0.50} for i in range(1, 21)] +
+        [{"run_at": f"2026-03-{i:02d}T00:00:00", "revenue_growth": 0.05} for i in range(1, 11)] +
+        [{"run_at": f"2026-05-{i:02d}T00:00:00", "revenue_growth": 0.05} for i in range(1, 11)]
+    )
+    no_reset = drift_tool.compute_ratio_drift(rows, split_last_n=10)
+    row0 = next(r for r in no_reset if r["ratio"] == "revenue_growth")
+    assert row0["n_baseline"] == 30
+
+    resets = {"revenue_growth": "2026-02-15T00:00:00"}
+    with_reset = drift_tool.compute_ratio_drift(rows, split_last_n=10, baseline_resets=resets)
+    row1 = next(r for r in with_reset if r["ratio"] == "revenue_growth")
+    assert row1["n_baseline"] == 10  # only the March batch (after reset, before the current split)
