@@ -30,9 +30,9 @@ const NAV_SECTIONS = [
       { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
       { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse" },
       //{ id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "ubogov",   icon: "shield",    l: "Control Tower" }
+      { id: "ubogov",   icon: "shield",    l: "Control Tower" },
+      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" }
       //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
-      //{ id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs" }
     ],
   },
   {

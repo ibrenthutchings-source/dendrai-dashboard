@@ -59,7 +59,8 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
   "runSpeed": 1.0,
   "autoExpand": true,
   "persona": "Internal Audit",
-  "colorScheme": "system"
+  "colorScheme": "system",
+  "digestFrequency": "off"
 } /*EDITMODE-END*/;
 
 const APPETITE_THRESHOLDS = { GREEN: 12.0, AMBER: 18.0, RED: 23.0 };
@@ -258,6 +259,47 @@ function App() {
     const t = setInterval(pollApprovals, 30_000);
     return () => { cancelled = true; clearInterval(t); };
   }, []);
+  // Scheduled digest notifications (Feature 5) — same lazy-poll shape as the
+  // approvals badge above. check-due is a no-op server-side unless the
+  // user's digestFrequency preference interval has elapsed and a new
+  // completed run exists for the current ticker, so this is cheap to poll.
+  const [digests, setDigests] = useState([]);
+  const [unreadDigestCount, setUnreadDigestCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    async function pollDigests() {
+      if (!cfg.ticker) return;
+      try {
+        const res = await fetch("/api/digests/check-due", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: cfg.ticker }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setUnreadDigestCount(data.unread_count || 0);
+        if (data.generated && data.digest) setDigests(prev => [data.digest, ...prev]);
+      } catch { /* best-effort — badge just stays at its last known value */ }
+    }
+    pollDigests();
+    const t = setInterval(pollDigests, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [cfg.ticker]);
+  // Full digest history — fetched lazily on opening the Notifications screen,
+  // same fetch-on-tab-select pattern as the Coverage tab (code-screens.jsx).
+  useEffect(() => {
+    if (activeScreen !== "notifs") return;
+    fetch("/api/digests", { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) { setDigests(data.digests || []); setUnreadDigestCount(data.unread_count || 0); } })
+      .catch(() => {});
+  }, [activeScreen]);
+  function markDigestRead(id) {
+    setDigests(prev => prev.map(d => d.id === id ? { ...d, read_at: new Date().toISOString() } : d));
+    setUnreadDigestCount(c => Math.max(0, c - 1));
+    fetch(`/api/digests/${id}/read`, { method: "POST", credentials: "include" }).catch(() => {});
+  }
   // Deep-link targets for click-through from Continuous Monitoring — only
   // read as each target screen's *initial* tab/process on mount, so a
   // stale value can't stick around: the plain left-nav onNavigate below
@@ -512,9 +554,12 @@ function App() {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accent: tweaks.accent, density: tweaks.density, colorScheme: tweaks.colorScheme }),
+      body: JSON.stringify({
+        accent: tweaks.accent, density: tweaks.density, colorScheme: tweaks.colorScheme,
+        digestFrequency: tweaks.digestFrequency,
+      }),
     }).catch(() => {});
-  }, [tweaks.accent, tweaks.density, tweaks.colorScheme]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tweaks.accent, tweaks.density, tweaks.colorScheme, tweaks.digestFrequency]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Logging helper ----
   const log = useCallback((msg) => {
@@ -1815,7 +1860,8 @@ function App() {
             controls: events.length,
             controlsPulse: unreadCEM > 0,
             maps: output.s4?.maps?.length || 0,
-            notifs: notifLog.length,
+            notifs: notifLog.length + unreadDigestCount,
+            notifsPulse: (notifLog.length + unreadDigestCount) > 0,
             approvals: approvalInboxCount,
             approvalsPulse: approvalInboxCount > 0,
           }} />
@@ -2090,10 +2136,11 @@ function App() {
               <div>
                 <div className="kicker">Execution</div>
                 <div className="panel-title mt-8">Notifications</div>
-                <div className="panel-sub">Tiered stakeholder cascade from the Control Event Monitor.</div>
+                <div className="panel-sub">Scheduled posture digests, plus the tiered stakeholder cascade from the Control Event Monitor.</div>
               </div>
             </div>
-            <NotifTab log={notifLog}/>
+            <NotifTab log={notifLog} digests={digests} onMarkRead={markDigestRead}
+              digestFreq={tweaks.digestFrequency || "off"} onSetDigestFreq={(v) => setTweak("digestFrequency", v)}/>
           </div>
           </ScreenAccessGate>
           )}
