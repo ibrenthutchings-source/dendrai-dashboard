@@ -442,6 +442,24 @@ function InvestigationCard({ ticker }) {
   const aiAvailable = typeof window !== "undefined" && (window.MCP?.agentInvestigateStream || window.MCP?.agentInvestigate);
   const hasStream = typeof window !== "undefined" && window.MCP?.agentInvestigateStream;
 
+  // #1b — Council investigation: financial / operational-cyber / compliance
+  // analysts run in parallel, then a synthesis pass. Separate state from the
+  // single-agent run above since the result shape (perspectives + synthesis)
+  // is different and neither run streams a shared trace.
+  const [councilState, setCouncilState] = useState({ loading: false, error: null, result: null });
+  const councilAvailable = typeof window !== "undefined" && window.MCP?.agentInvestigateCouncil;
+
+  async function runCouncil() {
+    if (!councilAvailable || !ticker) return;
+    setCouncilState({ loading: true, error: null, result: null });
+    try {
+      const res = await window.MCP.agentInvestigateCouncil(ticker, focus, null);
+      setCouncilState({ loading: false, error: null, result: res });
+    } catch (e) {
+      setCouncilState({ loading: false, error: e.message || "AI unavailable", result: null });
+    }
+  }
+
   async function run() {
     if (!aiAvailable || !ticker) return;
     setState({ loading: true, error: null, result: null });
@@ -485,9 +503,18 @@ function InvestigationCard({ ticker }) {
           <input className="fi-input" value={focus} onChange={e => setFocus(e.target.value)}
             placeholder={`Optional focus (e.g. "margin trend", "8-K events") for ${ticker || "entity"}`}
             style={{width: "100%", marginBottom: 8, fontSize: 12}}/>
-          <button className="btn btn-sm" style={{width: "100%"}} onClick={run} disabled={state.loading || !ticker}>
-            <Icon name="spark" size={11}/> {state.loading ? "Investigating…" : "Run investigation"}
-          </button>
+          <div style={{display: "flex", gap: 6}}>
+            <button className="btn btn-sm" style={{flex: 1}} onClick={run} disabled={state.loading || !ticker}>
+              <Icon name="spark" size={11}/> {state.loading ? "Investigating…" : "Run investigation"}
+            </button>
+            {councilAvailable && (
+              <button className="btn btn-sm" style={{flex: 1}} onClick={runCouncil}
+                disabled={councilState.loading || !ticker}
+                title="3 independent analysts (financial, operational/cyber, compliance) investigate in parallel, then a synthesis pass shows where they agree vs. diverge — ~3x the cost of a single investigation.">
+                <Icon name="spark" size={11}/> {councilState.loading ? "Council investigating…" : "Run council"}
+              </button>
+            )}
+          </div>
 
           {/* Live thinking trace (streaming) */}
           {state.loading && trace.length > 0 && (
@@ -524,6 +551,67 @@ function InvestigationCard({ ticker }) {
                 maxHeight: 360, overflowY: "auto"}}>
                 {state.result.final_text}
               </div>
+            </div>
+          )}
+
+          {councilState.loading && (
+            <div style={{marginTop: 8, display: "flex", gap: 6, alignItems: "center"}}>
+              <span className="spin" style={{width: 10, height: 10, borderWidth: 1.5}}/>
+              <span style={{fontSize: 10.5, color: "var(--ink-3)"}}>3 analysts investigating in parallel…</span>
+            </div>
+          )}
+          {councilState.error && (
+            <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 8}}>
+              {councilState.error}
+            </div>
+          )}
+          {councilState.result && (
+            <div style={{marginTop: 10}}>
+              <div style={{fontSize: 12.5, fontWeight: 500, marginBottom: 8}}>
+                {councilState.result.synthesis?.headline}
+              </div>
+
+              {(councilState.result.synthesis?.convergent_findings || []).length > 0 && (
+                <div style={{marginBottom: 10}}>
+                  <div className="mono" style={{fontSize: 9.5, color: "var(--green-ink)", letterSpacing: "0.06em", marginBottom: 4}}>
+                    CONVERGENT — flagged independently by multiple analysts
+                  </div>
+                  {councilState.result.synthesis.convergent_findings.map((f, i) => (
+                    <div key={i} style={{fontSize: 11.5, color: "var(--ink-2)", padding: "4px 0", borderBottom: "1px solid var(--line)"}}>
+                      {f.finding}
+                      <div className="mono" style={{fontSize: 9.5, color: "var(--ink-3)", marginTop: 2}}>{(f.perspectives || []).join(" + ")}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(councilState.result.synthesis?.divergent_findings || []).length > 0 && (
+                <div style={{marginBottom: 10}}>
+                  <div className="mono" style={{fontSize: 9.5, color: "var(--amber-ink)", letterSpacing: "0.06em", marginBottom: 4}}>
+                    SINGLE-ANALYST — not cross-validated, still worth noting
+                  </div>
+                  {councilState.result.synthesis.divergent_findings.map((f, i) => (
+                    <div key={i} style={{fontSize: 11.5, color: "var(--ink-2)", padding: "4px 0", borderBottom: "1px solid var(--line)"}}>
+                      {f.finding}
+                      <div className="mono" style={{fontSize: 9.5, color: "var(--ink-3)", marginTop: 2}}>{f.perspective}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", margin: "10px 0 4px"}}>
+                FULL MEMOS BY PERSPECTIVE
+              </div>
+              {(councilState.result.perspectives || []).map(p => (
+                <div key={p.key} style={{marginBottom: 8}}>
+                  <div style={{fontSize: 11, fontWeight: 500, color: "var(--ink-3)", marginBottom: 3}}>{p.label}</div>
+                  <div style={{whiteSpace: "pre-wrap", fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.6,
+                    background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px",
+                    maxHeight: 220, overflowY: "auto"}}>
+                    {p.memo}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </>
