@@ -3847,6 +3847,61 @@ def get_run_history(ticker: str, limit: int = 20) -> list:
     return _run(_do) or []
 
 
+def get_posture_trend(ticker: str, limit: int = 20) -> list:
+    """
+    Completed runs for a ticker, oldest-first, each with an aggregate risk-score
+    snapshot (avg/max score, RAG counts) computed from risk_scores. Feature 4 —
+    backward-looking "how has this company's actual posture changed run-over-run,"
+    distinct from forecasting.js's forward-looking quarter-ahead projections.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH ticker_runs AS (
+                        SELECT id, run_at, industry, appetite_level
+                        FROM risk_loop_runs
+                        WHERE ticker = %s AND completed = TRUE
+                        ORDER BY run_at DESC
+                        LIMIT %s
+                    ),
+                    agg AS (
+                        SELECT run_id,
+                               COUNT(*) AS risk_count,
+                               AVG(score) AS avg_score,
+                               MAX(score) AS max_score,
+                               COUNT(*) FILTER (WHERE rag_status = 'R') AS red_count,
+                               COUNT(*) FILTER (WHERE rag_status = 'A') AS amber_count,
+                               COUNT(*) FILTER (WHERE rag_status = 'G') AS green_count
+                        FROM risk_scores
+                        WHERE run_id IN (SELECT id FROM ticker_runs)
+                        GROUP BY run_id
+                    )
+                    SELECT tr.id, tr.run_at, tr.industry, tr.appetite_level,
+                           COALESCE(a.risk_count, 0), a.avg_score, a.max_score,
+                           COALESCE(a.red_count, 0), COALESCE(a.amber_count, 0), COALESCE(a.green_count, 0)
+                    FROM ticker_runs tr
+                    LEFT JOIN agg a ON a.run_id = tr.id
+                    ORDER BY tr.run_at ASC
+                    """,
+                    (ticker.upper(), limit),
+                )
+                return [
+                    {
+                        "run_id": r[0],
+                        "run_at": r[1].isoformat() if r[1] else None,
+                        "industry": r[2], "appetite_level": r[3],
+                        "risk_count": r[4],
+                        "avg_score": float(r[5]) if r[5] is not None else None,
+                        "max_score": float(r[6]) if r[6] is not None else None,
+                        "red_count": r[7], "amber_count": r[8], "green_count": r[9],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 def get_run_detail(run_id: int) -> Optional[dict]:
     """Single run with key sub-tables."""
     def _do():
