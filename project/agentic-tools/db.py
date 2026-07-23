@@ -1082,6 +1082,24 @@ CREATE TABLE IF NOT EXISTS pac_external_hooks (
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- Scheduled digest notifications (Feature 5) — a deterministic, zero-LLM-cost
+-- "what changed since your last visit" summary, generated lazily on the
+-- frontend's existing approval-inbox poll rather than a blind cron, so an
+-- inactive account never triggers generation. user_id is a soft reference to
+-- auth.users(id) (no FK: db.init_db() runs before auth_db.init_auth_db(), see
+-- approval_tasks above) — identity is always populated server-side.
+CREATE TABLE IF NOT EXISTS digest_notifications (
+    id           BIGSERIAL    PRIMARY KEY,
+    user_id      BIGINT       NOT NULL,
+    ticker       VARCHAR(16)  NOT NULL,
+    from_run_id  INT          REFERENCES risk_loop_runs(id),
+    to_run_id    INT          NOT NULL REFERENCES risk_loop_runs(id),
+    payload      JSONB        NOT NULL,
+    generated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    read_at      TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_digest_user ON digest_notifications (user_id, generated_at DESC);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -3900,6 +3918,96 @@ def get_posture_trend(ticker: str, limit: int = 20) -> list:
                     for r in cur.fetchall()
                 ]
     return _run(_do) or []
+
+
+def get_last_digest(user_id: int, ticker: str) -> Optional[dict]:
+    """Most recent digest notification (any read state) for this user+ticker."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, to_run_id, generated_at FROM digest_notifications
+                    WHERE user_id = %s AND ticker = %s
+                    ORDER BY generated_at DESC LIMIT 1
+                    """,
+                    (user_id, ticker.upper()),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {"id": row[0], "to_run_id": row[1], "generated_at": row[2]}
+    return _run(_do)
+
+
+def save_digest_notification(user_id: int, ticker: str, from_run_id: Optional[int],
+                              to_run_id: int, payload: dict) -> Optional[int]:
+    """Persist a generated digest and return its id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO digest_notifications (user_id, ticker, from_run_id, to_run_id, payload)
+                    VALUES (%s, %s, %s, %s, %s) RETURNING id
+                    """,
+                    (user_id, ticker.upper(), from_run_id, to_run_id, Json(payload)),
+                )
+                new_id = cur.fetchone()[0]
+            conn.commit()
+            return new_id
+    return _run(_do)
+
+
+def list_digest_notifications(user_id: int, limit: int = 20) -> list:
+    """Recent digests for a user, newest first, for the Notifications inbox."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, ticker, payload, generated_at, read_at
+                    FROM digest_notifications
+                    WHERE user_id = %s
+                    ORDER BY generated_at DESC LIMIT %s
+                    """,
+                    (user_id, limit),
+                )
+                return [
+                    {
+                        "id": r[0], "ticker": r[1], **(r[2] or {}),
+                        "generated_at": r[3].isoformat() if r[3] else None,
+                        "read_at": r[4].isoformat() if r[4] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def count_unread_digests(user_id: int) -> int:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM digest_notifications WHERE user_id = %s AND read_at IS NULL",
+                    (user_id,),
+                )
+                return cur.fetchone()[0]
+    return _run(_do) or 0
+
+
+def mark_digest_read(digest_id: int, user_id: int) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE digest_notifications SET read_at = NOW() WHERE id = %s AND user_id = %s AND read_at IS NULL",
+                    (digest_id, user_id),
+                )
+                updated = cur.rowcount > 0
+            conn.commit()
+            return updated
+    return _run(_do) or False
 
 
 def get_run_detail(run_id: int) -> Optional[dict]:

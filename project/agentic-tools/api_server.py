@@ -70,7 +70,7 @@ import os
 import sys
 import tempfile
 from contextlib import asynccontextmanager, AsyncExitStack
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1662,6 +1662,123 @@ def history_run_detail(ticker: str, run_id: int):
     if detail.get("ticker", "").upper() != ticker.upper():
         raise HTTPException(status_code=404, detail=f"Run {run_id} does not belong to ticker {ticker.upper()}")
     return detail
+
+
+# ── Digest notifications (Feature 5) ───────────────────────────────────────────
+#
+#  Deterministic "what changed since your last digest" summary — no LLM call,
+#  built entirely from get_posture_trend's aggregate rows. Generation is lazy:
+#  the frontend's existing 30s approval-inbox poll also calls check-due, which
+#  only writes a new row when the user's digestFrequency preference interval
+#  has elapsed AND a newer completed run exists. This avoids both a blind
+#  backend cron and generating digests nobody will ever see.
+
+_DIGEST_INTERVALS = {"daily": timedelta(hours=24), "weekly": timedelta(days=7)}
+
+
+class DigestCheckRequest(BaseModel):
+    ticker: str
+
+
+def _build_digest_payload(ticker: str, from_row: Optional[dict], to_row: dict) -> dict:
+    to_score = to_row.get("avg_score")
+    from_score = from_row.get("avg_score") if from_row else None
+    score_delta = (to_score - from_score) if (to_score is not None and from_score is not None) else None
+
+    if not from_row:
+        headline = (
+            f"{ticker}: first posture snapshot — avg score "
+            f"{to_score:.2f} · {to_row['red_count']}R/{to_row['amber_count']}A/{to_row['green_count']}G "
+            f"across {to_row['risk_count']} risks."
+        )
+        red_delta = amber_delta = green_delta = risk_count_delta = None
+    else:
+        red_delta = to_row["red_count"] - from_row["red_count"]
+        amber_delta = to_row["amber_count"] - from_row["amber_count"]
+        green_delta = to_row["green_count"] - from_row["green_count"]
+        risk_count_delta = to_row["risk_count"] - from_row["risk_count"]
+        direction = "worsened" if (score_delta or 0) > 0 else "improved" if (score_delta or 0) < 0 else "unchanged"
+        rag_bits = [f"{d:+d} {label}" for d, label in
+                    ((red_delta, "RED"), (amber_delta, "AMBER"), (green_delta, "GREEN")) if d]
+        rag_note = ", ".join(rag_bits) if rag_bits else "no RAG band changes"
+        headline = (
+            f"{ticker}: posture {direction} — avg score {from_score:.2f} -> {to_score:.2f} "
+            f"({score_delta:+.2f}). {rag_note}."
+        )
+
+    return {
+        "headline": headline,
+        "from_run": from_row, "to_run": to_row,
+        "avg_score_delta": score_delta,
+        "red_delta": red_delta, "amber_delta": amber_delta,
+        "green_delta": green_delta, "risk_count_delta": risk_count_delta,
+    }
+
+
+@app.post("/digests/check-due")
+def digests_check_due(
+    req: DigestCheckRequest,
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """Lazily generate a digest for `ticker` if the user's frequency preference
+    interval has elapsed and a new completed run exists since their last one."""
+    if not db.is_available():
+        return {"generated": False, "reason": "db_unavailable", "unread_count": 0}
+
+    freq = (current_user.get("preferences") or {}).get("digestFrequency", "off")
+    interval = _DIGEST_INTERVALS.get(freq)
+    if not interval:
+        return {"generated": False, "reason": "off", "unread_count": db.count_unread_digests(current_user["id"])}
+
+    ticker = req.ticker.upper()
+    last = db.get_last_digest(current_user["id"], ticker)
+    now = datetime.now(timezone.utc)
+    if last and (now - last["generated_at"]) < interval:
+        return {"generated": False, "reason": "not_due", "unread_count": db.count_unread_digests(current_user["id"])}
+
+    trend = db.get_posture_trend(ticker, limit=2)
+    if not trend:
+        return {"generated": False, "reason": "no_completed_runs", "unread_count": db.count_unread_digests(current_user["id"])}
+
+    to_row = trend[-1]
+    from_row = trend[0] if len(trend) > 1 else None
+    if last and to_row["run_id"] == last["to_run_id"]:
+        return {"generated": False, "reason": "no_new_run", "unread_count": db.count_unread_digests(current_user["id"])}
+
+    payload = _build_digest_payload(ticker, from_row, to_row)
+    digest_id = db.save_digest_notification(
+        current_user["id"], ticker,
+        from_row["run_id"] if from_row else None, to_row["run_id"], payload,
+    )
+    return {
+        "generated": True,
+        "digest": {"id": digest_id, "ticker": ticker, "generated_at": now.isoformat(), "read_at": None, **payload},
+        "unread_count": db.count_unread_digests(current_user["id"]),
+    }
+
+
+@app.get("/digests")
+def digests_list(
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    if not db.is_available():
+        return {"digests": [], "unread_count": 0}
+    return {
+        "digests": db.list_digest_notifications(current_user["id"], limit=limit),
+        "unread_count": db.count_unread_digests(current_user["id"]),
+    }
+
+
+@app.post("/digests/{digest_id}/read")
+def digests_mark_read(
+    digest_id: int,
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
+    ok = db.mark_digest_read(digest_id, current_user["id"])
+    return {"ok": ok, "unread_count": db.count_unread_digests(current_user["id"])}
 
 
 # ── Risk-as-Code: multi-source bridge ─────────────────────────────────────────
