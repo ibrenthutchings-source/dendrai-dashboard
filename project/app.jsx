@@ -409,7 +409,6 @@ function App() {
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
   const [evidencePackOpen, setEvidencePackOpen] = useState(false);
-  const [postureTrendOpen, setPostureTrendOpen] = useState(false);
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideGateNum, setOverrideGateNum] = useState(null);
 
