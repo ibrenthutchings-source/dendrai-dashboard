@@ -2100,10 +2100,11 @@ def _check_model_health_drift_once() -> list[dict]:
     if not db.is_available():
         return alerted
 
-    ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
+    baseline_resets = db.get_baseline_resets()
+    ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history(), baseline_resets=baseline_resets)
     fred_api_key = os.environ.get("FRED_API_KEY", "")
-    fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key)
-    acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history())
+    fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key, baseline_resets=baseline_resets)
+    acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history(), baseline_resets=baseline_resets)
 
     entries = (
         [(r["ratio"], "ratio", r) for r in ratio_drift] +
@@ -2175,13 +2176,15 @@ def get_model_health_summary(
     backtest_trend: list = []
     ratio_drift: list = []
     acceptance_drift: list = []
+    baseline_resets: dict = {}
     if db.is_available():
+        baseline_resets = db.get_baseline_resets()
         backtest_trend = db.get_backtest_trend()
-        ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
-        acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history())
+        ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history(), baseline_resets=baseline_resets)
+        acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history(), baseline_resets=baseline_resets)
 
     fred_api_key = os.environ.get("FRED_API_KEY", "")
-    fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key)
+    fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key, baseline_resets=baseline_resets)
 
     return {
         "backtest_trend": backtest_trend,
@@ -2189,6 +2192,7 @@ def get_model_health_summary(
         "fred_drift": fred_drift,
         "acceptance_drift": acceptance_drift,
         "fred_configured": bool(fred_api_key),
+        "baseline_resets": baseline_resets,
     }
 
 
@@ -2210,15 +2214,62 @@ def update_model_health_drift_incident(
     body: Dict[str, Any] = Body(...),
     current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
 ):
-    """Assign an owner, change status (open/acknowledged/resolved), or add
-    notes on a drift incident. Any field omitted from the body is left
-    unchanged."""
+    """Assign an owner, change status (open/acknowledged/resolved), add
+    notes, or log a structured correction_action on a drift incident. Any
+    field omitted from the body is left unchanged.
+
+    correction_action must be one of db._VALID_CORRECTION_ACTIONS
+    (rebaselined | recalibrated | escalated_for_review | false_positive |
+    no_action_needed) — this is the "what was actually done" record
+    MODEL_CARD.md's "Recommended Next Steps" asked for, distinct from
+    `status`. corrected_by defaults to the caller's display name."""
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
     ok = db.update_drift_incident(
         incident_id, status=body.get("status"), owner=body.get("owner"), notes=body.get("notes"),
+        correction_action=body.get("correction_action"),
+        corrected_by=body.get("correction_action") and (current_user.get("display_name") or current_user.get("username")),
     )
     return {"ok": ok, "id": incident_id}
+
+
+@app.post("/model-health/baseline-reset")
+def set_model_health_baseline_reset(
+    body: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """
+    Mark 'now' as the new baseline floor for a metric (metric_key: the same
+    ratio field / FRED series_id / 'ai_acceptance_<gate_type>' used by drift
+    incidents). Future drift computations exclude data before this point —
+    the "this is the new normal, stop comparing against pre-shift data"
+    correction option (MODEL_CARD.md "Recommended Next Steps"). Only
+    meaningful for 'ratio' and 'fred_series' metric kinds; ai_acceptance
+    drift already uses a rolling window, so a reset there is a no-op in
+    practice (nothing to exclude that the window doesn't already drop).
+    """
+    metric_key = body.get("metric_key")
+    if not metric_key:
+        raise HTTPException(status_code=422, detail="metric_key is required")
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.set_baseline_reset(
+        metric_key,
+        reset_by=current_user.get("display_name") or current_user.get("username"),
+        reason=body.get("reason"),
+    )
+    return {"ok": ok, "metric_key": metric_key}
+
+
+@app.delete("/model-health/baseline-reset/{metric_key}")
+def clear_model_health_baseline_reset(
+    metric_key: str,
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.clear_baseline_reset(metric_key)
+    return {"ok": ok, "metric_key": metric_key}
 
 
 @app.get("/observability/command-center")
@@ -2264,9 +2315,10 @@ def get_command_center(
         })
 
     import drift_tool
-    ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
-    fred_drift = drift_tool.compute_fred_regime_drift(os.environ.get("FRED_API_KEY", ""))
-    acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history())
+    baseline_resets = db.get_baseline_resets()
+    ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history(), baseline_resets=baseline_resets)
+    fred_drift = drift_tool.compute_fred_regime_drift(os.environ.get("FRED_API_KEY", ""), baseline_resets=baseline_resets)
+    acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history(), baseline_resets=baseline_resets)
     model_health_drift = any(r.get("flag") == "drift" for r in ratio_drift + fred_drift + acceptance_drift)
 
     return {
