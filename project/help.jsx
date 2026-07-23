@@ -12,58 +12,58 @@ const WORKFLOW_STAGES = [
     id: "assessment", label: "Risk Assessment", icon: "flow",
     desc: "Run the six-stage risk loop for a ticker, monitor grey-swan escalation scenarios, and track how posture has actually changed run over run.",
     items: [
-      { screen: "pipeline", label: "Risk Radar" },
-      { screen: "posturetrend", label: "Posture Trend" },
-      { screen: "scenarios", label: "Grey Swan Scenarios" },
-      { screen: "scenarioanalysis", label: "Scenario Sandbox" },
-      { screen: "sox", label: "SOX Control Pulse" },
+      { screen: "pipeline", label: "Risk Radar", desc: "Run the six-stage AI risk loop for a ticker and monitor live results." },
+      { screen: "posturetrend", label: "Posture Trend", desc: "See how overall risk posture has shifted run over run." },
+      { screen: "scenarios", label: "Grey Swan Scenarios", desc: "Model Bear/Base/Bull/Grey Swan futures and escalation cascades." },
+      { screen: "scenarioanalysis", label: "Scenario Sandbox", desc: "Quantitative what-if stress testing against custom macro shocks." },
+      { screen: "sox", label: "SOX Control Pulse", desc: "Track ICFR control testing status and SOX scope." },
     ],
   },
   {
     id: "automation", label: "Automation", icon: "code",
     desc: "Turn risk and control language into machine-enforceable code — Risk-as-Code, an OPA-backed Policy-as-Code engine, and a coverage view of what's actually automated vs. manual.",
     items: [
-      { screen: "riskcode", label: "Risk-as-Code Editor" },
-      { screen: "frameworks", label: "Framework Sync" },
-      { screen: "policycode", label: "Policy-as-Code Engine" },
-      { screen: "coverage", label: "Coverage Gap Analysis" },
+      { screen: "riskcode", label: "Risk-as-Code Editor", desc: "Author and version risk logic as machine-readable YAML." },
+      { screen: "frameworks", label: "Framework Sync", desc: "Map risks and controls onto compliance frameworks like COSO." },
+      { screen: "policycode", label: "Policy-as-Code Engine", desc: "Write and evaluate OPA/Rego policies against live controls." },
+      { screen: "coverage", label: "Coverage Gap Analysis", desc: "See what's automated vs. still manual across the program." },
     ],
   },
   {
     id: "tracking", label: "Tracking", icon: "list",
     desc: "The day-to-day audit execution layer — scope, the risk & control ledger, approval sign-offs, management action plans, and live control-event monitoring.",
     items: [
-      { screen: "continuousmonitoring", label: "Continuous Watch" },
-      { screen: "controls", label: "Controls Monitor" },
-      { screen: "aiinventory", label: "AI System Ledger" },
-      { screen: "scope", label: "Scope Builder" },
-      { screen: "rrreview", label: "Risk & Control Ledger" },
-      { screen: "maps", label: "MAPs" },
-      { screen: "approvals", label: "Approval Inbox" },
-      { screen: "ubogov", label: "Control Tower" },
-      { screen: "notifs", label: "Notifications" },
+      { screen: "continuousmonitoring", label: "Continuous Watch", desc: "Live command-center feed of control events as they fire." },
+      { screen: "controls", label: "Controls Monitor", desc: "Track control health, alerts, and status in real time." },
+      { screen: "aiinventory", label: "AI System Ledger", desc: "Inventory AI systems in use and their risk classification." },
+      { screen: "scope", label: "Scope Builder", desc: "Define risk-linked audit objectives by fiscal quarter." },
+      { screen: "rrreview", label: "Risk & Control Ledger", desc: "Review risks alongside the controls mapped to address them." },
+      { screen: "maps", label: "MAPs", desc: "Track management action plans, owners, and due dates." },
+      { screen: "approvals", label: "Approval Inbox", desc: "Sign off on Gate 1/Gate 2 approval tasks in your queue." },
+      { screen: "ubogov", label: "Control Tower", desc: "Oversight dashboard for UBO and governance controls." },
+      { screen: "notifs", label: "Notifications", desc: "Posture digests plus the tiered stakeholder alert cascade." },
     ],
   },
   {
     id: "board", label: "Board", icon: "user",
     desc: "Roll everything up for the board and audit committee — governance posture, pay & performance, shareholder proposals, and peer comparison.",
     items: [
-      { screen: "gov", govTab: "overview", label: "Boardroom Pulse" },
-      { screen: "gov", govTab: "board", label: "Board & Audit Committee" },
-      { screen: "gov", govTab: "comp", label: "Pay & Performance" },
-      { screen: "gov", govTab: "proposals", label: "Shareholder Proposals" },
-      { screen: "gov", govTab: "peers", label: "Peer Lens" },
+      { screen: "gov", govTab: "overview", label: "Boardroom Pulse", desc: "Executive summary of governance posture for the board." },
+      { screen: "gov", govTab: "board", label: "Board & Audit Committee", desc: "Composition, independence, and activity of the board and committee." },
+      { screen: "gov", govTab: "comp", label: "Pay & Performance", desc: "Executive compensation measured against company performance." },
+      { screen: "gov", govTab: "proposals", label: "Shareholder Proposals", desc: "Track shareholder proposals and voting outcomes." },
+      { screen: "gov", govTab: "peers", label: "Peer Lens", desc: "Compare governance posture against peer companies." },
     ],
   },
   {
     id: "setup", label: "Setup", icon: "gear",
     desc: "Configure the entity being assessed, manage team access, and watch the platform's own model health and usage.",
     items: [
-      { screen: "config", label: "Mission Control" },
-      { screen: "uboconfig", label: "Dendrai UBO™ Configuration" },
-      { screen: "tokenusage", label: "Usage Meter" },
-      { screen: "modelhealth", label: "Model Vitals" },
-      { screen: "userconfig", label: "Team & Access" },
+      { screen: "config", label: "Mission Control", desc: "Configure the entity, signal sources, and run the pipeline." },
+      { screen: "uboconfig", label: "Dendrai UBO™ Configuration", desc: "Configure ultimate beneficial ownership tracking settings." },
+      { screen: "tokenusage", label: "Usage Meter", desc: "Track AI token usage and cost by feature." },
+      { screen: "modelhealth", label: "Model Vitals", desc: "Monitor AI drift, acceptance rates, and model health." },
+      { screen: "userconfig", label: "Team & Access", desc: "Manage users, roles, and per-screen permissions." },
     ],
   },
 ];
@@ -120,10 +120,13 @@ function HelpScreen({ onNavigate }) {
                 key={it.screen + (it.govTab || "")}
                 type="button"
                 className="btn btn-sm"
-                style={{ justifyContent: "space-between" }}
+                style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3, textAlign: "left", padding: "10px 12px", height: "auto" }}
                 onClick={() => onNavigate?.(it.screen, it.govTab)}
               >
-                {it.label} <Icon name="chev-r" size={11}/>
+                <span style={{ display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center", fontWeight: 600 }}>
+                  {it.label} <Icon name="chev-r" size={11}/>
+                </span>
+                {it.desc && <span style={{ fontSize: 10.5, fontWeight: 400, color: "var(--ink-3)", lineHeight: 1.4 }}>{it.desc}</span>}
               </button>
             ))}
           </div>
