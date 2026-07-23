@@ -118,6 +118,11 @@ def loop_ctx():
     yield {"company_id": company_id, "run_id": run_id, "ai_id": ai_id}
 
     _cleanup(run_id, company_id)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM companies WHERE ticker=%s", (TICKER,))
+            left = cur.fetchone()[0]
+    assert left == 0, f"cleanup left {left} company row(s) for {TICKER}"
 
 
 def test_upsert_company_insert(loop_ctx):
