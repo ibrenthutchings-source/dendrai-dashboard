@@ -60,7 +60,7 @@ const NAV_SECTIONS = [
       { id: "tokenusage", icon: "table",  l: "Usage Meter" },
       { id: "modelhealth", icon: "trend", l: "Model Vitals" },
       { id: "userconfig", icon: "user",   l: "Team & Access", adminOnly: true },
-      { id: "help",       icon: "compass", l: "Help & Workflow Guide" },
+      { id: "help",       icon: "compass", l: "Intelligenza Workflow" },
     ],
   }
 ];
@@ -80,7 +80,9 @@ function NavIcon({ name, size = 14 }) {
 }
 
 function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null }) {
-  const [collapsed, setCollapsed] = React.useState({});
+  const [collapsed, setCollapsed] = React.useState(() =>
+    Object.fromEntries(NAV_SECTIONS.map(s => [s.label, true]))
+  );
   const DendraiMark = window.DendraiMark;
   const DendraiWordmark = window.DendraiWordmark;
 
