@@ -2103,10 +2103,12 @@ def _check_model_health_drift_once() -> list[dict]:
     ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
     fred_api_key = os.environ.get("FRED_API_KEY", "")
     fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key)
+    acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history())
 
     entries = (
         [(r["ratio"], "ratio", r) for r in ratio_drift] +
-        [(r["series_id"], "fred_series", r) for r in fred_drift]
+        [(r["series_id"], "fred_series", r) for r in fred_drift] +
+        [(f"ai_acceptance_{r['gate_type']}", "ai_acceptance", r) for r in acceptance_drift]
     )
     for metric_key, metric_kind, entry in entries:
         if entry.get("flag") != "drift":
@@ -2159,8 +2161,12 @@ def get_model_health_summary(
     Model Health screen data: forecast backtest accuracy trend across recent
     runs, cross-sectional PSI drift on financial ratios (has the population
     of companies being analyzed shifted from what the risk-scoring templates
-    were calibrated against), and PSI regime-shift drift on a small set of
-    broad FRED macro indicators (empty when no FRED_API_KEY is configured).
+    were calibrated against), PSI regime-shift drift on a small set of broad
+    FRED macro indicators (empty when no FRED_API_KEY is configured), and PSI
+    drift on the AI-suggestion acceptance rate per gate_type (MODEL_CARD.md
+    "Recommended Next Steps" #2 — is the AI's advice being accepted/overridden
+    at a materially different rate than its own recent history, not just
+    whether the underlying financial population has shifted).
     On-demand only — computed live on each request, no background job.
     Same nav-permission-gated convention as Token Usage, not admin-only.
     """
@@ -2168,9 +2174,11 @@ def get_model_health_summary(
 
     backtest_trend: list = []
     ratio_drift: list = []
+    acceptance_drift: list = []
     if db.is_available():
         backtest_trend = db.get_backtest_trend()
         ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
+        acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history())
 
     fred_api_key = os.environ.get("FRED_API_KEY", "")
     fred_drift = drift_tool.compute_fred_regime_drift(fred_api_key)
@@ -2179,6 +2187,7 @@ def get_model_health_summary(
         "backtest_trend": backtest_trend,
         "ratio_drift": ratio_drift,
         "fred_drift": fred_drift,
+        "acceptance_drift": acceptance_drift,
         "fred_configured": bool(fred_api_key),
     }
 
@@ -2257,7 +2266,8 @@ def get_command_center(
     import drift_tool
     ratio_drift = drift_tool.compute_ratio_drift(db.get_financial_ratios_history())
     fred_drift = drift_tool.compute_fred_regime_drift(os.environ.get("FRED_API_KEY", ""))
-    model_health_drift = any(r.get("flag") == "drift" for r in ratio_drift + fred_drift)
+    acceptance_drift = drift_tool.compute_ai_acceptance_drift(db.get_ai_acceptance_history())
+    model_health_drift = any(r.get("flag") == "drift" for r in ratio_drift + fred_drift + acceptance_drift)
 
     return {
         "systems": systems,

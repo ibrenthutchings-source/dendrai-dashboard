@@ -3145,6 +3145,33 @@ def get_ai_acceptance_stats_by_industry() -> list:
     return _run(_do) or []
 
 
+def get_ai_acceptance_history() -> list:
+    """
+    Individual AI-suggestion accept/override outcomes, oldest-first — the raw
+    events behind get_ai_acceptance_stats' aggregates, needed for
+    drift_tool.compute_ai_acceptance_drift's baseline-vs-current PSI split
+    (MODEL_CARD.md "Recommended Next Steps" #2).
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT gate_type, ai_accepted,
+                           COALESCE(reviewed_at, prepared_at, created_at) AS event_at
+                    FROM approval_tasks
+                    WHERE ai_suggested IS NOT NULL AND ai_accepted IS NOT NULL
+                    ORDER BY COALESCE(reviewed_at, prepared_at, created_at) ASC
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+                for r in rows:
+                    r["event_at"] = r["event_at"].isoformat() if r["event_at"] else None
+                return rows
+    return _run(_do) or []
+
+
 def review_approval_task(task_id: int, reviewer_id: int, reviewer_name: str, decision: str, comment: Optional[str]) -> Optional[dict]:
     """
     Manager decision on a submitted item ('approved' or 'rejected').
