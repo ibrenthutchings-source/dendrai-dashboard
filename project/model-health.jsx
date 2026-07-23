@@ -276,7 +276,7 @@ function DriftIncidentDetail({ incident }) {
   );
 }
 
-function DriftIncidentRow({ incident, onUpdate, saving }) {
+function DriftIncidentRow({ incident, onUpdate, onResetBaseline, saving }) {
   const [owner, setOwner] = React.useState(incident.owner || "");
   const [notes, setNotes] = React.useState(incident.notes || "");
   const st = _MH_INCIDENT_STATUS_STYLE[incident.status] || _MH_INCIDENT_STATUS_STYLE.open;
@@ -317,7 +317,15 @@ function DriftIncidentRow({ incident, onUpdate, saving }) {
           value={notes} onChange={e => setNotes(e.target.value)}
           onBlur={() => notes !== (incident.notes || "") && onUpdate(incident.id, { notes })} />
       </div>
-      <div style={{ display: "flex", gap: 6 }}>
+      {incident.correction_action && (
+        <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 8 }}>
+          <span style={{ fontWeight: 600 }}>Correction logged: </span>
+          {_MH_CORRECTION_LABEL[incident.correction_action] || incident.correction_action}
+          {incident.corrected_by && ` — ${incident.corrected_by}`}
+          {incident.corrected_at && ` · ${new Date(incident.corrected_at).toLocaleString()}`}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         {incident.status !== "acknowledged" && incident.status !== "resolved" && (
           <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(incident.id, { status: "acknowledged" })}>Acknowledge</button>
         )}
@@ -326,6 +334,18 @@ function DriftIncidentRow({ incident, onUpdate, saving }) {
         )}
         {incident.status === "resolved" && (
           <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(incident.id, { status: "open" })}>Reopen</button>
+        )}
+        <select className="code-input" style={{ fontSize: 10.5, padding: "4px 6px" }} disabled={saving}
+          value="" onChange={e => { if (e.target.value) onUpdate(incident.id, { correction_action: e.target.value, status: "resolved" }); }}
+          title="Log what was actually done about this drift — also resolves the incident.">
+          <option value="">Log correction…</option>
+          {_MH_CORRECTION_ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+        </select>
+        {(incident.metric_kind === "ratio" || incident.metric_kind === "fred_series") && (
+          <button className="btn btn-sm" disabled={saving} onClick={() => onResetBaseline(incident.metric_key)}
+            title="Mark now as the new baseline for this metric — future drift checks stop comparing against data from before this point.">
+            Reset baseline
+          </button>
         )}
       </div>
     </div>
@@ -362,6 +382,17 @@ function DriftIncidentsPanel() {
     setSavingId(null);
   }
 
+  async function handleResetBaseline(metricKey) {
+    if (!window.confirm(`Reset the baseline for "${metricKey}"? Future drift checks will stop comparing against data from before now.`)) return;
+    try {
+      await fetch("/api/mcp/model-health/baseline-reset", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metric_key: metricKey }),
+      });
+    } catch (_) {}
+  }
+
   const visible = showResolved ? incidents : incidents.filter(i => i.status !== "resolved");
   const openCount = incidents.filter(i => i.status === "open").length;
 
@@ -389,7 +420,7 @@ function DriftIncidentsPanel() {
         <Empty>{incidents.length ? "No open incidents — everything's resolved." : "No drift ever detected."}</Empty>
       ) : (
         visible.map(inc => (
-          <DriftIncidentRow key={inc.id} incident={inc} onUpdate={handleUpdate} saving={savingId === inc.id} />
+          <DriftIncidentRow key={inc.id} incident={inc} onUpdate={handleUpdate} onResetBaseline={handleResetBaseline} saving={savingId === inc.id} />
         ))
       )}
     </div>
