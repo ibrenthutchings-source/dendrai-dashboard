@@ -1315,6 +1315,18 @@ ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS ai_fin
 ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS human_verdict      VARCHAR(32);
 ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS human_reviewed_at  TIMESTAMPTZ;
 
+-- run_id links an adjudication to the pipeline run it occurred during, when
+-- known. In practice this is almost always NULL today: the dominant write
+-- path (mcp_http_telemetry._HTTP_SESSION_ID) is one UUID shared by every
+-- HTTP-originated MCP/REST tool call the process ever makes, across every
+-- ticker and run, so there is no run context available at INSERT time. The
+-- column exists so (a) any future write path that DOES have real run
+-- context can populate it directly, and (b) the Evidence Pack query can
+-- prefer a real run_id match over its best-effort time-window fallback
+-- (see mcp_governance.fetch_adjudications_for_run).
+ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS run_id INT REFERENCES risk_loop_runs(id);
+CREATE INDEX IF NOT EXISTS idx_adj_run ON observability.adjudicated_tool_calls (run_id) WHERE run_id IS NOT NULL;
+
 DROP VIEW IF EXISTS observability.tool_latency_summary;
 CREATE OR REPLACE VIEW observability.tool_latency_summary AS
 SELECT
@@ -3238,6 +3250,31 @@ def get_latest_audit_objectives(ticker: str) -> Optional[dict]:
     return _run(_do)
 
 
+def get_audit_objectives_for_run(run_id: int) -> list:
+    """Audit objectives for a specific run_id directly, rather than
+    get_latest_audit_objectives()'s "most recently completed run for
+    ticker" lookup — the Evidence Pack already has the exact run_id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT obj_id, objective_text, priority, linked_risk_ref, linked_risks, "
+                    "controls, hours, sprint, residual_risk_reduction "
+                    "FROM audit_objectives WHERE run_id = %s ORDER BY obj_id",
+                    (run_id,),
+                )
+                return [
+                    {
+                        "id": r[0], "objective": r[1], "priority": r[2],
+                        "linked_risk": r[3], "linked_risks": r[4] or ([r[3]] if r[3] else []),
+                        "controls": r[5] or [], "hours": r[6], "sprint": r[7],
+                        "residualRiskReduction": float(r[8]) if r[8] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 def save_manual_audits(run_id: int, audits: list) -> None:
     if not audits:
         return
@@ -3313,6 +3350,22 @@ def save_loop_log(run_id: int, entries: list) -> None:
                     rows,
                 )
     _run(_do)
+
+
+def get_loop_log_for_run(run_id: int) -> list:
+    """Pipeline execution trail for a run — no getter existed for this
+    table before the Evidence Pack needed it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT logged_at, message FROM loop_log_entries "
+                    "WHERE run_id = %s ORDER BY logged_at",
+                    (run_id,),
+                )
+                return [{"logged_at": r[0].isoformat() if r[0] else None, "message": r[1]}
+                        for r in cur.fetchall()]
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3842,6 +3895,42 @@ def get_run_detail(run_id: int) -> Optional[dict]:
                     "rag_status": brow[2] if brow else None,
                 } if brow else None
                 return result
+    return _run(_do)
+
+
+def get_run_meta_for_evidence_pack(run_id: int) -> Optional[dict]:
+    """Full risk_loop_runs row + company identity, for the Evidence Pack
+    header. get_run_detail() above is missing completed_at/persona/
+    signal_set/cik — it was built for a different caller (run detail
+    lookup) and trimmed to what that needed."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT r.id, r.ticker, r.run_at, r.period_begin, r.period_end_col,
+                           r.industry, r.appetite_level, r.persona, r.data_mode,
+                           r.signal_set, r.completed, r.completed_at,
+                           c.company_name, c.cik
+                    FROM risk_loop_runs r
+                    LEFT JOIN companies c ON c.id = r.company_id
+                    WHERE r.id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "run_id": row[0], "ticker": row[1],
+                    "run_at": row[2].isoformat() if row[2] else None,
+                    "period_begin": row[3], "period_end": row[4],
+                    "industry": row[5], "appetite_level": row[6], "persona": row[7],
+                    "data_mode": row[8], "signal_set": row[9] or [],
+                    "completed": row[10],
+                    "completed_at": row[11].isoformat() if row[11] else None,
+                    "company_name": row[12], "cik": row[13],
+                }
     return _run(_do)
 
 

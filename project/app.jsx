@@ -366,6 +366,7 @@ function App() {
 
   // ---- Modals ----
   const [reportOpen, setReportOpen] = useState(false);
+  const [evidencePackOpen, setEvidencePackOpen] = useState(false);
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideGateNum, setOverrideGateNum] = useState(null);
 
@@ -1909,6 +1910,10 @@ function App() {
                 {running ? <><span className="spin"/> Running loop…</> : <><Icon name="play" size={12}/> Run Loop</>}
               </button>
               <button className="btn" disabled={!hasRun} onClick={() => setReportOpen(true)}><Icon name="doc" size={11}/> Loop Report</button>
+              <button className="btn" disabled={!hasRun || !runIdRef.current} onClick={() => setEvidencePackOpen(true)}
+                title={hasRun && !runIdRef.current ? "Evidence Pack requires a DB-persisted run (MCP mode)" : ""}>
+                <Icon name="shield" size={11}/> Evidence Pack
+              </button>
               <button className="btn" disabled={!hasRun} onClick={() => setPersonaOpen(true)}><Icon name="user" size={11}/> Persona</button>
               {autoCodeYaml && (
                 <button className="btn btn-acc" onClick={downloadAutoYaml} title="Download auto-generated Risk-as-Code YAML">
@@ -2318,6 +2323,8 @@ function App() {
       )}
 
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
+      <EvidencePackModal open={evidencePackOpen} onClose={() => setEvidencePackOpen(false)}
+        runId={runIdRef.current} ticker={cfg.ticker || ""} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
       <AdjustRiskModal
         open={adjustOpen}

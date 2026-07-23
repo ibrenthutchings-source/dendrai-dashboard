@@ -737,6 +737,52 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
     return []
 
 
+def fetch_adjudications_for_run(run_id: int, run_at: str | None, completed_at: str | None) -> list[dict]:
+    """Best-effort adjudication set for a run's Evidence Pack.
+
+    Prefers rows with a real run_id match (currently rare — see the run_id
+    column comment in db.py's adjudicated_tool_calls migration). Falls back
+    to a time-window join against this run's execution window, since the
+    dominant HTTP write path (mcp_http_telemetry._HTTP_SESSION_ID) shares
+    one session_id UUID across every ticker/run the process ever handles
+    and genuinely cannot identify which run a call belongs to. Each row is
+    tagged linked_via so the caller can show which kind of match it is —
+    "time_window_estimate" is NOT a verified link.
+    """
+    if not db.is_available() or not run_at:
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, adjudicated_at, target_tool, server_name,
+                           final_verdict, risk_tier, requires_human_review,
+                           policy_violations, run_id
+                    FROM observability.adjudicated_tool_calls
+                    WHERE run_id = %s
+                       OR (run_id IS NULL
+                           AND adjudicated_at BETWEEN %s::timestamptz - interval '10 minutes'
+                                               AND COALESCE(%s::timestamptz, %s::timestamptz + interval '3 hours') + interval '30 minutes')
+                    ORDER BY adjudicated_at
+                    LIMIT 500
+                    """,
+                    (run_id, run_at, completed_at, run_at),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    d["linked_via"] = "run_id" if d["run_id"] == run_id else "time_window_estimate"
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("fetch_adjudications_for_run error (run_id=%s): %s", run_id, exc)
+        return []
+
+
 def _fetch_raw_telemetry(limit: int) -> list[dict]:
     """Fetch the most recent telemetry rows for the live-stream view, merged
     across mcp_telemetry (MCP tool calls) and system_telemetry (generic
