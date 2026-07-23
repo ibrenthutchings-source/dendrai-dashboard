@@ -189,7 +189,7 @@ function App() {
   const [autoCodeYaml, setAutoCodeYaml] = useState(null);
 
   // ---- Tabs ----
-  const [activeScreen, setActiveScreen] = useState("pipeline"); // config|pipeline|register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
+  const [activeScreen, setActiveScreen] = useState("help"); // default landing screen is the Intelligenza Workflow guide; config|pipeline|register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
   const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss (forecasts/scenarios moved to the rail)
   const [activeRailTab, setActiveRailTab] = useState("rr"); // Risk Register sub-tab: rr | hm | loop (also nudged by the run)
   const [personaOpen, setPersonaOpen] = useState(false);

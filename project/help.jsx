@@ -1,9 +1,10 @@
 /* ============================================================
-   Help & Workflow Guide — a clickable overview of the platform's
+   Intelligenza Workflow — a clickable overview of the platform's
    actual workflow: Risk Assessment -> Automation -> Tracking ->
    Board -> Setup. Mirrors nav.jsx's five sections exactly (same
    ids/labels) so this stays a map of the real nav, not a separate
-   narrative that can drift out of sync with it.
+   narrative that can drift out of sync with it. This is also the
+   default landing screen (see app.jsx's activeScreen initial state).
    ============================================================ */
 
 const WORKFLOW_STAGES = [
@@ -76,7 +77,7 @@ function HelpScreen({ onNavigate }) {
       <div className="panel-head">
         <div>
           <div className="kicker">Setup</div>
-          <div className="panel-title mt-8">Help & Workflow Guide</div>
+          <div className="panel-title mt-8">Intelligenza Workflow</div>
           <div className="panel-sub">How the platform's screens map onto the actual risk-to-audit workflow. Click a stage, then a screen, to jump straight there.</div>
         </div>
       </div>
