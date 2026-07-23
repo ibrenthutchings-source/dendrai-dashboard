@@ -3087,6 +3087,64 @@ def get_ai_acceptance_stats(gate_type: Optional[str] = None) -> list:
     return _run(_do) or []
 
 
+def get_ai_acceptance_stats_by_category() -> list:
+    """
+    Same acceptance-rate signal as get_ai_acceptance_stats, but broken down
+    by risk category — the fairness/bias breakdown MODEL_CARD.md flagged as
+    missing: does the AI's advice get overridden more often for certain risk
+    categories? Only 'risk' gate_type rows carry a category (item_ref is a
+    risk_ref that joins to risk_scores); other gate types are excluded, not
+    silently miscounted.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT rs.category,
+                           COUNT(*) FILTER (WHERE t.ai_suggested IS NOT NULL) AS ai_assisted_count,
+                           COUNT(*) FILTER (WHERE t.ai_accepted = TRUE)       AS accepted_count,
+                           COUNT(*) FILTER (WHERE t.ai_accepted = FALSE)      AS overridden_count
+                    FROM approval_tasks t
+                    JOIN risk_scores rs ON rs.run_id = t.run_id AND rs.risk_ref = t.item_ref
+                    WHERE t.gate_type = 'risk' AND t.ai_suggested IS NOT NULL
+                    GROUP BY rs.category
+                    ORDER BY rs.category
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_ai_acceptance_stats_by_industry() -> list:
+    """
+    Same signal, broken down by the run's industry (all gate types — every
+    approval_tasks row has a run_id, so this doesn't need the category join's
+    gate_type restriction). Answers the other half of MODEL_CARD.md's fairness
+    gap: is the AI's advice systematically overridden more for some industries?
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT r.industry,
+                           COUNT(*) FILTER (WHERE t.ai_suggested IS NOT NULL) AS ai_assisted_count,
+                           COUNT(*) FILTER (WHERE t.ai_accepted = TRUE)       AS accepted_count,
+                           COUNT(*) FILTER (WHERE t.ai_accepted = FALSE)      AS overridden_count
+                    FROM approval_tasks t
+                    JOIN risk_loop_runs r ON r.id = t.run_id
+                    WHERE t.ai_suggested IS NOT NULL
+                    GROUP BY r.industry
+                    ORDER BY r.industry
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _run(_do) or []
+
+
 def review_approval_task(task_id: int, reviewer_id: int, reviewer_name: str, decision: str, comment: Optional[str]) -> Optional[dict]:
     """
     Manager decision on a submitted item ('approved' or 'rejected').

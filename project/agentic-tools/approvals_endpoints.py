@@ -140,7 +140,17 @@ def get_ai_acceptance_stats(gate_type: Optional[str] = Query(default=None), curr
     Per-gate-type counts of how often a preparer kept an AI 'Suggest with AI'
     disposition as-is vs. overrode it — the measurable trail for whether the
     AI recommendations are actually trusted, not just offered.
+
+    Also breaks the same signal down by risk category and by industry
+    (MODEL_CARD.md "Recommended Next Steps" #1) — the fairness question this
+    exists to answer is whether AI advice gets overridden more often for
+    particular categories/industries, which a gate_type-only breakdown can't
+    show.
     """
     if not db.is_available():
-        return {"stats": []}
-    return {"stats": db.get_ai_acceptance_stats(gate_type)}
+        return {"stats": [], "by_category": [], "by_industry": []}
+    return {
+        "stats": db.get_ai_acceptance_stats(gate_type),
+        "by_category": db.get_ai_acceptance_stats_by_category(),
+        "by_industry": db.get_ai_acceptance_stats_by_industry(),
+    }
