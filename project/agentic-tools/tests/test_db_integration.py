@@ -32,6 +32,30 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_conn_works_regardless_of_pgvector_availability():
+    """
+    Regression test for a real bug this exact CI setup caught: _conn() used
+    to gate register_vector() on _HAS_PGVECTOR (the Python package being
+    importable) instead of _PGVECTOR_READY (the `vector` extension actually
+    existing on the connected server). On a Postgres without the extension —
+    e.g. CI's plain postgres:16 image, unlike Railway's Postgres which has it
+    — every single connection checkout raised psycopg2.ProgrammingError
+    ("vector type not found in the database"), breaking all persistence.
+    """
+    assert db.init_db()
+    with db._conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            assert cur.fetchone() == (1,)
+    # _PGVECTOR_READY must reflect server reality, not just "the pgvector
+    # Python package is installed" — assert it's never a false positive.
+    with db._conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regtype('vector') IS NOT NULL")
+            vector_actually_exists = bool(cur.fetchone()[0])
+    assert db._PGVECTOR_READY == vector_actually_exists
+
+
 def _cleanup(run_id, company_id):
     """Delete test rows children-first (FKs have no ON DELETE CASCADE)."""
     from db import _conn
