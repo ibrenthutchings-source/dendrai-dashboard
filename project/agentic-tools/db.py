@@ -1111,6 +1111,21 @@ CREATE TABLE IF NOT EXISTS digest_notifications (
     read_at      TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_digest_user ON digest_notifications (user_id, generated_at DESC);
+
+-- Per-metric baseline reset for Model Health drift (drift_tool.py's
+-- compute_ratio_drift/compute_fred_regime_drift/compute_ai_acceptance_drift
+-- always split "baseline" vs "current" out of rolling history — there's no
+-- separate stored baseline to edit directly). A reset instead tells those
+-- functions "ignore everything before this timestamp for this metric" —
+-- i.e. treat the post-shift population as the new normal going forward,
+-- rather than perpetually comparing against pre-shift data. One row per
+-- metric_key; a fresh reset overwrites the prior one.
+CREATE TABLE IF NOT EXISTS model_health_baseline_resets (
+    metric_key VARCHAR(128) PRIMARY KEY,
+    reset_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    reset_by   VARCHAR(128),
+    reason     TEXT
+);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -1243,6 +1258,14 @@ ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS reviewed_at        TIMESTAMPTZ;
 ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS review_note        TEXT;
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_review_queue
     ON ai_analyses (created_at DESC) WHERE sampled_for_review AND review_status IS DISTINCT FROM 'reviewed';
+
+-- Structured correction logging for Model Health drift incidents — distinct
+-- from `status`/`notes`. Resolving an incident says "we're done with this";
+-- correction_action says *why* — the audit trail a model-governance
+-- reviewer actually asks for (MODEL_CARD.md "Recommended Next Steps").
+ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS correction_action VARCHAR(32);
+ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS corrected_by      VARCHAR(128);
+ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS corrected_at      TIMESTAMPTZ;
 """
 
 # observability.system_telemetry had no uniqueness on (server_name, event_id),
@@ -6714,7 +6737,8 @@ def list_drift_incidents(status: Optional[str] = None) -> list:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cols = ("id, metric_key, metric_kind, psi, n_baseline, n_current, detail, "
-                        "status, owner, notes, detected_at, acknowledged_at, resolved_at, updated_at")
+                        "status, owner, notes, detected_at, acknowledged_at, resolved_at, updated_at, "
+                        "correction_action, corrected_by, corrected_at")
                 if status:
                     cur.execute(
                         f"SELECT {cols} FROM model_health_drift_incidents WHERE status = %s ORDER BY detected_at DESC",
@@ -6733,16 +6757,31 @@ def list_drift_incidents(status: Optional[str] = None) -> list:
                         "acknowledged_at": r[11].isoformat() if r[11] else None,
                         "resolved_at": r[12].isoformat() if r[12] else None,
                         "updated_at": r[13].isoformat() if r[13] else None,
+                        "correction_action": r[14], "corrected_by": r[15],
+                        "corrected_at": r[16].isoformat() if r[16] else None,
                     })
                 return out
     return _run(_do) or []
 
 
+_VALID_CORRECTION_ACTIONS = {
+    "rebaselined", "recalibrated", "escalated_for_review", "false_positive", "no_action_needed",
+}
+
+
 def update_drift_incident(incident_id: int, *, status: Optional[str] = None,
-                           owner: Optional[str] = None, notes: Optional[str] = None) -> bool:
+                           owner: Optional[str] = None, notes: Optional[str] = None,
+                           correction_action: Optional[str] = None,
+                           corrected_by: Optional[str] = None) -> bool:
     """Any field left as None is unchanged. A transition to 'acknowledged' or
     'resolved' stamps the matching timestamp; moving back to 'open' clears both,
-    so re-opening a previously-resolved incident (drift recurred) reads cleanly."""
+    so re-opening a previously-resolved incident (drift recurred) reads cleanly.
+
+    correction_action is the structured "what was actually done" record
+    (MODEL_CARD.md "Recommended Next Steps") — distinct from status, which is
+    just lifecycle state. Must be one of _VALID_CORRECTION_ACTIONS; silently
+    ignored (not applied) otherwise rather than raising, matching this
+    function's existing all-fields-optional style."""
     sets, params = ["updated_at = NOW()"], []
     if status is not None:
         sets.append("status = %s")
@@ -6760,6 +6799,13 @@ def update_drift_incident(incident_id: int, *, status: Optional[str] = None,
     if notes is not None:
         sets.append("notes = %s")
         params.append(notes)
+    if correction_action is not None and correction_action in _VALID_CORRECTION_ACTIONS:
+        sets.append("correction_action = %s")
+        params.append(correction_action)
+        sets.append("corrected_at = NOW()")
+        if corrected_by is not None:
+            sets.append("corrected_by = %s")
+            params.append(corrected_by[:128])
     if len(sets) == 1:  # only updated_at — nothing real to change
         return False
     params.append(incident_id)
@@ -6772,6 +6818,47 @@ def update_drift_incident(incident_id: int, *, status: Optional[str] = None,
                 )
                 return cur.rowcount > 0
     return _run(_do, default=False) or False
+
+
+def set_baseline_reset(metric_key: str, reset_by: Optional[str] = None, reason: Optional[str] = None) -> bool:
+    """Mark 'now' as the new baseline floor for a metric — future drift
+    computations (drift_tool.py) exclude data before this point. A fresh
+    reset overwrites any prior one for the same metric_key."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO model_health_baseline_resets (metric_key, reset_at, reset_by, reason)
+                    VALUES (%s, NOW(), %s, %s)
+                    ON CONFLICT (metric_key) DO UPDATE SET
+                        reset_at = NOW(), reset_by = EXCLUDED.reset_by, reason = EXCLUDED.reason
+                    """,
+                    (metric_key[:128], (reset_by or None) and reset_by[:128], reason),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def clear_baseline_reset(metric_key: str) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM model_health_baseline_resets WHERE metric_key = %s", (metric_key,))
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def get_baseline_resets() -> dict:
+    """{metric_key: reset_at (ISO string)} for every metric with an active
+    baseline reset — fed into drift_tool.py's compute_* functions so they
+    exclude pre-reset history."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT metric_key, reset_at FROM model_health_baseline_resets")
+                return {r[0]: r[1].isoformat() for r in cur.fetchall()}
+    return _run(_do) or {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
