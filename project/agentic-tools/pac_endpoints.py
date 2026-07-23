@@ -1096,6 +1096,46 @@ async def delete_process(process_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Controls catalog — the shared control_id vocabulary PaC/CaC/RaC all read
+# from (db.list_controls/upsert_catalog_control). "policy-enforced" means
+# source == 'pac_rego': the control_id traces to a real deny_*[msg] Rego
+# rule OPA can actually evaluate (see _extract_control_id above). 'manual'
+# entries are auditor-assigned business controls with no executable rule
+# behind them yet.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/controls/coverage")
+async def get_controls_coverage():
+    """Aggregate policy-enforcement coverage across the whole controls
+    catalog — how many of the org's controls actually have an enforceable
+    Rego rule behind them, broken down by process. This is a different
+    question from a single module's Control-ID Coverage badge (_rule_coverage,
+    which measures whether one module's deny rules are well-formed) — this
+    is the org-wide "are our controls actually enforced" view."""
+    if not db.is_available():
+        return {"total": 0, "policy_enforced": 0, "manual_only": 0, "by_process": [], "controls": []}
+
+    controls = db.list_controls()
+    by_process: Dict[str, Dict[str, int]] = {}
+    policy_enforced = 0
+    for c in controls:
+        proc = c.get("process") or "unassigned"
+        bucket = by_process.setdefault(proc, {"process": proc, "total": 0, "policy_enforced": 0})
+        bucket["total"] += 1
+        if c.get("source") == "pac_rego":
+            bucket["policy_enforced"] += 1
+            policy_enforced += 1
+
+    return {
+        "total": len(controls),
+        "policy_enforced": policy_enforced,
+        "manual_only": len(controls) - policy_enforced,
+        "by_process": sorted(by_process.values(), key=lambda b: b["process"]),
+        "controls": controls,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Module endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 

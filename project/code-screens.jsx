@@ -546,6 +546,18 @@ function ProcessFlowMap({ activeProcess, processes }) {
   );
 }
 
+function CoverageStat({ label, value, sub, color }) {
+  return (
+    <div style={{ padding:"12px 18px", borderRadius:8, border:"1px solid var(--line)", minWidth:130 }}>
+      <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:4 }}>{label}</div>
+      <div style={{ display:"flex", alignItems:"baseline", gap:6 }}>
+        <span style={{ fontSize:22, fontWeight:700, color: color || "var(--ink)" }}>{value}</span>
+        {sub && <span className="mono" style={{ fontSize:11, color: color || "var(--ink-3)" }}>{sub}</span>}
+      </div>
+    </div>
+  );
+}
+
 // ── PolicyAsCodeScreen ────────────────────────────────────────────────────
 function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, initialProcess }) {
   const [activeProcess, setActiveProcess] = useState(initialProcess || "itgc");
@@ -814,7 +826,25 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
     { id:"editor",    label:"Rego Editor" },
     { id:"sources",   label:"External Sources" },
     { id:"narrative", label:"Narrative & Flow Map" },
+    { id:"coverage",  label:"Control Coverage" },
   ];
+
+  // Org-wide "how many of our controls actually have an enforceable Rego
+  // rule behind them" — a different question from the per-module Control-ID
+  // Coverage badge above (which measures whether one module's deny rules
+  // are well-formed, not whether the org's controls are enforced at all).
+  const [covData, setCovData] = useState(null);
+  const [covLoading, setCovLoading] = useState(false);
+  const [covError, setCovError] = useState(null);
+  useEffect(() => {
+    if (mainTab !== "coverage" || covData || covLoading) return;
+    setCovLoading(true); setCovError(null);
+    fetch("/api/pac/controls/coverage", { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(setCovData)
+      .catch(e => setCovError(e.message || "Failed to load"))
+      .finally(() => setCovLoading(false));
+  }, [mainTab, covData, covLoading]);
 
   return (
     <div className="pac-shell">
@@ -1193,6 +1223,67 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
             </div>
           </div>
           <ProcessFlowMap activeProcess={activeProcess} processes={processes} />
+        </div>
+      )}
+
+      {/* ── TAB 4: Control Coverage ── */}
+      {mainTab === "coverage" && (
+        <div style={{ padding:"18px 20px", overflow:"auto" }}>
+          {covLoading && <div style={{ fontSize:12, color:"var(--ink-3)" }}>Loading coverage…</div>}
+          {covError && <div className="code-status err" style={{ fontSize:11 }}>Failed to load coverage — {covError}</div>}
+          {covData && (
+            <>
+              <div style={{ display:"flex", gap:12, marginBottom:20, flexWrap:"wrap" }}>
+                <CoverageStat label="Total Controls" value={covData.total} />
+                <CoverageStat label="Policy-Enforced" value={covData.policy_enforced} color="var(--green-ink, #166534)"
+                  sub={covData.total ? `${Math.round(100 * covData.policy_enforced / covData.total)}%` : "—"} />
+                <CoverageStat label="Manual Only" value={covData.manual_only} color="var(--amber-ink, #b45309)"
+                  sub={covData.total ? `${Math.round(100 * covData.manual_only / covData.total)}%` : "—"} />
+              </div>
+
+              <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8 }}>
+                By Process
+              </div>
+              <table className="rep-table" style={{ marginBottom:20 }}>
+                <thead><tr><th>Process</th><th>Total</th><th>Policy-Enforced</th><th>Coverage</th></tr></thead>
+                <tbody>
+                  {covData.by_process.map(b => (
+                    <tr key={b.process}>
+                      <td className="mono" style={{ fontSize:11 }}>{b.process}</td>
+                      <td>{b.total}</td>
+                      <td>{b.policy_enforced}</td>
+                      <td className="mono" style={{ fontSize:11 }}>{b.total ? `${Math.round(100 * b.policy_enforced / b.total)}%` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8 }}>
+                All Controls · {covData.controls.length}
+              </div>
+              <table className="rep-table">
+                <thead><tr><th>Control ID</th><th>Name</th><th>Process</th><th>Source</th></tr></thead>
+                <tbody>
+                  {covData.controls.map(c => (
+                    <tr key={c.control_id}>
+                      <td className="mono" style={{ fontSize:10.5 }}>{c.control_id}</td>
+                      <td style={{ fontSize:11.5 }}>{c.name}</td>
+                      <td className="mono" style={{ fontSize:10.5, color:"var(--ink-3)" }}>{c.process || "—"}</td>
+                      <td>
+                        <span className="mono" style={{
+                          fontSize:9.5, padding:"1px 6px", borderRadius:4,
+                          background: c.source === "pac_rego" ? "var(--green-soft)" : "var(--amber-soft)",
+                          color: c.source === "pac_rego" ? "var(--green-ink)" : "var(--amber-ink)",
+                        }}>
+                          {c.source === "pac_rego" ? "policy-enforced" : "manual"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
       )}
 

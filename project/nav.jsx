@@ -14,8 +14,8 @@ const NAV_SECTIONS = [
       { id: "scenarioanalysis", icon: "compass", l: "Scenario Sandbox" },
       { id: "sox",        icon: "grid",    l: "SOX Control Pulse"},
       { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
-      { id: "frameworks", icon: "spark",   l: "Framework Sync" }
-     // { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" }
+      { id: "frameworks", icon: "spark",   l: "Framework Sync" },
+      { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" }
     ],
   },
   {
