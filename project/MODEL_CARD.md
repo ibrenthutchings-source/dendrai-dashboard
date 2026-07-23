@@ -64,6 +64,8 @@ None of these are machine-learned — they're hand-authored formulas and rule ta
 
 **Human override**: `requires_human_review` / `human_verdict` are enforced end-to-end. A human reviewing an item can set `human_verdict ∈ {APPROVE, ESCALATE, CLEAR, MONITOR}`, which clears the review flag and can override `final_verdict`. A reconciliation query already compares `human_verdict` against `ai_final_verdict`/`council_votes` for accuracy tracking — currently the *only* place AI-vs-human disagreement is measured anywhere in the system, and it's scoped narrowly to MCP tool-call adjudication, not the Gate 1/2 recommendations above.
 
+**Same pattern, second application (2026-07-23)**: `POST /agent/investigate/council` applies the same independent-voters-then-reconciliation shape to investigation instead of tool-call risk — three analyst perspectives run in parallel, a synthesis pass reports convergence, nothing is discarded or overridden. See [AI Components](#ai-components-claude). Deliberately *not* extended to pool signal across customers/tenants — this is client-confidential audit data, and cross-tenant aggregation was explicitly ruled out when this was scoped.
+
 ---
 
 ## Ongoing Monitoring — Current State
