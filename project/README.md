@@ -2,7 +2,7 @@
 
 A six-stage, AI-augmented internal audit and risk governance platform built in React. It derives live risk profiles from SEC EDGAR filings, FRED macro data, and industry RSS signals, runs them through a human-in-the-loop (HITL) review pipeline, and produces a Management Action Plan (MAP) register with quarterly projections and a closing loop calibration.
 
-The platform pairs a **deterministic analytics core** (statistical models — ARIMA, Beneish M-score, correlation, templated scoring) with an **agentic layer** powered by Claude (`claude-opus-4-8`): AI-drafted HITL gate dispositions, SEC filing narrative analysis, role-tailored persona briefs, board-ready report generation, and a tool-use investigation agent. The deterministic numbers remain ground truth the model cites — never invents. See [AI-Augmented Features](#ai-augmented-features).
+The platform pairs a **deterministic analytics core** (statistical models — ARIMA, Beneish M-score, correlation, templated scoring) with an **agentic layer** powered by Claude (`claude-sonnet-4-6`): AI-drafted HITL gate dispositions, SEC filing narrative analysis, role-tailored persona briefs, board-ready report generation, and a tool-use investigation agent. The deterministic numbers remain ground truth the model cites — never invents. See [AI-Augmented Features](#ai-augmented-features) and [MODEL_CARD.md](MODEL_CARD.md) for the full AI-component inventory, human-oversight level per feature, and known limitations.
 
 ---
 
@@ -221,7 +221,9 @@ Implemented in `project/agentic-tools/predictive_analytics_tool.py`. Activated v
 
 ## AI-Augmented Features
 
-The agentic layer puts Claude (`claude-opus-4-8`, adaptive thinking) in the loop alongside the deterministic models. All of it goes through one shared client, `agentic-tools/claude_client.py` (model selection, prompt caching, structured-output handling, token-cost accounting). Every feature **degrades gracefully**: if `ANTHROPIC_API_KEY` is not set on the Python bridge, the AI routes return HTTP `503` and the deterministic pipeline is unaffected — the UI affordances simply don't appear.
+The agentic layer puts Claude (`claude-sonnet-4-6`, adaptive thinking) in the loop alongside the deterministic models. All of it goes through one shared client, `agentic-tools/claude_client.py` (model selection, prompt caching, structured-output handling, token-cost accounting). Every feature **degrades gracefully**: if `ANTHROPIC_API_KEY` is not set on the Python bridge, the AI routes return HTTP `503` and the deterministic pipeline is unaffected — the UI affordances simply don't appear.
+
+See [MODEL_CARD.md](MODEL_CARD.md) for the human-oversight level of each feature below, the deterministic/statistical models alongside them, and known bias/limitation findings.
 
 | Feature | UI surface | Endpoint | What it does |
 |---------|-----------|----------|--------------|
@@ -475,7 +477,7 @@ Place a `.env` file in `project/agentic-tools/` (copy `.env.example`). The bridg
 | `ANTHROPIC_API_KEY` | All AI features (`/ai/*`, `/agent/*`, 10-K peer intelligence) | Without it those routes return `503` and the deterministic pipeline is unaffected. |
 | `DATABASE_URL` | Postgres persistence | `postgresql://user:pass@host:port/db`. Unset = persistence disabled (app still runs). On Railway use the public proxy host (`…proxy.rlwy.net:PORT`) from outside Railway, or the internal host when deployed on Railway. The schema self-heals on startup (`db.init_db()` runs DDL + idempotent column migrations). |
 | `FRED_API_KEY` | FRED correlation analysis | Free key from [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html). |
-| `DENDRAI_CLAUDE_MODEL` | — | Optional model override (default `claude-opus-4-8`). |
+| `DENDRAI_CLAUDE_MODEL` | — | Optional model override (default `claude-sonnet-4-6`). |
 | `DENDRAI_MCP_URL` | Managed Agents tool access | Optional hosted MCP server URL for the scheduled cloud agent. |
 
 > **Secrets:** `.env` files are git-ignored — never commit real keys; the committed `.env.example` files are the templates.
