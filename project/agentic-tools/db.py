@@ -1713,7 +1713,7 @@ def _conn():
     conn = _pool.getconn()
     broken = False
     try:
-        if _PGVECTOR_READY:
+        if _HAS_PGVECTOR and _PGVECTOR_READY:
             _pg_register_vector(conn)
         yield conn
         conn.commit()
@@ -5036,7 +5036,7 @@ def save_embedding(
     chunk_index  : 0-based chunk position for long documents split before embedding
     company_id   : companies.id — enables fast per-company filtering in searches
     """
-    if not embedding or not _PGVECTOR_READY:
+    if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
         return None
     def _do():
         with _conn() as conn:
@@ -5080,7 +5080,7 @@ def search_similar_embeddings(
     Returns list of dicts: id, source_table, source_id, content_type, model,
     chunk_index, text_snippet, distance, created_at.
     """
-    if not embedding or not _PGVECTOR_READY:
+    if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
         return []
     op = _DISTANCE_OPS.get(metric, "<=>")
     def _do():
@@ -5133,7 +5133,7 @@ def save_embeddings_bulk(rows: list) -> int:
 
     Returns the number of rows processed (0 when pgvector is unavailable).
     """
-    if not rows or not _PGVECTOR_READY:
+    if not rows or not (_HAS_PGVECTOR and _PGVECTOR_READY):
         return 0
     def _do():
         data = [
@@ -5201,7 +5201,7 @@ def get_relevant_context(
         chunk_index, text_snippet, distance, created_at.
     Sorted by ascending distance (most relevant first).
     """
-    if not query_embedding or not _PGVECTOR_READY:
+    if not query_embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
         return []
     op = _DISTANCE_OPS.get(metric, "<=>")
     def _do():
