@@ -5,6 +5,27 @@
    window.print() export mechanism, same Row/RepSubhead helpers.
    ============================================================ */
 
+// report.jsx's Row/RepSubhead are module-scoped there, not attached to
+// window (only ReportModal/OverrideModal are) — ES modules don't share
+// top-level scope across files, so this file needs its own copies rather
+// than relying on the bare identifiers resolving cross-module.
+function Row({ k, v }) {
+  return (
+    <div className="rep-row">
+      <span className="rep-key">{k}</span>
+      <span className="rep-val">{v}</span>
+    </div>
+  );
+}
+
+function RepSubhead({ children, style }) {
+  return (
+    <div style={{fontWeight:600, fontSize:12, color:"var(--ink)", margin:"12px 0 7px", ...style}}>
+      {children}
+    </div>
+  );
+}
+
 function EvidencePackModal({ open, onClose, runId, ticker }) {
   const [state, setState] = useState({ loading: false, error: null, data: null });
 
