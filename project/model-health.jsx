@@ -511,6 +511,7 @@ function ModelHealthScreen() {
 
   const ratioDrift = data?.ratio_drift || [];
   const fredDrift = data?.fred_drift || [];
+  const acceptanceDrift = data?.acceptance_drift || [];
 
   return (
     <div className="scope-screen" data-screen-label="Model Health">
@@ -569,6 +570,23 @@ function ModelHealthScreen() {
               fredDrift.map(f => (
                 <MHDriftRow key={f.series_id} label={f.name}
                   psi={f.psi} flag={f.flag} nBaseline={f.n_baseline} nCurrent={f.n_current} />
+              ))
+            )}
+          </div>
+
+          <div style={{ flex: 1, minWidth: 340 }}>
+            <div className="kicker" style={{ marginBottom: 8 }}>
+              AI Acceptance Drift (PSI)
+            </div>
+            <div style={{ fontSize: 10, color: "var(--ink-4)", marginBottom: 8 }}>
+              Per Gate, is the AI's advice being accepted/overridden at a materially different rate than its own
+              recent history — MODEL_CARD.md "Recommended Next Steps" #2. Needs real review volume (≥10 events on
+              both sides of the split) before it reports a PSI rather than "insufficient data".
+            </div>
+            {!acceptanceDrift.length ? <Empty>No AI-acceptance history yet.</Empty> : (
+              acceptanceDrift.map(a => (
+                <MHDriftRow key={a.gate_type} label={_MH_GATE_LABELS[a.gate_type] || a.gate_type}
+                  psi={a.psi} flag={a.flag} nBaseline={a.n_baseline} nCurrent={a.n_current} />
               ))
             )}
           </div>
