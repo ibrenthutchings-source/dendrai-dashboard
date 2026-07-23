@@ -22,6 +22,29 @@ const _MH_RATIO_LABELS = {
   asset_growth: "Asset Growth", cash_ratio: "Cash Ratio",
 };
 
+const _MH_GATE_LABELS = {
+  risk: "Risk Gate (Gate 1)", objective: "Objective Gate (Gate 2)",
+  sox_materiality: "SOX Materiality Gate", sox_account: "SOX Account Gate", sox_process: "SOX Process Gate",
+};
+
+const _MH_METRIC_KIND_LABEL = {
+  ratio: "Financial ratio", fred_series: "FRED macro series", ai_acceptance: "AI acceptance rate",
+};
+
+// Correction actions a reviewer can log against a drift incident — the
+// structured "what was actually done" record MODEL_CARD.md's "Recommended
+// Next Steps" asked for, distinct from `status`. Choosing one auto-resolves
+// the incident (see DriftIncidentRow) since logging a correction is itself
+// the decision that the incident is handled.
+const _MH_CORRECTION_ACTIONS = [
+  { value: "rebaselined", label: "Rebaselined" },
+  { value: "recalibrated", label: "Recalibrated" },
+  { value: "escalated_for_review", label: "Escalated for review" },
+  { value: "false_positive", label: "False positive" },
+  { value: "no_action_needed", label: "No action needed" },
+];
+const _MH_CORRECTION_LABEL = Object.fromEntries(_MH_CORRECTION_ACTIONS.map(a => [a.value, a.label]));
+
 function MHFlagBadge({ flag }) {
   const s = _MH_FLAG_STYLE[flag] || _MH_FLAG_STYLE.insufficient_data;
   return (
@@ -187,6 +210,11 @@ function _mhShiftText(incident) {
     const b = shift.baselineMean * 100, c = shift.currentMean * 100, delta = shift.delta * 100;
     return `Population-average shifted from ${b.toFixed(1)}% (baseline) to ${c.toFixed(1)}% (current) — ${delta > 0 ? "+" : ""}${delta.toFixed(1)}pt.`;
   }
+  if (incident.metric_kind === "ai_acceptance") {
+    if (d.baseline_acceptance_rate == null || d.current_acceptance_rate == null) return null;
+    const b = d.baseline_acceptance_rate * 100, c = d.current_acceptance_rate * 100, delta = c - b;
+    return `AI-suggestion acceptance rate moved from ${b.toFixed(0)}% (baseline) to ${c.toFixed(0)}% (current) — ${delta > 0 ? "+" : ""}${delta.toFixed(0)}pt.`;
+  }
   if (d.baseline_mean != null && d.current_mean != null) {
     const delta = d.current_mean - d.baseline_mean;
     return `Series average moved from ${d.baseline_mean.toFixed(2)} (baseline) to ${d.current_mean.toFixed(2)} (current) — ${delta > 0 ? "+" : ""}${delta.toFixed(2)}.`;
@@ -205,6 +233,15 @@ function _mhNextSteps(incident) {
       return `Spot-check recent runs where ${label} is a key risk driver — confirm the shift reflects genuine conditions rather than an upstream data issue, and flag it to whoever owns risk-template calibration for this ratio.`;
     }
     return `Monitor on the next drift cycle — if ${label} keeps drifting in the same direction, plan a template re-calibration rather than treating this as a one-off.`;
+  }
+  if (incident.metric_kind === "ai_acceptance") {
+    const label = _MH_GATE_LABELS[incident.detail?.gate_type] || incident.detail?.gate_type || incident.metric_key;
+    const dir = (incident.detail?.current_acceptance_rate ?? 0) < (incident.detail?.baseline_acceptance_rate ?? 0)
+      ? "being overridden more often" : "being accepted more readily";
+    if (magnitude === "severe" || magnitude === "major") {
+      return `${label} AI suggestions are ${dir} than their own recent history. Sample a few recent items from the review queue (GET /ai/review-queue) or the Approval Inbox for this gate and check whether the AI's advice quality genuinely changed, or whether the underlying risk population did.`;
+    }
+    return `Monitor — if the ${label} acceptance rate keeps moving in the same direction, treat it as a signal to review recent AI recommendations for this gate, not just the aggregate number.`;
   }
   const name = incident.detail?.name || incident.metric_key;
   if (magnitude === "severe" || magnitude === "major") {
