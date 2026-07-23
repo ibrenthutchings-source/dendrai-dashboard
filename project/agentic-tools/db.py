@@ -3871,9 +3871,9 @@ def get_posture_trend(ticker: str, limit: int = 20) -> list:
                                COUNT(*) AS risk_count,
                                AVG(score) AS avg_score,
                                MAX(score) AS max_score,
-                               COUNT(*) FILTER (WHERE rag_status = 'R') AS red_count,
-                               COUNT(*) FILTER (WHERE rag_status = 'A') AS amber_count,
-                               COUNT(*) FILTER (WHERE rag_status = 'G') AS green_count
+                               COUNT(*) FILTER (WHERE LEFT(rag_status, 1) ILIKE 'r') AS red_count,
+                               COUNT(*) FILTER (WHERE LEFT(rag_status, 1) ILIKE 'a') AS amber_count,
+                               COUNT(*) FILTER (WHERE LEFT(rag_status, 1) ILIKE 'g') AS green_count
                         FROM risk_scores
                         WHERE run_id IN (SELECT id FROM ticker_runs)
                         GROUP BY run_id
