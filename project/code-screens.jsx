@@ -784,6 +784,32 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
 
   const proc = processes.find(p => p.id === activeProcess) || processes[0];
 
+  // The process tab bar has no fixed limit — sync_github auto-registers a
+  // new tab per unmatched repo file, so it can grow past the visible width.
+  // overflow-x:auto alone let it scroll but gave no visual cue that more
+  // tabs existed off-screen (scrollbar deliberately hidden for a cleaner
+  // look) and no way to scroll with a plain mouse wheel — a right-edge tab
+  // like "Payroll" just looked clipped/missing. Chevron buttons + wheel
+  // support fix both.
+  const procBarRef = useRef(null);
+  const [procScroll, setProcScroll] = useState({ left: false, right: false });
+  const updateProcScroll = useCallback(() => {
+    const el = procBarRef.current;
+    if (!el) return;
+    setProcScroll({
+      left: el.scrollLeft > 2,
+      right: el.scrollLeft < el.scrollWidth - el.clientWidth - 2,
+    });
+  }, []);
+  useEffect(() => {
+    updateProcScroll();
+    window.addEventListener("resize", updateProcScroll);
+    return () => window.removeEventListener("resize", updateProcScroll);
+  }, [updateProcScroll, processes.length]);
+  function scrollProcBar(dir) {
+    procBarRef.current?.scrollBy({ left: dir * 220, behavior: "smooth" });
+  }
+
   const MAIN_TABS = [
     { id:"editor",    label:"Rego Editor" },
     { id:"sources",   label:"External Sources" },
@@ -793,17 +819,43 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
   return (
     <div className="pac-shell">
       {/* Process selector tabs */}
-      <div className="pac-process-bar">
-        {processes.map(p => (
-          <button key={p.id}
-            className={"pac-proc-tab" + (activeProcess === p.id ? " active" : "")}
-            onClick={() => setActiveProcess(p.id)}
-            style={activeProcess === p.id ? { borderColor:`${p.color}55`, color:p.color } : {}}>
-            <span className="pac-proc-dot" style={{ background:p.color }} />
-            <span className="pac-proc-icon">{p.icon}</span>
-            {p.label}
+      <div className="pac-process-bar-wrap">
+        {procScroll.left && (
+          <button type="button" className="pac-process-bar-scroll left"
+            onClick={() => scrollProcBar(-1)} aria-label="Scroll tabs left">
+            <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6.5 1.5 2.5 5l4 3.5"/>
+            </svg>
           </button>
-        ))}
+        )}
+        <div className="pac-process-bar" ref={procBarRef}
+          onScroll={updateProcScroll}
+          onWheel={e => {
+            if (e.deltaY === 0) return;
+            e.currentTarget.scrollLeft += e.deltaY;
+            e.preventDefault();
+          }}>
+          {processes.map(p => (
+            <button key={p.id}
+              className={"pac-proc-tab" + (activeProcess === p.id ? " active" : "")}
+              onClick={() => setActiveProcess(p.id)}
+              style={activeProcess === p.id ? { borderColor:`${p.color}55`, color:p.color } : {}}>
+              <span className="pac-proc-dot" style={{ background:p.color }} />
+              <span className="pac-proc-icon">{p.icon}</span>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {procScroll.right && (
+          <button type="button" className="pac-process-bar-scroll right"
+            onClick={() => scrollProcBar(1)} aria-label="Scroll tabs right">
+            <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3.5 1.5 7.5 5l-4 3.5"/>
+            </svg>
+          </button>
+        )}
       </div>
 
       {/* Main sub-tabs */}
