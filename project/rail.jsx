@@ -562,12 +562,58 @@ function LoopTab({ loop, ticker = "", risks = [], loopStats = {}, runId = null }
 }
 
 // ---------- NOTIFS ----------
-function NotifTab({ log }) {
-  if (!log?.length) return <Empty>No notifications yet. Fire a control event in the Control Event Monitor tab to populate this log.</Empty>;
+const DIGEST_FREQ_OPTIONS = [
+  { id: "off", l: "Off" },
+  { id: "daily", l: "Daily" },
+  { id: "weekly", l: "Weekly" },
+];
+
+// #6 (roadmap item 5) — scheduled digest notifications: a deterministic,
+// zero-LLM-cost "what changed since your last visit" summary, generated
+// lazily server-side. Shares this screen with the pre-existing CEM
+// stakeholder-cascade log below.
+function NotifTab({ log, digests = [], onMarkRead, digestFreq = "off", onSetDigestFreq }) {
   return (
     <>
+      <SectionLabel right={
+        <div style={{display: "flex", gap: 4}}>
+          {DIGEST_FREQ_OPTIONS.map(o => (
+            <button key={o.id} className={"pp" + (digestFreq === o.id ? " active" : "")}
+              onClick={() => onSetDigestFreq?.(o.id)} title="How often to generate a posture digest for the current ticker">
+              {o.l}
+            </button>
+          ))}
+        </div>
+      }>Posture Digests</SectionLabel>
+      {!digests.length ? (
+        <div style={{marginBottom: 16}}>
+          <Empty>
+            {digestFreq === "off"
+              ? "Digests are off. Pick Daily or Weekly above to get a posture-change summary for the current ticker."
+              : "No digests yet — one generates automatically once enough time has passed and a new completed run exists."}
+          </Empty>
+        </div>
+      ) : digests.slice(0, 20).map(d => (
+        <div key={d.id} className="notif" style={{cursor: d.read_at ? "default" : "pointer"}}
+          onClick={() => !d.read_at && onMarkRead?.(d.id)}>
+          <div className={"avatar " + (d.read_at ? "ack" : "sent")}>
+            {d.read_at ? <Icon name="check" size={11}/> : <Icon name="trend" size={11}/>}
+          </div>
+          <div className="body">
+            <div className="ttl">{d.ticker}</div>
+            <div className="msg">{d.headline}</div>
+            <div className="ts">
+              {d.read_at ? "READ" : "NEW — click to mark read"} · {new Date(d.generated_at).toLocaleString("en-US", {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"})}
+            </div>
+          </div>
+        </div>
+      ))}
+
+      <div style={{marginTop: 20}}/>
       <SectionLabel right={<span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{log.length} sent</span>}>Notification Log</SectionLabel>
-      {log.slice(0, 30).map((n, i) => (
+      {!log?.length ? (
+        <Empty>No notifications yet. Fire a control event in the Control Event Monitor tab to populate this log.</Empty>
+      ) : log.slice(0, 30).map((n, i) => (
         <div key={i} className="notif">
           <div className={"avatar " + (n.status === "ack" ? "ack" : "sent")}>{n.status === "ack" ? <Icon name="check" size={11}/> : "!"}</div>
           <div className="body">
