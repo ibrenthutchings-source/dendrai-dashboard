@@ -1,42 +1,49 @@
 /* ============================================================
    Left navigation rail — menu only, routes the main canvas.
-   Three sections: Configuration · Execution · Governance Intelligence
+   Five sections, mirroring the actual workflow this platform
+   automates: Risk Assessment -> Automation -> Tracking -> Board ->
+   Setup. See help.jsx for the same framing rendered as a clickable
+   overview (HelpScreen).
    ============================================================ */
 
 const NAV_SECTIONS = [
   {
-    label: "Risk Intelligence",
+    label: "Risk Assessment",
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
-      { id: "pipeline", icon: "flow",      l: "Risk Radar" },
-      { id: "scenarios",  icon: "trend",   l: "Grey Swan Scenarios" },
+      { id: "pipeline",  icon: "flow",  l: "Risk Radar" },
+      { id: "posturetrend", icon: "trend", l: "Posture Trend" },
+      { id: "scenarios",  icon: "alert",  l: "Grey Swan Scenarios" },
       { id: "scenarioanalysis", icon: "compass", l: "Scenario Sandbox" },
       { id: "sox",        icon: "grid",    l: "SOX Control Pulse"},
-      { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
-      { id: "frameworks", icon: "spark",   l: "Framework Sync" },
-      { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" }
     ],
   },
   {
-    label: "Audit & Compliance Tracking",
+    label: "Automation",
     items: [
-      // Risk Register, Risk Flow, and Forecasts now live in the
-      // right-hand Live Register rail on the Pipeline screen (post-run).
+      { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
+      { id: "frameworks", icon: "spark",   l: "Framework Sync" },
+      { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
+      { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
+    ],
+  },
+  {
+    label: "Tracking",
+    items: [
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch" },
+      { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "aiinventory", icon: "list", l: "AI System Ledger" },
       { id: "scope",    icon: "grid",      l: "Scope Builder" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
-      { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
+      { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse" },
-      //{ id: "controls", icon: "alert",     l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "ubogov",   icon: "shield",    l: "Control Tower" },
-      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" }
-      //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
+      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
     ],
   },
   {
-    label: "Board Intelligence",
+    label: "Board",
     items: [
       { id: "gov", govTab: "overview",  icon: "compass", l: "Boardroom Pulse" },
       { id: "gov", govTab: "board",     icon: "user",    l: "Board & Audit Committee" },
@@ -46,13 +53,14 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    label: "Configuration",
+    label: "Setup",
     items: [
       { id: "config",     icon: "gear",   l: "Mission Control" },
       { id: "uboconfig",  icon: "shield", l: "Dendrai UBO™ Configuration" },
       { id: "tokenusage", icon: "table",  l: "Usage Meter" },
       { id: "modelhealth", icon: "trend", l: "Model Vitals" },
       { id: "userconfig", icon: "user",   l: "Team & Access", adminOnly: true },
+      { id: "help",       icon: "compass", l: "Help & Workflow Guide" },
     ],
   }
 ];

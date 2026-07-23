@@ -30,6 +30,8 @@ const ScenariosPanelLazy = lazyGlobal(() => import('./scenarios.jsx'), 'Scenario
 const ScenarioAnalysisScreenLazy = lazyGlobal(() => import('./scenario-analysis.jsx'), 'ScenarioAnalysisScreen');
 const SoxScopePanelLazy = lazyGlobal(() => Promise.all([import('./sox-scope.jsx'), import('./sox-hitl.jsx')]), 'SoxScopePanel');
 const GovernanceViewLazy = lazyGlobal(() => import('./governance.jsx'), 'GovernanceView');
+const PostureTrendScreenLazy = lazyGlobal(() => import('./posture-trend.jsx'), 'PostureTrendPanel');
+const HelpScreenLazy = lazyGlobal(() => import('./help.jsx'), 'HelpScreen');
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { err: null }; }
@@ -1961,10 +1963,6 @@ function App() {
                 <Icon name="shield" size={11}/> Evidence Pack
               </button>
               <button className="btn" disabled={!hasRun} onClick={() => setPersonaOpen(true)}><Icon name="user" size={11}/> Persona</button>
-              <button className="btn" disabled={!hasRun || !runIdRef.current} onClick={() => setPostureTrendOpen(true)}
-                title={hasRun && !runIdRef.current ? "Posture Trend requires DB-persisted runs (MCP mode)" : ""}>
-                <Icon name="trend" size={11}/> Posture Trend
-              </button>
               {autoCodeYaml && (
                 <button className="btn btn-acc" onClick={downloadAutoYaml} title="Download auto-generated Risk-as-Code YAML">
                   <Icon name="download" size={11}/> Risk-as-Code
@@ -2183,6 +2181,20 @@ function App() {
           </div>
           )}
 
+          {/* ---- Posture Trend ---- */}
+          {activeScreen === "posturetrend" && (
+          <ScreenAccessGate screenId="posturetrend">
+            <PostureTrendScreenLazy ticker={cfg.ticker} />
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Help ---- */}
+          {activeScreen === "help" && (
+          <div className="panel active">
+            <HelpScreenLazy onNavigate={(screen, govTab) => { setActiveScreen(screen); if (govTab) setActiveGovTab(govTab); }} />
+          </div>
+          )}
+
           {/* ---- Risk-as-Code ---- */}
           {activeScreen === "riskcode" && (
           <div className="panel active">
@@ -2376,8 +2388,6 @@ function App() {
       <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} payload={reportPayload} />
       <EvidencePackModal open={evidencePackOpen} onClose={() => setEvidencePackOpen(false)}
         runId={runIdRef.current} ticker={cfg.ticker || ""} />
-      <PostureTrendModal open={postureTrendOpen} onClose={() => setPostureTrendOpen(false)}
-        ticker={cfg.ticker || ""} />
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
       <AdjustRiskModal
         open={adjustOpen}
