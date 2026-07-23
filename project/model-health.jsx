@@ -296,10 +296,12 @@ function DriftIncidentRow({ incident, onUpdate, saving }) {
             background: st.bg, color: st.ink,
           }}>{st.label}</span>
           <span style={{ fontSize: 11.5, fontWeight: 600 }}>
-            {incident.metric_kind === "ratio" ? (_MH_RATIO_LABELS[incident.metric_key] || incident.metric_key) : (incident.detail?.name || incident.metric_key)}
+            {incident.metric_kind === "ratio" ? (_MH_RATIO_LABELS[incident.metric_key] || incident.metric_key)
+              : incident.metric_kind === "ai_acceptance" ? (_MH_GATE_LABELS[incident.detail?.gate_type] || incident.detail?.gate_type || incident.metric_key)
+              : (incident.detail?.name || incident.metric_key)}
           </span>
           <span style={{ fontSize: 9.5, color: "var(--ink-4)" }}>
-            {incident.metric_kind === "ratio" ? "Financial ratio" : "FRED macro series"}
+            {_MH_METRIC_KIND_LABEL[incident.metric_kind] || incident.metric_kind}
           </span>
         </div>
         <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>
