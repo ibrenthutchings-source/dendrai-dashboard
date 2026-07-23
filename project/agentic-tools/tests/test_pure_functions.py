@@ -180,7 +180,7 @@ def test_build_digest_payload_worsened():
     from_row = _posture_row(1, 5.0, amber=4, green=4)
     to_row = _posture_row(2, 5.8, red=1, amber=3, green=4)
     payload = _build_digest_payload("ON", from_row, to_row)
-    assert payload["avg_score_delta"] == 0.8000000000000007 or round(payload["avg_score_delta"], 2) == 0.80
+    assert round(payload["avg_score_delta"], 2) == 0.80
     assert payload["red_delta"] == 1
     assert payload["amber_delta"] == -1
     assert payload["green_delta"] == 0
