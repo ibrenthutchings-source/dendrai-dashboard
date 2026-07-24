@@ -2518,6 +2518,114 @@ function WhatChangedDigest({ ticker, hasRun }) {
   );
 }
 
+// ---- Next Best Action rail (quasi-facilitated navigation) ----
+// A single always-current "what should I do next" prompt, computed from real
+// app state (pending gates, breached appetite, approval-inbox depth, overdue
+// MAPs, unread notifications) — not a generic tour. Deliberately has no
+// permanent "seen it, never show again" flag: it's state-driven, so it goes
+// quiet on its own once there's genuinely nothing to act on, and comes back
+// the moment something new needs attention. Dismissing only clears it for
+// the current session (resets on reload) since a queue this short doesn't
+// warrant a persisted preference.
+function _isMapOverdue(m) {
+  if (!m || (m.completion_pct ?? 0) >= 100 || !m.due_date) return false;
+  const match = /^(\d{4})-Q([1-4])$/.exec(m.due_date);
+  if (!match) return false;
+  const dueYear = +match[1], dueQ = +match[2];
+  const now = new Date();
+  const curYear = now.getFullYear(), curQ = Math.ceil((now.getMonth() + 1) / 3);
+  return dueYear < curYear || (dueYear === curYear && dueQ < curQ);
+}
+
+function _computeNextActions({ hasRun, running, gateState, output, approvalInboxCount, notifLog, unreadDigestCount, ticker }) {
+  const actions = [];
+  if (!hasRun && !running) {
+    actions.push({ id: "run", priority: 0, screen: "pipeline",
+      text: `Run the risk loop for ${ticker || "this entity"} to generate your first assessment.`,
+      cta: "Go to Risk Radar" });
+  }
+  if (hasRun && gateState?.g1 === "pending") {
+    actions.push({ id: "gate1", priority: 1, screen: "pipeline",
+      text: "Gate 1 risk approval is waiting on your review.", cta: "Review Gate 1" });
+  }
+  if (hasRun && gateState?.g2 === "pending") {
+    actions.push({ id: "gate2", priority: 1, screen: "pipeline",
+      text: "Gate 2 scope approval is waiting on your review.", cta: "Review Gate 2" });
+  }
+  if (output?.s2?.riskAppetite?.status === "BREACHED") {
+    const n = output.s2.riskAppetite.breaching?.length || 0;
+    actions.push({ id: "appetite", priority: 1, screen: "pipeline",
+      text: `Risk appetite breached — ${n} risk${n !== 1 ? "s" : ""} exceed tolerance.`, cta: "Review risks" });
+  }
+  if (approvalInboxCount > 0) {
+    actions.push({ id: "approvals", priority: 2, screen: "approvals",
+      text: `${approvalInboxCount} item${approvalInboxCount !== 1 ? "s" : ""} in your Approval Inbox need review.`,
+      cta: "Open Approval Inbox" });
+  }
+  const overdueMaps = (output?.s4?.maps || []).filter(_isMapOverdue);
+  if (overdueMaps.length > 0) {
+    actions.push({ id: "maps", priority: 2, screen: "maps",
+      text: `${overdueMaps.length} management action plan${overdueMaps.length !== 1 ? "s are" : " is"} past their due quarter.`,
+      cta: "Open MAPs" });
+  }
+  const unread = (notifLog?.length || 0) + (unreadDigestCount || 0);
+  if (unread > 0) {
+    actions.push({ id: "notifs", priority: 3, screen: "notifs",
+      text: `${unread} unread notification${unread !== 1 ? "s" : ""}.`, cta: "Open Notifications" });
+  }
+  return actions.sort((a, b) => a.priority - b.priority);
+}
+
+function NextActionRail({ hasRun, running, gateState, output, approvalInboxCount, notifLog, unreadDigestCount, ticker, onNavigate }) {
+  const [dismissed, setDismissed] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(false);
+
+  const actions = _computeNextActions({ hasRun, running, gateState, output, approvalInboxCount, notifLog, unreadDigestCount, ticker });
+  // Re-arm the dismissal once the queue changes shape (new action appeared,
+  // or the count shifted) — dismissing "review Gate 1" shouldn't also
+  // silently swallow a brand-new appetite breach that shows up a minute later.
+  const actionsKey = actions.map(a => a.id).join(",");
+  const lastKeyRef = React.useRef(actionsKey);
+  if (lastKeyRef.current !== actionsKey) {
+    lastKeyRef.current = actionsKey;
+    if (dismissed) setDismissed(false);
+  }
+
+  if (!actions.length || dismissed) return null;
+  const top = actions[0];
+  const rest = actions.slice(1);
+
+  return (
+    <div className="nba">
+      <div className="nba-head">
+        <span className="nba-icon"><Icon name="compass" size={13}/></span>
+        <span className="nba-text">{top.text}</span>
+        <button type="button" className="btn btn-sm nba-cta" onClick={() => onNavigate(top.screen)}>
+          {top.cta} <Icon name="chev-r" size={10}/>
+        </button>
+        {rest.length > 0 && (
+          <button type="button" className="nba-more" onClick={() => setExpanded(v => !v)}>
+            +{rest.length} more <Icon name={expanded ? "chev-u" : "chev-d"} size={10}/>
+          </button>
+        )}
+        <button type="button" className="nba-dismiss" onClick={() => setDismissed(true)} title="Dismiss for this session">
+          <Icon name="x" size={11}/>
+        </button>
+      </div>
+      {expanded && rest.length > 0 && (
+        <div className="nba-rows">
+          {rest.map(a => (
+            <div key={a.id} className="nba-row">
+              <span className="nba-row-text">{a.text}</span>
+              <button type="button" className="btn btn-sm" onClick={() => onNavigate(a.screen)}>{a.cta}</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Header ----
 function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName, entityTicker,
                   aiChatLabel, chatOpen, onChatToggle }) {
