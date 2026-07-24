@@ -5,7 +5,7 @@
    ============================================================ */
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer,
+  Tooltip, ResponsiveContainer, ComposedChart, Area,
 } from 'recharts';
 
 const GOV_TABS = [
@@ -70,9 +70,29 @@ const _PEER_METRICS = [
   { id: "revenue_growth", label: "Revenue Growth" },
 ];
 
+// Linear-interpolation percentile (same convention as numpy/Excel's default) —
+// good enough for a peer set of ~5-15 companies, no need for a stats library.
+function _percentile(sorted, p) {
+  if (!sorted.length) return null;
+  if (sorted.length === 1) return sorted[0];
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
 function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
+  // governance.jsx has no build-time import of components.jsx (cross-file
+  // access here is always via window — see GovernanceView's RefreshBadge
+  // below for the established pattern); a bare <AuditorTakeaway> JSX tag
+  // would throw ReferenceError the same way evidence-pack.jsx's Row did.
+  const AuditorTakeaway = window.AuditorTakeaway;
   const [metric, setMetric] = useState("gross_margin");
-  const [hidden, setHidden] = useState(() => new Set());
+  // Individual peer lines start hidden — with up to 15 peers, N overlapping
+  // lines reads as spaghetti, not signal. The percentile band (below) answers
+  // "moving with peers or breaking away" at a glance; any single peer can
+  // still be toggled on via the legend for a direct one-to-one comparison.
+  const [hidden, setHidden] = useState(() => new Set((peers || []).map((p, i) => p.company_name || p.ticker || `Peer ${i + 1}`)));
 
   const series = useMemo(() => {
     const list = [];
@@ -93,6 +113,8 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
     return list;
   }, [peers, subjectHistory, ticker]);
 
+  const peerSeries = useMemo(() => series.filter(s => s.key !== "__subject__"), [series]);
+
   if (!series.length) return null;
 
   const allPeriods = Array.from(new Set(series.flatMap(s => s.history.map(h => h.period)))).sort();
@@ -102,16 +124,34 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
       const pt = s.history.find(h => h.period === period);
       row[s.key] = pt ? pt[metric] : null;
     });
+    const peerVals = peerSeries
+      .map(s => row[s.key])
+      .filter(v => v != null && Number.isFinite(v))
+      .sort((a, b) => a - b);
+    if (peerVals.length >= 2) {
+      row.peerRange = [_percentile(peerVals, 0.25), _percentile(peerVals, 0.75)];
+      row.peerMedian = _percentile(peerVals, 0.5);
+    }
     return row;
   });
+
+  // Latest-period subject-vs-peer-median comparison, for the takeaway strip.
+  // Deliberately neutral/informational — for these three metrics, "above" or
+  // "below" median isn't reliably good or bad (e.g. revenue growth can also
+  // signal Beneish SGI risk), so this states the fact, not a verdict.
+  const latestWithMedian = [...data].reverse().find(r => r.peerMedian != null && r["__subject__"] != null);
 
   const fmtV = v => Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "—";
 
   function ChartTooltip({ active, payload, label }) {
     if (!active || !payload?.length) return null;
+    const row = payload[0]?.payload;
     const vals = series
       .map(s => ({ name: s.name, color: s.color, value: payload.find(p => p.dataKey === s.key)?.value }))
       .filter(v => v.value != null && !hidden.has(v.name));
+    if (row?.peerMedian != null) {
+      vals.push({ name: `Peer median (n=${peerSeries.length})`, color: "var(--ink-3)", value: row.peerMedian });
+    }
     if (!vals.length) return null;
     return (
       <div style={{
@@ -151,7 +191,7 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
         ))}
       </div>
       <ResponsiveContainer width="100%" height={240}>
-        <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+        <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false}/>
           <XAxis dataKey="period"
             tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
@@ -160,6 +200,12 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
             tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
             tickLine={false} axisLine={false} width={48}/>
           <Tooltip content={<ChartTooltip/>} cursor={{ stroke: 'var(--line-strong)', strokeWidth: 1, strokeDasharray: '2 2' }}/>
+          {/* Peer 25th-75th percentile band — drawn first so lines render on top. */}
+          <Area dataKey="peerRange" fill="var(--ink-4)" fillOpacity={0.12} stroke="none"
+            connectNulls isAnimationActive={false} legendType="none"/>
+          <Line type="monotone" dataKey="peerMedian" stroke="var(--ink-3)" strokeWidth={1.4}
+            strokeDasharray="3 3" dot={false} activeDot={{ r: 3, fill: "var(--ink-3)", strokeWidth: 0 }}
+            connectNulls isAnimationActive={false} legendType="none"/>
           {series.map(s => (
             <Line key={s.key} type="monotone" dataKey={s.key}
               stroke={s.color} strokeWidth={s.strokeWidth}
@@ -170,9 +216,17 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
               isAnimationActive={false}
               legendType="none"/>
           ))}
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
       <div className="gov-peer-legend">
+        <span className="gov-peer-legend-item" style={{ cursor: "default" }} title="25th-75th percentile of peers with data this period">
+          <span className="gov-peer-legend-swatch" style={{background: "var(--ink-4)", opacity: 0.4}}/>
+          Peer range (p25–p75)
+        </span>
+        <span className="gov-peer-legend-item" style={{ cursor: "default" }}>
+          <span className="gov-peer-legend-swatch" style={{background: "var(--ink-3)"}}/>
+          Peer median
+        </span>
         {series.map(s => (
           <button key={s.key}
             className={"gov-peer-legend-item" + (hidden.has(s.name) ? " off" : "")}
@@ -183,6 +237,18 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
           </button>
         ))}
       </div>
+      {latestWithMedian && AuditorTakeaway && (() => {
+        const subj = latestWithMedian["__subject__"];
+        const med = latestWithMedian.peerMedian;
+        const diffPts = (subj - med) * 100;
+        const metricLabel = _PEER_METRICS.find(m => m.id === metric)?.label || metric;
+        return (
+          <AuditorTakeaway tone="info">
+            {metricLabel} ({latestWithMedian.period}): {fmtV(subj)} for {ticker?.toUpperCase() || "this company"} vs.{" "}
+            {fmtV(med)} peer median ({peerSeries.length} peers) — {Math.abs(diffPts) < 0.1 ? "in line with peers" : `${diffPts > 0 ? diffPts.toFixed(1) + " pts above" : Math.abs(diffPts).toFixed(1) + " pts below"} the peer median`}.
+          </AuditorTakeaway>
+        );
+      })()}
     </div>
   );
 }
