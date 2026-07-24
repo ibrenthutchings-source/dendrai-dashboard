@@ -2506,7 +2506,7 @@ function WhatChangedDigest({ ticker, hasRun }) {
   function changeLine(c, i) {
     if (c.type === "risk_band") {
       return (
-        <div key={i} className="wcd-row">
+        <div key={i} className="wcd-row" style={{ "--i": i }}>
           <span className="wcd-row-icon"><Icon name={CHANGE_ICON.risk_band} size={12}/></span>
           <span className="wcd-row-text">
             <b>{c.name}</b> {c.from_band && c.to_band ? "moved" : "shifted"}{" "}
@@ -2520,7 +2520,7 @@ function WhatChangedDigest({ ticker, hasRun }) {
     }
     const label = c.type === "mscore_band" ? "Beneish M-Score" : "Altman Z''-Score";
     return (
-      <div key={i} className="wcd-row">
+      <div key={i} className="wcd-row" style={{ "--i": i }}>
         <span className="wcd-row-icon"><Icon name={CHANGE_ICON[c.type]} size={12}/></span>
         <span className="wcd-row-text">
           <b>{label}</b> crossed from <RAGChip rag={c.from_band[0]}>{c.from_band}</RAGChip> to <RAGChip rag={c.to_band[0]}>{c.to_band}</RAGChip>
