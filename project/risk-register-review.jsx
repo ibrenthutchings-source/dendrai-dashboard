@@ -2247,8 +2247,14 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         </button>
       </div>
 
-      {/* Tab content — scrollable, no bottom padding needed since action bar is outside */}
-      <div style={{ flex:1, overflowY:"auto" }}>
+      {/* Tab content — scrollable, no bottom padding needed since action bar is outside.
+          overflowX here is a belt-and-suspenders horizontal scrollbar: the wide tables
+          (RiskFrameworkMatrix, ControlCoverageMatrix — one column per framework, can
+          run wider than the viewport) already wrap themselves in their own
+          overflowX:auto div, but this flex column's cross-axis has no width
+          constraint of its own, so without this the wide table could push the
+          whole screen wider instead of scrolling in place. */}
+      <div style={{ flex:1, overflowY:"auto", overflowX:"auto" }}>
 
         {/* ── Internal Register tab ── */}
         {activeTab === "internal" && (
