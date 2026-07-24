@@ -42,6 +42,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     forecasts,
     enabledFeedIds,
     onRssSignalsReady,
+    onAddObjective,
     peerData,
   };
   const s2Extra = {
@@ -788,7 +789,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -898,7 +899,7 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
   );
 }
 
-function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null }) {
+function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null }) {
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
