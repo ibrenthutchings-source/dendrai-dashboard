@@ -727,8 +727,11 @@ def cac_map_to_risks(ticker: str = "", run_id: int = 0, limit: int = 50) -> str:
                             (lim,),
                         )
                     return [
+                        # score is NUMERIC in Postgres -> psycopg2 returns Decimal,
+                        # which json.dumps can't serialize; this crashed the whole
+                        # tool on any real (non-empty) risk data before this cast.
                         {"id": r[0], "risk_ref": r[1], "risk_name": r[2], "category": r[3] or "",
-                         "risk_score": r[4], "rag_status": r[5]}
+                         "risk_score": float(r[4]) if r[4] is not None else None, "rag_status": r[5]}
                         for r in cur.fetchall()
                     ]
 
