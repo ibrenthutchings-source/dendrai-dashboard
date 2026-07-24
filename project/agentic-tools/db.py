@@ -290,6 +290,19 @@ CREATE TABLE IF NOT EXISTS beneish_mscores (
     missing_inputs TEXT[]
 );
 
+CREATE TABLE IF NOT EXISTS altman_zscores (
+    id             SERIAL PRIMARY KEY,
+    run_id         INT         NOT NULL REFERENCES risk_loop_runs(id) UNIQUE,
+    z_score        NUMERIC(6,3),
+    interpretation VARCHAR(32),
+    rag_status     VARCHAR(8),
+    x1_input       NUMERIC,
+    x2_input       NUMERIC,
+    x3_input       NUMERIC,
+    x4_input       NUMERIC,
+    missing_inputs TEXT[]
+);
+
 CREATE TABLE IF NOT EXISTS risk_scores (
     id             SERIAL PRIMARY KEY,
     run_id         INT          NOT NULL REFERENCES risk_loop_runs(id),
@@ -1862,9 +1875,16 @@ def save_sic_peers(company_id: int, peers: list) -> None:
             return
         with _conn() as conn:
             with conn.cursor() as cur:
+                # Replace this company's peer set wholesale. sic_peers has no
+                # unique constraint, so the previous "INSERT ... ON CONFLICT DO
+                # NOTHING" never deduped — every run re-appended the full peer
+                # list, accumulating hundreds of duplicate rows (the "552 peers"
+                # / repeated-ticker bug). Peer identities are stable per run, so
+                # a clean delete-then-insert is the correct semantics.
+                cur.execute("DELETE FROM sic_peers WHERE company_id = %s", (company_id,))
                 execute_values(
                     cur,
-                    "INSERT INTO sic_peers (company_id, peer_ticker, peer_cik, peer_name, peer_state, sic) VALUES %s ON CONFLICT DO NOTHING",
+                    "INSERT INTO sic_peers (company_id, peer_ticker, peer_cik, peer_name, peer_state, sic) VALUES %s",
                     rows,
                 )
     _run(_do)
@@ -1887,8 +1907,9 @@ def get_sic_peers(ticker: str) -> Optional[dict]:
                 company_id, company_name, sic, sic_description, cik = comp
                 cur.execute(
                     """
-                    SELECT peer_ticker, peer_cik, peer_name, peer_state, sic
+                    SELECT DISTINCT peer_ticker, peer_cik, peer_name, peer_state, sic
                     FROM sic_peers WHERE company_id = %s
+                    LIMIT 50
                     """,
                     (company_id,),
                 )
@@ -2420,6 +2441,38 @@ def save_beneish_mscore(run_id: int, mscore: dict) -> None:
                         (mscore.get("inputs") or {}).get("sgi"),
                         (mscore.get("inputs") or {}).get("tata"),
                         mscore.get("missing_inputs") or [],
+                    ),
+                )
+    _run(_do)
+
+
+def save_altman_zscore(run_id: int, zscore: dict) -> None:
+    """Persist the Altman Z''-Score for a run (mirrors save_beneish_mscore).
+    Without this the Z-score existed only transiently in the live response and
+    was lost to any DB-backed reader (run detail, evidence pack)."""
+    if not zscore or zscore.get("error"):
+        return
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO altman_zscores
+                        (run_id, z_score, interpretation, rag_status,
+                         x1_input, x2_input, x3_input, x4_input, missing_inputs)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (
+                        run_id,
+                        zscore.get("z_score"),
+                        zscore.get("interpretation"),
+                        zscore.get("rag_status"),
+                        (zscore.get("inputs") or {}).get("x1"),
+                        (zscore.get("inputs") or {}).get("x2"),
+                        (zscore.get("inputs") or {}).get("x3"),
+                        (zscore.get("inputs") or {}).get("x4"),
+                        zscore.get("missing_inputs") or [],
                     ),
                 )
     _run(_do)
@@ -4251,6 +4304,16 @@ def get_run_detail(run_id: int) -> Optional[dict]:
                     "interpretation": brow[1] if brow else None,
                     "rag_status": brow[2] if brow else None,
                 } if brow else None
+                cur.execute(
+                    "SELECT z_score, interpretation, rag_status FROM altman_zscores WHERE run_id = %s",
+                    (run_id,),
+                )
+                zrow = cur.fetchone()
+                result["altman_zscore"] = {
+                    "z_score": float(zrow[0]) if zrow and zrow[0] is not None else None,
+                    "interpretation": zrow[1] if zrow else None,
+                    "rag_status": zrow[2] if zrow else None,
+                } if zrow else None
                 return result
     return _run(_do)
 
