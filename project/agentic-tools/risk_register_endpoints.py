@@ -13,6 +13,7 @@ Routes:
     GET  /risk-register/reviews/{review_id}    Get review with risk states
     PUT  /risk-register/reviews/{review_id}/risks  Bulk-upsert risk states
     POST /risk-register/reviews/{review_id}/complete  Mark review complete
+    POST /risk-register/reviews/{review_id}/generate-cac  Generate CaC from this review's risk<->control mappings
     POST /risk-register/convert-to-code        Convert reviewed risks to YAML
 """
 
@@ -26,6 +27,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 import db
+from pac_endpoints import _controls_to_rego
 
 logger = logging.getLogger(__name__)
 
@@ -679,6 +681,70 @@ async def complete_review(review_id: int):
     """Mark a review session as completed."""
     db.complete_risk_register_review(review_id)
     return {"completed": True}
+
+
+class GenerateCacFromReviewRequest(BaseModel):
+    ticker: Optional[str] = None
+    run_id: Optional[int] = None
+
+
+@router.post("/reviews/{review_id}/generate-cac")
+async def generate_cac_from_review(review_id: int, req: GenerateCacFromReviewRequest):
+    """Generate a Controls-as-Code Rego artifact from the controls actually
+    assigned to risks in this review (risk_control_mappings) — the
+    auditor-curated relationship, not the whole general control library.
+    Each control's Rego block embeds its linked_risks, so the risk<->control
+    mapping lives in the artifact itself, not only in a side table. Mirrors
+    cac_generate's persistence (controls_as_code_artifacts + embedding), but
+    scoped to this review and grounded in real assignments instead of an
+    arbitrary controls list the caller has to assemble by hand."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    mappings = db.get_risk_control_mappings(review_id=review_id)
+    if not mappings:
+        return {"generated": False, "reason": "no_controls_assigned", "artifact_id": None}
+
+    linked_risks_by_ctrl: Dict[str, List[str]] = {}
+    for m in mappings:
+        linked_risks_by_ctrl.setdefault(m["control_ref"], []).append(m["risk_ref"])
+
+    control_map = _get_control_map_live()
+    controls = []
+    new_to_catalog = []
+    for ctrl_ref, risk_refs in linked_risks_by_ctrl.items():
+        base = control_map.get(ctrl_ref)
+        if base is None:
+            base = {
+                "ref": ctrl_ref, "name": ctrl_ref, "framework": "Internal — Register-assigned",
+                "category": "Uncategorised", "domain": "",
+                "description": "Ad-hoc control assigned in the Risk & Controls Register; not yet in the control library.",
+            }
+            new_to_catalog.append(base)
+        controls.append({**base, "ref": ctrl_ref, "linked_risks": sorted(set(risk_refs))})
+
+    content_rego = _controls_to_rego(controls, req.ticker)
+    artifact_id = db.save_controls_as_code_artifact(content_rego, req.ticker, req.run_id)
+
+    if artifact_id:
+        try:
+            db.save_embedding(
+                source_table="controls_as_code_artifacts", source_id=artifact_id,
+                content_type=db.EMBT_CAC, text=content_rego[:8000],
+            )
+        except Exception:
+            pass  # embedding is non-fatal, same as cac_generate
+        # Self-register ad-hoc controls into the canonical catalog, same pattern
+        # cac_from_pac already uses, so they show up in the library going forward.
+        for c in new_to_catalog:
+            db.upsert_catalog_control(c["ref"], c["name"], c.get("description"), source="register")
+
+    return {
+        "generated": artifact_id is not None,
+        "artifact_id": artifact_id,
+        "control_count": len(controls),
+        "linked_risk_count": len(mappings),
+    }
 
 
 @router.post("/apply-wording")

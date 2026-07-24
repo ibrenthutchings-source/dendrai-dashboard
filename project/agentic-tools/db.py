@@ -5468,13 +5468,26 @@ def create_risk_register_review(
 
 
 def save_review_risk_states(review_id: int, states: list) -> None:
-    """Upsert per-risk state rows for a review session."""
+    """Upsert per-risk state rows for a review session.
+
+    Also normalizes each row's controls_assigned JSONB blob into
+    risk_control_mappings — that table existed in the schema (with exactly
+    the right shape: review_id, risk_ref, control_ref) but had zero write
+    path anywhere in the codebase until now, so cac_map_to_risks and anything
+    else wanting "which controls did the auditor actually assign to this
+    risk" had no real data to query and fell back to fuzzy keyword matching.
+    This is a full replace for the review's mappings each call (delete then
+    re-insert), not a merge — controls_assigned in the request is always the
+    complete current set for the risks it includes, same as the JSONB column
+    itself.
+    """
     if not states:
         return
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 for s in states:
+                    risk_ref = s.get("risk_ref")
                     cur.execute(
                         """
                         INSERT INTO review_risk_states
@@ -5490,7 +5503,7 @@ def save_review_risk_states(review_id: int, states: list) -> None:
                         """,
                         (
                             review_id,
-                            s.get("risk_ref"),
+                            risk_ref,
                             s.get("original_wording"),
                             s.get("current_wording"),
                             s.get("included", True),
@@ -5498,7 +5511,52 @@ def save_review_risk_states(review_id: int, states: list) -> None:
                             Json(s.get("controls_assigned") or []),
                         ),
                     )
+                    cur.execute(
+                        "DELETE FROM risk_control_mappings WHERE review_id = %s AND risk_ref = %s",
+                        (review_id, risk_ref),
+                    )
+                    ctrl_rows = [
+                        (review_id, risk_ref, c.get("ref"), "manual", bool(c.get("generate_code", False)))
+                        for c in (s.get("controls_assigned") or [])
+                        if c.get("ref")
+                    ]
+                    if ctrl_rows:
+                        execute_values(
+                            cur,
+                            """
+                            INSERT INTO risk_control_mappings
+                                (review_id, risk_ref, control_ref, mapping_type, generate_code)
+                            VALUES %s
+                            ON CONFLICT (review_id, risk_ref, control_ref) DO UPDATE SET
+                                generate_code = EXCLUDED.generate_code
+                            """,
+                            ctrl_rows,
+                        )
     _run(_do)
+
+
+def get_risk_control_mappings(review_id: Optional[int] = None) -> list:
+    """Return risk_control_mappings rows, optionally scoped to one review.
+    Each row: {risk_ref, control_ref, mapping_type, generate_code}."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if review_id is not None:
+                    cur.execute(
+                        "SELECT risk_ref, control_ref, mapping_type, generate_code "
+                        "FROM risk_control_mappings WHERE review_id = %s ORDER BY risk_ref",
+                        (review_id,),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT risk_ref, control_ref, mapping_type, generate_code "
+                        "FROM risk_control_mappings ORDER BY review_id DESC, risk_ref"
+                    )
+                return [
+                    {"risk_ref": r[0], "control_ref": r[1], "mapping_type": r[2], "generate_code": r[3]}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
 
 
 def get_review_risk_states(review_id: int) -> list:
