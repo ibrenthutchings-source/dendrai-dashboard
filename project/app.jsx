@@ -113,6 +113,7 @@ function App() {
   // ---- AI Chat (declared here so it's before the persistence effects that include it) ----
   const [aiChatCfg, setAiChatCfg] = useState({ provider: "claude", buttonLabel: "Ask Claude" });
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatSeedQuestion, setChatSeedQuestion] = useState(null);
 
   // ---- Config persistence (DB primary, localStorage fallback) ----
   const [lastSaved, setLastSaved] = useState(null);
@@ -190,6 +191,16 @@ function App() {
 
   // ---- Tabs ----
   const [activeScreen, setActiveScreen] = useState("help"); // default landing screen is the Intelligenza Workflow guide; config|pipeline|register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
+
+  // Session-only screen-visit tally, for the anticipatory help nudge (see
+  // HelpNudge below) — watches activeScreen directly rather than instrumenting
+  // every individual onNavigate callsite (nav rail, WorkflowStrip,
+  // navigateToScreen, NextActionRail all change activeScreen independently),
+  // so no navigation path can silently go untracked.
+  const [screenVisitCounts, setScreenVisitCounts] = useState({});
+  useEffect(() => {
+    setScreenVisitCounts(prev => ({ ...prev, [activeScreen]: (prev[activeScreen] || 0) + 1 }));
+  }, [activeScreen]);
   const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss (forecasts/scenarios moved to the rail)
   const [activeRailTab, setActiveRailTab] = useState("rr"); // Risk Register sub-tab: rr | hm | loop (also nudged by the run)
   const [personaOpen, setPersonaOpen] = useState(false);
@@ -1894,6 +1905,16 @@ function App() {
           approvalInboxCount={approvalInboxCount} notifLog={notifLog}
           unreadDigestCount={unreadDigestCount} ticker={cfg.ticker}
           onNavigate={navigateToScreen} />
+        {/* Help nudge only competes for attention when there's no actual work
+            queued (NextActionRail empty) — an orientation offer shouldn't
+            crowd out a pending approval or a breached appetite. */}
+        {_computeNextActions({ hasRun, running, gateState, output, approvalInboxCount, notifLog, unreadDigestCount, ticker: cfg.ticker }).length === 0 && (
+          <HelpNudge
+            activeScreen={activeScreen}
+            visitCount={screenVisitCounts[activeScreen] || 0}
+            onNavigate={navigateToScreen}
+            onAskChat={(question) => { setChatSeedQuestion(question); setChatOpen(true); }} />
+        )}
         <React.Suspense fallback={<ScreenLoadingFallback/>}>
 
           {/* ---- Configuration / Setup ---- */}
@@ -2447,7 +2468,8 @@ function App() {
         ticker={cfg.ticker}
         industry={cfg.industry}
         output={output}
-        useDb={useDb} setUseDb={setUseDb} />
+        useDb={useDb} setUseDb={setUseDb}
+        seedQuestion={chatSeedQuestion} />
       </ErrorBoundary>
     </div>);
 
@@ -2627,6 +2649,50 @@ function NextActionRail({ hasRun, running, gateState, output, approvalInboxCount
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---- Anticipatory help nudge ----
+// Reads one cheap, fully-client-side activity signal — how many times the
+// current screen has been visited this session — and offers (never
+// auto-injects) a way to get oriented: jump to that screen's entry in the
+// Intelligenza Workflow guide, or ask the AI chat a seeded-but-not-sent
+// question about it. Both offers only ever point at data/screens the user
+// can already reach through the normal nav — this never fetches anything on
+// its own or bypasses ScreenAccessGate, it just suggests a next click.
+const _HELP_NUDGE_THRESHOLD = 3;
+
+function HelpNudge({ activeScreen, visitCount, onNavigate, onAskChat }) {
+  const [dismissed, setDismissed] = React.useState(() => new Set());
+
+  if (activeScreen === "help" || visitCount < _HELP_NUDGE_THRESHOLD || dismissed.has(activeScreen)) {
+    return null;
+  }
+
+  let label = activeScreen;
+  for (const section of window.NAV_SECTIONS || []) {
+    const item = section.items.find(it => it.id === activeScreen);
+    if (item) { label = item.l; break; }
+  }
+
+  function dismiss() {
+    setDismissed(prev => new Set(prev).add(activeScreen));
+  }
+
+  return (
+    <div className="help-nudge">
+      <span className="help-nudge-icon"><Icon name="compass" size={13}/></span>
+      <span className="help-nudge-text">You've come back to {label} a few times this session — need a hand?</span>
+      <button type="button" className="btn btn-sm" onClick={() => { dismiss(); onNavigate("help"); }}>
+        Show workflow guide <Icon name="chev-r" size={10}/>
+      </button>
+      <button type="button" className="btn btn-sm btn-ghost" onClick={() => { dismiss(); onAskChat(`What does the ${label} screen do and how should I use it?`); }}>
+        Ask in chat
+      </button>
+      <button type="button" className="help-nudge-dismiss" onClick={dismiss} title="Dismiss for this session">
+        <Icon name="x" size={11}/>
+      </button>
     </div>
   );
 }
