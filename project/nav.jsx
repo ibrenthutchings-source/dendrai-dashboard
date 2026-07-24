@@ -65,6 +65,71 @@ const NAV_SECTIONS = [
   }
 ];
 
+// Which nav section + item does the current screen map to? Board tabs all
+// share id "gov", so activeGovTab disambiguates them. Returns nulls when a
+// screen has no nav entry (shouldn't happen for reachable screens).
+function findNavLocation(activeScreen, activeGovTab) {
+  for (const section of NAV_SECTIONS) {
+    for (const item of section.items) {
+      if (item.id !== activeScreen) continue;
+      if (item.govTab && item.govTab !== activeGovTab) continue;
+      return { sectionLabel: section.label, itemLabel: item.l };
+    }
+  }
+  return { sectionLabel: null, itemLabel: null };
+}
+
+// The four risk-to-audit workflow stages (Setup is configuration, not a
+// workflow stage — see help.jsx). Kept as an explicit list rather than
+// derived so a future Setup rename can't silently light up a stepper cell.
+const WORKFLOW_STAGE_LABELS = ["Risk Assessment", "Automation", "Tracking", "Board"];
+
+// Compact "you are here" strip for the top of the main canvas: the four
+// workflow stages as a clickable stepper, plus a Stage › Screen breadcrumb.
+// Always visible regardless of nav expand/collapse state. Screens outside
+// the four stages (Setup) resolve to a breadcrumb with no stage highlighted.
+function WorkflowStrip({ activeScreen, activeGovTab, onNavigate }) {
+  const { sectionLabel, itemLabel } = findNavLocation(activeScreen, activeGovTab);
+  const activeStageIdx = WORKFLOW_STAGE_LABELS.indexOf(sectionLabel);
+
+  function goToStage(label) {
+    const section = NAV_SECTIONS.find(s => s.label === label);
+    const first = section && section.items[0];
+    if (first) onNavigate(first.id, first.govTab);
+  }
+
+  return (
+    <div className="wf-strip" data-screen-label="Workflow position">
+      <div className="wf-steps">
+        {WORKFLOW_STAGE_LABELS.map((label, i) => {
+          const cls = "wf-step"
+            + (i === activeStageIdx ? " active" : "")
+            + (activeStageIdx >= 0 && i < activeStageIdx ? " past" : "");
+          return (
+            <React.Fragment key={label}>
+              <button type="button" className={cls} onClick={() => goToStage(label)} title={label}>
+                <span className="wf-step-dot" />
+                <span className="wf-step-label">{label}</span>
+              </button>
+              {i < WORKFLOW_STAGE_LABELS.length - 1 && (
+                <span className="wf-step-sep"><Icon name="chev-r" size={10}/></span>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+      <div className="wf-crumb">
+        <button type="button" className="wf-crumb-stage"
+          onClick={() => sectionLabel && goToStage(sectionLabel)}>
+          {sectionLabel || "—"}
+        </button>
+        <Icon name="chev-r" size={9}/>
+        <span className="wf-crumb-screen">{itemLabel || activeScreen}</span>
+      </div>
+    </div>
+  );
+}
+
 // Mini gear icon (not in the shared Icon set) — falls back gracefully.
 function NavIcon({ name, size = 14 }) {
   if (name === "gear") {
@@ -80,9 +145,18 @@ function NavIcon({ name, size = 14 }) {
 }
 
 function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null }) {
-  const [collapsed, setCollapsed] = React.useState(() =>
-    Object.fromEntries(NAV_SECTIONS.map(s => [s.label, true]))
-  );
+  // Sections start collapsed except the one holding the active screen, so
+  // the "you are here" highlight is always visible without hunting for it.
+  const [collapsed, setCollapsed] = React.useState(() => {
+    const active = findNavLocation(activeScreen, activeGovTab).sectionLabel;
+    return Object.fromEntries(NAV_SECTIONS.map(s => [s.label, s.label !== active]));
+  });
+  // Reveal the active section on navigation; leave the user's manual
+  // expand/collapse of every other section untouched.
+  React.useEffect(() => {
+    const active = findNavLocation(activeScreen, activeGovTab).sectionLabel;
+    if (active) setCollapsed(prev => ({ ...prev, [active]: false }));
+  }, [activeScreen, activeGovTab]);
   const DendraiMark = window.DendraiMark;
   const DendraiWordmark = window.DendraiWordmark;
 
@@ -160,4 +234,4 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
   );
 }
 
-Object.assign(window, { LeftNav, NAV_SECTIONS });
+Object.assign(window, { LeftNav, NAV_SECTIONS, WorkflowStrip });
