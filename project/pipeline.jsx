@@ -1136,6 +1136,23 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
                 <span>Bands = 10th/90th percentile of simulated paths, not a fixed ±%</span>
               </div>
             )}
+            {forecasts.revenue.monteCarlo && (() => {
+              const pd = forecasts.revenue.monteCarlo.probDecline;
+              const material = pd > 0.4; // same threshold already used to color the span above red
+              return (
+                <AuditorTakeaway
+                  tone={material ? "red" : "green"}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Assess revenue concentration and growth durability — Monte Carlo model shows a ${(pd * 100).toFixed(0)}% probability of Q4 revenue decline.`
+                  ) : undefined}
+                >
+                  {material
+                    ? `Elevated downside risk — ${(pd * 100).toFixed(0)}% simulated probability of a Q4 revenue decline warrants a concentration/durability review this cycle.`
+                    : "Downside probability within normal range — no elevated revenue risk from this forecast."}
+                </AuditorTakeaway>
+              );
+            })()}
           </div>
         );
       })()}
@@ -1151,6 +1168,24 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
               Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
             </div>
             <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)"/>
+            {(() => {
+              const lastF = forecasts.margin.forecast.slice(-1)[0]?.base;
+              if (lastF == null) return null;
+              const material = lastF < 10; // same 10% GMI-risk threshold stated above
+              return (
+                <AuditorTakeaway
+                  tone={material ? "amber" : "green"}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Review cost structure and margin trend — gross margin is forecast to compress to ${lastF.toFixed(1)}%, below the 10% Beneish GMI-risk threshold.`
+                  ) : undefined}
+                >
+                  {material
+                    ? `Forecast margin (${lastF.toFixed(1)}%) is below the 10% threshold that flags Beneish GMI risk — worth a cost-structure review this cycle.`
+                    : "Forecast margin stays above the GMI-risk threshold — no elevated financial-reporting risk from this signal."}
+                </AuditorTakeaway>
+              );
+            })()}
           </div>
         );
       })()}
