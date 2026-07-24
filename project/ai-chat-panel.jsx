@@ -49,13 +49,23 @@ function ChatMessage({ msg }) {
   );
 }
 
-function AiChatPanel({ open, onClose, provider = "claude", buttonLabel, ticker, industry, output, useDb = false, setUseDb }) {
+function AiChatPanel({ open, onClose, provider = "claude", buttonLabel, ticker, industry, output, useDb = false, setUseDb, seedQuestion = null }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const abortRef = useRef(null);
+
+  // Pre-fill (never auto-send) a contextual question when a caller opens the
+  // panel with one queued — e.g. the anticipatory help nudge. Only applies to
+  // a fresh conversation so it can't clobber something the user is mid-typing
+  // or already discussing; the user still has to hit send themselves.
+  useEffect(() => {
+    if (open && seedQuestion && messages.length === 0 && !input) {
+      setInput(seedQuestion);
+    }
+  }, [open, seedQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll to bottom on new content
   useEffect(() => {
