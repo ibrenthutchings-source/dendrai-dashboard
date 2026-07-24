@@ -611,6 +611,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
 
     db.save_financial_ratios(run_id, result.get("financial_ratios", {}))
     db.save_beneish_mscore(run_id, result.get("beneish_mscore", {}))
+    db.save_altman_zscore(run_id, result.get("altman_zscore", {}))
 
     risk_data = result.get("risk_scores", {})
     risks_list = risk_data.get("risks", [])
