@@ -1889,6 +1889,11 @@ function App() {
             setCemInitialTab(null);
             setPacInitialProcess(null);
           }} />
+        <NextActionRail
+          hasRun={hasRun} running={running} gateState={gateState} output={output}
+          approvalInboxCount={approvalInboxCount} notifLog={notifLog}
+          unreadDigestCount={unreadDigestCount} ticker={cfg.ticker}
+          onNavigate={navigateToScreen} />
         <React.Suspense fallback={<ScreenLoadingFallback/>}>
 
           {/* ---- Configuration / Setup ---- */}

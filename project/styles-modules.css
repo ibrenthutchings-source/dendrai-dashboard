@@ -278,6 +278,40 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .wcd-row-text { color: var(--ink-2); line-height: 1.5; }
 .wcd-row-text b { color: var(--ink); font-weight: 600; }
 
+/* ---------------- NEXT BEST ACTION RAIL ---------------- */
+/* Sits at the .main level (sibling of .wf-strip, outside any scrolling
+   .panel) so it's visible regardless of which screen is active. */
+.nba {
+  flex-shrink: 0;
+  background: var(--acc-soft);
+  border-bottom: 1px solid var(--line);
+}
+.nba-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 24px;
+}
+[data-density="compact"] .nba-head { padding: 5px 18px; }
+.nba-icon { display: flex; flex-shrink: 0; color: var(--acc-ink); }
+.nba-text { flex: 1; font-size: 12px; font-weight: 500; color: var(--acc-ink); min-width: 0; }
+.nba-cta { flex-shrink: 0; }
+.nba-more {
+  flex-shrink: 0; display: flex; align-items: center; gap: 3px;
+  font-size: 10.5px; color: var(--acc-ink); opacity: 0.8; padding: 4px 6px; border-radius: 5px;
+}
+.nba-more:hover { opacity: 1; background: color-mix(in oklch, var(--acc) 12%, transparent); }
+.nba-dismiss { flex-shrink: 0; display: flex; opacity: .55; padding: 3px; border-radius: 4px; color: var(--acc-ink); }
+.nba-dismiss:hover { opacity: 1; background: color-mix(in oklch, var(--acc) 12%, transparent); }
+.nba-rows {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 0 24px 8px; border-top: 1px solid color-mix(in oklch, var(--acc) 20%, transparent);
+}
+[data-density="compact"] .nba-rows { padding: 0 18px 6px; }
+.nba-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 0; font-size: 11.5px; color: var(--acc-ink);
+}
+.nba-row-text { flex: 1; min-width: 0; }
+
 /* ---------------- AUDITOR TAKEAWAY STRIP ---------------- */
 .aud-tk {
   display: flex; align-items: flex-start; gap: 9px;
