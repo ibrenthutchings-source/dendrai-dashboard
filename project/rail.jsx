@@ -705,7 +705,12 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
   if (!personas) return <Empty>Persona reports populate after the loop completes.</Empty>;
   const names = Object.keys(personas);
   const layer = AUDIENCE_LAYERS.find(l => l.key === selected);
-  const cur = personas[selected];
+  // `selected` comes from tweaks.persona, whose value space has drifted from
+  // this component's own persona/audience-layer keys before (crashed on
+  // `cur.headline` for anyone with a stale or mismatched selection — neither
+  // a personas key nor an AUDIENCE_LAYERS key). Fall back to the first real
+  // persona rather than trust the caller's value matches something rendered.
+  const cur = personas[selected] || personas[names[0]];
 
   // #4 — AI-generated persona briefs replace the template when requested.
   const [aiBriefs, setAiBriefs] = useState({});   // { [personaName]: brief }

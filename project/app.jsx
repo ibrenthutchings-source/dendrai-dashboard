@@ -60,7 +60,7 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
   "density": "comfortable",
   "runSpeed": 1.0,
   "autoExpand": true,
-  "persona": "Internal Audit",
+  "persona": "Chief Audit Executive",
   "colorScheme": "system",
   "digestFrequency": "off"
 } /*EDITMODE-END*/;

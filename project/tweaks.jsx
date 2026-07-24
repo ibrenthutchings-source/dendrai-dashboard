@@ -81,11 +81,16 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
         <TweakSelect
           label="Persona lens"
           value={tweaks.persona}
+          // Values must match a real key: either PersonaTab's own persona
+          // report keys (risk-engine.js's buildPersonas) or its AI-generated
+          // audience-layer keys (rail.jsx's AUDIENCE_LAYERS) — anything else
+          // falls through to an undefined lookup. See PersonaTab's fallback
+          // comment for what happens when this drifts again.
           options={[
-            { label: "Internal Audit",        value: "Internal Audit" },
-            { label: "Board / Audit Comm.",   value: "Board / Audit Committee" },
-            { label: "CFO / Treasury",        value: "CFO / Treasury" },
-            { label: "CRO / ERM",             value: "CRO / ERM" },
+            { label: "Internal Audit (CAE)",  value: "Chief Audit Executive" },
+            { label: "CFO / Treasury",        value: "Chief Financial Officer" },
+            { label: "COO / Operations",      value: "Chief Operating Officer" },
+            { label: "Board / Audit Comm.",   value: "BOARD" },
           ]}
           onChange={(v) => setTweak("persona", v)}
         />
