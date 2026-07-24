@@ -1045,9 +1045,25 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
               </div>
               <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
                 8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
-                {ms.m > -1.78 ? " Score exceeds likely-manipulator threshold — accruals and revenue recognition warrant IA review." : ms.m > -2.22 ? " Gray zone — accruals monitoring recommended." : " Score within normal range — no elevated financial reporting risk detected."}
               </div>
             </div>
+            {(() => {
+              const tone = ms.m > -1.78 ? "red" : ms.m > -2.22 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Review revenue recognition and accruals quality — Beneish M-Score (${ms.m.toFixed(2)}) is ${tone === "red" ? "above the likely-manipulator threshold (-1.78)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {ms.m > -1.78 ? "Score exceeds the likely-manipulator threshold — accruals and revenue recognition warrant IA review this cycle."
+                    : ms.m > -2.22 ? "Gray zone — worth a lighter-touch accruals monitoring pass, not necessarily a full scope item."
+                    : "Within normal range — no elevated financial-reporting risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
           </div>
         );
       })()}
@@ -1077,9 +1093,25 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
               </div>
               <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
                 General/non-manufacturer variant (book equity, no market-cap dependency): working capital, retained earnings, and EBIT relative to total assets, plus book equity to total liabilities — computed from EDGAR 10-K.
-                {zs.z <= 1.1 ? " Distress zone — going-concern assessment and covenant headroom warrant immediate IA review." : zs.z <= 2.6 ? " Gray zone — liquidity and solvency monitoring recommended." : " Score within safe range — no elevated solvency risk detected."}
               </div>
             </div>
+            {(() => {
+              const tone = zs.z <= 1.1 ? "red" : zs.z <= 2.6 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Assess going-concern risk and covenant headroom — Altman Z''-Score (${zs.z.toFixed(2)}) is ${tone === "red" ? "in the distress zone (≤1.10)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {zs.z <= 1.1 ? "Distress zone — going-concern assessment and covenant headroom warrant IA review this cycle."
+                    : zs.z <= 2.6 ? "Gray zone — worth a liquidity/solvency monitoring pass, not necessarily a full scope item."
+                    : "Within safe range — no elevated solvency risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
           </div>
         );
       })()}
