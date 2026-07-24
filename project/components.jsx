@@ -102,6 +102,29 @@ function RAGChip({ rag, children, mono = true }) {
   return <span className={`rag-chip rag-${rag}` + (mono ? "" : "")}>{children || rag}</span>;
 }
 
+// ---- Auditor takeaway strip ----
+// Standardized "what this means -> what to do" callout for charts/gauges
+// (M-Score, Z-Score, forecasts, peer comparisons). tone drives the accent
+// color; actionLabel+onAction render an optional single action button that
+// turns the insight into real work (e.g. "-> Add to scope") rather than
+// leaving the reader to remember to act on it themselves.
+function AuditorTakeaway({ tone = "info", children, actionLabel, onAction }) {
+  return (
+    <div className={`aud-tk aud-tk-${tone}`}>
+      <span className="aud-tk-icon"><Icon name="compass" size={12}/></span>
+      <div className="aud-tk-body">
+        <span className="aud-tk-label">Auditor takeaway</span>
+        <span className="aud-tk-text">{children}</span>
+      </div>
+      {actionLabel && onAction && (
+        <button type="button" className="btn btn-sm aud-tk-action" onClick={onAction}>
+          {actionLabel} <Icon name="chev-r" size={10}/>
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ---- Velocity pill ----
 function VelocityPill({ v }) {
   const tone = v > 0 ? "vel-up" : v < 0 ? "vel-dn" : "vel-flat";
@@ -350,7 +373,7 @@ function ScreenLoadingFallback() {
 
 // Expose globally
 Object.assign(window, {
-  Icon, DendraiMark, DendraiWordmark, Pill, RAGChip, VelocityPill, Sparkline,
+  Icon, DendraiMark, DendraiWordmark, Pill, RAGChip, VelocityPill, Sparkline, AuditorTakeaway,
   scoreColor, scoreColorInk, ragFromScore,
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,

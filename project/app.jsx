@@ -744,13 +744,17 @@ function App() {
     log(`Bulk-approve: all remaining objectives accepted by ${auditorName}`);
   }, [auditorName, log, output.s3?.objectives, submitApprovalTask]);
 
-  const addObjective = useCallback(() => {
+  // prefillText/linkedRiskRefs let a caller (e.g. an Auditor Takeaway "Add to
+  // scope" button on the M-Score/Z-Score gauges) seed a real starting point
+  // instead of the generic placeholder — the user still reviews/edits via the
+  // same AdjustObjectiveModal that opens immediately after either way.
+  const addObjective = useCallback((prefillText, linkedRiskRefs = []) => {
     const newId = `OBJ-${String((output.s3?.objectives?.length || 0) + 1).padStart(2, "0")}`;
     const newObj = {
       id: newId,
-      objective: "New audit objective — click Edit to define scope",
+      objective: prefillText || "New audit objective — click Edit to define scope",
       priority: "P2",
-      linked_risks: [],
+      linked_risks: linkedRiskRefs,
       controls: [],
       hours: 40,
       sprint: 1,
