@@ -358,6 +358,11 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .aud-tk-amber  .aud-tk-icon { color: var(--amber-ink); }
 .aud-tk-green  .aud-tk-icon { color: var(--green-ink); }
 
+/* M-Score/Z-Score gauge needle — sweeps to its new angle instead of
+   snapping, so a band-crossing reads as motion (the actual signal), not
+   just a color flip a reader could miss on a static re-render. */
+.gauge-needle { transition: x2 0.7s cubic-bezier(0.25, 1.2, 0.4, 1), y2 0.7s cubic-bezier(0.25, 1.2, 0.4, 1); }
+
 /* ---------------- PIPELINE ---------------- */
 .pipeline { display: flex; flex-direction: column; }
 
