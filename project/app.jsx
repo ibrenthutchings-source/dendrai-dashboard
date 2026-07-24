@@ -1868,6 +1868,16 @@ function App() {
           }} />
 
         <main className="main" data-screen-label="Main canvas">
+        <WorkflowStrip
+          activeScreen={activeScreen}
+          activeGovTab={activeGovTab}
+          onNavigate={(screen, govTab) => {
+            setActiveScreen(screen);
+            if (govTab) setActiveGovTab(govTab);
+            if (screen === "controls") setUnreadCEM(0);
+            setCemInitialTab(null);
+            setPacInitialProcess(null);
+          }} />
         <React.Suspense fallback={<ScreenLoadingFallback/>}>
 
           {/* ---- Configuration / Setup ---- */}
@@ -2505,10 +2515,6 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
         <div className="item">
           <Icon name={mcpMode ? "gear" : liveMode ? "wifi" : "satellite"} size={12} className="muted" />
           <span className="val">{mcpMode ? "MCP" : liveMode ? "LIVE" : "MOCK"}</span>
-        </div>
-        <div className="item">
-          <span className="muted">Cycle</span>
-          <span className="val">28d</span>
         </div>
       </div>
       <button
