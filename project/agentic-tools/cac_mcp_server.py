@@ -153,6 +153,11 @@ def _parse_control_active_rules(rego_content: str) -> list[dict]:
             fm = re.search(rf'"{field}"\s*:\s*"([^"]*)"', body)
             if fm:
                 ctrl[field] = fm.group(1)
+        # linked_risks is an array field (risk_refs assigned to this control in
+        # the Risk & Controls Register), not a plain string — parsed separately.
+        lm = re.search(r'"linked_risks"\s*:\s*\[([^\]]*)\]', body)
+        if lm:
+            ctrl["linked_risks"] = [r.strip().strip('"') for r in lm.group(1).split(",") if r.strip()]
         controls.append(ctrl)
     return controls
 

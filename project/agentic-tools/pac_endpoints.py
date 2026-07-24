@@ -1013,6 +1013,13 @@ def _controls_to_rego(controls: list, ticker: Optional[str] = None) -> str:
             fw   = c.get("framework", "Internal").replace('"', '\\"')
             dom  = c.get("domain", "").replace('"', '\\"')
             desc = (c.get("description") or c.get("desc", "")).replace('"', '\\"')[:200]
+            # linked_risks: risk_ref list this control was actually assigned to in
+            # the Risk & Controls Register (risk_control_mappings), when the caller
+            # supplies it — embeds the risk<->control relationship directly in the
+            # artifact itself rather than only in a separate join table, so anyone
+            # reading the Rego (or diffing it over time) can see what each control
+            # is actually for, not just what it technically does.
+            linked = c.get("linked_risks") or []
             lines.append(f'control_active["{ref}"] := {{')
             lines.append(f'    "name":        "{name}",')
             lines.append(f'    "framework":   "{fw}",')
@@ -1021,6 +1028,9 @@ def _controls_to_rego(controls: list, ticker: Optional[str] = None) -> str:
             lines.append(f'    "description": "{desc}",')
             lines.append(f'    "frequency":   "Quarterly",')
             lines.append(f'    "owner":       "Control Owner",')
+            if linked:
+                risk_list = ", ".join(f'"{r}"' for r in linked)
+                lines.append(f'    "linked_risks": [{risk_list}],')
             lines.append(f'    "test_criteria": [')
             lines.append(f'        "Design effectiveness tested annually",')
             lines.append(f'        "Operating effectiveness tested quarterly",')
