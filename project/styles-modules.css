@@ -249,7 +249,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 
 .panel {
   display: none;
-  flex: 1; overflow-y: auto;
+  flex: 1; overflow-y: auto; overflow-x: auto;
   padding: 20px 24px;
   flex-direction: column;
 }
