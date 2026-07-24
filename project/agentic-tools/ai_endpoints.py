@@ -688,10 +688,18 @@ Technical vocabulary is appropriate for this audience.
 - NONTECH_EXEC (Non-Technical Executive — CFO / COO / CEO): translate risk into \
 business, financial, and operational impact — no technical jargon. Focus on what \
 decision or resource ask this creates for leadership.
-- BOARD (Board / Audit Committee): governance framing only — top risks relative to \
-risk appetite, trend vs. the prior cycle (better/worse/unchanged), and whether \
-management's response looks adequate. Assume the reader has 90 seconds: keep the \
-whole brief under ~200 words and limit it to 2-3 short sections.
+- BOARD (Board / Audit Committee): dollar-led governance framing, not a survey of \
+the register. Select only risks that are simultaneously (a) high severity — RAG Red, \
+or Amber with velocity trending toward Red, (b) high velocity — actively worsening, \
+not stable or improving, and (c) carrying the largest dollar_exposure_m. Rank \
+candidates by that combination and keep only the ones that clearly qualify on all \
+three — this is usually a handful of risks, never the full list. If nothing clears \
+that bar, say so explicitly rather than padding the brief with lower-priority risks. \
+For each risk kept: lead with its dollar exposure, then RAG/velocity, then one line \
+on why it's on this list. Close with the aggregate $ figure across the selected \
+risks and how the picture compares to the prior cycle (better/worse/unchanged) and \
+risk appetite. Assume the reader has 90 seconds: keep the whole brief under ~200 \
+words and limit it to 2-3 short sections.
 
 Lead with the single most important thing for that audience. Be specific and cite \
 scores and RAG bands. Avoid generic filler.
@@ -756,7 +764,13 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
     # brief on the same run with nothing changed (the common "just looking
     # again" case) is then free. Any real change to risks/loop_stats changes
     # the hash and falls through to a fresh call, same as before.
-    input_hash = hashlib.sha256(user.encode("utf-8")).hexdigest()[:32]
+    #
+    # _PERSONA_SYSTEM is included in the hash alongside the user message —
+    # without it, editing the prompt's instructions (e.g. the BOARD persona's
+    # dollar-led filtering rules) would silently keep serving briefs generated
+    # under the OLD instructions for any run whose risks/loop_stats hadn't
+    # changed, since the cache key would be identical either way.
+    input_hash = hashlib.sha256((_PERSONA_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
     cached = db.get_cached_ai_analysis("persona_brief", req.run_id, persona, input_hash)
     if cached is not None:
         return cached
@@ -811,8 +825,10 @@ def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_us
 
     # Same cache as persona_brief — this is the more expensive of the two
     # (effort="high", 10k max_tokens), so a re-open-with-nothing-changed
-    # cache hit here is worth the most.
-    input_hash = hashlib.sha256(user.encode("utf-8")).hexdigest()[:32]
+    # cache hit here is worth the most. _REPORT_SYSTEM is included in the hash
+    # for the same reason as persona_brief's: a future prompt edit must bust
+    # the cache, not keep serving briefs generated under old instructions.
+    input_hash = hashlib.sha256((_REPORT_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
     cached = db.get_cached_ai_analysis("audit_report", req.run_id, None, input_hash)
     if cached is not None:
         return {"ticker": req.ticker, "markdown": cached.get("markdown", "")}
