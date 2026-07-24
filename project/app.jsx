@@ -2002,6 +2002,8 @@ function App() {
               }
             </div>
 
+            <WhatChangedDigest ticker={cfg.ticker} hasRun={hasRun} />
+
             {/* Sub-tabs — hidden when only one tab exists */}
             {pipeTabs.length > 1 && (
               <div className="pipe-sub-tabs">
@@ -2433,6 +2435,76 @@ function App() {
       </ErrorBoundary>
     </div>);
 
+}
+
+// ---- What Changed digest (Change Layer) ----
+// "What changed since your last run" — see api_server.py's Change Layer
+// section for the materiality rules. Fetches on ticker change and whenever
+// a fresh run completes (hasRun flips), so a just-finished run's deltas
+// show up immediately without a manual refresh. Renders nothing on a
+// ticker's first-ever run (no prior to compare against) or while loading;
+// a fetch failure is swallowed the same way govPeerError's siblings are —
+// this is a nice-to-have callout, not something worth blocking the screen on.
+function WhatChangedDigest({ ticker, hasRun }) {
+  const [data, setData] = React.useState(null);
+  const [dismissedFor, setDismissedFor] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!ticker) { setData(null); return; }
+    let cancelled = false;
+    MCP.fetchChanges(ticker)
+      .then(d => { if (!cancelled) setData(d); })
+      .catch(() => { if (!cancelled) setData(null); });
+    return () => { cancelled = true; };
+  }, [ticker, hasRun]);
+
+  if (!data?.has_prior) return null;
+  const dismissKey = data.to_run?.run_id;
+  if (dismissKey != null && dismissedFor === dismissKey) return null;
+
+  const changes = data.changes || [];
+  const CHANGE_ICON = { risk_band: "alert", mscore_band: "flow", zscore_band: "trend" };
+
+  function changeLine(c, i) {
+    if (c.type === "risk_band") {
+      return (
+        <div key={i} className="wcd-row">
+          <span className="wcd-row-icon"><Icon name={CHANGE_ICON.risk_band} size={12}/></span>
+          <span className="wcd-row-text">
+            <b>{c.name}</b> {c.from_band && c.to_band ? "moved" : "shifted"}{" "}
+            {c.from_band && c.to_band && (
+              <>from <RAGChip rag={c.from_band[0]}>{c.from_band}</RAGChip> to <RAGChip rag={c.to_band[0]}>{c.to_band}</RAGChip></>
+            )}
+            {" "}<span className="mono muted">({c.from_score?.toFixed(1)} → {c.to_score?.toFixed(1)}, {c.delta > 0 ? "+" : ""}{c.delta?.toFixed(1)})</span>
+          </span>
+        </div>
+      );
+    }
+    const label = c.type === "mscore_band" ? "Beneish M-Score" : "Altman Z''-Score";
+    return (
+      <div key={i} className="wcd-row">
+        <span className="wcd-row-icon"><Icon name={CHANGE_ICON[c.type]} size={12}/></span>
+        <span className="wcd-row-text">
+          <b>{label}</b> crossed from <RAGChip rag={c.from_band[0]}>{c.from_band}</RAGChip> to <RAGChip rag={c.to_band[0]}>{c.to_band}</RAGChip>
+          {" "}<span className="mono muted">({c.from_value?.toFixed(2)} → {c.to_value?.toFixed(2)})</span>
+        </span>
+      </div>
+    );
+  }
+
+  const hasMaterial = changes.length > 0;
+  return (
+    <div className={"wcd" + (hasMaterial ? " wcd-material" : "")}>
+      <div className="wcd-head">
+        <Icon name={hasMaterial ? "alert" : "check"} size={13}/>
+        <span className="wcd-headline">{data.headline}</span>
+        <button type="button" className="wcd-dismiss" onClick={() => setDismissedFor(dismissKey)} title="Dismiss">
+          <Icon name="x" size={11}/>
+        </button>
+      </div>
+      {hasMaterial && <div className="wcd-rows">{changes.map(changeLine)}</div>}
+    </div>
+  );
 }
 
 // ---- Header ----
