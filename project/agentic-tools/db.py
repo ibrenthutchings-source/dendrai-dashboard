@@ -1272,6 +1272,15 @@ ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS review_note        TEXT;
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_review_queue
     ON ai_analyses (created_at DESC) WHERE sampled_for_review AND review_status IS DISTINCT FROM 'reviewed';
 
+-- Cost-reduction cache: persona_brief/audit_report recompute their full
+-- prompt from (persona/role, risk register, loop stats) every single call,
+-- including on a plain "reopen the same modal" with nothing changed since
+-- the last generation. input_hash lets the endpoint skip the Claude call
+-- entirely on a hit — see get_cached_ai_analysis()/ai_endpoints.py.
+ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS input_hash VARCHAR(64);
+CREATE INDEX IF NOT EXISTS idx_ai_analyses_cache
+    ON ai_analyses (kind, run_id, subject_ref, input_hash) WHERE input_hash IS NOT NULL;
+
 -- Structured correction logging for Model Health drift incidents — distinct
 -- from `status`/`notes`. Resolving an incident says "we're done with this";
 -- correction_action says *why* — the audit trail a model-governance
@@ -3693,6 +3702,7 @@ def save_ai_analysis(
     output_tokens: Optional[int] = None,
     cost_usd: Optional[float] = None,
     sampled_for_review: bool = False,
+    input_hash: Optional[str] = None,
 ) -> Optional[int]:
     """Persist a single AI/LLM output with provenance. Returns the row id.
 
@@ -3700,6 +3710,11 @@ def save_ai_analysis(
     (persona_brief, audit_report) per MODEL_CARD.md "Recommended Next Steps"
     #4 — every other kind leaves this False, since every other AI endpoint
     already has a human gate before its output takes effect.
+
+    input_hash: set by callers that support the cost-reduction cache (see
+    get_cached_ai_analysis) — a stable hash of the exact inputs that
+    produced `content`, so a later call with identical inputs can be served
+    from this row instead of re-calling the model.
     """
     review_status = "pending" if sampled_for_review else None
     def _do():
@@ -3710,18 +3725,42 @@ def save_ai_analysis(
                     INSERT INTO ai_analyses
                         (run_id, ticker, kind, subject_ref, model, effort,
                          content, summary, input_tokens, output_tokens, cost_usd,
-                         sampled_for_review, review_status)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         sampled_for_review, review_status, input_hash)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     RETURNING id
                     """,
                     (
                         run_id, (ticker or None) and ticker.upper(), kind, subject_ref,
                         model, effort, Json(content), summary,
                         input_tokens, output_tokens, cost_usd,
-                        sampled_for_review, review_status,
+                        sampled_for_review, review_status, input_hash,
                     ),
                 )
                 return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_cached_ai_analysis(kind: str, run_id: Optional[int], subject_ref: Optional[str], input_hash: str) -> Optional[dict]:
+    """Look up a prior AI generation with identical inputs (see save_ai_analysis's
+    input_hash param). Returns the cached content dict, or None on a cache miss —
+    callers should fall through to a fresh model call on None, not treat it as
+    an error. run_id may be None (e.g. mock/offline mode); subject_ref scopes
+    the lookup to e.g. a specific persona so different personas never collide."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT content FROM ai_analyses
+                    WHERE kind = %s AND input_hash = %s
+                      AND run_id IS NOT DISTINCT FROM %s
+                      AND subject_ref IS NOT DISTINCT FROM %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (kind, input_hash, run_id, subject_ref),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
     return _run(_do)
 
 
