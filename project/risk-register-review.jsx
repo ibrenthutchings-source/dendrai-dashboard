@@ -1250,6 +1250,9 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [convertErr, setConvertErr] = useState(null);
   const [saving,     setSaving]     = useState(false);
   const [validationMsg, setValidationMsg] = useState(null);
+  // CaC generated alongside RaC by handleSaveAll — {controlCount, linkedRiskCount} on
+  // success, {error} on failure, null before the first Save All.
+  const [cacStatus, setCacStatus] = useState(null);
 
   // On mount: load controls library and matrix config from DB/API
   useEffect(() => {
@@ -1774,6 +1777,31 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     }
     setOutputYaml(yaml);
 
+    // 3b. Generate Controls-as-Code from this review's actual risk<->control
+    // assignments (not the whole control library) — so RaC (above) and CaC
+    // are generated together from the same curated review, with the
+    // relationship between them captured in risk_control_mappings and
+    // embedded directly in the CaC Rego's linked_risks fields.
+    if (savedReviewId) {
+      try {
+        const cacRes = await fetch(`/api/risk-register/reviews/${savedReviewId}/generate-cac`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: ticker || null, run_id: effectiveRunId || null }),
+        });
+        if (cacRes.ok) {
+          const cacData = await cacRes.json();
+          setCacStatus(cacData.generated
+            ? { controlCount: cacData.control_count, linkedRiskCount: cacData.linked_risk_count }
+            : { error: cacData.reason === "no_controls_assigned" ? "No controls assigned yet" : "Not generated" });
+        } else {
+          setCacStatus({ error: `HTTP ${cacRes.status}` });
+        }
+      } catch (err) {
+        setCacStatus({ error: err.message || "CaC generation failed" });
+      }
+    }
+
     // 4. Refresh display from DB so wording changes are reflected
     try {
       const url = effectiveRunId
@@ -2111,6 +2139,21 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           <div style={{ fontSize:10, color:"var(--green,#2a7)", display:"flex", alignItems:"center", gap:3 }}>
             <span>✓</span> Saved to register at {savedAt}
           </div>
+        )}
+
+        {isInternal && cacStatus && (
+          cacStatus.error ? (
+            <div style={{ fontSize:10, color:"var(--amber,#c65)", display:"flex", alignItems:"center", gap:3 }}
+              title="Controls-as-Code generation">
+              <span>⚠</span> CaC: {cacStatus.error}
+            </div>
+          ) : (
+            <div style={{ fontSize:10, color:"var(--green,#2a7)", display:"flex", alignItems:"center", gap:3 }}
+              title="Controls-as-Code generated from this review's risk<->control assignments">
+              <span>✓</span> CaC: {cacStatus.controlCount} control{cacStatus.controlCount !== 1 ? "s" : ""}
+              {" · "}{cacStatus.linkedRiskCount} mapping{cacStatus.linkedRiskCount !== 1 ? "s" : ""}
+            </div>
+          )
         )}
 
         <div style={{ marginLeft:"auto" }}>
