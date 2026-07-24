@@ -28,6 +28,7 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -734,6 +735,17 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
         f"Loop statistics:\n{json.dumps(req.loop_stats, indent=2, default=str)}\n\n"
         f"Write the {persona} brief."
     )
+
+    # Cost reduction: hash the exact inputs and check for a prior identical
+    # generation before spending a Claude call. Re-opening the same persona
+    # brief on the same run with nothing changed (the common "just looking
+    # again" case) is then free. Any real change to risks/loop_stats changes
+    # the hash and falls through to a fresh call, same as before.
+    input_hash = hashlib.sha256(user.encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("persona_brief", req.run_id, persona, input_hash)
+    if cached is not None:
+        return cached
+
     try:
         result = claude_client.complete_json(
             _PERSONA_SYSTEM, user, _PERSONA_SCHEMA, label="persona",
@@ -749,6 +761,7 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
         model=_MODEL_STRUCTURED, effort="medium",
         summary=result.get("headline", "")[:500],
         sampled_for_review=_should_sample_for_review(),
+        input_hash=input_hash,
     )
     return result
 
@@ -780,6 +793,15 @@ def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_us
         f"Generate the audit report for {req.ticker} from this risk-loop output:\n\n"
         f"{json.dumps(payload, indent=2, default=str)[:60_000]}"
     )
+
+    # Same cache as persona_brief — this is the more expensive of the two
+    # (effort="high", 10k max_tokens), so a re-open-with-nothing-changed
+    # cache hit here is worth the most.
+    input_hash = hashlib.sha256(user.encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("audit_report", req.run_id, None, input_hash)
+    if cached is not None:
+        return {"ticker": req.ticker, "markdown": cached.get("markdown", "")}
+
     try:
         markdown = claude_client.complete_text(
             _REPORT_SYSTEM, user, label="report",
@@ -794,6 +816,7 @@ def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_us
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=f"{len(markdown)} char report",
         sampled_for_review=_should_sample_for_review(),
+        input_hash=input_hash,
     )
     return {"ticker": req.ticker, "markdown": markdown}
 

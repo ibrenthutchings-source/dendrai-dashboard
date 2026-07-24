@@ -67,6 +67,8 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+import threading
+import time
 import sys
 import tempfile
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -1260,15 +1262,39 @@ def _build_ratio_history(xbrl: dict, max_years: int = 6) -> list:
     return history[-max_years:]
 
 
+
+# Cross-request cache for peer XBRL enrichment, keyed by CIK. A peer's
+# fundamentals (gross_margin, m_score, etc.) depend only on its own CIK, not
+# on who's asking — so two different subject companies that happen to share
+# a peer (a common case: AMZN/MSFT/etc. show up as a competitor across many
+# tickers' peer sets) were each independently re-fetching and re-computing
+# the exact same peer's financials. TTL is long (fundamentals are annual
+# 10-K data, not intraday) purely to bound memory growth over a long-running
+# process, not because the data goes stale quickly.
+_PEER_ENRICH_CACHE_TTL = 6 * 3600
+_PEER_ENRICH_FIELDS = ("gross_margin", "rd_intensity", "revenue_growth", "history", "m_score", "z_score")
+_peer_enrich_cache: Dict[str, tuple] = {}  # cik -> (expires_at, fields_dict)
+_peer_enrich_lock = threading.Lock()
+
+
 def _enrich_peer_financials(peer: dict) -> dict:
     """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity,
     revenue_growth, a simplified Beneish M-score and Altman Z''-Score for
     cross-peer benchmarking, and a multi-year `history` series for the
-    peer-benchmarking time series chart."""
+    peer-benchmarking time series chart. Cached by CIK — see
+    _peer_enrich_cache above."""
+    cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
+    if not cik or cik == "0000000000":
+        return peer
+
+    now = time.time()
+    with _peer_enrich_lock:
+        hit = _peer_enrich_cache.get(cik)
+    if hit and hit[0] > now:
+        peer.update(hit[1])
+        return peer
+
     try:
-        cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
-        if not cik or cik == "0000000000":
-            return peer
         xbrl = fetch_xbrl_facts(cik)
         if not xbrl:
             return peer
@@ -1331,6 +1357,11 @@ def _enrich_peer_financials(peer: dict) -> dict:
             )
     except Exception:
         pass
+
+    fields = {k: peer[k] for k in _PEER_ENRICH_FIELDS if k in peer}
+    if fields:
+        with _peer_enrich_lock:
+            _peer_enrich_cache[cik] = (now + _PEER_ENRICH_CACHE_TTL, fields)
     return peer
 
 
