@@ -264,6 +264,15 @@ window.MCP = (function () {
     return _getSavedOrNull(`/audit-scope/${encodeURIComponent(ticker)}`);
   }
 
+  // "What changed since the last run" — see api_server.py's Change Layer
+  // section. Always {has_prior:false, changes:[]} rather than a 404 when
+  // there's no prior run yet, so callers don't need special-case error handling.
+  async function fetchChanges(ticker) {
+    const res = await fetch(BASE + `/changes/${encodeURIComponent(ticker)}`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`MCP /changes: ${res.status}`);
+    return res.json();
+  }
+
   // ── Approval workflow (real 2-stage preparer -> manager HITL review) ────────
   // Session-cookie authenticated (proxied at /approvals/, not /api/mcp/) —
   // identity is always resolved server-side from the login session, never
@@ -622,6 +631,7 @@ window.MCP = (function () {
     fetchSavedProxyData,
     fetchSavedPeerBenchmarks,
     fetchSavedAuditScope,
+    fetchChanges,
     prepareApprovalTask,
     enrichRisksFromFactors,
     map8kToCemEvents,
