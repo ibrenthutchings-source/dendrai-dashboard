@@ -3,6 +3,19 @@
    Light/airy enterprise SaaS, warm neutrals, emerald accent
    ============================================================ */
 
+/* Global motion-safety net — every animation/transition in the app (gauge
+   needle sweeps, staggered reveals, nav pulses, spinners, etc.) collapses to
+   effectively instant for anyone with reduced-motion enabled at the OS
+   level, without needing every individual rule to remember its own guard. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 :root {
   /* Surfaces — warm bone whites */
   --bg:           oklch(98.2% 0.004 80);

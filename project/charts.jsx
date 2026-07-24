@@ -479,8 +479,10 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22, peers = 
               </line>
             );
           })}
-          {/* Needle */}
-          <line x1={cx} y1={cy} x2={needleTip.x} y2={needleTip.y}
+          {/* Needle — className (not a static line) so it sweeps to its new
+              position via CSS transition on x2/y2 rather than snapping,
+              whenever the score changes (e.g. a fresh run moves it). */}
+          <line className="gauge-needle" x1={cx} y1={cy} x2={needleTip.x} y2={needleTip.y}
             stroke="var(--ink)" strokeWidth="3" strokeLinecap="round"/>
           <circle cx={cx} cy={cy} r="5.5" fill="var(--ink)"/>
           {/* Threshold labels along the arc */}
@@ -596,8 +598,10 @@ function ZScoreGauge({ z, distressThreshold = 1.1, greyThreshold = 2.6, peers = 
               </line>
             );
           })}
-          {/* Needle */}
-          <line x1={cx} y1={cy} x2={needleTip.x} y2={needleTip.y}
+          {/* Needle — className (not a static line) so it sweeps to its new
+              position via CSS transition on x2/y2 rather than snapping,
+              whenever the score changes (e.g. a fresh run moves it). */}
+          <line className="gauge-needle" x1={cx} y1={cy} x2={needleTip.x} y2={needleTip.y}
             stroke="var(--ink)" strokeWidth="3" strokeLinecap="round"/>
           <circle cx={cx} cy={cy} r="5.5" fill="var(--ink)"/>
           {/* Threshold labels along the arc */}
