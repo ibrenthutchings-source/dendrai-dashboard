@@ -1436,9 +1436,16 @@ function App() {
     {
       const _gsIndustry = RISK_ENGINE.normalizeIndustry(profileRef.current.entity?.focus || cfg.industry);
       const _liveRatios = profileRef.current.ratios || {};
+      const _freshScenarios = RISK_ENGINE.buildScenarios(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry);
+      // Mutates adjustedRisks in place with dollarExposureM — same array
+      // reference used for output.s2.risks (Stage 2's payload below) and
+      // thus what the Persona brief's req.risks and the Live Register rail
+      // both actually read, so this keeps the per-risk $ figure in sync with
+      // post-signal-adjustment scores/velocities, not just the run's baseline.
+      RISK_ENGINE.allocateRiskDollarExposure(adjustedRisks, _freshScenarios);
       profileRef.current = {
         ...profileRef.current,
-        scenarios: RISK_ENGINE.buildScenarios(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry),
+        scenarios: _freshScenarios,
         greySwan:  RISK_ENGINE.buildGreySwan(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry),
       };
       setProfile(profileRef.current);

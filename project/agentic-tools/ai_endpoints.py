@@ -694,7 +694,16 @@ management's response looks adequate. Assume the reader has 90 seconds: keep the
 whole brief under ~200 words and limit it to 2-3 short sections.
 
 Lead with the single most important thing for that audience. Be specific and cite \
-scores and RAG bands. Avoid generic filler."""
+scores and RAG bands. Avoid generic filler.
+
+Each risk may carry a dollar_exposure_m figure (millions) — a proportional \
+allocation of the Bear-case scenario's modeled revenue-at-risk across the \
+register, weighted by score and velocity. It is real model output, not your \
+estimate. CFO, BOARD, and NONTECH_EXEC audiences care about this most — cite \
+it by name when present ("modeled revenue exposure of ~$XM"), and note it \
+sums to the Bear scenario's total, not a worst-case-per-risk sum. Never \
+invent a dollar figure of your own for a risk where dollar_exposure_m is \
+null — say the impact is not quantified rather than estimating one."""
 
 _PERSONA_SCHEMA = {
     "type": "object",
@@ -726,7 +735,13 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
     risks_min = [
         {"risk_ref": r.get("id") or r.get("risk_ref"), "name": r.get("name"),
          "category": r.get("category"), "score": r.get("score"),
-         "rag": r.get("rag"), "velocity": r.get("velocity"), "ce": r.get("ce")}
+         "rag": r.get("rag"), "velocity": r.get("velocity"), "ce": r.get("ce"),
+         # Pre-computed by risk-engine.js's allocateRiskDollarExposure — a
+         # proportional breakdown of the Bear scenario's modeled revenue-at-risk,
+         # not an independent estimate. Passed through so the model can cite a
+         # real figure instead of inventing one; null when no scenario data
+         # was available to allocate from (e.g. thin/unavailable financials).
+         "dollar_exposure_m": r.get("dollarExposureM")}
         for r in req.risks
     ]
     user = (

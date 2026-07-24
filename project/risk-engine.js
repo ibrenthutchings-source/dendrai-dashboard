@@ -1384,20 +1384,32 @@ window.RISK_ENGINE = (function () {
   function buildPersonas(risks, ticker) {
     const red   = risks.filter(r => r.rag === 'R').map(r => r.id);
     const top3  = [...risks].sort((a,b)=>b.score-a.score).slice(0,3);
+    // Sum of dollarExposureM (see allocateRiskDollarExposure) over a risk
+    // subset. Returns null if no risk in the subset has an exposure figure,
+    // so callers can fall back to un-quantified language rather than show "$0M".
+    const exposureSum = subset => {
+      const vals = subset.map(r => r.dollarExposureM).filter(v => v != null);
+      return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0)) : null;
+    };
+    const totalExposure = exposureSum(risks);
+    const finRisks = risks.filter(r=>r.category==='Financial Reporting'||r.category==='Revenue');
+    const finExposure = exposureSum(finRisks);
+    const opsRisks = risks.filter(r=>r.category==='Operational'||r.category==='Supply');
+    const opsExposure = exposureSum(opsRisks);
     return {
       'Chief Audit Executive': {
         sections: top3.map(r => `${r.id} ${r.name.split('—')[0].trim()}`),
-        summary: `${red.length > 0 ? `${red.length} RED risk${red.length>1?'s':''} require immediate remediation.` : 'No RED risks; amber risk management is the priority.'} Top priority: ${top3[0]?.name.split('—')[0].trim() || 'primary risk'} — highest score and velocity.`,
+        summary: `${red.length > 0 ? `${red.length} RED risk${red.length>1?'s':''} require immediate remediation.` : 'No RED risks; amber risk management is the priority.'} Top priority: ${top3[0]?.name.split('—')[0].trim() || 'primary risk'} — highest score and velocity.${totalExposure != null ? ` Modeled revenue exposure across the register: $${totalExposure}M (Bear-case allocation).` : ''}`,
         headline: `Audit impact score derived from risk velocity and score distribution across ${risks.length} risks.`,
       },
       'Chief Financial Officer': {
-        sections: risks.filter(r=>r.category==='Financial Reporting'||r.category==='Revenue').slice(0,3).map(r=>`${r.id} ${r.name.split('—')[0].trim()}`),
-        summary: `Financial reporting risks: ${risks.filter(r=>r.category==='Financial Reporting').length} identified. ${risks.find(r=>r.category==='Financial Reporting'&&r.rag==='R')?'At least one financial reporting risk at RED — potential disclosure implications.':'Financial reporting risks within amber range; accruals and estimate review required.'}`,
+        sections: finRisks.slice(0,3).map(r => `${r.id} ${r.name.split('—')[0].trim()}`),
+        summary: `Financial reporting risks: ${risks.filter(r=>r.category==='Financial Reporting').length} identified. ${risks.find(r=>r.category==='Financial Reporting'&&r.rag==='R')?'At least one financial reporting risk at RED — potential disclosure implications.':'Financial reporting risks within amber range; accruals and estimate review required.'}${finExposure != null ? ` Modeled revenue exposure: $${finExposure}M.` : ''}`,
         headline: `M-score and accruals ratio are the primary financial reporting early-warning signals for this entity.`,
       },
       'Chief Operating Officer': {
-        sections: risks.filter(r=>r.category==='Operational'||r.category==='Supply').slice(0,3).map(r=>`${r.id} ${r.name.split('—')[0].trim()}`),
-        summary: `Operational risks: ${risks.filter(r=>r.category==='Operational'||r.category==='Supply').length} identified. Priority: KRI integration with GRC to ensure velocity signals are captured before risks breach amber thresholds.`,
+        sections: opsRisks.slice(0,3).map(r => `${r.id} ${r.name.split('—')[0].trim()}`),
+        summary: `Operational risks: ${opsRisks.length} identified. Priority: KRI integration with GRC to ensure velocity signals are captured before risks breach amber thresholds.${opsExposure != null ? ` Modeled revenue exposure: $${opsExposure}M.` : ''}`,
         headline: `Operational risk KPIs should feed GRC risk register triggers; current coverage gap is the primary operational audit finding.`,
       },
     };
@@ -1817,6 +1829,34 @@ window.RISK_ENGINE = (function () {
   }
 
   // ── Main: buildProfile ───────────────────────────────────────
+  // ── Per-risk dollar exposure ────────────────────────────────
+  // Allocates the Bear scenario's modeled revenue-at-risk (revenue_at_risk_m,
+  // already computed in buildScenarios) across individual risks, weighted by
+  // each risk's current score and velocity. This exists so Board/CFO persona
+  // briefs (and the risk register itself) can cite a defensible $ figure per
+  // risk instead of an AI inventing one — allocations sum exactly to the
+  // Bear scenario's own total, so it's a proportional breakdown of an
+  // existing model output, not an independent estimate.
+  function allocateRiskDollarExposure(risks, scenarios) {
+    const bear = (scenarios || []).find(s => s.id === 'bear');
+    const total = bear?.revenue_at_risk_m;
+    if (!risks?.length) return risks;
+    if (total == null) {
+      risks.forEach(r => { r.dollarExposureM = null; });
+      return risks;
+    }
+    // velocity ranges -1..3 (see velOf) — modulates the score-based weight by
+    // roughly -10% to +30% so a fast-worsening risk carries a larger share of
+    // the allocation without letting velocity alone dominate over score.
+    const weight = r => Math.max(r.score || 0.5, 0.5) * (1 + (r.velocity || 0) * 0.10);
+    const weights = risks.map(weight);
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    risks.forEach((r, i) => {
+      r.dollarExposureM = totalWeight > 0 ? Math.round(total * (weights[i] / totalWeight)) : 0;
+    });
+    return risks;
+  }
+
   function buildProfile(ticker, fin, sic, industryHint) {
     const industryLabel = industryHint || sic2industry(sic) || 'Generic';
     const industry = normalizeIndustry(industryLabel);
@@ -1825,6 +1865,7 @@ window.RISK_ENGINE = (function () {
     const objectives = buildObjectives(risks, industry);
     const maps     = buildMAPs(risks, objectives);
     const scenarios  = buildScenarios(risks, ratios, ticker, industry);
+    allocateRiskDollarExposure(risks, scenarios);
     const greySwan   = buildGreySwan(risks, ratios, ticker, industry);
     const reverseStress      = buildReverseStressTest(risks, ratios, ticker, industry);
     const historicalAnalogs  = buildHistoricalAnalogs(ratios, ticker, industry);
@@ -1851,6 +1892,6 @@ window.RISK_ENGINE = (function () {
 
   return { buildProfile, buildLoop, computeRatios, sic2industry, normalizeIndustry, quarterBoundaries: _quarterBoundaries,
            buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator,
-           buildGreySwan, buildScenarios };
+           buildGreySwan, buildScenarios, allocateRiskDollarExposure };
 
 })();
