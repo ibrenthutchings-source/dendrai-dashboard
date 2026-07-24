@@ -108,10 +108,16 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
 
   return (
     <nav className="lnav" data-screen-label="Navigation">
-      <div className="lnav-brand">
+      <button
+        type="button"
+        className="lnav-brand"
+        onClick={() => onNavigate("help")}
+        style={{ background: "none", border: "none", cursor: "pointer", width: "100%" }}
+        title="Back to Intelligenza Workflow"
+      >
         <div className="lnav-logo"><DendraiMark size={17}/></div>
         <div className="lnav-brand-name"><DendraiWordmark size={13.5}/></div>
-      </div>
+      </button>
 
       <div className="lnav-scroll">
         {NAV_SECTIONS.filter(section => section.items.some(isVisible)).map(section => {
