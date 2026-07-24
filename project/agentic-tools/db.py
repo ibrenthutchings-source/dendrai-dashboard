@@ -5559,6 +5559,34 @@ def get_risk_control_mappings(review_id: Optional[int] = None) -> list:
     return _run(_do) or []
 
 
+def get_risk_control_mappings_for_run(run_id: int) -> list:
+    """Curated risk<->control mappings for a pipeline run, via its most
+    recent review session. Used by cac_map_to_risks to prefer the
+    auditor-assigned mapping over its fuzzy keyword-matching fallback."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT m.risk_ref, m.control_ref, m.mapping_type, m.generate_code
+                    FROM risk_control_mappings m
+                    JOIN risk_register_reviews r ON r.id = m.review_id
+                    WHERE r.run_id = %s
+                      AND r.id = (
+                          SELECT id FROM risk_register_reviews
+                          WHERE run_id = %s ORDER BY created_at DESC LIMIT 1
+                      )
+                    ORDER BY m.risk_ref
+                    """,
+                    (run_id, run_id),
+                )
+                return [
+                    {"risk_ref": r[0], "control_ref": r[1], "mapping_type": r[2], "generate_code": r[3]}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 def get_review_risk_states(review_id: int) -> list:
     """Return all risk state rows for a review session."""
     def _do():

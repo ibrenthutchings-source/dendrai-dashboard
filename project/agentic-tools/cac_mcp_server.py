@@ -689,37 +689,58 @@ def cac_map_to_risks(ticker: str = "", run_id: int = 0, limit: int = 50) -> str:
         if not controls:
             return json.dumps({"error": "CaC artifact contains no parseable control_active rules"}, indent=2)
 
-        # Fetch risk scores
+        # Fetch risk scores. risk_scores has no ticker/domain/risk_score columns
+        # (it's run_id + risk_ref + score) — this query previously referenced
+        # all three and would have thrown UndefinedColumn on every call; fixed
+        # here alongside adding risk_ref (needed for the curated-mapping join
+        # below) and a proper ticker->run_id join via risk_loop_runs.
         def _fetch_risks() -> list[dict]:
             with db._conn() as conn:
                 with conn.cursor() as cur:
                     if tok and rid:
                         cur.execute(
-                            "SELECT id, risk_name, category, domain, risk_score, rag_status "
-                            "FROM risk_scores WHERE ticker = %s AND run_id = %s "
-                            "ORDER BY risk_score DESC LIMIT %s",
+                            "SELECT rs.id, rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status "
+                            "FROM risk_scores rs JOIN risk_loop_runs rl ON rl.id = rs.run_id "
+                            "WHERE rl.ticker = %s AND rs.run_id = %s "
+                            "ORDER BY rs.score DESC LIMIT %s",
                             (tok, rid, lim),
                         )
                     elif tok:
                         cur.execute(
-                            "SELECT id, risk_name, category, domain, risk_score, rag_status "
-                            "FROM risk_scores WHERE ticker = %s "
-                            "ORDER BY risk_score DESC LIMIT %s",
+                            "SELECT rs.id, rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status "
+                            "FROM risk_scores rs JOIN risk_loop_runs rl ON rl.id = rs.run_id "
+                            "WHERE rl.ticker = %s "
+                            "ORDER BY rs.score DESC LIMIT %s",
                             (tok, lim),
+                        )
+                    elif rid:
+                        cur.execute(
+                            "SELECT id, risk_ref, risk_name, category, score, rag_status "
+                            "FROM risk_scores WHERE run_id = %s "
+                            "ORDER BY score DESC LIMIT %s",
+                            (rid, lim),
                         )
                     else:
                         cur.execute(
-                            "SELECT id, risk_name, category, domain, risk_score, rag_status "
-                            "FROM risk_scores ORDER BY risk_score DESC LIMIT %s",
+                            "SELECT id, risk_ref, risk_name, category, score, rag_status "
+                            "FROM risk_scores ORDER BY score DESC LIMIT %s",
                             (lim,),
                         )
                     return [
-                        {"id": r[0], "risk_name": r[1], "category": r[2] or "",
-                         "domain": r[3] or "", "risk_score": r[4], "rag_status": r[5]}
+                        {"id": r[0], "risk_ref": r[1], "risk_name": r[2], "category": r[3] or "",
+                         "risk_score": r[4], "rag_status": r[5]}
                         for r in cur.fetchall()
                     ]
 
         risks = db._run(_fetch_risks) or []
+
+        # Curated mapping (Risk & Controls Register) preferred over the fuzzy
+        # keyword heuristic below — only available when we know which run,
+        # since risk_control_mappings' review is scoped to one run.
+        curated_by_risk: dict[str, list[str]] = {}
+        if rid:
+            for m in db.get_risk_control_mappings_for_run(rid):
+                curated_by_risk.setdefault(m["risk_ref"], []).append(m["control_ref"])
         if not risks:
             return json.dumps({
                 "artifact_id": artifact["id"],
@@ -737,29 +758,37 @@ def cac_map_to_risks(ticker: str = "", run_id: int = 0, limit: int = 50) -> str:
         uncovered_risks: list[str] = []
 
         for risk in risks:
-            risk_tokens = (
-                _tokens(risk["risk_name"]) |
-                _tokens(risk["category"]) |
-                _tokens(risk["domain"])
-            )
-            matched_controls: list[str] = []
-            for ctrl in controls:
-                ctrl_tokens = (
-                    _tokens(ctrl.get("category", "")) |
-                    _tokens(ctrl.get("domain", "")) |
-                    _tokens(ctrl.get("name", ""))
-                )
-                if risk_tokens & ctrl_tokens:
-                    matched_controls.append(ctrl["ref"])
+            curated = curated_by_risk.get(risk["risk_ref"] or "")
+            if curated:
+                matched_controls = curated
+                match_type = "curated"
+            else:
+                risk_tokens = _tokens(risk["risk_name"]) | _tokens(risk["category"])
+                matched_controls = []
+                for ctrl in controls:
+                    ctrl_tokens = (
+                        _tokens(ctrl.get("category", "")) |
+                        _tokens(ctrl.get("domain", "")) |
+                        _tokens(ctrl.get("name", ""))
+                    )
+                    if risk_tokens & ctrl_tokens:
+                        matched_controls.append(ctrl["ref"])
+                match_type = "heuristic" if matched_controls else "none"
 
             entry = {
                 "risk_id":          risk["id"],
+                "risk_ref":         risk["risk_ref"],
                 "risk_name":        risk["risk_name"],
                 "risk_score":       risk["risk_score"],
                 "rag_status":       risk["rag_status"],
                 "mapped_controls":  matched_controls,
                 "control_coverage": len(matched_controls),
                 "covered":          len(matched_controls) > 0,
+                # "curated" = from the Risk & Controls Register's actual
+                # assignments (risk_control_mappings); "heuristic" = guessed by
+                # category/name keyword overlap because no curated mapping
+                # exists for this risk yet; "none" = neither found a match.
+                "match_type":       match_type,
             }
             matrix.append(entry)
             if not matched_controls:
