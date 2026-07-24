@@ -1782,6 +1782,133 @@ def digests_mark_read(
     return {"ok": ok, "unread_count": db.count_unread_digests(current_user["id"])}
 
 
+# ── Change Layer ────────────────────────────────────────────────────────────────
+#
+#  "What changed since your last run" — deterministic, no LLM call. Distinct from
+#  the digest system above: digests are user-scoped, interval-gated, and written
+#  to a notifications table for the inbox. This is ticker-scoped, always computed
+#  fresh from the two most recent completed runs, and meant to render inline on
+#  Risk Radar every time there IS a prior run — not gated by anyone's frequency
+#  preference. Reuses get_posture_trend (already aggregates avg/RAG deltas) and
+#  extends it with per-risk band transitions and M-Score/Z-Score band crossings,
+#  which get_posture_trend's aggregate view can't see.
+#
+#  Materiality is intentionally narrow: a RAG/band crossing is always "high"; a
+#  risk score move of >= _RISK_DELTA_MATERIAL points (on the 1-25 scale) without
+#  a band crossing is "medium". Anything smaller is omitted — the point is to
+#  avoid crying wolf on noise, matching the thresholds already used elsewhere
+#  (see risk-engine.js's ragOf and drift_tool.py's PSI bands).
+#
+#  Peer-rank shift and forecast-direction flips are deliberately NOT included
+#  yet: peer benchmarking snapshots aren't persisted per-run (only current
+#  identities + live-re-enriched ratios), and forecasts aren't stored in a
+#  run-comparable shape. Surfacing either now would mean fabricating a
+#  comparison from data that doesn't actually exist at two points in time.
+
+_RISK_DELTA_MATERIAL = 2.0  # points, on the 1-25 risk score scale
+
+
+def _rag_word(v: Optional[str]) -> Optional[str]:
+    """Normalize a rag_status value (may be a single letter or a full word,
+    per risk_scores' historical inconsistency) to Red/Amber/Green/None."""
+    if not v:
+        return None
+    c = v[0].upper()
+    return {"R": "Red", "A": "Amber", "G": "Green"}.get(c)
+
+
+def _score_band_change(kind: str, from_score: Optional[dict], to_score: Optional[dict], value_key: str) -> Optional[dict]:
+    """Build a mscore_band/zscore_band change entry if the RAG band crossed
+    between the two runs. Returns None if either run is missing the score,
+    or the band is unchanged (not material)."""
+    if not from_score or not to_score:
+        return None
+    from_rag = _rag_word(from_score.get("rag_status"))
+    to_rag = _rag_word(to_score.get("rag_status"))
+    if not from_rag or not to_rag or from_rag == to_rag:
+        return None
+    return {
+        "type": kind,
+        "materiality": "high",
+        "from_band": from_rag, "to_band": to_rag,
+        "from_value": from_score.get(value_key), "to_value": to_score.get(value_key),
+    }
+
+
+def _build_change_summary(ticker: str) -> dict:
+    ticker = ticker.upper()
+    trend = db.get_posture_trend(ticker, limit=2)
+    if len(trend) < 2:
+        return {
+            "has_prior": False,
+            "to_run": trend[-1] if trend else None,
+            "headline": None, "posture": None, "changes": [],
+        }
+
+    from_row, to_row = trend[0], trend[1]
+    digest = _build_digest_payload(ticker, from_row, to_row)
+
+    changes: List[Dict[str, Any]] = []
+
+    # Per-risk band/score transitions, matched by the stable risk_ref key.
+    from_risks = {r["risk_ref"]: r for r in db.get_risk_scores_for_run(from_row["run_id"]) if r.get("risk_ref")}
+    to_risks = {r["risk_ref"]: r for r in db.get_risk_scores_for_run(to_row["run_id"]) if r.get("risk_ref")}
+    for ref, to_r in to_risks.items():
+        from_r = from_risks.get(ref)
+        if not from_r:
+            continue  # new risk this run — not a "change" to an existing one
+        from_rag, to_rag = _rag_word(from_r.get("rag")), _rag_word(to_r.get("rag"))
+        from_score, to_score = from_r.get("score"), to_r.get("score")
+        if from_score is None or to_score is None:
+            continue
+        delta = to_score - from_score
+        band_crossed = bool(from_rag and to_rag and from_rag != to_rag)
+        if not band_crossed and abs(delta) < _RISK_DELTA_MATERIAL:
+            continue
+        changes.append({
+            "type": "risk_band",
+            "materiality": "high" if band_crossed else "medium",
+            "risk_ref": ref, "name": to_r.get("name") or to_r.get("risk_name"),
+            "category": to_r.get("category"),
+            "from_band": from_rag, "to_band": to_rag,
+            "from_score": from_score, "to_score": to_score, "delta": delta,
+        })
+
+    # M-Score / Z-Score band crossings.
+    m_change = _score_band_change("mscore_band", db.get_beneish_mscore(from_row["run_id"]), db.get_beneish_mscore(to_row["run_id"]), "m_score")
+    if m_change:
+        changes.append(m_change)
+    z_change = _score_band_change("zscore_band", db.get_altman_zscore(from_row["run_id"]), db.get_altman_zscore(to_row["run_id"]), "z_score")
+    if z_change:
+        changes.append(z_change)
+
+    # Rank: band crossings ("high") before score-move-only ("medium"); within
+    # each tier, largest |delta| first (score-band entries have no delta — treat as 0).
+    changes.sort(key=lambda c: (c["materiality"] != "high", -abs(c.get("delta") or 0)))
+
+    return {
+        "has_prior": True,
+        "from_run": {"run_id": from_row["run_id"], "run_at": from_row["run_at"]},
+        "to_run": {"run_id": to_row["run_id"], "run_at": to_row["run_at"]},
+        "headline": digest["headline"],
+        "posture": {
+            "avg_score_delta": digest["avg_score_delta"],
+            "red_delta": digest["red_delta"], "amber_delta": digest["amber_delta"],
+            "green_delta": digest["green_delta"], "risk_count_delta": digest["risk_count_delta"],
+        },
+        "changes": changes,
+    }
+
+
+@app.get("/changes/{ticker}")
+def get_changes(ticker: str):
+    """What changed since this ticker's previous completed run — see module
+    comment above for scope and materiality rules."""
+    if not db.is_available():
+        return {"has_prior": False, "to_run": None, "headline": None, "posture": None, "changes": []}
+    return _build_change_summary(ticker)
+
+
 # ── Risk-as-Code: multi-source bridge ─────────────────────────────────────────
 #
 #  These three endpoints complement /risks-as-code/generate (JSON-only) by adding:

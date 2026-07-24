@@ -2478,6 +2478,45 @@ def save_altman_zscore(run_id: int, zscore: dict) -> None:
     _run(_do)
 
 
+def get_beneish_mscore(run_id: int) -> Optional[dict]:
+    """Single-row Beneish M-Score lookup for a run — lighter than get_run_detail
+    when a caller (e.g. the Change Layer) only needs this one figure for two runs."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT m_score, interpretation, rag_status FROM beneish_mscores WHERE run_id = %s",
+                    (run_id,),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return None
+                return {
+                    "m_score": float(r[0]) if r[0] is not None else None,
+                    "interpretation": r[1], "rag_status": r[2],
+                }
+    return _run(_do)
+
+
+def get_altman_zscore(run_id: int) -> Optional[dict]:
+    """Single-row Altman Z''-Score lookup for a run (mirrors get_beneish_mscore)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT z_score, interpretation, rag_status FROM altman_zscores WHERE run_id = %s",
+                    (run_id,),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return None
+                return {
+                    "z_score": float(r[0]) if r[0] is not None else None,
+                    "interpretation": r[1], "rag_status": r[2],
+                }
+    return _run(_do)
+
+
 def save_risk_scores(run_id: int, risks: list) -> None:
     if not risks:
         return
