@@ -139,6 +139,65 @@ class GitHubBronzeHandler(BronzeLayerBase):
         )
 
 
+class GitLabBronzeHandler(BronzeLayerBase):
+    """
+    Ingests GitLab events — both real webhook payloads and the synthetic
+    branch-protection audit events scm_audit_endpoints.py produces (same
+    shape convention as GitHubBronzeHandler's synthetic branch_protection_rule
+    events: a "compliance" sub-dict carrying the structured check results,
+    consumed by SilverConformationLayer._conform_gitlab).
+    """
+
+    source_system = SourceSystem.GITLAB
+
+    _ACTION_MAP: dict[str, EventType] = {
+        "protected_branch_audit": EventType.BRANCH_PROTECTION_BYPASSED,
+        "merge_request":          EventType.CODE_REVIEW_BYPASSED,
+        "push":                   EventType.FORCE_PUSH_MAIN,
+        "vulnerability":          EventType.DEPENDENCY_VULNERABILITY,
+    }
+
+    async def ingest(self, raw_event: dict[str, Any]) -> URO:
+        ts_raw = (
+            raw_event.get("created_at")
+            or raw_event.get("timestamp")
+        )
+        ts = _parse_ts(ts_raw)
+
+        gl_event = str(raw_event.get("X-Gitlab-Event") or raw_event.get("event_type", "push"))
+        event_type = self._ACTION_MAP.get(gl_event, EventType.ANOMALY)
+
+        actor_login = (
+            raw_event.get("user", {}).get("username")
+            or raw_event.get("actor", "UNKNOWN")
+        )
+
+        project = raw_event.get("project", {})
+        env = CloudEnvironment(
+            provider="GitLab",
+            account_id=str(project.get("id", "")),
+            tags={
+                "namespace":  project.get("namespace", ""),
+                "repo":       project.get("path_with_namespace", ""),
+                "visibility": project.get("visibility", "private"),
+            },
+        )
+
+        return URO(
+            timestamp=ts,
+            source_system=SourceSystem.GITLAB,
+            event_type=event_type,
+            actor_id=str(actor_login),
+            actor_type=ActorType.HUMAN,
+            environment=env,
+            raw_payload=RawPayload(
+                content=raw_event,
+                schema_version="GitLab-Webhook-v4",
+            ),
+            pipeline_stage=PipelineStage.BRONZE,
+        )
+
+
 class SailPointBronzeHandler(BronzeLayerBase):
     """Ingests SailPoint IdentityNow activity stream events."""
 
@@ -275,6 +334,11 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         "privileged_access":  EventType.PRIVILEGE_ESCALATION,
         "sensitive_resource": EventType.SENSITIVE_RESOURCE_ACCESS,
         "policy_violation":   EventType.POLICY_VIOLATION,
+        # DevOps Monitoring: scheduled poll-connector audits (github_scm_tool.py /
+        # gitlab_scm_tool.py) and evidence_endpoints.py's SARIF webhook both ride
+        # this generic system_telemetry path — see mcp_governance._detect_system_flags.
+        "branch_protection_violation": EventType.BRANCH_PROTECTION_BYPASSED,
+        "sast_finding":                EventType.SAST_FINDING,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
@@ -335,6 +399,7 @@ class BronzeIngestionLayer:
         self._handlers: dict[SourceSystem, BronzeLayerBase] = {
             SourceSystem.SAP:        SAPBronzeHandler(),
             SourceSystem.GITHUB:     GitHubBronzeHandler(),
+            SourceSystem.GITLAB:     GitLabBronzeHandler(),
             SourceSystem.SAILPOINT:  SailPointBronzeHandler(),
             SourceSystem.MCP_PROXY:  McpProxyBronzeHandler(),
             SourceSystem.SYSTEM_TELEMETRY: SystemTelemetryBronzeHandler(),

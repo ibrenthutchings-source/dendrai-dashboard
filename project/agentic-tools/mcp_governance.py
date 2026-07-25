@@ -323,6 +323,7 @@ def _fetch_unprocessed_system(batch_size: int) -> list[dict]:
 # which process actually applies.
 _SOURCE_SYSTEM_TO_PAC_PROCESS = {
     "GITHUB":           "itgc",              # code/access change management
+    "GITLAB":           "itgc",
     "SAILPOINT":        "itgc",              # IAM — access governance
     "ORACLE_FUSION":     "procure_to_pay",    # existing Oracle Fusion tool surface is procurement/controls-centric
     "SAP":               "record_to_report",  # SAP is typically the financial-close system of record
@@ -330,6 +331,21 @@ _SOURCE_SYSTEM_TO_PAC_PROCESS = {
     "MCP_PROXY":         "itgc",
 }
 _DEFAULT_PAC_PROCESS = "itgc"
+
+# Finer-grained override checked before _SOURCE_SYSTEM_TO_PAC_PROCESS: some
+# event types need a different process than the rest of their source system's
+# traffic. DevOps Monitoring reuses GITHUB/GITLAB (real webhooks still route to
+# itgc) and SYSTEM_TELEMETRY (shared with every other push-model system) as
+# source systems, so process routing can't key on source_system alone here —
+# event_type disambiguates the DevOps-specific subset.
+_SOURCE_EVENT_TO_PAC_PROCESS = {
+    ("GITHUB", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
+    ("GITHUB", "CODE_REVIEW_BYPASSED"):        "devops_monitoring",
+    ("GITLAB", "BRANCH_PROTECTION_BYPASSED"):  "devops_monitoring",
+    ("GITLAB", "CODE_REVIEW_BYPASSED"):        "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "SAST_FINDING"):      "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
+}
 
 
 def _evaluate_pac_policy(uro: "URO") -> Optional[dict]:
@@ -346,7 +362,11 @@ def _evaluate_pac_policy(uro: "URO") -> Optional[dict]:
     """
     try:
         source_system = uro.source_system.value if hasattr(uro.source_system, "value") else str(uro.source_system)
-        process = _SOURCE_SYSTEM_TO_PAC_PROCESS.get(source_system, _DEFAULT_PAC_PROCESS)
+        event_type = uro.event_type.value if hasattr(uro.event_type, "value") else str(uro.event_type)
+        process = _SOURCE_EVENT_TO_PAC_PROCESS.get(
+            (source_system, event_type),
+            _SOURCE_SYSTEM_TO_PAC_PROCESS.get(source_system, _DEFAULT_PAC_PROCESS),
+        )
 
         saved = db.get_latest_pac_module(process) if db.is_available() else None
         rego_content = saved["rego_content"] if saved else pac_endpoints._REGO_DEFAULTS.get(process)
@@ -1635,6 +1655,14 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("sod_violation")
     if severity == "CRITICAL" or payload.get("policy_violation"):
         flags.add("policy_violation")
+    # DevOps Monitoring: explicit signals set by github_scm_tool.py/gitlab_scm_tool.py
+    # (branch-protection audits) and evidence_endpoints.py (SARIF findings) rather
+    # than inferred from generic keyword matching — these producers know exactly
+    # which event they're emitting.
+    if payload.get("branch_protection_violation"):
+        flags.add("branch_protection_violation")
+    if payload.get("sast_finding"):
+        flags.add("sast_finding")
     return sorted(flags)
 
 

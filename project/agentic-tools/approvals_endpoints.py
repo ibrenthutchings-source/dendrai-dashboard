@@ -36,8 +36,9 @@ router = APIRouter(prefix="/approvals", tags=["Approval Workflow"])
 
 
 class PrepareRequest(BaseModel):
-    run_id: int
-    gate_type: str            # 'risk' | 'objective' | 'sox_materiality' | 'sox_account' | 'sox_process'
+    # None only for gate_type='devops_scm_exception' — no risk_loop_runs association.
+    run_id: Optional[int] = None
+    gate_type: str            # 'risk' | 'objective' | 'sox_materiality' | 'sox_account' | 'sox_process' | 'devops_scm_exception'
     item_ref: str
     item_label: Optional[str] = None
     disposition: str          # 'approved' | 'adjusted'
@@ -96,6 +97,9 @@ def prepare_item(req: PrepareRequest, current_user: dict = Depends(get_current_u
     if task.get("status") == "approved" and task.get("gate_type") == "risk" and task.get("disposition") == "adjusted":
         db.update_risk_score_fields(task["run_id"], task["item_ref"], task.get("adjustments") or {})
 
+    if task.get("status") == "approved" and task.get("gate_type") == "devops_scm_exception":
+        _create_waiver_from_task(task, _display_name(current_user))
+
     return {"saved": True, "task": task}
 
 
@@ -135,7 +139,41 @@ def review_item(req: ReviewRequest, current_user: dict = Depends(get_current_use
     if updated.get("status") == "manager_approved" and updated.get("gate_type") == "risk" and updated.get("disposition") == "adjusted":
         db.update_risk_score_fields(updated["run_id"], updated["item_ref"], updated.get("adjustments") or {})
 
+    # DevOps Monitoring: a manager-approved SCM exception becomes a real,
+    # time-boxed Risk Waiver (observability.risk_waivers) — see
+    # _create_waiver_from_task. Rejected exceptions create no waiver; the
+    # finding stays open/failing exactly as if nothing had been requested.
+    if updated.get("status") == "manager_approved" and updated.get("gate_type") == "devops_scm_exception":
+        _create_waiver_from_task(updated, _display_name(current_user))
+
     return {"saved": True, "task": updated}
+
+
+def _create_waiver_from_task(task: dict, approved_by: str) -> None:
+    """Turn an approved devops_scm_exception approval_tasks row into an ACTIVE
+    observability.risk_waivers row. item_ref is the vulnerability_hash
+    (evidence_records.fingerprint, or an scm control key for a branch-
+    protection exception); adjustments carries reason/compensating_control/
+    expires_at from the preparer's request. A pre-existing ACTIVE waiver for
+    the same hash is revoked first — the unique index on (vulnerability_hash)
+    WHERE status='ACTIVE' would otherwise reject the insert outright, and
+    silently colliding two waivers for the same finding is worse than making
+    the newest approval the one that counts."""
+    adjustments = task.get("adjustments") or {}
+    expires_at = adjustments.get("expires_at")
+    if not expires_at:
+        return  # a waiver with no expiration isn't a waiver — nothing to create
+    existing = db.get_active_waiver(task["item_ref"])
+    if existing:
+        db.revoke_risk_waiver(existing["id"])
+    db.create_risk_waiver(
+        vulnerability_hash=task["item_ref"],
+        reason=task.get("rationale") or adjustments.get("reason") or "No rationale provided",
+        compensating_control=adjustments.get("compensating_control"),
+        approved_by=approved_by,
+        approval_task_id=task["id"],
+        expires_at=expires_at,
+    )
 
 
 @router.get("/inbox")

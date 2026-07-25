@@ -42,6 +42,12 @@ const NAV_SECTIONS = [
     ],
   },
   {
+    label: "DevOps Monitoring",
+    items: [
+      { id: "devopsmonitoring", icon: "shield", l: "Branch Integrity & Evidence" },
+    ],
+  },
+  {
     label: "Board",
     items: [
       { id: "gov", govTab: "overview",  icon: "compass", l: "Boardroom Pulse" },

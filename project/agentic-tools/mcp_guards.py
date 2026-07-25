@@ -16,19 +16,23 @@ Defences:
   audit_log           — structured append-only tool-call audit log
   cap_output          — hard size cap on returned JSON/YAML strings
   check_read_only     — block write operations when MCP_READ_ONLY=true
+  validate_external_url — block SSRF via user-supplied repo/webhook URLs
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ── Safe directories ───────────────────────────────────────────────────────────
 
@@ -241,6 +245,46 @@ def cap_output(data: str, max_bytes: int = _DEFAULT_OUTPUT_CAP) -> str:
         return data
     truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
     return truncated + f'\n"__truncated__": "Output capped at {max_bytes // 1024} KB"'
+
+
+# ── SSRF guard for user-supplied external URLs ─────────────────────────────────
+# Nothing else in this module covers SSRF today — added for DevOps Monitoring's
+# repo registration (base_url) and evidence webhook use cases, where the URL
+# comes from a user-editable form/config rather than a hardcoded API host.
+# Mirrors api_server.py's _PRIVATE_HOST_RE blocklist (used there for the
+# rss-proxy) but resolves the hostname and checks the actual IP range rather
+# than pattern-matching the literal host string, which also blocks DNS
+# rebinding to a private address.
+
+def validate_external_url(url: str, field: str = "url") -> str:
+    """
+    Raise ValueError unless `url` is an https:// URL whose resolved host is a
+    public (non-private, non-loopback, non-link-local, non-reserved) address.
+    Returns the url unchanged when valid.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(f"Invalid {field} '{url}' — only https:// URLs are allowed")
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise ValueError(f"Invalid {field} '{url}' — missing host")
+
+    try:
+        resolved_ips = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+    except socket.gaierror as exc:
+        raise ValueError(f"Could not resolve host '{hostname}' for {field}: {exc}")
+
+    for ip_str in resolved_ips:
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise ValueError(
+                f"Invalid {field} '{url}' — host '{hostname}' resolves to a "
+                f"non-public address ({ip_str}); private/internal targets are not allowed"
+            )
+    return url
 
 
 # ── Read-only mode ─────────────────────────────────────────────────────────────

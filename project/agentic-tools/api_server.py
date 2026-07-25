@@ -123,6 +123,9 @@ import risk_register_endpoints
 import pac_endpoints
 import approvals_endpoints
 import evidence_pack_endpoints
+import scm_audit_endpoints
+import evidence_endpoints
+import risk_waiver_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -142,6 +145,7 @@ from predictive_analytics_mcp_server import mcp as _predictive_mcp
 from risk_as_code_mcp_server import mcp as _rac_mcp
 from pac_mcp_server import mcp as _pac_mcp
 from cac_mcp_server import mcp as _cac_mcp
+from devops_monitoring_mcp_server import mcp as _devops_monitoring_mcp
 
 try:
     from oracle_fusion_mcp_server import mcp as _oracle_mcp
@@ -244,6 +248,12 @@ async def lifespan(application: FastAPI):
             _drift_task = asyncio.create_task(model_health_drift_watch())
             logger.info("Model Health drift watch task started")
 
+        # DevOps Monitoring: Risk Waiver & Exception Hub automated expiry sweep.
+        _waiver_sweep_task = None
+        if db.is_available():
+            _waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
+            logger.info("Risk waiver expiry sweep task started")
+
         # Background DB reconnect loop — retries every 30 s if startup DB init failed.
         # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
         # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -268,6 +278,9 @@ async def lifespan(application: FastAPI):
                     if _drift_task is None:
                         asyncio.create_task(model_health_drift_watch())
                         logger.info("Model Health drift watch started after DB reconnect")
+                    if _waiver_sweep_task is None:
+                        asyncio.create_task(risk_waiver_sweep.start_sweep())
+                        logger.info("Risk waiver expiry sweep started after DB reconnect")
 
         _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -275,7 +288,7 @@ async def lifespan(application: FastAPI):
             yield
         finally:
             _reconnect_task.cancel()
-            for _bg_task in (_gov_task, _connector_task, _drift_task):
+            for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task):
                 if _bg_task is not None:
                     _bg_task.cancel()
                     try:
@@ -420,6 +433,7 @@ _AUTH_EXEMPT = (
     "/rss-proxy",                    # server-side CORS bypass for feed XML — no user data, SSRF-guarded
     "/scoring/config",               # read-only scoring vocabulary, fetched at JS module init time
     "/observability/telemetry/ingest", # external systems auth via per-system Bearer key
+    "/evidence/webhook",             # SARIF evidence ingestion — own per-system Bearer key auth
 )
 
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
@@ -489,6 +503,12 @@ app.include_router(evidence_pack_endpoints.router)
 app.include_router(github_endpoints.router)
 logger.info("GitHub webhook router registered at /github/webhook")
 
+# DevOps Monitoring: SCM branch-protection/CODEOWNERS auditor (GitHub + GitLab).
+app.include_router(scm_audit_endpoints.router)
+
+# DevOps Monitoring: SARIF/SAST evidence ingestion, fingerprinting, and signing.
+app.include_router(evidence_endpoints.router)
+
 # ── MCP Streamable-HTTP mounts ─────────────────────────────────────────────────
 # Each FastMCP instance is mounted as an ASGI sub-app so claude.ai can connect
 # directly to this server without a separate process.
@@ -521,6 +541,7 @@ _mount_mcp("/mcp/risk-as-code",     "Risk-as-Code OSCAL/COSO YAML generation",  
 _mount_mcp("/mcp/policy-as-code",   "Policy-as-Code Rego module management",    _pac_mcp)
 _mount_mcp("/mcp/controls-as-code", "Controls-as-Code generation & evaluation", _cac_mcp)
 _mount_mcp("/mcp/oracle",           "Oracle Fusion ERP data",                   _oracle_mcp)
+_mount_mcp("/mcp/devops-monitoring", "DevOps Monitoring: SCM audits & SARIF evidence", _devops_monitoring_mcp)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
