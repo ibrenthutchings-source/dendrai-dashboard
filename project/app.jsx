@@ -8,7 +8,7 @@ import { lazyGlobal } from './src/lazy-screen.js';
 
 // Screens reachable only through the activeScreen switch below are
 // code-split: each chunk is fetched on first navigation, not at startup.
-// (code-screens.jsx backs "policycode", "riskcode", and "frameworks";
+// (code-screens.jsx backs "policycode" and "riskcode";
 // sox-scope.jsx needs sox-hitl.jsx loaded alongside it since it renders
 // SoxGate1Review/SoxGate2Review/SoxGateBanner unguarded. cem.jsx and
 // risk-register-review.jsx are NOT split, despite backing their own
@@ -25,7 +25,6 @@ const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'Audi
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
 const RiskAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RiskAsCodeScreen');
 const PolicyAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'PolicyAsCodeScreen');
-const RisksAsCodeLiveScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RisksAsCodeLiveScreen');
 const ScenariosPanelLazy = lazyGlobal(() => import('./scenarios.jsx'), 'ScenariosPanel');
 const ScenarioAnalysisScreenLazy = lazyGlobal(() => import('./scenario-analysis.jsx'), 'ScenarioAnalysisScreen');
 const SoxScopePanelLazy = lazyGlobal(() => Promise.all([import('./sox-scope.jsx'), import('./sox-hitl.jsx')]), 'SoxScopePanel');
@@ -2271,22 +2270,6 @@ function App() {
               }} />
           </div>
           </ScreenAccessGate>
-          )}
-
-          {/* ---- Risks as Code (Industry Frameworks) ---- */}
-          {activeScreen === "frameworks" && (
-          <div className="panel active">
-            <RisksAsCodeLiveScreenLazy
-              risks={output.s2?.risks || (hasRun ? profile.risks : null)}
-              objectives={output.s3?.objectives || (hasRun ? profile.objectives : [])}
-              maps={output.s4?.maps || (hasRun ? profile.maps : null)}
-              signals={output.s1?.signals || []}
-              ratios={hasRun ? (profile.ratios || {}) : {}}
-              ticker={cfg.ticker}
-              industry={cfg.industry}
-              period={cfg.periodEnd}
-              runId={runIdRef.current} />
-          </div>
           )}
 
           {/* ---- Policy-as-Code ---- */}
