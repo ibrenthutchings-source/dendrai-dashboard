@@ -60,6 +60,7 @@ _BUILTIN_PROCESS_IDS = {
     "procure_to_pay",
     "receive_to_ship",
     "record_to_report",
+    "devops_monitoring",
 }
 
 
@@ -80,6 +81,7 @@ _PROCESS_LABELS = {
     "procure_to_pay":  "Procure to Pay",
     "receive_to_ship": "Receive to Ship",
     "record_to_report": "Record to Report",
+    "devops_monitoring": "DevOps Monitoring",
 }
 
 # Assigned round-robin to processes auto-registered by sync_github (a folder
@@ -96,6 +98,7 @@ _PROCESS_ID_PREFIX = {
     "procure_to_pay":  "P2P",
     "receive_to_ship": "R2S",
     "record_to_report": "R2R",
+    "devops_monitoring": "DEVOPS",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -685,6 +688,84 @@ deny_disclosure_event[msg] if {
     msg := sprintf("R2R-P007: Segment disclosure '%v' not reconciled to consolidated financials in Oracle Fusion — ASC 280 compliance gap", [
         input.disclosure.segment_name
     ])
+}
+""",
+
+"devops_monitoring": """\
+# DevOps Monitoring — SCM Integrity + SARIF/SAST Evidence
+# Package:  controls.devops.monitoring
+# Process:  DevOps Monitoring
+# Version:  1.0
+# Approved by: CISO, VP Engineering
+# Last Revised: 2026-07-25
+# Description: Branch-protection/CODEOWNERS compliance for GitHub & GitLab
+#   repositories, and severity-based SLA triggers for ingested SARIF/SAST
+#   findings. Evaluated against the synthesized events scm_audit_endpoints.py
+#   and evidence_endpoints.py produce — see their module docstrings.
+
+package controls.devops.monitoring
+
+import future.keywords.in
+import future.keywords.if
+
+# ── DEVOPS-001: Admin Bypass (CRITICAL) ──────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "branch_protection_rule"
+    input.event.enforce_admins == false
+    msg := sprintf("DEVOPS-001: Branch protection on '%v' does not enforce rules for administrators — admins can bypass required checks (CRITICAL)", [input.event.resource])
+}
+
+# ── DEVOPS-002: Minimum Approving Reviews ────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "branch_protection_rule"
+    input.event.required_approving_review_count < 1
+    msg := sprintf("DEVOPS-002: Branch '%v' requires zero approving reviews before merge", [input.event.resource])
+}
+
+# ── DEVOPS-003: Stale Review Dismissal ───────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "branch_protection_rule"
+    input.event.dismiss_stale_reviews == false
+    msg := sprintf("DEVOPS-003: Branch '%v' does not dismiss stale reviews when new commits are pushed", [input.event.resource])
+}
+
+# ── DEVOPS-004: Required Security/Test Status Checks ─────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "branch_protection_rule"
+    input.event.has_required_sast_check == false
+    msg := sprintf("DEVOPS-004: Branch '%v' has no required SAST/security status check", [input.event.resource])
+}
+
+deny_branch_protection[msg] if {
+    input.event.type == "branch_protection_rule"
+    input.event.has_required_test_check == false
+    msg := sprintf("DEVOPS-004: Branch '%v' has no required unit-test status check", [input.event.resource])
+}
+
+# ── DEVOPS-005/006: CODEOWNERS Coverage ──────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "branch_protection_rule"
+    not input.event.codeowners_present
+    msg := sprintf("DEVOPS-005: Repository for '%v' has no CODEOWNERS file", [input.event.resource])
+}
+
+deny_branch_protection[msg] if {
+    input.event.type == "branch_protection_rule"
+    input.event.codeowners_present == true
+    input.event.codeowners_covers_workflows == false
+    msg := sprintf("DEVOPS-006: CODEOWNERS for '%v' does not cover the CI/workflow definition path", [input.event.resource])
+}
+
+# ── DEVOPS-007/008: SARIF Evidence Severity SLA ──────────────────────────────
+# Critical = 7-day resolution target, High = 30-day (spec thresholds).
+deny_evidence_finding[msg] if {
+    input.event.severity == "CRITICAL"
+    msg := sprintf("DEVOPS-007: CRITICAL SARIF finding '%v' on '%v' — 7-day remediation SLA applies", [input.event.rule_id, input.event.resource])
+}
+
+deny_evidence_finding[msg] if {
+    input.event.severity == "HIGH"
+    msg := sprintf("DEVOPS-008: HIGH SARIF finding '%v' on '%v' — 30-day remediation SLA applies", [input.event.rule_id, input.event.resource])
 }
 """,
 

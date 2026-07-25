@@ -122,6 +122,52 @@ GITHUB_RULES: list[PolicyRule] = [
         severity="MEDIUM",
         applies_to=[SourceSystem.GITHUB.value],
     ),
+    PolicyRule(
+        rule_id="POL-GH-004",
+        name="Branch Protection Admin Bypass",
+        description=(
+            "A branch-protection audit (BRANCH_PROTECTION_BYPASSED) that finds "
+            "enforce_admins == false means administrators can bypass every other "
+            "required check — automatically CRITICAL regardless of the other checks."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value],
+    ),
+]
+
+# ── GitLab DevSecOps Rules ────────────────────────────────────────────────────
+
+GITLAB_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-GL-001",
+        name="Protected Branch Admin Bypass",
+        description=(
+            "A protected-branch audit (BRANCH_PROTECTION_BYPASSED) that finds GitLab's "
+            "admin/maintainer bypass allowed means the equivalent of enforce_admins=false — "
+            "automatically CRITICAL."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITLAB.value],
+    ),
+]
+
+# ── DevOps Monitoring: SARIF/SAST Evidence Rules ──────────────────────────────
+# Findings ride the generic system_telemetry ingestion path (see
+# SystemTelemetryBronzeHandler / evidence_endpoints.py), so this rule is
+# keyed to SourceSystem.SYSTEM_TELEMETRY rather than GITHUB/GITLAB.
+
+DEVOPS_EVIDENCE_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-DEVOPS-001",
+        name="SARIF Finding SLA Severity Floor",
+        description=(
+            "SAST_FINDING events at CRITICAL or HIGH severity start a remediation SLA "
+            "clock (7 days / 30 days respectively) and must be escalated at ingestion, "
+            "not left for the next periodic scan."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
 ]
 
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
@@ -255,6 +301,8 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *CORE_RULES,
     *SAP_RULES,
     *GITHUB_RULES,
+    *GITLAB_RULES,
+    *DEVOPS_EVIDENCE_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

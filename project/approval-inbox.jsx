@@ -11,6 +11,11 @@ const GATE_TYPE_LABEL = {
   sox_materiality: "SOX · Gate S1 (Materiality)",
   sox_account: "SOX · Gate S1 (Account)",
   sox_process: "SOX · Gate S2 (Process)",
+  // DevOps Monitoring: a preparer submits POST /approvals/prepare with this
+  // gate_type to request a documented, time-boxed exception for a flagged
+  // branch-protection weakness — same generic approval_tasks workflow, no
+  // schema change (gate_type is free-text, per approvals_endpoints.py).
+  devops_scm_exception: "DevOps Monitoring · SCM Exception",
 };
 
 const ADJUSTMENT_FIELD_LABEL = {

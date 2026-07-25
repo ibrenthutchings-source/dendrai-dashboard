@@ -90,6 +90,27 @@ const CONNECTOR_TYPES = [
       { key: "token_secret", label: "Token Secret", type: "password" },
     ],
     extraFields: [ { key: "account_id", label: "Account ID", type: "text", placeholder: "1234567 or 1234567_SB1" } ] },
+  // DevOps Monitoring: branch-protection/CODEOWNERS auditing (scm_audit_endpoints.py,
+  // github_scm_tool.py/gitlab_scm_tool.py). Registered here like every other connector;
+  // results and on-demand audits surface on the DevOps Monitoring screen.
+  { id: "github_scm", label: "GitHub (SCM Audit)",
+    baseUrlPlaceholder: "https://api.github.com (leave blank for github.com)",
+    credentialFields: [
+      { key: "token", label: "Personal Access Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "repo_full_name", label: "Repository (owner/repo)", type: "text", placeholder: "my-org/my-repo" },
+      { key: "branch", label: "Branch", type: "text", placeholder: "main" },
+    ] },
+  { id: "gitlab_scm", label: "GitLab (SCM Audit)",
+    baseUrlPlaceholder: "https://gitlab.com/api/v4 (leave blank for gitlab.com)",
+    credentialFields: [
+      { key: "token", label: "Personal/Project Access Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "project_ref", label: "Project (namespace/project or numeric ID)", type: "text", placeholder: "my-group/my-project" },
+      { key: "branch", label: "Branch", type: "text", placeholder: "main" },
+    ] },
 ];
 
 function _uboConfigBase() {

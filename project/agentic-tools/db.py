@@ -565,6 +565,15 @@ CREATE TABLE IF NOT EXISTS approval_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_approval_tasks_manager ON approval_tasks (manager_id, status);
 CREATE INDEX IF NOT EXISTS idx_approval_tasks_run ON approval_tasks (run_id, gate_type);
+-- DevOps Monitoring's devops_scm_exception gate_type has no risk_loop_runs
+-- association — a NULL run_id still satisfies the FK (NULL never violates a
+-- REFERENCES constraint), same reasoning as adjudicated_tool_calls.session_id
+-- above. Known limitation: two devops_scm_exception submissions for the same
+-- item_ref both have run_id=NULL, and Postgres treats NULLs as distinct for
+-- UNIQUE(run_id, gate_type, item_ref) — so they insert as two rows rather
+-- than upserting one. Acceptable for now; risk_waivers' own unique-active-hash
+-- index is what actually prevents two simultaneous ACTIVE waivers.
+ALTER TABLE approval_tasks ALTER COLUMN run_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
@@ -1611,6 +1620,124 @@ ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS token_enc   
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_synced_at   TIMESTAMPTZ;
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_status VARCHAR(16);
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_error  TEXT;
+
+-- DevOps Monitoring: append-only, immutable SARIF/SAST evidence log (evidence_endpoints.py).
+-- Nothing else in the schema carries SARIF's per-finding shape (rule/CWE/CVE/file/line) or
+-- the dedup-fingerprint + cryptographic-signature requirements, so this is a purpose-built
+-- table rather than a reuse of system_telemetry (which HIGH/CRITICAL findings ALSO get
+-- mirrored into, for adjudication — see evidence_endpoints.py's ingest handler).
+CREATE TABLE IF NOT EXISTS observability.evidence_records (
+    id              BIGSERIAL    PRIMARY KEY,
+    ingested_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    repository      VARCHAR(256) NOT NULL,
+    commit_sha      VARCHAR(64),
+    pipeline_run_id VARCHAR(128),
+    source          VARCHAR(32)  NOT NULL DEFAULT 'other',  -- github_actions | gitlab_ci | snyk | sonarqube | checkmarx | other
+    rule_id         VARCHAR(256),
+    severity        VARCHAR(16)  NOT NULL DEFAULT 'INFO',   -- CRITICAL | HIGH | MEDIUM | LOW | INFO
+    cwe             VARCHAR(32),
+    cve             VARCHAR(32),
+    file_path       TEXT,
+    line_number     INTEGER,
+    line_snippet    TEXT,
+    fingerprint     CHAR(64)     NOT NULL,  -- SHA256(repository|file_path|rule_id|line_snippet)
+    author          VARCHAR(256),
+    approver        VARCHAR(256),
+    scan_status     VARCHAR(16)  NOT NULL DEFAULT 'FAIL',   -- PASS | FAIL
+    raw_sarif       JSONB,
+    record_json     JSONB        NOT NULL,   -- canonical payload the signature below covers
+    signature       CHAR(64)     NOT NULL    -- HMAC-SHA256(record_json, EVIDENCE_SIGNING_KEY)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_fingerprint_commit
+    ON observability.evidence_records (fingerprint, commit_sha);
+CREATE INDEX IF NOT EXISTS idx_evidence_repository
+    ON observability.evidence_records (repository, ingested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_severity
+    ON observability.evidence_records (severity, ingested_at DESC);
+
+-- DevOps Monitoring: last-known compliance snapshot per repo, so each new audit
+-- (scheduled poll or on-demand run) has something to diff against. Not the
+-- audit history itself (that's system_telemetry / adjudicated_tool_calls) —
+-- just "what did we see last time", overwritten every audit.
+CREATE TABLE IF NOT EXISTS observability.scm_repository_state (
+    resource     VARCHAR(256) PRIMARY KEY,   -- e.g. "org/repo@main"
+    compliance   JSONB        NOT NULL,
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- DevOps Monitoring: drift/time-series log. Catches "2am override" style
+-- incidents — an admin temporarily weakens a control, merges, restores it —
+-- that a webhook-only or single-snapshot system would never see, because the
+-- state is compliant again by the time anyone looks. Populated by comparing
+-- each audit's compliance dict against scm_repository_state's prior value
+-- (see scm_connectors.diff_compliance / db.record_scm_audit_snapshot).
+CREATE TABLE IF NOT EXISTS observability.scm_drift_events (
+    id              BIGSERIAL    PRIMARY KEY,
+    resource        VARCHAR(256) NOT NULL,
+    control_name    VARCHAR(64)  NOT NULL,
+    expected_state  JSONB        NOT NULL,
+    actual_state    JSONB        NOT NULL,
+    direction       VARCHAR(16)  NOT NULL,   -- regressed | improved
+    detected_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_scm_drift_open
+    ON observability.scm_drift_events (resource, control_name)
+    WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_scm_drift_resource
+    ON observability.scm_drift_events (resource, detected_at DESC);
+
+-- DevOps Monitoring: Risk Waiver & Exception Hub. A preparer requests a waiver
+-- via the existing HITL approval_tasks workflow (gate_type='devops_scm_exception',
+-- see approvals_endpoints.py); when a manager approves it, one row lands here.
+-- Kept as its own table (rather than living only in approval_tasks.adjustments
+-- JSONB) because automated expiry needs an indexed, queryable expires_at — you
+-- cannot efficiently sweep JSONB-buried dates across many rows.
+CREATE TABLE IF NOT EXISTS observability.risk_waivers (
+    id                   BIGSERIAL    PRIMARY KEY,
+    vulnerability_hash   CHAR(64)     NOT NULL,  -- evidence_records.fingerprint or a scm control key
+    reason               TEXT         NOT NULL,
+    compensating_control TEXT,
+    approved_by          VARCHAR(128) NOT NULL,
+    approval_task_id     BIGINT       REFERENCES approval_tasks(id),
+    expires_at           TIMESTAMPTZ  NOT NULL,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    status               VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE'  -- ACTIVE | EXPIRED | REVOKED
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_risk_waivers_active_hash
+    ON observability.risk_waivers (vulnerability_hash) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_risk_waivers_expiry
+    ON observability.risk_waivers (expires_at) WHERE status = 'ACTIVE';
+
+-- DevOps Monitoring: pipeline provenance/attestation metadata (SLSA-adjacent).
+-- Stores what a CI run claims about itself — OIDC identity claims, SLSA
+-- provenance statement, a hash (never the raw values) of its environment
+-- variables so an injected SKIP_TESTS=true/DISABLE_SAST=1 flag is detectable,
+-- runner metadata, an optional Cosign/Sigstore bundle, and an SBOM. See
+-- attestation.py for the (structural, not full Sigstore-trust-root) validation
+-- this data gets — real cryptographic verification requires the actual `cosign`
+-- binary and network access to Rekor, which this environment does not assume.
+CREATE TABLE IF NOT EXISTS observability.pipeline_attestations (
+    id                BIGSERIAL    PRIMARY KEY,
+    commit_sha        VARCHAR(64)  NOT NULL,
+    pipeline_run_id   VARCHAR(128),
+    oidc_actor        VARCHAR(256),
+    oidc_claims       JSONB,
+    slsa_provenance   JSONB,
+    slsa_level        SMALLINT,             -- 0-3, structural estimate — see attestation.validate_slsa_provenance
+    env_vars_hash     CHAR(64),
+    runner_type       VARCHAR(32),          -- github-hosted | self-hosted | gitlab-shared | gitlab-self-managed | other
+    runner_id         VARCHAR(256),
+    container_image_sha VARCHAR(128),
+    cosign_bundle     JSONB,
+    cosign_verified    VARCHAR(16),         -- true | false | unknown (no cosign binary available)
+    sbom_format       VARCHAR(16),          -- cyclonedx | spdx
+    sbom              JSONB,
+    license_risk      BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_attestations_commit
+    ON observability.pipeline_attestations (commit_sha, created_at DESC);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -3209,7 +3336,7 @@ def get_sox_hitl_gate_status(run_id: int) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def upsert_approval_task(
-    run_id: int,
+    run_id: Optional[int],
     gate_type: str,
     item_ref: str,
     item_label: Optional[str],
@@ -3454,7 +3581,12 @@ def get_approval_task(task_id: int) -> Optional[dict]:
 
 
 def get_approval_inbox(manager_id: int) -> list:
-    """Items awaiting this user's review, newest-submitted first."""
+    """Items awaiting this user's review, newest-submitted first.
+
+    LEFT JOIN (not INNER) — devops_scm_exception tasks have run_id=NULL (no
+    risk_loop_runs association; see approval_tasks.run_id's DROP NOT NULL
+    migration above), and an INNER JOIN would silently drop them from every
+    manager's inbox instead of just leaving ticker NULL for those rows."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -3464,7 +3596,7 @@ def get_approval_inbox(manager_id: int) -> list:
                            t.adjustments, t.rationale, t.prepared_by_name, t.prepared_at, r.ticker,
                            t.ai_suggested, t.ai_accepted
                     FROM approval_tasks t
-                    JOIN risk_loop_runs r ON r.id = t.run_id
+                    LEFT JOIN risk_loop_runs r ON r.id = t.run_id
                     WHERE t.manager_id = %s AND t.status = 'submitted'
                     ORDER BY t.prepared_at DESC
                     """,
@@ -6925,6 +7057,9 @@ _BUILTIN_PAC_PROCESSES = [
     {"id": "record_to_report", "label": "Record to Report", "short_label": "R2R", "control_prefix": "R2R",
      "color": "#ef4444", "icon": "📊",
      "description": "Journal Entry → Sub-ledger → GL Close → Financial Statements — Oracle GL, SLA, FAH, Financial Reporting modules."},
+    {"id": "devops_monitoring", "label": "DevOps Monitoring", "short_label": "DevOps", "control_prefix": "DEVOPS",
+     "color": "#22d3ee", "icon": "🛠️",
+     "description": "SCM branch-protection auditing and SARIF/SAST evidence ingestion — GitHub/GitLab repo integrity, CODEOWNERS coverage, and vulnerability severity SLAs."},
 ]
 
 
@@ -7346,6 +7481,476 @@ def record_poll_result(connector_id: int, status: str, error: Optional[str] = No
                     (status, error, connector_id),
                 )
     _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: SARIF/SAST evidence records (observability.evidence_records)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def insert_evidence_record(
+    repository: str, commit_sha: Optional[str], pipeline_run_id: Optional[str],
+    source: str, rule_id: Optional[str], severity: str, cwe: Optional[str], cve: Optional[str],
+    file_path: Optional[str], line_number: Optional[int], line_snippet: Optional[str],
+    fingerprint: str, author: Optional[str], approver: Optional[str], scan_status: str,
+    raw_sarif: Optional[dict], record_json: dict, signature: str,
+) -> Optional[int]:
+    """Insert one immutable evidence row. Returns None (no row id) when
+    (fingerprint, commit_sha) already exists — the same finding re-ingested
+    from a repeated scan of the same commit, not a new occurrence."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.evidence_records (
+                        repository, commit_sha, pipeline_run_id, source, rule_id, severity,
+                        cwe, cve, file_path, line_number, line_snippet, fingerprint,
+                        author, approver, scan_status, raw_sarif, record_json, signature
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s
+                    )
+                    ON CONFLICT (fingerprint, commit_sha) DO NOTHING
+                    RETURNING id
+                    """,
+                    (repository, commit_sha, pipeline_run_id, source, rule_id, severity,
+                     cwe, cve, file_path, line_number, line_snippet, fingerprint,
+                     author, approver, scan_status,
+                     Json(raw_sarif) if raw_sarif is not None else None, Json(record_json), signature),
+                )
+                row = cur.fetchone()
+            return row[0] if row else None
+    return _run(_do)
+
+
+def list_evidence_records(repository: Optional[str] = None, severity: Optional[str] = None,
+                           commit_sha: Optional[str] = None, limit: int = 100) -> list:
+    """Filtered list, newest first — feeds the Evidence Inspector modal."""
+    def _do():
+        filters, params = [], []
+        if repository:
+            filters.append("repository = %s"); params.append(repository)
+        if severity:
+            filters.append("severity = %s"); params.append(severity.upper())
+        if commit_sha:
+            filters.append("commit_sha = %s"); params.append(commit_sha)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, ingested_at, repository, commit_sha, pipeline_run_id, source,
+                           rule_id, severity, cwe, cve, file_path, line_number, line_snippet,
+                           fingerprint, author, approver, scan_status
+                    FROM observability.evidence_records
+                    {where}
+                    ORDER BY ingested_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("ingested_at"):
+                        d["ingested_at"] = d["ingested_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_evidence_record(record_id: int) -> Optional[dict]:
+    """Full row including raw_sarif/record_json/signature — used by the
+    /evidence/records/{id}/verify endpoint to recompute the HMAC."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, ingested_at, repository, commit_sha, pipeline_run_id, source,
+                           rule_id, severity, cwe, cve, file_path, line_number, line_snippet,
+                           fingerprint, author, approver, scan_status, raw_sarif, record_json, signature
+                    FROM observability.evidence_records
+                    WHERE id = %s
+                    """,
+                    (record_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                if d.get("ingested_at"):
+                    d["ingested_at"] = d["ingested_at"].isoformat()
+                return d
+    return _run(_do)
+
+
+def get_scm_repository_state(resource: str) -> Optional[dict]:
+    """Last-known compliance dict for one repo (server_name/repo_ref@branch), or
+    None if this is the first audit ever recorded for it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT compliance FROM observability.scm_repository_state WHERE resource = %s",
+                    (resource,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def record_scm_audit_snapshot(resource: str, compliance: dict) -> list:
+    """Diff `compliance` against the last-recorded state for `resource` (via
+    scm_connectors.diff_compliance), persist the new state, and open/resolve
+    scm_drift_events rows for whatever changed. Returns the list of drift
+    events detected THIS call (empty on a repo's very first audit, and empty
+    when nothing changed since the last one).
+
+    Called after every audit — both the scheduled poll-connector path
+    (github_scm_tool.py/gitlab_scm_tool.py) and the on-demand "run now" path
+    (scm_audit_endpoints.py) — so a control that's flipped and flipped back
+    between two consecutive audits still leaves a resolved drift_events row,
+    which is the whole point (catching a short-lived "2am override")."""
+    import scm_connectors as _scm_connectors
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT compliance FROM observability.scm_repository_state WHERE resource = %s",
+                    (resource,),
+                )
+                row = cur.fetchone()
+                baseline = row[0] if row else None
+
+                cur.execute(
+                    """
+                    INSERT INTO observability.scm_repository_state (resource, compliance, updated_at)
+                    VALUES (%s, %s::jsonb, NOW())
+                    ON CONFLICT (resource) DO UPDATE SET compliance = EXCLUDED.compliance, updated_at = NOW()
+                    """,
+                    (resource, Json(compliance)),
+                )
+
+                if baseline is None:
+                    return []
+
+                diffs = _scm_connectors.diff_compliance(baseline, compliance)
+                detected: list[dict] = []
+                for d in diffs:
+                    if d["direction"] == "regressed":
+                        cur.execute(
+                            """
+                            INSERT INTO observability.scm_drift_events
+                                (resource, control_name, expected_state, actual_state, direction)
+                            VALUES (%s, %s, %s::jsonb, %s::jsonb, 'regressed')
+                            RETURNING id, detected_at
+                            """,
+                            (resource, d["control_name"], Json(d["expected_state"]), Json(d["actual_state"])),
+                        )
+                        new_id, detected_at = cur.fetchone()
+                        detected.append({**d, "id": new_id, "detected_at": detected_at.isoformat(), "resource": resource})
+                    else:  # improved -> auto-resolve the most recent open regression for this control
+                        cur.execute(
+                            """
+                            UPDATE observability.scm_drift_events
+                            SET resolved_at = NOW()
+                            WHERE id = (
+                                SELECT id FROM observability.scm_drift_events
+                                WHERE resource = %s AND control_name = %s AND resolved_at IS NULL
+                                ORDER BY detected_at DESC LIMIT 1
+                            )
+                            RETURNING id
+                            """,
+                            (resource, d["control_name"]),
+                        )
+                        resolved = cur.fetchone()
+                        if resolved:
+                            detected.append({**d, "id": resolved[0], "resource": resource})
+            return detected
+    return _run(_do) or []
+
+
+def list_scm_drift_events(resource: Optional[str] = None, open_only: bool = False, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if resource:
+            filters.append("resource = %s"); params.append(resource)
+        if open_only:
+            filters.append("resolved_at IS NULL")
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, resource, control_name, expected_state, actual_state, direction,
+                           detected_at, resolved_at
+                    FROM observability.scm_drift_events
+                    {where}
+                    ORDER BY detected_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("detected_at"):
+                        d["detected_at"] = d["detected_at"].isoformat()
+                    if d.get("resolved_at"):
+                        d["resolved_at"] = d["resolved_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: Risk Waiver & Exception Hub (observability.risk_waivers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_risk_waiver(vulnerability_hash: str, reason: str, compensating_control: Optional[str],
+                        approved_by: str, approval_task_id: Optional[int], expires_at) -> Optional[int]:
+    """Insert an ACTIVE waiver. Only one ACTIVE waiver per vulnerability_hash
+    can exist (idx_risk_waivers_active_hash) — approving a new one for an
+    already-waived hash should REVOKE the old one first (the approvals
+    endpoint checks this), not silently collide."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.risk_waivers
+                        (vulnerability_hash, reason, compensating_control, approved_by,
+                         approval_task_id, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (vulnerability_hash, reason, compensating_control, approved_by,
+                     approval_task_id, expires_at),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_risk_waivers(status: Optional[str] = None, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if status:
+            filters.append("status = %s"); params.append(status.upper())
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, vulnerability_hash, reason, compensating_control, approved_by,
+                           approval_task_id, expires_at, created_at, status
+                    FROM observability.risk_waivers
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("expires_at", "created_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_active_waiver(vulnerability_hash: str) -> Optional[dict]:
+    rows = [w for w in list_risk_waivers(status="ACTIVE", limit=500) if w["vulnerability_hash"] == vulnerability_hash]
+    return rows[0] if rows else None
+
+
+def revoke_risk_waiver(waiver_id: int) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE observability.risk_waivers SET status = 'REVOKED' WHERE id = %s AND status = 'ACTIVE'",
+                    (waiver_id,),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def expire_overdue_waivers() -> list:
+    """Flip ACTIVE -> EXPIRED for every waiver past its expires_at. Returns the
+    rows just expired so the caller (risk_waiver_sweep.py) can re-open/re-escalate
+    each one — 'automated expiry' means the control goes back to failing, not
+    that the waiver silently lapses with no one told."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.risk_waivers
+                    SET status = 'EXPIRED'
+                    WHERE status = 'ACTIVE' AND expires_at < NOW()
+                    RETURNING id, vulnerability_hash, reason, compensating_control, approved_by, expires_at
+                    """,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("expires_at"):
+                        d["expires_at"] = d["expires_at"].isoformat()
+                    rows.append(d)
+            return rows
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: pipeline provenance/attestation (observability.pipeline_attestations)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def insert_pipeline_attestation(
+    commit_sha: str, pipeline_run_id: Optional[str], oidc_actor: Optional[str],
+    oidc_claims: Optional[dict], slsa_provenance: Optional[dict], slsa_level: Optional[int],
+    env_vars_hash: Optional[str], runner_type: Optional[str], runner_id: Optional[str],
+    container_image_sha: Optional[str], cosign_bundle: Optional[dict], cosign_verified: Optional[str],
+    sbom_format: Optional[str], sbom: Optional[dict], license_risk: bool,
+) -> Optional[int]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.pipeline_attestations (
+                        commit_sha, pipeline_run_id, oidc_actor, oidc_claims, slsa_provenance,
+                        slsa_level, env_vars_hash, runner_type, runner_id, container_image_sha,
+                        cosign_bundle, cosign_verified, sbom_format, sbom, license_risk
+                    ) VALUES (
+                        %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s
+                    )
+                    RETURNING id
+                    """,
+                    (commit_sha, pipeline_run_id, oidc_actor,
+                     Json(oidc_claims) if oidc_claims is not None else None,
+                     Json(slsa_provenance) if slsa_provenance is not None else None,
+                     slsa_level, env_vars_hash, runner_type, runner_id, container_image_sha,
+                     Json(cosign_bundle) if cosign_bundle is not None else None,
+                     cosign_verified, sbom_format,
+                     Json(sbom) if sbom is not None else None, license_risk),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_pipeline_attestations(commit_sha: Optional[str] = None, limit: int = 50) -> list:
+    def _do():
+        filters, params = [], []
+        if commit_sha:
+            filters.append("commit_sha = %s"); params.append(commit_sha)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, commit_sha, pipeline_run_id, oidc_actor, slsa_level, env_vars_hash,
+                           runner_type, runner_id, container_image_sha, cosign_verified,
+                           sbom_format, license_risk, created_at
+                    FROM observability.pipeline_attestations
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("created_at"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_pipeline_attestation(attestation_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, commit_sha, pipeline_run_id, oidc_actor, oidc_claims, slsa_provenance,
+                           slsa_level, env_vars_hash, runner_type, runner_id, container_image_sha,
+                           cosign_bundle, cosign_verified, sbom_format, sbom, license_risk, created_at
+                    FROM observability.pipeline_attestations
+                    WHERE id = %s
+                    """,
+                    (attestation_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                if d.get("created_at"):
+                    d["created_at"] = d["created_at"].isoformat()
+                return d
+    return _run(_do)
+
+
+def fetch_scm_audit_results(resource: Optional[str] = None, limit: int = 50) -> list:
+    """SCM branch-protection audit rows (scm_audit_endpoints.py's on-demand
+    'run now' path and real GitHub/GitLab webhooks both land here via
+    github_endpoints._write_adjudication). Without `resource`, returns the
+    single latest row per repo (server_name) — the Branch Integrity Matrix
+    feed; with it, full history for that one repo, newest first."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                params: list = ["GITHUB", "GITLAB", "branch_protection_rule", "protected_branch_audit"]
+                if resource:
+                    query = """
+                        SELECT id, adjudicated_at, source_system, server_name, target_tool,
+                               uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                               policy_violations
+                        FROM observability.adjudicated_tool_calls
+                        WHERE source_system IN (%s, %s) AND target_tool IN (%s, %s)
+                          AND server_name = %s
+                        ORDER BY adjudicated_at DESC
+                        LIMIT %s
+                    """
+                    params += [resource, min(limit, 500)]
+                else:
+                    query = """
+                        SELECT DISTINCT ON (server_name)
+                               id, adjudicated_at, source_system, server_name, target_tool,
+                               uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                               policy_violations
+                        FROM observability.adjudicated_tool_calls
+                        WHERE source_system IN (%s, %s) AND target_tool IN (%s, %s)
+                        ORDER BY server_name, adjudicated_at DESC
+                        LIMIT %s
+                    """
+                    params += [min(limit, 500)]
+                cur.execute(query, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 def get_observability_24h_counts() -> dict:

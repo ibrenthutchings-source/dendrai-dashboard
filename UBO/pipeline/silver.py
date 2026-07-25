@@ -46,6 +46,7 @@ class SilverConformationLayer(SilverLayerBase):
         conformers = {
             SourceSystem.SAP:        self._conform_sap,
             SourceSystem.GITHUB:     self._conform_github,
+            SourceSystem.GITLAB:     self._conform_gitlab,
             SourceSystem.SAILPOINT:  self._conform_sailpoint,
             SourceSystem.MCP_PROXY:  self._conform_mcp_proxy,
             SourceSystem.SYSTEM_TELEMETRY: self._conform_system_telemetry,
@@ -138,6 +139,38 @@ class SilverConformationLayer(SilverLayerBase):
                 cvss = raw.get("cvss_score") or raw.get("severity_score")
                 if cvss is None:
                     return "DEPENDENCY_VULNERABILITY event missing cvss_score field"
+
+        elif rule.rule_id == "POL-GH-004":
+            if uro.event_type == EventType.BRANCH_PROTECTION_BYPASSED and uro.source_system == SourceSystem.GITHUB:
+                compliance = raw.get("compliance") or {}
+                if compliance.get("enforce_admins") is False:
+                    repo = raw.get("repository", {}).get("full_name", "unknown")
+                    return (
+                        f"CRITICAL: branch protection on '{repo}' does not "
+                        "enforce rules for administrators — admins can bypass every required check"
+                    )
+
+        # ── GitLab rules ──────────────────────────────────────────────────────
+        elif rule.rule_id == "POL-GL-001":
+            if uro.event_type == EventType.BRANCH_PROTECTION_BYPASSED and uro.source_system == SourceSystem.GITLAB:
+                compliance = raw.get("compliance") or {}
+                if compliance.get("enforce_admins") is False:
+                    repo = raw.get("project", {}).get("path_with_namespace", "unknown")
+                    return (
+                        f"CRITICAL: protected branch on '{repo}' allows admin/maintainer "
+                        "bypass of required checks"
+                    )
+
+        # ── DevOps Monitoring: SARIF/SAST evidence rules ─────────────────────
+        elif rule.rule_id == "POL-DEVOPS-001":
+            if uro.event_type == EventType.SAST_FINDING:
+                severity = str(raw.get("severity") or "").upper()
+                if severity in ("CRITICAL", "HIGH"):
+                    rule_ref = (raw.get("raw_payload") or {}).get("rule_id", "unknown-rule")
+                    return (
+                        f"{severity}: SARIF finding '{rule_ref}' on '{raw.get('resource', 'unknown')}' "
+                        "— remediation SLA clock started"
+                    )
 
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
@@ -282,12 +315,41 @@ class SilverConformationLayer(SilverLayerBase):
                 "secret_type":   raw.get("alert", {}).get("secret_type"),
                 "commits_count": len(raw.get("commits", [])),
                 "is_admin":      raw.get("sender", {}).get("site_admin", False),
+                # DevOps Monitoring: scm_audit_endpoints.py synthesizes a
+                # branch_protection_rule event with a "compliance" sub-dict
+                # (enforce_admins, required_approving_review_count, ...) —
+                # spread here so PaC's devops_monitoring Rego can reference
+                # input.event.enforce_admins etc. Absent on real GitHub
+                # webhook payloads, so this is a no-op for those.
+                **(raw.get("compliance") or {}),
             },
             affected_entities=[
                 repo.get("full_name", ""),
                 str(raw.get("sender", {}).get("login", "")),
             ],
             conformation_rules_applied=["GitHub-Webhook-v3-conform"],
+        )
+
+    def _conform_gitlab(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
+        project = raw.get("project", {})
+        return ConformedPayload(
+            resource_id=project.get("path_with_namespace") or str(project.get("id", "")),
+            resource_type="git_repository",
+            action=raw.get("X-Gitlab-Event") or raw.get("event_type") or "push",
+            outcome="success" if not raw.get("error") else "failure",
+            risk_indicators={
+                "ref":           raw.get("ref"),
+                "commits_count": len(raw.get("commits", [])),
+                # Same convention as _conform_github: scm_audit_endpoints.py's
+                # synthesized protected_branch_audit event carries its
+                # structured findings under "compliance".
+                **(raw.get("compliance") or {}),
+            },
+            affected_entities=[
+                project.get("path_with_namespace", ""),
+                str(raw.get("user", {}).get("username", "")),
+            ],
+            conformation_rules_applied=["GitLab-Webhook-v4-conform"],
         )
 
     def _conform_sailpoint(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
@@ -362,6 +424,20 @@ class SilverConformationLayer(SilverLayerBase):
                 "system_type":  raw.get("system_type"),
                 "event_id":     raw.get("event_id"),
                 "narrative":    narrative,
+                # DevOps Monitoring evidence findings (event_type=='sast_finding')
+                # carry rule/CWE detail in the nested raw_payload — surfaced here
+                # so PaC's devops_monitoring Rego and the Silver POL-DEVOPS-001
+                # rule can reference them without re-parsing raw_payload.
+                "rule_id":      (raw.get("raw_payload") or {}).get("rule_id"),
+                "cwe":          (raw.get("raw_payload") or {}).get("cwe"),
+                # DevOps Monitoring scheduled branch-protection audits (github_scm_tool.py /
+                # gitlab_scm_tool.py, event_type=='branch_protection_violation') carry the
+                # same normalized compliance dict scm_audit_endpoints.py's on-demand path
+                # embeds under raw_event["compliance"] for the GITHUB/GITLAB source-system
+                # path — spread the same fields here so the devops_monitoring Rego sees
+                # identical input.event.* fields regardless of which path produced the URO.
+                # No-op (all None) for every other poll-connector type's telemetry.
+                **(raw.get("raw_payload") or {}).get("compliance", {}),
             },
             affected_entities=[server, str(raw.get("actor", ""))],
             conformation_rules_applied=["System-Telemetry-v1-conform"],

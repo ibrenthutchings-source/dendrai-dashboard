@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 class SourceSystem(str, Enum):
     SAP            = "SAP"
     GITHUB         = "GITHUB"
+    GITLAB         = "GITLAB"
     SAILPOINT      = "SAILPOINT"
     FRED           = "FRED"
     SEC_EDGAR      = "SEC_EDGAR"
@@ -48,6 +49,9 @@ class EventType(str, Enum):
     FORCE_PUSH_MAIN            = "FORCE_PUSH_MAIN"
     DEPENDENCY_VULNERABILITY   = "DEPENDENCY_VULNERABILITY"
     CODE_REVIEW_BYPASSED       = "CODE_REVIEW_BYPASSED"
+
+    # ── DevOps Monitoring: SCM audits + SARIF/SAST evidence ───
+    SAST_FINDING               = "SAST_FINDING"
 
     # ── SailPoint Identity ────────────────────────────────────
     PRIVILEGE_ESCALATION       = "PRIVILEGE_ESCALATION"

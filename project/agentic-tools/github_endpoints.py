@@ -110,7 +110,7 @@ def _verify_signature(body: bytes, sig_header: str | None) -> bool:
 
 # ── DB write ───────────────────────────────────────────────────────────────────
 
-def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
+def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str, source_system: str = "GITHUB") -> None:
     """
     Write adjudication result to observability.adjudicated_tool_calls.
 
@@ -120,6 +120,10 @@ def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
     GitHub events previously skipped both and never wrote council_votes at
     all, so this was a second, thinner adjudication path than everything
     else feeding this table.
+
+    source_system defaults to 'GITHUB' for the real webhook path below;
+    scm_audit_endpoints.py passes 'GITLAB' for its on-demand GitLab audits,
+    which reuse this same writer rather than duplicating it.
     """
     if not db.is_available():
         return
@@ -181,7 +185,7 @@ def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
                         %s, %s, %s, NULL,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s::jsonb,
-                        'GITHUB'
+                        %s
                     )
                     """,
                     (
@@ -199,6 +203,7 @@ def _write_adjudication(uro: Any, repo_full_name: str, gh_event: str) -> None:
                         list(uro.silver_policy_violations) + pac_violations,
                         adj.conflict_reasoning[:1000] if adj and adj.conflict_reasoning else None,
                         json.dumps(council_votes_list),
+                        source_system,
                     ),
                 )
             conn.commit()

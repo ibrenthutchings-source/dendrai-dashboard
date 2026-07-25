@@ -34,6 +34,8 @@ from datetime import datetime, timedelta, timezone
 
 import db
 import dynamics365_tool
+import github_scm_tool
+import gitlab_scm_tool
 import mcp_governance
 import netsuite_tool
 import oracle_fusion_tool
@@ -53,6 +55,8 @@ _ADAPTERS = {
     "sailpoint":      sailpoint_tool,
     "dynamics365":    dynamics365_tool,
     "netsuite":       netsuite_tool,
+    "github_scm":     github_scm_tool,
+    "gitlab_scm":     gitlab_scm_tool,
 }
 
 
