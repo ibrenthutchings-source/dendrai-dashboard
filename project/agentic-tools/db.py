@@ -1160,6 +1160,22 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     N
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework  VARCHAR(128);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative          TEXT;
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
+
+-- risk_scores was write-once (save_risk_scores only ever INSERTed, never
+-- updated) — Stage 2's signal-driven score adjustments and Gate 1's
+-- human-adjusted-and-approved scores never made it back into this table, so
+-- every downstream reader keyed on it (get_posture_trend's RAG counts chief
+-- among them) silently showed the run's initial pre-adjustment snapshot
+-- forever. Fixing that requires save_risk_scores to become a real upsert,
+-- which requires a uniqueness guarantee on (run_id, risk_ref) first — dedupe
+-- any pre-existing duplicates (there shouldn't be any in practice, since
+-- this table was only ever written once per run, but a clean guard costs
+-- nothing) before adding the index ON CONFLICT will target.
+DELETE FROM risk_scores rs USING risk_scores dup
+    WHERE rs.run_id = dup.run_id AND rs.risk_ref = dup.risk_ref
+      AND rs.risk_ref IS NOT NULL AND rs.id > dup.id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_risk_scores_run_ref_unique
+    ON risk_scores (run_id, risk_ref) WHERE risk_ref IS NOT NULL;
 ALTER TABLE risk_register_reviews ADD COLUMN IF NOT EXISTS rac_yaml TEXT;
 ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate3_status VARCHAR(16);
 ALTER TABLE hitl_sessions ADD COLUMN IF NOT EXISTS gate4_status VARCHAR(16);
@@ -2527,6 +2543,18 @@ def get_altman_zscore(run_id: int) -> Optional[dict]:
 
 
 def save_risk_scores(run_id: int, risks: list) -> None:
+    """Upsert risk_scores rows for a run, keyed on (run_id, risk_ref).
+
+    Originally insert-only, called exactly once per run at initial analysis
+    time — Stage 2's signal-driven adjustments and Gate 1's approved human
+    adjustments never made it back in, so every downstream reader keyed on
+    this table (get_posture_trend's RAG counts chief among them) silently
+    showed the run's pre-adjustment snapshot forever. Now safe to call again
+    whenever the true risk state changes — see the risk-scores/{run_id}/sync
+    endpoint (Stage 2) and update_risk_score_fields (Gate 1 approvals) below.
+    Risks with no risk_ref are skipped (can't upsert without a stable key,
+    same rows that would have been dropped by the old insert path anyway).
+    """
     if not risks:
         return
     def _do():
@@ -2545,7 +2573,10 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                 r.get("peer_benchmark"),
             )
             for r in risks
+            if (r.get("risk_ref") or r.get("id"))
         ]
+        if not rows:
+            return
         with _conn() as conn:
             with conn.cursor() as cur:
                 execute_values(
@@ -2555,10 +2586,63 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                         (run_id, risk_ref, risk_name, category, base_score, delta, score,
                          rag_status, velocity, control_env, peer_benchmark)
                     VALUES %s
+                    ON CONFLICT (run_id, risk_ref) WHERE risk_ref IS NOT NULL DO UPDATE SET
+                        risk_name      = EXCLUDED.risk_name,
+                        category       = EXCLUDED.category,
+                        base_score     = EXCLUDED.base_score,
+                        delta          = EXCLUDED.delta,
+                        score          = EXCLUDED.score,
+                        rag_status     = EXCLUDED.rag_status,
+                        velocity       = EXCLUDED.velocity,
+                        control_env    = EXCLUDED.control_env,
+                        peer_benchmark = EXCLUDED.peer_benchmark
                     """,
                     rows,
                 )
     _run(_do)
+
+
+_RAG_LETTER_TO_WORD = {"R": "Red", "A": "Amber", "G": "Green"}
+
+
+def update_risk_score_fields(run_id: int, risk_ref: str, adjustments: dict) -> bool:
+    """Patch a single risk_scores row after a Gate 1 adjustment reaches a
+    final approved state (auto-approved with no manager, or manager-
+    approved) — called from approvals_endpoints.py's prepare/review handlers,
+    not the frontend, so it fires regardless of whether the browser that
+    submitted the adjustment is still open when a manager finally reviews it.
+
+    adjustments keys mirror AdjustRiskModal's onSubmit payload: name,
+    category, rag ('R'/'A'/'G' — risk_scores.rag_status stores full words,
+    so this normalizes), score, velocity, ce. Only present keys are applied
+    (COALESCE against the existing value), so a partial adjustments dict
+    can't null out fields it didn't touch."""
+    if not adjustments:
+        return False
+    rag_letter = (adjustments.get("rag") or "")[:1].upper()
+    rag_word = _RAG_LETTER_TO_WORD.get(rag_letter)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE risk_scores SET
+                        risk_name   = COALESCE(%s, risk_name),
+                        category    = COALESCE(%s, category),
+                        rag_status  = COALESCE(%s, rag_status),
+                        score       = COALESCE(%s, score),
+                        velocity    = COALESCE(%s, velocity),
+                        control_env = COALESCE(%s, control_env)
+                    WHERE run_id = %s AND risk_ref = %s
+                    """,
+                    (
+                        adjustments.get("name"), adjustments.get("category"), rag_word,
+                        adjustments.get("score"), adjustments.get("velocity"), adjustments.get("ce"),
+                        run_id, risk_ref,
+                    ),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False)
 
 
 def save_scenario_analyses(run_id: int, scenarios: dict) -> None:
@@ -3341,7 +3425,7 @@ def review_approval_task(task_id: int, reviewer_id: int, reviewer_name: str, dec
                         status = %s, reviewed_by = %s, reviewed_by_name = %s,
                         reviewed_at = NOW(), review_comment = %s, updated_at = NOW()
                     WHERE id = %s AND status = 'submitted'
-                    RETURNING id, run_id, gate_type, item_ref, status
+                    RETURNING id, run_id, gate_type, item_ref, status, disposition, adjustments
                     """,
                     (status, reviewer_id, reviewer_name, comment, task_id),
                 )

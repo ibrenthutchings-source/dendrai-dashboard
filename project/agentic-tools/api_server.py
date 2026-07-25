@@ -908,6 +908,26 @@ def predictive_full_analysis(req: FullAnalysisRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class SyncRiskScoresRequest(BaseModel):
+    risks: List[Dict[str, Any]]
+
+
+@app.post("/risk-scores/{run_id}/sync")
+def sync_risk_scores(run_id: int, req: SyncRiskScoresRequest):
+    """Re-sync risk_scores for a run after Stage 2's RSS/8-K/FRED
+    signal-driven adjustments move scores/RAG/velocity beyond what
+    _persist_full_analysis wrote at initial-analysis time (before those
+    signals were applied). save_risk_scores is now an upsert (keyed on
+    run_id + risk_ref), so this is safe to call repeatedly as the displayed
+    risk set changes over the course of a run — see save_risk_scores'
+    docstring for the full "why" (this closes the gap where Posture Trend's
+    RAG counts silently showed pre-adjustment data)."""
+    if not db.is_available():
+        return {"synced": False, "reason": "database not configured"}
+    db.save_risk_scores(run_id, req.risks)
+    return {"synced": True, "count": len(req.risks)}
+
+
 @app.post("/edgar/financials")
 def edgar_financials(req: TickerRequest):
     """Return XBRL financial time-series and save to normalized DB tables."""
