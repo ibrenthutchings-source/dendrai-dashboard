@@ -87,6 +87,15 @@ def prepare_item(req: PrepareRequest, current_user: dict = Depends(get_current_u
     )
     if not task:
         raise HTTPException(status_code=500, detail="Failed to save approval task")
+
+    # A risk adjustment that's final immediately (auto-approved — no manager
+    # configured) must propagate to risk_scores now, same reasoning as the
+    # manager-approval path in review_item below: without this, every reader
+    # keyed on risk_scores (get_posture_trend's RAG counts chief among them)
+    # keeps showing the run's pre-adjustment snapshot forever.
+    if task.get("status") == "approved" and task.get("gate_type") == "risk" and task.get("disposition") == "adjusted":
+        db.update_risk_score_fields(task["run_id"], task["item_ref"], task.get("adjustments") or {})
+
     return {"saved": True, "task": task}
 
 
@@ -115,6 +124,17 @@ def review_item(req: ReviewRequest, current_user: dict = Depends(get_current_use
     )
     if not updated:
         raise HTTPException(status_code=409, detail="Item was already reviewed")
+
+    # Manager-approved risk adjustment -> propagate to risk_scores. This runs
+    # server-side (not triggered by the frontend) because the manager review
+    # can happen long after the preparer's browser session that submitted the
+    # adjustment is gone — risk_scores otherwise stays frozen at the run's
+    # original computed values even after a human explicitly overrode them
+    # and a manager signed off, which is exactly the discrepancy Posture
+    # Trend's RAG counts were silently showing.
+    if updated.get("status") == "manager_approved" and updated.get("gate_type") == "risk" and updated.get("disposition") == "adjusted":
+        db.update_risk_score_fields(updated["run_id"], updated["item_ref"], updated.get("adjustments") or {})
+
     return {"saved": True, "task": updated}
 
 

@@ -1459,6 +1459,20 @@ function App() {
         greySwan:  RISK_ENGINE.buildGreySwan(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry),
       };
       setProfile(profileRef.current);
+
+      // Re-sync risk_scores with these signal-adjusted values — without this,
+      // risk_scores stays frozen at the initial pre-adjustment snapshot from
+      // the MCP call above, and anything reading it directly (Posture Trend's
+      // RAG counts) shows the wrong distribution once Stage 2 has actually
+      // moved scores. Fire-and-forget: non-blocking, same pattern as the
+      // peer-benchmarks call elsewhere in this function.
+      if (runIdRef.current) {
+        fetch(`/api/mcp/risk-scores/${runIdRef.current}/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ risks: adjustedRisks }),
+        }).catch(() => {});
+      }
     }
 
     // GATE 1 — Risk assessment
