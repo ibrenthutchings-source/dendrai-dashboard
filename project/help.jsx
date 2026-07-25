@@ -24,7 +24,6 @@ const WORKFLOW_STAGES = [
     desc: "Turn risk and control language into machine-enforceable code — Risk-as-Code, an OPA-backed Policy-as-Code engine, and a coverage view of what's actually automated vs. manual.",
     items: [
       { screen: "riskcode", label: "Risk-as-Code Editor", desc: "Version-controlled risk definitions as OSCAL/COSO YAML — risk logic becomes a diffable, auditable artifact instead of a spreadsheet." },
-      { screen: "frameworks", label: "Framework Sync", desc: "Auto-maps your risks and controls onto COSO, NIST, and other frameworks, exposing where a framework requirement has no control behind it." },
       { screen: "policycode", label: "Policy-as-Code Engine", desc: "Author policies in OPA/Rego and evaluate them against live control data — enforceable, testable governance rather than PDF policy." },
       { screen: "coverage", label: "Coverage Gap Analysis", desc: "The automated-vs-manual heatmap — surfaces exactly which risks still lack a control, a test, or a quant model behind them." },
     ],
@@ -37,7 +36,7 @@ const WORKFLOW_STAGES = [
       { screen: "controls", label: "Controls Monitor", desc: "Live control-health board — flags failing and degrading controls in real time instead of at period-end testing." },
       { screen: "aiinventory", label: "AI System Ledger", desc: "The EU AI Act-style register — every AI system in use, classified by risk tier and mapped to its governance obligations." },
       { screen: "scope", label: "Scope Builder", desc: "Risk-linked audit objectives organized by fiscal quarter, so the plan is traceable back to the risks that justified it." },
-      { screen: "rrreview", label: "Risk & Control Ledger", desc: "The living risk register with its control mappings — the single source of truth for what each risk is and what mitigates it." },
+      { screen: "rrreview", label: "Risk & Control Ledger", desc: "The living risk register with its control mappings — Save All generates reviewed Risk-as-Code and Controls-as-Code together, with the relationship between them embedded in both artifacts." },
       { screen: "maps", label: "MAPs", desc: "Management action plans tracked to closure — findings, owners, due dates, and completion in one accountable view." },
       { screen: "approvals", label: "Approval Inbox", desc: "The two-stage preparer→manager sign-off queue — human-in-the-loop gates every AI-suggested disposition before it lands." },
       { screen: "ubogov", label: "Control Tower", desc: "Ultimate-beneficial-ownership oversight — surfaces hidden ownership and control chains behind the entity." },

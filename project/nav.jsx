@@ -23,7 +23,6 @@ const NAV_SECTIONS = [
     label: "Automation",
     items: [
       { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
-      { id: "frameworks", icon: "spark",   l: "Framework Sync" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
       { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
     ],
