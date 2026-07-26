@@ -16,11 +16,13 @@ The originating system that produced the raw event.
 |---|---|
 | `SAP` | SAP ERP audit log (CDHDR / CDPOS schema) |
 | `GITHUB` | GitHub webhook payloads |
+| `GITLAB` | GitLab webhook payloads / SCM audits |
 | `SAILPOINT` | SailPoint IdentityNow activity stream |
 | `FRED` | Federal Reserve macro economic indicators |
 | `SEC_EDGAR` | SEC EDGAR filings |
 | `ORACLE_FUSION` | Oracle Fusion ERP |
 | `MCP_PROXY` | MCP Telemetry Proxy flagged tool calls |
+| `SYSTEM_TELEMETRY` | Generic REST-ingested enterprise systems — poll connectors (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite), SCM audits (GitHub/GitLab branch-protection), SARIF evidence, ITSM SLA breaches, and Infrastructure Monitoring (Postgres CIS, Railway drift) |
 | `INTERNAL` | Internal risk register or manual entry |
 | `UNKNOWN` | Fallback for unrecognised sources |
 
@@ -47,6 +49,24 @@ The specific risk event class. Each value maps to a base severity weight in the 
 | `FORCE_PUSH_MAIN` | 0.65 | Force push to protected branch |
 | `DEPENDENCY_VULNERABILITY` | 0.50 | Dependabot CVE alert |
 | `CODE_REVIEW_BYPASSED` | 0.55 | Pull request merged without required review |
+
+**DevOps Monitoring — SCM audits + SARIF/SAST evidence**
+
+| Value | Base Weight | Description |
+|---|---|---|
+| `SAST_FINDING` | 0.60 | SARIF/SAST finding ingested via `evidence_endpoints.py` |
+
+**DevOps Monitoring — ITSM SLA Bridge**
+
+| Value | Base Weight | Description |
+|---|---|---|
+| `SLA_BREACH` | 0.70 | An ITSM ticket linked to a finding missed its remediation SLA |
+
+**Infrastructure Monitoring — IaaS/OS/DB continuous audit**
+
+| Value | Base Weight | Description |
+|---|---|---|
+| `INFRASTRUCTURE_FINDING` | 0.65 | Postgres CIS-style hardening check or Railway platform/deployment drift finding |
 
 **SailPoint Identity**
 
@@ -84,6 +104,13 @@ The specific risk event class. Each value maps to a base severity weight in the 
 | `MCP_BULK_ARGS` | 0.45 | Tool called with > 20 arguments |
 | `MCP_TOOL_ERROR` | 0.40 | Tool returned error status |
 | `MCP_LARGE_PAYLOAD` | 0.35 | Payload size > 50 KB |
+
+**Generic Enterprise Systems (system_telemetry ingest)**
+
+| Value | Base Weight | Description |
+|---|---|---|
+| `SENSITIVE_RESOURCE_ACCESS` | 0.65 | `sensitive_resource` flag matched a generic keyword |
+| `SYSTEM_GOVERNANCE_VIOLATION` | 0.85 | 2+ generic risk flags fired simultaneously on one event |
 
 #### `PipelineStage`
 

@@ -307,6 +307,12 @@ Each tool also ships as a standalone MCP server for use with Claude Desktop or o
 | `rss_mcp_server.py` | `rss_tool.py` | Industry RSS signal grading |
 | `predictive_analytics_mcp_server.py` | `predictive_analytics_tool.py` | All 10 analytics models |
 | `token_cost_mcp_server.py` | `token_cost_tool.py` | Anthropic API token cost estimation |
+| `oracle_fusion_mcp_server.py` | `oracle_fusion_tool.py` | Oracle Fusion Cloud RMCS/FSCM control data |
+| `risk_as_code_mcp_server.py` | `risks_as_code.py` | OSCAL / COSO ERM Risk-as-Code artifact generation |
+| `pac_mcp_server.py` | `pac_endpoints.py` | Policy-as-Code Rego modules + negative-control testing |
+| `cac_mcp_server.py` | `pac_endpoints.py` | Controls-as-Code artifact generation from PaC deny rules |
+| `devops_monitoring_mcp_server.py` | `scm_audit_endpoints.py` / `evidence_endpoints.py` | SCM branch-protection audits, SARIF evidence, risk waivers, ITSM SLA bridge |
+| `infrastructure_monitoring_mcp_server.py` | `postgres_cis_tool.py` / `railway_iaas_tool.py` | Continuous Postgres CIS hardening + Railway platform/deployment drift audits |
 
 ### Node.js MCP Server (`mcp-server/`)
 
