@@ -339,6 +339,10 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         # this generic system_telemetry path — see mcp_governance._detect_system_flags.
         "branch_protection_violation": EventType.BRANCH_PROTECTION_BYPASSED,
         "sast_finding":                EventType.SAST_FINDING,
+        # ITSM SLA Bridge: itsm_sla_sweep.py re-ingests an overdue ticket's
+        # underlying finding tagged with this flag — see risk_waiver_sweep.py's
+        # near-identical "waiver expired, re-open as failing" precedent.
+        "sla_breach":                  EventType.SLA_BREACH,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:

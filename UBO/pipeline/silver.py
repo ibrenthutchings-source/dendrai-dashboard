@@ -172,6 +172,15 @@ class SilverConformationLayer(SilverLayerBase):
                         "— remediation SLA clock started"
                     )
 
+        elif rule.rule_id == "POL-DEVOPS-002":
+            if uro.event_type == EventType.SLA_BREACH:
+                payload = raw.get("raw_payload") or {}
+                return (
+                    f"ITSM ticket '{payload.get('external_ticket_key', 'unknown')}' for finding "
+                    f"'{payload.get('finding_hash', 'unknown')}' breached its remediation SLA "
+                    f"(due {payload.get('sla_due_at', 'unknown')})"
+                )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -438,6 +447,14 @@ class SilverConformationLayer(SilverLayerBase):
                 # identical input.event.* fields regardless of which path produced the URO.
                 # No-op (all None) for every other poll-connector type's telemetry.
                 **(raw.get("raw_payload") or {}).get("compliance", {}),
+                # ITSM SLA Bridge (itsm_sla_sweep.py, event_type=='sla_breach'):
+                # ticket/finding identifiers so the devops_monitoring Rego's
+                # deny_sla_breach rule and any downstream review UI can trace
+                # the breach back to its ticket without re-parsing raw_payload.
+                "external_system":      (raw.get("raw_payload") or {}).get("external_system"),
+                "external_ticket_key":  (raw.get("raw_payload") or {}).get("external_ticket_key"),
+                "finding_hash":         (raw.get("raw_payload") or {}).get("finding_hash"),
+                "sla_due_at":           (raw.get("raw_payload") or {}).get("sla_due_at"),
             },
             affected_entities=[server, str(raw.get("actor", ""))],
             conformation_rules_applied=["System-Telemetry-v1-conform"],

@@ -72,6 +72,7 @@ except ImportError as exc:
 import db  # project/agentic-tools/db.py — psycopg2 thread pool
 import claude_client  # optional 4th-opinion reviewer for conflicted/low-confidence UROs
 import pac_endpoints  # real Rego/OPA evaluation — see _evaluate_pac_policy below
+import mcp_guards  # SSRF guard for user-supplied connector base_urls
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -345,6 +346,7 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("GITLAB", "CODE_REVIEW_BYPASSED"):        "devops_monitoring",
     ("SYSTEM_TELEMETRY", "SAST_FINDING"):      "devops_monitoring",
     ("SYSTEM_TELEMETRY", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "SLA_BREACH"):        "devops_monitoring",
 }
 
 
@@ -1663,6 +1665,8 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("branch_protection_violation")
     if payload.get("sast_finding"):
         flags.add("sast_finding")
+    if payload.get("sla_breach"):
+        flags.add("sla_breach")
     return sorted(flags)
 
 
@@ -1948,6 +1952,23 @@ async def delete_system(system_id: int):
 # Configured entirely from the app UI, no env vars — see connector_poller.py
 # for the background dispatch loop that actually polls these.
 
+# Connector types whose base_url points at a public SaaS API (github.com,
+# gitlab.com, ...) rather than a customer's own on-prem/VPN-internal system —
+# only these get the SSRF guard. Oracle Fusion/SAP HANA/etc. connectors are
+# legitimately configured with private/internal addresses, so validating
+# those would break real deployments.
+_SSRF_GUARDED_CONNECTOR_TYPES = {"github_scm", "gitlab_scm"}
+
+
+def _validate_connector_base_url(connector_type: str, base_url: Optional[str]) -> None:
+    if not base_url or connector_type not in _SSRF_GUARDED_CONNECTOR_TYPES:
+        return
+    try:
+        mcp_guards.validate_external_url(base_url, field="base_url")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/connectors")
 async def list_connectors():
     """All poll-based connectors. Never includes credentials."""
@@ -1959,10 +1980,12 @@ async def list_connectors():
 async def create_connector(body: dict = Body(...)):
     """Register a new poll connector. Body includes plaintext credentials —
     encrypted before storage, never echoed back."""
+    connector_type = str(body.get("connector_type") or "")[:32]
+    _validate_connector_base_url(connector_type, body.get("base_url"))
     try:
         new_id = await asyncio.to_thread(
             db.create_poll_connector,
-            str(body.get("connector_type") or "")[:32],
+            connector_type,
             str(body.get("display_name") or "")[:128],
             body.get("base_url"),
             str(body.get("auth_type") or "")[:32],
@@ -1982,6 +2005,10 @@ async def create_connector(body: dict = Body(...)):
 @router.put("/connectors/{connector_id}")
 async def update_connector(connector_id: int, body: dict = Body(...)):
     """Update a connector. Omit `credentials` to keep the existing encrypted value."""
+    if body.get("base_url"):
+        existing = await asyncio.to_thread(db.get_poll_connector, connector_id, False)
+        if existing:
+            _validate_connector_base_url(existing["connector_type"], body.get("base_url"))
     try:
         ok = await asyncio.to_thread(
             db.update_poll_connector,
