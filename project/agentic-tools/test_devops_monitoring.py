@@ -14,6 +14,7 @@ import hashlib
 import hmac
 
 import evidence_endpoints
+import mcp_governance
 import pac_endpoints
 import scm_connectors
 
@@ -221,3 +222,39 @@ def test_devops_monitoring_rego_fires_on_critical_evidence_severity():
     result = pac_endpoints.evaluate_policy_event(_rego(), input_event)
     fired_rules = {r["rule"] for r in result["rules_fired"]}
     assert "deny_evidence_finding" in fired_rules
+
+
+# ── mcp_governance: SSRF guard on poll-connector base_url ──────────────────────
+# The generic /observability/connectors form (not scm_audit_endpoints.py's
+# unused register_repository) is the actual UI-facing registration path for
+# github_scm/gitlab_scm connectors, so the guard must live in
+# _validate_connector_base_url, wired into both create_connector and
+# update_connector.
+
+def test_connector_base_url_guard_rejects_private_ip_for_github_scm():
+    try:
+        mcp_governance._validate_connector_base_url("github_scm", "https://169.254.169.254/latest/meta-data")
+        assert False, "expected HTTPException for a link-local target"
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+
+
+def test_connector_base_url_guard_rejects_http_scheme_for_gitlab_scm():
+    try:
+        mcp_governance._validate_connector_base_url("gitlab_scm", "http://gitlab.example.com/api/v4")
+        assert False, "expected HTTPException for a non-https scheme"
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+
+
+def test_connector_base_url_guard_allows_blank_base_url():
+    # github_scm/gitlab_scm may omit base_url entirely (adapter defaults to
+    # the public api.github.com / gitlab.com host) — must not raise.
+    mcp_governance._validate_connector_base_url("github_scm", None)
+    mcp_governance._validate_connector_base_url("github_scm", "")
+
+
+def test_connector_base_url_guard_skips_unguarded_connector_types():
+    # Oracle Fusion/SAP HANA/etc. connectors legitimately point at
+    # private/on-prem addresses — the guard must not touch them.
+    mcp_governance._validate_connector_base_url("oracle_fusion", "https://10.0.5.20/api")

@@ -168,6 +168,17 @@ DEVOPS_EVIDENCE_RULES: list[PolicyRule] = [
         severity="HIGH",
         applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
     ),
+    PolicyRule(
+        rule_id="POL-DEVOPS-002",
+        name="ITSM Ticket SLA Breach",
+        description=(
+            "A ticket linked to a DevOps Monitoring finding (branch-protection "
+            "weakness or SARIF finding) was not resolved before its SLA due date — "
+            "the finding is re-escalated as failing, same as an expired risk waiver."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
 ]
 
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────

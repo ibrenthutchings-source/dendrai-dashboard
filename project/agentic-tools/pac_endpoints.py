@@ -710,47 +710,47 @@ import future.keywords.if
 
 # ── DEVOPS-001: Admin Bypass (CRITICAL) ──────────────────────────────────────
 deny_branch_protection[msg] if {
-    input.event.type == "branch_protection_rule"
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
     input.event.enforce_admins == false
     msg := sprintf("DEVOPS-001: Branch protection on '%v' does not enforce rules for administrators — admins can bypass required checks (CRITICAL)", [input.event.resource])
 }
 
 # ── DEVOPS-002: Minimum Approving Reviews ────────────────────────────────────
 deny_branch_protection[msg] if {
-    input.event.type == "branch_protection_rule"
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
     input.event.required_approving_review_count < 1
     msg := sprintf("DEVOPS-002: Branch '%v' requires zero approving reviews before merge", [input.event.resource])
 }
 
 # ── DEVOPS-003: Stale Review Dismissal ───────────────────────────────────────
 deny_branch_protection[msg] if {
-    input.event.type == "branch_protection_rule"
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
     input.event.dismiss_stale_reviews == false
     msg := sprintf("DEVOPS-003: Branch '%v' does not dismiss stale reviews when new commits are pushed", [input.event.resource])
 }
 
 # ── DEVOPS-004: Required Security/Test Status Checks ─────────────────────────
 deny_branch_protection[msg] if {
-    input.event.type == "branch_protection_rule"
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
     input.event.has_required_sast_check == false
     msg := sprintf("DEVOPS-004: Branch '%v' has no required SAST/security status check", [input.event.resource])
 }
 
 deny_branch_protection[msg] if {
-    input.event.type == "branch_protection_rule"
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
     input.event.has_required_test_check == false
     msg := sprintf("DEVOPS-004: Branch '%v' has no required unit-test status check", [input.event.resource])
 }
 
 # ── DEVOPS-005/006: CODEOWNERS Coverage ──────────────────────────────────────
 deny_branch_protection[msg] if {
-    input.event.type == "branch_protection_rule"
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
     not input.event.codeowners_present
     msg := sprintf("DEVOPS-005: Repository for '%v' has no CODEOWNERS file", [input.event.resource])
 }
 
 deny_branch_protection[msg] if {
-    input.event.type == "branch_protection_rule"
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
     input.event.codeowners_present == true
     input.event.codeowners_covers_workflows == false
     msg := sprintf("DEVOPS-006: CODEOWNERS for '%v' does not cover the CI/workflow definition path", [input.event.resource])
@@ -766,6 +766,12 @@ deny_evidence_finding[msg] if {
 deny_evidence_finding[msg] if {
     input.event.severity == "HIGH"
     msg := sprintf("DEVOPS-008: HIGH SARIF finding '%v' on '%v' — 30-day remediation SLA applies", [input.event.rule_id, input.event.resource])
+}
+
+# ── DEVOPS-009: ITSM Ticket SLA Breach ───────────────────────────────────────
+deny_sla_breach[msg] if {
+    input.event.type == "SLA_BREACH"
+    msg := sprintf("DEVOPS-009: ITSM ticket '%v' (%v) for finding '%v' breached its remediation SLA (due %v)", [input.event.external_ticket_key, input.event.external_system, input.event.finding_hash, input.event.sla_due_at])
 }
 """,
 
