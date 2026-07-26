@@ -95,6 +95,7 @@ const CONNECTOR_TYPES = [
   // results and on-demand audits surface on the DevOps Monitoring screen.
   { id: "github_scm", label: "GitHub (SCM Audit)",
     baseUrlPlaceholder: "https://api.github.com (leave blank for github.com)",
+    baseUrlOptional: true,
     credentialFields: [
       { key: "token", label: "Personal Access Token", type: "password" },
     ],
@@ -104,6 +105,7 @@ const CONNECTOR_TYPES = [
     ] },
   { id: "gitlab_scm", label: "GitLab (SCM Audit)",
     baseUrlPlaceholder: "https://gitlab.com/api/v4 (leave blank for gitlab.com)",
+    baseUrlOptional: true,
     credentialFields: [
       { key: "token", label: "Personal/Project Access Token", type: "password" },
     ],
@@ -111,6 +113,25 @@ const CONNECTOR_TYPES = [
       { key: "project_ref", label: "Project (namespace/project or numeric ID)", type: "text", placeholder: "my-group/my-project" },
       { key: "branch", label: "Branch", type: "text", placeholder: "main" },
     ] },
+  // DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge (itsm_endpoints.py,
+  // itsm_jira_tool.py/itsm_servicenow_tool.py). Credentials here are used both
+  // to open real tickets (POST /itsm/tickets) and to poll ticket status back.
+  { id: "itsm_jira", label: "Jira (ITSM SLA Bridge)",
+    baseUrlPlaceholder: "https://mycompany.atlassian.net",
+    credentialFields: [
+      { key: "email", label: "Account Email", type: "text" },
+      { key: "api_token", label: "API Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "project_key", label: "Project Key", type: "text", placeholder: "SEC" },
+    ] },
+  { id: "itsm_servicenow", label: "ServiceNow (ITSM SLA Bridge)",
+    baseUrlPlaceholder: "https://mycompany.service-now.com",
+    credentialFields: [
+      { key: "username", label: "Username", type: "text" },
+      { key: "password", label: "Password", type: "password" },
+    ],
+    extraFields: [] },
 ];
 
 function _uboConfigBase() {
@@ -667,7 +688,7 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
 
   const typeInfo = CONNECTOR_TYPES.find(t => t.id === form.connector_type) || CONNECTOR_TYPES[0];
   const isEdit = !!initial?.id;
-  const valid = form.display_name.trim() && form.base_url.trim() &&
+  const valid = form.display_name.trim() && (typeInfo.baseUrlOptional || form.base_url.trim()) &&
     (isEdit || typeInfo.credentialFields.some(f => (form.credentials[f.key] || "").trim()));
 
   function handleSave() {
@@ -676,7 +697,7 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
     onSave({
       connector_type: form.connector_type,
       display_name: form.display_name.trim(),
-      base_url: form.base_url.trim(),
+      base_url: form.base_url.trim() || null,
       auth_type: form.connector_type, // one auth scheme per connector type in this framework
       poll_interval_s: Number(form.poll_interval_s) || 1800,
       extra_config: form.extra_config,
@@ -709,7 +730,7 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
       </div>
 
       <div className="field" style={{ marginBottom: 0 }}>
-        <label className="field-label">Base URL / host *</label>
+        <label className="field-label">Base URL / host{typeInfo.baseUrlOptional ? "" : " *"}</label>
         <input className="input" value={form.base_url}
           onChange={e => set("base_url", e.target.value)}
           placeholder={typeInfo.baseUrlPlaceholder}

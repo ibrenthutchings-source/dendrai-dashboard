@@ -36,6 +36,8 @@ import db
 import dynamics365_tool
 import github_scm_tool
 import gitlab_scm_tool
+import itsm_jira_tool
+import itsm_servicenow_tool
 import mcp_governance
 import netsuite_tool
 import oracle_fusion_tool
@@ -57,6 +59,8 @@ _ADAPTERS = {
     "netsuite":       netsuite_tool,
     "github_scm":     github_scm_tool,
     "gitlab_scm":     gitlab_scm_tool,
+    "itsm_jira":       itsm_jira_tool,
+    "itsm_servicenow": itsm_servicenow_tool,
 }
 
 

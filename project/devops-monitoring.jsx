@@ -45,6 +45,15 @@ function DmWaiverStatusPill({ status }) {
   return <Pill tone={DM_WAIVER_STATUS_TONE[status] || "neutral"}>{status || "—"}</Pill>;
 }
 
+const DM_TICKET_STATUS_TONE = {
+  open: "neutral", in_progress: "warn", resolved: "good", closed: "good", cancelled: "neutral",
+};
+
+function DmTicketStatusPill({ status }) {
+  const Pill = window.Pill;
+  return <Pill tone={DM_TICKET_STATUS_TONE[status] || "neutral"}>{(status || "—").replace("_", " ")}</Pill>;
+}
+
 function DevopsMonitoringScreen({ onNavigate } = {}) {
   const Empty = window.Empty;
   const LiveBadge = window.LiveBadge;
@@ -70,6 +79,12 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
   const [waivers, setWaivers] = React.useState([]);
   const [waiverStatus, setWaiverStatus] = React.useState("");
   const [attestations, setAttestations] = React.useState([]);
+
+  const [itsmTickets, setItsmTickets] = React.useState([]);
+  const [itsmStatus, setItsmStatus] = React.useState("");
+  const [itsmBreachedOnly, setItsmBreachedOnly] = React.useState(false);
+  const [itsmSummary, setItsmSummary] = React.useState({ open: 0, breached: 0, at_risk_24h: 0 });
+  const [syncingTicketId, setSyncingTicketId] = React.useState(null);
 
   const load = React.useCallback(() => {
     return Promise.all([
@@ -128,6 +143,29 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
       .then(r => r.json()).then(d => setAttestations(d.attestations || [])).catch(() => setAttestations([]));
   }, []);
   React.useEffect(() => { loadAttestations(); }, [loadAttestations]);
+
+  const loadItsm = React.useCallback(() => {
+    const params = new URLSearchParams();
+    if (itsmStatus) params.set("status", itsmStatus);
+    if (itsmBreachedOnly) params.set("breached_only", "true");
+    return Promise.all([
+      fetch(`${_devopsBase()}/itsm/tickets?${params.toString()}`, { credentials: "include" }).then(r => r.json()),
+      fetch(`${_devopsBase()}/itsm/sla-summary`, { credentials: "include" }).then(r => r.json()),
+    ])
+      .then(([ticketRes, summaryRes]) => {
+        setItsmTickets(ticketRes.tickets || []);
+        setItsmSummary(summaryRes || { open: 0, breached: 0, at_risk_24h: 0 });
+      })
+      .catch(() => { setItsmTickets([]); });
+  }, [itsmStatus, itsmBreachedOnly]);
+  React.useEffect(() => { loadItsm(); }, [loadItsm]);
+
+  function syncTicket(id) {
+    setSyncingTicketId(id);
+    fetch(`${_devopsBase()}/itsm/tickets/${id}/sync`, { method: "POST", credentials: "include" })
+      .catch(() => {})
+      .finally(() => { setSyncingTicketId(null); loadItsm(); });
+  }
 
   // Join the registry (has ids, for the run action) with the latest audit
   // result per repo (keyed by server_name == repo_ref) into one matrix row.
@@ -445,6 +483,73 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
                       {a.license_risk ? <window.Pill tone="warn">copyleft</window.Pill> : "—"}
                     </td>
                     <td style={{ padding: "8px 12px", color: "var(--ink-3)" }}>{new Date(a.created_at).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ---- ITSM Tickets & SLA ---- */}
+      <div style={{ marginTop: 24 }}>
+        <SectionLabel
+          right={
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
+                Open {itsmSummary.open} · Breached {itsmSummary.breached} · At risk (24h) {itsmSummary.at_risk_24h}
+              </span>
+              <select className="input input-sm" value={itsmStatus} onChange={e => setItsmStatus(e.target.value)}
+                style={{ fontSize: 11, padding: "4px 8px" }}>
+                <option value="">All statuses</option>
+                {["open", "in_progress", "resolved", "closed", "cancelled"].map(s => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
+              </select>
+              <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 5 }}>
+                <input type="checkbox" checked={itsmBreachedOnly} onChange={e => setItsmBreachedOnly(e.target.checked)} />
+                Breached only
+              </label>
+            </div>
+          }
+        >
+          ITSM Tickets & SLA
+        </SectionLabel>
+        <div className="panel-sub" style={{ marginBottom: 8 }}>
+          Jira/ServiceNow tickets opened against DevOps Monitoring findings, tracked against
+          a severity-based remediation SLA independent of the external system — an overdue
+          ticket is flagged and its finding re-opened as failing by the hourly breach sweep,
+          even if nobody is watching Jira/ServiceNow. Register a connector (System type "Jira
+          (ITSM SLA Bridge)" or "ServiceNow (ITSM SLA Bridge)") on the Dendrai UBO Configuration
+          screen, then open tickets via POST /itsm/tickets.
+        </div>
+        {!itsmTickets.length ? <Empty>No ITSM tickets tracked yet.</Empty> : (
+          <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left" }}>
+                  {["Ticket", "System", "Finding", "Severity", "Status", "SLA Due", "Breached", ""].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", color: "var(--ink-4)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {itsmTickets.map(t => (
+                  <tr key={t.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                    <td style={{ padding: "8px 12px", fontFamily: "var(--mono)" }}>{t.external_ticket_key}</td>
+                    <td style={{ padding: "8px 12px" }}>{t.external_system}</td>
+                    <td style={{ padding: "8px 12px", fontFamily: "var(--mono)" }}>{(t.finding_hash || "").slice(0, 12)}…</td>
+                    <td style={{ padding: "8px 12px" }}><DmSeverityPill severity={t.severity} /></td>
+                    <td style={{ padding: "8px 12px" }}><DmTicketStatusPill status={t.status} /></td>
+                    <td style={{ padding: "8px 12px", color: "var(--ink-3)" }}>{new Date(t.sla_due_at).toLocaleString()}</td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {t.sla_breached_at
+                        ? <span style={{ color: "var(--red-ink)", fontWeight: 700 }}>BREACHED</span>
+                        : <span style={{ color: "var(--ink-4)" }}>—</span>}
+                    </td>
+                    <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                      <button type="button" className="btn btn-sm" onClick={() => syncTicket(t.id)} disabled={syncingTicketId === t.id}>
+                        {syncingTicketId === t.id ? "Syncing…" : "Sync"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

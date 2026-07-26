@@ -196,7 +196,7 @@ def test_devops_monitoring_rego_registered_as_default():
 
 def test_devops_monitoring_rego_fires_on_admin_bypass():
     input_event = {"event": {
-        "type": "branch_protection_rule", "resource": "org/repo@main",
+        "type": "BRANCH_PROTECTION_BYPASSED", "resource": "org/repo@main",
         "enforce_admins": False, "required_approving_review_count": 2,
         "dismiss_stale_reviews": True,
     }}
@@ -207,7 +207,7 @@ def test_devops_monitoring_rego_fires_on_admin_bypass():
 
 def test_devops_monitoring_rego_silent_when_compliant():
     input_event = {"event": {
-        "type": "branch_protection_rule", "resource": "org/repo@main",
+        "type": "BRANCH_PROTECTION_BYPASSED", "resource": "org/repo@main",
         "enforce_admins": True, "required_approving_review_count": 2,
         "dismiss_stale_reviews": True, "has_required_sast_check": True,
         "has_required_test_check": True, "codeowners_present": True,

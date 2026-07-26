@@ -1957,7 +1957,7 @@ async def delete_system(system_id: int):
 # only these get the SSRF guard. Oracle Fusion/SAP HANA/etc. connectors are
 # legitimately configured with private/internal addresses, so validating
 # those would break real deployments.
-_SSRF_GUARDED_CONNECTOR_TYPES = {"github_scm", "gitlab_scm"}
+_SSRF_GUARDED_CONNECTOR_TYPES = {"github_scm", "gitlab_scm", "itsm_jira", "itsm_servicenow"}
 
 
 def _validate_connector_base_url(connector_type: str, base_url: Optional[str]) -> None:

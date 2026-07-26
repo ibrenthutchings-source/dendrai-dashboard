@@ -30,6 +30,9 @@ Claude Desktop — add to ~/.claude/claude_desktop_config.json:
     waiver_list             List Risk Waivers (ACTIVE/EXPIRED/REVOKED)
     waiver_sweep_now        Run the automated-expiry sweep immediately (write-guarded)
     attestation_list        List pipeline provenance/attestation records
+    itsm_list_tickets       List ITSM (Jira/ServiceNow) tickets tracking findings
+    itsm_sla_summary        Open/breached/at-risk-24h counts for the ITSM SLA Bridge
+    itsm_sweep_now          Run the SLA breach-detection sweep immediately (write-guarded)
 
 ── Environment variables ─────────────────────────────────────────────────────
 
@@ -56,6 +59,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from mcp_guards import audit_log, cap_output, check_rate_limit, check_read_only
 import db
 import evidence_endpoints
+import itsm_sla_sweep
 import risk_waiver_sweep
 import scm_audit_endpoints
 
@@ -255,6 +259,65 @@ def attestation_list(commit_sha: str = "", limit: int = 50) -> str:
         return cap_output(json.dumps({"attestations": rows}, indent=2, default=str))
     except Exception as exc:
         return f"Error listing attestations: {exc}"
+
+
+@mcp.tool()
+def itsm_list_tickets(status: str = "", external_system: str = "", breached_only: bool = False,
+                       limit: int = 100) -> str:
+    """
+    List ITSM (Jira/ServiceNow) tickets tracking DevOps Monitoring findings,
+    with their remediation SLA status.
+
+    Args:
+        status: Optional filter — open | in_progress | resolved | closed | cancelled
+        external_system: Optional filter — jira | servicenow
+        breached_only: If true, only tickets past their SLA due date
+        limit: Max rows to return (capped at 500)
+    """
+    try:
+        check_rate_limit("itsm_list_tickets")
+        if not db.is_available():
+            return json.dumps({"tickets": [], "note": "Database not configured"}, indent=2)
+        rows = db.list_itsm_tickets(status=status or None, external_system=external_system or None,
+                                     breached_only=breached_only, limit=limit)
+        return cap_output(json.dumps({"tickets": rows}, indent=2, default=str))
+    except Exception as exc:
+        return f"Error listing ITSM tickets: {exc}"
+
+
+@mcp.tool()
+def itsm_sla_summary() -> str:
+    """Open/breached/at-risk-within-24h counts for the ITSM SLA Bridge, for a
+    quick posture check without listing every ticket."""
+    try:
+        check_rate_limit("itsm_sla_summary")
+        if not db.is_available():
+            return json.dumps({"open": 0, "breached": 0, "at_risk_24h": 0, "note": "Database not configured"}, indent=2)
+        import itsm_endpoints
+        import asyncio
+        return json.dumps(asyncio.run(itsm_endpoints.sla_summary()), indent=2)
+    except Exception as exc:
+        return f"Error computing SLA summary: {exc}"
+
+
+@mcp.tool()
+def itsm_sweep_now() -> str:
+    """
+    Run the ITSM SLA breach-detection sweep immediately instead of waiting
+    for the hourly background loop — flags overdue open tickets as breached
+    and re-escalates their underlying findings as failing again. Blocked
+    when MCP_READ_ONLY=true (this writes).
+    """
+    try:
+        check_read_only("itsm_sweep_now")
+        check_rate_limit("itsm_sweep_now")
+        if not db.is_available():
+            return json.dumps({"note": "Database not configured"}, indent=2)
+        audit_log("itsm_sweep_now")
+        breached_count = asyncio.run(itsm_sla_sweep.sweep_once())
+        return json.dumps({"breached_count": breached_count}, indent=2)
+    except Exception as exc:
+        return f"Error running ITSM SLA sweep: {exc}"
 
 
 if __name__ == "__main__":

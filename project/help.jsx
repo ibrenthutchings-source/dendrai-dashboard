@@ -1,10 +1,11 @@
 /* ============================================================
    Intelligenza Workflow — a clickable overview of the platform's
    actual workflow: Risk Assessment -> Automation -> Tracking ->
-   Board -> Setup. Mirrors nav.jsx's five sections exactly (same
-   ids/labels) so this stays a map of the real nav, not a separate
-   narrative that can drift out of sync with it. This is also the
-   default landing screen (see app.jsx's activeScreen initial state).
+   DevOps Monitoring -> Board -> Setup. Mirrors nav.jsx's six
+   sections exactly (same ids/labels) so this stays a map of the
+   real nav, not a separate narrative that can drift out of sync
+   with it. This is also the default landing screen (see app.jsx's
+   activeScreen initial state).
    ============================================================ */
 
 const WORKFLOW_STAGES = [
@@ -41,6 +42,13 @@ const WORKFLOW_STAGES = [
       { screen: "approvals", label: "Approval Inbox", desc: "The two-stage preparer→manager sign-off queue — human-in-the-loop gates every AI-suggested disposition before it lands." },
       { screen: "ubogov", label: "Control Tower", desc: "Ultimate-beneficial-ownership oversight — surfaces hidden ownership and control chains behind the entity." },
       { screen: "notifs", label: "Notifications", desc: "Scheduled posture digests plus the graduated stakeholder alert cascade driven by control-event severity." },
+    ],
+  },
+  {
+    id: "devopsmonitoring", label: "DevOps Monitoring", icon: "shield",
+    desc: "SCM branch-protection integrity and SARIF/SAST evidence, wired into the same RaC→CaC→PaC and HITL spine as every other category — drift detection, risk waivers, provenance/SBOM attestation, and ITSM SLA tracking, not a separate bolt-on system.",
+    items: [
+      { screen: "devopsmonitoring", label: "Branch Integrity & Evidence", desc: "Branch-protection/CODEOWNERS audits, SARIF findings, drift & time-series log, risk waivers, pipeline provenance attestations, and ITSM ticket SLA tracking in one command center." },
     ],
   },
   {
