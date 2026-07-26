@@ -181,6 +181,23 @@ DEVOPS_EVIDENCE_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ────────────────────
+
+INFRASTRUCTURE_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-INFRA-001",
+        name="Infrastructure Configuration Finding Severity Floor",
+        description=(
+            "A continuous IaaS/DB configuration audit (postgres_cis_tool.py / "
+            "railway_iaas_tool.py) found a CRITICAL or HIGH severity finding — "
+            "e.g. SSL not enforced, weak password encryption, or a service "
+            "unexpectedly exposed to the public internet."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
 
 SAILPOINT_RULES: list[PolicyRule] = [
@@ -314,6 +331,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *GITHUB_RULES,
     *GITLAB_RULES,
     *DEVOPS_EVIDENCE_RULES,
+    *INFRASTRUCTURE_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

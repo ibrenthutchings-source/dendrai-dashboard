@@ -145,8 +145,86 @@ DEVOPS_MONITORING_FIXTURES: list[Fixture] = [
     ),
 ]
 
+# ── infrastructure_monitoring corpus ────────────────────────────────────────
+# Mirrors iaas_connectors.normalize_postgres_compliance()'s output shape.
+
+_FULLY_COMPLIANT_DB = {
+    "ssl_enabled": True, "password_encryption": "scram-sha-256",
+    "log_connections": True, "row_security_enabled": True,
+    "superuser_count": 1, "unencrypted_connection_count": 0,
+}
+
+INFRASTRUCTURE_MONITORING_FIXTURES: list[Fixture] = [
+    Fixture(
+        name="ssl_not_enforced_must_fire",
+        input_event={"event": {**_FULLY_COMPLIANT_DB, "type": "INFRASTRUCTURE_FINDING",
+                                "resource": "primary-db", "ssl_enabled": False}},
+        expect="fire", expected_control_id="INFRA-001",
+        rationale="Connections can be made in plaintext.",
+    ),
+    Fixture(
+        name="weak_password_encryption_must_fire",
+        input_event={"event": {**_FULLY_COMPLIANT_DB, "type": "INFRASTRUCTURE_FINDING",
+                                "resource": "primary-db", "password_encryption": "md5"}},
+        expect="fire", expected_control_id="INFRA-002",
+        rationale="md5 password hashing is materially weaker than scram-sha-256.",
+    ),
+    Fixture(
+        name="superuser_sprawl_must_fire",
+        input_event={"event": {**_FULLY_COMPLIANT_DB, "type": "INFRASTRUCTURE_FINDING",
+                                "resource": "primary-db", "superuser_count": 5}},
+        expect="fire", expected_control_id="INFRA-003",
+        rationale="Excess superusers widen the blast radius of one compromised credential.",
+    ),
+    Fixture(
+        name="unencrypted_active_connection_must_fire",
+        input_event={"event": {**_FULLY_COMPLIANT_DB, "type": "INFRASTRUCTURE_FINDING",
+                                "resource": "primary-db", "unencrypted_connection_count": 2}},
+        expect="fire", expected_control_id="INFRA-004",
+        rationale="A live connection is transmitting in plaintext right now.",
+    ),
+    Fixture(
+        name="connection_logging_disabled_must_fire",
+        input_event={"event": {**_FULLY_COMPLIANT_DB, "type": "INFRASTRUCTURE_FINDING",
+                                "resource": "primary-db", "log_connections": False}},
+        expect="fire", expected_control_id="INFRA-005",
+        rationale="A compromised credential's access can't be reconstructed without connection logs.",
+    ),
+    Fixture(
+        name="fully_compliant_db_must_be_silent",
+        input_event={"event": {**_FULLY_COMPLIANT_DB, "type": "INFRASTRUCTURE_FINDING", "resource": "primary-db"}},
+        expect="silent",
+        rationale="Every control satisfied — a false positive here trains reviewers to ignore this process.",
+    ),
+    Fixture(
+        name="unexpected_public_domain_must_fire",
+        input_event={"event": {"type": "INFRASTRUCTURE_FINDING", "resource": "internal-worker",
+                                "unexpected_public_domain": True}},
+        expect="fire", expected_control_id="INFRA-006",
+        rationale="A service quietly gaining public exposure should never go unnoticed.",
+    ),
+    Fixture(
+        name="image_digest_mismatch_must_fire",
+        input_event={"event": {"type": "INFRASTRUCTURE_FINDING", "resource": "dendrai-intelligenza",
+                                "image_digest_mismatch": True}},
+        expect="fire", expected_control_id="INFRA-007",
+        rationale="A running deployment with no matching pipeline attestation can't be traced back to a known build.",
+    ),
+    Fixture(
+        name="image_digest_mismatch_unknown_must_be_silent",
+        # None (not False) — no attestation data ingested yet, so nothing to
+        # compare against. Must NOT fire; firing here would mean every
+        # deployment in an environment with no attestations flags forever.
+        input_event={"event": {"type": "INFRASTRUCTURE_FINDING", "resource": "dendrai-intelligenza",
+                                "image_digest_mismatch": None, "unexpected_public_domain": False}},
+        expect="silent",
+        rationale="No attestation data yet is 'unknown', not 'mismatched' — never fabricate a finding.",
+    ),
+]
+
 CORPORA: dict[str, list[Fixture]] = {
     "devops_monitoring": DEVOPS_MONITORING_FIXTURES,
+    "infrastructure_monitoring": INFRASTRUCTURE_MONITORING_FIXTURES,
 }
 
 

@@ -132,6 +132,34 @@ const CONNECTOR_TYPES = [
       { key: "password", label: "Password", type: "password" },
     ],
     extraFields: [] },
+  // Infrastructure Monitoring: continuous IaaS/OS/DB configuration audit
+  // (postgres_cis_tool.py). No REST base_url — the connection string IS
+  // the credential (host/port/dbname all encoded in the DSN), so Base URL
+  // is left unused/optional here.
+  { id: "postgres_cis", label: "Postgres (CIS Hardening Audit)",
+    baseUrlPlaceholder: "(unused — connection details are in the DSN below)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "dsn", label: "Connection String (postgresql://user:pass@host:port/db?sslmode=require)", type: "password" },
+    ],
+    extraFields: [
+      { key: "resource_label", label: "Resource Label", type: "text", placeholder: "primary-db" },
+    ] },
+  // Infrastructure Monitoring: Railway platform/deployment drift
+  // (railway_iaas_tool.py). api_token should be a real Railway Account/Team
+  // API token (Railway dashboard -> Account Settings -> Tokens), not a CLI
+  // OAuth session token. No REST base_url — the Railway GraphQL endpoint is
+  // fixed, so Base URL is left unused/optional here too.
+  { id: "railway_iaas", label: "Railway (Platform Drift Audit)",
+    baseUrlPlaceholder: "(unused — audits the Railway GraphQL API directly)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "api_token", label: "Railway API Token (Account/Team token, not a CLI session token)", type: "password" },
+    ],
+    extraFields: [
+      { key: "environment_id", label: "Railway Environment ID", type: "text", placeholder: "e.g. from the dashboard URL" },
+      { key: "approved_public_service_ids", label: "Approved Public Service IDs (comma-separated)", type: "text", placeholder: "svc-id-1,svc-id-2" },
+    ] },
 ];
 
 function _uboConfigBase() {

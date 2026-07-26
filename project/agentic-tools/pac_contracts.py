@@ -127,6 +127,20 @@ _SAILPOINT_FIELDS = frozenset({
     "role_count", "last_login_days", "access_request_id", "entitlements", "certification_id",
 })
 
+# Fields postgres_cis_tool.py and railway_iaas_tool.py contribute, via
+# iaas_connectors.normalize_postgres_compliance /
+# normalize_railway_service_compliance. Both adapters share this one process
+# (infrastructure_monitoring) and event type (INFRASTRUCTURE_FINDING).
+_INFRA_FIELDS = frozenset({
+    # postgres_cis_tool.py
+    "ssl_enabled", "password_encryption", "log_connections", "row_security_enabled",
+    "superuser_count", "superuser_no_expiry_count", "unencrypted_connection_count",
+    "extension_count", "extensions", "check_id",
+    # railway_iaas_tool.py
+    "service_id", "service_name", "has_public_domain", "unexpected_public_domain",
+    "image_digest", "image_digest_mismatch", "deployment_status",
+})
+
 
 # ── Per-process contract ──────────────────────────────────────────────────────
 # allowed_fields: every input.event.<field> a module for this process may
@@ -156,6 +170,10 @@ PROCESS_CONTRACTS: dict[str, dict] = {
     "procure_to_pay":   {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
     "order_to_cash":    {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
     "receive_to_ship":  {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
+    "infrastructure_monitoring": {
+        "allowed_fields": _INFRA_FIELDS,
+        "allowed_event_types": {"INFRASTRUCTURE_FINDING"},
+    },
 }
 
 

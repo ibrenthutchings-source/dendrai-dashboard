@@ -44,6 +44,7 @@ Claude Code — add to .claude/settings.json in your project:
     pac_run_negative_tests   Schema-contract check + must-fire/must-not-fire corpus (write-guarded)
     pac_negative_test_history  Past negative-control test runs for a process
     pac_assurance_summary     Which policy-enforced controls are proven working vs. unverified
+    pac_run_negative_sweep_now  Run the periodic full-evaluation sweep for every process now (write-guarded)
 
 ── Environment variables ─────────────────────────────────────────────────────
 
@@ -54,6 +55,7 @@ Claude Code — add to .claude/settings.json in your project:
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import os
@@ -69,6 +71,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from mcp_guards import audit_log, cap_output, check_rate_limit, check_read_only, validate_enum
 import db
 import pac_assurance
+import pac_negative_sweep
 from pac_endpoints import (
     _PROCESS_LABELS,
     _REGO_DEFAULTS,
@@ -739,6 +742,35 @@ def pac_assurance_summary(process: str = "", stale_days: int = 30) -> str:
         return f"Error: {exc}"
     except Exception as exc:
         return f"Error computing assurance summary: {exc}"
+
+
+@mcp.tool()
+def pac_run_negative_sweep_now() -> str:
+    """
+    Run the periodic full-evaluation negative-testing sweep immediately,
+    instead of waiting for the hourly background loop — tests every
+    registered process's currently-live Rego (latest saved module, or the
+    built-in default) and persists the result as audit evidence. Also
+    detects regressions: a process that passed its previous sweep and fails
+    this one gets logged as a warning even if its Rego text didn't change
+    (a Silver-layer conformer edit elsewhere can break a contract just as
+    easily as editing the policy itself).
+
+    Blocked when MCP_READ_ONLY=true (this writes test-run rows).
+    """
+    try:
+        check_read_only("pac_run_negative_sweep_now")
+        check_rate_limit("pac_run_negative_sweep_now")
+        audit_log("pac_run_negative_sweep_now")
+
+        results = asyncio.run(pac_negative_sweep.sweep_once())
+        summary = {
+            proc: {"ok": r["ok"], "contract_ok": r["contract"]["ok"], "corpus": r["corpus"].get("ok")}
+            for proc, r in results.items()
+        }
+        return json.dumps({"processes_tested": len(results), "results": summary}, indent=2)
+    except Exception as exc:
+        return f"Error running negative-testing sweep: {exc}"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

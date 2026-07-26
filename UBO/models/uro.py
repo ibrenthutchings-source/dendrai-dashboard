@@ -56,6 +56,9 @@ class EventType(str, Enum):
     # ── DevOps Monitoring: ITSM SLA Bridge ────────────────────
     SLA_BREACH                 = "SLA_BREACH"
 
+    # ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ─
+    INFRASTRUCTURE_FINDING     = "INFRASTRUCTURE_FINDING"
+
     # ── SailPoint Identity ────────────────────────────────────
     PRIVILEGE_ESCALATION       = "PRIVILEGE_ESCALATION"
     ORPHANED_ACCOUNT           = "ORPHANED_ACCOUNT"
