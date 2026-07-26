@@ -128,6 +128,7 @@ import evidence_endpoints
 import risk_waiver_sweep
 import itsm_endpoints
 import itsm_sla_sweep
+import pac_negative_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -148,6 +149,7 @@ from risk_as_code_mcp_server import mcp as _rac_mcp
 from pac_mcp_server import mcp as _pac_mcp
 from cac_mcp_server import mcp as _cac_mcp
 from devops_monitoring_mcp_server import mcp as _devops_monitoring_mcp
+from infrastructure_monitoring_mcp_server import mcp as _infrastructure_monitoring_mcp
 
 try:
     from oracle_fusion_mcp_server import mcp as _oracle_mcp
@@ -262,6 +264,12 @@ async def lifespan(application: FastAPI):
             _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
             logger.info("ITSM SLA breach sweep task started")
 
+        # Policy-as-Code negative-testing periodic full evaluation (P1).
+        _pac_negative_sweep_task = None
+        if db.is_available():
+            _pac_negative_sweep_task = asyncio.create_task(pac_negative_sweep.start_sweep())
+            logger.info("PaC negative-testing sweep task started")
+
         # Background DB reconnect loop — retries every 30 s if startup DB init failed.
         # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
         # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -292,6 +300,9 @@ async def lifespan(application: FastAPI):
                     if _itsm_sla_sweep_task is None:
                         asyncio.create_task(itsm_sla_sweep.start_sweep())
                         logger.info("ITSM SLA breach sweep started after DB reconnect")
+                    if _pac_negative_sweep_task is None:
+                        asyncio.create_task(pac_negative_sweep.start_sweep())
+                        logger.info("PaC negative-testing sweep started after DB reconnect")
 
         _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -299,7 +310,8 @@ async def lifespan(application: FastAPI):
             yield
         finally:
             _reconnect_task.cancel()
-            for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task, _itsm_sla_sweep_task):
+            for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task,
+                             _itsm_sla_sweep_task, _pac_negative_sweep_task):
                 if _bg_task is not None:
                     _bg_task.cancel()
                     try:
@@ -557,6 +569,7 @@ _mount_mcp("/mcp/policy-as-code",   "Policy-as-Code Rego module management",    
 _mount_mcp("/mcp/controls-as-code", "Controls-as-Code generation & evaluation", _cac_mcp)
 _mount_mcp("/mcp/oracle",           "Oracle Fusion ERP data",                   _oracle_mcp)
 _mount_mcp("/mcp/devops-monitoring", "DevOps Monitoring: SCM audits & SARIF evidence", _devops_monitoring_mcp)
+_mount_mcp("/mcp/infrastructure-monitoring", "Infrastructure Monitoring: IaaS/OS/DB continuous audit", _infrastructure_monitoring_mcp)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────

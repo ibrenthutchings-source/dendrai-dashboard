@@ -347,6 +347,7 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("SYSTEM_TELEMETRY", "SAST_FINDING"):      "devops_monitoring",
     ("SYSTEM_TELEMETRY", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
     ("SYSTEM_TELEMETRY", "SLA_BREACH"):        "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "INFRASTRUCTURE_FINDING"): "infrastructure_monitoring",
 }
 
 
@@ -1667,6 +1668,8 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("sast_finding")
     if payload.get("sla_breach"):
         flags.add("sla_breach")
+    if payload.get("infrastructure_finding"):
+        flags.add("infrastructure_finding")
     return sorted(flags)
 
 

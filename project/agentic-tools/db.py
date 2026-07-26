@@ -7335,6 +7335,9 @@ _BUILTIN_PAC_PROCESSES = [
     {"id": "devops_monitoring", "label": "DevOps Monitoring", "short_label": "DevOps", "control_prefix": "DEVOPS",
      "color": "#22d3ee", "icon": "🛠️",
      "description": "SCM branch-protection auditing and SARIF/SAST evidence ingestion — GitHub/GitLab repo integrity, CODEOWNERS coverage, and vulnerability severity SLAs."},
+    {"id": "infrastructure_monitoring", "label": "Infrastructure Monitoring", "short_label": "Infra", "control_prefix": "INFRA",
+     "color": "#a855f7", "icon": "🖥️",
+     "description": "Continuous IaaS/OS/DB configuration audit — Postgres CIS-style hardening checks and Railway platform/deployment drift."},
 ]
 
 

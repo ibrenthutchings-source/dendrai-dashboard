@@ -181,6 +181,17 @@ class SilverConformationLayer(SilverLayerBase):
                     f"(due {payload.get('sla_due_at', 'unknown')})"
                 )
 
+        # ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ────────────
+        elif rule.rule_id == "POL-INFRA-001":
+            if uro.event_type == EventType.INFRASTRUCTURE_FINDING:
+                payload = raw.get("raw_payload") or {}
+                severity = str(raw.get("severity") or "").upper()
+                if severity in ("CRITICAL", "HIGH"):
+                    return (
+                        f"{severity}: infrastructure finding on '{raw.get('resource', 'unknown')}' "
+                        f"({payload.get('check_id', 'unknown check')})"
+                    )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -455,6 +466,12 @@ class SilverConformationLayer(SilverLayerBase):
                 "external_ticket_key":  (raw.get("raw_payload") or {}).get("external_ticket_key"),
                 "finding_hash":         (raw.get("raw_payload") or {}).get("finding_hash"),
                 "sla_due_at":           (raw.get("raw_payload") or {}).get("sla_due_at"),
+                # Infrastructure Monitoring (postgres_cis_tool.py/railway_iaas_tool.py,
+                # event_type=='infrastructure_finding'): the normalized compliance
+                # dict iaas_connectors.normalize_postgres_compliance()/
+                # normalize_railway_compliance() produces, spread the same way
+                # scm_audit_endpoints.py's "compliance" sub-dict is above.
+                **(raw.get("raw_payload") or {}).get("infra_compliance", {}),
             },
             affected_entities=[server, str(raw.get("actor", ""))],
             conformation_rules_applied=["System-Telemetry-v1-conform"],

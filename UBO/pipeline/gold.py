@@ -45,6 +45,7 @@ _EVENT_BASE_WEIGHTS: dict[EventType, float] = {
     # risk_indicators; this is the pre-severity baseline)
     EventType.SAST_FINDING:               0.60,
     EventType.SLA_BREACH:                 0.70,
+    EventType.INFRASTRUCTURE_FINDING:     0.65,
     # SailPoint
     EventType.PRIVILEGE_ESCALATION:       0.80,
     EventType.ORPHANED_ACCOUNT:           0.45,

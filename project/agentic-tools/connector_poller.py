@@ -41,6 +41,8 @@ import itsm_servicenow_tool
 import mcp_governance
 import netsuite_tool
 import oracle_fusion_tool
+import postgres_cis_tool
+import railway_iaas_tool
 import sailpoint_tool
 import sap_hana_tool
 
@@ -61,6 +63,8 @@ _ADAPTERS = {
     "gitlab_scm":     gitlab_scm_tool,
     "itsm_jira":       itsm_jira_tool,
     "itsm_servicenow": itsm_servicenow_tool,
+    "postgres_cis":    postgres_cis_tool,
+    "railway_iaas":    railway_iaas_tool,
 }
 
 

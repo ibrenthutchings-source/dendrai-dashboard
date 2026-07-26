@@ -68,6 +68,7 @@ _BUILTIN_PROCESS_IDS = {
     "receive_to_ship",
     "record_to_report",
     "devops_monitoring",
+    "infrastructure_monitoring",
 }
 
 
@@ -89,6 +90,7 @@ _PROCESS_LABELS = {
     "receive_to_ship": "Receive to Ship",
     "record_to_report": "Record to Report",
     "devops_monitoring": "DevOps Monitoring",
+    "infrastructure_monitoring": "Infrastructure Monitoring",
 }
 
 # Assigned round-robin to processes auto-registered by sync_github (a folder
@@ -106,6 +108,7 @@ _PROCESS_ID_PREFIX = {
     "receive_to_ship": "R2S",
     "record_to_report": "R2R",
     "devops_monitoring": "DEVOPS",
+    "infrastructure_monitoring": "INFRA",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -779,6 +782,74 @@ deny_evidence_finding[msg] if {
 deny_sla_breach[msg] if {
     input.event.type == "SLA_BREACH"
     msg := sprintf("DEVOPS-009: ITSM ticket '%v' (%v) for finding '%v' breached its remediation SLA (due %v)", [input.event.external_ticket_key, input.event.external_system, input.event.finding_hash, input.event.sla_due_at])
+}
+""",
+
+"infrastructure_monitoring": """\
+# Infrastructure Monitoring — Continuous IaaS/OS/DB Configuration Audit
+# Package:  controls.infrastructure.monitoring
+# Process:  Infrastructure Monitoring
+# Version:  1.0
+# Approved by: CISO, VP Engineering
+# Last Revised: 2026-07-26
+# Description: Postgres CIS-style hardening checks (postgres_cis_tool.py) and
+#   Railway platform/deployment drift (railway_iaas_tool.py). Evaluated
+#   against iaas_connectors.normalize_postgres_compliance()'s output, spread
+#   into input.event.* the same way scm_audit_endpoints.py's "compliance"
+#   sub-dict is for the devops_monitoring module.
+
+package controls.infrastructure.monitoring
+
+import future.keywords.in
+import future.keywords.if
+
+# ── INFRA-001: TLS/SSL Enforcement ───────────────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.ssl_enabled == false
+    msg := sprintf("INFRA-001: Postgres instance '%v' does not enforce SSL — connections can be made in plaintext (CRITICAL)", [input.event.resource])
+}
+
+# ── INFRA-002: Password Encryption Scheme ────────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.password_encryption != "scram-sha-256"
+    msg := sprintf("INFRA-002: Postgres instance '%v' uses '%v' password encryption instead of scram-sha-256", [input.event.resource, input.event.password_encryption])
+}
+
+# ── INFRA-003: Superuser Sprawl ──────────────────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.superuser_count > 2
+    msg := sprintf("INFRA-003: Postgres instance '%v' has %v superuser roles — excess superusers widen the blast radius of a single compromised credential", [input.event.resource, input.event.superuser_count])
+}
+
+# ── INFRA-004: Unencrypted Active Connections ────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.unencrypted_connection_count > 0
+    msg := sprintf("INFRA-004: Postgres instance '%v' has %v active connection(s) not using SSL", [input.event.resource, input.event.unencrypted_connection_count])
+}
+
+# ── INFRA-005: Connection/Disconnection Audit Logging ────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.log_connections == false
+    msg := sprintf("INFRA-005: Postgres instance '%v' does not log connections — a compromised credential's access can't be reconstructed after the fact", [input.event.resource])
+}
+
+# ── INFRA-006: Public Network Exposure (Railway) ─────────────────────────────
+deny_railway_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.unexpected_public_domain == true
+    msg := sprintf("INFRA-006: Service '%v' has a public domain that isn't in the approved baseline — verify this exposure was intentional", [input.event.resource])
+}
+
+# ── INFRA-007: Deployment Provenance Mismatch (Railway) ──────────────────────
+deny_railway_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.image_digest_mismatch == true
+    msg := sprintf("INFRA-007: Running deployment for '%v' does not match the last approved image digest — verify what's actually deployed", [input.event.resource])
 }
 """,
 

@@ -343,6 +343,9 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         # underlying finding tagged with this flag — see risk_waiver_sweep.py's
         # near-identical "waiver expired, re-open as failing" precedent.
         "sla_breach":                  EventType.SLA_BREACH,
+        # Infrastructure Monitoring: postgres_cis_tool.py / railway_iaas_tool.py
+        # poll-connector audits set this explicit flag on findings.
+        "infrastructure_finding":      EventType.INFRASTRUCTURE_FINDING,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
