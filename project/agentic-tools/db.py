@@ -1050,6 +1050,18 @@ ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_fired_at     TIMESTAM
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_verified_at  TIMESTAMPTZ;
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_test_passed BOOLEAN;
 
+-- Framework crosswalk metadata (Executive Compliance Scorecard). Curated
+-- mappings only (db.seed_framework_mappings, called once at startup from a
+-- static Python dict — see framework_mappings.py) — never LLM-generated or
+-- auto-inferred, same "no ungrounded generation" guardrail as RaC/CaC
+-- (commit 2b98f45's retired Framework Sync). A control_id with no mapping
+-- row here simply isn't scored against any framework yet; that's an honest
+-- gap, not hidden by a fabricated mapping.
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS soc2_criteria   TEXT[];  -- e.g. {CC6.1,CC7.2}
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS nist_800_53     TEXT[];  -- e.g. {AC-3,AU-2,SC-8}
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS iso_27001       TEXT[];  -- e.g. {A.9.4.1,A.12.4.1}
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS coso_component  VARCHAR(64);  -- COSO ERM 2017 component name
+
 -- One row per negative-control corpus run (pac_negative_tests.run_corpus),
 -- whether triggered manually, by a module-approval gate, or the periodic
 -- sweep (P1a) — this is audit evidence ("prove the control was tested on
@@ -7026,7 +7038,8 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                 where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
                 cur.execute(
                     f"SELECT control_id, name, description, process, source, created_at, "
-                    f"       last_fired_at, last_verified_at, last_test_passed "
+                    f"       last_fired_at, last_verified_at, last_test_passed, "
+                    f"       soc2_criteria, nist_800_53, iso_27001, coso_component "
                     f"FROM controls_catalog {where} ORDER BY control_id",
                     params,
                 )
@@ -7038,6 +7051,8 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                         "last_fired_at": r[6].isoformat() if r[6] else None,
                         "last_verified_at": r[7].isoformat() if r[7] else None,
                         "last_test_passed": r[8],
+                        "soc2_criteria": r[9] or [], "nist_800_53": r[10] or [],
+                        "iso_27001": r[11] or [], "coso_component": r[12],
                     }
                     for r in cur.fetchall()
                 ]
@@ -7050,7 +7065,8 @@ def get_control(control_id: str) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT control_id, name, description, process, source, created_at, "
-                    "       last_fired_at, last_verified_at, last_test_passed "
+                    "       last_fired_at, last_verified_at, last_test_passed, "
+                    "       soc2_criteria, nist_800_53, iso_27001, coso_component "
                     "FROM controls_catalog WHERE control_id = %s",
                     (control_id,),
                 )
@@ -7064,8 +7080,114 @@ def get_control(control_id: str) -> Optional[dict]:
                     "last_fired_at": row[6].isoformat() if row[6] else None,
                     "last_verified_at": row[7].isoformat() if row[7] else None,
                     "last_test_passed": row[8],
+                    "soc2_criteria": row[9] or [], "nist_800_53": row[10] or [],
+                    "iso_27001": row[11] or [], "coso_component": row[12],
                 }
     return _run(_do)
+
+
+def upsert_framework_mapping(control_id: str, soc2_criteria: Optional[list] = None,
+                              nist_800_53: Optional[list] = None, iso_27001: Optional[list] = None,
+                              coso_component: Optional[str] = None) -> bool:
+    """Set framework crosswalk metadata for one control. No-ops (returns
+    False) if control_id doesn't exist yet — mappings are seeded after
+    controls_catalog itself (see seed_framework_mappings, called after
+    _seed_controls_catalog in api_server.py's startup sequence)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE controls_catalog
+                    SET soc2_criteria = %s, nist_800_53 = %s, iso_27001 = %s,
+                        coso_component = %s, updated_at = NOW()
+                    WHERE control_id = %s
+                    """,
+                    (soc2_criteria, nist_800_53, iso_27001, coso_component, control_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+_SCORECARD_ARRAY_COL = {"soc2": "soc2_criteria", "nist_800_53": "nist_800_53", "iso_27001": "iso_27001"}
+
+
+def _aggregate_scorecard_rows(rows: list, stale_days: int = 30) -> list:
+    """
+    Pure aggregation step, split out of get_compliance_scorecard so it's
+    unit-testable with fake rows — no DB connection needed (mirrors
+    _parse_opa_bindings' reasoning in pac_endpoints.py: a bug in aggregation
+    logic shouldn't require a live Postgres connection to catch).
+
+    rows: [(criterion, control_id, last_test_passed, last_fired_at), ...] —
+    last_fired_at is a timezone-aware datetime or None.
+
+    Deliberately two different numbers, never conflated: "mapped" (a human
+    curated this crosswalk in framework_mappings.py) and "verified" (P0's
+    negative-testing assurance metadata actually backs it up). A criterion
+    can be fully mapped and 0% verified — that's the honest state to
+    surface, not a green checkmark a mapping alone hasn't earned.
+    """
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+    by_criterion: dict[str, dict] = {}
+    for criterion, control_id, last_test_passed, last_fired_at in rows:
+        bucket = by_criterion.setdefault(criterion, {"criterion": criterion, "control_ids": [], "verified_control_ids": []})
+        bucket["control_ids"].append(control_id)
+        fired_recently = bool(last_fired_at) and last_fired_at > cutoff
+        if last_test_passed or fired_recently:
+            bucket["verified_control_ids"].append(control_id)
+
+    criteria = []
+    for c in sorted(by_criterion.values(), key=lambda x: x["criterion"]):
+        criteria.append({
+            "criterion": c["criterion"],
+            "control_ids": sorted(set(c["control_ids"])),
+            "total_controls": len(set(c["control_ids"])),
+            "verified_controls": len(set(c["verified_control_ids"])),
+        })
+    return criteria
+
+
+def get_compliance_scorecard(framework: str, stale_days: int = 30) -> dict:
+    """
+    Executive Compliance Scorecard: for one framework
+    ('soc2' | 'nist_800_53' | 'iso_27001' | 'coso'), every distinct
+    criterion any control is mapped to, how many controls map to it, and
+    how many are actually PROVEN working — see _aggregate_scorecard_rows.
+    """
+    if framework not in ("soc2", "nist_800_53", "iso_27001", "coso"):
+        return {"framework": framework, "criteria": [], "error": f"Unknown framework '{framework}'"}
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if framework == "coso":
+                    cur.execute(
+                        """
+                        SELECT coso_component, control_id, last_test_passed, last_fired_at
+                        FROM controls_catalog WHERE coso_component IS NOT NULL
+                        """,
+                    )
+                else:
+                    array_col = _SCORECARD_ARRAY_COL[framework]
+                    cur.execute(
+                        f"""
+                        SELECT unnest({array_col}) AS criterion, control_id, last_test_passed, last_fired_at
+                        FROM controls_catalog WHERE {array_col} IS NOT NULL
+                        """,
+                    )
+                return cur.fetchall()
+
+    rows = _run(_do) or []
+    criteria = _aggregate_scorecard_rows(rows, stale_days=stale_days)
+    fully_verified = sum(1 for c in criteria if c["total_controls"] > 0 and c["verified_controls"] == c["total_controls"])
+    return {
+        "framework": framework,
+        "criteria": criteria,
+        "total_criteria": len(criteria),
+        "fully_verified_criteria": fully_verified,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -7352,6 +7474,27 @@ def seed_builtin_pac_processes() -> int:
         ):
             created += 1
     return created
+
+
+def seed_framework_mappings() -> int:
+    """Idempotently apply framework_mappings.FRAMEWORK_MAPPINGS to
+    controls_catalog. Must run AFTER _seed_controls_catalog (api_server.py's
+    startup order) — upsert_framework_mapping no-ops for a control_id that
+    doesn't exist yet. Safe to re-run: always overwrites with the current
+    curated dict, so an edit to framework_mappings.py takes effect on next
+    restart without a manual migration."""
+    import framework_mappings
+    updated = 0
+    for control_id, mapping in framework_mappings.FRAMEWORK_MAPPINGS.items():
+        if upsert_framework_mapping(
+            control_id,
+            soc2_criteria=mapping.get("soc2_criteria"),
+            nist_800_53=mapping.get("nist_800_53"),
+            iso_27001=mapping.get("iso_27001"),
+            coso_component=mapping.get("coso_component"),
+        ):
+            updated += 1
+    return updated
 
 
 def create_pac_process(process_id: str, label: str, short_label: str, *,

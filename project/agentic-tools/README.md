@@ -322,6 +322,8 @@ SCM branch-protection auditing (GitHub/GitLab), SARIF/SAST evidence ingestion, d
 
 **REST endpoints (prefix `/api/evidence`):** `POST /webhook` (SARIF ingestion, Bearer-key auth), `GET /records`, `GET /records/{id}/verify`, `POST /attestation`, `GET /attestations`, `GET /attestations/{id}`
 
+**Any SARIF-producing scanner works out of the box** — `source` is a free-text field, no per-tool code required. Verified against real Trivy output (container/dependency CVE scanning): correctly extracts CVSS-based severity and CVE IDs, though Trivy's SARIF never tags a CWE (CVE/GHSA-centric, unlike CodeQL) — see [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for a copy-pasteable GitHub Actions recipe.
+
 **MCP server:** `devops_monitoring_mcp_server.py` — 11 tools (SCM audit, drift, evidence, waivers, attestations, ITSM). See `mcp.md` → `devops-monitoring`.
 
 **Background sweeps:** `risk_waiver_sweep.py` (hourly — expires overdue waivers, re-opens the underlying finding), `itsm_sla_sweep.py` (hourly — flags overdue ITSM tickets, re-escalates the finding).

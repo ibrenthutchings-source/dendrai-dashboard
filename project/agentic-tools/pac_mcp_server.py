@@ -45,6 +45,7 @@ Claude Code — add to .claude/settings.json in your project:
     pac_negative_test_history  Past negative-control test runs for a process
     pac_assurance_summary     Which policy-enforced controls are proven working vs. unverified
     pac_run_negative_sweep_now  Run the periodic full-evaluation sweep for every process now (write-guarded)
+    pac_compliance_scorecard   Framework coverage (SOC 2/NIST/ISO/COSO) — mapped vs. verified controls
 
 ── Environment variables ─────────────────────────────────────────────────────
 
@@ -742,6 +743,31 @@ def pac_assurance_summary(process: str = "", stale_days: int = 30) -> str:
         return f"Error: {exc}"
     except Exception as exc:
         return f"Error computing assurance summary: {exc}"
+
+
+@mcp.tool()
+def pac_compliance_scorecard(framework: str = "soc2", stale_days: int = 30) -> str:
+    """
+    Executive Compliance Scorecard — for one framework, every criterion any
+    control is mapped to (curated in framework_mappings.py, never auto-
+    generated), how many controls map to it, and how many are actually
+    PROVEN working (real production fire and/or a passing negative-control
+    test within stale_days) rather than just mapped on paper. "Mapped" and
+    "verified" are always reported separately.
+
+    Args:
+        framework: 'soc2' | 'nist_800_53' | 'iso_27001' | 'coso'
+        stale_days: Evidence older than this doesn't count as current (default 30)
+    """
+    try:
+        check_rate_limit("pac_compliance_scorecard")
+        audit_log("pac_compliance_scorecard", framework=framework)
+        if not db.is_available():
+            return json.dumps({"framework": framework, "criteria": [], "note": "Database not configured"}, indent=2)
+        result = db.get_compliance_scorecard(framework, stale_days=stale_days)
+        return cap_output(json.dumps(result, indent=2, default=str))
+    except Exception as exc:
+        return f"Error computing compliance scorecard: {exc}"
 
 
 @mcp.tool()
