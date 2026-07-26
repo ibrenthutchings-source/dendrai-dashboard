@@ -1738,6 +1738,39 @@ CREATE TABLE IF NOT EXISTS observability.pipeline_attestations (
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_attestations_commit
     ON observability.pipeline_attestations (commit_sha, created_at DESC);
+
+-- DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge. A ticket is opened
+-- against an external ITSM system for a finding (SARIF evidence fingerprint
+-- or an SCM control key — same key space as risk_waivers.vulnerability_hash),
+-- and its remediation SLA is tracked here rather than only in the external
+-- system, so a breach can be detected and re-escalated even if nobody is
+-- watching Jira/ServiceNow (see itsm_sla_sweep.py). Kept as its own table for
+-- the same reason as scm_drift_events/risk_waivers: an indexed sla_due_at is
+-- required for the sweep, which JSONB-buried dates can't give efficiently.
+CREATE TABLE IF NOT EXISTS observability.itsm_tickets (
+    id                    BIGSERIAL    PRIMARY KEY,
+    finding_hash          CHAR(64)     NOT NULL,  -- evidence_records.fingerprint or an scm control key
+    external_system       VARCHAR(16)  NOT NULL,  -- jira | servicenow
+    external_ticket_key   VARCHAR(64)  NOT NULL,  -- e.g. 'SEC-142' (Jira) or 'INC0012345' (ServiceNow)
+    connector_id          BIGINT       REFERENCES observability.poll_connectors(id),
+    summary               TEXT,
+    severity              VARCHAR(16)  NOT NULL,  -- CRITICAL | HIGH | MEDIUM | LOW
+    status                VARCHAR(24)  NOT NULL DEFAULT 'open',  -- open | in_progress | resolved | closed | cancelled
+    sla_hours             INTEGER      NOT NULL,
+    sla_due_at            TIMESTAMPTZ  NOT NULL,
+    sla_breached_at       TIMESTAMPTZ,
+    created_by            VARCHAR(128),
+    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_itsm_tickets_active_hash
+    ON observability.itsm_tickets (finding_hash)
+    WHERE status NOT IN ('closed', 'cancelled');
+CREATE INDEX IF NOT EXISTS idx_itsm_tickets_sla_sweep
+    ON observability.itsm_tickets (sla_due_at)
+    WHERE sla_breached_at IS NULL AND status NOT IN ('closed', 'cancelled');
+CREATE INDEX IF NOT EXISTS idx_itsm_tickets_system
+    ON observability.itsm_tickets (external_system, status);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -7905,6 +7938,166 @@ def get_pipeline_attestation(attestation_id: int) -> Optional[dict]:
                     d["created_at"] = d["created_at"].isoformat()
                 return d
     return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge (observability.itsm_tickets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ITSM_TICKET_COLUMNS = (
+    "id, finding_hash, external_system, external_ticket_key, connector_id, summary, "
+    "severity, status, sla_hours, sla_due_at, sla_breached_at, created_by, created_at, updated_at"
+)
+_ITSM_TIMESTAMP_FIELDS = ("sla_due_at", "sla_breached_at", "created_at", "updated_at")
+
+
+def _itsm_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _ITSM_TIMESTAMP_FIELDS:
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def create_itsm_ticket(finding_hash: str, external_system: str, external_ticket_key: str,
+                        connector_id: Optional[int], summary: Optional[str], severity: str,
+                        sla_hours: int, sla_due_at, created_by: str) -> Optional[int]:
+    """Insert a ticket tracking row. Only one open (non-closed/cancelled)
+    ticket per finding_hash can exist (idx_itsm_tickets_active_hash) — the
+    caller is expected to check get_open_ticket_for_finding first and reuse
+    it rather than opening a duplicate against the same finding."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.itsm_tickets
+                        (finding_hash, external_system, external_ticket_key, connector_id,
+                         summary, severity, sla_hours, sla_due_at, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (finding_hash, external_system, external_ticket_key, connector_id,
+                     summary, severity.upper(), sla_hours, sla_due_at, created_by),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_itsm_tickets(status: Optional[str] = None, external_system: Optional[str] = None,
+                       breached_only: bool = False, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if status:
+            filters.append("status = %s"); params.append(status.lower())
+        if external_system:
+            filters.append("external_system = %s"); params.append(external_system.lower())
+        if breached_only:
+            filters.append("sla_breached_at IS NOT NULL")
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_ITSM_TICKET_COLUMNS}
+                    FROM observability.itsm_tickets
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_itsm_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_itsm_ticket(ticket_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_ITSM_TICKET_COLUMNS} FROM observability.itsm_tickets WHERE id = %s",
+                    (ticket_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _itsm_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def get_open_ticket_for_finding(finding_hash: str) -> Optional[dict]:
+    rows = [t for t in list_itsm_tickets(limit=500) if t["finding_hash"] == finding_hash
+            and t["status"] not in ("closed", "cancelled")]
+    return rows[0] if rows else None
+
+
+def get_itsm_ticket_by_external_key(external_system: str, external_ticket_key: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_ITSM_TICKET_COLUMNS} FROM observability.itsm_tickets
+                    WHERE external_system = %s AND external_ticket_key = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (external_system.lower(), external_ticket_key),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _itsm_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def update_itsm_ticket_status(ticket_id: int, status: str) -> bool:
+    """Reconciles our record with the external system's current status —
+    called by itsm_jira_tool.py/itsm_servicenow_tool.py's poll adapter and by
+    the webhook path for real-time closure. Does not touch sla_breached_at —
+    that's itsm_sla_sweep.py's job, run independently of ticket status so a
+    late-arriving 'resolved' doesn't erase the fact that it missed its SLA."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE observability.itsm_tickets SET status = %s, updated_at = NOW() WHERE id = %s",
+                    (status.lower(), ticket_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def expire_overdue_sla() -> list:
+    """Flag every open ticket past its sla_due_at with sla_breached_at, once.
+    Returns the rows just flagged so the caller (itsm_sla_sweep.py) can
+    re-escalate each one's underlying finding — mirrors expire_overdue_waivers'
+    'automated expiry re-opens the finding, doesn't silently lapse' contract."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.itsm_tickets
+                    SET sla_breached_at = NOW()
+                    WHERE sla_breached_at IS NULL AND status NOT IN ('closed', 'cancelled')
+                      AND sla_due_at < NOW()
+                    RETURNING id, finding_hash, external_system, external_ticket_key, severity, sla_due_at
+                    """,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("sla_due_at"):
+                        d["sla_due_at"] = d["sla_due_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 def fetch_scm_audit_results(resource: Optional[str] = None, limit: int = 50) -> list:

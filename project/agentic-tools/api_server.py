@@ -126,6 +126,8 @@ import evidence_pack_endpoints
 import scm_audit_endpoints
 import evidence_endpoints
 import risk_waiver_sweep
+import itsm_endpoints
+import itsm_sla_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -254,6 +256,12 @@ async def lifespan(application: FastAPI):
             _waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
             logger.info("Risk waiver expiry sweep task started")
 
+        # DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge breach-detection sweep.
+        _itsm_sla_sweep_task = None
+        if db.is_available():
+            _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
+            logger.info("ITSM SLA breach sweep task started")
+
         # Background DB reconnect loop — retries every 30 s if startup DB init failed.
         # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
         # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -281,6 +289,9 @@ async def lifespan(application: FastAPI):
                     if _waiver_sweep_task is None:
                         asyncio.create_task(risk_waiver_sweep.start_sweep())
                         logger.info("Risk waiver expiry sweep started after DB reconnect")
+                    if _itsm_sla_sweep_task is None:
+                        asyncio.create_task(itsm_sla_sweep.start_sweep())
+                        logger.info("ITSM SLA breach sweep started after DB reconnect")
 
         _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -288,7 +299,7 @@ async def lifespan(application: FastAPI):
             yield
         finally:
             _reconnect_task.cancel()
-            for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task):
+            for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task, _itsm_sla_sweep_task):
                 if _bg_task is not None:
                     _bg_task.cancel()
                     try:
@@ -434,6 +445,7 @@ _AUTH_EXEMPT = (
     "/scoring/config",               # read-only scoring vocabulary, fetched at JS module init time
     "/observability/telemetry/ingest", # external systems auth via per-system Bearer key
     "/evidence/webhook",             # SARIF evidence ingestion — own per-system Bearer key auth
+    "/itsm/webhook",                 # ITSM ticket-status push — own per-system Bearer key auth
 )
 
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
@@ -508,6 +520,9 @@ app.include_router(scm_audit_endpoints.router)
 
 # DevOps Monitoring: SARIF/SAST evidence ingestion, fingerprinting, and signing.
 app.include_router(evidence_endpoints.router)
+
+# DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge — ticket lifecycle + breach tracking.
+app.include_router(itsm_endpoints.router)
 
 # ── MCP Streamable-HTTP mounts ─────────────────────────────────────────────────
 # Each FastMCP instance is mounted as an ASGI sub-app so claude.ai can connect
