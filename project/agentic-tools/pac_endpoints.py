@@ -17,6 +17,11 @@ Router prefix: /pac
     POST /pac/hooks/github/sync           Pull .rego files from the configured repo path and import them
     POST /pac/cac/generate                Generate Controls-as-Code Rego from controls library
     GET  /pac/cac/latest                  Get the latest CaC artifact
+
+    -- Negative testing (pac_contracts.py / pac_negative_tests.py / pac_assurance.py) --
+    POST /pac/negative-tests/run/{process}      Run schema-contract + must-fire/must-not-fire corpus
+    GET  /pac/negative-tests/history/{process}  Past test runs (audit evidence)
+    GET  /pac/assurance                         Which controls are proven working vs. unverified
 """
 
 from __future__ import annotations
@@ -40,6 +45,8 @@ from pydantic import BaseModel
 
 import claude_client
 import db
+import pac_assurance
+import pac_contracts
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pac", tags=["pac"])
@@ -884,6 +891,50 @@ def _rule_coverage(rego_content: str) -> dict:
     return {"total": total, "with_control_id": with_id}
 
 
+def _parse_opa_bindings(bindings: dict) -> tuple[list[dict], list[dict]]:
+    """
+    Pure parsing step, split out of _run_real_opa_eval so it's unit-testable
+    against a captured OPA response shape without needing the opa binary
+    installed (this repo's local dev/test environment has no OPA on PATH —
+    only the Docker image does — so a bug here can otherwise hide behind
+    every test silently running the heuristic fallback instead).
+
+    `bindings` is `parsed["result"][0]["expressions"][0]["value"]` from a
+    real `opa eval -f json` response: {rule_name: rule_value, ...} for every
+    rule under the queried package.
+    """
+    fired: list[dict] = []
+    passed: list[dict] = []
+    for key, val in bindings.items():
+        if not (key.startswith("deny") or key.startswith("allow")):
+            continue
+        # A Rego partial-set rule (`deny_x[msg] if { ...; msg := "..." }`)
+        # is serialized by `opa eval -f json` as a JSON OBJECT whose keys
+        # are the set's members — e.g. {"DEVOPS-001: ...": true} — never
+        # a JSON array, even for a single-member set. A dict here looked
+        # enough like "the rule's raw value" that _extract_control_id was
+        # called on the whole dict instead of each message, so control_id
+        # was silently None for every real-OPA evaluation (the heuristic
+        # fallback parses Rego source per rule-block and never hit this).
+        # Flatten to one finding per individual message, matching that
+        # per-rule-block granularity.
+        if isinstance(val, dict):
+            messages = list(val.keys())
+        elif isinstance(val, list):
+            messages = val
+        elif val in (None, False, {}, [], set()):
+            messages = []
+        else:
+            messages = [val]
+
+        if not messages:
+            passed.append({"rule": key, "value": val, "control_id": None})
+            continue
+        for msg in messages:
+            fired.append({"rule": key, "value": msg, "control_id": _extract_control_id(msg)})
+    return fired, passed
+
+
 def _run_real_opa_eval(rego_content: str, input_event: dict) -> dict:
     """
     Run the actual OPA binary against a Rego module and input document.
@@ -930,14 +981,7 @@ def _run_real_opa_eval(rego_content: str, input_event: dict) -> dict:
         except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"could not parse opa eval output: {exc}")
 
-        fired: list[dict] = []
-        passed: list[dict] = []
-        for key, val in bindings.items():
-            if not (key.startswith("deny") or key.startswith("allow")):
-                continue
-            entry = {"rule": key, "value": val, "control_id": _extract_control_id(val)}
-            is_empty = val in (None, False, [], {}, set())
-            (passed if is_empty else fired).append(entry)
+        fired, passed = _parse_opa_bindings(bindings)
 
         return {
             "evaluation": "opa eval (authoritative)",
@@ -1334,7 +1378,18 @@ async def get_module_history(process: str):
 
 @router.post("/modules/{process}/approve")
 async def approve_module(process: str, req: ApproveModuleRequest):
-    """Add an approver sign-off for a module version."""
+    """Add an approver sign-off for a module version.
+
+    Also runs the negative-testing gate (schema-contract check + must-fire/
+    must-not-fire corpus) against the EXACT version being approved and
+    persists the result as audit evidence — but does not (yet) block the
+    approval on failure. Advisory rather than blocking on purpose: today
+    every built-in process except devops_monitoring fails the contract check
+    (see pac_contracts.py's module docstring — no real producer wires their
+    input fields yet), so a hard block would make this endpoint unusable for
+    5 of 6 processes with no warning. The result is returned in the response
+    so the approver sees it before deciding, and it's on record either way.
+    """
     if process not in _valid_processes():
         raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
 
@@ -1348,7 +1403,72 @@ async def approve_module(process: str, req: ApproveModuleRequest):
     if not approval_id:
         raise HTTPException(status_code=500, detail="Failed to save approval")
 
-    return {"saved": True, "approval_id": approval_id, "approver": req.approver, "role": req.role}
+    negative_test_result = None
+    module = db.get_pac_module_by_id(req.module_id)
+    if module:
+        negative_test_result = pac_assurance.evaluate_and_record(
+            process, module["rego_content"], module_id=req.module_id,
+            triggered_by="approval_gate", triggered_by_user=req.approver.strip(),
+        )
+
+    return {
+        "saved": True, "approval_id": approval_id, "approver": req.approver, "role": req.role,
+        "negative_test_result": negative_test_result,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Negative testing (pac_contracts.py / pac_negative_tests.py / pac_assurance.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RunNegativeTestRequest(BaseModel):
+    rego_content: Optional[str] = None  # omit to test the currently-saved (or default) module
+    triggered_by: str = "manual"
+    triggered_by_user: Optional[str] = None
+
+
+@router.post("/negative-tests/run/{process}")
+async def run_negative_tests(process: str, req: RunNegativeTestRequest):
+    """Run the schema-contract check and must-fire/must-not-fire corpus
+    against a process's Rego — either an explicit rego_content (e.g. the
+    Rego Editor's unsaved draft) or, if omitted, whatever is currently live
+    (the latest saved module, falling back to the built-in default)."""
+    if process not in _valid_processes():
+        raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
+
+    rego_content = req.rego_content
+    module_id = None
+    if not rego_content:
+        saved = db.get_latest_pac_module(process) if db.is_available() else None
+        if saved:
+            rego_content = saved["rego_content"]
+            module_id = saved.get("id")
+        else:
+            rego_content = _REGO_DEFAULTS.get(process)
+    if not rego_content:
+        raise HTTPException(status_code=404, detail=f"No Rego content available for process '{process}'")
+
+    return pac_assurance.evaluate_and_record(
+        process, rego_content, module_id=module_id,
+        triggered_by=req.triggered_by, triggered_by_user=req.triggered_by_user,
+    )
+
+
+@router.get("/negative-tests/history/{process}")
+async def get_negative_test_history(process: str, limit: int = 50):
+    """Past negative-control test runs for a process — audit evidence that
+    a control was actually tested, and when."""
+    if not db.is_available():
+        return {"process": process, "runs": []}
+    return {"process": process, "runs": db.list_pac_test_runs(process=process, limit=limit)}
+
+
+@router.get("/assurance")
+async def get_assurance(process: Optional[str] = None, stale_days: int = 30):
+    """Which policy-enforced controls are currently proven working (recent
+    real production fire and/or a passing negative-control test) vs.
+    unverified (neither) — the silent-rule-detection view."""
+    return pac_assurance.assurance_summary(process=process, stale_days=stale_days)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
