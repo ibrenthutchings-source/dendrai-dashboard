@@ -1037,6 +1037,40 @@ CREATE TABLE IF NOT EXISTS controls_catalog (
 );
 CREATE INDEX IF NOT EXISTS idx_controls_catalog_process ON controls_catalog (process);
 
+-- Negative-testing assurance metadata (PaC negative-control effort, see
+-- pac_contracts.py/pac_negative_tests.py). "We have 400 controls" and "we
+-- have 400 controls, 12 of which nothing proves are working" are very
+-- different claims — these columns are what makes the second one answerable.
+-- last_fired_at: most recent real production adjudication whose
+--   policy_violations included this control_id (db.get_control_fire_stats).
+-- last_verified_at/last_test_passed: most recent negative-control corpus run
+--   (pac_negative_tests.run_corpus) that exercised a must-fire fixture for
+--   this control_id, and whether it passed.
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_fired_at     TIMESTAMPTZ;
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_verified_at  TIMESTAMPTZ;
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_test_passed BOOLEAN;
+
+-- One row per negative-control corpus run (pac_negative_tests.run_corpus),
+-- whether triggered manually, by a module-approval gate, or the periodic
+-- sweep (P1a) — this is audit evidence ("prove the control was tested on
+-- date X"), not a log line, so it's a table with its own retention, not
+-- something that scrolls out of application logs.
+CREATE TABLE IF NOT EXISTS observability.pac_test_runs (
+    id                BIGSERIAL    PRIMARY KEY,
+    process           VARCHAR(64)  NOT NULL,
+    module_id         BIGINT       REFERENCES pac_policy_modules(id),  -- NULL when testing the built-in default
+    triggered_by      VARCHAR(32)  NOT NULL,  -- 'manual' | 'approval_gate' | 'scheduled_sweep'
+    triggered_by_user  VARCHAR(128),
+    contract_ok       BOOLEAN,
+    contract_findings  JSONB,
+    total             INTEGER      NOT NULL,
+    passed            INTEGER      NOT NULL,
+    failed            INTEGER      NOT NULL,
+    results           JSONB        NOT NULL,   -- full per-fixture results, for drill-down
+    run_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pac_test_runs_process ON observability.pac_test_runs (process, run_at DESC);
+
 -- Policy-as-Code business processes: was a hardcoded 5-entry Python set
 -- (VALID_PROCESSES); now a real table so sync_github() can register a new
 -- process discovered in a synced repo instead of silently skipping it.
@@ -6991,7 +7025,8 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                     clauses.append("source = %s"); params.append(source)
                 where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
                 cur.execute(
-                    f"SELECT control_id, name, description, process, source, created_at "
+                    f"SELECT control_id, name, description, process, source, created_at, "
+                    f"       last_fired_at, last_verified_at, last_test_passed "
                     f"FROM controls_catalog {where} ORDER BY control_id",
                     params,
                 )
@@ -7000,6 +7035,9 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                         "control_id": r[0], "name": r[1], "description": r[2],
                         "process": r[3], "source": r[4],
                         "created_at": r[5].isoformat() if r[5] else None,
+                        "last_fired_at": r[6].isoformat() if r[6] else None,
+                        "last_verified_at": r[7].isoformat() if r[7] else None,
+                        "last_test_passed": r[8],
                     }
                     for r in cur.fetchall()
                 ]
@@ -7011,7 +7049,8 @@ def get_control(control_id: str) -> Optional[dict]:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT control_id, name, description, process, source, created_at "
+                    "SELECT control_id, name, description, process, source, created_at, "
+                    "       last_fired_at, last_verified_at, last_test_passed "
                     "FROM controls_catalog WHERE control_id = %s",
                     (control_id,),
                 )
@@ -7022,8 +7061,184 @@ def get_control(control_id: str) -> Optional[dict]:
                     "control_id": row[0], "name": row[1], "description": row[2],
                     "process": row[3], "source": row[4],
                     "created_at": row[5].isoformat() if row[5] else None,
+                    "last_fired_at": row[6].isoformat() if row[6] else None,
+                    "last_verified_at": row[7].isoformat() if row[7] else None,
+                    "last_test_passed": row[8],
                 }
     return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PaC negative-testing assurance (pac_contracts.py / pac_negative_tests.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_control_fire_stats(control_id: str, window_days: int = 30) -> dict:
+    """Real-production evidence a control is doing something: the most
+    recent adjudicated_tool_calls row whose policy_violations included this
+    control_id, and how many times in the trailing window. NULL/0 doesn't
+    necessarily mean the control is broken — it may just mean the underlying
+    bad state hasn't occurred recently — but combined with no passing
+    negative-control test, it means nothing currently proves this control
+    works at all (see list_unverified_controls)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT MAX(adjudicated_at),
+                           COUNT(*) FILTER (WHERE adjudicated_at > NOW() - (%s || ' days')::interval)
+                    FROM observability.adjudicated_tool_calls
+                    WHERE %s = ANY(policy_violations)
+                    """,
+                    (window_days, control_id),
+                )
+                last_fired_at, fire_count = cur.fetchone()
+                return {
+                    "control_id": control_id,
+                    "last_fired_at": last_fired_at.isoformat() if last_fired_at else None,
+                    "fire_count_window": int(fire_count or 0),
+                    "window_days": window_days,
+                }
+    return _run(_do) or {"control_id": control_id, "last_fired_at": None, "fire_count_window": 0, "window_days": window_days}
+
+
+def update_control_verification(control_id: str, passed: bool, verified_at=None) -> bool:
+    """Record the outcome of the most recent negative-control fixture that
+    exercised this control_id. Called once per control_id after a corpus run
+    (pac_negative_tests.run_corpus), not once per fixture — a control tested
+    by two fixtures gets the AND of their results via the caller, not two
+    competing writes here."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE controls_catalog
+                    SET last_verified_at = COALESCE(%s, NOW()), last_test_passed = %s, updated_at = NOW()
+                    WHERE control_id = %s
+                    """,
+                    (verified_at, passed, control_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def refresh_control_fire_stats(control_ids: Optional[list] = None) -> int:
+    """Batch-refresh last_fired_at for every control (or a given subset)
+    from real adjudication history. Cheap to run often — a single query per
+    control_id, no full-table scan needed thanks to the GIN-able
+    policy_violations = ANY(...) pattern already used elsewhere on this table."""
+    ids = control_ids if control_ids is not None else [c["control_id"] for c in list_controls(source="pac_rego")]
+    updated = 0
+    for control_id in ids:
+        stats = get_control_fire_stats(control_id)
+        if stats["last_fired_at"]:
+            def _do(cid=control_id, ts=stats["last_fired_at"]):
+                with _conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE controls_catalog SET last_fired_at = %s WHERE control_id = %s",
+                            (ts, cid),
+                        )
+                        return cur.rowcount > 0
+            if _run(_do, default=False):
+                updated += 1
+    return updated
+
+
+def list_unverified_controls(process: Optional[str] = None, stale_days: int = 30) -> list:
+    """Controls that are 'policy-enforced' (source='pac_rego') but have
+    NEITHER fired in real production within stale_days NOR passed a
+    negative-control test within stale_days — the silent-rule / unverified-
+    policy signal from the negative-testing plan: a control nothing currently
+    proves is working."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                # Placeholder order must match their literal position in the
+                # SQL text below: any "process = %s" (inside `where`) comes
+                # first, then the two stale_days interval comparisons.
+                clauses = ["source = 'pac_rego'"]
+                params: list = []
+                if process:
+                    clauses.append("process = %s")
+                    params.append(process)
+                where = " AND ".join(clauses)
+                params.extend([stale_days, stale_days])
+                cur.execute(
+                    f"""
+                    SELECT control_id, name, process, last_fired_at, last_verified_at, last_test_passed
+                    FROM controls_catalog
+                    WHERE {where}
+                      AND (last_fired_at IS NULL OR last_fired_at < NOW() - (%s || ' days')::interval)
+                      AND (last_test_passed IS NOT TRUE OR last_verified_at < NOW() - (%s || ' days')::interval)
+                    ORDER BY process, control_id
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("last_fired_at", "last_verified_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def insert_pac_test_run(process: str, module_id: Optional[int], triggered_by: str,
+                         triggered_by_user: Optional[str], contract_ok: Optional[bool],
+                         contract_findings: Optional[list], total: int, passed: int,
+                         failed: int, results: list) -> Optional[int]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.pac_test_runs
+                        (process, module_id, triggered_by, triggered_by_user,
+                         contract_ok, contract_findings, total, passed, failed, results)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb)
+                    RETURNING id
+                    """,
+                    (process, module_id, triggered_by, triggered_by_user, contract_ok,
+                     Json(contract_findings or []), total, passed, failed, Json(results)),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_pac_test_runs(process: Optional[str] = None, limit: int = 50) -> list:
+    def _do():
+        filters, params = [], []
+        if process:
+            filters.append("process = %s"); params.append(process)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, process, module_id, triggered_by, triggered_by_user,
+                           contract_ok, contract_findings, total, passed, failed, results, run_at
+                    FROM observability.pac_test_runs
+                    {where}
+                    ORDER BY run_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("run_at"):
+                        d["run_at"] = d["run_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 def get_pac_module_history(process: str, limit: int = 20) -> list:
@@ -7049,6 +7264,33 @@ def get_pac_module_history(process: str, limit: int = 20) -> list:
                     for r in cur.fetchall()
                 ]
     return _run(_do) or []
+
+
+def get_pac_module_by_id(module_id: int) -> Optional[dict]:
+    """Fetch one module version by id, rego_content included — needed by the
+    negative-testing approval gate (pac_assurance.evaluate_and_record), which
+    must test the EXACT version being approved, not just 'whatever is
+    currently latest for the process' (those can differ mid-review)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, process, module_name, rego_content, version, last_revised_at, created_at
+                    FROM pac_policy_modules WHERE id = %s
+                    """,
+                    (module_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "process": row[1], "module_name": row[2],
+                    "rego_content": row[3], "version": row[4],
+                    "last_revised_at": row[5].isoformat() if row[5] else None,
+                    "created_at": row[6].isoformat() if row[6] else None,
+                }
+    return _run(_do)
 
 
 def save_pac_approval(module_id: int, approver: str, role: Optional[str] = None) -> Optional[int]:

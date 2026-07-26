@@ -827,6 +827,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
     { id:"sources",   label:"External Sources" },
     { id:"narrative", label:"Narrative & Flow Map" },
     { id:"coverage",  label:"Control Coverage" },
+    { id:"negtest",   label:"Negative Testing" },
   ];
 
   // Org-wide "how many of our controls actually have an enforceable Rego
@@ -845,6 +846,65 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
       .catch(e => setCovError(e.message || "Failed to load"))
       .finally(() => setCovLoading(false));
   }, [mainTab, covData, covLoading]);
+
+  // Negative Testing tab — schema-contract check + must-fire/must-not-fire
+  // corpus (pac_contracts.py / pac_negative_tests.py), run against whatever
+  // is CURRENTLY in the editor (including an unsaved draft) so a policy
+  // author can catch a dead-by-construction rule before ever saving it.
+  const [ntRunning,     setNtRunning]     = useState(false);
+  const [ntResult,      setNtResult]      = useState(null);
+  const [ntError,       setNtError]       = useState(null);
+  const [ntHistory,     setNtHistory]     = useState(null);
+  const [ntHistoryLoad, setNtHistoryLoad] = useState(false);
+  const [assurance,     setAssurance]     = useState(null);
+  const [assuranceLoad, setAssuranceLoad] = useState(false);
+
+  const loadNtHistory = useCallback((process) => {
+    setNtHistoryLoad(true);
+    return fetch(`/api/pac/negative-tests/history/${process}`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setNtHistory(d?.runs || []))
+      .catch(() => setNtHistory([]))
+      .finally(() => setNtHistoryLoad(false));
+  }, []);
+
+  const loadAssurance = useCallback((process) => {
+    setAssuranceLoad(true);
+    return fetch(`/api/pac/assurance?process=${process}`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(setAssurance)
+      .catch(() => setAssurance(null))
+      .finally(() => setAssuranceLoad(false));
+  }, []);
+
+  useEffect(() => {
+    if (mainTab !== "negtest") return;
+    setNtResult(null); setNtError(null);
+    loadNtHistory(activeProcess);
+    loadAssurance(activeProcess);
+  }, [mainTab, activeProcess, loadNtHistory, loadAssurance]);
+
+  async function handleRunNegativeTests() {
+    if (!rego.trim()) return;
+    setNtRunning(true); setNtError(null); setNtResult(null);
+    try {
+      const r = await fetch(`/api/pac/negative-tests/run/${activeProcess}`, {
+        method: "POST", headers: _codeAuthHeaders(),
+        body: JSON.stringify({ rego_content: rego, triggered_by: "manual" }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        setNtResult(d);
+        loadNtHistory(activeProcess);
+        loadAssurance(activeProcess);
+      } else {
+        setNtError(`HTTP ${r.status}`);
+      }
+    } catch (e) {
+      setNtError(e.message || "Network error");
+    }
+    setNtRunning(false);
+  }
 
   return (
     <div className="pac-shell">
@@ -1283,6 +1343,141 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
                 </tbody>
               </table>
             </>
+          )}
+        </div>
+      )}
+
+      {/* ── TAB 5: Negative Testing ── */}
+      {mainTab === "negtest" && (
+        <div style={{ padding:"18px 20px", overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12, marginBottom:16 }}>
+            <div style={{ fontSize:11.5, color:"var(--ink-3)", maxWidth:640, lineHeight:1.5 }}>
+              Runs two checks against the Rego currently in the editor (including an unsaved draft):
+              a schema-contract check — does every field/event-type it references correspond to
+              something the real adjudication pipeline actually produces — and a must-fire/must-not-fire
+              fixture corpus, evaluated through the real OPA engine when available. A rule that reads as
+              enforcing something but can never fire is worse than no rule at all.
+            </div>
+            <button className="btn btn-sm btn-acc" onClick={handleRunNegativeTests} disabled={ntRunning || !rego.trim()}>
+              {ntRunning ? "Running…" : "Run Negative Tests"}
+            </button>
+          </div>
+
+          {ntError && <div className="code-status err" style={{ fontSize:11, marginBottom:12 }}>Test run failed — {ntError}</div>}
+
+          {ntResult && (
+            <div style={{ marginBottom:24 }}>
+              <div style={{ display:"flex", gap:12, marginBottom:14, flexWrap:"wrap" }}>
+                <CoverageStat label="Overall" value={ntResult.ok ? "PASS" : "FAIL"}
+                  color={ntResult.ok ? "var(--green-ink, #166534)" : "var(--red-ink, #b91c1c)"} />
+                <CoverageStat label="Schema Contract" value={ntResult.contract?.ok ? "OK" : "FAILED"}
+                  color={ntResult.contract?.ok ? "var(--green-ink, #166534)" : "var(--red-ink, #b91c1c)"} />
+                <CoverageStat label="Corpus" value={
+                  ntResult.corpus?.ok === null ? "no corpus" : `${ntResult.corpus?.passed ?? 0} / ${ntResult.corpus?.total ?? 0}`
+                } color={ntResult.corpus?.ok === false ? "var(--red-ink, #b91c1c)" : undefined} />
+              </div>
+
+              {ntResult.contract && ntResult.contract.findings?.length > 0 && (
+                <>
+                  <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8 }}>
+                    Schema-Contract Findings
+                  </div>
+                  <ul style={{ fontSize:11, color:"var(--red-ink, #b91c1c)", marginBottom:18, paddingLeft:18, lineHeight:1.6 }}>
+                    {ntResult.contract.findings.map((f, i) => <li key={i}>{f}</li>)}
+                  </ul>
+                </>
+              )}
+
+              {ntResult.corpus?.results?.length > 0 && (
+                <>
+                  <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8 }}>
+                    Fixture Results
+                  </div>
+                  <table className="rep-table" style={{ marginBottom:18 }}>
+                    <thead><tr><th>Fixture</th><th>Expect</th><th>Result</th><th>Fired Control(s)</th></tr></thead>
+                    <tbody>
+                      {ntResult.corpus.results.map(r => (
+                        <tr key={r.name}>
+                          <td style={{ fontSize:11 }}>{r.name}</td>
+                          <td className="mono" style={{ fontSize:10.5, color:"var(--ink-3)" }}>{r.expect}{r.expected_control_id ? ` (${r.expected_control_id})` : ""}</td>
+                          <td>
+                            <span className="mono" style={{
+                              fontSize:9.5, padding:"1px 6px", borderRadius:4, fontWeight:700,
+                              background: r.passed ? "var(--green-soft)" : "var(--red-soft, #fee2e2)",
+                              color: r.passed ? "var(--green-ink)" : "var(--red-ink, #b91c1c)",
+                            }}>
+                              {r.passed ? "PASS" : "FAIL"}
+                            </span>
+                          </td>
+                          <td className="mono" style={{ fontSize:10.5 }}>{r.fired_control_ids?.join(", ") || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              {ntResult.corpus?.note && (
+                <div style={{ fontSize:11, color:"var(--ink-3)", marginBottom:18 }}>{ntResult.corpus.note}</div>
+              )}
+            </div>
+          )}
+
+          <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8 }}>
+            Unverified Controls — {proc.label}
+          </div>
+          <div style={{ fontSize:11, color:"var(--ink-3)", marginBottom:10 }}>
+            Policy-enforced controls with neither a recent real production fire nor a passing
+            negative-control test — nothing currently proves these work.
+          </div>
+          {assuranceLoad && <div style={{ fontSize:12, color:"var(--ink-3)" }}>Loading…</div>}
+          {assurance && !assurance.unverified?.length && !assuranceLoad && (
+            <div style={{ fontSize:11.5, color:"var(--green-ink, #166534)", marginBottom:20 }}>
+              Every policy-enforced control for this process has recent evidence it works.
+            </div>
+          )}
+          {assurance && assurance.unverified?.length > 0 && (
+            <table className="rep-table" style={{ marginBottom:20 }}>
+              <thead><tr><th>Control ID</th><th>Name</th><th>Last Fired</th><th>Last Verified</th></tr></thead>
+              <tbody>
+                {assurance.unverified.map(c => (
+                  <tr key={c.control_id}>
+                    <td className="mono" style={{ fontSize:10.5 }}>{c.control_id}</td>
+                    <td style={{ fontSize:11.5 }}>{c.name}</td>
+                    <td className="mono" style={{ fontSize:10.5, color:"var(--ink-3)" }}>{c.last_fired_at ? new Date(c.last_fired_at).toLocaleDateString() : "never"}</td>
+                    <td className="mono" style={{ fontSize:10.5, color:"var(--ink-3)" }}>{c.last_verified_at ? new Date(c.last_verified_at).toLocaleDateString() : "never"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:8 }}>
+            Test Run History
+          </div>
+          {ntHistoryLoad && <div style={{ fontSize:12, color:"var(--ink-3)" }}>Loading…</div>}
+          {ntHistory && !ntHistory.length && !ntHistoryLoad && <div style={{ fontSize:11.5, color:"var(--ink-3)" }}>No negative-control tests run yet for this process.</div>}
+          {ntHistory && ntHistory.length > 0 && (
+            <table className="rep-table">
+              <thead><tr><th>Run At</th><th>Triggered By</th><th>Contract</th><th>Corpus</th></tr></thead>
+              <tbody>
+                {ntHistory.map(run => (
+                  <tr key={run.id}>
+                    <td className="mono" style={{ fontSize:10.5, color:"var(--ink-3)" }}>{new Date(run.run_at).toLocaleString()}</td>
+                    <td style={{ fontSize:11 }}>{run.triggered_by}{run.triggered_by_user ? ` (${run.triggered_by_user})` : ""}</td>
+                    <td>
+                      <span className="mono" style={{
+                        fontSize:9.5, padding:"1px 6px", borderRadius:4, fontWeight:700,
+                        background: run.contract_ok ? "var(--green-soft)" : "var(--red-soft, #fee2e2)",
+                        color: run.contract_ok ? "var(--green-ink)" : "var(--red-ink, #b91c1c)",
+                      }}>
+                        {run.contract_ok ? "OK" : "FAILED"}
+                      </span>
+                    </td>
+                    <td className="mono" style={{ fontSize:10.5 }}>{run.passed} / {run.total}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}
