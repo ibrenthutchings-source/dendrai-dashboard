@@ -847,6 +847,31 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
       .finally(() => setCovLoading(false));
   }, [mainTab, covData, covLoading]);
 
+  // Executive Compliance Scorecard — framework coverage (mapped vs. actually
+  // verified, per P0's negative-testing assurance metadata). Separate fetch
+  // per framework, re-triggered on selector change, cached per framework so
+  // switching back and forth doesn't re-fetch.
+  const SCORECARD_FRAMEWORKS = [
+    { id: "soc2", label: "SOC 2" },
+    { id: "nist_800_53", label: "NIST SP 800-53" },
+    { id: "iso_27001", label: "ISO 27001" },
+    { id: "coso", label: "COSO ERM" },
+  ];
+  const [scorecardFramework, setScorecardFramework] = useState("soc2");
+  const [scorecardCache, setScorecardCache] = useState({});
+  const [scorecardLoading, setScorecardLoading] = useState(false);
+  const [scorecardError, setScorecardError] = useState(null);
+  useEffect(() => {
+    if (mainTab !== "coverage" || scorecardCache[scorecardFramework]) return;
+    setScorecardLoading(true); setScorecardError(null);
+    fetch(`/api/pac/compliance-scorecard?framework=${scorecardFramework}`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(d => setScorecardCache(prev => ({ ...prev, [scorecardFramework]: d })))
+      .catch(e => setScorecardError(e.message || "Failed to load"))
+      .finally(() => setScorecardLoading(false));
+  }, [mainTab, scorecardFramework, scorecardCache]);
+  const scorecardData = scorecardCache[scorecardFramework];
+
   // Negative Testing tab — schema-contract check + must-fire/must-not-fire
   // corpus (pac_contracts.py / pac_negative_tests.py), run against whatever
   // is CURRENTLY in the editor (including an unsaved draft) so a policy
@@ -1342,6 +1367,58 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
                   ))}
                 </tbody>
               </table>
+
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:28, marginBottom:8 }}>
+                <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase" }}>
+                  Executive Compliance Scorecard
+                </div>
+                <select className="code-input" value={scorecardFramework}
+                  onChange={e => setScorecardFramework(e.target.value)}
+                  style={{ fontSize:11, padding:"3px 8px", width:"auto" }}>
+                  {SCORECARD_FRAMEWORKS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                </select>
+              </div>
+              <div style={{ fontSize:11, color:"var(--ink-3)", marginBottom:10, lineHeight:1.5 }}>
+                Curated framework crosswalk (never auto-generated — see <code>framework_mappings.py</code>), against
+                the same negative-testing assurance metadata as the Negative Testing tab. "Mapped" and "verified" are
+                deliberately separate numbers: a criterion can be fully mapped and still show 0% verified if nothing
+                currently proves those controls work.
+              </div>
+              {scorecardLoading && <div style={{ fontSize:12, color:"var(--ink-3)" }}>Loading scorecard…</div>}
+              {scorecardError && <div className="code-status err" style={{ fontSize:11 }}>Failed to load scorecard — {scorecardError}</div>}
+              {scorecardData && !scorecardData.criteria?.length && !scorecardLoading && (
+                <div style={{ fontSize:11.5, color:"var(--ink-3)" }}>No controls currently mapped to this framework.</div>
+              )}
+              {scorecardData && scorecardData.criteria?.length > 0 && (
+                <>
+                  <div style={{ display:"flex", gap:12, marginBottom:14, flexWrap:"wrap" }}>
+                    <CoverageStat label="Criteria Covered" value={scorecardData.total_criteria} />
+                    <CoverageStat label="Fully Verified" value={scorecardData.fully_verified_criteria} color="var(--green-ink, #166534)"
+                      sub={scorecardData.total_criteria ? `${Math.round(100 * scorecardData.fully_verified_criteria / scorecardData.total_criteria)}%` : "—"} />
+                  </div>
+                  <table className="rep-table">
+                    <thead><tr><th>Criterion</th><th>Mapped Controls</th><th>Verified</th><th>Coverage</th></tr></thead>
+                    <tbody>
+                      {scorecardData.criteria.map(c => (
+                        <tr key={c.criterion}>
+                          <td className="mono" style={{ fontSize:11 }}>{c.criterion}</td>
+                          <td className="mono" style={{ fontSize:10.5 }}>{c.control_ids.join(", ")}</td>
+                          <td>{c.verified_controls} / {c.total_controls}</td>
+                          <td>
+                            <span className="mono" style={{
+                              fontSize:9.5, padding:"1px 6px", borderRadius:4, fontWeight:700,
+                              background: c.verified_controls === c.total_controls ? "var(--green-soft)" : "var(--amber-soft)",
+                              color: c.verified_controls === c.total_controls ? "var(--green-ink)" : "var(--amber-ink)",
+                            }}>
+                              {c.total_controls ? `${Math.round(100 * c.verified_controls / c.total_controls)}%` : "—"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
             </>
           )}
         </div>

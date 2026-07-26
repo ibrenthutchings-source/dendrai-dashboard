@@ -200,6 +200,7 @@ async def lifespan(application: FastAPI):
         _seed_ticker_cik()
         _seed_controls_catalog()
         db.seed_builtin_pac_processes()
+        db.seed_framework_mappings()
         logger.info("Static reference data seeded")
         # Auth schema + default users
         if auth_db.init_auth_db():

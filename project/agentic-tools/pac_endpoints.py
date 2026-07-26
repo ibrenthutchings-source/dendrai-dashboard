@@ -22,6 +22,7 @@ Router prefix: /pac
     POST /pac/negative-tests/run/{process}      Run schema-contract + must-fire/must-not-fire corpus
     GET  /pac/negative-tests/history/{process}  Past test runs (audit evidence)
     GET  /pac/assurance                         Which controls are proven working vs. unverified
+    GET  /pac/compliance-scorecard               Framework coverage (SOC 2/NIST/ISO/COSO) — mapped vs. verified
 """
 
 from __future__ import annotations
@@ -1540,6 +1541,26 @@ async def get_assurance(process: Optional[str] = None, stale_days: int = 30):
     real production fire and/or a passing negative-control test) vs.
     unverified (neither) — the silent-rule-detection view."""
     return pac_assurance.assurance_summary(process=process, stale_days=stale_days)
+
+
+@router.get("/compliance-scorecard")
+async def get_compliance_scorecard(framework: str = "soc2", stale_days: int = 30):
+    """
+    Executive Compliance Scorecard — for one framework
+    ('soc2' | 'nist_800_53' | 'iso_27001' | 'coso'), every criterion any
+    control_id is mapped to (framework_mappings.py, curated — never
+    auto-generated), how many controls map to it, and how many of those are
+    actually PROVEN working per the negative-testing assurance metadata
+    (last_fired_at/last_test_passed), not just mapped on paper.
+
+    "Mapped" and "verified" are reported separately and never conflated — a
+    criterion can be 100% mapped and 0% verified, and that's the honest
+    number to show, not a green checkmark a compliance mapping alone
+    doesn't earn.
+    """
+    if not db.is_available():
+        return {"framework": framework, "criteria": [], "note": "Database not configured"}
+    return db.get_compliance_scorecard(framework, stale_days=stale_days)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

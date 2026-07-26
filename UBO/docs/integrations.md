@@ -217,6 +217,43 @@ Authorization: Bearer <ingest_api_key>   (per-system key from the monitored-syst
 
 Each finding becomes one immutable `observability.evidence_records` row — SHA-256 fingerprinted (`repository|file_path|rule_id|line_snippet`, deduped against `(fingerprint, commit_sha)`) and HMAC-signed (`EVIDENCE_SIGNING_KEY`) so `/evidence/records/{id}/verify` can prove it hasn't been tampered with since ingestion. HIGH/CRITICAL findings are additionally mirrored into `system_telemetry` (flag `sast_finding`), which is what actually pushes them through adjudication.
 
+#### Container/Dependency Image Scanning (Trivy) — a concrete CI example
+
+`POST /evidence/webhook` needs no Trivy-specific code — it's the same generic SARIF path any scanner uses, `source: "trivy"` is just another free-text value. Verified (not assumed) against a real `trivy fs --format sarif` run, v0.72.0: `parse_sarif()` correctly extracts severity from the CVSS `security-severity` rule property, and CVE IDs directly from `ruleId` (Trivy's `ruleId` usually *is* the CVE string, unlike CodeQL's rule-name convention). One real, non-obvious gap worth knowing: **Trivy's dependency-vulnerability SARIF never tags a CWE** — it's CVE/GHSA-centric, not CWE-centric — so `cwe` is reliably `None` for Trivy-sourced evidence records; that's a characteristic of the source, not a parsing defect.
+
+```yaml
+# .github/workflows/trivy-scan.yml
+name: Trivy image scan → Evidence Ingestion
+on: [push]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f project/Dockerfile -t dendrai-app:${{ github.sha }} .
+      - name: Trivy scan (SARIF)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: dendrai-app:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+      - name: POST results to Evidence Ingestion
+        run: |
+          curl -X POST "$DENDRAI_HOST/evidence/webhook" \
+            -H "Authorization: Bearer $DENDRAI_INGEST_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg sarif "$(cat trivy-results.sarif)" \
+                 '{repository: "'"$GITHUB_REPOSITORY"'", commit_sha: "'"$GITHUB_SHA"'",
+                   source: "trivy", scan_status: "FAIL", sarif: ($sarif | fromjson)}')"
+        env:
+          DENDRAI_HOST: ${{ secrets.DENDRAI_HOST }}
+          DENDRAI_INGEST_API_KEY: ${{ secrets.DENDRAI_INGEST_API_KEY }}
+```
+
+`DENDRAI_INGEST_API_KEY` comes from registering a monitored system (e.g. named `trivy-ci`) via the Dendrai UBO Configuration screen's monitored-systems card — the same push-model registry every other SARIF-producing CI system uses, so this scanner gets its own revocable key instead of sharing one shared webhook secret.
+
 ### Risk Waiver & Exception Hub
 
 A documented, time-boxed exception to a failing finding — reuses the generic HITL `approval_tasks` workflow (`gate_type='devops_scm_exception'`, zero schema changes) rather than a bespoke approval flow. A manager-approved exception becomes an `observability.risk_waivers` row; `risk_waiver_sweep.py`'s hourly sweep flips overdue waivers to `EXPIRED` and re-ingests the underlying finding — automated expiry re-opens the control as failing, it never silently lapses.
