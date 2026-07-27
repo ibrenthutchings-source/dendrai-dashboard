@@ -8,6 +8,7 @@ Router prefix: /evidence
     GET  /evidence/records            Filtered list (repository, severity, commit_sha)
     GET  /evidence/records/{id}/verify  Recompute the HMAC signature, report {valid}
     GET  /evidence/chain/verify        Verify the tamper-evidence hash chain across all records
+    GET  /evidence/dora-metrics        Deployment frequency / change failure rate / MTTR (SOC 2 CC8.1)
     POST /evidence/attestation        Ingest pipeline provenance (OIDC/SLSA/Cosign/SBOM)
     GET  /evidence/attestations       Filtered list (commit_sha)
     GET  /evidence/attestations/{id}  Full attestation, including SLSA/Cosign/SBOM detail
@@ -58,6 +59,7 @@ from pydantic import BaseModel
 
 import attestation
 import db
+import dora_metrics
 import mcp_governance
 
 logger = logging.getLogger("ubo.evidence")
@@ -370,3 +372,12 @@ async def verify_chain(limit: Optional[int] = None):
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
     return db.verify_evidence_chain(limit=limit)
+
+
+@router.get("/dora-metrics")
+async def get_dora_metrics(window_days: int = 30):
+    """Deployment frequency / change failure rate / MTTR — real operational
+    evidence for SOC 2 CC8.1, computed from pipeline_attestations and
+    itsm_tickets. See dora_metrics.py's module docstring for the exact
+    proxies used and why Lead Time for Changes isn't included."""
+    return dora_metrics.compute_dora_metrics(window_days=window_days)

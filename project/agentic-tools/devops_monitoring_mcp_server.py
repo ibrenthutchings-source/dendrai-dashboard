@@ -36,6 +36,7 @@ Claude Desktop — add to ~/.claude/claude_desktop_config.json:
     itsm_list_tickets       List ITSM (Jira/ServiceNow) tickets tracking findings
     itsm_sla_summary        Open/breached/at-risk-24h counts for the ITSM SLA Bridge
     itsm_sweep_now          Run the SLA breach-detection sweep immediately (write-guarded)
+    dora_metrics            Deployment frequency / change failure rate / MTTR (SOC 2 CC8.1)
 
 ── Environment variables ─────────────────────────────────────────────────────
 
@@ -63,6 +64,7 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 from mcp_guards import audit_log, cap_output, check_rate_limit, check_read_only
 import db
+import dora_metrics
 import evidence_endpoints
 import itsm_sla_sweep
 import risk_waiver_sweep
@@ -420,6 +422,26 @@ def itsm_sweep_now() -> str:
         return json.dumps({"breached_count": breached_count}, indent=2)
     except Exception as exc:
         return f"Error running ITSM SLA sweep: {exc}"
+
+
+@mcp.tool()
+def dora_metrics_summary(window_days: int = 30) -> str:
+    """
+    DORA-style change-management metrics over the trailing window_days —
+    deployment frequency (pipeline_attestations/day), change failure rate
+    (itsm_tickets opened per attestation), and MTTR (mean hours from ticket
+    open to actual resolution). Real operational evidence for SOC 2 CC8.1,
+    not a policy-mapping claim. A metric reports null (not 0) when its
+    denominator is empty — see dora_metrics.py's module docstring.
+
+    Args:
+        window_days: Trailing window size in days (default 30).
+    """
+    try:
+        check_rate_limit("dora_metrics_summary")
+        return json.dumps(dora_metrics.compute_dora_metrics(window_days=window_days), indent=2)
+    except Exception as exc:
+        return f"Error computing DORA metrics: {exc}"
 
 
 if __name__ == "__main__":

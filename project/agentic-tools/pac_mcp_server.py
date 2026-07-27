@@ -71,6 +71,7 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 from mcp_guards import audit_log, cap_output, check_rate_limit, check_read_only, validate_enum
 import db
+import pac_approval_drift
 import pac_assurance
 import pac_negative_sweep
 from pac_endpoints import (
@@ -791,12 +792,39 @@ def pac_run_negative_sweep_now() -> str:
 
         results = asyncio.run(pac_negative_sweep.sweep_once())
         summary = {
-            proc: {"ok": r["ok"], "contract_ok": r["contract"]["ok"], "corpus": r["corpus"].get("ok")}
+            proc: {"ok": r["ok"], "contract_ok": r["contract"]["ok"], "corpus": r["corpus"].get("ok"),
+                   "approval_drifted": r.get("approval_drift", {}).get("drifted")}
             for proc, r in results.items()
         }
         return json.dumps({"processes_tested": len(results), "results": summary}, indent=2)
     except Exception as exc:
         return f"Error running negative-testing sweep: {exc}"
+
+
+@mcp.tool()
+def pac_check_approval_drift(process: str = "") -> str:
+    """
+    Compare what's actually being evaluated in production for a PaC process
+    (the latest SAVED module — see pac_approval_drift.py's module docstring
+    for why saving alone is enough to go live, with no approval gate) against
+    the latest version that ever received a real approval sign-off. A
+    mismatch means an unapproved or since-edited module is currently
+    adjudicating real events for that process — this is the one thing that
+    surfaces that gap, since nothing today blocks it from happening.
+
+    Args:
+        process: A specific process id, or "" (default) to check every
+            known process at once.
+    """
+    try:
+        check_rate_limit("pac_check_approval_drift")
+        if process:
+            result = pac_approval_drift.check_process_drift(process)
+        else:
+            result = pac_approval_drift.check_all_processes()
+        return cap_output(json.dumps(result, indent=2, default=str))
+    except Exception as exc:
+        return f"Error checking approval drift: {exc}"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

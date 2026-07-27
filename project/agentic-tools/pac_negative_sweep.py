@@ -18,6 +18,12 @@ things this catches that edit-time testing alone can't:
      Rego itself, and nothing about editing silver.py would trigger the
      approval-gate test. Comparing consecutive observability.pac_test_runs
      rows is what catches that.
+  3. APPROVAL DRIFT (pac_approval_drift.py): the module actually being
+     evaluated (db.get_latest_pac_module — the latest SAVE, not the latest
+     APPROVAL) silently diverges from the latest version a human actually
+     signed off on. Since there's no approval gate on evaluation itself
+     (see pac_approval_drift.py's module docstring), this is the only thing
+     that surfaces it.
 
 Mirrors risk_waiver_sweep.py/itsm_sla_sweep.py's shape exactly: infinite
 loop, errors caught and logged, never exits on its own except cancellation.
@@ -30,6 +36,7 @@ import asyncio
 import logging
 
 import db
+import pac_approval_drift
 import pac_assurance
 import pac_endpoints
 
@@ -79,6 +86,14 @@ async def sweep_once() -> dict:
             module_id=module_id, triggered_by="scheduled_sweep",
         )
         results[process] = result
+
+        drift = await asyncio.to_thread(pac_approval_drift.check_process_drift, process)
+        result["approval_drift"] = drift
+        if drift["drifted"]:
+            logger.warning(
+                "pac_negative_sweep: APPROVAL DRIFT on process '%s' — %s",
+                process, drift["reason"],
+            )
 
         if previous_ok is True and result["ok"] is False:
             logger.warning(

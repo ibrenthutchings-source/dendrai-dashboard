@@ -1829,6 +1829,13 @@ CREATE TABLE IF NOT EXISTS observability.itsm_tickets (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_itsm_tickets_active_hash
     ON observability.itsm_tickets (finding_hash)
     WHERE status NOT IN ('closed', 'cancelled');
+-- DORA metrics (dora_metrics.py / compute_dora_metrics): MTTR needs a real
+-- resolution timestamp, not updated_at (which bumps on ANY field change,
+-- same reason poll_connectors got its own credentials_rotated_at rather
+-- than reusing updated_at) — set only on the open/in_progress -> resolved
+-- transition by update_itsm_ticket_status, mirroring model_health alerts'
+-- existing resolved_at precedent.
+ALTER TABLE observability.itsm_tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_itsm_tickets_sla_sweep
     ON observability.itsm_tickets (sla_due_at)
     WHERE sla_breached_at IS NULL AND status NOT IN ('closed', 'cancelled');
@@ -6976,6 +6983,41 @@ def get_latest_pac_module(process: str) -> Optional[dict]:
     return _run(_do)
 
 
+def get_latest_approved_pac_module(process: str) -> Optional[dict]:
+    """The newest module version for a process that has EVER received an
+    approval sign-off — may be OLDER than get_latest_pac_module's result,
+    since saving a new draft (PUT /pac/modules/{process}) doesn't require or
+    wait for approval before becoming the version real adjudication
+    evaluates. Used by pac_approval_drift.py to detect exactly that gap:
+    the live module and the latest APPROVED module are not necessarily the
+    same row."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT m.id, m.process, m.module_name, m.rego_content, m.version,
+                           m.source_format, m.last_revised_at, m.created_at
+                    FROM pac_policy_modules m
+                    WHERE m.process = %s
+                      AND EXISTS (SELECT 1 FROM pac_policy_approvals a WHERE a.module_id = m.id)
+                    ORDER BY m.created_at DESC
+                    LIMIT 1
+                    """,
+                    (process,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "process": row[1], "module_name": row[2],
+                    "rego_content": row[3], "version": row[4], "source_format": row[5],
+                    "last_revised_at": row[6].isoformat() if row[6] else None,
+                    "created_at": row[7].isoformat() if row[7] else None,
+                }
+    return _run(_do)
+
+
 def list_pac_modules() -> list:
     """Return the latest module for every process that has been saved."""
     def _do():
@@ -7205,6 +7247,86 @@ def get_compliance_scorecard(framework: str, stale_days: int = 30) -> dict:
         "total_criteria": len(criteria),
         "fully_verified_criteria": fully_verified,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DORA-style change-management metrics (SOC 2 CC8.1 operational evidence)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _aggregate_dora_metrics(window_days: int, attestation_count: int, ticket_count: int,
+                             resolved_ticket_hours: list) -> dict:
+    """
+    Pure aggregation, split out of compute_dora_metrics for testability —
+    same reasoning as _aggregate_scorecard_rows.
+
+    Two of DORA's four metrics, computed from data this platform actually
+    ingests (not fabricated): pipeline_attestations (one row per CI pipeline
+    run — evidence_endpoints.py's POST /evidence/attestation) as the
+    deployment-frequency proxy, and itsm_tickets (findings escalated into a
+    real Jira/ServiceNow ticket) as the change-failure/incident proxy.
+
+    deployment_frequency_per_day: attestation_count / window_days.
+    change_failure_rate: ticket_count / attestation_count — the fraction of
+        pipeline runs in the window that produced a finding serious enough
+        to open an incident ticket. None (not 0) when attestation_count==0 —
+        a rate with no denominator is undefined, not "zero failures".
+    mttr_hours: mean of resolved_ticket_hours — None when no ticket resolved
+        in the window, not 0 (0 would falsely claim instant resolution).
+
+    Lead Time for Changes (DORA's fourth metric) is deliberately NOT
+    computed — see dora_metrics.py's module docstring for why.
+    """
+    deployment_frequency_per_day = round(attestation_count / window_days, 3) if window_days > 0 else None
+    change_failure_rate = round(ticket_count / attestation_count, 3) if attestation_count > 0 else None
+    mttr_hours = round(sum(resolved_ticket_hours) / len(resolved_ticket_hours), 2) if resolved_ticket_hours else None
+    return {
+        "window_days": window_days,
+        "deployment_count": attestation_count,
+        "deployment_frequency_per_day": deployment_frequency_per_day,
+        "incident_ticket_count": ticket_count,
+        "change_failure_rate": change_failure_rate,
+        "resolved_ticket_count": len(resolved_ticket_hours),
+        "mttr_hours": mttr_hours,
+    }
+
+
+def compute_dora_metrics(window_days: int = 30) -> dict:
+    """Real deployment-frequency / change-failure-rate / MTTR metrics over
+    the trailing window_days — see _aggregate_dora_metrics for the exact
+    proxies and their honest-null semantics."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.pipeline_attestations "
+                    "WHERE created_at >= NOW() - (%s || ' days')::interval",
+                    (window_days,),
+                )
+                attestation_count = cur.fetchone()[0]
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.itsm_tickets "
+                    "WHERE created_at >= NOW() - (%s || ' days')::interval",
+                    (window_days,),
+                )
+                ticket_count = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0
+                    FROM observability.itsm_tickets
+                    WHERE resolved_at IS NOT NULL
+                      AND created_at >= NOW() - (%s || ' days')::interval
+                    """,
+                    (window_days,),
+                )
+                resolved_ticket_hours = [r[0] for r in cur.fetchall() if r[0] is not None]
+
+                return attestation_count, ticket_count, resolved_ticket_hours
+    result = _run(_do)
+    if result is None:
+        return _aggregate_dora_metrics(window_days, 0, 0, []) | {"note": "Database not configured"}
+    return _aggregate_dora_metrics(window_days, *result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -8109,7 +8231,6 @@ def verify_evidence_chain(limit: Optional[int] = None) -> dict:
     or all-legacy table), not a pass — callers should treat that distinctly
     from a real, non-empty, unbroken chain.
     """
-    import hashlib
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -8125,10 +8246,10 @@ def verify_evidence_chain(limit: Optional[int] = None) -> dict:
                     cur.execute(q)
                 rows = cur.fetchall()
 
-        prev_hash = EVIDENCE_CHAIN_GENESIS_HASH
+        prev_hash = None
         checked = 0
         for rid, signature, stored_chain_hash in rows:
-            expected = hashlib.sha256((prev_hash + signature).encode("utf-8")).hexdigest()
+            expected = _evidence_chain_hash(prev_hash, signature)
             checked += 1
             if expected != stored_chain_hash:
                 return {"valid": False, "checked": checked, "break_at_id": rid,
@@ -8580,14 +8701,31 @@ def update_itsm_ticket_status(ticket_id: int, status: str) -> bool:
     called by itsm_jira_tool.py/itsm_servicenow_tool.py's poll adapter and by
     the webhook path for real-time closure. Does not touch sla_breached_at —
     that's itsm_sla_sweep.py's job, run independently of ticket status so a
-    late-arriving 'resolved' doesn't erase the fact that it missed its SLA."""
+    late-arriving 'resolved' doesn't erase the fact that it missed its SLA.
+
+    Sets resolved_at exactly once, on the transition INTO resolved/closed —
+    the DORA MTTR metric (compute_dora_metrics) needs a real resolution
+    timestamp, not updated_at (which bumps on any field change). Re-closing
+    an already-resolved ticket (idempotent re-sync) leaves resolved_at as
+    the FIRST resolution time, not the latest sync — COALESCE keeps it from
+    being overwritten on every subsequent poll."""
+    status = status.lower()
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE observability.itsm_tickets SET status = %s, updated_at = NOW() WHERE id = %s",
-                    (status.lower(), ticket_id),
-                )
+                if status in ("resolved", "closed"):
+                    cur.execute(
+                        "UPDATE observability.itsm_tickets "
+                        "SET status = %s, updated_at = NOW(), resolved_at = COALESCE(resolved_at, NOW()) "
+                        "WHERE id = %s",
+                        (status, ticket_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE observability.itsm_tickets SET status = %s, updated_at = NOW(), resolved_at = NULL "
+                        "WHERE id = %s",
+                        (status, ticket_id),
+                    )
                 return cur.rowcount > 0
     return _run(_do, default=False) or False
 
