@@ -149,6 +149,8 @@ _INFRA_FIELDS = frozenset({
     # railway_iaas_tool.py
     "service_id", "service_name", "has_public_domain", "unexpected_public_domain",
     "image_digest", "image_digest_mismatch", "deployment_status",
+    # connector_hygiene.py (dogfooded on Intelligenza's own connector store)
+    "stale_connector_count", "oldest_credential_age_days", "stale_connectors",
 })
 
 

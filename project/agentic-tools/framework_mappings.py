@@ -150,6 +150,13 @@ FRAMEWORK_MAPPINGS: dict[str, dict] = {
         "iso_27001": ["A.14.2.2", "A.14.2.4"],
         "coso_component": "Control Activities",
     },
+    # ── Infrastructure Monitoring: connector credential hygiene ────────────
+    "INFRA-008": {  # Stale connector credential rotation
+        "soc2_criteria": ["CC6.1", "CC6.3"],
+        "nist_800_53": ["IA-5", "AC-2"],
+        "iso_27001": ["A.9.2.4", "A.9.4.3"],
+        "coso_component": "Control Activities",
+    },
 }
 
 

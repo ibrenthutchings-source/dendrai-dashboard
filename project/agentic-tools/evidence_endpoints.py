@@ -7,6 +7,7 @@ Router prefix: /evidence
     POST /evidence/webhook            Ingest a SARIF payload from CI/SAST tooling
     GET  /evidence/records            Filtered list (repository, severity, commit_sha)
     GET  /evidence/records/{id}/verify  Recompute the HMAC signature, report {valid}
+    GET  /evidence/chain/verify        Verify the tamper-evidence hash chain across all records
     POST /evidence/attestation        Ingest pipeline provenance (OIDC/SLSA/Cosign/SBOM)
     GET  /evidence/attestations       Filtered list (commit_sha)
     GET  /evidence/attestations/{id}  Full attestation, including SLSA/Cosign/SBOM detail
@@ -357,3 +358,15 @@ async def verify_record(record_id: int):
         "valid": hmac.compare_digest(recomputed, record["signature"]),
         "fingerprint": record["fingerprint"],
     }
+
+
+@router.get("/chain/verify")
+async def verify_chain(limit: Optional[int] = None):
+    """Tamper-evidence chain verification — proves trail completeness (no
+    row deleted or reordered), which the per-record HMAC above cannot: that
+    check only proves a row's own content wasn't altered. See
+    db.verify_evidence_chain's docstring for what 'valid' does and doesn't
+    mean, particularly when checked==0."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    return db.verify_evidence_chain(limit=limit)

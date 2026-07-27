@@ -29,6 +29,7 @@ Claude Desktop — add to ~/.claude/claude_desktop_config.json:
     scm_list_drift          Drift/time-series log (control flips, either direction)
     evidence_list_records   Filtered SARIF evidence records
     evidence_verify_record  Recompute the HMAC signature for one evidence record
+    evidence_verify_chain   Verify the tamper-evidence hash chain across all records
     waiver_list             List Risk Waivers (ACTIVE/EXPIRED/REVOKED)
     waiver_sweep_now        Run the automated-expiry sweep immediately (write-guarded)
     attestation_list        List pipeline provenance/attestation records
@@ -42,6 +43,8 @@ Claude Desktop — add to ~/.claude/claude_desktop_config.json:
     EVIDENCE_SIGNING_KEY  HMAC key evidence_verify_record checks records against
     MCP_READ_ONLY         Set to "true" to block scm_run_audit (a write operation)
     MCP_RATE_LIMIT_PER_MIN  Override per-tool rate limit (default 30)
+    GITLEAKS_BINARY       Path to a gitleaks binary (falls back to PATH); scm_run_secret_scan
+                          reports itself unavailable, not clean, when neither is found
 """
 
 from __future__ import annotations
@@ -273,6 +276,30 @@ def evidence_verify_record(record_id: int) -> str:
         return json.dumps({"id": record_id, "valid": valid, "fingerprint": record["fingerprint"]}, indent=2)
     except Exception as exc:
         return f"Error verifying record: {exc}"
+
+
+@mcp.tool()
+def evidence_verify_chain(limit: int = 0) -> str:
+    """
+    Verify the tamper-evidence hash chain across observability.evidence_records
+    — proves trail completeness (no row deleted or reordered), which
+    evidence_verify_record's per-record HMAC cannot: that only proves a
+    row's own content wasn't altered. checked==0 means there is nothing yet
+    to verify (a fresh table, or one with only legacy pre-chain rows), not
+    a pass — read valid together with checked.
+
+    Args:
+        limit: 0 (default) verifies the whole chain; a positive value
+            verifies only the oldest N chained rows.
+    """
+    try:
+        check_rate_limit("evidence_verify_chain")
+        if not db.is_available():
+            return json.dumps({"note": "Database not configured"}, indent=2)
+        result = db.verify_evidence_chain(limit=limit or None)
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return f"Error verifying chain: {exc}"
 
 
 @mcp.tool()
