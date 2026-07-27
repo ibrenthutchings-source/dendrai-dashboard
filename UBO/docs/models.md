@@ -56,6 +56,14 @@ The specific risk event class. Each value maps to a base severity weight in the 
 |---|---|---|
 | `SAST_FINDING` | 0.60 | SARIF/SAST finding ingested via `evidence_endpoints.py` |
 
+**DevOps Monitoring — pipeline-as-code (CI/CD workflow) audit**
+
+| Value | Base Weight | Description |
+|---|---|---|
+| `PIPELINE_MISCONFIGURATION` | 0.60 | GitHub Actions workflow finding — write-all `GITHUB_TOKEN` permissions, a missing explicit permissions block, an unpinned third-party action, or a `pull_request_target` trigger combined with an untrusted PR-head checkout. Produced by `pipeline_security_connectors.py`, reused by both `github_scm_tool.py`'s scheduled poll and `scm_audit_endpoints.py`'s on-demand path. |
+
+A real `gitleaks` secret scan (`secret_scanner_connectors.py`, on-demand only — see Integrations) reuses the existing `SECRET_DETECTED` event type above rather than introducing a second one — it's the same zero-tolerance finding, just from a different producer than a live GitHub Advanced Security webhook.
+
 **DevOps Monitoring — ITSM SLA Bridge**
 
 | Value | Base Weight | Description |

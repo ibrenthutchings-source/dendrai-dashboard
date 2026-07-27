@@ -35,7 +35,7 @@ POL-CORE   cross-system baseline rules (all source systems)
 POL-SAP    SAP financial controls
 POL-GH     GitHub DevSecOps
 POL-GL     GitLab DevSecOps
-POL-DEVOPS DevOps Monitoring — SCM audits, SARIF evidence, ITSM SLA breaches
+POL-DEVOPS DevOps Monitoring — SCM audits, SARIF evidence, ITSM SLA breaches, pipeline-as-code security
 POL-INFRA  Infrastructure Monitoring — IaaS/OS/DB continuous audit
 POL-SP     SailPoint identity governance
 POL-MCP    MCP proxy tool-call governance
@@ -223,14 +223,23 @@ A ticket linked to a DevOps Monitoring finding (branch-protection weakness or SA
 
 ---
 
+### POL-DEVOPS-003 — GitHub Actions Workflow Security
+**Severity:** CRITICAL
+
+A `PIPELINE_MISCONFIGURATION` event (`pipeline_security_connectors.py` — GitHub Actions workflow YAML static analysis: token permissions, unpinned third-party actions, `pull_request_target` risk) where the workflow grants write-all `GITHUB_TOKEN` permissions, or triggers on `pull_request_target` with an untrusted PR-head checkout (the classic fork-PR code-execution pattern). Both are automatically escalated regardless of any other finding — the same zero-tolerance treatment POL-GH-004 gives an `enforce_admins=false` branch-protection finding. Applies to both the GITHUB (on-demand) and SYSTEM_TELEMETRY (scheduled poll) source-system paths, since this check can be produced by either.
+
+**Violation message:** `"CRITICAL: workflow on '{repo}' triggers on pull_request_target with an untrusted PR-head checkout — a fork PR can execute code with write-scoped secrets"` or `"Workflow permissions on '{repo}' are write-all — broader than least-privilege"`
+
+---
+
 ## Infrastructure Monitoring Rules — IaaS/OS/DB Continuous Audit
 
-Applied only to UROs where `source_system = SYSTEM_TELEMETRY` and `event_type = INFRASTRUCTURE_FINDING`. Fed by `postgres_cis_tool.py` (Postgres CIS-style hardening checks — SSL enforcement, password encryption, superuser sprawl, live unencrypted connections, connection logging) and `railway_iaas_tool.py` (Railway platform/deployment drift — unexpected public domain exposure, deployment image digest with no matching pipeline attestation), both scheduled poll-connector audits under the `infrastructure_monitoring` Policy-as-Code process.
+Applied only to UROs where `source_system = SYSTEM_TELEMETRY` and `event_type = INFRASTRUCTURE_FINDING`. Fed by `postgres_cis_tool.py` (Postgres CIS-style hardening checks — SSL enforcement, password encryption, superuser sprawl, live unencrypted connections, connection logging), `railway_iaas_tool.py` (Railway platform/deployment drift — unexpected public domain exposure, deployment image digest with no matching pipeline attestation), and `connector_hygiene.py` (connector credential rotation staleness — dogfooded on Intelligenza's own `observability.poll_connectors` store, the one check with no external system to poll), all under the `infrastructure_monitoring` Policy-as-Code process.
 
 ### POL-INFRA-001 — Infrastructure Configuration Finding Severity Floor
 **Severity:** HIGH
 
-A continuous IaaS/DB configuration audit found a CRITICAL or HIGH severity finding — e.g. SSL not enforced, weak password encryption, or a service unexpectedly exposed to the public internet.
+A continuous IaaS/DB configuration audit found a CRITICAL or HIGH severity finding — e.g. SSL not enforced, weak password encryption, a service unexpectedly exposed to the public internet, or (INFRA-008, via `connector_hygiene_sweep.py`'s daily sweep) a stored connector credential that has gone unrotated past the staleness threshold. This one Silver rule covers every Infrastructure Monitoring check by severity alone — no per-check-type rule is needed since each producer already computes its own severity.
 
 **Violation message:** `"{severity}: infrastructure finding on '{resource}' ({check_id})"`
 
@@ -382,7 +391,8 @@ A single flag can represent noise or edge-case behaviour. Three simultaneous fla
 | POL-GL-001 | CRITICAL | GITLAB | Protected branch admin bypass |
 | POL-DEVOPS-001 | HIGH | SYSTEM_TELEMETRY | SARIF finding SLA severity floor |
 | POL-DEVOPS-002 | HIGH | SYSTEM_TELEMETRY | ITSM ticket SLA breach |
-| POL-INFRA-001 | HIGH | SYSTEM_TELEMETRY | Infrastructure config finding severity floor |
+| POL-DEVOPS-003 | CRITICAL | GITHUB, SYSTEM_TELEMETRY | GitHub Actions workflow security (write-all perms, risky pull_request_target) |
+| POL-INFRA-001 | HIGH | SYSTEM_TELEMETRY | Infrastructure config finding severity floor (incl. connector credential staleness) |
 | POL-SP-001 | CRITICAL | SAILPOINT | Privilege escalation approval workflow |
 | POL-SP-002 | HIGH | SAILPOINT | Dormant account age threshold |
 | POL-SP-003 | CRITICAL | SAILPOINT | Role explosion SoD limit |
@@ -395,7 +405,7 @@ A single flag can represent noise or edge-case behaviour. Three simultaneous fla
 | POL-SYS-002 | HIGH | SYSTEM_TELEMETRY | Privileged access on critical severity |
 | POL-SYS-003 | CRITICAL | SYSTEM_TELEMETRY | Compound generic governance violation (2+ flags) |
 
-**Total: 27 rules across 9 domains.** (Also evaluated independently, in parallel, against the real saved/default Rego for the process the event routes to — see `mcp_governance._evaluate_pac_policy` in [integrations.md](integrations.md); these Silver rules and the Rego rules are two separate mechanisms checking overlapping ground, not one calling the other.)
+**Total: 28 rules across 9 domains.** (Also evaluated independently, in parallel, against the real saved/default Rego for the process the event routes to — see `mcp_governance._evaluate_pac_policy` in [integrations.md](integrations.md); these Silver rules and the Rego rules are two separate mechanisms checking overlapping ground, not one calling the other.)
 
 ---
 

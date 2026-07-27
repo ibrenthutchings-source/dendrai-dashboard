@@ -262,6 +262,22 @@ A documented, time-boxed exception to a failing finding — reuses the generic H
 
 `POST /evidence/attestation` ingests OIDC identity claims, a SLSA provenance statement (structural 0–3 level estimate via `attestation.validate_slsa_provenance`), an environment-variable hash (`attestation.hash_env_vars` — detects an injected `SKIP_TESTS=true`/`DISABLE_SAST=1` **without ever storing the raw values**), runner metadata, an optional Cosign/Sigstore bundle (`attestation.verify_cosign_bundle` — **structural validation only**; reports `"unknown"` rather than fabricating `"true"`/`"false"` without a real `cosign` binary), and an SBOM (CycloneDX/SPDX, with copyleft-license flagging). Stored in `observability.pipeline_attestations`.
 
+### Tamper-Evidence Hash Chain
+
+A per-record HMAC (`signature`) proves a row's own content wasn't altered after ingestion — it says nothing about whether a row was *deleted or reordered* out from between its neighbors. Every `evidence_records` insert now also computes `chain_hash = sha256(prev_row.chain_hash + this_row.signature)` under a Postgres advisory transaction lock (`pg_advisory_xact_lock`, so two concurrent ingests can't both read the same "previous" row and fork the chain). `GET /evidence/chain/verify` walks the whole table in insertion order and recomputes the chain from genesis — a mismatch anywhere means a row was altered, deleted, or reordered since it was written. Rows from before this column existed have `chain_hash = NULL` and are excluded from verification rather than folded into a fabricated retroactive chain — `checked == 0` means "nothing yet to verify," not "verified clean."
+
+### Pipeline-as-Code Security Audit (GitHub Actions Workflows)
+
+**File:** `pipeline_security_connectors.py`, reused by `github_scm_tool.py`'s scheduled poll (a second event per tick, alongside branch-protection) and `scm_audit_endpoints.py`'s on-demand `POST /scm-audit/repositories/{id}/run-pipeline-security` — no new connector type, since it reuses the same registered repo+token already used for branch-protection auditing.
+
+Static analysis of every `.github/workflows/*.yml` file's YAML — no runtime execution, no evaluation of what a third-party action actually does. Three checks: (1) an explicit `permissions:` block present (top-level or per-job) and not `write-all`; (2) every `uses:` action reference pinned to a full 40-hex-char commit SHA, not a mutable tag like `@v4`; (3) a `pull_request_target` trigger combined with an `actions/checkout` step whose `ref:` points at the PR head — the classic fork-PR code-execution-with-write-scoped-secrets pattern behind several real supply-chain incidents. Findings are DEVOPS-010 through DEVOPS-013 in the `devops_monitoring` Rego module; DEVOPS-013 (risky `pull_request_target`) is CRITICAL, everything else HIGH or informational — see [policy.md](policy.md)'s POL-DEVOPS-003.
+
+### Real Secret Scanning (gitleaks)
+
+**File:** `secret_scanner_connectors.py`, on-demand only via `scm_audit_endpoints.py`'s `POST /scm-audit/repositories/{id}/run-secret-scan` (and `scm_run_secret_scan` MCP tool) — not part of the scheduled poll tick, since a full-history clone is heavier than the REST-only checks above.
+
+GitHub's native `secret_scanning_alert` webhook (already wired via `bronze.py`'s `GitHubBronzeHandler`) only fires for orgs with GitHub Advanced Security enabled — a paid feature many orgs, especially on private repos, don't have. This is an independent, plan-tier-agnostic producer for the same `SECRET_DETECTED` event: clones the repo's full git history (a secret committed and later removed is still exposed to anyone who ever cloned the repo — a working-tree-only scan would miss exactly that) and runs a real `gitleaks` binary (verified empirically against v8.28.0's actual JSON report shape during development), shelled out via `_find_gitleaks_binary()` — same "real binary if present, otherwise report unavailable, never fabricate a result" convention as `pac_endpoints._find_opa_binary`. A **clean scan is never adjudicated** (no false "compliant" SECRET_DETECTED event); any real finding is CRITICAL, matching POL-GH-001's existing zero-tolerance treatment. The secret value itself is never persisted, logged, or returned — every finding is redacted to a fixed placeholder before it leaves the module, and the clone (with the token embedded in its URL) lives only in a `TemporaryDirectory` removed on every exit path. Requires the `gitleaks` and `git` binaries in the runtime image (`project/Dockerfile`'s `gitleaks-fetch` build stage, same throwaway-fetch pattern as OPA's).
+
 ---
 
 ## DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge
@@ -299,6 +315,10 @@ The API token should be a real Railway Account/Team API token (dashboard → Acc
 
 Both adapters register into the same `infrastructure_monitoring` Policy-as-Code process and `INFRASTRUCTURE_FINDING` event type — see [policy.md](policy.md)'s POL-INFRA-001 and the `devops_monitoring_mcp_server.py`-adjacent `infrastructure_monitoring_mcp_server.py` for the MCP tool surface.
 
+### Connector Credential Rotation Hygiene (`connector_hygiene.py`)
+
+The one Infrastructure Monitoring check with no external system to poll — the system being checked is Intelligenza itself. `observability.poll_connectors` gained a `credentials_rotated_at` column, bumped **only** when `credentials` are actually changed via `update_poll_connector` (deliberately not reusing `updated_at`, which bumps on any field edit — display name, poll interval, anything — and would be a dishonest proxy for credential age). `connector_hygiene_sweep.py` checks daily for any active connector's credential older than `stale_days` (default 90) — Oracle Fusion, SAP HANA, GitHub/GitLab PATs, Postgres DSNs, Railway tokens, all of it — and ingests a HIGH `INFRASTRUCTURE_FINDING` (INFRA-008) if anything is stale. Run on demand via the `iaas_run_connector_hygiene_check` MCP tool — no dedicated REST endpoint or UI panel; findings surface through the same Continuous Monitoring feed every other Infrastructure Monitoring check already uses.
+
 ---
 
 ## Policy-as-Code: Real Rego Evaluation in the Adjudication Pipeline
@@ -332,6 +352,8 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("SYSTEM_TELEMETRY", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
     ("SYSTEM_TELEMETRY", "SLA_BREACH"):        "devops_monitoring",
     ("SYSTEM_TELEMETRY", "INFRASTRUCTURE_FINDING"): "infrastructure_monitoring",
+    ("GITHUB", "PIPELINE_MISCONFIGURATION"):          "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "PIPELINE_MISCONFIGURATION"): "devops_monitoring",
 }
 ```
 
@@ -348,6 +370,16 @@ Found during development: a Rego rule that references a field or event-type lite
 3. **Assurance metadata + periodic full evaluation** (`pac_assurance.evaluate_and_record`, `pac_negative_sweep.py`'s hourly sweep) — persists every test run as audit evidence (`observability.pac_test_runs`) and updates `controls_catalog.last_verified_at`/`last_test_passed`/`last_fired_at` per control, so `db.list_unverified_controls()` can answer "which policy-enforced controls does nothing currently prove are working" — not just "how many controls do we have."
 
 The negative-testing gate runs (and records evidence) on module approval (`POST /pac/modules/{process}/approve`) and on the hourly sweep, advisory rather than blocking today — see `pac_endpoints.py`'s `approve_module` docstring for why.
+
+### Approval/Evaluation Drift Detection (`pac_approval_drift.py`)
+
+A real governance gap found while building the negative-testing sweep above: `db.get_latest_pac_module(process)` — what `_evaluate_pac_policy` actually evaluates in production — returns the most recently **saved** module row. `pac_policy_modules` has no status/approved column at all; approval is tracked only by a row existing in `pac_policy_approvals`, and evaluation never joins against it. That means `PUT /pac/modules/{process}` makes a brand-new draft live in production **the instant it's saved, before any approval** — the negative-testing gate on `POST /modules/{process}/approve` runs strictly afterward, and is advisory even then (above).
+
+This module doesn't change that behavior — gating evaluation on approval is a real product decision, not something to slip in silently as part of a monitoring feature — it makes the gap visible: `check_process_drift(process)` compares the content hash of what's live (`get_latest_pac_module`) against the content hash of the latest module version that ever received a real approval (`get_latest_approved_pac_module` — the newest module row with at least one `pac_policy_approvals` entry, which may be OLDER than what's live). A mismatch means an unapproved or since-edited module is currently adjudicating real events. Run via `GET /pac/approval-drift`, the `pac_check_approval_drift` MCP tool, or automatically every hour as part of `pac_negative_sweep.py`'s sweep (logged as a warning, embedded in each process's sweep result under `approval_drift`). Surfaced as a red banner on the Policy-as-Code screen's Control Coverage tab when any process has drifted.
+
+### DORA-style Change-Management Metrics (`dora_metrics.py`)
+
+Real operational evidence for SOC 2 CC8.1 (change management), not just a policy-mapping claim: **deployment frequency** (`observability.pipeline_attestations` row count per day — each attestation is one real CI pipeline run reporting its provenance, not a self-reported number), **change failure rate** (`observability.itsm_tickets` opened per attestation in the same window — the fraction of pipeline runs serious enough to escalate into a real incident), and **mean time to restore / MTTR** (mean hours from `itsm_tickets.created_at` to its `resolved_at`, a column set only on the actual resolved/closed transition — not the generic `updated_at`, which would overstate/understate restore time). All three report `None`, never a fabricated `0`, when their own denominator is empty (e.g. `change_failure_rate` is `None` with zero deployments in the window, not `0%`). DORA's fourth metric, Lead Time for Changes, is deliberately not computed — this schema has no commit-authored-at timestamp anywhere, only pipeline-attestation ingestion time, so computing it would mean inventing a number from data that doesn't exist. `GET /evidence/dora-metrics?window_days=30`, the `dora_metrics_summary` MCP tool, and a summary panel on the Compliance Scorecard (shown when the SOC 2 framework is selected, since CC8.1 is the relevant criterion).
 
 ---
 
