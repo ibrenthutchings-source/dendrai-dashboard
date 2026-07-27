@@ -355,6 +355,16 @@ class SilverConformationLayer(SilverLayerBase):
                 # input.event.enforce_admins etc. Absent on real GitHub
                 # webhook payloads, so this is a no-op for those.
                 **(raw.get("compliance") or {}),
+                # DevOps Monitoring: secret_scanner_connectors.py's gitleaks scan
+                # (event_type=='gitleaks_scan') attaches redacted findings under
+                # "secret_findings" — surfaced as a count + distinct rule ids
+                # rather than the findings themselves (which still carry
+                # file/commit/author detail useful for triage, but no secret
+                # value — already redacted by parse_gitleaks_report()).
+                "secret_finding_count": len(raw.get("secret_findings") or []),
+                "secret_rule_ids": sorted({
+                    f.get("rule_id") for f in (raw.get("secret_findings") or []) if f.get("rule_id")
+                }),
             },
             affected_entities=[
                 repo.get("full_name", ""),

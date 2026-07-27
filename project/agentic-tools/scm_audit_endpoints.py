@@ -48,6 +48,7 @@ import db
 import github_endpoints
 import pipeline_security_connectors
 import scm_connectors
+import secret_scanner_connectors
 from mcp_guards import validate_external_url
 
 logger = logging.getLogger("ubo.scm_audit")
@@ -357,6 +358,91 @@ async def _run_github_pipeline_security(connector: dict) -> dict:
     )
 
 
+async def _adjudicate_secret_scan(raw_event: dict, ubo_source_system, resource: str, findings: list) -> dict:
+    """Same shape as _adjudicate_pipeline_security() above. Only called when
+    findings is non-empty — a clean scan never reaches here, so there is no
+    'compliant' branch to fabricate: the honest report for a clean repo is
+    simply {"scanned": True, "finding_count": 0}, computed entirely in
+    _run_github_secret_scan() before this function is ever invoked."""
+    result = {
+        "provider":      "github",
+        "resource":      resource,
+        "scanned":       True,
+        "finding_count": len(findings),
+        "findings":      findings,
+        "adjudicated":   False,
+    }
+    bronze, silver, gold, council = _get_pipeline()
+    if bronze is None or ubo_source_system is None:
+        result["reason"] = "UBO pipeline not available — findings computed, not adjudicated"
+        return result
+
+    try:
+        uro = await bronze.ingest(raw_event, ubo_source_system)
+        uro = await silver.conform(uro)
+        uro = await gold.score(uro)
+        uro = await council.evaluate(uro)
+
+        asyncio.create_task(asyncio.to_thread(
+            github_endpoints._write_adjudication, uro, resource, "gitleaks_scan", "GITHUB",
+        ))
+
+        result.update({
+            "adjudicated":            True,
+            "uro_id":                 uro.id,
+            "risk_tier":              uro.risk_tier,
+            "risk_score":             float(uro.risk_score) if uro.risk_score is not None else None,
+            "verdict":                uro.adjudication.final_verdict.value if uro.adjudication else None,
+            "requires_human_review":  uro.adjudication.requires_human_review if uro.adjudication else False,
+            "policy_violations":      list(uro.silver_policy_violations),
+        })
+    except Exception as exc:
+        logger.warning("Secret scan adjudication error (resource=%s): %s", resource, exc)
+        result["adjudication_error"] = str(exc)
+    return result
+
+
+async def _run_github_secret_scan(connector: dict) -> dict:
+    """Real gitleaks scan of an already-registered github_scm repo's full
+    git history — see secret_scanner_connectors.py. Heavier than the
+    branch-protection/pipeline-security checks (a full clone, not just a few
+    REST calls), so this is on-demand only, not part of the scheduled poll
+    tick. GitHub-only."""
+    creds = connector.get("credentials") or {}
+    token = creds.get("token")
+    extra = connector.get("extra_config") or {}
+    repo_full_name = extra.get("repo_full_name")
+    base_url = connector.get("base_url") or _DEFAULT_BASE_URL["github"]
+    if not repo_full_name or not token:
+        raise HTTPException(status_code=422, detail="Repository is missing repo_full_name or token")
+
+    if not secret_scanner_connectors.is_gitleaks_available():
+        return {"provider": "github", "resource": repo_full_name, "scanned": False,
+                "reason": "gitleaks binary not available in this environment"}
+
+    try:
+        findings = await asyncio.to_thread(
+            secret_scanner_connectors.scan_repo_for_secrets, repo_full_name, token, base_url)
+    except secret_scanner_connectors.ConnectorError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    if not findings:
+        return {"provider": "github", "resource": repo_full_name, "scanned": True,
+                "finding_count": 0, "adjudicated": False}
+
+    raw_event = {
+        "X-GitHub-Event": "gitleaks_scan",
+        "repository": {"full_name": repo_full_name, "id": connector["id"], "visibility": "private"},
+        "sender": {"login": "secret-scanner-engine", "site_admin": False},
+        "organization": {"login": repo_full_name.split("/")[0] if "/" in repo_full_name else ""},
+        "alert": {"secret_type": findings[0]["rule_id"]},
+        "secret_findings": findings,
+    }
+    return await _adjudicate_secret_scan(
+        raw_event, UBOSourceSystem.GITHUB if _HAS_UBO else None, repo_full_name, findings,
+    )
+
+
 async def _run_gitlab(connector: dict) -> dict:
     creds = connector.get("credentials") or {}
     token = creds.get("token")
@@ -424,6 +510,35 @@ async def run_repository_pipeline_security_audit(repository_id: int):
     db.record_poll_result(repository_id, "error" if result.get("adjudication_error") else "ok",
                            result.get("adjudication_error"))
     return result
+
+
+@router.post("/repositories/{repository_id}/run-secret-scan")
+async def run_repository_secret_scan(repository_id: int):
+    """Real gitleaks scan of an already-registered GitHub repository's full
+    git history — see secret_scanner_connectors.py. This clones the repo, so
+    it can take noticeably longer than the other on-demand audits for large
+    repos/histories; GitHub-only."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    connector = db.get_poll_connector(repository_id, include_credentials=True)
+    if not connector or connector["connector_type"] != "github_scm":
+        raise HTTPException(status_code=404,
+                             detail="Repository not found, or not a GitHub repository (secret scanning is GitHub-only)")
+
+    result = await _run_github_secret_scan(connector)
+    db.record_poll_result(repository_id, "error" if result.get("adjudication_error") else "ok",
+                           result.get("adjudication_error"))
+    return result
+
+
+@router.get("/secret-scan/results")
+async def list_secret_scan_results(limit: int = 50):
+    """Latest on-demand gitleaks scan per repo that actually found
+    something — a clean scan is never adjudicated (see
+    _adjudicate_secret_scan's docstring), so it never appears here either."""
+    if not db.is_available():
+        return {"results": []}
+    return {"results": db.fetch_secret_scan_results(limit=limit)}
 
 
 @router.get("/pipeline-security/results")

@@ -8567,6 +8567,38 @@ def fetch_pipeline_security_results(limit: int = 50) -> list:
     return _run(_do) or []
 
 
+def fetch_secret_scan_results(limit: int = 50) -> list:
+    """Real gitleaks scan rows — same shape/idiom as
+    fetch_pipeline_security_results. A clean scan is never adjudicated (see
+    scm_audit_endpoints._adjudicate_secret_scan), so every row returned here
+    represents an actual finding, never a false 'compliant' status."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (server_name)
+                           id, adjudicated_at, source_system, server_name, target_tool,
+                           uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                           policy_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE source_system = 'GITHUB' AND target_tool = 'gitleaks_scan'
+                    ORDER BY server_name, adjudicated_at DESC
+                    LIMIT %s
+                    """,
+                    (min(limit, 500),),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
 def get_observability_24h_counts() -> dict:
     """Rows adjudicated / escalated / PaC-violation-flagged in the last 24h —
     none of the existing observability endpoints (/systems, /holds, /coverage)

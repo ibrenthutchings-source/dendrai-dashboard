@@ -112,6 +112,7 @@ _SYSTEM_TELEMETRY_FIELDS = frozenset({
 # Fields _conform_github / _conform_gitlab always set.
 _GIT_FIELDS = frozenset({
     "ref", "forced", "cvss_score", "secret_type", "commits_count", "is_admin",
+    "secret_finding_count", "secret_rule_ids",
 })
 
 # Fields pipeline_security_connectors.normalize_pipeline_compliance()
