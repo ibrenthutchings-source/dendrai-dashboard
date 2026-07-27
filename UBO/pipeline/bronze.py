@@ -91,6 +91,11 @@ class GitHubBronzeHandler(BronzeLayerBase):
         # DevOps Monitoring: scm_audit_endpoints.py's on-demand pipeline-security
         # audit synthesizes this event name, same convention as branch_protection_rule.
         "workflow_security_audit": EventType.PIPELINE_MISCONFIGURATION,
+        # DevOps Monitoring: scm_audit_endpoints.py's on-demand gitleaks secret
+        # scan synthesizes this event name — only sent when gitleaks actually
+        # found something (see scm_audit_endpoints._run_github_secret_scan),
+        # so this mapping firing is itself already a real positive.
+        "gitleaks_scan": EventType.SECRET_DETECTED,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
