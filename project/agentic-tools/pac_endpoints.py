@@ -1606,6 +1606,27 @@ async def get_compliance_scorecard(framework: str = "soc2", stale_days: int = 30
     return db.get_compliance_scorecard(framework, stale_days=stale_days)
 
 
+@router.get("/approval-drift")
+async def get_approval_drift(process: Optional[str] = None):
+    """
+    Compare what's actually being evaluated in production (the latest SAVED
+    module for a process) against the latest version that ever received a
+    real approval sign-off — see pac_approval_drift.py's module docstring
+    for why a save alone is enough to go live, with no approval gate today.
+    A mismatch (drifted=True) means an unapproved or since-edited module is
+    currently adjudicating real events.
+
+    Args:
+        process: A specific process id, or omit to check every known process.
+    """
+    import pac_approval_drift  # local import: pac_approval_drift imports this module
+                                # for _REGO_DEFAULTS/_valid_processes, so importing it
+                                # back at module level here would be circular.
+    if process:
+        return pac_approval_drift.check_process_drift(process)
+    return pac_approval_drift.check_all_processes()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # External hook endpoints
 # ─────────────────────────────────────────────────────────────────────────────

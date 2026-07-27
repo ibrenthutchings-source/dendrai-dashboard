@@ -872,6 +872,36 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
   }, [mainTab, scorecardFramework, scorecardCache]);
   const scorecardData = scorecardCache[scorecardFramework];
 
+  // Approval/evaluation drift — whether the module actually being evaluated
+  // in production (latest SAVE) matches the latest version a human actually
+  // approved (see pac_approval_drift.py's module docstring: nothing today
+  // gates evaluation on approval existing at all, so this is the one signal
+  // that surfaces the gap). Fetched once per coverage-tab visit.
+  const [driftData, setDriftData] = useState(null);
+  const [driftLoading, setDriftLoading] = useState(false);
+  useEffect(() => {
+    if (mainTab !== "coverage" || driftData || driftLoading) return;
+    setDriftLoading(true);
+    fetch(`/api/pac/approval-drift`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(setDriftData)
+      .catch(() => {})
+      .finally(() => setDriftLoading(false));
+  }, [mainTab, driftData, driftLoading]);
+  const drifted = driftData ? Object.values(driftData.processes || {}).filter(p => p.drifted) : [];
+
+  // DORA-style change-management metrics — real operational evidence for
+  // SOC 2 CC8.1, shown alongside the scorecard when that framework is
+  // selected (see dora_metrics.py's module docstring for the exact proxies).
+  const [doraData, setDoraData] = useState(null);
+  useEffect(() => {
+    if (mainTab !== "coverage" || scorecardFramework !== "soc2" || doraData) return;
+    fetch(`/api/evidence/dora-metrics?window_days=30`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(setDoraData)
+      .catch(() => {});
+  }, [mainTab, scorecardFramework, doraData]);
+
   // Negative Testing tab — schema-contract check + must-fire/must-not-fire
   // corpus (pac_contracts.py / pac_negative_tests.py), run against whatever
   // is CURRENTLY in the editor (including an unsaved draft) so a policy
@@ -1368,6 +1398,19 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
                 </tbody>
               </table>
 
+              {drifted.length > 0 && (
+                <div style={{
+                  marginTop: 20, padding: "10px 14px", borderRadius: 6, fontSize: 11.5, lineHeight: 1.5,
+                  background: "var(--red-soft, rgba(239,68,68,0.08))", color: "var(--red-ink, #991b1b)",
+                  border: "1px solid var(--red-ink, #991b1b)",
+                }}>
+                  <strong>Approval drift detected</strong> — the module currently evaluating real events differs
+                  from the last approved version for: {drifted.map(d => d.process).join(", ")}.
+                  {" "}Saving a draft goes live immediately; approval doesn't gate evaluation today (see the
+                  Policy-as-Code editor's approval workflow). Review and re-approve before relying on these processes.
+                </div>
+              )}
+
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:28, marginBottom:8 }}>
                 <div style={{ fontSize:9.5, fontWeight:700, color:"var(--ink-4)", letterSpacing:"0.05em", textTransform:"uppercase" }}>
                   Executive Compliance Scorecard
@@ -1384,6 +1427,36 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
                 deliberately separate numbers: a criterion can be fully mapped and still show 0% verified if nothing
                 currently proves those controls work.
               </div>
+              {scorecardFramework === "soc2" && doraData && (
+                <div style={{
+                  display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 14,
+                  padding: "10px 14px", borderRadius: 6, border: "1px solid var(--line)",
+                }}>
+                  <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--ink-4)", letterSpacing: "0.05em",
+                                 textTransform: "uppercase", width: "100%" }}>
+                    Change Management Evidence (DORA, trailing {doraData.window_days}d) — CC8.1
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: "var(--ink-4)" }}>Deploy Frequency</div>
+                    <div style={{ fontSize: 15, fontFamily: "var(--mono)" }}>
+                      {doraData.deployment_frequency_per_day != null ? `${doraData.deployment_frequency_per_day}/day` : "—"}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: "var(--ink-4)" }}>Change Failure Rate</div>
+                    <div style={{ fontSize: 15, fontFamily: "var(--mono)" }}>
+                      {doraData.change_failure_rate != null ? `${Math.round(doraData.change_failure_rate * 100)}%` : "—"}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: "var(--ink-4)" }}>MTTR</div>
+                    <div style={{ fontSize: 15, fontFamily: "var(--mono)" }}>
+                      {doraData.mttr_hours != null ? `${doraData.mttr_hours}h` : "—"}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {scorecardLoading && <div style={{ fontSize:12, color:"var(--ink-3)" }}>Loading scorecard…</div>}
               {scorecardError && <div className="code-status err" style={{ fontSize:11 }}>Failed to load scorecard — {scorecardError}</div>}
               {scorecardData && !scorecardData.criteria?.length && !scorecardLoading && (
