@@ -289,8 +289,9 @@ Manages Rego policy modules for seven processes: the five original Oracle Fusion
 | `POST` | `/pac/negative-tests/run/{process}` | Schema-contract check + must-fire/must-not-fire fixture corpus |
 | `GET` | `/pac/negative-tests/history/{process}` | Past negative-control test runs (audit evidence) |
 | `GET` | `/pac/assurance` | Which policy-enforced controls are proven working vs. unverified |
+| `GET` | `/pac/compliance-scorecard` | Executive Compliance Scorecard — SOC 2/NIST/ISO/COSO framework coverage, mapped vs. verified |
 
-**MCP server:** `pac_mcp_server.py` — 14 tools. See `mcp.md` → `policy-as-code`.
+**MCP server:** `pac_mcp_server.py` — 15 tools. See `mcp.md` → `policy-as-code`.
 
 #### Negative testing (`pac_contracts.py` + `pac_negative_tests.py` + `pac_assurance.py` + `pac_negative_sweep.py`)
 
@@ -299,6 +300,10 @@ A Rego rule that references a field or event-type literal the real adjudication 
 - **Schema-contract check** (`pac_contracts.check_module_contract`) — static analysis: every `input.event.<field>` reference must be in the process's declared `PROCESS_CONTRACTS["allowed_fields"]`, every `input.event.type == "..."` literal must be a real `EventType` that actually routes to that process, and any top-level `input.<root>.*` reference other than `event` is flagged (the pipeline only ever constructs `{"event": {...}}`). This is how the original five ERP process modules were found to be dead-by-construction — real-sounding SAP/ERP policy language with no producer ever feeding `input.journal.*`/`input.invoice.*`/etc.
 - **Must-fire/must-not-fire corpus** (`pac_negative_tests.run_corpus`) — curated fixtures per process, run through the real `evaluate_policy_event` (authoritative OPA when available, labelled heuristic fallback otherwise). Only `devops_monitoring` and `infrastructure_monitoring` have a registered corpus today.
 - **Assurance metadata + periodic sweep** (`pac_assurance.evaluate_and_record`, `pac_negative_sweep.py`'s hourly background task) — persists every test run to `observability.pac_test_runs` and updates `controls_catalog.last_fired_at`/`last_verified_at`/`last_test_passed`, so `db.list_unverified_controls()` answers "which controls does nothing currently prove are working," not just "how many controls exist." The sweep also detects regressions — a process that passed last sweep and fails this one, even if its Rego text didn't change (a Silver-layer conformer edit can break a contract just as easily as editing the policy itself).
+
+#### Executive Compliance Scorecard (`framework_mappings.py`)
+
+Curated (never auto-generated — same guardrail as the retired Framework Sync pattern, commit `2b98f45`) SOC 2 / NIST SP 800-53 / ISO 27001 / COSO ERM crosswalk for policy-enforced controls. `GET /pac/compliance-scorecard?framework=soc2|nist_800_53|iso_27001|coso` reports, per criterion, how many controls are *mapped* to it vs. how many are actually *verified* (per the assurance metadata above) — deliberately two separate numbers, since a criterion can be 100% mapped and 0% verified. Edit `framework_mappings.FRAMEWORK_MAPPINGS` directly to correct or extend a mapping; `test_compliance_scorecard.py` asserts every `DEVOPS-*`/`INFRA-*` control_id the Rego defaults actually define has a mapping, so new rules can't silently go unmapped.
 
 ---
 

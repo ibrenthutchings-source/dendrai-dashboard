@@ -259,6 +259,7 @@ Manages Rego policy modules for seven processes: the five original Oracle Fusion
 | `pac_negative_test_history` | Past negative-control test runs for a process, newest first |
 | `pac_assurance_summary` | Which policy-enforced controls are proven working (real fire and/or passing test) vs. unverified |
 | `pac_run_negative_sweep_now` | Run the periodic full-evaluation sweep for every process immediately; detects regressions |
+| `pac_compliance_scorecard` | Executive Compliance Scorecard — SOC 2/NIST 800-53/ISO 27001/COSO ERM crosswalk (curated, never auto-generated); reports mapped vs. verified controls per criterion |
 
 **Supported processes:** `itgc` · `order_to_cash` · `procure_to_pay` · `receive_to_ship` · `record_to_report` · `devops_monitoring` · `infrastructure_monitoring`
 
