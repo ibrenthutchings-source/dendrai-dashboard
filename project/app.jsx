@@ -2346,7 +2346,9 @@ function App() {
               sensitivity={hasRun ? profile.sensitivity : null}
               multiFactorStress={hasRun ? profile.multiFactorStress : null}
               liquidityRunway={hasRun ? profile.liquidityRunway : null}
-              earlyWarning={hasRun ? profile.earlyWarning : null} />
+              earlyWarning={hasRun ? profile.earlyWarning : null}
+              risks={hasRun ? (profile.risks || []) : []}
+              onAddAudit={addManualAudit} />
           </div>
           </ScreenAccessGate>
           )}
