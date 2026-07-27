@@ -95,6 +95,71 @@ function genFiscalQuarters() {
 }
 const FISCAL_QUARTERS = genFiscalQuarters();
 
+// Private companies have no SEC ticker/CIK — this creates one via
+// POST /company/private (a synthetic PVT-<SLUG> pseudo-ticker) and points
+// cfg.ticker at it, so every other ticker-keyed part of the app (this form's
+// two call sites — Sidebar and ConfigScreen's Entity card — plus the run
+// loop, /predictive/full-analysis, localStorage caching) works unmodified.
+function PrivateCompanyForm({ cfg, setCfg }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [fye, setFye] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  if (!open) {
+    return (
+      <button type="button" className="cfg-link" style={{marginTop: 4}} onClick={() => setOpen(true)}>
+        + Private company (no ticker)
+      </button>
+    );
+  }
+
+  async function create() {
+    if (!name.trim() || !window.MCP?.createPrivateCompany) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await window.MCP.createPrivateCompany(name.trim(), industry, fye);
+      setCfg(prev => ({
+        ...prev,
+        ticker: res.ticker,
+        company: res.company_name,
+        industry: industry || prev.industry,
+        isPrivate: true,
+      }));
+      setOpen(false);
+      setName(""); setIndustry(""); setFye("");
+    } catch (e) {
+      setErr(e.message || "Failed to create private company");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div style={{marginTop: 6, padding: 8, border: "1px solid var(--line)", borderRadius: 6, background: "var(--surface-2)"}}>
+      <div className="mono" style={{fontSize: 10, color: "var(--ink-3)", marginBottom: 6, letterSpacing: "0.04em"}}>
+        PRIVATE COMPANY — NO SEC TICKER
+      </div>
+      <input className="input" style={{marginBottom: 6}} placeholder="Company name"
+        value={name} onChange={e => setName(e.target.value)} />
+      <input className="input" style={{marginBottom: 6}} placeholder="Industry (free text)"
+        value={industry} onChange={e => setIndustry(e.target.value)} />
+      <input className="input" style={{marginBottom: 6}} placeholder="Fiscal year end (e.g. 1231)"
+        value={fye} onChange={e => setFye(e.target.value)} />
+      {err && <div className="mono" style={{fontSize: 10, color: "var(--red-ink)", marginBottom: 6}}>{err}</div>}
+      <div style={{display: "flex", gap: 6}}>
+        <button type="button" className="btn btn-sm btn-primary" style={{flex: 1}}
+          disabled={busy || !name.trim()} onClick={create}>
+          {busy ? "Creating…" : "Create"}
+        </button>
+        <button type="button" className="btn btn-sm" onClick={() => setOpen(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function Sidebar({
   cfg, setCfg, signalSet, setSignalSet,
   velocity,
@@ -175,6 +240,7 @@ function Sidebar({
               <div className="mono" style={{fontSize:10,color:"var(--ink-3)",marginTop:3}}>{meta.name}</div>
             ) : null;
           })()}
+          <PrivateCompanyForm cfg={cfg} setCfg={setCfg} />
         </div>
         <div className="field">
           <label className="field-label">Industry</label>
@@ -379,4 +445,5 @@ function Sidebar({
 Object.assign(window, {
   Sidebar,
   FOCUS_OPTS, TICKER_META, FISCAL_QUARTERS, findTickerMeta, resolveIndustryFromSec,
+  PrivateCompanyForm,
 });

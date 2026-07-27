@@ -42,6 +42,23 @@ window.MCP = (function () {
     return res.json();
   }
 
+  // No Content-Type header here — the browser sets the multipart boundary
+  // itself when the body is a FormData instance (setting it manually breaks
+  // the boundary and the server fails to parse the upload).
+  async function _postForm(path, formData, timeoutMs = TIMEOUT_MS) {
+    const res = await fetch(BASE + path, {
+      method: 'POST',
+      body: formData,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
   // ── Health ──────────────────────────────────────────────────────────────────
 
   async function checkHealth() {
@@ -235,6 +252,39 @@ window.MCP = (function () {
 
   async function fetchPeerBenchmarks(ticker) {
     return _post('/edgar/peers', { ticker });
+  }
+
+  // ── Manual financials — private companies + monthly/quarterly supplements ──
+
+  /**
+   * Create a company with no SEC ticker/CIK. Returns { ticker, company_name,
+   * is_private } — the returned synthetic ticker (PVT-<SLUG>) should be set
+   * as cfg.ticker so the rest of the app treats it like any other entity.
+   */
+  async function createPrivateCompany(name, industry = '', fiscalYearEnd = '') {
+    return _post('/company/private', { name, industry, fiscal_year_end: fiscalYearEnd });
+  }
+
+  /**
+   * Upload a financial statement (.xlsx/.xls/.csv/.pdf) for parsing. Returns
+   * { line_items, format_detected, unmapped_labels, filename } for review —
+   * nothing is persisted until commitFinancials() is called with the
+   * (possibly user-edited) line items.
+   */
+  async function uploadFinancials(ticker, file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('ticker', ticker);
+    return _postForm('/financials/upload', fd);
+  }
+
+  /**
+   * Persist a reviewed set of line items for `ticker`. Each item needs
+   * metric/period_end/value/granularity at minimum — rows still missing a
+   * metric (unmapped in review) are skipped server-side, not guessed.
+   */
+  async function commitFinancials(ticker, lineItems) {
+    return _post('/financials/commit', { ticker, line_items: lineItems });
   }
 
   // ── Governance Intelligence — load from DB without a live pipeline run ──────
@@ -628,6 +678,9 @@ window.MCP = (function () {
     fetch8kEvents,
     fetchProxyData,
     fetchPeerBenchmarks,
+    createPrivateCompany,
+    uploadFinancials,
+    commitFinancials,
     fetchSavedProxyData,
     fetchSavedPeerBenchmarks,
     fetchSavedAuditScope,

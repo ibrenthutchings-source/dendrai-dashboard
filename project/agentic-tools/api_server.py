@@ -11,6 +11,9 @@ Endpoints:
 
     POST /predictive/full-analysis    All 10 analytics models
     POST /edgar/financials            XBRL financial time-series
+    POST /company/private             Create a private company (no SEC ticker/CIK)
+    POST /financials/upload           Parse an uploaded financial statement (.xlsx/.xls/.csv/.pdf) for review
+    POST /financials/commit           Persist reviewed manual financial line items
     POST /edgar/risk-factors          Item 1A risk factors from 10-K filings
     POST /edgar/8k-events             Material 8-K events
     POST /edgar/peers                 SIC peer companies
@@ -111,6 +114,7 @@ from rss_ingest_service import (
 )
 from edgar_tool import _8K_ITEMS as EDGAR_8K_ITEMS
 import db
+import manual_financials_tool
 
 import ai_endpoints
 import chat_endpoint
@@ -541,6 +545,15 @@ class RiskFactorsRequest(BaseModel):
     ticker: str
     max_filings: int = 2
 
+class PrivateCompanyRequest(BaseModel):
+    name: str
+    industry: str = ""
+    fiscal_year_end: str = ""
+
+class CommitFinancialsRequest(BaseModel):
+    ticker: str
+    line_items: List[Dict[str, Any]]
+
 class FredRequest(BaseModel):
     ticker: str
     api_key: str = ""
@@ -967,6 +980,95 @@ def edgar_financials(req: TickerRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/company/private")
+def create_private_company(req: PrivateCompanyRequest):
+    """Create a company with no SEC ticker/CIK — for private entities that
+    don't file 10-K/10-Q/8-K with the SEC. Assigns a synthetic PVT-<SLUG>
+    pseudo-ticker so the rest of the ticker-keyed pipeline (this endpoint's
+    siblings, the frontend's cfg.ticker, /predictive/full-analysis) works
+    unmodified — see db.upsert_private_company."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    ticker = db.upsert_private_company(name, req.industry, req.fiscal_year_end)
+    if not ticker:
+        raise HTTPException(status_code=500, detail="Failed to create private company")
+    return {"ticker": ticker, "company_name": name, "industry": req.industry, "is_private": True}
+
+
+@app.post("/financials/upload")
+async def upload_financials(file: UploadFile = File(...), ticker: str = Form(...)):
+    """Parse an uploaded financial statement (.xlsx/.xls/.csv or .pdf) into
+    normalized line items for review. Nothing is persisted here — the
+    (possibly user-edited) reviewed set is POSTed to /financials/commit
+    separately, mirroring /risk-register/upload's parse-then-review-then-
+    persist flow."""
+    suffix = (file.filename or "upload").rsplit(".", 1)[-1].lower()
+    content = await file.read()
+    try:
+        if suffix == "pdf":
+            result = manual_financials_tool.parse_pdf(content, file.filename or "upload")
+        elif suffix in ("xlsx", "xls", "csv"):
+            result = manual_financials_tool.parse_spreadsheet(content, file.filename or "upload")
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '.{suffix}' — upload a .xlsx, .xls, .csv, or .pdf file",
+            )
+    except HTTPException:
+        raise
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    result["ticker"] = ticker.upper()
+    return result
+
+
+@app.post("/financials/commit")
+def commit_financials(req: CommitFinancialsRequest):
+    """Persist a reviewed set of line items (from /financials/upload,
+    possibly edited by the user) for `ticker`. Resolves/creates the company
+    row if it doesn't exist yet for a public ticker (mirrors /edgar/financials'
+    upsert-on-write); a private ticker must already exist via
+    POST /company/private."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    ticker = req.ticker.upper()
+    if db.is_private_ticker(ticker):
+        company_id = db.get_company_id(ticker)
+        if not company_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown private company '{ticker}' — create it via POST /company/private first",
+            )
+    else:
+        company_id = db.get_company_id(ticker)
+        if not company_id:
+            try:
+                meta, _ = get_company_info(ticker)
+            except Exception as e:
+                raise HTTPException(status_code=404, detail=f"Could not resolve ticker '{ticker}': {e}")
+            company_id = db.upsert_company({
+                "ticker": ticker,
+                "company_name": meta["company_name"],
+                "cik": meta.get("cik", ""),
+                "sic": meta.get("sic", ""),
+                "sic_description": meta.get("sic_description", ""),
+                "entity_type": meta.get("entity_type"),
+                "state_of_inc": meta.get("state_of_inc"),
+                "fiscal_year_end": meta.get("fiscal_year_end"),
+                "exchanges": meta.get("exchanges"),
+            })
+            if not company_id:
+                raise HTTPException(status_code=500, detail="Failed to create company record")
+
+    return manual_financials_tool.commit_line_items(company_id, req.line_items)
 
 
 @app.post("/edgar/risk-factors")
