@@ -325,6 +325,15 @@ function DriftIncidentRow({ incident, onUpdate, onResetBaseline, saving }) {
           {incident.corrected_at && ` · ${new Date(incident.corrected_at).toLocaleString()}`}
         </div>
       )}
+      {incident.reoptimize_triggered_at && (
+        <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 8 }}>
+          <span style={{ fontWeight: 600 }}>Auto re-evaluated: </span>
+          {incident.reoptimize_summary
+            ? `${incident.reoptimize_summary.succeeded}/${incident.reoptimize_summary.tickers_attempted} tickers re-optimized`
+            : "forecast/backtest layer re-run"}
+          {" "}· {new Date(incident.reoptimize_triggered_at).toLocaleString()}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         {incident.status !== "acknowledged" && incident.status !== "resolved" && (
           <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(incident.id, { status: "acknowledged" })}>Acknowledge</button>
@@ -352,7 +361,7 @@ function DriftIncidentRow({ incident, onUpdate, onResetBaseline, saving }) {
   );
 }
 
-function DriftIncidentsPanel() {
+function DriftIncidentsPanel({ refreshToken }) {
   const [incidents, setIncidents] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [savingId, setSavingId] = React.useState(null);
@@ -366,7 +375,9 @@ function DriftIncidentsPanel() {
       .finally(() => setLoading(false));
   }, []);
 
-  React.useEffect(() => { load(); }, [load]);
+  // refreshToken changes after RunReviewButton completes (a re-optimization
+  // sweep may have just stamped reoptimize_triggered_at on an incident here).
+  React.useEffect(() => { load(); }, [load, refreshToken]);
 
   async function handleUpdate(id, fields) {
     setSavingId(id);
@@ -487,12 +498,63 @@ function AgentCalibrationPanel() {
   );
 }
 
+// User-initiated version of the sweep model_health_drift_watch runs
+// automatically on drift (POST /model-health/run-review) — re-derives FRED
+// correlations and re-optimizes ensemble weights (walk-forward backtest
+// MAPE/RMSE/R2) for every actively-tracked ticker, without waiting for a
+// drift flag or the 6h background check. Same tri-state idle/running/done
+// shape as DataConfigModal's testKey(), since a spinner alone doesn't show
+// whether the run actually helped.
+function RunReviewButton({ onDone }) {
+  const [state, setState] = React.useState({ status: "idle", summary: null, error: null });
+
+  async function run() {
+    setState({ status: "running", summary: null, error: null });
+    try {
+      const res = await fetch("/api/mcp/model-health/run-review", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      const summary = await res.json();
+      setState({ status: "done", summary, error: null });
+      onDone?.();
+    } catch (e) {
+      setState({ status: "error", summary: null, error: e.message || "Run review failed" });
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+      <button className="btn btn-sm" disabled={state.status === "running"} onClick={run}
+        title="Re-run the forecast/backtest layer (FRED correlations + ensemble weights) for every actively-tracked ticker now, without waiting for drift or the background watch.">
+        {state.status === "running" ? <span className="spin" /> : "▶"} Run review
+      </button>
+      {state.status === "done" && state.summary && (
+        <div className="mono" style={{ fontSize: 9.5, color: "var(--green-ink)" }}>
+          Re-evaluated {state.summary.tickers_attempted} ticker{state.summary.tickers_attempted === 1 ? "" : "s"} —{" "}
+          {state.summary.succeeded} succeeded{state.summary.failed ? `, ${state.summary.failed} failed` : ""}
+        </div>
+      )}
+      {state.status === "error" && (
+        <div className="mono" style={{ fontSize: 9.5, color: "var(--red-ink)" }}>{state.error}</div>
+      )}
+    </div>
+  );
+}
+
 function ModelHealthScreen() {
   const RefreshBadge = window.RefreshBadge;
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const [lastRefresh, setLastRefresh] = React.useState(null);
+  const [reviewRefreshToken, setReviewRefreshToken] = React.useState(0);
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -526,7 +588,10 @@ function ModelHealthScreen() {
               alerts on newly-detected drift — this on-demand view recomputes live on every load/refresh, independent of that.
             </div>
           </div>
-          <RefreshBadge lastRefresh={lastRefresh} onRefresh={load} loading={loading} />
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <RunReviewButton onDone={() => { load(); setReviewRefreshToken(t => t + 1); }} />
+            <RefreshBadge lastRefresh={lastRefresh} onRefresh={load} loading={loading} />
+          </div>
         </div>
       </div>
 
@@ -536,7 +601,7 @@ function ModelHealthScreen() {
 
       {loading ? <Empty>Loading…</Empty> : (
         <>
-        <DriftIncidentsPanel />
+        <DriftIncidentsPanel refreshToken={reviewRefreshToken} />
         <AgentCalibrationPanel />
         <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 340 }}>

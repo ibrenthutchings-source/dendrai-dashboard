@@ -2401,15 +2401,48 @@ def _check_model_health_drift_once() -> list[dict]:
             metric_key, metric_kind, entry.get("psi"),
             entry.get("n_baseline"), entry.get("n_current"), detail=entry,
         )
+        # Close the loop: a ratio or FRED-regime drift means the forecast
+        # layer (FRED correlations + ensemble weights) may be stale for every
+        # actively-tracked ticker, not just whichever one happened to be
+        # open in the UI — see reoptimization_tool.py's docstring for why
+        # this sweeps the tracked set rather than a computed "affected"
+        # subset (neither drift signal is ticker-scoped). ai_acceptance
+        # drift is a governance-process signal, not a forecasting one, so it
+        # doesn't trigger this. Best-effort: a re-optimization failure must
+        # never break the drift-check loop itself.
+        reoptimize_summary = None
+        if (
+            incident_id
+            and metric_kind in ("ratio", "fred_series")
+            and os.environ.get("MODEL_HEALTH_AUTO_REOPTIMIZE", "true").lower() == "true"
+        ):
+            try:
+                import reoptimization_tool
+                reoptimize_summary = reoptimization_tool.run_reoptimization_sweep(
+                    trigger_reason="drift_auto_reoptimize",
+                    trigger_incident_id=incident_id,
+                    max_tickers=int(os.environ.get("MODEL_HEALTH_REOPTIMIZE_MAX_TICKERS", "15")),
+                )
+                db.record_drift_reoptimization(incident_id, reoptimize_summary)
+            except Exception as exc:
+                logger.warning("Drift-triggered re-optimization failed for incident #%s: %s", incident_id, exc)
+
         if _HAS_MCP_GOVERNANCE:
+            fields = [
+                {"title": "Metric", "value": metric_key, "short": True},
+                {"title": "PSI",    "value": f"{entry.get('psi'):.3f}" if entry.get("psi") is not None else "n/a", "short": True},
+                {"title": "n (baseline / current)", "value": f"{entry.get('n_baseline')} / {entry.get('n_current')}", "short": True},
+                {"title": "Incident", "value": f"#{incident_id}" if incident_id else "not persisted (db unavailable)", "short": True},
+            ]
+            if reoptimize_summary:
+                fields.append({
+                    "title": "Auto re-optimization",
+                    "value": f"{reoptimize_summary['succeeded']}/{reoptimize_summary['tickers_attempted']} tickers succeeded",
+                    "short": True,
+                })
             mcp_governance._post_webhook_alert(
                 f"\U0001f4c9 *Model Health drift detected* — `{metric_key}`",
-                [
-                    {"title": "Metric", "value": metric_key, "short": True},
-                    {"title": "PSI",    "value": f"{entry.get('psi'):.3f}" if entry.get("psi") is not None else "n/a", "short": True},
-                    {"title": "n (baseline / current)", "value": f"{entry.get('n_baseline')} / {entry.get('n_current')}", "short": True},
-                    {"title": "Incident", "value": f"#{incident_id}" if incident_id else "not persisted (db unavailable)", "short": True},
-                ],
+                fields,
                 color="#d97706",
             )
         alerted.append({"metric": metric_key, "incident_id": incident_id, **entry})
@@ -2551,6 +2584,34 @@ def clear_model_health_baseline_reset(
         raise HTTPException(status_code=503, detail="Database not configured")
     ok = db.clear_baseline_reset(metric_key)
     return {"ok": ok, "metric_key": metric_key}
+
+
+@app.post("/model-health/run-review")
+def run_model_health_review(
+    body: Dict[str, Any] = Body(default={}),
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """User-initiated version of the same sweep model_health_drift_watch runs
+    automatically on drift — re-derives FRED correlations and re-optimizes
+    ensemble weights (walk-forward backtest MAPE/RMSE/R²) for every
+    actively-tracked ticker/company, without waiting for the next drift flag
+    or the 6h background check. Synchronous — bounded by max_tickers, same
+    cost profile as the existing synchronous /predictive/full-analysis call.
+    """
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    import reoptimization_tool
+    max_tickers = body.get("max_tickers")
+    summary = reoptimization_tool.run_reoptimization_sweep(
+        trigger_reason="manual_review",
+        max_tickers=int(max_tickers) if max_tickers else None,
+    )
+    logger.info(
+        "Model Health: manual review run by %s — %d/%d tickers succeeded",
+        current_user.get("username") or current_user.get("display_name") or "unknown",
+        summary["succeeded"], summary["tickers_attempted"],
+    )
+    return summary
 
 
 @app.get("/observability/command-center")

@@ -2098,6 +2098,95 @@ def compute_qoq_momentum(revenue_series: list[dict], window: int = 8) -> dict:
     }
 
 
+def run_forecast_backtest(xbrl: dict, macro_info: Optional[dict], forecast_metric: str,
+                           forecast_horizon: int, company_id: Optional[int] = None) -> dict:
+    """Time-series forecasting + walk-forward backtesting for `forecast_metric`
+    (re-derives FRED-correlated features via macro_info and re-optimizes
+    ensemble weights via inverse-MAPE, see walk_forward_backtest), plus a
+    parallel gross-margin forecast and any manually-uploaded monthly detail.
+
+    Extracted out of run_full_analysis so reoptimization_tool.reoptimize_ticker
+    can re-run just this layer — re-deriving FRED correlations and backtest
+    metrics on drift — without the full ratio/Beneish/Altman/risk-score/RSS
+    pipeline. Pure function of its inputs; no DB/network side effects beyond
+    what macro_info/xbrl already carry. Returns {forecast, backtest?, monthly_series?}.
+    """
+    out: dict = {}
+    q_series = extract_quarterly_series(xbrl, forecast_metric)
+    if q_series:
+        vals = [p["value"] for p in q_series]
+        if len(vals) >= 8:
+            fred_matrix = fred_meta = None
+            if macro_info:
+                fred_matrix, fred_meta = _build_fred_feature_matrix(
+                    q_series, macro_info, forecast_metric, forecast_horizon)
+            bt = walk_forward_backtest(vals, fred_matrix=fred_matrix)
+            out["backtest"] = bt
+            calibrated_w = bt.get("calibrated_weights")
+            out["forecast"] = compute_ensemble_forecast(
+                vals, horizon=forecast_horizon, weights=calibrated_w, fred_matrix=fred_matrix,
+            )
+            out["forecast"]["metric"]  = forecast_metric
+            out["forecast"]["quarters"] = [p["quarter_end"] for p in q_series]
+            out["forecast"]["history"]  = q_series  # raw quarterly values for JS chart
+            if fred_meta:
+                out["forecast"]["fred_features_used"] = fred_meta
+        else:
+            out["forecast"] = {
+                "note": f"Only {len(vals)} quarters available for {forecast_metric}; need ≥8",
+                "history": q_series,
+            }
+    else:
+        out["forecast"] = {"note": f"No quarterly {forecast_metric} data in XBRL"}
+
+    # ── Monthly detail (manual uploads only — supplements the quarterly
+    # forecast history above with finer resolution; never feeds ratios/
+    # Beneish/Altman, see extract_monthly_series) ────────────────────────────
+    monthly_series = extract_monthly_series(company_id, forecast_metric)
+    if monthly_series:
+        out["monthly_series"] = {"metric": forecast_metric, "history": monthly_series}
+
+    # Gross margin quarterly history + ensemble forecast — needed by the JS forecast chart
+    try:
+        gp_series = extract_quarterly_series(xbrl, "GrossProfit")
+        rev_map   = {p["quarter_end"]: p["value"] for p in q_series} if q_series else {}
+        gm_history = []
+        for gp in gp_series:
+            rv = rev_map.get(gp["quarter_end"])
+            if rv and rv > 0:
+                gm = gp["value"] / rv * 100
+                if 0 < gm < 100:
+                    gm_history.append({"quarter_end": gp["quarter_end"], "value": round(gm, 2)})
+        if gm_history:
+            out["forecast"]["margin_history"] = gm_history
+            # Ensemble forecast for gross margin (same models as revenue)
+            gm_vals = [p["value"] for p in gm_history]
+            if len(gm_vals) >= 8:
+                try:
+                    # Gross Margin = GrossProfit / Revenue has no correlation
+                    # entry of its own — borrow GrossProfit's correlated
+                    # indicators/lags, aligned to gm_history's own quarters.
+                    gm_fred_matrix = gm_fred_meta = None
+                    if macro_info:
+                        gm_fred_matrix, gm_fred_meta = _build_fred_feature_matrix(
+                            gm_history, macro_info, "GrossProfit", forecast_horizon)
+                    gm_bt = walk_forward_backtest(gm_vals, fred_matrix=gm_fred_matrix)
+                    gm_fc = compute_ensemble_forecast(
+                        gm_vals, horizon=forecast_horizon,
+                        weights=gm_bt.get("calibrated_weights"), fred_matrix=gm_fred_matrix,
+                    )
+                    if gm_fred_meta:
+                        gm_fc["fred_features_used"] = gm_fred_meta
+                    out["forecast"]["margin_forecast"] = gm_fc
+                    out["forecast"]["margin_backtest"] = gm_bt
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FULL ANALYSIS ORCHESTRATOR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2172,78 +2261,15 @@ def run_full_analysis(
         if result["macro_leading_indicators"].get("source") == "live_fred_analysis":
             macro_info = result["macro_leading_indicators"].get("result")
 
-    # ── 7 & 8. Time-Series Forecasting + Backtesting ─────────────────────────
-    q_series = extract_quarterly_series(xbrl, forecast_metric)
-    if q_series:
-        vals = [p["value"] for p in q_series]
-        if len(vals) >= 8:
-            fred_matrix = fred_meta = None
-            if macro_info:
-                fred_matrix, fred_meta = _build_fred_feature_matrix(
-                    q_series, macro_info, forecast_metric, forecast_horizon)
-            bt = walk_forward_backtest(vals, fred_matrix=fred_matrix)
-            result["backtest"] = bt
-            calibrated_w = bt.get("calibrated_weights")
-            result["forecast"] = compute_ensemble_forecast(
-                vals, horizon=forecast_horizon, weights=calibrated_w, fred_matrix=fred_matrix,
-            )
-            result["forecast"]["metric"]  = forecast_metric
-            result["forecast"]["quarters"] = [p["quarter_end"] for p in q_series]
-            result["forecast"]["history"]  = q_series  # raw quarterly values for JS chart
-            if fred_meta:
-                result["forecast"]["fred_features_used"] = fred_meta
-        else:
-            result["forecast"] = {
-                "note": f"Only {len(vals)} quarters available for {forecast_metric}; need ≥8",
-                "history": q_series,
-            }
-    else:
-        result["forecast"] = {"note": f"No quarterly {forecast_metric} data in XBRL"}
-
-    # ── 7b. Monthly detail (manual uploads only — supplements the quarterly
-    # forecast history above with finer resolution; never feeds ratios/
-    # Beneish/Altman, see extract_monthly_series) ────────────────────────────
-    monthly_series = extract_monthly_series(company_id, forecast_metric)
-    if monthly_series:
-        result["monthly_series"] = {"metric": forecast_metric, "history": monthly_series}
-
-    # Gross margin quarterly history + ensemble forecast — needed by the JS forecast chart
-    try:
-        gp_series = extract_quarterly_series(xbrl, "GrossProfit")
-        rev_map   = {p["quarter_end"]: p["value"] for p in q_series} if q_series else {}
-        gm_history = []
-        for gp in gp_series:
-            rv = rev_map.get(gp["quarter_end"])
-            if rv and rv > 0:
-                gm = gp["value"] / rv * 100
-                if 0 < gm < 100:
-                    gm_history.append({"quarter_end": gp["quarter_end"], "value": round(gm, 2)})
-        if gm_history:
-            result["forecast"]["margin_history"] = gm_history
-            # Ensemble forecast for gross margin (same models as revenue)
-            gm_vals = [p["value"] for p in gm_history]
-            if len(gm_vals) >= 8:
-                try:
-                    # Gross Margin = GrossProfit / Revenue has no correlation
-                    # entry of its own — borrow GrossProfit's correlated
-                    # indicators/lags, aligned to gm_history's own quarters.
-                    gm_fred_matrix = gm_fred_meta = None
-                    if macro_info:
-                        gm_fred_matrix, gm_fred_meta = _build_fred_feature_matrix(
-                            gm_history, macro_info, "GrossProfit", forecast_horizon)
-                    gm_bt = walk_forward_backtest(gm_vals, fred_matrix=gm_fred_matrix)
-                    gm_fc = compute_ensemble_forecast(
-                        gm_vals, horizon=forecast_horizon,
-                        weights=gm_bt.get("calibrated_weights"), fred_matrix=gm_fred_matrix,
-                    )
-                    if gm_fred_meta:
-                        gm_fc["fred_features_used"] = gm_fred_meta
-                    result["forecast"]["margin_forecast"] = gm_fc
-                    result["forecast"]["margin_backtest"] = gm_bt
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    # ── 7, 7b & 8. Time-Series Forecasting + Backtesting + monthly detail +
+    # gross-margin forecast (see run_forecast_backtest — extracted so
+    # reoptimization_tool can re-run just this layer on drift) ───────────────
+    fb = run_forecast_backtest(xbrl, macro_info, forecast_metric, forecast_horizon, company_id)
+    result["forecast"] = fb["forecast"]
+    if "backtest" in fb:
+        result["backtest"] = fb["backtest"]
+    if "monthly_series" in fb:
+        result["monthly_series"] = fb["monthly_series"]
 
     # ── 9. RSS Signal Grading ─────────────────────────────────────────────────
     if include_rss:
@@ -2259,6 +2285,7 @@ def run_full_analysis(
         result["qoq_momentum"] = {"note": "No quarterly Revenue data available"}
 
     # ── 11. Analyst KPI Series (EPS, OpMargin, NetIncome, FCF, EBITDA) ───────
+    q_series = extract_quarterly_series(xbrl, forecast_metric)
     result["analyst_series"] = compute_analyst_series(xbrl, q_series or [], macro_info, forecast_horizon)
 
     return result
