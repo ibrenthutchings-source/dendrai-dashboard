@@ -8534,6 +8534,39 @@ def fetch_scm_audit_results(resource: Optional[str] = None, limit: int = 50) -> 
     return _run(_do) or []
 
 
+def fetch_pipeline_security_results(limit: int = 50) -> list:
+    """Pipeline-as-code (GitHub Actions workflow) audit rows — same shape and
+    idiom as fetch_scm_audit_results, filtered to the distinct
+    workflow_security_audit target_tool scm_audit_endpoints.py's on-demand
+    path and github_scm_tool.py's scheduled poll both write. Single-value
+    filter (not IN, unlike branch protection) since this check is GitHub-only."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (server_name)
+                           id, adjudicated_at, source_system, server_name, target_tool,
+                           uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                           policy_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE source_system = 'GITHUB' AND target_tool = 'workflow_security_audit'
+                    ORDER BY server_name, adjudicated_at DESC
+                    LIMIT %s
+                    """,
+                    (min(limit, 500),),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
 def get_observability_24h_counts() -> dict:
     """Rows adjudicated / escalated / PaC-violation-flagged in the last 24h —
     none of the existing observability endpoints (/systems, /holds, /coverage)

@@ -8,11 +8,17 @@ SailPoint/Dynamics365/NetSuite adapters — same pull_events()/test_connection()
 contract (see connector_poller.py's module docstring). Each poll re-audits the
 registered repo/branch's *current* branch-protection + CODEOWNERS state — `since`
 is unused, since this is a point-in-time configuration check, not an append-only
-log of new events. The one event per poll is tagged with the
-branch_protection_violation flag (mcp_governance._detect_system_flags) whenever
-the audit found anything the devops_monitoring PaC policy would deny, so it
-flows through the normal adjudication pipeline exactly like every other
-poll-connector event.
+log of new events. That event is tagged with the branch_protection_violation
+flag (mcp_governance._detect_system_flags) whenever the audit found anything
+the devops_monitoring PaC policy would deny, so it flows through the normal
+adjudication pipeline exactly like every other poll-connector event.
+
+A second event per poll re-audits the same repo's GitHub Actions workflow
+YAML (pipeline_security_connectors.py) — token permissions, unpinned action
+references, risky pull_request_target triggers — tagged with the
+pipeline_misconfiguration flag. This reuses the one registered repo+token
+rather than requiring a separate connector registration, since it's the
+identical credential.
 
 Required per-connector config (set via the app UI, not env vars):
   base_url:     GitHub API host, e.g. "https://api.github.com" (or a GHE host)
@@ -27,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import db
+import pipeline_security_connectors
 import scm_connectors
 
 logger = logging.getLogger(__name__)
@@ -75,14 +82,43 @@ def _audit_once(base_url: Optional[str], credentials: dict, extra_config: dict) 
     }
 
 
+def _audit_pipeline_security_once(base_url: Optional[str], credentials: dict, extra_config: dict) -> dict:
+    """Pipeline-as-code (GitHub Actions workflow YAML) audit for the same
+    repo/token already registered for branch-protection auditing — reuses
+    the one connector rather than requiring a second registration, since it's
+    the identical repo+credential. GitHub-only (GitLab CI has a different
+    YAML shape and isn't covered here)."""
+    extra_config = extra_config or {}
+    repo_full_name = extra_config.get("repo_full_name")
+    token = (credentials or {}).get("token")
+    api_base = base_url or "https://api.github.com"
+
+    workflow_files = pipeline_security_connectors.fetch_github_workflow_files(repo_full_name, token, api_base)
+    analyzed = [pipeline_security_connectors.analyze_workflow(f["content"]) for f in workflow_files]
+    compliance = pipeline_security_connectors.normalize_pipeline_compliance(analyzed)
+    severity = pipeline_security_connectors.evaluate_pipeline_severity(compliance)
+    violated = severity != "INFO"
+
+    return {
+        "repo_full_name": repo_full_name,
+        "compliance": compliance,
+        "violated": violated,
+        "severity": severity,
+    }
+
+
 def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
                  since: Optional[datetime]) -> list[dict]:
-    """One audit event per poll tick, normalized to the uniform connector
-    event shape (event_id, event_type, actor, action, resource, severity,
-    raw_payload) per connector_poller.py's documented contract."""
+    """Two audit events per poll tick — branch-protection and pipeline
+    security — each normalized to the uniform connector event shape
+    (event_id, event_type, actor, action, resource, severity, raw_payload)
+    per connector_poller.py's documented contract. A pipeline-security
+    failure (e.g. workflow fetch error on a repo with no Actions enabled)
+    is logged and dropped rather than failing the whole poll tick — the
+    branch-protection event still gets through."""
     result = _audit_once(base_url, credentials, extra_config)
     today = datetime.now(timezone.utc).date().isoformat()
-    return [{
+    events = [{
         "event_id":    f"scm-audit:{result['repo_full_name']}:{result['branch']}:{today}",
         "event_type":  "branch_protection_audit",
         "actor":       "github_scm_tool",
@@ -96,6 +132,26 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
             "drift_events": result["drift_events"],
         },
     }]
+
+    try:
+        pipeline_result = _audit_pipeline_security_once(base_url, credentials, extra_config)
+        events.append({
+            "event_id":    f"pipeline-security:{pipeline_result['repo_full_name']}:{today}",
+            "event_type":  "pipeline_security_audit",
+            "actor":       "github_scm_tool",
+            "action":      "pipeline_security_audit",
+            "resource":    pipeline_result["repo_full_name"],
+            "severity":    pipeline_result["severity"],
+            "raw_payload": {
+                "pipeline_misconfiguration": pipeline_result["violated"],
+                "pipeline_compliance": pipeline_result["compliance"],
+            },
+        })
+    except Exception as exc:
+        logger.warning("Pipeline security audit failed for %s: %s",
+                        (extra_config or {}).get("repo_full_name"), exc)
+
+    return events
 
 
 def test_connection(base_url: Optional[str], credentials: dict, extra_config: dict) -> tuple[bool, str]:

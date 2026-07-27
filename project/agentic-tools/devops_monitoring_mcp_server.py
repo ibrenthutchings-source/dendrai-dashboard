@@ -24,6 +24,7 @@ Claude Desktop — add to ~/.claude/claude_desktop_config.json:
 
     scm_list_repositories   Registered GitHub/GitLab repos under audit (no tokens)
     scm_run_audit           Run a branch-protection/CODEOWNERS audit now
+    scm_run_pipeline_security_audit  Run a GitHub Actions workflow-security audit now
     scm_list_drift          Drift/time-series log (control flips, either direction)
     evidence_list_records   Filtered SARIF evidence records
     evidence_verify_record  Recompute the HMAC signature for one evidence record
@@ -129,6 +130,41 @@ def scm_run_audit(repository_id: int) -> str:
         return f"Error: {exc}"
     except Exception as exc:
         return f"Error running audit: {exc}"
+
+
+@mcp.tool()
+def scm_run_pipeline_security_audit(repository_id: int) -> str:
+    """
+    Run a GitHub Actions workflow-as-code security audit now for one
+    registered GitHub repository (permissions least-privilege, unpinned
+    third-party actions, risky pull_request_target triggers), adjudicated
+    through the full Bronze->Silver->Gold->Council pipeline and the
+    devops_monitoring PaC policy. GitHub-only. Blocked when MCP_READ_ONLY=true.
+
+    Args:
+        repository_id: The registry id from scm_list_repositories (must be a
+            github_scm repository, not gitlab_scm).
+    """
+    try:
+        check_read_only("scm_run_pipeline_security_audit")
+        check_rate_limit("scm_run_pipeline_security_audit")
+        if not db.is_available():
+            return json.dumps({"note": "Database not configured"}, indent=2)
+
+        audit_log("scm_run_pipeline_security_audit", repository_id=repository_id)
+
+        connector = db.get_poll_connector(repository_id, include_credentials=True)
+        if not connector or connector["connector_type"] != "github_scm":
+            return f"Error: repository {repository_id} not found or not a GitHub repository"
+
+        result = asyncio.run(scm_audit_endpoints._run_github_pipeline_security(connector))
+        db.record_poll_result(repository_id, "error" if result.get("adjudication_error") else "ok",
+                               result.get("adjudication_error"))
+        return cap_output(json.dumps(result, indent=2, default=str))
+    except ValueError as exc:
+        return f"Error: {exc}"
+    except Exception as exc:
+        return f"Error running pipeline security audit: {exc}"
 
 
 @mcp.tool()

@@ -81,6 +81,31 @@ FRAMEWORK_MAPPINGS: dict[str, dict] = {
         "iso_27001": ["A.16.1.5"],
         "coso_component": "Monitoring Activities",
     },
+    # ── DevOps Monitoring: Pipeline-as-Code (CI/CD workflow) security ──────
+    "DEVOPS-010": {  # Write-all GITHUB_TOKEN permissions
+        "soc2_criteria": ["CC6.1", "CC6.3"],
+        "nist_800_53": ["AC-6", "CM-7"],
+        "iso_27001": ["A.9.2.3", "A.9.4.4"],
+        "coso_component": "Control Activities",
+    },
+    "DEVOPS-011": {  # Missing explicit permissions block
+        "soc2_criteria": ["CC6.1"],
+        "nist_800_53": ["AC-6", "CM-7"],
+        "iso_27001": ["A.9.2.3"],
+        "coso_component": "Control Activities",
+    },
+    "DEVOPS-012": {  # Unpinned third-party actions
+        "soc2_criteria": ["CC8.1"],
+        "nist_800_53": ["SA-12", "SR-4"],
+        "iso_27001": ["A.14.2.4", "A.15.1.1"],
+        "coso_component": "Control Activities",
+    },
+    "DEVOPS-013": {  # Risky pull_request_target + untrusted checkout
+        "soc2_criteria": ["CC6.1", "CC7.1"],
+        "nist_800_53": ["AC-6", "SC-7"],
+        "iso_27001": ["A.9.4.4", "A.14.2.1"],
+        "coso_component": "Control Activities",
+    },
     # ── Infrastructure Monitoring: Postgres CIS ────────────────────────────
     "INFRA-001": {  # SSL not enforced
         "soc2_criteria": ["CC6.1", "CC6.7"],

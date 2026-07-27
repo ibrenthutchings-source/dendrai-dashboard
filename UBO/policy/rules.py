@@ -181,6 +181,27 @@ DEVOPS_EVIDENCE_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── DevOps Monitoring: Pipeline-as-Code (CI/CD workflow) audit ────────────────
+# Findings ride either the GITHUB on-demand path (scm_audit_endpoints.py's
+# synthesized workflow_security_audit event) or the SYSTEM_TELEMETRY scheduled
+# poll path (github_pipeline_tool.py via github_scm_tool.py) — see
+# pipeline_security_connectors.py for the underlying workflow YAML analysis.
+
+PIPELINE_SECURITY_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-DEVOPS-003",
+        name="GitHub Actions Workflow Security",
+        description=(
+            "A pipeline-as-code audit found a write-all GITHUB_TOKEN permissions grant, "
+            "or a pull_request_target trigger combined with an untrusted PR-head checkout "
+            "(the classic fork-PR code-execution pattern) — both are automatically "
+            "escalated regardless of any other finding."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value, SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ────────────────────
 
 INFRASTRUCTURE_RULES: list[PolicyRule] = [
@@ -331,6 +352,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *GITHUB_RULES,
     *GITLAB_RULES,
     *DEVOPS_EVIDENCE_RULES,
+    *PIPELINE_SECURITY_RULES,
     *INFRASTRUCTURE_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,

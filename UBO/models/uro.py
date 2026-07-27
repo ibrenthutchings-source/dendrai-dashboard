@@ -53,6 +53,9 @@ class EventType(str, Enum):
     # ── DevOps Monitoring: SCM audits + SARIF/SAST evidence ───
     SAST_FINDING               = "SAST_FINDING"
 
+    # ── DevOps Monitoring: pipeline-as-code (CI/CD workflow) audit ────
+    PIPELINE_MISCONFIGURATION  = "PIPELINE_MISCONFIGURATION"
+
     # ── DevOps Monitoring: ITSM SLA Bridge ────────────────────
     SLA_BREACH                 = "SLA_BREACH"
 

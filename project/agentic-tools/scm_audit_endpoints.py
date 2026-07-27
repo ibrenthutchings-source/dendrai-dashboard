@@ -46,6 +46,7 @@ from pydantic import BaseModel
 
 import db
 import github_endpoints
+import pipeline_security_connectors
 import scm_connectors
 from mcp_guards import validate_external_url
 
@@ -284,6 +285,78 @@ async def _run_github(connector: dict) -> dict:
     )
 
 
+async def _adjudicate_pipeline_security(raw_event: dict, ubo_source_system, resource: str,
+                                         compliance: dict, severity: str) -> dict:
+    """Same shape as _adjudicate() above, minus the branch-protection-specific
+    compliance_status tri-state and drift tracking (pipeline-security has
+    neither — every field it reports is directly Rego-actionable)."""
+    result = {
+        "provider":   "github",
+        "resource":   resource,
+        "severity":   severity,
+        "compliance": compliance,
+        "adjudicated": False,
+    }
+    bronze, silver, gold, council = _get_pipeline()
+    if bronze is None or ubo_source_system is None:
+        result["reason"] = "UBO pipeline not available — compliance computed, not adjudicated"
+        return result
+
+    try:
+        uro = await bronze.ingest(raw_event, ubo_source_system)
+        uro = await silver.conform(uro)
+        uro = await gold.score(uro)
+        uro = await council.evaluate(uro)
+
+        asyncio.create_task(asyncio.to_thread(
+            github_endpoints._write_adjudication, uro, resource, "workflow_security_audit", "GITHUB",
+        ))
+
+        result.update({
+            "adjudicated":            True,
+            "uro_id":                 uro.id,
+            "risk_tier":              uro.risk_tier,
+            "risk_score":             float(uro.risk_score) if uro.risk_score is not None else None,
+            "verdict":                uro.adjudication.final_verdict.value if uro.adjudication else None,
+            "requires_human_review":  uro.adjudication.requires_human_review if uro.adjudication else False,
+            "policy_violations":      list(uro.silver_policy_violations),
+        })
+    except Exception as exc:
+        logger.warning("Pipeline security adjudication error (resource=%s): %s", resource, exc)
+        result["adjudication_error"] = str(exc)
+    return result
+
+
+async def _run_github_pipeline_security(connector: dict) -> dict:
+    """GitHub Actions workflow-as-code security audit for a repo already
+    registered for branch-protection auditing (github_scm connector) — reuses
+    the same token, since it's the identical credential. GitHub-only."""
+    creds = connector.get("credentials") or {}
+    token = creds.get("token")
+    extra = connector.get("extra_config") or {}
+    repo_full_name = extra.get("repo_full_name")
+    base_url = connector.get("base_url") or _DEFAULT_BASE_URL["github"]
+    if not repo_full_name or not token:
+        raise HTTPException(status_code=422, detail="Repository is missing repo_full_name or token")
+
+    workflow_files = await asyncio.to_thread(
+        pipeline_security_connectors.fetch_github_workflow_files, repo_full_name, token, base_url)
+    analyzed = [pipeline_security_connectors.analyze_workflow(f["content"]) for f in workflow_files]
+    compliance = pipeline_security_connectors.normalize_pipeline_compliance(analyzed)
+    severity = pipeline_security_connectors.evaluate_pipeline_severity(compliance)
+
+    raw_event = {
+        "X-GitHub-Event": "workflow_security_audit",
+        "repository": {"full_name": repo_full_name, "id": connector["id"], "visibility": "private"},
+        "sender": {"login": "scm-audit-engine", "site_admin": False},
+        "organization": {"login": repo_full_name.split("/")[0] if "/" in repo_full_name else ""},
+        "compliance": compliance,
+    }
+    return await _adjudicate_pipeline_security(
+        raw_event, UBOSourceSystem.GITHUB if _HAS_UBO else None, repo_full_name, compliance, severity,
+    )
+
+
 async def _run_gitlab(connector: dict) -> dict:
     creds = connector.get("credentials") or {}
     token = creds.get("token")
@@ -332,6 +405,34 @@ async def run_repository_audit(repository_id: int):
     db.record_poll_result(repository_id, "error" if result.get("adjudication_error") else "ok",
                            result.get("adjudication_error"))
     return result
+
+
+@router.post("/repositories/{repository_id}/run-pipeline-security")
+async def run_repository_pipeline_security_audit(repository_id: int):
+    """GitHub Actions workflow-as-code security audit (permissions, unpinned
+    actions, risky pull_request_target) for an already-registered github_scm
+    repository — see pipeline_security_connectors.py. GitHub-only; GitLab CI
+    has a different workflow shape and isn't covered."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    connector = db.get_poll_connector(repository_id, include_credentials=True)
+    if not connector or connector["connector_type"] != "github_scm":
+        raise HTTPException(status_code=404,
+                             detail="Repository not found, or not a GitHub repository (pipeline security auditing is GitHub-only)")
+
+    result = await _run_github_pipeline_security(connector)
+    db.record_poll_result(repository_id, "error" if result.get("adjudication_error") else "ok",
+                           result.get("adjudication_error"))
+    return result
+
+
+@router.get("/pipeline-security/results")
+async def list_pipeline_security_results(limit: int = 50):
+    """Latest on-demand/scheduled pipeline-security audit per repo — the
+    Pipeline Security section's feed."""
+    if not db.is_available():
+        return {"results": []}
+    return {"results": db.fetch_pipeline_security_results(limit=limit)}
 
 
 @router.post("/run-all")

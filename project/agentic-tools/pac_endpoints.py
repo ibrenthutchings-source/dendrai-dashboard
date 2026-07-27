@@ -703,16 +703,18 @@ deny_disclosure_event[msg] if {
 """,
 
 "devops_monitoring": """\
-# DevOps Monitoring — SCM Integrity + SARIF/SAST Evidence
+# DevOps Monitoring — SCM Integrity + SARIF/SAST Evidence + Pipeline Security
 # Package:  controls.devops.monitoring
 # Process:  DevOps Monitoring
-# Version:  1.0
+# Version:  1.1
 # Approved by: CISO, VP Engineering
-# Last Revised: 2026-07-25
+# Last Revised: 2026-07-26
 # Description: Branch-protection/CODEOWNERS compliance for GitHub & GitLab
-#   repositories, and severity-based SLA triggers for ingested SARIF/SAST
-#   findings. Evaluated against the synthesized events scm_audit_endpoints.py
-#   and evidence_endpoints.py produce — see their module docstrings.
+#   repositories, severity-based SLA triggers for ingested SARIF/SAST
+#   findings, and GitHub Actions workflow-as-code security (token
+#   permissions, unpinned actions, pull_request_target). Evaluated against
+#   the synthesized events scm_audit_endpoints.py, evidence_endpoints.py,
+#   and pipeline_security_connectors.py produce — see their module docstrings.
 
 package controls.devops.monitoring
 
@@ -783,6 +785,34 @@ deny_evidence_finding[msg] if {
 deny_sla_breach[msg] if {
     input.event.type == "SLA_BREACH"
     msg := sprintf("DEVOPS-009: ITSM ticket '%v' (%v) for finding '%v' breached its remediation SLA (due %v)", [input.event.external_ticket_key, input.event.external_system, input.event.finding_hash, input.event.sla_due_at])
+}
+
+# ── DEVOPS-010: Workflow Permissions Least-Privilege ─────────────────────────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.has_write_all_permissions == true
+    msg := sprintf("DEVOPS-010: A workflow in '%v' grants write-all GITHUB_TOKEN permissions — scope to only what each job needs", [input.event.resource])
+}
+
+# ── DEVOPS-011: Missing Explicit Permissions Block ───────────────────────────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.workflows_without_permissions > 0
+    msg := sprintf("DEVOPS-011: %v workflow(s) in '%v' have no explicit permissions block — token scope depends on a repo/org default that can silently change", [input.event.workflows_without_permissions, input.event.resource])
+}
+
+# ── DEVOPS-012: Unpinned Third-Party Actions ─────────────────────────────────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.unpinned_action_count > 0
+    msg := sprintf("DEVOPS-012: %v action reference(s) in '%v' are pinned to a mutable tag/branch rather than a commit SHA — a compromised upstream tag changes what runs with no change on this side", [input.event.unpinned_action_count, input.event.resource])
+}
+
+# ── DEVOPS-013: Risky pull_request_target + Untrusted Checkout (CRITICAL) ────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.has_risky_pull_request_target == true
+    msg := sprintf("DEVOPS-013: A workflow in '%v' triggers on pull_request_target and checks out the PR head — a fork PR can execute arbitrary code with write-scoped secrets (CRITICAL)", [input.event.resource])
 }
 """,
 
