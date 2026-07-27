@@ -58,7 +58,7 @@ A slide-out conversational interface accessible from the **"Ask Claude" / "Ask G
 | Audit Scope | Audit objectives and sprint plan |
 | Risk-as-Code | YAML risk register editor with live Generate CaC button |
 | Policy-as-Code | Rego policy editor — 7 processes (5 ERP + DevOps Monitoring + Infrastructure Monitoring), version history, multi-approver sign-off, GitHub/Confluence hooks, animated process flow map, negative-control testing (Negative Testing tab) |
-| DevOps Monitoring | Branch Integrity Matrix, Evidence Inspector, Drift Timeline, Risk Waivers, Pipeline Attestations, ITSM Tickets & SLA — SCM/SARIF/ITSM/Infrastructure findings all ride the same UBO adjudication pipeline as every other category |
+| DevOps Monitoring | Branch Integrity Matrix, Pipeline Security (GitHub Actions workflow audit), Secret Scanning (real `gitleaks`), Evidence Inspector (with tamper-evidence hash-chain verification), Drift Timeline, Risk Waivers, Pipeline Attestations, ITSM Tickets & SLA — SCM/SARIF/ITSM/Infrastructure findings all ride the same UBO adjudication pipeline as every other category |
 | Grey Swan Scenarios | Bear / Base / Bull scenarios + Grey Swan cascade |
 | Governance Intelligence | Board, exec comp, shareholder proposals, peer benchmarking |
 

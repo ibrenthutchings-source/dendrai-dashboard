@@ -171,9 +171,12 @@ Flag → EventType:
 | `branch_protection_violation` | `BRANCH_PROTECTION_BYPASSED` | `github_scm_tool.py` / `gitlab_scm_tool.py` (explicit — not inferred) |
 | `sast_finding` | `SAST_FINDING` | `evidence_endpoints.py` SARIF ingestion (explicit) |
 | `sla_breach` | `SLA_BREACH` | `itsm_sla_sweep.py`'s hourly breach sweep (explicit) |
-| `infrastructure_finding` | `INFRASTRUCTURE_FINDING` | `postgres_cis_tool.py` / `railway_iaas_tool.py` (explicit) |
+| `infrastructure_finding` | `INFRASTRUCTURE_FINDING` | `postgres_cis_tool.py` / `railway_iaas_tool.py` / `connector_hygiene_sweep.py` (explicit) |
+| `pipeline_misconfiguration` | `PIPELINE_MISCONFIGURATION` | `github_scm_tool.py`'s scheduled poll (explicit — a second event per tick, alongside `branch_protection_violation`) |
 
-The last four flags are set directly by their producers rather than inferred from generic keyword matching — those producers know exactly which event they're emitting, so there's no ambiguity to heuristically resolve.
+The last five flags are set directly by their producers rather than inferred from generic keyword matching — those producers know exactly which event they're emitting, so there's no ambiguity to heuristically resolve.
+
+On the GITHUB source-system path (not SYSTEM_TELEMETRY), `bronze.py`'s `GitHubBronzeHandler._ACTION_MAP` separately maps `scm_audit_endpoints.py`'s synthesized on-demand event names directly to `EventType`: `"workflow_security_audit"` → `PIPELINE_MISCONFIGURATION`, `"gitleaks_scan"` → `SECRET_DETECTED` (only ever sent when a real gitleaks scan actually found something — a clean scan is never adjudicated).
 
 Schema version: `"System-Telemetry-v1"`
 
@@ -197,11 +200,11 @@ Routes to a source-specific conformer based on `uro.source_system`. Each conform
 | Source | resource_type | Key risk_indicators |
 |---|---|---|
 | SAP | `"SAP_OBJECT"` | amount, currency, cost_center, approver, actor_groups |
-| GitHub | `"git_repository"` | ref, forced, cvss_score, secret_type, commits_count, is_admin, + spread `compliance` sub-dict (enforce_admins, required_approving_review_count, …) |
+| GitHub | `"git_repository"` | ref, forced, cvss_score, secret_type, commits_count, is_admin, secret_finding_count, secret_rule_ids (gitleaks), + spread `compliance` sub-dict (enforce_admins, required_approving_review_count, … / pipeline-security fields for `PIPELINE_MISCONFIGURATION` events — has_write_all_permissions, unpinned_action_count, has_risky_pull_request_target, …) |
 | GitLab | `"git_repository"` | ref, commits_count, + spread `compliance` sub-dict (same shape as GitHub's) |
 | SailPoint | `"identity"` | role_count, last_login_days, access_request_id, entitlements |
 | MCP Proxy | `"mcp_tool"` | risk_flags, flag_count, execution_time_ms, error_message, narrative |
-| System Telemetry | `"enterprise_system_resource"` | risk_flags, flag_count, severity, rule_id, cwe (SARIF), external_system/external_ticket_key/finding_hash/sla_due_at (ITSM), + spread `compliance`/`infra_compliance` sub-dict (SCM branch-protection / Postgres CIS / Railway drift) |
+| System Telemetry | `"enterprise_system_resource"` | risk_flags, flag_count, severity, rule_id, cwe (SARIF), external_system/external_ticket_key/finding_hash/sla_due_at (ITSM), + spread `compliance`/`infra_compliance`/`pipeline_compliance` sub-dict (SCM branch-protection / Postgres CIS + Railway drift + connector credential hygiene / pipeline-as-code security) |
 | Generic | `"unknown"` | All non-reserved fields passed through |
 
 `compliance`/`infra_compliance` are spread into `risk_indicators` (not nested) specifically so `mcp_governance._evaluate_pac_policy`'s real Rego evaluation — which flattens `conformed_payload.risk_indicators` straight into `input.event.*` — sees the exact same field names regardless of whether the event came from a live webhook or a scheduled poll-connector audit. See [integrations.md](integrations.md) for that flattening and `pac_contracts.py`'s per-process schema-contract declarations, which is what caught this shape actually needing to match in the first place.

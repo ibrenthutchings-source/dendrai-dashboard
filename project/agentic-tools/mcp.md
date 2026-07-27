@@ -260,6 +260,7 @@ Manages Rego policy modules for seven processes: the five original Oracle Fusion
 | `pac_assurance_summary` | Which policy-enforced controls are proven working (real fire and/or passing test) vs. unverified |
 | `pac_run_negative_sweep_now` | Run the periodic full-evaluation sweep for every process immediately; detects regressions |
 | `pac_compliance_scorecard` | Executive Compliance Scorecard — SOC 2/NIST 800-53/ISO 27001/COSO ERM crosswalk (curated, never auto-generated); reports mapped vs. verified controls per criterion |
+| `pac_check_approval_drift` | Compares the latest SAVED module (what's actually evaluating) against the latest module that ever received a real approval — a mismatch means an unapproved/since-edited module is live |
 
 **Supported processes:** `itgc` · `order_to_cash` · `procure_to_pay` · `receive_to_ship` · `record_to_report` · `devops_monitoring` · `infrastructure_monitoring`
 
@@ -325,18 +326,22 @@ Pulls control data from Oracle Fusion Cloud (Risk Management Cloud + FSCM).
 **File:** `devops_monitoring_mcp_server.py`  
 **Requires:** `DATABASE_URL`. Set `MCP_READ_ONLY=true` to disable writes.
 
-SCM branch-protection auditing (GitHub/GitLab), SARIF/SAST evidence ingestion, the Risk Waiver & Exception Hub, pipeline provenance/attestation, and the ITSM/Jira-ServiceNow SLA Bridge — see [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for how each rides the Bronze→Silver→Gold→Council pipeline.
+SCM branch-protection auditing (GitHub/GitLab), GitHub Actions pipeline-as-code security auditing, real `gitleaks` secret scanning, SARIF/SAST evidence ingestion (with a tamper-evidence hash chain), the Risk Waiver & Exception Hub, pipeline provenance/attestation, DORA-style change-management metrics, and the ITSM/Jira-ServiceNow SLA Bridge — see [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for how each rides the Bronze→Silver→Gold→Council pipeline.
 
 | Tool | Description |
 |---|---|
 | `scm_list_repositories` | Registered GitHub/GitLab repos under audit (no tokens) |
 | `scm_run_audit` | Run a branch-protection/CODEOWNERS audit now, adjudicated through the full pipeline |
+| `scm_run_pipeline_security_audit` | Run a GitHub Actions workflow-security audit now (token permissions, unpinned actions, risky `pull_request_target`). GitHub-only. |
+| `scm_run_secret_scan` | Run a real `gitleaks` scan of the repo's full git history now — the producer for `SECRET_DETECTED` outside a live GitHub Advanced Security webhook. Clean scans are never adjudicated as a false "compliant". GitHub-only. |
 | `scm_list_drift` | Drift/time-series log — controls that flipped between consecutive audits, either direction (the "2am override" pattern) |
 | `evidence_list_records` | Filtered SARIF evidence records |
 | `evidence_verify_record` | Recompute the HMAC signature for one record — proves it hasn't been tampered with since ingestion |
+| `evidence_verify_chain` | Verify the tamper-evidence hash chain across all evidence records — proves trail completeness (no row deleted/reordered) |
 | `waiver_list` | List Risk Waivers (ACTIVE/EXPIRED/REVOKED) |
 | `waiver_sweep_now` | Run the automated waiver-expiry sweep immediately |
 | `attestation_list` | List pipeline provenance/attestation records (OIDC, SLSA level, Cosign, SBOM license-risk) |
+| `dora_metrics_summary` | Deployment frequency / change failure rate / MTTR over a trailing window — real operational evidence for SOC 2 CC8.1 |
 | `itsm_list_tickets` | ITSM tickets tracking findings, with SLA status |
 | `itsm_sla_summary` | Open/breached/at-risk-within-24h counts |
 | `itsm_sweep_now` | Run the SLA breach-detection sweep immediately |
@@ -348,13 +353,14 @@ SCM branch-protection auditing (GitHub/GitLab), SARIF/SAST evidence ingestion, t
 **File:** `infrastructure_monitoring_mcp_server.py`  
 **Requires:** `DATABASE_URL`. Set `MCP_READ_ONLY=true` to disable writes.
 
-Continuous IaaS/OS/DB configuration auditing — Postgres CIS-style hardening (SSL enforcement, password encryption, superuser sprawl, live unencrypted connections, connection logging) and Railway platform/deployment drift (unexpected public domain exposure, deployment image digest with no matching pipeline attestation). Findings ride the generic `system_telemetry` → adjudication path, so they already surface in Continuous Monitoring / Controls Monitor with no dedicated findings viewer needed.
+Continuous IaaS/OS/DB configuration auditing — Postgres CIS-style hardening (SSL enforcement, password encryption, superuser sprawl, live unencrypted connections, connection logging), Railway platform/deployment drift (unexpected public domain exposure, deployment image digest with no matching pipeline attestation), and connector credential rotation hygiene (dogfooded on Intelligenza's own stored credentials — the one check with no external system to poll). Findings ride the generic `system_telemetry` → adjudication path, so they already surface in Continuous Monitoring / Controls Monitor with no dedicated findings viewer needed.
 
 | Tool | Description |
 |---|---|
 | `iaas_list_targets` | Registered Postgres/Railway audit connectors (no credentials) |
 | `iaas_run_postgres_audit` | Run a Postgres CIS-style hardening audit now |
 | `iaas_run_railway_audit` | Run a Railway platform/deployment drift audit now |
+| `iaas_run_connector_hygiene_check` | Check Intelligenza's own stored connector credentials for rotation staleness now (default threshold 90 days) |
 
 Railway API tokens should be a real Account/Team token (dashboard → Account Settings → Tokens), not a CLI OAuth session token.
 

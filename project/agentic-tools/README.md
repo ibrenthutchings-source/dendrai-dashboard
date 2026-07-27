@@ -290,8 +290,9 @@ Manages Rego policy modules for seven processes: the five original Oracle Fusion
 | `GET` | `/pac/negative-tests/history/{process}` | Past negative-control test runs (audit evidence) |
 | `GET` | `/pac/assurance` | Which policy-enforced controls are proven working vs. unverified |
 | `GET` | `/pac/compliance-scorecard` | Executive Compliance Scorecard — SOC 2/NIST/ISO/COSO framework coverage, mapped vs. verified |
+| `GET` | `/pac/approval-drift` | Compares what's actually evaluating (latest saved module) against the latest module that ever received a real approval sign-off, per process |
 
-**MCP server:** `pac_mcp_server.py` — 15 tools. See `mcp.md` → `policy-as-code`.
+**MCP server:** `pac_mcp_server.py` — 16 tools. See `mcp.md` → `policy-as-code`.
 
 #### Negative testing (`pac_contracts.py` + `pac_negative_tests.py` + `pac_assurance.py` + `pac_negative_sweep.py`)
 
@@ -304,6 +305,10 @@ A Rego rule that references a field or event-type literal the real adjudication 
 #### Executive Compliance Scorecard (`framework_mappings.py`)
 
 Curated (never auto-generated — same guardrail as the retired Framework Sync pattern, commit `2b98f45`) SOC 2 / NIST SP 800-53 / ISO 27001 / COSO ERM crosswalk for policy-enforced controls. `GET /pac/compliance-scorecard?framework=soc2|nist_800_53|iso_27001|coso` reports, per criterion, how many controls are *mapped* to it vs. how many are actually *verified* (per the assurance metadata above) — deliberately two separate numbers, since a criterion can be 100% mapped and 0% verified. Edit `framework_mappings.FRAMEWORK_MAPPINGS` directly to correct or extend a mapping; `test_compliance_scorecard.py` asserts every `DEVOPS-*`/`INFRA-*` control_id the Rego defaults actually define has a mapping, so new rules can't silently go unmapped.
+
+#### Approval/Evaluation Drift Detection (`pac_approval_drift.py`)
+
+A real governance gap found while building the negative-testing sweep: `db.get_latest_pac_module(process)` (what `_evaluate_pac_policy` actually evaluates) returns the most recently **saved** module — `pac_policy_modules` has no status/approved column, so saving a draft via `PUT /pac/modules/{process}` makes it live in production before any approval; the negative-testing gate on `POST /modules/{process}/approve` is advisory and runs strictly afterward. `check_process_drift(process)` compares the content hash of what's live against the content hash of the latest module version that ever received a real approval — a mismatch means an unapproved or since-edited module is currently adjudicating real events. Run via `GET /pac/approval-drift`, the `pac_check_approval_drift` MCP tool, or automatically as part of the hourly negative-testing sweep (logged as a warning); shown as a red banner on the Policy-as-Code screen when any process has drifted.
 
 ---
 
@@ -319,17 +324,23 @@ CaC artifacts are stored in the `controls_as_code_artifacts` table and indexed v
 
 ### DevOps Monitoring (`scm_connectors.py` + `scm_audit_endpoints.py` + `evidence_endpoints.py` + `devops_monitoring_mcp_server.py`)
 
-SCM branch-protection auditing (GitHub/GitLab), SARIF/SAST evidence ingestion, drift detection, the Risk Waiver & Exception Hub, and pipeline provenance/attestation — all riding the same Bronze→Silver→Gold→Council pipeline every other source uses, not a parallel system. See [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for the full architecture.
+SCM branch-protection auditing (GitHub/GitLab), GitHub Actions pipeline-as-code security auditing, real `gitleaks` secret scanning, SARIF/SAST evidence ingestion (with a tamper-evidence hash chain), drift detection, the Risk Waiver & Exception Hub, pipeline provenance/attestation, and DORA-style change-management metrics — all riding the same Bronze→Silver→Gold→Council pipeline every other source uses, not a parallel system. See [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for the full architecture.
 
-**Repos are registered as poll connectors** on the Dendrai UBO Configuration screen (`connector_type` `github_scm`/`gitlab_scm`), the same way Oracle Fusion/SAP HANA/etc. are — no bespoke registration form.
+**Repos are registered as poll connectors** on the Dendrai UBO Configuration screen (`connector_type` `github_scm`/`gitlab_scm`), the same way Oracle Fusion/SAP HANA/etc. are — no bespoke registration form. Pipeline-security auditing and secret scanning both reuse the same registered repo+token rather than requiring a second registration.
 
-**REST endpoints (prefix `/api/scm-audit`):** `POST/GET/DELETE /repositories`, `POST /repositories/{id}/run`, `POST /run-all`, `GET /results`, `GET /results/history`, `GET /drift`, `GET /waivers`, `POST /waivers/{id}/revoke`
+**REST endpoints (prefix `/api/scm-audit`):** `POST/GET/DELETE /repositories`, `POST /repositories/{id}/run`, `POST /repositories/{id}/run-pipeline-security`, `POST /repositories/{id}/run-secret-scan`, `POST /run-all`, `GET /results`, `GET /results/history`, `GET /pipeline-security/results`, `GET /secret-scan/results`, `GET /drift`, `GET /waivers`, `POST /waivers/{id}/revoke`
 
-**REST endpoints (prefix `/api/evidence`):** `POST /webhook` (SARIF ingestion, Bearer-key auth), `GET /records`, `GET /records/{id}/verify`, `POST /attestation`, `GET /attestations`, `GET /attestations/{id}`
+**REST endpoints (prefix `/api/evidence`):** `POST /webhook` (SARIF ingestion, Bearer-key auth), `GET /records`, `GET /records/{id}/verify`, `GET /chain/verify` (tamper-evidence hash-chain verification), `GET /dora-metrics`, `POST /attestation`, `GET /attestations`, `GET /attestations/{id}`
 
 **Any SARIF-producing scanner works out of the box** — `source` is a free-text field, no per-tool code required. Verified against real Trivy output (container/dependency CVE scanning): correctly extracts CVSS-based severity and CVE IDs, though Trivy's SARIF never tags a CWE (CVE/GHSA-centric, unlike CodeQL) — see [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for a copy-pasteable GitHub Actions recipe.
 
-**MCP server:** `devops_monitoring_mcp_server.py` — 11 tools (SCM audit, drift, evidence, waivers, attestations, ITSM). See `mcp.md` → `devops-monitoring`.
+**Pipeline-as-code security** (`pipeline_security_connectors.py`): static analysis of every `.github/workflows/*.yml` — write-all `GITHUB_TOKEN` permissions, unpinned third-party actions, and `pull_request_target` combined with an untrusted PR-head checkout (CRITICAL — the fork-PR code-execution pattern). No runtime execution.
+
+**Real secret scanning** (`secret_scanner_connectors.py`): a real `gitleaks` binary scans the repo's full git history — the producer for `SECRET_DETECTED` outside a paid GitHub Advanced Security webhook. Secret values are never persisted, logged, or returned; a clean scan is never adjudicated as a false "compliant". Requires `gitleaks` + `git` in the runtime image (`project/Dockerfile`).
+
+**Tamper-evidence hash chain**: every `evidence_records` insert computes `chain_hash = sha256(prev.chain_hash + this.signature)` under an advisory lock — proves no row was deleted/reordered, which the per-record HMAC alone can't.
+
+**MCP server:** `devops_monitoring_mcp_server.py` — 15 tools (SCM audit, pipeline security, secret scan, drift, evidence, chain verification, waivers, attestations, DORA metrics, ITSM). See `mcp.md` → `devops-monitoring`.
 
 **Background sweeps:** `risk_waiver_sweep.py` (hourly — expires overdue waivers, re-opens the underlying finding), `itsm_sla_sweep.py` (hourly — flags overdue ITSM tickets, re-escalates the finding).
 
@@ -360,10 +371,11 @@ Continuous IaaS/OS/DB configuration audit. Railway (and most PaaS hosting) is im
 
 - **Postgres CIS-style hardening** (`postgres_cis_tool.py`, connector_type `postgres_cis`): SSL enforcement, password encryption scheme, superuser count, live unencrypted connections, connection logging. Read-only — a `pg_read_all_settings`/`pg_monitor` role is sufficient, superuser is not required.
 - **Railway platform/deployment drift** (`railway_iaas_tool.py`, connector_type `railway_iaas`): unexpected public domain exposure (against a connector-configured allow-list) and deployment image digest with no matching pipeline attestation (`observability.pipeline_attestations.container_image_sha` — reports "unknown," never a fabricated finding, until at least one real attestation exists to compare against).
+- **Connector credential rotation hygiene** (`connector_hygiene.py` + `connector_hygiene_sweep.py`, daily): the one check with no external system to poll — the system being checked is Intelligenza itself. Flags any active `poll_connectors` row whose credential (`credentials_rotated_at`, bumped only on an actual credential change, never on any other field edit) exceeds the staleness threshold (default 90 days).
 
 No dedicated findings viewer — findings ride the generic `system_telemetry` → adjudication path and surface in Continuous Monitoring / Controls Monitor automatically.
 
-**MCP server:** `infrastructure_monitoring_mcp_server.py` — 3 tools. See `mcp.md` → `infrastructure-monitoring`.
+**MCP server:** `infrastructure_monitoring_mcp_server.py` — 4 tools. See `mcp.md` → `infrastructure-monitoring`.
 
 ---
 
