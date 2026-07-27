@@ -1307,6 +1307,21 @@ CREATE INDEX IF NOT EXISTS idx_ai_analyses_cache
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS correction_action VARCHAR(32);
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS corrected_by      VARCHAR(128);
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS corrected_at      TIMESTAMPTZ;
+
+-- Closes the drift -> re-optimization loop: reoptimization_tool.run_reoptimization_sweep
+-- re-runs the forecast/backtest layer per actively-tracked ticker, either
+-- automatically (model_health_drift_watch, on a new ratio or fred_series
+-- drift incident) or on demand (POST /model-health/run-review). Every
+-- re-optimization run is a NEW risk_loop_runs row (matches the existing
+-- create_risk_loop_run convention of never overwriting prior runs, so
+-- MAPE/RMSE/R2 history stays intact) — trigger_reason/trigger_incident_id
+-- distinguish it from an organic user-initiated pipeline run, and
+-- reoptimize_triggered_at/reoptimize_summary on the incident itself let the
+-- Model Vitals UI show "auto re-evaluated" without cross-referencing runs.
+ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(32) NOT NULL DEFAULT 'user_run';
+ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_incident_id INT REFERENCES model_health_drift_incidents(id);
+ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_triggered_at TIMESTAMPTZ;
+ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_summary      JSONB;
 """
 
 # observability.system_telemetry had no uniqueness on (server_name, event_id),
@@ -2578,7 +2593,14 @@ def save_fred_correlations(company_id: int, correlations: list, run_date: Option
 # ─────────────────────────────────────────────────────────────────────────────
 
 def create_risk_loop_run(company_id: Optional[int], config: dict) -> Optional[int]:
-    """Create a risk_loop_runs record and return run_id."""
+    """Create a risk_loop_runs record and return run_id.
+
+    config.trigger_reason distinguishes an organic user-initiated run
+    ('user_run', the default) from one created by reoptimization_tool.py:
+    'drift_auto_reoptimize' (model_health_drift_watch, on a new drift
+    incident) or 'manual_review' (POST /model-health/run-review).
+    trigger_incident_id links a drift-triggered run back to the incident
+    that caused it, when applicable."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -2587,8 +2609,8 @@ def create_risk_loop_run(company_id: Optional[int], config: dict) -> Optional[in
                     INSERT INTO risk_loop_runs
                         (company_id, ticker, period_begin, period_end_col, industry,
                          appetite_level, persona, data_mode, signal_set,
-                         forecast_metric, forecast_horizon)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         forecast_metric, forecast_horizon, trigger_reason, trigger_incident_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     RETURNING id
                     """,
                     (
@@ -2603,6 +2625,8 @@ def create_risk_loop_run(company_id: Optional[int], config: dict) -> Optional[in
                         config.get("signal_set") or [],
                         config.get("forecast_metric", "Revenue"),
                         config.get("forecast_horizon", 4),
+                        config.get("trigger_reason", "user_run"),
+                        config.get("trigger_incident_id"),
                     ),
                 )
                 return cur.fetchone()[0]
@@ -2618,6 +2642,61 @@ def complete_risk_loop_run(run_id: int) -> None:
                     (run_id,),
                 )
     _run(_do)
+
+
+def list_active_tickers(days: int = 90, limit: int = 15) -> list[str]:
+    """Tickers (public or private — PVT-* tickers included, no special-casing)
+    with a completed run in the last `days` days, oldest-last-run-first. Used
+    by reoptimization_tool.run_reoptimization_sweep to pick which tickers get
+    re-optimized on a drift trigger — drift signals themselves aren't
+    ticker-scoped (see drift_tool.py), so there's no "affected tickers" list
+    to derive; sweeping the actively-tracked set, oldest-stale-first, means
+    repeated triggers cycle through different tickers instead of always
+    hitting the same top N."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ticker, MAX(run_at) AS last_run
+                    FROM risk_loop_runs
+                    WHERE run_at > NOW() - (%s || ' days')::interval
+                    GROUP BY ticker
+                    ORDER BY last_run ASC
+                    LIMIT %s
+                    """,
+                    (days, limit),
+                )
+                return [r[0] for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_latest_run_meta(ticker: str) -> Optional[dict]:
+    """Most recent completed run's config for a ticker — industry/forecast
+    settings a re-optimization run (reoptimization_tool.py) should inherit
+    rather than re-derive from a bare SIC code. None if the ticker has never
+    completed a run."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT industry, forecast_metric, forecast_horizon
+                    FROM risk_loop_runs
+                    WHERE ticker = %s AND completed = TRUE
+                    ORDER BY run_at DESC LIMIT 1
+                    """,
+                    (ticker.upper(),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "industry": row[0],
+                    "forecast_metric": row[1] or "Revenue",
+                    "forecast_horizon": row[2] or 4,
+                }
+    return _run(_do)
 
 
 def save_financial_ratios(run_id: int, ratios: dict) -> None:
@@ -7249,7 +7328,8 @@ def list_drift_incidents(status: Optional[str] = None) -> list:
             with conn.cursor() as cur:
                 cols = ("id, metric_key, metric_kind, psi, n_baseline, n_current, detail, "
                         "status, owner, notes, detected_at, acknowledged_at, resolved_at, updated_at, "
-                        "correction_action, corrected_by, corrected_at")
+                        "correction_action, corrected_by, corrected_at, "
+                        "reoptimize_triggered_at, reoptimize_summary")
                 if status:
                     cur.execute(
                         f"SELECT {cols} FROM model_health_drift_incidents WHERE status = %s ORDER BY detected_at DESC",
@@ -7270,9 +7350,31 @@ def list_drift_incidents(status: Optional[str] = None) -> list:
                         "updated_at": r[13].isoformat() if r[13] else None,
                         "correction_action": r[14], "corrected_by": r[15],
                         "corrected_at": r[16].isoformat() if r[16] else None,
+                        "reoptimize_triggered_at": r[17].isoformat() if r[17] else None,
+                        "reoptimize_summary": r[18],
                     })
                 return out
     return _run(_do) or []
+
+
+def record_drift_reoptimization(incident_id: int, summary: dict) -> None:
+    """Stamp a drift incident with the outcome of the automated re-optimization
+    sweep it triggered (reoptimization_tool.run_reoptimization_sweep's return
+    value) — separate from update_drift_incident's human-driven
+    status/correction_action fields, since this is a system-recorded fact,
+    not a governance decision."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE model_health_drift_incidents
+                    SET reoptimize_triggered_at = NOW(), reoptimize_summary = %s
+                    WHERE id = %s
+                    """,
+                    (Json(summary), incident_id),
+                )
+    _run(_do)
 
 
 _VALID_CORRECTION_ACTIONS = {
