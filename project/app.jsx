@@ -955,6 +955,14 @@ function App() {
     let currentRssSignals = [...rssSignals];
     let _capturedCemEvents = [];
 
+    // Private companies (synthetic PVT-<SLUG> ticker, see PrivateCompanyForm /
+    // POST /company/private) have no SEC filings — every EDGAR-only call below
+    // (risk factors, 8-K events, proxy, peers, direct XBRL fetch) would just
+    // 404/error for one, so skip them rather than let each fail individually.
+    // The financial ratios themselves still come through: MCP mode's
+    // run_full_analysis branches on this internally (see build_company_xbrl).
+    const isPrivateTicker = cfg.isPrivate || /^PVT-/i.test(cfg.ticker || "");
+
     if (mcpMode) {
       // ── MCP mode: delegate all ingestion to Python predictive analytics server ──
       setLiveStatus("Calling Python MCP servers…");
@@ -1176,7 +1184,7 @@ function App() {
 
         // Item 1A risk factors → enrich risk narratives with filing snippets
         let enrichedRisks = mergedRisks;
-        if (signalSet.has("edgar")) {
+        if (signalSet.has("edgar") && !isPrivateTicker) {
           try {
             const factors = await MCP.fetchRiskFactors(cfg.ticker);
             enrichedRisks = MCP.enrichRisksFromFactors(mergedRisks, factors);
@@ -1185,7 +1193,7 @@ function App() {
         }
 
         // 8-K material events → seed CEM with real events
-        try {
+        if (!isPrivateTicker) try {
           const eightK = await MCP.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);
           if (cemEvs.length) {
@@ -1206,7 +1214,13 @@ function App() {
           }
         } catch(e) { log(`MCP 8-K Events unavailable: ${e.message}`); }
 
-        // Proxy data + peer benchmarks → Governance pane (fire and forget, non-blocking)
+        // Proxy data + peer benchmarks → Governance pane (fire and forget, non-blocking).
+        // Neither applies to a private company — no proxy filings, and SIC-peer
+        // benchmarking needs a resolved SIC/CIK the private path doesn't have.
+        if (isPrivateTicker) {
+          log("Governance/Peers: skipped — no SEC filings for a private company");
+        } else
+        {
         setGovLoading(true);
         setGovFetchError(null);
         setGovPeerError(null);
@@ -1235,6 +1249,7 @@ function App() {
           if (proxyRes.status === "fulfilled") log(`MCP Governance: proxy data loaded`);
           if (peerRes.status  === "fulfilled") log(`MCP Peers: ${peerRes.value?.peers?.length || 0} peers with data (${peerRes.value?.peer_source || "SIC peers"})`);
         });
+        }
 
         profileRef.current = { ...templateProfile, risks: enrichedRisks };
         setProfile(profileRef.current);
@@ -1296,10 +1311,16 @@ function App() {
         }
       }
 
-      // EDGAR direct fetch
+      // EDGAR direct fetch — private companies have no CIK/filings to fetch,
+      // and Live JS mode has no client-side path to manual financials (those
+      // only exist via the Python bridge, see MCP mode above), so it falls
+      // back to the industry template same as an EDGAR lookup failure would.
       let edgarFin = null;
       let edgarSic = null;
-      {
+      if (isPrivateTicker) {
+        setLiveStatus("Private company · industry template (switch to MCP mode for manually-uploaded financials)");
+        log("EDGAR: skipped — private company has no SEC filings");
+      } else {
         setLiveStatus("Fetching EDGAR companyfacts…");
         try {
           const facts = await LIVE.fetchEdgarFacts(cfg.ticker);
@@ -1329,7 +1350,7 @@ function App() {
       }
 
       // 8-K material events via MCP bridge (Live mode — opportunistic)
-      if (liveMode) {
+      if (liveMode && !isPrivateTicker) {
         try {
           const eightK = await MCP.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);

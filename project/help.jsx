@@ -64,8 +64,7 @@ function HelpScreen({ onNavigate }) {
     <>
       <div className="panel-head">
         <div>
-          <div className="kicker">Setup</div>
-          <div className="panel-title mt-8">Intelligenza Workflow</div>
+          <div className="panel-title">Intelligenza Workflow</div>
           <div className="panel-sub">How the platform's screens map onto the actual risk-to-audit workflow. Click a stage, then a screen, to jump straight there.</div>
         </div>
       </div>

@@ -65,10 +65,22 @@ HEADERS = {"User-Agent": "PredictiveAnalyticsTool/1.0 (research@example.com)"}
 # SECTION 1 — FINANCIAL RATIO ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# "MANUAL-A"/"MANUAL-Q" are written by manual_financials_tool.py's
+# commit_line_items for user-uploaded annual/quarterly data (private-company
+# financials, or a supplement/correction to a public company's EDGAR data —
+# see build_company_xbrl). Distinct tags per granularity, not one shared
+# "MANUAL" tag, so an annual entry can never accidentally satisfy the
+# quarterly-only filter below purely because form-string membership is the
+# primary gate here.
+_ANNUAL_FORMS    = {"10-K", "20-F", "10-K/A", "MANUAL-A"}
+_QUARTERLY_FORMS = {"10-Q", "10-Q/A", "MANUAL-Q"}
+
+
 def _annual_pts(metric_data: dict) -> list:
     return [
         p for p in metric_data.get("data_points", [])
-        if p.get("form") in {"10-K", "20-F", "10-K/A"} and p.get("val") is not None
+        if p.get("form") in _ANNUAL_FORMS and p.get("val") is not None
     ]
 
 def _quarterly_pts(metric_data: dict) -> list:
@@ -81,7 +93,7 @@ def _quarterly_pts(metric_data: dict) -> list:
     """
     result = []
     for p in metric_data.get("data_points", []):
-        if p.get("form") not in {"10-Q", "10-Q/A"}:
+        if p.get("form") not in _QUARTERLY_FORMS:
             continue
         if p.get("val") is None:
             continue
@@ -245,6 +257,106 @@ def extract_quarterly_series(xbrl: dict, metric: str) -> list[dict]:
             by_end[end] = p
     pts_sorted = sorted(by_end.values(), key=lambda p: p.get("end", ""))
     return [{"quarter_end": p["end"], "value": p["val"], "start": p.get("start")} for p in pts_sorted]
+
+
+def extract_monthly_series(company_id: Optional[int], metric: str) -> list[dict]:
+    """Return [{month_end, value}, ...] sorted oldest-first, from manually
+    uploaded monthly data points only. SEC XBRL has no monthly granularity, so
+    unlike extract_quarterly_series this never touches live EDGAR data — it
+    feeds only the forecast/backtest/QoQ-momentum stage (finer time
+    resolution than quarterly where a user has entered it); the ratio/
+    Beneish/Altman models stay annual/quarterly as before, see
+    build_company_xbrl. Returns [] when there's no DB, no company_id, or no
+    monthly data uploaded for this metric — same "degrade to nothing" pattern
+    every other sparse-data path in this file already follows."""
+    if not company_id:
+        return []
+    try:
+        import db
+    except ImportError:
+        return []
+    if not db.is_available():
+        return []
+    monthly = db.get_manual_financials(company_id, granularity=["monthly"])
+    pts = monthly.get(metric, {}).get("data_points", [])
+    by_end: dict = {}
+    for p in pts:
+        end = p.get("end")
+        if not end or p.get("val") is None:
+            continue
+        if end not in by_end or (p.get("filed") or "") > (by_end[end].get("filed") or ""):
+            by_end[end] = p
+    pts_sorted = sorted(by_end.values(), key=lambda p: p.get("end", ""))
+    return [{"month_end": p["end"], "value": p["val"], "start": p.get("start")} for p in pts_sorted]
+
+
+def _merge_xbrl_manual(xbrl: dict, manual: dict) -> dict:
+    """Overlay manually-uploaded annual/quarterly points onto live EDGAR data.
+    Manual wins on a period_end collision for the same metric — a user
+    entering a restated or more precise figure supersedes the as-filed EDGAR
+    value rather than the two silently coexisting as duplicate history
+    points feeding the same ratio calculation."""
+    if not manual:
+        return xbrl
+    merged = {k: {**v, "data_points": list(v.get("data_points", []))} for k, v in xbrl.items()}
+    for metric, m_entry in manual.items():
+        base_entry = merged.setdefault(metric, {
+            "tag": m_entry.get("tag") or metric, "label": metric,
+            "unit": m_entry.get("unit", "USD"), "data_points": [],
+        })
+        manual_ends = {p["end"] for p in m_entry.get("data_points", []) if p.get("end")}
+        base_entry["data_points"] = [
+            p for p in base_entry["data_points"] if p.get("end") not in manual_ends
+        ] + m_entry.get("data_points", [])
+    return merged
+
+
+def build_company_xbrl(ticker: str) -> tuple[dict, dict]:
+    """Resolve a ticker to XBRL-shaped financial data plus company metadata,
+    branching on whether it's a real SEC filer or a private company created
+    via db.upsert_private_company (synthetic PVT-<SLUG> ticker, no CIK).
+    Private companies skip the EDGAR round-trip entirely and run purely on
+    manually-uploaded data; public companies get live EDGAR XBRL overlaid
+    with any manual annual/quarterly corrections/supplements a user has
+    uploaded (see _merge_xbrl_manual). Returns (xbrl, meta) where meta has
+    company_name/cik/sic/sic_description/is_private/company_id — cik and
+    company_id are None for a private company not yet persisted, or for a
+    public company never previously looked up (DB unavailable/not yet upserted)."""
+    try:
+        import db
+        has_db = db.is_available()
+    except ImportError:
+        db = None
+        has_db = False
+
+    if has_db and db.is_private_ticker(ticker):
+        company_meta = db.get_company_meta(ticker)
+        if not company_meta:
+            raise ValueError(
+                f"Unknown private company ticker '{ticker}' — create it via POST /company/private first"
+            )
+        xbrl = db.get_manual_financials(company_meta["id"], granularity=["annual", "quarterly"])
+        meta = {
+            "company_name": company_meta["company_name"], "cik": None,
+            "sic": company_meta.get("sic") or "", "sic_description": company_meta.get("sic_description") or "",
+            "is_private": True, "company_id": company_meta["id"],
+        }
+        return xbrl, meta
+
+    meta_edgar, _ = get_company_info(ticker)
+    xbrl = fetch_xbrl_facts(meta_edgar["cik"])
+    company_id = None
+    if has_db:
+        company_id = db.get_company_id(ticker)
+        if company_id:
+            manual = db.get_manual_financials(company_id, granularity=["annual", "quarterly"])
+            xbrl = _merge_xbrl_manual(xbrl, manual)
+    meta = {
+        "company_name": meta_edgar["company_name"], "cik": meta_edgar["cik"],
+        "sic": meta_edgar.get("sic", ""), "sic_description": meta_edgar.get("sic_description", ""),
+        "is_private": False, "company_id": company_id,
+    }
+    return xbrl, meta
 
 
 def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[dict] = None,
@@ -2009,22 +2121,21 @@ def run_full_analysis(
 
     result: dict = {"ticker": ticker.upper(), "generated_at": datetime.now(timezone.utc).isoformat()}
 
-    # ── Fetch EDGAR data ──────────────────────────────────────────────────────
+    # ── Fetch financial data ──────────────────────────────────────────────────
+    # build_company_xbrl branches on public (live EDGAR + manual overlay) vs.
+    # private (manual data only, no CIK) — see its docstring.
     try:
-        meta, _ = get_company_info(ticker)
-        cik     = meta["cik"]
-        sic     = meta.get("sic", "")
-        result["company_name"]    = meta["company_name"]
+        xbrl, company_meta = build_company_xbrl(ticker)
+        cik        = company_meta.get("cik")
+        sic        = company_meta.get("sic", "")
+        company_id = company_meta.get("company_id")
+        result["company_name"]    = company_meta["company_name"]
         result["cik"]             = cik
         result["sic"]             = sic
-        result["sic_description"] = meta.get("sic_description", "")
+        result["sic_description"] = company_meta.get("sic_description", "")
+        result["is_private"]      = company_meta.get("is_private", False)
     except Exception as e:
-        return {"error": f"EDGAR lookup failed: {e}"}
-
-    try:
-        xbrl = fetch_xbrl_facts(cik)
-    except Exception as e:
-        return {"error": f"XBRL fetch failed: {e}"}
+        return {"error": f"Company lookup failed: {e}"}
 
     # Detect industry if not supplied
     if not industry:
@@ -2088,6 +2199,13 @@ def run_full_analysis(
             }
     else:
         result["forecast"] = {"note": f"No quarterly {forecast_metric} data in XBRL"}
+
+    # ── 7b. Monthly detail (manual uploads only — supplements the quarterly
+    # forecast history above with finer resolution; never feeds ratios/
+    # Beneish/Altman, see extract_monthly_series) ────────────────────────────
+    monthly_series = extract_monthly_series(company_id, forecast_metric)
+    if monthly_series:
+        result["monthly_series"] = {"metric": forecast_metric, "history": monthly_series}
 
     # Gross margin quarterly history + ensemble forecast — needed by the JS forecast chart
     try:

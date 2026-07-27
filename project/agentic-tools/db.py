@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS companies (
     state_of_incorporation  VARCHAR(4),
     fiscal_year_end         VARCHAR(4),
     exchanges               TEXT[],
+    is_private              BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -134,7 +135,9 @@ CREATE TABLE IF NOT EXISTS xbrl_data_points (
     form             VARCHAR(16),
     value            NUMERIC,
     filed_date       DATE,
-    accession_number VARCHAR(20)
+    accession_number VARCHAR(20),
+    source           VARCHAR(16) NOT NULL DEFAULT 'sec_edgar',
+    granularity      VARCHAR(8)  NOT NULL DEFAULT 'annual'
 );
 CREATE INDEX IF NOT EXISTS idx_xbrl_dp_series ON xbrl_data_points (series_id, period_end DESC);
 
@@ -1611,6 +1614,35 @@ ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS token_enc   
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_synced_at   TIMESTAMPTZ;
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_status VARCHAR(16);
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_error  TEXT;
+
+-- Private-company support (no SEC ticker/CIK) and manual financial-statement
+-- ingestion: companies.is_private flags entities created via
+-- upsert_private_company (synthetic PVT-<SLUG> ticker, cik NULL) rather than
+-- resolved from EDGAR. xbrl_data_points.source distinguishes rows written by
+-- the live /edgar/financials pull ('sec_edgar', insert-only, matches SEC's
+-- append-only filing history) from rows a user uploaded/entered by hand
+-- ('manual_upload', upsertable — correcting a typo shouldn't accumulate
+-- duplicate rows). granularity ('annual'|'quarterly'|'monthly') lets manual
+-- monthly entries be excluded from the annual/quarterly ratio pipeline and
+-- routed to the forecast-only path instead.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE xbrl_data_points ADD COLUMN IF NOT EXISTS source      VARCHAR(16) NOT NULL DEFAULT 'sec_edgar';
+ALTER TABLE xbrl_data_points ADD COLUMN IF NOT EXISTS granularity VARCHAR(8)  NOT NULL DEFAULT 'annual';
+
+-- xbrl_data_points had no uniqueness constraint at all, so save_xbrl_data_points
+-- (insert-only, still used by the SEC pull) has always silently duplicated rows
+-- on re-fetch. That was harmless while these tables were write-only, but the
+-- new manual-upload upsert path needs a real ON CONFLICT target. Dedupe any
+-- pre-existing rows (keep the lowest id per group) before adding the index,
+-- the same way idx_risk_scores_run_ref_unique was retrofitted above.
+DELETE FROM xbrl_data_points d USING xbrl_data_points dup
+    WHERE d.series_id = dup.series_id
+      AND d.period_end = dup.period_end
+      AND COALESCE(d.form, '') = COALESCE(dup.form, '')
+      AND d.source = dup.source
+      AND d.id > dup.id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_xbrl_dp_unique
+    ON xbrl_data_points (series_id, period_end, form, source);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -1884,6 +1916,75 @@ def get_company_id(ticker: str) -> Optional[int]:
     return _run(_do)
 
 
+def upsert_private_company(name: str, industry: str = "", fiscal_year_end: str = "") -> Optional[str]:
+    """Create a company with no SEC ticker/CIK, keyed by a synthetic PVT-<SLUG>
+    pseudo-ticker instead. Every other table (xbrl_metric_series, sic_peers,
+    risk_loop_runs, ...) references company_id, and every endpoint/frontend
+    call is keyed by ticker (see companies.ticker NOT NULL UNIQUE) — a synthetic
+    ticker lets a private company flow through that same plumbing unmodified
+    rather than requiring a schema-wide refactor to company_id. Returns the
+    assigned ticker, or None on failure."""
+    def _do():
+        import re
+        slug = re.sub(r"[^A-Z0-9]", "", (name or "").upper())[:10] or "COMPANY"
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                ticker = f"PVT-{slug}"
+                attempt = 1
+                while True:
+                    cur.execute("SELECT 1 FROM companies WHERE ticker = %s", (ticker,))
+                    if not cur.fetchone():
+                        break
+                    attempt += 1
+                    ticker = f"PVT-{slug[:8]}{attempt}"
+                cur.execute(
+                    """
+                    INSERT INTO companies
+                        (ticker, cik, company_name, sic_description, fiscal_year_end, is_private)
+                    VALUES (%s, NULL, %s, %s, %s, TRUE)
+                    RETURNING ticker
+                    """,
+                    (ticker, name, industry or None, fiscal_year_end or None),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_company_meta(ticker: str) -> Optional[dict]:
+    """Return the full companies row for a ticker (id, cik, name, sic, is_private,
+    ...), or None if not found. Used by build_company_xbrl to resolve a private
+    company's identity from the DB instead of an EDGAR lookup — private
+    companies have no CIK to look up in the first place."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, ticker, cik, company_name, sic, sic_description,
+                           fiscal_year_end, is_private
+                    FROM companies WHERE ticker = %s
+                    """,
+                    (ticker.upper(),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "ticker": row[1], "cik": row[2], "company_name": row[3],
+                    "sic": row[4], "sic_description": row[5], "fiscal_year_end": row[6],
+                    "is_private": row[7],
+                }
+    return _run(_do)
+
+
+def is_private_ticker(ticker: str) -> bool:
+    """True if `ticker` is a synthetic pseudo-ticker minted by
+    upsert_private_company (PVT-<SLUG>). Checked by prefix rather than a DB
+    round-trip so callers can branch before doing any company lookup at all —
+    mirrors the frontend's identical cfg.ticker.startsWith('PVT-') check."""
+    return (ticker or "").upper().startswith("PVT-")
+
+
 def save_sic_peers(company_id: int, peers: list) -> None:
     """Save SIC peer companies."""
     def _do():
@@ -2016,6 +2117,105 @@ def save_xbrl_data_points(series_id: int, data_points: list) -> None:
                     rows,
                 )
     _run(_do)
+
+
+def upsert_manual_data_points(series_id: int, data_points: list) -> None:
+    """Upsert user-entered/uploaded data points (source='manual_upload').
+    Unlike save_xbrl_data_points (insert-only, appropriate for SEC's append-only
+    filing history), re-uploading the same period here updates the value in
+    place — a user correcting a typo or replacing a draft trial balance
+    shouldn't accumulate duplicate rows. Relies on idx_xbrl_dp_unique
+    (series_id, period_end, form, source)."""
+    def _do():
+        rows = [
+            (
+                series_id,
+                dp.get("period_end") or dp.get("end"),
+                dp.get("period_start") or dp.get("start"),
+                dp.get("fiscal_period") or dp.get("fp"),
+                dp.get("form") or "MANUAL",
+                dp.get("value") if dp.get("value") is not None else dp.get("val"),
+                dp.get("filed") or dp.get("filed_date"),
+                dp.get("accn") or dp.get("accession_number"),
+                "manual_upload",
+                dp.get("granularity") or "annual",
+            )
+            for dp in data_points
+        ]
+        rows = [r for r in rows if r[1]]
+        if not rows:
+            return
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO xbrl_data_points
+                        (series_id, period_end, period_start, fiscal_period,
+                         form, value, filed_date, accession_number, source, granularity)
+                    VALUES %s
+                    ON CONFLICT (series_id, period_end, form, source) DO UPDATE SET
+                        value            = EXCLUDED.value,
+                        period_start     = EXCLUDED.period_start,
+                        fiscal_period    = EXCLUDED.fiscal_period,
+                        filed_date       = EXCLUDED.filed_date,
+                        accession_number = EXCLUDED.accession_number,
+                        granularity      = EXCLUDED.granularity
+                    """,
+                    rows,
+                )
+    _run(_do)
+
+
+def get_manual_financials(company_id: int, granularity: Optional[list[str]] = None) -> dict:
+    """Reconstruct an xbrl-shaped dict ({metric_name: {tag, label, unit,
+    data_points: [{end, start, val, fp, form, filed, accn}, ...]}}) from
+    manually-uploaded data points — this is the first read path for
+    xbrl_metric_series/xbrl_data_points, which were write-only before manual
+    ingestion existed (fetch_xbrl_facts always re-pulls live from EDGAR
+    instead of reading them back). Pass granularity=['annual','quarterly'] to
+    feed the ratio/Beneish/Altman pipeline, or granularity=['monthly'] to feed
+    the forecast-only path."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                params: list = [company_id]
+                gran_clause = ""
+                if granularity:
+                    gran_clause = "AND dp.granularity = ANY(%s)"
+                    params.append(list(granularity))
+                cur.execute(
+                    f"""
+                    SELECT s.metric_name, s.xbrl_tag, s.unit,
+                           dp.period_end, dp.period_start, dp.fiscal_period,
+                           dp.form, dp.value, dp.filed_date, dp.accession_number
+                    FROM xbrl_data_points dp
+                    JOIN xbrl_metric_series s ON s.id = dp.series_id
+                    WHERE s.company_id = %s AND dp.source = 'manual_upload' {gran_clause}
+                    ORDER BY dp.period_end DESC
+                    """,
+                    params,
+                )
+                xbrl: dict = {}
+                for (metric_name, xbrl_tag, unit, period_end, period_start,
+                     fiscal_period, form, value, filed_date, accn) in cur.fetchall():
+                    entry = xbrl.setdefault(metric_name, {
+                        "tag": xbrl_tag or metric_name,
+                        "label": metric_name,
+                        "unit": unit or "USD",
+                        "data_points": [],
+                    })
+                    entry["data_points"].append({
+                        "end":   period_end.isoformat() if period_end else None,
+                        "start": period_start.isoformat() if period_start else None,
+                        "val":   float(value) if value is not None else None,
+                        "fp":    fiscal_period,
+                        "form":  form,
+                        "filed": filed_date.isoformat() if filed_date else None,
+                        "accn":  accn,
+                    })
+                return xbrl
+    return _run(_do, default={})
 
 
 def save_edgar_8k_events(company_id: int, events: list) -> list[str]:
