@@ -114,6 +114,15 @@ _GIT_FIELDS = frozenset({
     "ref", "forced", "cvss_score", "secret_type", "commits_count", "is_admin",
 })
 
+# Fields pipeline_security_connectors.normalize_pipeline_compliance()
+# contributes, spread via _conform_github's "compliance" dict (GITHUB
+# on-demand path) or _conform_system_telemetry's "pipeline_compliance" dict
+# (SYSTEM_TELEMETRY scheduled-poll path — github_scm_tool.py's second event).
+_PIPELINE_SECURITY_FIELDS = frozenset({
+    "total_workflows", "workflows_without_permissions", "has_write_all_permissions",
+    "has_risky_pull_request_target", "unpinned_action_count", "unpinned_actions",
+})
+
 _MCP_FIELDS = frozenset({
     "risk_flags", "flag_count", "execution_time_ms", "server_name", "session_id",
     "message_id", "tool_args_hash", "error_message", "payload_hash", "narrative",
@@ -154,12 +163,13 @@ _INFRA_FIELDS = frozenset({
 
 PROCESS_CONTRACTS: dict[str, dict] = {
     "devops_monitoring": {
-        "allowed_fields": _SCM_COMPLIANCE_FIELDS | _SYSTEM_TELEMETRY_FIELDS | _GIT_FIELDS,
+        "allowed_fields": _SCM_COMPLIANCE_FIELDS | _SYSTEM_TELEMETRY_FIELDS | _GIT_FIELDS | _PIPELINE_SECURITY_FIELDS,
         "allowed_event_types": {
             "BRANCH_PROTECTION_BYPASSED",
             "CODE_REVIEW_BYPASSED",
             "SAST_FINDING",
             "SLA_BREACH",
+            "PIPELINE_MISCONFIGURATION",
         },
     },
     "itgc": {

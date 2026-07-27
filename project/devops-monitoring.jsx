@@ -10,6 +10,8 @@
 
    Data: GET /api/scm-audit/repositories, GET /api/scm-audit/results,
          POST /api/scm-audit/repositories/{id}/run, POST /api/scm-audit/run-all,
+         GET /api/scm-audit/pipeline-security/results,
+         POST /api/scm-audit/repositories/{id}/run-pipeline-security,
          GET /api/evidence/records, GET /api/evidence/records/{id}/verify.
    ============================================================ */
 
@@ -68,6 +70,9 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
   const [runningId, setRunningId] = React.useState(null);
   const [runAllBusy, setRunAllBusy] = React.useState(false);
 
+  const [pipelineResults, setPipelineResults] = React.useState([]);
+  const [pipelineRunningId, setPipelineRunningId] = React.useState(null);
+
   const [evRepository, setEvRepository] = React.useState("");
   const [evSeverity, setEvSeverity] = React.useState("");
   const [evRecords, setEvRecords] = React.useState([]);
@@ -107,6 +112,19 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
     const id = setInterval(load, 15000);
     return () => clearInterval(id);
   }, [load, isPaused]);
+
+  const loadPipelineResults = React.useCallback(() => {
+    return fetch(`${_devopsBase()}/scm-audit/pipeline-security/results`, { credentials: "include" })
+      .then(r => r.json())
+      .then(d => setPipelineResults(d.results || []))
+      .catch(() => setPipelineResults([]));
+  }, []);
+  React.useEffect(() => {
+    loadPipelineResults();
+    if (isPaused) return;
+    const id = setInterval(loadPipelineResults, 15000);
+    return () => clearInterval(id);
+  }, [loadPipelineResults, isPaused]);
 
   const loadEvidence = React.useCallback(() => {
     setEvLoading(true);
@@ -191,6 +209,21 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
       .finally(() => { setRunAllBusy(false); load(); });
   }
 
+  const githubRepos = repos.filter(r => r.provider === "github");
+  const pipelineRows = githubRepos.map(repo => ({
+    repo, result: pipelineResults.find(r => r.server_name === repo.repo_ref) || null,
+  }));
+
+  function runPipelineSecurityAudit(repositoryId) {
+    setPipelineRunningId(repositoryId);
+    fetch(`${_devopsBase()}/scm-audit/repositories/${repositoryId}/run-pipeline-security`, {
+      method: "POST", credentials: "include",
+    })
+      .then(r => r.json())
+      .catch(e => ({ adjudication_error: e.message }))
+      .finally(() => { setPipelineRunningId(null); loadPipelineResults(); });
+  }
+
   function verifyRecord(id) {
     fetch(`${_devopsBase()}/evidence/records/${id}/verify`, { credentials: "include" })
       .then(r => r.json())
@@ -206,10 +239,11 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
             <div className="kicker">DevOps Monitoring · SCM Integrity & Evidence</div>
             <div className="panel-title mt-8">DevOps Monitoring</div>
             <div className="panel-sub">
-              Branch-protection/CODEOWNERS compliance for registered GitHub & GitLab
-              repositories, and the SARIF/SAST evidence log feeding their severity SLAs.
-              Findings are adjudicated through the same Bronze→Silver→Gold→Council pipeline
-              and devops_monitoring Policy-as-Code module as every other governed system.
+              Branch-protection/CODEOWNERS compliance and GitHub Actions workflow-as-code
+              security for registered GitHub & GitLab repositories, and the SARIF/SAST
+              evidence log feeding their severity SLAs. Findings are adjudicated through the
+              same Bronze→Silver→Gold→Council pipeline and devops_monitoring Policy-as-Code
+              module as every other governed system.
             </div>
           </div>
           {LiveBadge && (
@@ -275,6 +309,55 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
                       </button>
                     </td>
                   </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ---- Pipeline Security ---- */}
+      <div style={{ marginBottom: 24 }}>
+        <SectionLabel>Pipeline Security</SectionLabel>
+        <div className="panel-sub" style={{ marginBottom: 8 }}>
+          GitHub Actions workflow-as-code audit — token permissions, unpinned third-party
+          actions, and risky pull_request_target triggers — for registered GitHub repositories.
+        </div>
+
+        {!githubRepos.length ? (
+          <Empty>No GitHub repositories registered yet.</Empty>
+        ) : (
+          <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left" }}>
+                  {["Repository", "Workflows", "Missing Permissions", "Unpinned Actions", "Risky pull_request_target", "Risk Tier", "Last Audited", ""].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", color: "var(--ink-4)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pipelineRows.map(({ repo, result }) => (
+                    <tr key={repo.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                      <td style={{ padding: "8px 12px", fontFamily: "var(--mono)" }}>{repo.repo_ref}</td>
+                      <td style={{ padding: "8px 12px" }}>{result ? (result.compliance?.total_workflows ?? "—") : "—"}</td>
+                      <td style={{ padding: "8px 12px" }}>{result ? (result.compliance?.workflows_without_permissions ?? "—") : "—"}</td>
+                      <td style={{ padding: "8px 12px" }}>{result ? (result.compliance?.unpinned_action_count ?? "—") : "—"}</td>
+                      <td style={{ padding: "8px 12px" }}>
+                        {result ? (result.compliance?.has_risky_pull_request_target
+                          ? <DmSeverityPill severity="CRITICAL" /> : <DmSeverityPill severity="INFO" />)
+                          : <span style={{ color: "var(--ink-4)" }}>not yet audited</span>}
+                      </td>
+                      <td style={{ padding: "8px 12px" }}>{result?.risk_tier || "—"}</td>
+                      <td style={{ padding: "8px 12px", color: "var(--ink-3)" }}>
+                        {result?.adjudicated_at ? new Date(result.adjudicated_at).toLocaleString() : "—"}
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                        <button type="button" className="btn btn-sm" onClick={() => runPipelineSecurityAudit(repo.id)} disabled={pipelineRunningId === repo.id}>
+                          {pipelineRunningId === repo.id ? "Running…" : "Run now"}
+                        </button>
+                      </td>
+                    </tr>
                 ))}
               </tbody>
             </table>

@@ -181,6 +181,19 @@ class SilverConformationLayer(SilverLayerBase):
                     f"(due {payload.get('sla_due_at', 'unknown')})"
                 )
 
+        # ── DevOps Monitoring: Pipeline-as-Code (CI/CD workflow) audit ────────
+        elif rule.rule_id == "POL-DEVOPS-003":
+            if uro.event_type == EventType.PIPELINE_MISCONFIGURATION:
+                compliance = raw.get("compliance") or (raw.get("raw_payload") or {}).get("pipeline_compliance") or {}
+                repo = (raw.get("repository") or {}).get("full_name") or raw.get("resource") or "unknown"
+                if compliance.get("has_risky_pull_request_target"):
+                    return (
+                        f"CRITICAL: workflow on '{repo}' triggers on pull_request_target with an "
+                        "untrusted PR-head checkout — a fork PR can execute code with write-scoped secrets"
+                    )
+                if compliance.get("has_write_all_permissions"):
+                    return f"Workflow permissions on '{repo}' are write-all — broader than least-privilege"
+
         # ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ────────────
         elif rule.rule_id == "POL-INFRA-001":
             if uro.event_type == EventType.INFRASTRUCTURE_FINDING:
@@ -472,6 +485,13 @@ class SilverConformationLayer(SilverLayerBase):
                 # normalize_railway_compliance() produces, spread the same way
                 # scm_audit_endpoints.py's "compliance" sub-dict is above.
                 **(raw.get("raw_payload") or {}).get("infra_compliance", {}),
+                # DevOps Monitoring: Pipeline-as-Code audit (github_pipeline_tool.py,
+                # event_type=='pipeline_misconfiguration'): the normalized dict
+                # pipeline_security_connectors.normalize_pipeline_compliance()
+                # produces. Named distinctly from "compliance" above (SCM branch
+                # protection) since a single poll tick's telemetry row can't hold
+                # both under the same key.
+                **(raw.get("raw_payload") or {}).get("pipeline_compliance", {}),
             },
             affected_entities=[server, str(raw.get("actor", ""))],
             conformation_rules_applied=["System-Telemetry-v1-conform"],

@@ -88,6 +88,9 @@ class GitHubBronzeHandler(BronzeLayerBase):
         "push":                   EventType.FORCE_PUSH_MAIN,
         "dependabot_alert":       EventType.DEPENDENCY_VULNERABILITY,
         "pull_request_review":    EventType.CODE_REVIEW_BYPASSED,
+        # DevOps Monitoring: scm_audit_endpoints.py's on-demand pipeline-security
+        # audit synthesizes this event name, same convention as branch_protection_rule.
+        "workflow_security_audit": EventType.PIPELINE_MISCONFIGURATION,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
@@ -346,6 +349,10 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         # Infrastructure Monitoring: postgres_cis_tool.py / railway_iaas_tool.py
         # poll-connector audits set this explicit flag on findings.
         "infrastructure_finding":      EventType.INFRASTRUCTURE_FINDING,
+        # DevOps Monitoring: github_scm_tool.py's scheduled poll additionally
+        # runs a pipeline-as-code (workflow YAML) audit each tick alongside
+        # its branch-protection check — see pipeline_security_connectors.py.
+        "pipeline_misconfiguration":   EventType.PIPELINE_MISCONFIGURATION,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
