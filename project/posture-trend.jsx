@@ -15,8 +15,49 @@ function EmptyNote({ text }) {
   return <div style={{ fontSize: 11.5, color: "var(--ink-4)", fontStyle: "italic" }}>{text}</div>;
 }
 
+// Reverse-chronological by default (newest run first) — toggled per-column
+// by clicking a header. Sorting is display-only: the underlying `rows` array
+// stays oldest->newest for the chart and for the delta-vs-prior calc, which
+// depends on chronological order.
+function _sortRows(rows, sort) {
+  const dir = sort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let av = a[sort.key], bv = b[sort.key];
+    if (sort.key === "run_at") {
+      av = av ? new Date(av).getTime() : null;
+      bv = bv ? new Date(bv).getTime() : null;
+    }
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;  // nulls sort last regardless of direction
+    if (bv == null) return -1;
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  });
+}
+
+function SortableTh({ label, sortKey, sort, onSort }) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      onClick={() => onSort(sortKey)}
+      style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+      title={`Sort by ${label}`}
+    >
+      {label}
+      <span className="mono" style={{
+        marginLeft: 4, fontSize: 9,
+        color: active ? "var(--ink)" : "var(--ink-4)", opacity: active ? 1 : 0.5,
+      }}>
+        {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
+      </span>
+    </th>
+  );
+}
+
 function PostureTrendPanel({ ticker }) {
   const [state, setState] = useState({ loading: false, error: null, runs: null });
+  const [sort, setSort] = useState({ key: "run_at", dir: "desc" });
 
   useEffect(() => {
     if (!ticker) return;
@@ -35,6 +76,12 @@ function PostureTrendPanel({ ticker }) {
     delta: i > 0 && r.avg_score != null && runs[i - 1].avg_score != null
       ? r.avg_score - runs[i - 1].avg_score : null,
   }));
+
+  function toggleSort(key) {
+    setSort(prev => prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" });
+  }
+
+  const sortedRows = useMemo(() => _sortRows(rows, sort), [rows, sort]);
 
   function downloadJson() {
     if (!state.runs) return;
@@ -123,9 +170,17 @@ function PostureTrendPanel({ ticker }) {
           <div className="rep-section">
             <h3>Run-over-Run Detail</h3>
             <table className="rep-table">
-              <thead><tr><th>Run Date</th><th>Avg Score</th><th>Δ vs. prior</th><th>RAG (R/A/G)</th><th>Risks</th></tr></thead>
+              <thead>
+                <tr>
+                  <SortableTh label="Run Date" sortKey="run_at" sort={sort} onSort={toggleSort} />
+                  <SortableTh label="Avg Score" sortKey="avg_score" sort={sort} onSort={toggleSort} />
+                  <SortableTh label="Δ vs. prior" sortKey="delta" sort={sort} onSort={toggleSort} />
+                  <SortableTh label="RAG (R/A/G)" sortKey="red_count" sort={sort} onSort={toggleSort} />
+                  <SortableTh label="Risks" sortKey="risk_count" sort={sort} onSort={toggleSort} />
+                </tr>
+              </thead>
               <tbody>
-                {rows.map(r => (
+                {sortedRows.map(r => (
                   <tr key={r.run_id}>
                     <td className="mono" style={{ fontSize: 10 }}>{r.dateLabel}</td>
                     <td className="mono">{r.avg_score != null ? r.avg_score.toFixed(2) : "—"}</td>
