@@ -512,11 +512,21 @@ function CorporateEventsTimeline({ events, onSelect }) {
   );
 }
 
-function CorporateEventRow({ event, onUpdate, saving, expanded, onToggle, highlight }) {
+function CorporateEventRow({ event, onUpdate, saving, expanded, onToggle, highlight, users, risks, onAddAudit }) {
   const [owner, setOwner] = React.useState(event.owner || "");
   const [notes, setNotes] = React.useState(event.notes || "");
+  const [auditModalOpen, setAuditModalOpen] = React.useState(false);
+  const [auditAdded, setAuditAdded] = React.useState(false);
   const st = _CE_STATUS_STYLE[event.status] || _CE_STATUS_STYLE.new;
   const cls = event.classification || {};
+
+  // The current owner may be a name that isn't (or is no longer) an active
+  // user — keep it selectable rather than silently dropping it from the list.
+  const ownerOptions = React.useMemo(() => {
+    const names = new Set((users || []).map(u => u.display_name || u.username).filter(Boolean));
+    if (owner) names.add(owner);
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [users, owner]);
 
   React.useEffect(() => { setOwner(event.owner || ""); }, [event.owner]);
   React.useEffect(() => { setNotes(event.notes || ""); }, [event.notes]);
@@ -563,16 +573,19 @@ function CorporateEventRow({ event, onUpdate, saving, expanded, onToggle, highli
             </div>
           )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 8 }}>
-            <input className="code-input" style={{ fontSize: 11 }} placeholder="Owner (unassigned)"
-              value={owner} onChange={e => setOwner(e.target.value)}
-              onBlur={() => owner !== (event.owner || "") && onUpdate(event.id, { owner })}
-              onClick={e => e.stopPropagation()} />
+            <select className="code-input" style={{ fontSize: 11 }}
+              value={owner}
+              onChange={e => { setOwner(e.target.value); onUpdate(event.id, { owner: e.target.value }); }}
+              onClick={e => e.stopPropagation()}>
+              <option value="">Owner (unassigned)</option>
+              {ownerOptions.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
             <input className="code-input" style={{ fontSize: 11 }} placeholder="Notes / assessment"
               value={notes} onChange={e => setNotes(e.target.value)}
               onBlur={() => notes !== (event.notes || "") && onUpdate(event.id, { notes })}
               onClick={e => e.stopPropagation()} />
           </div>
-          <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }} onClick={e => e.stopPropagation()}>
             {event.status !== "reviewing" && event.status !== "assessed" && event.status !== "dismissed" && (
               <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(event.id, { status: "reviewing" })}>Start Review</button>
             )}
@@ -582,14 +595,157 @@ function CorporateEventRow({ event, onUpdate, saving, expanded, onToggle, highli
             {event.status !== "dismissed" && (
               <button className="btn btn-sm" disabled={saving} onClick={() => onUpdate(event.id, { status: "dismissed" })}>Dismiss</button>
             )}
+            {onAddAudit && (
+              <button className="btn btn-sm" onClick={() => { setAuditModalOpen(true); setAuditAdded(false); }}>
+                <Icon name="plus" size={10}/> Add Audit
+              </button>
+            )}
+            {auditAdded && (
+              <span className="mono" style={{ fontSize: 10, color: "var(--green-ink)" }}>✓ Added to Individual Audits</span>
+            )}
           </div>
         </div>
+      )}
+
+      {auditModalOpen && (
+        <AddAuditFromEventModal
+          event={event}
+          risks={risks || []}
+          onClose={() => setAuditModalOpen(false)}
+          onSubmit={(audit) => {
+            onAddAudit(audit);
+            setAuditModalOpen(false);
+            setAuditAdded(true);
+          }}
+        />
       )}
     </div>
   );
 }
 
-function CorporateEventsPanel({ ticker }) {
+const _CE_AUDIT_QUARTERS = ["Q3 2026", "Q4 2026", "Q1 2027", "Q2 2027", "Q3 2027", "Q4 2027"];
+
+// Same shape/visual language as pipeline.jsx's AddAuditModal (reuses its
+// "ar-*"/"s3-*" CSS classes for consistency) but with an optional, not
+// required, linked risk — a corporate event is often worth auditing before
+// it has an existing scored risk to attach to, unlike the Stage 3 flow this
+// otherwise mirrors. Submits into the same manualAudits list (onAddAudit =
+// app.jsx's addManualAudit), so it shows up in Stage 3 "Individual audits"
+// and rides the same end-of-run persistence as any other manual audit.
+function AddAuditFromEventModal({ event, risks, onClose, onSubmit }) {
+  const cls = event.classification || {};
+  const [title, setTitle] = React.useState(
+    cls.summary ? `Assess corporate event: ${cls.summary.slice(0, 80)}` : `Assess corporate event — ${event.event_date}`
+  );
+  const [riskId, setRiskId] = React.useState("");
+  const [when, setWhen] = React.useState(_CE_AUDIT_QUARTERS[0]);
+  const [reduction, setReduction] = React.useState(20);
+
+  const selectedRisk = risks.find(r => r.id === riskId);
+  const baseScore = selectedRisk?.score ?? 0;
+  const residualScore = selectedRisk ? parseFloat(Math.max(0, baseScore * (1 - reduction / 100)).toFixed(1)) : null;
+  const valid = title.trim().length >= 5;
+
+  return (
+    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+      <div className="modal-box" style={{ width: 560 }}>
+        <div className="modal-head">
+          <div>
+            <div className="modal-title">Add Audit from Corporate Event</div>
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>
+              {event.event_date} · {_CE_TYPE_LABEL[cls.action_type] || "8-K event"}
+            </div>
+          </div>
+          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+        </div>
+
+        <div className="modal-body">
+          <div className="ar-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+            <div className="ar-field" style={{ gridColumn: "1 / -1" }}>
+              <label className="ar-label">Audit Objective</label>
+              <input type="text" value={title} onChange={e => setTitle(e.target.value)} className="fi-input" />
+            </div>
+
+            <div className="ar-field" style={{ gridColumn: "1 / -1" }}>
+              <label className="ar-label">Linked Risk <span className="mono muted" style={{ fontWeight: 400 }}>(optional)</span></label>
+              <select value={riskId} onChange={e => setRiskId(e.target.value)} className="s3-risk-sel" disabled={!risks.length}>
+                <option value="">{risks.length ? "— None —" : "— No scored risks yet (run the pipeline) —"}</option>
+                {[...risks].sort((a, b) => b.score - a.score).map(r => (
+                  <option key={r.id} value={r.id}>{r.id} · {r.name} · score {fmt2(r.score)} ({r.rag})</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="ar-field">
+              <label className="ar-label">Scheduled Period</label>
+              <div className="ar-ce-row" style={{ flexWrap: "wrap", gap: 4 }}>
+                {_CE_AUDIT_QUARTERS.map(q => (
+                  <button key={q} className={`ar-ce-opt ${when === q ? "active" : ""}`} onClick={() => setWhen(q)}>{q}</button>
+                ))}
+              </div>
+            </div>
+
+            {selectedRisk && (
+              <div className="ar-field">
+                <label className="ar-label">
+                  Anticipated Risk Reduction <span className="mono ar-val">{reduction}%</span>
+                </label>
+                <input type="range" min="5" max="80" step="5" value={reduction}
+                  onChange={e => setReduction(parseInt(e.target.value))} className="ar-slider" />
+              </div>
+            )}
+          </div>
+
+          {selectedRisk && (
+            <div className="s3-residual-preview">
+              <div className="s3-res-label mono">Residual Risk Projection</div>
+              <div className="s3-res-row">
+                <div className="s3-res-item">
+                  <div className="l">Current Score</div>
+                  <div className="v mono" style={{ color: scoreColorInk(baseScore) }}>{fmt2(baseScore)}</div>
+                </div>
+                <div className="s3-res-arrow">→</div>
+                <div className="s3-res-item">
+                  <div className="l">Residual Score</div>
+                  <div className="v mono" style={{ color: scoreColorInk(residualScore) }}>{fmt2(residualScore)}</div>
+                </div>
+                <div className="s3-res-item">
+                  <div className="l">Score Reduction</div>
+                  <div className="v mono" style={{ color: "var(--green-ink)" }}>−{fmt2(baseScore - residualScore)}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-foot">
+          <span className="muted mono" style={{ fontSize: 11 }}>
+            {!valid ? "Audit objective must be at least 5 characters" : "Ready to add to plan"}
+          </span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+            <button className="btn btn-sm btn-primary" disabled={!valid}
+              onClick={() => onSubmit({
+                id: `MA-${Date.now().toString(36).toUpperCase()}`,
+                riskId: riskId || null,
+                riskName: selectedRisk?.name || null,
+                when,
+                title: title.trim(),
+                reduction: selectedRisk ? reduction : 0,
+                baseScore: selectedRisk ? baseScore : null,
+                residualScore,
+                sourceEventId: event.id,
+              })}>
+              <Icon name="plus" size={10}/> Add to Plan
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CorporateEventsPanel({ ticker, risks, onAddAudit }) {
   const [events, setEvents] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [savingId, setSavingId] = React.useState(null);
@@ -599,6 +755,16 @@ function CorporateEventsPanel({ ticker }) {
   const [lastChecked, setLastChecked] = React.useState(null);
   const [expandedIds, setExpandedIds] = React.useState(new Set());
   const [highlightId, setHighlightId] = React.useState(null);
+  const [users, setUsers] = React.useState([]);
+
+  // Any authenticated user can list this (see auth_endpoints.py) — powers
+  // the Owner dropdown below, same source the account-menu manager picker uses.
+  React.useEffect(() => {
+    fetch("/auth/users", { credentials: "include" })
+      .then(r => r.ok ? r.json() : { users: [] })
+      .then(d => setUsers(d.users || []))
+      .catch(() => {});
+  }, []);
 
   function selectFromTimeline(ev) {
     setExpandedIds(prev => new Set(prev).add(ev.id));
@@ -716,6 +882,7 @@ function CorporateEventsPanel({ ticker }) {
           {visible.map(ev => (
             <CorporateEventRow key={ev.id} event={ev} onUpdate={handleUpdate} saving={savingId === ev.id}
               expanded={expandedIds.has(ev.id)} highlight={highlightId === ev.id}
+              users={users} risks={risks} onAddAudit={onAddAudit}
               onToggle={() => setExpandedIds(prev => {
                 const next = new Set(prev);
                 next.has(ev.id) ? next.delete(ev.id) : next.add(ev.id);
@@ -728,7 +895,7 @@ function CorporateEventsPanel({ ticker }) {
   );
 }
 
-function ScenarioAnalysisScreen({ ticker, hasRun, varCvar, sensitivity, multiFactorStress, liquidityRunway, earlyWarning }) {
+function ScenarioAnalysisScreen({ ticker, hasRun, varCvar, sensitivity, multiFactorStress, liquidityRunway, earlyWarning, risks, onAddAudit }) {
   const [activeTab, setActiveTab] = React.useState("var");
   const hasData = !!(varCvar || sensitivity || multiFactorStress || liquidityRunway || earlyWarning);
 
@@ -745,7 +912,7 @@ function ScenarioAnalysisScreen({ ticker, hasRun, varCvar, sensitivity, multiFac
         </div>
       </div>
 
-      <CorporateEventsPanel ticker={ticker} />
+      <CorporateEventsPanel ticker={ticker} risks={risks || []} onAddAudit={onAddAudit} />
 
       <div className="pipe-sub-tabs" style={{ marginTop: 4 }}>
         {SCEN_TABS.map(t => (
