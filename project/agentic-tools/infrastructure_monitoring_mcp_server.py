@@ -33,6 +33,7 @@ Claude Desktop — add to ~/.claude/claude_desktop_config.json:
     iaas_list_targets       Registered Postgres CIS audit connectors (no credentials)
     iaas_run_postgres_audit Run a Postgres CIS-style hardening audit now (write-guarded)
     iaas_run_railway_audit  Run a Railway platform/deployment drift audit now (write-guarded)
+    iaas_run_connector_hygiene_check  Check Intelligenza's own connector credential ages now (write-guarded)
 
 ── Environment variables ─────────────────────────────────────────────────────
 
@@ -55,6 +56,8 @@ load_dotenv()
 
 sys.path.insert(0, os.path.dirname(__file__))
 from mcp_guards import audit_log, cap_output, check_rate_limit, check_read_only
+import connector_hygiene
+import connector_hygiene_sweep
 import db
 import postgres_cis_tool
 import railway_iaas_tool
@@ -168,6 +171,34 @@ def iaas_run_railway_audit(connector_id: int) -> str:
         except Exception:
             pass
         return f"Error running audit: {exc}"
+
+
+@mcp.tool()
+def iaas_run_connector_hygiene_check(stale_days: int = 90) -> str:
+    """
+    Check Intelligenza's own stored connector credentials (Oracle Fusion,
+    SAP HANA, GitHub/GitLab PATs, Postgres DSNs, Railway tokens, ...) for
+    rotation staleness now, instead of waiting for the daily background
+    sweep. Any credential older than stale_days is adjudicated as a HIGH
+    INFRASTRUCTURE_FINDING (INFRA-008). Blocked when MCP_READ_ONLY=true when
+    it would actually write an adjudication (a clean result never writes).
+
+    Args:
+        stale_days: Rotation-age threshold in days (default 90).
+    """
+    try:
+        check_rate_limit("iaas_run_connector_hygiene_check")
+        if not db.is_available():
+            return json.dumps({"note": "Database not configured"}, indent=2)
+
+        result = connector_hygiene.check_connector_credential_rotation(stale_days=stale_days)
+        if result["violated"]:
+            check_read_only("iaas_run_connector_hygiene_check")
+            audit_log("iaas_run_connector_hygiene_check", stale_days=stale_days)
+            asyncio.run(connector_hygiene_sweep.sweep_once())
+        return cap_output(json.dumps(result, indent=2, default=str))
+    except Exception as exc:
+        return f"Error checking connector hygiene: {exc}"
 
 
 if __name__ == "__main__":

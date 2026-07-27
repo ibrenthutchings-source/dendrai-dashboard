@@ -1598,6 +1598,12 @@ CREATE INDEX IF NOT EXISTS idx_poll_connectors_active ON observability.poll_conn
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS risk_tier        VARCHAR(16);
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS data_sensitivity VARCHAR(32);
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS system_owner     VARCHAR(128);
+-- Infrastructure Monitoring: connector credential rotation hygiene
+-- (connector_hygiene.py). Distinct from updated_at, which bumps on ANY
+-- field edit (display_name, poll_interval_s, ...) — this column changes
+-- ONLY when the credentials themselves are rotated, so it's an honest
+-- "credential age" signal rather than "row last touched for any reason".
+ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS credentials_rotated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 -- Generic system telemetry: any registered system pushes events here via REST.
 -- Enterprise systems (Saviynt, SAP, Oracle Fusion, ServiceNow, etc.) authenticate
@@ -1698,6 +1704,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_fingerprint_commit
     ON observability.evidence_records (fingerprint, commit_sha);
 CREATE INDEX IF NOT EXISTS idx_evidence_repository
     ON observability.evidence_records (repository, ingested_at DESC);
+-- Tamper-evidence chain: a per-record HMAC (signature above) proves a row's
+-- OWN content wasn't altered, but proves nothing about whether a row was
+-- deleted or reordered out from between its neighbors — that requires a
+-- link to the prior row. chain_hash = sha256(prev_row.chain_hash + this
+-- row's signature), computed under an advisory lock at insert time (see
+-- insert_evidence_record) so concurrent inserts can't fork the chain.
+-- Nullable because pre-existing rows from before this column existed have
+-- no prior chain_hash to link from — verify_evidence_chain() only walks
+-- rows where chain_hash IS NOT NULL and documents that boundary rather than
+-- fabricating a retroactive chain over rows that were never signed for it.
+ALTER TABLE observability.evidence_records ADD COLUMN IF NOT EXISTS chain_hash CHAR(64);
 CREATE INDEX IF NOT EXISTS idx_evidence_severity
     ON observability.evidence_records (severity, ingested_at DESC);
 
@@ -7811,7 +7828,7 @@ def list_poll_connectors(include_credentials: bool = False) -> list:
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                cols = "id, connector_type, display_name, base_url, auth_type, extra_config, poll_interval_s, active, last_poll_at, last_poll_status, last_poll_error, created_at, updated_at, created_by, risk_tier, data_sensitivity, system_owner"
+                cols = "id, connector_type, display_name, base_url, auth_type, extra_config, poll_interval_s, active, last_poll_at, last_poll_status, last_poll_error, created_at, updated_at, created_by, risk_tier, data_sensitivity, system_owner, credentials_rotated_at"
                 if include_credentials:
                     cols += ", credentials_enc"
                 cur.execute(f"SELECT {cols} FROM observability.poll_connectors ORDER BY created_at DESC")
@@ -7827,9 +7844,10 @@ def list_poll_connectors(include_credentials: bool = False) -> list:
                         "updated_at": r[12].isoformat() if r[12] else None,
                         "created_by": r[13],
                         "risk_tier": r[14], "data_sensitivity": r[15], "system_owner": r[16],
+                        "credentials_rotated_at": r[17].isoformat() if r[17] else None,
                     }
                     if include_credentials:
-                        d["credentials"] = decrypt_credentials(r[17]) if r[17] else {}
+                        d["credentials"] = decrypt_credentials(r[18]) if r[18] else {}
                     out.append(d)
                 return out
     return _run(_do) or []
@@ -7864,6 +7882,7 @@ def update_poll_connector(connector_id: int, *, display_name: Optional[str] = No
     if credentials is not None:
         sets.append("credentials_enc = %s")
         params.append(encrypt_credentials(credentials))
+        sets.append("credentials_rotated_at = NOW()")
     if not sets:
         return False
     sets.append("updated_at = NOW()")
@@ -7877,6 +7896,38 @@ def update_poll_connector(connector_id: int, *, display_name: Optional[str] = No
                 )
                 return cur.rowcount > 0
     return _run(_do, default=False) or False
+
+
+def list_connectors_with_stale_credentials(stale_days: int = 90) -> list:
+    """Active connectors whose credential hasn't been rotated in over
+    stale_days — the producer for INFRA-008 (connector_hygiene.py). Only
+    active connectors count: a disabled connector's stale credential isn't
+    an active exposure. Dogfoods Infrastructure Monitoring on Intelligenza's
+    own credential store (Oracle Fusion, SAP HANA, GitHub/GitLab PATs,
+    Postgres DSNs, Railway tokens, ...), not just external audit targets."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, connector_type, display_name, credentials_rotated_at,
+                           EXTRACT(DAY FROM NOW() - credentials_rotated_at)::int AS credential_age_days
+                    FROM observability.poll_connectors
+                    WHERE active = TRUE
+                      AND credentials_rotated_at < NOW() - (%s || ' days')::interval
+                    ORDER BY credentials_rotated_at ASC
+                    """,
+                    (stale_days,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("credentials_rotated_at"):
+                        d["credentials_rotated_at"] = d["credentials_rotated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 def delete_poll_connector(connector_id: int) -> bool:
@@ -7908,6 +7959,24 @@ def record_poll_result(connector_id: int, status: str, error: Optional[str] = No
 # DevOps Monitoring: SARIF/SAST evidence records (observability.evidence_records)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Fixed seed for the first record in the tamper-evidence chain — documented,
+# not secret (the chain's integrity comes from linking, not from this value
+# being unguessable). Arbitrary Postgres advisory-lock key for serializing
+# chain_hash computation across concurrent inserts (same session-scoped
+# xact-lock idiom Postgres recommends for "compute next value, insert" races).
+EVIDENCE_CHAIN_GENESIS_HASH = "0" * 64
+_EVIDENCE_CHAIN_LOCK_KEY = 918_273_645
+
+
+def _evidence_chain_hash(prev_hash: Optional[str], signature: str) -> str:
+    """Pure chain-link function, extracted for testability without a real
+    DB connection — same reasoning as pac_endpoints._parse_opa_bindings /
+    _aggregate_scorecard_rows. prev_hash=None (a fresh table, or the row
+    before this one was a pre-chain legacy row) is treated as genesis."""
+    import hashlib
+    return hashlib.sha256(((prev_hash or EVIDENCE_CHAIN_GENESIS_HASH) + signature).encode("utf-8")).hexdigest()
+
+
 def insert_evidence_record(
     repository: str, commit_sha: Optional[str], pipeline_run_id: Optional[str],
     source: str, rule_id: Optional[str], severity: str, cwe: Optional[str], cve: Optional[str],
@@ -7917,18 +7986,30 @@ def insert_evidence_record(
 ) -> Optional[int]:
     """Insert one immutable evidence row. Returns None (no row id) when
     (fingerprint, commit_sha) already exists — the same finding re-ingested
-    from a repeated scan of the same commit, not a new occurrence."""
+    from a repeated scan of the same commit, not a new occurrence.
+
+    Also computes and stores chain_hash = sha256(prev_chain_hash + signature)
+    under a Postgres advisory transaction lock, so two concurrent ingests
+    can't both read the same "previous" row and fork the tamper-evidence
+    chain — see verify_evidence_chain()."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_EVIDENCE_CHAIN_LOCK_KEY,))
+                cur.execute(
+                    "SELECT chain_hash FROM observability.evidence_records ORDER BY id DESC LIMIT 1"
+                )
+                prev_row = cur.fetchone()
+                prev_hash = prev_row[0] if prev_row else None
+                chain_hash = _evidence_chain_hash(prev_hash, signature)
                 cur.execute(
                     """
                     INSERT INTO observability.evidence_records (
                         repository, commit_sha, pipeline_run_id, source, rule_id, severity,
                         cwe, cve, file_path, line_number, line_snippet, fingerprint,
-                        author, approver, scan_status, raw_sarif, record_json, signature
+                        author, approver, scan_status, raw_sarif, record_json, signature, chain_hash
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s
                     )
                     ON CONFLICT (fingerprint, commit_sha) DO NOTHING
                     RETURNING id
@@ -7936,7 +8017,7 @@ def insert_evidence_record(
                     (repository, commit_sha, pipeline_run_id, source, rule_id, severity,
                      cwe, cve, file_path, line_number, line_snippet, fingerprint,
                      author, approver, scan_status,
-                     Json(raw_sarif) if raw_sarif is not None else None, Json(record_json), signature),
+                     Json(raw_sarif) if raw_sarif is not None else None, Json(record_json), signature, chain_hash),
                 )
                 row = cur.fetchone()
             return row[0] if row else None
@@ -8006,6 +8087,57 @@ def get_evidence_record(record_id: int) -> Optional[dict]:
                     d["ingested_at"] = d["ingested_at"].isoformat()
                 return d
     return _run(_do)
+
+
+def verify_evidence_chain(limit: Optional[int] = None) -> dict:
+    """Walk observability.evidence_records in insertion order and recompute
+    each row's chain_hash from the previous chained row's chain_hash plus
+    this row's own signature. This is what actually proves trail
+    completeness: a per-record HMAC (checked by GET
+    /evidence/records/{id}/verify) proves a row's OWN content wasn't
+    altered, but says nothing about whether a row was deleted from between
+    its neighbors — only the chain linkage can catch that, since a deleted
+    row's absence breaks the next surviving row's expected chain_hash.
+
+    Only walks rows where chain_hash IS NOT NULL — rows inserted before this
+    column existed have nothing to link from and are deliberately excluded
+    rather than folded into a fabricated retroactive chain (see the column's
+    comment in the schema).
+
+    Returns {"valid", "checked", "break_at_id", "unchained_legacy_count"}.
+    valid=True with checked=0 means there is nothing yet to verify (a fresh
+    or all-legacy table), not a pass — callers should treat that distinctly
+    from a real, non-empty, unbroken chain.
+    """
+    import hashlib
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.evidence_records WHERE chain_hash IS NULL"
+                )
+                unchained_legacy_count = cur.fetchone()[0]
+                q = ("SELECT id, signature, chain_hash FROM observability.evidence_records "
+                     "WHERE chain_hash IS NOT NULL ORDER BY id ASC")
+                if limit:
+                    cur.execute(q + " LIMIT %s", (limit,))
+                else:
+                    cur.execute(q)
+                rows = cur.fetchall()
+
+        prev_hash = EVIDENCE_CHAIN_GENESIS_HASH
+        checked = 0
+        for rid, signature, stored_chain_hash in rows:
+            expected = hashlib.sha256((prev_hash + signature).encode("utf-8")).hexdigest()
+            checked += 1
+            if expected != stored_chain_hash:
+                return {"valid": False, "checked": checked, "break_at_id": rid,
+                        "unchained_legacy_count": unchained_legacy_count}
+            prev_hash = stored_chain_hash
+        return {"valid": True, "checked": checked, "break_at_id": None,
+                "unchained_legacy_count": unchained_legacy_count}
+    return _run(_do, default={"valid": False, "checked": 0, "break_at_id": None,
+                               "unchained_legacy_count": 0, "error": "query failed"})
 
 
 def get_scm_repository_state(resource: str) -> Optional[dict]:

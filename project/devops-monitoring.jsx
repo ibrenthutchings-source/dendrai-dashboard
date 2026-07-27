@@ -12,6 +12,8 @@
          POST /api/scm-audit/repositories/{id}/run, POST /api/scm-audit/run-all,
          GET /api/scm-audit/pipeline-security/results,
          POST /api/scm-audit/repositories/{id}/run-pipeline-security,
+         GET /api/scm-audit/secret-scan/results,
+         POST /api/scm-audit/repositories/{id}/run-secret-scan,
          GET /api/evidence/records, GET /api/evidence/records/{id}/verify.
    ============================================================ */
 
@@ -73,11 +75,17 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
   const [pipelineResults, setPipelineResults] = React.useState([]);
   const [pipelineRunningId, setPipelineRunningId] = React.useState(null);
 
+  const [secretScanResults, setSecretScanResults] = React.useState([]);
+  const [secretScanRunningId, setSecretScanRunningId] = React.useState(null);
+  const [secretScanNote, setSecretScanNote] = React.useState({});
+
   const [evRepository, setEvRepository] = React.useState("");
   const [evSeverity, setEvSeverity] = React.useState("");
   const [evRecords, setEvRecords] = React.useState([]);
   const [evLoading, setEvLoading] = React.useState(false);
   const [verifyResults, setVerifyResults] = React.useState({});
+  const [chainVerifyResult, setChainVerifyResult] = React.useState(null);
+  const [chainVerifying, setChainVerifying] = React.useState(false);
 
   const [driftEvents, setDriftEvents] = React.useState([]);
   const [driftOpenOnly, setDriftOpenOnly] = React.useState(false);
@@ -125,6 +133,14 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
     const id = setInterval(loadPipelineResults, 15000);
     return () => clearInterval(id);
   }, [loadPipelineResults, isPaused]);
+
+  const loadSecretScanResults = React.useCallback(() => {
+    return fetch(`${_devopsBase()}/scm-audit/secret-scan/results`, { credentials: "include" })
+      .then(r => r.json())
+      .then(d => setSecretScanResults(d.results || []))
+      .catch(() => setSecretScanResults([]));
+  }, []);
+  React.useEffect(() => { loadSecretScanResults(); }, [loadSecretScanResults]);
 
   const loadEvidence = React.useCallback(() => {
     setEvLoading(true);
@@ -224,11 +240,31 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
       .finally(() => { setPipelineRunningId(null); loadPipelineResults(); });
   }
 
+  function runSecretScan(repositoryId) {
+    setSecretScanRunningId(repositoryId);
+    fetch(`${_devopsBase()}/scm-audit/repositories/${repositoryId}/run-secret-scan`, {
+      method: "POST", credentials: "include",
+    })
+      .then(r => r.json())
+      .then(d => setSecretScanNote(prev => ({ ...prev, [repositoryId]: d })))
+      .catch(e => setSecretScanNote(prev => ({ ...prev, [repositoryId]: { adjudication_error: e.message } })))
+      .finally(() => { setSecretScanRunningId(null); loadSecretScanResults(); });
+  }
+
   function verifyRecord(id) {
     fetch(`${_devopsBase()}/evidence/records/${id}/verify`, { credentials: "include" })
       .then(r => r.json())
       .then(d => setVerifyResults(prev => ({ ...prev, [id]: d.valid })))
       .catch(() => setVerifyResults(prev => ({ ...prev, [id]: false })));
+  }
+
+  function verifyChain() {
+    setChainVerifying(true);
+    fetch(`${_devopsBase()}/evidence/chain/verify`, { credentials: "include" })
+      .then(r => r.json())
+      .then(d => setChainVerifyResult(d))
+      .catch(e => setChainVerifyResult({ valid: false, error: e.message }))
+      .finally(() => setChainVerifying(false));
   }
 
   return (
@@ -365,6 +401,65 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
         )}
       </div>
 
+      {/* ---- Secret Scanning ---- */}
+      <div style={{ marginBottom: 24 }}>
+        <SectionLabel>Secret Scanning</SectionLabel>
+        <div className="panel-sub" style={{ marginBottom: 8 }}>
+          Real gitleaks scan of each registered GitHub repository's full git history — the
+          producer for SECRET_DETECTED (zero-tolerance, CRITICAL) findings outside a live
+          GitHub Advanced Security webhook. Clones the repo, so a run can take longer than
+          the other audits above; secret values are never stored or displayed, only
+          redacted metadata (rule, file, commit, author).
+        </div>
+
+        {!githubRepos.length ? (
+          <Empty>No GitHub repositories registered yet.</Empty>
+        ) : (
+          <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left" }}>
+                  {["Repository", "Status", "Risk Tier", "Last Scanned", ""].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", color: "var(--ink-4)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {githubRepos.map(repo => {
+                  const result = secretScanResults.find(r => r.server_name === repo.repo_ref) || null;
+                  const note = secretScanNote[repo.id];
+                  let statusNode;
+                  if (note && note.scanned === false) {
+                    statusNode = <span style={{ color: "var(--ink-4)" }}>gitleaks unavailable in this environment</span>;
+                  } else if (note && note.finding_count === 0) {
+                    statusNode = <DmSeverityPill severity="INFO" />;
+                  } else if (result || (note && note.finding_count > 0)) {
+                    statusNode = <DmSeverityPill severity="CRITICAL" />;
+                  } else {
+                    statusNode = <span style={{ color: "var(--ink-4)" }}>not yet scanned</span>;
+                  }
+                  return (
+                    <tr key={repo.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                      <td style={{ padding: "8px 12px", fontFamily: "var(--mono)" }}>{repo.repo_ref}</td>
+                      <td style={{ padding: "8px 12px" }}>{statusNode}</td>
+                      <td style={{ padding: "8px 12px" }}>{result?.risk_tier || "—"}</td>
+                      <td style={{ padding: "8px 12px", color: "var(--ink-3)" }}>
+                        {result?.adjudicated_at ? new Date(result.adjudicated_at).toLocaleString() : "—"}
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                        <button type="button" className="btn btn-sm" onClick={() => runSecretScan(repo.id)} disabled={secretScanRunningId === repo.id}>
+                          {secretScanRunningId === repo.id ? "Scanning…" : "Run scan"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* ---- Evidence Inspector ---- */}
       <div>
         <SectionLabel
@@ -380,11 +475,30 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
                 <option value="">All severities</option>
                 {["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].map(s => <option key={s} value={s}>{s}</option>)}
               </select>
+              <button type="button" className="btn btn-sm" onClick={verifyChain} disabled={chainVerifying}>
+                {chainVerifying ? "Verifying…" : "Verify Chain"}
+              </button>
             </div>
           }
         >
           Evidence Inspector
         </SectionLabel>
+
+        {chainVerifyResult && (
+          <div className="mono" style={{
+            fontSize: 11, marginBottom: 8, padding: "6px 10px", borderRadius: 4,
+            background: chainVerifyResult.valid ? "var(--green-bg, rgba(16,185,129,0.1))" : "var(--red-bg, rgba(239,68,68,0.1))",
+            color: chainVerifyResult.valid ? "var(--green-ink, #059669)" : "var(--red-ink, #dc2626)",
+          }}>
+            {chainVerifyResult.error
+              ? `Chain verification error: ${chainVerifyResult.error}`
+              : chainVerifyResult.checked === 0
+              ? "Chain verification: nothing to verify yet (no chained records)"
+              : chainVerifyResult.valid
+              ? `Chain verification: OK — ${chainVerifyResult.checked} record(s) verified, unbroken`
+              : `Chain verification FAILED at record #${chainVerifyResult.break_at_id} — a row may have been altered, deleted, or reordered`}
+          </div>
+        )}
 
         {evLoading && !evRecords.length ? <Empty>Loading…</Empty> : !evRecords.length ? (
           <Empty>No SARIF evidence ingested yet — see /evidence/webhook setup docs.</Empty>

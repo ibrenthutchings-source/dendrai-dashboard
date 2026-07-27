@@ -820,12 +820,14 @@ deny_pipeline_security[msg] if {
 # Infrastructure Monitoring — Continuous IaaS/OS/DB Configuration Audit
 # Package:  controls.infrastructure.monitoring
 # Process:  Infrastructure Monitoring
-# Version:  1.0
+# Version:  1.1
 # Approved by: CISO, VP Engineering
-# Last Revised: 2026-07-26
-# Description: Postgres CIS-style hardening checks (postgres_cis_tool.py) and
-#   Railway platform/deployment drift (railway_iaas_tool.py). Evaluated
-#   against iaas_connectors.normalize_postgres_compliance()'s output, spread
+# Last Revised: 2026-07-27
+# Description: Postgres CIS-style hardening checks (postgres_cis_tool.py),
+#   Railway platform/deployment drift (railway_iaas_tool.py), and
+#   Intelligenza's own connector-credential rotation hygiene
+#   (connector_hygiene.py). Evaluated against
+#   iaas_connectors.normalize_postgres_compliance()'s output, spread
 #   into input.event.* the same way scm_audit_endpoints.py's "compliance"
 #   sub-dict is for the devops_monitoring module.
 
@@ -881,6 +883,17 @@ deny_railway_config[msg] if {
     input.event.type == "INFRASTRUCTURE_FINDING"
     input.event.image_digest_mismatch == true
     msg := sprintf("INFRA-007: Running deployment for '%v' does not match the last approved image digest — verify what's actually deployed", [input.event.resource])
+}
+
+# ── INFRA-008: Connector Credential Rotation Staleness ───────────────────────
+# Dogfooded on Intelligenza's own observability.poll_connectors credential
+# store (connector_hygiene.py) — the one Infrastructure Monitoring check
+# with no external system to poll; the system being checked is Intelligenza
+# itself.
+deny_connector_hygiene[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.stale_connector_count > 0
+    msg := sprintf("INFRA-008: %v stored connector credential(s) have not been rotated in over the staleness threshold (oldest: %v days) — see the Connector Hygiene panel for which ones", [input.event.stale_connector_count, input.event.oldest_credential_age_days])
 }
 """,
 
