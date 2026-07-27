@@ -311,8 +311,8 @@ Each tool also ships as a standalone MCP server for use with Claude Desktop or o
 | `risk_as_code_mcp_server.py` | `risks_as_code.py` | OSCAL / COSO ERM Risk-as-Code artifact generation |
 | `pac_mcp_server.py` | `pac_endpoints.py` | Policy-as-Code Rego modules + negative-control testing |
 | `cac_mcp_server.py` | `pac_endpoints.py` | Controls-as-Code artifact generation from PaC deny rules |
-| `devops_monitoring_mcp_server.py` | `scm_audit_endpoints.py` / `evidence_endpoints.py` | SCM branch-protection audits, SARIF evidence, risk waivers, ITSM SLA bridge |
-| `infrastructure_monitoring_mcp_server.py` | `postgres_cis_tool.py` / `railway_iaas_tool.py` | Continuous Postgres CIS hardening + Railway platform/deployment drift audits |
+| `devops_monitoring_mcp_server.py` | `scm_audit_endpoints.py` / `evidence_endpoints.py` | SCM branch-protection + pipeline-as-code security audits, real `gitleaks` secret scanning, SARIF evidence with tamper-evidence hash chain, risk waivers, ITSM SLA bridge, DORA change-management metrics |
+| `infrastructure_monitoring_mcp_server.py` | `postgres_cis_tool.py` / `railway_iaas_tool.py` | Continuous Postgres CIS hardening + Railway platform/deployment drift + connector credential rotation hygiene audits |
 
 ### Node.js MCP Server (`mcp-server/`)
 
