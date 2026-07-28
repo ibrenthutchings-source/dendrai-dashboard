@@ -1847,14 +1847,27 @@ def ping() -> dict:
         return {"connected": False, "pgvector": False, "error": str(exc)}
 
 
-def _run(fn, default=None):
-    """Call fn(), return default on any failure. Never raises."""
+def _run(fn, default=None, on_error=None):
+    """Call fn(), return default on any failure. Never raises.
+
+    on_error, when given, receives the exception before it's swallowed — a
+    caller-local capture (not a shared/global "last error", which would race
+    under concurrent requests) for the handful of call sites where silently
+    returning `default` makes a real failure look identical to "nothing to
+    do" (e.g. reoptimization_tool.py's create_risk_loop_run call: without
+    this, a schema-mismatch INSERT failure and an ordinary empty result both
+    just produce None, and the caller can't tell which happened)."""
     if _pool is None:
         return default
     try:
         return fn()
     except Exception as exc:
         logger.error("db: %s", exc)
+        if on_error is not None:
+            try:
+                on_error(exc)
+            except Exception:
+                pass
         return default
 
 
@@ -2592,7 +2605,7 @@ def save_fred_correlations(company_id: int, correlations: list, run_date: Option
 # Risk Loop Run
 # ─────────────────────────────────────────────────────────────────────────────
 
-def create_risk_loop_run(company_id: Optional[int], config: dict) -> Optional[int]:
+def create_risk_loop_run(company_id: Optional[int], config: dict, on_error=None) -> Optional[int]:
     """Create a risk_loop_runs record and return run_id.
 
     config.trigger_reason distinguishes an organic user-initiated run
@@ -2600,7 +2613,8 @@ def create_risk_loop_run(company_id: Optional[int], config: dict) -> Optional[in
     'drift_auto_reoptimize' (model_health_drift_watch, on a new drift
     incident) or 'manual_review' (POST /model-health/run-review).
     trigger_incident_id links a drift-triggered run back to the incident
-    that caused it, when applicable."""
+    that caused it, when applicable. See _run's on_error docstring — pass
+    on_error to distinguish a real failure from "nothing to do"."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -2630,10 +2644,10 @@ def create_risk_loop_run(company_id: Optional[int], config: dict) -> Optional[in
                     ),
                 )
                 return cur.fetchone()[0]
-    return _run(_do)
+    return _run(_do, on_error=on_error)
 
 
-def complete_risk_loop_run(run_id: int) -> None:
+def complete_risk_loop_run(run_id: int, on_error=None) -> None:
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -2641,7 +2655,7 @@ def complete_risk_loop_run(run_id: int) -> None:
                     "UPDATE risk_loop_runs SET completed = TRUE, completed_at = NOW() WHERE id = %s",
                     (run_id,),
                 )
-    _run(_do)
+    _run(_do, on_error=on_error)
 
 
 def list_active_tickers(days: int = 90, limit: int = 15) -> list[str]:
@@ -2993,7 +3007,7 @@ def save_grey_swan(run_id: int, grey_swan: dict) -> None:
     _run(_do)
 
 
-def save_forecasts(run_id: int, metric: str, forecast_data: dict) -> None:
+def save_forecasts(run_id: int, metric: str, forecast_data: dict, on_error=None) -> None:
     if not forecast_data or forecast_data.get("note") or forecast_data.get("error"):
         return
     def _do():
@@ -3026,7 +3040,7 @@ def save_forecasts(run_id: int, metric: str, forecast_data: dict) -> None:
                     """,
                     rows,
                 )
-    _run(_do)
+    _run(_do, on_error=on_error)
 
 
 def save_analyst_kpi_series(run_id: int, analyst_series: dict) -> None:
@@ -3059,7 +3073,7 @@ def save_analyst_kpi_series(run_id: int, analyst_series: dict) -> None:
     _run(_do)
 
 
-def save_backtest_metrics(run_id: int, backtest_data: dict) -> None:
+def save_backtest_metrics(run_id: int, backtest_data: dict, on_error=None) -> None:
     if not backtest_data:
         return
     def _do():
@@ -3095,7 +3109,7 @@ def save_backtest_metrics(run_id: int, backtest_data: dict) -> None:
                     """,
                     rows,
                 )
-    _run(_do)
+    _run(_do, on_error=on_error)
 
 
 def save_qoq_momentum(run_id: int, qoq_data: dict) -> None:

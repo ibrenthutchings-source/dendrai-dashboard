@@ -498,6 +498,118 @@ function AgentCalibrationPanel() {
   );
 }
 
+// Per-ticker detail behind the one-line summary — which FRED indicators were
+// tested/selected/cleared the strong-correlation tier, and which forecasting
+// models were actually attempted and backtested (MAPE/RMSE/R2, ensemble
+// weight). Collapsed by default; failed tickers show their real error
+// inline without needing to expand (see reoptimization_tool.py's
+// _summarize_fred_diagnostics / _summarize_backtest_diagnostics).
+function ReviewResultRow({ result }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const fred = result.fred_diagnostics || {};
+  const bt = result.backtest_diagnostics || {};
+  const bestModel = bt.metrics_by_model
+    ? Object.entries(bt.metrics_by_model).sort((a, b) => (a[1].mape ?? Infinity) - (b[1].mape ?? Infinity))[0]
+    : null;
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "8px 10px", marginBottom: 6, background: "var(--surface)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, cursor: "pointer" }}
+        onClick={() => setExpanded(v => !v)}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="mono" style={{
+            fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+            background: result.success ? "var(--green-soft)" : "var(--red-soft)",
+            color: result.success ? "var(--green-ink)" : "var(--red-ink)",
+          }}>
+            {result.success ? "OK" : "FAILED"}
+          </span>
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>{result.ticker}{result.is_private ? " · private" : ""}</span>
+        </div>
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>
+          {result.success
+            ? (bestModel && bestModel[1].mape != null ? `best MAPE ${bestModel[1].mape.toFixed(2)}% (${bestModel[0]})` : "no backtest")
+            : "▾ details"}
+        </span>
+      </div>
+
+      {!result.success && result.error && (
+        <div className="mono" style={{ fontSize: 10, color: "var(--red-ink)", marginTop: 6, wordBreak: "break-word" }}>
+          {result.error}
+        </div>
+      )}
+
+      {expanded && (
+        <div style={{ marginTop: 8, fontSize: 10.5, color: "var(--ink-2)" }}>
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ fontWeight: 600 }}>FRED indicators: </span>
+            {fred.source === "live_fred_analysis" ? (
+              <>
+                {fred.fred_series_fetched}/{fred.fred_series_attempted} series fetched ·{" "}
+                {fred.indicators_selected} selected (|r|≥{fred.selection_threshold}) ·{" "}
+                {fred.indicators_strong} strong (|r|≥{fred.strong_threshold})
+                {fred.strong_indicators?.length > 0 && (
+                  <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)", marginTop: 4, lineHeight: 1.6 }}>
+                    {fred.strong_indicators.map(s => (
+                      <div key={`${s.series_id}-${s.metric}`}>
+                        {s.series_id} → {s.metric} (r={s.pearson_r}, lag {s.lag_quarters}q)
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <span className="mono" style={{ color: "var(--ink-3)" }}>{fred.note || `source: ${fred.source || "n/a"}`}</span>
+            )}
+          </div>
+          <div>
+            <span style={{ fontWeight: 600 }}>Forecasting models: </span>
+            {bt.models_attempted?.length > 0 ? (
+              <div style={{ marginTop: 4 }}>
+                {bt.models_attempted.map(m => {
+                  const mm = bt.metrics_by_model[m] || {};
+                  const w = bt.ensemble_weights?.[m];
+                  return (
+                    <div key={m} className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)", padding: "2px 0" }}>
+                      {m}: MAPE {mm.mape != null ? `${mm.mape.toFixed(2)}%` : "—"} ·{" "}
+                      RMSE {mm.rmse != null ? mm.rmse.toFixed(1) : "—"} ·{" "}
+                      R² {mm.r_squared != null ? mm.r_squared.toFixed(2) : "—"} ·{" "}
+                      weight {w != null ? `${(w * 100).toFixed(0)}%` : "—"}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <span className="mono" style={{ color: "var(--ink-3)" }}>{bt.note}</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewResultsPanel({ result }) {
+  if (!result) return null;
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div className="kicker" style={{ marginBottom: 4 }}>
+        Last Review — {result.trigger_reason === "manual_review" ? "manually triggered" : "drift-triggered"}
+      </div>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", marginBottom: 10 }}>
+        {result.tickers_attempted} ticker{result.tickers_attempted === 1 ? "" : "s"} reviewed —{" "}
+        {result.succeeded} succeeded, {result.failed} failed. Click a row for FRED indicators tested/selected and which
+        forecasting models were backtested.
+      </div>
+      {!result.results?.length ? (
+        <Empty>No actively-tracked tickers to review — a ticker needs at least one completed run in the last 90 days.</Empty>
+      ) : (
+        result.results.map(r => <ReviewResultRow key={r.ticker} result={r} />)
+      )}
+    </div>
+  );
+}
+
 // User-initiated version of the sweep model_health_drift_watch runs
 // automatically on drift (POST /model-health/run-review) — re-derives FRED
 // correlations and re-optimizes ensemble weights (walk-forward backtest
@@ -523,7 +635,7 @@ function RunReviewButton({ onDone }) {
       }
       const summary = await res.json();
       setState({ status: "done", summary, error: null });
-      onDone?.();
+      onDone?.(summary);
     } catch (e) {
       setState({ status: "error", summary: null, error: e.message || "Run review failed" });
     }
@@ -555,6 +667,7 @@ function ModelHealthScreen() {
   const [error, setError] = React.useState(null);
   const [lastRefresh, setLastRefresh] = React.useState(null);
   const [reviewRefreshToken, setReviewRefreshToken] = React.useState(0);
+  const [reviewResult, setReviewResult] = React.useState(null);
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -589,7 +702,7 @@ function ModelHealthScreen() {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-            <RunReviewButton onDone={() => { load(); setReviewRefreshToken(t => t + 1); }} />
+            <RunReviewButton onDone={(summary) => { load(); setReviewRefreshToken(t => t + 1); setReviewResult(summary); }} />
             <RefreshBadge lastRefresh={lastRefresh} onRefresh={load} loading={loading} />
           </div>
         </div>
@@ -601,6 +714,7 @@ function ModelHealthScreen() {
 
       {loading ? <Empty>Loading…</Empty> : (
         <>
+        <ReviewResultsPanel result={reviewResult} />
         <DriftIncidentsPanel refreshToken={reviewRefreshToken} />
         <AgentCalibrationPanel />
         <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
