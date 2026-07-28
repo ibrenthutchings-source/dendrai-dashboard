@@ -142,6 +142,26 @@ class SilverConformationLayer(SilverLayerBase):
                 if cvss is None:
                     return "DEPENDENCY_VULNERABILITY event missing cvss_score field"
 
+        elif rule.rule_id == "POL-GH-006":
+            if uro.event_type == EventType.DEPENDENCY_VULNERABILITY:
+                severity = str(raw.get("severity") or "").upper()
+                state = str(raw.get("state") or "open").lower()
+                first_detected = raw.get("first_detected_at") or raw.get("created_at")
+                if severity in ("CRITICAL", "HIGH") and state == "open" and first_detected:
+                    try:
+                        detected_ts = first_detected if isinstance(first_detected, datetime) else datetime.fromisoformat(str(first_detected).replace("Z", "+00:00"))
+                        if detected_ts.tzinfo is None:
+                            detected_ts = detected_ts.replace(tzinfo=timezone.utc)
+                        age_days = (now - detected_ts).total_seconds() / 86400
+                    except (ValueError, TypeError):
+                        age_days = None
+                    if age_days is not None and age_days > 14:
+                        repo = raw.get("repository", {}).get("full_name", "unknown")
+                        return (
+                            f"CRITICAL: {severity} vulnerability on '{repo}' has been open "
+                            f"{age_days:.0f} days — exceeds the 14-day remediation SLA"
+                        )
+
         elif rule.rule_id == "POL-GH-004":
             if uro.event_type == EventType.BRANCH_PROTECTION_BYPASSED and uro.source_system == SourceSystem.GITHUB:
                 compliance = raw.get("compliance") or {}
@@ -369,6 +389,13 @@ class SilverConformationLayer(SilverLayerBase):
                 "ref":           raw.get("ref"),
                 "forced":        raw.get("forced", False),
                 "cvss_score":    raw.get("cvss_score") or raw.get("severity_score"),
+                # Technology Risk Pipeline: CVE remediation SLA aging (POL-GH-006) —
+                # "severity"/"state"/"first_detected_at" are the flat fields that
+                # rule reads directly off raw_payload; surfaced here too for
+                # dashboards that only look at conformed risk_indicators.
+                "severity":        raw.get("severity"),
+                "state":           raw.get("state"),
+                "first_detected_at": raw.get("first_detected_at") or raw.get("created_at"),
                 "secret_type":   raw.get("alert", {}).get("secret_type"),
                 "commits_count": len(raw.get("commits", [])),
                 "is_admin":      raw.get("sender", {}).get("site_admin", False),
@@ -393,7 +420,7 @@ class SilverConformationLayer(SilverLayerBase):
                 # check attaches PR-approval lookup results under "gate_approval".
                 **(raw.get("gate_approval") or {}),
             },
-            normalized_attributes=self._gate_approval_normalized_attributes(raw),
+            normalized_attributes=self._technology_normalized_attributes(raw),
             affected_entities=[
                 repo.get("full_name", ""),
                 str(raw.get("sender", {}).get("login", "")),
@@ -402,21 +429,39 @@ class SilverConformationLayer(SilverLayerBase):
         )
 
     @staticmethod
-    def _gate_approval_normalized_attributes(raw: dict[str, Any]) -> "NormalizedAttributes | None":
+    def _technology_normalized_attributes(raw: dict[str, Any]) -> "NormalizedAttributes | None":
         """Multi-Domain Risk Pipeline spec's formal metric shape for the
-        deploy-gate-bypass check — additive, only populated for that one
-        event; every other GitHub event returns None here (unchanged risk_indicators-only path)."""
+        Technology-domain GitHub checks (deploy-gate bypass, CVE SLA aging) —
+        additive, only populated for those events; every other GitHub event
+        returns None here (unchanged risk_indicators-only path)."""
         gate = raw.get("gate_approval")
-        if gate is None:
-            return None
-        approved = 1.0 if gate.get("approved") else 0.0
-        return NormalizedAttributes(
-            entity_id=raw.get("repository", {}).get("full_name"),
-            monitored_metric="deploy_gate_approved",
-            metric_value=approved,
-            threshold_limit=1.0,
-            variance=approved - 1.0,
-        )
+        if gate is not None:
+            approved = 1.0 if gate.get("approved") else 0.0
+            return NormalizedAttributes(
+                entity_id=raw.get("repository", {}).get("full_name"),
+                monitored_metric="deploy_gate_approved",
+                metric_value=approved,
+                threshold_limit=1.0,
+                variance=approved - 1.0,
+            )
+
+        first_detected = raw.get("first_detected_at") or raw.get("created_at")
+        if first_detected:
+            try:
+                detected_ts = first_detected if isinstance(first_detected, datetime) else datetime.fromisoformat(str(first_detected).replace("Z", "+00:00"))
+                if detected_ts.tzinfo is None:
+                    detected_ts = detected_ts.replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(tz=timezone.utc) - detected_ts).total_seconds() / 86400
+            except (ValueError, TypeError):
+                return None
+            return NormalizedAttributes(
+                entity_id=raw.get("repository", {}).get("full_name"),
+                monitored_metric="cve_age_days",
+                metric_value=round(age_days, 1),
+                threshold_limit=14.0,
+                variance=round(age_days - 14.0, 1),
+            )
+        return None
 
     def _conform_gitlab(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
         project = raw.get("project", {})
