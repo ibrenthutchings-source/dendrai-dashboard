@@ -54,7 +54,7 @@ function InfrastructureMonitoringScreen({ onNavigate } = {}) {
         setConnectors(c.connectors || []);
         setResults(r.results || []);
         setError(null);
-        setLastRefresh(Date.now());
+        setLastRefresh(new Date());
       })
       .catch(e => setError(e.message || "Failed to load infrastructure monitoring data"))
       .finally(() => setLoading(false));

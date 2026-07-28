@@ -563,7 +563,7 @@ function App() {
 
   useEffect(() => {
     if (!prefsHydratedRef.current || !auth?.user) return;
-    fetch("/users/me/preferences", {
+    fetch("/auth/users/me/preferences", {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
