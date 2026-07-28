@@ -1101,6 +1101,12 @@ function App() {
             thresholds: { distress: 1.1, grey: 2.6 },
           };
         }
+        // Financial Risk Pipeline: JE velocity / liquidity shift / inventory
+        // divergence — passed straight through, same shape
+        // check_financial_risk_pipeline() returns server-side.
+        if (mcpResult.financial_risk_pipeline) {
+          templateProfile.forecasts.financialRiskPipeline = mcpResult.financial_risk_pipeline;
+        }
 
         // Same placeholder problem as mscore/zscore above — templateProfile.ratios
         // is {} (buildProfile was called with fin=null), which silently breaks any

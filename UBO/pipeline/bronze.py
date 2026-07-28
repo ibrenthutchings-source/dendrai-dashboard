@@ -429,7 +429,18 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         # runs a pipeline-as-code (workflow YAML) audit each tick alongside
         # its branch-protection check — see pipeline_security_connectors.py.
         "pipeline_misconfiguration":   EventType.PIPELINE_MISCONFIGURATION,
+        # Financial Risk Pipeline: predictive_analytics_tool.py's three
+        # calculation functions set the matching flag on the ingested event.
+        "je_velocity_anomaly":  EventType.JE_VELOCITY_ANOMALY,
+        "liquidity_shift":      EventType.LIQUIDITY_SHIFT,
+        "inventory_divergence": EventType.INVENTORY_DIVERGENCE,
     }
+
+    # Multi-Domain Risk Pipeline classification for the Financial-domain flags
+    # above — additive, only for those three; every other system_telemetry
+    # event (SoD, privileged access, DevOps/Infra findings, ...) keeps
+    # domain=None exactly as before.
+    _FINANCIAL_FLAGS = {"je_velocity_anomaly", "liquidity_shift", "inventory_divergence"}
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
         ts = _parse_ts(raw_event.get("created_at") or raw_event.get("timestamp"))
@@ -457,6 +468,9 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
             },
         )
 
+        domain = RiskDomain.FINANCIAL if self._FINANCIAL_FLAGS.intersection(risk_flags) else None
+        sub_domain = "RECORD_TO_REPORT" if domain else None
+
         return URO(
             timestamp=ts,
             source_system=SourceSystem.SYSTEM_TELEMETRY,
@@ -464,6 +478,8 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
             actor_id=actor,
             actor_type=ActorType.HUMAN,
             environment=env,
+            domain=domain,
+            sub_domain=sub_domain,
             raw_payload=RawPayload(
                 content={
                     **{k: str(v) if hasattr(v, "hex") else v for k, v in raw_event.items()}

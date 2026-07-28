@@ -186,6 +186,17 @@ const CONNECTOR_TYPES = [
       { key: "regions", label: "Regions (comma-separated)", type: "text", placeholder: "us-east-1,us-west-2" },
       { key: "max_session_duration_hours", label: "Max IAM Session Duration (hours)", type: "text", placeholder: "12" },
     ] },
+  // Technology Risk Pipeline: generic OT/SCADA device keep-alive monitoring
+  // (ot_heartbeat_tool.py) — HTTP health-check only, not a real fieldbus
+  // protocol; see that module's docstring for scope.
+  { id: "ot_heartbeat", label: "OT/SCADA Heartbeat (Generic HTTP)",
+    baseUrlPlaceholder: "(unused — each device URL is set below)",
+    baseUrlOptional: true,
+    credentialFields: [],
+    extraFields: [
+      { key: "devices", label: "Devices (comma-separated name=url pairs)", type: "text", placeholder: "pump-01=http://10.0.1.5/health,valve-12=http://10.0.1.9/health" },
+      { key: "timeout_s", label: "Timeout (seconds)", type: "text", placeholder: "5" },
+    ] },
 ];
 
 function _uboConfigBase() {

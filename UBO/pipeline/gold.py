@@ -47,6 +47,10 @@ _EVENT_BASE_WEIGHTS: dict[EventType, float] = {
     EventType.SAST_FINDING:               0.60,
     EventType.SLA_BREACH:                 0.70,
     EventType.INFRASTRUCTURE_FINDING:     0.65,
+    # Financial Risk Pipeline
+    EventType.JE_VELOCITY_ANOMALY:        0.65,
+    EventType.LIQUIDITY_SHIFT:            0.70,
+    EventType.INVENTORY_DIVERGENCE:       0.55,
     EventType.PIPELINE_MISCONFIGURATION:  0.60,
     # SailPoint
     EventType.PRIVILEGE_ESCALATION:       0.80,

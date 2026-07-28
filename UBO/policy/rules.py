@@ -256,6 +256,48 @@ INFRASTRUCTURE_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Financial Risk Pipeline ────────────────────────────────────────────────────
+# Findings ride the SYSTEM_TELEMETRY path (predictive_analytics_tool.py's three
+# calculation functions, via mcp_governance._ingest_system_event) — same idiom
+# as Infrastructure Monitoring above.
+
+FINANCIAL_RISK_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-FIN-001",
+        name="Manual Journal Entry Velocity Spike",
+        description=(
+            "The manual journal-entry rate over the trailing 30 days is more than "
+            "3 standard deviations above the company's own historical baseline — "
+            "a pattern consistent with post-close manipulation or a broken control."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-FIN-002",
+        name="Liquidity Shift",
+        description=(
+            "A quarter-over-quarter current-ratio or quick-ratio break more than 3 "
+            "standard deviations below the company's own historical QoQ noise — a "
+            "sudden liquidity deterioration the point-in-time ratio snapshot alone "
+            "would not flag as unusual."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-FIN-003",
+        name="Inventory/Sales Divergence (Toxic Bloat)",
+        description=(
+            "Inventory is growing faster than revenue can absorb, by more than 3 "
+            "standard deviations against the company's own historical QoQ ratio "
+            "movement — an early obsolescence/write-down risk signal."
+        ),
+        severity="MEDIUM",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
 
 SAILPOINT_RULES: list[PolicyRule] = [
@@ -392,6 +434,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *DEVOPS_EVIDENCE_RULES,
     *PIPELINE_SECURITY_RULES,
     *INFRASTRUCTURE_RULES,
+    *FINANCIAL_RISK_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,
