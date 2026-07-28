@@ -20,6 +20,7 @@ const TokenUsageScreenLazy = lazyGlobal(() => import('./token-usage.jsx'), 'Toke
 const ModelHealthScreenLazy = lazyGlobal(() => import('./model-health.jsx'), 'ModelHealthScreen');
 const ContinuousMonitoringScreenLazy = lazyGlobal(() => import('./continuous-monitoring.jsx'), 'ContinuousMonitoringScreen');
 const DevopsMonitoringScreenLazy = lazyGlobal(() => import('./devops-monitoring.jsx'), 'DevopsMonitoringScreen');
+const InfrastructureMonitoringScreenLazy = lazyGlobal(() => import('./infrastructure-monitoring.jsx'), 'InfrastructureMonitoringScreen');
 const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
@@ -2005,6 +2006,15 @@ function App() {
           <ScreenAccessGate screenId="devopsmonitoring">
             <div className="panel active">
               <DevopsMonitoringScreenLazy onNavigate={navigateToScreen} />
+            </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Infrastructure Monitoring (Postgres CIS + Railway drift + connector hygiene) ---- */}
+          {activeScreen === "infrastructuremonitoring" && (
+          <ScreenAccessGate screenId="infrastructuremonitoring">
+            <div className="panel active">
+              <InfrastructureMonitoringScreenLazy onNavigate={navigateToScreen} />
             </div>
           </ScreenAccessGate>
           )}

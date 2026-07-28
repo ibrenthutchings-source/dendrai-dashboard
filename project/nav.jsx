@@ -45,6 +45,7 @@ const NAV_SECTIONS = [
     label: "DevOps Monitoring",
     items: [
       { id: "devopsmonitoring", icon: "shield", l: "Branch Integrity & Evidence" },
+      { id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring" },
     ],
   },
   {
