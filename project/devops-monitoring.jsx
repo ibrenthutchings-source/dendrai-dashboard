@@ -58,6 +58,131 @@ function DmTicketStatusPill({ status }) {
   return <Pill tone={DM_TICKET_STATUS_TONE[status] || "neutral"}>{(status || "—").replace("_", " ")}</Pill>;
 }
 
+// ---- Discover repositories — token-driven picker over POST /discover,
+// bulk-registers the selected ones via POST /repositories/bulk. Covers all
+// three SCM providers (github_scm.py's request already accepts a per-provider
+// base_url override for self-hosted GitHub Enterprise/GitLab/Bitbucket Server). ----
+function DiscoverReposModal({ onClose, onRegistered }) {
+  const Empty = window.Empty;
+  const [provider, setProvider] = React.useState("github");
+  const [baseUrl, setBaseUrl] = React.useState("");
+  const [token, setToken] = React.useState("");
+  const [fetching, setFetching] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [repos, setRepos] = React.useState(null);
+  const [capped, setCapped] = React.useState(false);
+  const [selected, setSelected] = React.useState({});
+  const [registering, setRegistering] = React.useState(false);
+  const [registerError, setRegisterError] = React.useState(null);
+
+  function discover() {
+    if (!token.trim()) { setError("Token is required"); return; }
+    setFetching(true); setError(null); setRepos(null);
+    fetch(`${_devopsBase()}/scm-audit/discover`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, token, base_url: baseUrl || undefined }),
+    })
+      .then(r => r.json().then(d => r.ok ? d : Promise.reject(new Error(d.detail || `HTTP ${r.status}`))))
+      .then(d => { setRepos(d.repositories || []); setCapped(!!d.capped); setSelected({}); })
+      .catch(e => setError(e.message || "Discovery failed"))
+      .finally(() => setFetching(false));
+  }
+
+  function toggle(repoRef) {
+    setSelected(s => ({ ...s, [repoRef]: !s[repoRef] }));
+  }
+
+  function registerSelected() {
+    const picked = (repos || []).filter(r => selected[r.repo_ref]);
+    if (!picked.length) return;
+    setRegistering(true); setRegisterError(null);
+    fetch(`${_devopsBase()}/scm-audit/repositories/bulk`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider, token, base_url: baseUrl || undefined,
+        repos: picked.map(r => ({ repo_ref: r.repo_ref, branch: r.default_branch || "main" })),
+      }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.failed && d.failed.length) {
+          setRegisterError(`${d.registered.length} registered, ${d.failed.length} failed: ${d.failed.map(f => f.repo_ref).join(", ")}`);
+        } else {
+          onRegistered();
+          onClose();
+        }
+      })
+      .catch(e => setRegisterError(e.message || "Registration failed"))
+      .finally(() => setRegistering(false));
+  }
+
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+      onClick={onClose}>
+      <div style={{ background: "var(--surface)", borderRadius: 10, padding: 20, width: 560, maxHeight: "80vh", overflowY: "auto", border: "1px solid var(--line)" }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Discover repositories</div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <select className="input input-sm" value={provider} onChange={e => { setProvider(e.target.value); setRepos(null); }} style={{ flex: 1 }}>
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab</option>
+            <option value="bitbucket">Bitbucket</option>
+          </select>
+          <input className="input input-sm" placeholder="Base URL (optional — self-hosted)"
+            value={baseUrl} onChange={e => setBaseUrl(e.target.value)} style={{ flex: 2 }} />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <input className="input input-sm" type="password" placeholder="Access token"
+            value={token} onChange={e => setToken(e.target.value)} style={{ flex: 1 }} />
+          <button type="button" className="btn btn-sm" onClick={discover} disabled={fetching}>
+            {fetching ? "Fetching…" : "Fetch repositories"}
+          </button>
+        </div>
+
+        {error && <div className="mono" style={{ fontSize: 11, color: "var(--red-ink)", marginBottom: 8 }}>{error}</div>}
+
+        {repos && (
+          <>
+            {capped && (
+              <div className="panel-sub" style={{ marginBottom: 8 }}>
+                Showing the first {repos.length} repositories — this token can see more; narrow by provider/workspace if the one you want isn't listed.
+              </div>
+            )}
+            {!repos.length ? (
+              <Empty>No repositories visible to this token.</Empty>
+            ) : (
+              <div style={{ border: "1px solid var(--line)", borderRadius: 6, maxHeight: 260, overflowY: "auto", marginBottom: 12 }}>
+                {repos.map(r => (
+                  <label key={r.repo_ref} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: "1px solid var(--line)", cursor: "pointer", fontSize: 11.5 }}>
+                    <input type="checkbox" checked={!!selected[r.repo_ref]} onChange={() => toggle(r.repo_ref)} />
+                    <span style={{ fontFamily: "var(--mono)", flex: 1 }}>{r.repo_ref}</span>
+                    {r.private === false && <span style={{ fontSize: 10, color: "var(--ink-4)" }}>public</span>}
+                  </label>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {registerError && <div className="mono" style={{ fontSize: 11, color: "var(--red-ink)", marginBottom: 8 }}>{registerError}</div>}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button type="button" className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-sm btn-primary" onClick={registerSelected}
+            disabled={!selectedCount || registering}>
+            {registering ? "Registering…" : `Register ${selectedCount || ""} selected`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DevopsMonitoringScreen({ onNavigate } = {}) {
   const Empty = window.Empty;
   const LiveBadge = window.LiveBadge;
@@ -71,6 +196,7 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
   const [isPaused, setIsPaused] = React.useState(false);
   const [runningId, setRunningId] = React.useState(null);
   const [runAllBusy, setRunAllBusy] = React.useState(false);
+  const [showDiscoverModal, setShowDiscoverModal] = React.useState(false);
 
   const [pipelineResults, setPipelineResults] = React.useState([]);
   const [pipelineRunningId, setPipelineRunningId] = React.useState(null);
@@ -298,6 +424,9 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
         <SectionLabel
           right={
             <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" className="btn btn-sm" onClick={() => setShowDiscoverModal(true)}>
+                Discover repositories
+              </button>
               <button type="button" className="btn btn-sm" onClick={() => onNavigate && onNavigate("uboconfig")}>
                 + Register repository
               </button>
@@ -310,10 +439,16 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
           Branch Integrity Matrix
         </SectionLabel>
 
+        {showDiscoverModal && (
+          <DiscoverReposModal onClose={() => setShowDiscoverModal(false)} onRegistered={load} />
+        )}
+
         {loading && !repos.length ? <Empty>Loading…</Empty> : !repos.length ? (
           <Empty>
-            No repositories registered yet. Register one via "+ Register repository" —
-            it adds a GitHub/GitLab connector on the Dendrai UBO Configuration screen.
+            No repositories registered yet. Use "Discover repositories" to pick from
+            everything a token can see, or "+ Register repository" for one at a time —
+            both add a GitHub/GitLab/Bitbucket connector visible on the Dendrai UBO
+            Configuration screen too.
           </Empty>
         ) : (
           <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>

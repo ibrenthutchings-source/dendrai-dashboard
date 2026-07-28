@@ -206,6 +206,61 @@ class GitLabBronzeHandler(BronzeLayerBase):
         )
 
 
+class BitbucketBronzeHandler(BronzeLayerBase):
+    """
+    Ingests the synthetic branch-restriction audit events
+    scm_audit_endpoints.py produces (same shape convention as
+    GitHubBronzeHandler/GitLabBronzeHandler's synthetic events: a
+    "compliance" sub-dict carrying the structured check results, consumed by
+    SilverConformationLayer._conform_bitbucket). Bitbucket Cloud has no
+    equivalent push-based webhook this platform subscribes to yet, so this
+    handler only ever sees on-demand "run now" audits, not live webhooks.
+    """
+
+    source_system = SourceSystem.BITBUCKET
+
+    _ACTION_MAP: dict[str, EventType] = {
+        "branch_restriction_audit": EventType.BRANCH_PROTECTION_BYPASSED,
+    }
+
+    async def ingest(self, raw_event: dict[str, Any]) -> URO:
+        ts_raw = raw_event.get("created_at") or raw_event.get("timestamp")
+        ts = _parse_ts(ts_raw)
+
+        bb_event = str(raw_event.get("event_type", "branch_restriction_audit"))
+        event_type = self._ACTION_MAP.get(bb_event, EventType.ANOMALY)
+
+        actor_login = (
+            raw_event.get("actor", {}).get("username")
+            or raw_event.get("actor", "UNKNOWN")
+        )
+
+        repo = raw_event.get("repository", {})
+        env = CloudEnvironment(
+            provider="Bitbucket",
+            account_id=str(repo.get("uuid", "")),
+            tags={
+                "workspace":  repo.get("workspace", ""),
+                "repo":       repo.get("full_name", ""),
+                "visibility": "private" if repo.get("is_private", True) else "public",
+            },
+        )
+
+        return URO(
+            timestamp=ts,
+            source_system=SourceSystem.BITBUCKET,
+            event_type=event_type,
+            actor_id=str(actor_login),
+            actor_type=ActorType.HUMAN,
+            environment=env,
+            raw_payload=RawPayload(
+                content=raw_event,
+                schema_version="Bitbucket-Audit-v2",
+            ),
+            pipeline_stage=PipelineStage.BRONZE,
+        )
+
+
 class SailPointBronzeHandler(BronzeLayerBase):
     """Ingests SailPoint IdentityNow activity stream events."""
 
@@ -419,6 +474,7 @@ class BronzeIngestionLayer:
             SourceSystem.SAP:        SAPBronzeHandler(),
             SourceSystem.GITHUB:     GitHubBronzeHandler(),
             SourceSystem.GITLAB:     GitLabBronzeHandler(),
+            SourceSystem.BITBUCKET:  BitbucketBronzeHandler(),
             SourceSystem.SAILPOINT:  SailPointBronzeHandler(),
             SourceSystem.MCP_PROXY:  McpProxyBronzeHandler(),
             SourceSystem.SYSTEM_TELEMETRY: SystemTelemetryBronzeHandler(),

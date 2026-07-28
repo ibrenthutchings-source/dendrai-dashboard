@@ -47,6 +47,7 @@ class SilverConformationLayer(SilverLayerBase):
             SourceSystem.SAP:        self._conform_sap,
             SourceSystem.GITHUB:     self._conform_github,
             SourceSystem.GITLAB:     self._conform_gitlab,
+            SourceSystem.BITBUCKET:  self._conform_bitbucket,
             SourceSystem.SAILPOINT:  self._conform_sailpoint,
             SourceSystem.MCP_PROXY:  self._conform_mcp_proxy,
             SourceSystem.SYSTEM_TELEMETRY: self._conform_system_telemetry,
@@ -159,6 +160,17 @@ class SilverConformationLayer(SilverLayerBase):
                     return (
                         f"CRITICAL: protected branch on '{repo}' allows admin/maintainer "
                         "bypass of required checks"
+                    )
+
+        # ── Bitbucket rules ───────────────────────────────────────────────────
+        elif rule.rule_id == "POL-BB-001":
+            if uro.event_type == EventType.BRANCH_PROTECTION_BYPASSED and uro.source_system == SourceSystem.BITBUCKET:
+                compliance = raw.get("compliance") or {}
+                if compliance.get("enforce_admins") is False:
+                    repo = raw.get("repository", {}).get("full_name", "unknown")
+                    return (
+                        f"CRITICAL: branch restrictions on '{repo}' do not block direct "
+                        "pushes for all users — admins/exempted users can bypass required checks"
                     )
 
         # ── DevOps Monitoring: SARIF/SAST evidence rules ─────────────────────
@@ -393,6 +405,26 @@ class SilverConformationLayer(SilverLayerBase):
                 str(raw.get("user", {}).get("username", "")),
             ],
             conformation_rules_applied=["GitLab-Webhook-v4-conform"],
+        )
+
+    def _conform_bitbucket(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
+        repo = raw.get("repository", {})
+        return ConformedPayload(
+            resource_id=repo.get("full_name") or str(repo.get("uuid", "")),
+            resource_type="git_repository",
+            action=raw.get("event_type") or "branch_restriction_audit",
+            outcome="success" if not raw.get("error") else "failure",
+            risk_indicators={
+                # Same convention as _conform_github/_conform_gitlab:
+                # scm_audit_endpoints.py's synthesized branch_restriction_audit
+                # event carries its structured findings under "compliance".
+                **(raw.get("compliance") or {}),
+            },
+            affected_entities=[
+                repo.get("full_name", ""),
+                str(raw.get("actor", {}).get("username", "")),
+            ],
+            conformation_rules_applied=["Bitbucket-Webhook-v2-conform"],
         )
 
     def _conform_sailpoint(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
