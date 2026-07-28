@@ -485,6 +485,68 @@ async def _adjudicate_secret_scan(raw_event: dict, ubo_source_system, resource: 
     return result
 
 
+async def _adjudicate_deploy_gate(raw_event: dict, ubo_source_system, resource: str, gate: dict) -> dict:
+    """Same shape as _adjudicate_pipeline_security() above — no drift
+    tracking (a deploy-gate check is a point-in-time event per commit, not a
+    branch-protection state to diff against a prior snapshot)."""
+    result = {
+        "provider":      "github",
+        "resource":      resource,
+        "gate_approval": gate,
+        "adjudicated":   False,
+    }
+    bronze, silver, gold, council = _get_pipeline()
+    if bronze is None or ubo_source_system is None:
+        result["reason"] = "UBO pipeline not available — gate check computed, not adjudicated"
+        return result
+
+    try:
+        uro = await bronze.ingest(raw_event, ubo_source_system)
+        uro = await silver.conform(uro)
+        uro = await gold.score(uro)
+        uro = await council.evaluate(uro)
+
+        asyncio.create_task(asyncio.to_thread(
+            github_endpoints._write_adjudication, uro, resource, "deploy_gate_audit", "GITHUB",
+        ))
+
+        result.update({
+            "adjudicated":            True,
+            "uro_id":                 uro.id,
+            "risk_tier":              uro.risk_tier,
+            "risk_score":             float(uro.risk_score) if uro.risk_score is not None else None,
+            "verdict":                uro.adjudication.final_verdict.value if uro.adjudication else None,
+            "requires_human_review":  uro.adjudication.requires_human_review if uro.adjudication else False,
+            "policy_violations":      list(uro.silver_policy_violations),
+        })
+    except Exception as exc:
+        logger.warning("Deploy-gate adjudication error (resource=%s): %s", resource, exc)
+        result["adjudication_error"] = str(exc)
+    return result
+
+
+async def check_deploy_gate(repo_full_name: str, commit_sha: str, token: str,
+                             base_url: str = "https://api.github.com") -> dict:
+    """Technology Risk Pipeline: check whether a deployed commit went through
+    an approved pull request, and adjudicate the result through the real
+    Bronze->Silver->Gold->Council pipeline (POL-GH-005). Public (no leading
+    underscore) — called from evidence_endpoints.py's attestation-ingest path,
+    not exposed as its own HTTP endpoint (attestation ingest is the trigger)."""
+    gate = await asyncio.to_thread(
+        scm_connectors.fetch_github_commit_pr_approval, repo_full_name, commit_sha, token, base_url)
+
+    raw_event = {
+        "event_type": "deploy_gate_audit",
+        "repository": {"full_name": repo_full_name, "id": 0, "visibility": "private"},
+        "sender": {"login": "deploy-gate-engine", "site_admin": False},
+        "commit_sha": commit_sha,
+        "gate_approval": gate,
+    }
+    return await _adjudicate_deploy_gate(
+        raw_event, UBOSourceSystem.GITHUB if _HAS_UBO else None, repo_full_name, gate,
+    )
+
+
 async def _run_github_secret_scan(connector: dict) -> dict:
     """Real gitleaks scan of an already-registered github_scm repo's full
     git history — see secret_scanner_connectors.py. Heavier than the
@@ -661,6 +723,17 @@ async def list_pipeline_security_results(limit: int = 50):
     if not db.is_available():
         return {"results": []}
     return {"results": db.fetch_pipeline_security_results(limit=limit)}
+
+
+@router.get("/deploy-gate/results")
+async def list_deploy_gate_results(limit: int = 50):
+    """Latest deploy-gate-bypass check per repo (Technology Risk Pipeline,
+    POL-GH-005) — populated by evidence_endpoints.py's attestation-ingest
+    path whenever an attestation names a repository registered as a
+    github_scm connector."""
+    if not db.is_available():
+        return {"results": []}
+    return {"results": db.fetch_deploy_gate_results(limit=limit)}
 
 
 @router.post("/run-all")

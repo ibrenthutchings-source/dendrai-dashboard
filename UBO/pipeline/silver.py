@@ -17,6 +17,7 @@ from typing import Any
 from ..models.uro import (
     ConformedPayload,
     EventType,
+    NormalizedAttributes,
     PipelineStage,
     SourceSystem,
     URO,
@@ -149,6 +150,17 @@ class SilverConformationLayer(SilverLayerBase):
                     return (
                         f"CRITICAL: branch protection on '{repo}' does not "
                         "enforce rules for administrators — admins can bypass every required check"
+                    )
+
+        elif rule.rule_id == "POL-GH-005":
+            if uro.event_type == EventType.DEPLOY_GATE_BYPASSED and uro.source_system == SourceSystem.GITHUB:
+                gate = raw.get("gate_approval") or {}
+                if not gate.get("approved"):
+                    repo = raw.get("repository", {}).get("full_name", "unknown")
+                    reason = "no associated pull request" if not gate.get("has_pr") else "pull request never approved"
+                    return (
+                        f"CRITICAL: commit '{raw.get('commit_sha', 'unknown')[:12]}' deployed to "
+                        f"'{repo}' with {reason} — required review gate was bypassed"
                     )
 
         # ── GitLab rules ──────────────────────────────────────────────────────
@@ -377,12 +389,33 @@ class SilverConformationLayer(SilverLayerBase):
                 "secret_rule_ids": sorted({
                     f.get("rule_id") for f in (raw.get("secret_findings") or []) if f.get("rule_id")
                 }),
+                # Technology Risk Pipeline: evidence_endpoints.py's deploy-gate
+                # check attaches PR-approval lookup results under "gate_approval".
+                **(raw.get("gate_approval") or {}),
             },
+            normalized_attributes=self._gate_approval_normalized_attributes(raw),
             affected_entities=[
                 repo.get("full_name", ""),
                 str(raw.get("sender", {}).get("login", "")),
             ],
             conformation_rules_applied=["GitHub-Webhook-v3-conform"],
+        )
+
+    @staticmethod
+    def _gate_approval_normalized_attributes(raw: dict[str, Any]) -> "NormalizedAttributes | None":
+        """Multi-Domain Risk Pipeline spec's formal metric shape for the
+        deploy-gate-bypass check — additive, only populated for that one
+        event; every other GitHub event returns None here (unchanged risk_indicators-only path)."""
+        gate = raw.get("gate_approval")
+        if gate is None:
+            return None
+        approved = 1.0 if gate.get("approved") else 0.0
+        return NormalizedAttributes(
+            entity_id=raw.get("repository", {}).get("full_name"),
+            monitored_metric="deploy_gate_approved",
+            metric_value=approved,
+            threshold_limit=1.0,
+            variance=approved - 1.0,
         )
 
     def _conform_gitlab(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:

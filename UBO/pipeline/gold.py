@@ -41,6 +41,7 @@ _EVENT_BASE_WEIGHTS: dict[EventType, float] = {
     EventType.FORCE_PUSH_MAIN:            0.65,
     EventType.DEPENDENCY_VULNERABILITY:   0.50,
     EventType.CODE_REVIEW_BYPASSED:       0.55,
+    EventType.DEPLOY_GATE_BYPASSED:       0.75,
     # DevOps Monitoring (SARIF/SAST evidence — severity refines this in Silver's
     # risk_indicators; this is the pre-severity baseline)
     EventType.SAST_FINDING:               0.60,
@@ -126,7 +127,23 @@ class GoldAggregationLayer(GoldLayerBase):
         # Register in the observation window for future cascade detection
         self._window.append(uro)
 
-        return uro.as_gold(score=score, tier=tier)
+        # Multi-Domain Risk Pipeline spec's split score view — additive, only
+        # for UROs whose Silver conformer populated normalized_attributes
+        # (today: none of the existing conformers do; new Technology/Financial
+        # conformers will). `inherent_risk_score` is the pre-mitigation event-type
+        # baseline; `normalized_risk_index_delta` is everything policy
+        # violations/actor context/cascade correlation added on top of it —
+        # i.e. this event's marginal contribution to the pooled Normalized Risk Index.
+        risk_score_impact = None
+        norm_attrs = uro.conformed_payload.normalized_attributes if uro.conformed_payload else None
+        if norm_attrs is not None:
+            from ..models.uro import RiskScoreImpact
+            risk_score_impact = RiskScoreImpact(
+                inherent_risk_score=base,
+                normalized_risk_index_delta=score - base,
+            )
+
+        return uro.as_gold(score=score, tier=tier, risk_score_impact=risk_score_impact)
 
     # ── Aggregate reporting ───────────────────────────────────────────────────
 

@@ -61,6 +61,7 @@ import attestation
 import db
 import dora_metrics
 import mcp_governance
+import scm_audit_endpoints
 
 logger = logging.getLogger("ubo.evidence")
 router = APIRouter(prefix="/evidence", tags=["Evidence Ingestion"])
@@ -257,6 +258,10 @@ async def evidence_webhook(request: Request, body: EvidenceWebhookBody):
 
 class AttestationBody(BaseModel):
     commit_sha: str
+    repository: Optional[str] = None          # "owner/repo" — Technology Risk Pipeline's
+                                               # deploy-gate-bypass check needs this to look
+                                               # up the matching github_scm connector's token;
+                                               # omit if the pipeline system isn't GitHub-backed.
     pipeline_run_id: Optional[str] = None
     oidc_actor: Optional[str] = None          # OIDC token's job_workflow_ref/actor claim
     oidc_claims: Optional[dict] = None        # full decoded claim set, for forensic reconstruction
@@ -310,13 +315,43 @@ async def ingest_attestation(request: Request, body: AttestationBody):
         body.sbom_format, body.sbom, (sbom_result["license_risk"] if sbom_result else False),
     )
 
+    deploy_gate = await _check_deploy_gate_for_attestation(body.repository, body.commit_sha)
+
     return {
         "id": attestation_id,
         "env_vars_hash": env_vars_hash,
         "slsa": slsa_result,
         "cosign": cosign_result,
         "sbom": sbom_result,
+        "deploy_gate": deploy_gate,
     }
+
+
+async def _check_deploy_gate_for_attestation(repository: Optional[str], commit_sha: str) -> Optional[dict]:
+    """Technology Risk Pipeline: if this attestation named a repository and
+    that repo is also registered as a github_scm connector (Branch Integrity
+    & Evidence / Dendrai UBO Configuration), check the deployed commit's PR
+    approval and adjudicate it (scm_audit_endpoints.check_deploy_gate,
+    POL-GH-005). Returns None (not an error) when there's no repository name
+    or no matching connector — this check is opportunistic, not required for
+    attestation ingestion to succeed."""
+    if not repository or not db.is_available():
+        return None
+    connectors = [c for c in db.list_poll_connectors()
+                  if c["connector_type"] == "github_scm"
+                  and (c.get("extra_config") or {}).get("repo_full_name") == repository]
+    if not connectors:
+        return None
+    connector = db.get_poll_connector(connectors[0]["id"], include_credentials=True)
+    token = (connector.get("credentials") or {}).get("token") if connector else None
+    if not token:
+        return None
+    try:
+        return await scm_audit_endpoints.check_deploy_gate(
+            repository, commit_sha, token, connector.get("base_url") or "https://api.github.com")
+    except Exception as exc:
+        logger.warning("Deploy-gate check failed for %s@%s: %s", repository, commit_sha, exc)
+        return {"error": str(exc)}
 
 
 @router.get("/attestations")
