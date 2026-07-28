@@ -15,13 +15,32 @@ function useAuth() {
 
 // ── AuthProvider ──────────────────────────────────────────────────────────────
 
+// 30 minutes of no mouse/keyboard/touch/scroll activity signs the user out
+// and returns them to the login screen. Enforced on both sides: the client
+// timer below gives immediate feedback, but the server independently expires
+// the session at the same threshold (auth_db.validate_session_reason) via the
+// periodic POST /auth/touch heartbeat, so a user can't stay signed in just by
+// disabling the client-side timer.
+const IDLE_TIMEOUT_MS   = 30 * 60 * 1000;
+const IDLE_CHECK_MS     = 15 * 1000;
+const TOUCH_THROTTLE_MS = 60 * 1000;
+const IDLE_ACTIVITY_EVENTS = ["mousemove", "mousedown", "keydown", "wheel", "touchstart", "scroll"];
+
 function AuthProvider({ children }) {
   const [user,      setUser]      = useState(undefined); // undefined = loading
   const [providers, setProviders] = useState([]);
+  const [sessionMessage, setSessionMessage] = useState("");
 
   const loadSession = useCallback(() => {
     fetch("/auth/me", { credentials: "include" })
-      .then(r => (r.ok ? r.json() : null))
+      .then(async r => {
+        if (r.ok) return r.json();
+        const d = await r.json().catch(() => null);
+        if (d?.detail === "Session expired due to inactivity") {
+          setSessionMessage("You were signed out due to inactivity. Please sign in again.");
+        }
+        return null;
+      })
       .then(d  => setUser(d?.user || null))
       .catch(() => setUser(null));
   }, []);
@@ -34,10 +53,46 @@ function AuthProvider({ children }) {
       .catch(() => setProviders([]));
   }, [loadSession]);
 
-  const logout = useCallback(() => {
+  // logout() is also bound directly to onClick handlers elsewhere, which pass
+  // the DOM event as the first arg — only treat a real string as a reason.
+  const logout = useCallback((reason) => {
     fetch("/auth/logout", { method: "POST", credentials: "include" })
-      .finally(() => setUser(null));
+      .finally(() => {
+        setUser(null);
+        setSessionMessage(typeof reason === "string" ? reason : "");
+      });
   }, []);
+
+  const clearSessionMessage = useCallback(() => setSessionMessage(""), []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    let lastActivity = Date.now();
+    let lastTouchSent = 0;
+
+    const onActivity = () => {
+      const now = Date.now();
+      lastActivity = now;
+      if (now - lastTouchSent < TOUCH_THROTTLE_MS) return;
+      lastTouchSent = now;
+      fetch("/auth/touch", { method: "POST", credentials: "include" })
+        .then(r => { if (r.status === 401) logout("You were signed out due to inactivity."); })
+        .catch(() => {});
+    };
+
+    IDLE_ACTIVITY_EVENTS.forEach(ev => window.addEventListener(ev, onActivity, { passive: true }));
+    const checkInterval = setInterval(() => {
+      if (Date.now() - lastActivity >= IDLE_TIMEOUT_MS) {
+        logout("You were signed out due to inactivity.");
+      }
+    }, IDLE_CHECK_MS);
+
+    return () => {
+      IDLE_ACTIVITY_EVENTS.forEach(ev => window.removeEventListener(ev, onActivity));
+      clearInterval(checkInterval);
+    };
+  }, [user, logout]);
 
   if (user === undefined) {
     return (
@@ -53,7 +108,7 @@ function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser, logout, providers, loadSession }}>
+    <AuthContext.Provider value={{ user, setUser, logout, providers, loadSession, sessionMessage, clearSessionMessage }}>
       {user
         ? (user.must_change_pw
             ? <ChangePasswordScreen onDone={() => setUser({ ...user, must_change_pw: false })} />
@@ -90,7 +145,7 @@ function AuthField({ label, type = "text", value, onChange, placeholder, autoFoc
 // ── Login Screen ──────────────────────────────────────────────────────────────
 
 function LoginScreen() {
-  const { setUser, providers } = useContext(AuthContext);
+  const { setUser, providers, sessionMessage, clearSessionMessage } = useContext(AuthContext);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error,    setError]    = useState("");
@@ -99,7 +154,7 @@ function LoginScreen() {
   async function handleLogin(e) {
     e.preventDefault();
     if (!username.trim() || !password) return;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); clearSessionMessage();
     try {
       const r = await fetch("/auth/login", {
         method: "POST", credentials: "include",
@@ -170,6 +225,16 @@ function LoginScreen() {
         </div>
 
         <h2 className="auth-heading">Sign in to your account</h2>
+
+        {sessionMessage && (
+          <div role="status" style={{
+            fontSize: 12, color: "var(--ink-3, #888)", background: "var(--surface-2, #f4f4f5)",
+            border: "1px solid var(--line, #e0e0e0)", borderRadius: 8,
+            padding: "8px 12px", marginBottom: 14, lineHeight: 1.5,
+          }}>
+            {sessionMessage}
+          </div>
+        )}
 
         {/* Local login form */}
         <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>

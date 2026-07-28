@@ -485,7 +485,16 @@ class _DendraiAuthMiddleware(_BaseHTTPMiddleware):
         payload = auth_endpoints.decode_jwt(cookie)
         if not payload:
             return JSONResponse({"detail": "Invalid session token"}, status_code=401)
-        if not auth_db.validate_session(payload.get("jti", "")):
+        jti = payload.get("jti", "")
+        user_id, reason = auth_db.validate_session_reason(jti)
+        if not user_id:
+            # This runs ahead of every route's get_current_user dependency, so
+            # it — not auth_endpoints._resolve_session — is what actually sees
+            # idle sessions first; revoke here so the reason survives for the
+            # frontend even though the route handler never runs.
+            if reason == "idle":
+                auth_db.revoke_session(jti)
+                return JSONResponse({"detail": "Session expired due to inactivity"}, status_code=401)
             return JSONResponse({"detail": "Session expired"}, status_code=401)
         return await call_next(request)
 
