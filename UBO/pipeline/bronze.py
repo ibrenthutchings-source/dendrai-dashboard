@@ -139,11 +139,12 @@ class GitHubBronzeHandler(BronzeLayerBase):
         )
 
         # Multi-Domain Risk Pipeline classification — additive, only for the
-        # new deploy-gate-audit event; every other GitHub event (real
-        # webhooks, branch_protection_rule, gitleaks_scan, ...) keeps
-        # domain=None exactly as before.
-        domain = RiskDomain.TECHNOLOGY if gh_event == "deploy_gate_audit" else None
-        sub_domain = "CI_CD" if gh_event == "deploy_gate_audit" else None
+        # Technology-domain events (deploy-gate audit, real Dependabot alert
+        # webhooks); every other GitHub event (branch_protection_rule,
+        # gitleaks_scan, push, ...) keeps domain=None exactly as before.
+        _TECH_SUB_DOMAIN = {"deploy_gate_audit": "CI_CD", "dependabot_alert": "CVE_SLA"}
+        domain = RiskDomain.TECHNOLOGY if gh_event in _TECH_SUB_DOMAIN else None
+        sub_domain = _TECH_SUB_DOMAIN.get(gh_event)
 
         return URO(
             timestamp=ts,

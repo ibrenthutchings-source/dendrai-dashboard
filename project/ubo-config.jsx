@@ -170,6 +170,22 @@ const CONNECTOR_TYPES = [
       { key: "environment_id", label: "Railway Environment ID", type: "text", placeholder: "e.g. from the dashboard URL" },
       { key: "approved_public_service_ids", label: "Approved Public Service IDs (comma-separated)", type: "text", placeholder: "svc-id-1,svc-id-2" },
     ] },
+  // Technology Risk Pipeline: AWS cloud configuration drift + IAM lease
+  // duration (aws_iaas_tool.py). Fill EITHER Role ARN (recommended — no
+  // long-lived keys) OR the access-key pair, not both.
+  { id: "aws_iaas", label: "AWS (Cloud Drift + IAM Lease Audit)",
+    baseUrlPlaceholder: "(unused — audits the AWS API directly)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "role_arn", label: "Role ARN (recommended — sts:AssumeRole, no long-lived keys)", type: "text", placeholder: "arn:aws:iam::123456789012:role/dendrai-readonly-audit" },
+      { key: "access_key_id", label: "Access Key ID (only if not using Role ARN)", type: "text" },
+      { key: "secret_access_key", label: "Secret Access Key (only if not using Role ARN)", type: "password" },
+      { key: "session_token", label: "Session Token (optional, temporary credentials only)", type: "password" },
+    ],
+    extraFields: [
+      { key: "regions", label: "Regions (comma-separated)", type: "text", placeholder: "us-east-1,us-west-2" },
+      { key: "max_session_duration_hours", label: "Max IAM Session Duration (hours)", type: "text", placeholder: "12" },
+    ] },
 ];
 
 function _uboConfigBase() {

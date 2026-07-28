@@ -144,6 +144,16 @@ GITHUB_RULES: list[PolicyRule] = [
         severity="CRITICAL",
         applies_to=[SourceSystem.GITHUB.value],
     ),
+    PolicyRule(
+        rule_id="POL-GH-006",
+        name="CVE Remediation SLA Breach",
+        description=(
+            "A still-open CRITICAL/HIGH dependency vulnerability has exceeded the "
+            "14-day remediation SLA. Technology Risk Pipeline."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value],
+    ),
 ]
 
 # ── GitLab DevSecOps Rules ────────────────────────────────────────────────────

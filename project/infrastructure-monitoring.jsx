@@ -110,11 +110,11 @@ function InfrastructureMonitoringScreen({ onNavigate } = {}) {
             <div className="kicker">Infrastructure Monitoring · Config Posture &amp; Credential Hygiene</div>
             <div className="panel-title mt-8">Infrastructure Monitoring</div>
             <div className="panel-sub">
-              Postgres CIS-style hardening checks and Railway platform/deployment drift for
-              registered infrastructure targets, plus Intelligenza's own connector-credential
-              rotation hygiene. Findings feed the infrastructure_monitoring Policy-as-Code module
-              (INFRA-001 through INFRA-008) the same way DevOps Monitoring's findings feed
-              devops_monitoring.
+              Postgres CIS-style hardening checks, Railway platform/deployment drift, and AWS
+              cloud configuration drift + IAM lease duration for registered infrastructure
+              targets, plus Intelligenza's own connector-credential rotation hygiene. Findings
+              feed the infrastructure_monitoring Policy-as-Code module the same way DevOps
+              Monitoring's findings feed devops_monitoring.
             </div>
           </div>
           {LiveBadge && (
@@ -155,7 +155,7 @@ function InfrastructureMonitoringScreen({ onNavigate } = {}) {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {c.display_name}
                     <span className="mono" style={{ fontSize: 10, color: "var(--ink-4)", marginLeft: 8 }}>
-                      {c.connector_type === "postgres_cis" ? "Postgres CIS" : "Railway platform"}
+                      {{ postgres_cis: "Postgres CIS", railway_iaas: "Railway platform", aws_iaas: "AWS" }[c.connector_type] || c.connector_type}
                     </span>
                   </div>
                   <button type="button" className="btn btn-sm" onClick={() => runConnector(c.id)} disabled={runningId === c.id}>
@@ -182,9 +182,17 @@ function InfrastructureMonitoringScreen({ onNavigate } = {}) {
                           if (compliance.password_encryption && compliance.password_encryption !== "scram-sha-256") notes.push(`weak password hashing (${compliance.password_encryption})`);
                           if ((compliance.superuser_count || 0) > 2) notes.push(`${compliance.superuser_count} superusers`);
                           if (compliance.log_connections === false) notes.push("connection logging off");
-                        } else {
+                        } else if (c.connector_type === "railway_iaas") {
                           if (compliance.unexpected_public_domain) notes.push("unapproved public domain");
                           if (compliance.image_digest_mismatch) notes.push("image digest mismatch");
+                        } else if (c.connector_type === "aws_iaas") {
+                          // AWS multiplexes several distinct checks (S3/security group/
+                          // encryption/IAM) into the same resource matrix — r.action names
+                          // which one this row is.
+                          if (r.action === "s3_public_access" && compliance.is_public) notes.push("bucket publicly accessible");
+                          if (r.action === "security_group_open_ingress" && (compliance.open_sensitive_ports || []).length) notes.push(`open ports: ${compliance.open_sensitive_ports.join(", ")}`);
+                          if ((r.action === "unencrypted_volume" || r.action === "unencrypted_rds") && compliance.encrypted === false) notes.push("unencrypted at rest");
+                          if (r.action === "iam_excessive_session" && compliance.max_session_duration_hours > 12) notes.push(`${compliance.max_session_duration_hours}h max session`);
                         }
                         return (
                           <tr key={r.id} style={{ borderBottom: "1px solid var(--line)" }}>

@@ -8918,13 +8918,13 @@ def fetch_infra_monitoring_results(resource: Optional[str] = None, limit: int = 
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                params: list = ["postgres_cis", "railway_iaas", "infrastructure_finding"]
+                params: list = ["postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat", "infrastructure_finding"]
                 if resource:
                     query = """
                         SELECT id, created_at, system_type, server_name, resource,
                                actor, action, severity, risk_flags, raw_payload
                         FROM observability.system_telemetry
-                        WHERE system_type IN (%s, %s) AND event_type = %s
+                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
                           AND resource = %s
                         ORDER BY created_at DESC
                         LIMIT %s
@@ -8936,7 +8936,7 @@ def fetch_infra_monitoring_results(resource: Optional[str] = None, limit: int = 
                                id, created_at, system_type, server_name, resource,
                                actor, action, severity, risk_flags, raw_payload
                         FROM observability.system_telemetry
-                        WHERE system_type IN (%s, %s) AND event_type = %s
+                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
                         ORDER BY server_name, resource, created_at DESC
                         LIMIT %s
                     """

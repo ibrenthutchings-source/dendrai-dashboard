@@ -39,17 +39,22 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+import aws_iaas_tool
 import connector_hygiene
 import db
 import mcp_governance
+import ot_heartbeat_tool
 import postgres_cis_tool
 import railway_iaas_tool
 
 logger = logging.getLogger("ubo.infrastructure_monitoring")
 router = APIRouter(prefix="/infra-monitoring", tags=["Infrastructure Monitoring"])
 
-_CONNECTOR_TYPES = ("postgres_cis", "railway_iaas")
-_ADAPTERS = {"postgres_cis": postgres_cis_tool, "railway_iaas": railway_iaas_tool}
+_CONNECTOR_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat")
+_ADAPTERS = {
+    "postgres_cis": postgres_cis_tool, "railway_iaas": railway_iaas_tool,
+    "aws_iaas": aws_iaas_tool, "ot_heartbeat": ot_heartbeat_tool,
+}
 
 
 @router.get("/connectors")
