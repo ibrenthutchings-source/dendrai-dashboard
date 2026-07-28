@@ -6,6 +6,7 @@ Routes
 ------
 POST /auth/login                   Local username + password
 POST /auth/logout                  Revoke session cookie
+POST /auth/touch                   Record activity, resetting the idle timeout
 GET  /auth/me                      Current user info
 POST /auth/change-password         Change own password (with history check)
 GET  /auth/sso/providers           List enabled SSO providers
@@ -179,20 +180,34 @@ def _clear_cookie(response: Response) -> None:
 
 # ── FastAPI auth dependency ───────────────────────────────────────────────────
 
+def _resolve_session(dendrai_session: Optional[str]) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    """Decode + validate a session cookie. Returns (user_id, jti, invalid_reason).
+    invalid_reason is "idle" when the session is otherwise valid but has had no
+    activity within IDLE_TIMEOUT_MINUTES — distinct from a missing/invalid/
+    revoked/absolutely-expired session — so callers can give a specific
+    "signed out due to inactivity" message. An idle session is revoked here so
+    it can't be resurrected by a stale JWT after the fact."""
+    if not dendrai_session:
+        return None, None, None
+    payload = decode_jwt(dendrai_session)
+    if not payload:
+        return None, None, None
+    jti = payload.get("jti", "")
+    user_id, reason = auth_db.validate_session_reason(jti)
+    if reason == "idle":
+        auth_db.revoke_session(jti)
+    return user_id, jti, reason
+
+
 def get_current_user(
     request: Request,
     dendrai_session: Optional[str] = Cookie(default=None, alias=_COOKIE_NAME),
 ) -> dict:
-    """Raise 401 if cookie is missing, expired, or revoked."""
-    if not dendrai_session:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_jwt(dendrai_session)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid session token")
-    jti = payload.get("jti", "")
-    user_id = auth_db.validate_session(jti)
+    """Raise 401 if cookie is missing, expired, revoked, or idle-timed-out."""
+    user_id, _jti, reason = _resolve_session(dendrai_session)
     if not user_id:
-        raise HTTPException(status_code=401, detail="Session expired or revoked")
+        detail = "Session expired due to inactivity" if reason == "idle" else "Not authenticated" if not dendrai_session else "Session expired or revoked"
+        raise HTTPException(status_code=401, detail=detail)
     user = auth_db.get_user_by_id(user_id)
     if not user or not user.get("is_active"):
         raise HTTPException(status_code=401, detail="Account inactive")
@@ -454,6 +469,21 @@ def logout(
         if payload and payload.get("jti"):
             auth_db.revoke_session(payload["jti"])
     _clear_cookie(response)
+    return {"ok": True}
+
+
+@router.post("/touch", summary="Record user activity, resetting the idle timeout")
+def touch_session(
+    dendrai_session: Optional[str] = Cookie(default=None, alias=_COOKIE_NAME),
+):
+    """Called by the frontend only on genuine mouse/keyboard/touch activity
+    (throttled), not on background polling — that keeps the idle clock tied to
+    whether a person is actually at the keyboard, not to unattended refresh traffic."""
+    user_id, jti, reason = _resolve_session(dendrai_session)
+    if not user_id:
+        detail = "Session expired due to inactivity" if reason == "idle" else "Not authenticated"
+        raise HTTPException(status_code=401, detail=detail)
+    auth_db.touch_session(jti)
     return {"ok": True}
 
 
