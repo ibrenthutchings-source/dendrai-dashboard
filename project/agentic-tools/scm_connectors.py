@@ -86,6 +86,52 @@ def fetch_github_branch_protection(repo_full_name: str, branch: str, token: str,
     return resp.json()
 
 
+def fetch_github_commit_pr_approval(repo_full_name: str, commit_sha: str, token: str,
+                                     base_url: str = "https://api.github.com") -> dict:
+    """GET /repos/{owner}/{repo}/commits/{sha}/pulls — the pull request(s) (if
+    any) associated with a commit, so a deployed commit can be checked against
+    the PR-approval gate it should have gone through (Technology Risk
+    Pipeline: CI/CD deploy-gate bypass detection, evidence_endpoints.py's
+    attestation-ingest path). Returns {has_pr, approved, pr_number,
+    review_decision}. A commit with no associated PR at all (has_pr=False) is
+    just as much a bypass as one with an unapproved PR — both mean the deploy
+    didn't go through required review."""
+    _require_requests()
+    url = f"{base_url.rstrip('/')}/repos/{repo_full_name}/commits/{commit_sha}/pulls"
+    resp = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.groot-preview+json"},
+        timeout=20,
+    )
+    if resp.status_code == 404:
+        return {"has_pr": False, "approved": False, "pr_number": None, "review_decision": None}
+    if not resp.ok:
+        raise ConnectorError(f"GitHub commit->PR lookup failed ({resp.status_code}): {resp.text[:300]}")
+    prs = resp.json() or []
+    if not prs:
+        return {"has_pr": False, "approved": False, "pr_number": None, "review_decision": None}
+
+    pr = prs[0]
+    pr_number = pr.get("number")
+    reviews_resp = requests.get(
+        f"{base_url.rstrip('/')}/repos/{repo_full_name}/pulls/{pr_number}/reviews",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+        timeout=20,
+    )
+    if not reviews_resp.ok:
+        raise ConnectorError(f"GitHub PR reviews fetch failed ({reviews_resp.status_code}): {reviews_resp.text[:300]}")
+    reviews = reviews_resp.json() or []
+    # Latest review per user wins (a user can submit multiple reviews on the same PR).
+    latest_by_user: dict[str, str] = {}
+    for r in reviews:
+        user = (r.get("user") or {}).get("login")
+        if user:
+            latest_by_user[user] = r.get("state")
+    approved = any(state == "APPROVED" for state in latest_by_user.values())
+    return {"has_pr": True, "approved": approved, "pr_number": pr_number,
+            "review_decision": "APPROVED" if approved else "NOT_APPROVED"}
+
+
 def fetch_github_codeowners(repo_full_name: str, token: str,
                              base_url: str = "https://api.github.com") -> Optional[str]:
     """Returns CODEOWNERS file content, or None if absent at every conventional path."""

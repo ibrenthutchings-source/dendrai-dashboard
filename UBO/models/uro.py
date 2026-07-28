@@ -50,6 +50,9 @@ class EventType(str, Enum):
     FORCE_PUSH_MAIN            = "FORCE_PUSH_MAIN"
     DEPENDENCY_VULNERABILITY   = "DEPENDENCY_VULNERABILITY"
     CODE_REVIEW_BYPASSED       = "CODE_REVIEW_BYPASSED"
+    # Technology Risk Pipeline: a deployed commit has no associated
+    # approved pull request (evidence_endpoints.py's attestation path).
+    DEPLOY_GATE_BYPASSED       = "DEPLOY_GATE_BYPASSED"
 
     # ── DevOps Monitoring: SCM audits + SARIF/SAST evidence ───
     SAST_FINDING               = "SAST_FINDING"
@@ -91,6 +94,19 @@ class EventType(str, Enum):
     # ── Generic Enterprise Systems (system_telemetry ingest) ──
     SENSITIVE_RESOURCE_ACCESS   = "SENSITIVE_RESOURCE_ACCESS"    # sensitive_resource flag
     SYSTEM_GOVERNANCE_VIOLATION = "SYSTEM_GOVERNANCE_VIOLATION"  # 2+ flags simultaneously
+
+
+class RiskDomain(str, Enum):
+    """Four enterprise risk categories from the Multi-Domain Continuous Risk
+    Pipeline spec. Optional and additive — existing sources (SAP, GitHub,
+    GitLab, Bitbucket, SailPoint, ...) leave `URO.domain` unset; only the new
+    Technology/Financial pipelines populate it. OPERATIONAL/STRATEGIC are
+    declared now so the enum doesn't need another migration when those
+    domains ship, but nothing produces them yet."""
+    TECHNOLOGY  = "TECHNOLOGY"
+    OPERATIONAL = "OPERATIONAL"
+    FINANCIAL   = "FINANCIAL"
+    STRATEGIC   = "STRATEGIC"
 
 
 class PipelineStage(str, Enum):
@@ -145,6 +161,35 @@ class RawPayload(BaseModel):
             object.__setattr__(self, "checksum", hashlib.sha256(raw).hexdigest())
 
 
+class NormalizedAttributes(BaseModel):
+    """Formal metric/threshold shape from the Multi-Domain Continuous Risk
+    Pipeline spec's URO. Optional, additive alongside ConformedPayload's
+    existing free-form `risk_indicators` dict — new Technology/Financial
+    conformers populate this in addition to (not instead of) risk_indicators
+    so Gold can compute a real `variance`; existing conformers (GitHub,
+    GitLab, Bitbucket, SAP, ...) are unaffected and never set it."""
+
+    entity_id:       Optional[str] = None
+    monitored_metric: Optional[str] = None
+    metric_value:    Optional[float | str | bool] = None
+    threshold_limit: Optional[float | str | bool] = None
+    variance:        Optional[float] = None  # computed by Gold when both values are numeric
+
+    model_config = {"frozen": True}
+
+
+class RiskScoreImpact(BaseModel):
+    """Split view of Gold's scoring alongside the existing collapsed
+    `URO.risk_score`. Optional/additive — only set for URO's producing
+    `NormalizedAttributes`; every other pipeline keeps using the single
+    `risk_score` field exactly as it does today."""
+
+    inherent_risk_score:        Optional[float] = None  # pre-mitigation baseline for this metric
+    normalized_risk_index_delta: Optional[float] = None  # this event's contribution to the pooled NRI
+
+    model_config = {"frozen": True}
+
+
 class ConformedPayload(BaseModel):
     """
     Source-agnostic normalised view of the event.
@@ -161,6 +206,10 @@ class ConformedPayload(BaseModel):
 
     # Extracted risk signals — free-form but typed
     risk_indicators: dict[str, Any] = Field(default_factory=dict)
+
+    # Multi-Domain Risk Pipeline spec's formal metric shape — optional,
+    # additive alongside risk_indicators (see NormalizedAttributes docstring).
+    normalized_attributes: Optional[NormalizedAttributes] = None
 
     # Entities involved (user IDs, system names, account refs)
     affected_entities: list[str] = Field(default_factory=list)
@@ -205,6 +254,11 @@ class URO(BaseModel):
     actor_id:      str                                 # Who/what triggered the event
     actor_type:    ActorType = ActorType.UNKNOWN
 
+    # ── Multi-Domain Risk Pipeline classification ─────────────────────────────
+    # Optional/additive — see RiskDomain docstring. Existing sources leave both unset.
+    domain:     Optional[RiskDomain] = None
+    sub_domain: Optional[str] = None
+
     # ── Multi-Cloud Context ───────────────────────────────────────────────────
     environment: CloudEnvironment
 
@@ -218,6 +272,9 @@ class URO(BaseModel):
     risk_score: Optional[float] = None   # Composite 0.0–1.0
     risk_tier:  Optional[str]  = None   # "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
     silver_policy_violations: list[str] = Field(default_factory=list)
+    # Split view alongside risk_score above — optional/additive, only set
+    # when conformed_payload.normalized_attributes was populated.
+    risk_score_impact: Optional[RiskScoreImpact] = None
 
     # ── Adjudication result (Council of Agents) ───────────────────────────────
     # Populated only after the full agent swarm has run
@@ -250,12 +307,15 @@ class URO(BaseModel):
             "silver_policy_violations": violations,
         })
 
-    def as_gold(self, score: float, tier: str) -> "URO":
-        return self.model_copy(update={
+    def as_gold(self, score: float, tier: str, risk_score_impact: Optional["RiskScoreImpact"] = None) -> "URO":
+        update: dict[str, Any] = {
             "pipeline_stage": PipelineStage.GOLD,
             "risk_score":     score,
             "risk_tier":      tier,
-        })
+        }
+        if risk_score_impact is not None:
+            update["risk_score_impact"] = risk_score_impact
+        return self.model_copy(update=update)
 
     def as_adjudicated(self, adjudication: Any) -> "URO":
         return self.model_copy(update={

@@ -133,6 +133,17 @@ GITHUB_RULES: list[PolicyRule] = [
         severity="CRITICAL",
         applies_to=[SourceSystem.GITHUB.value],
     ),
+    PolicyRule(
+        rule_id="POL-GH-005",
+        name="Deploy Gate Bypass",
+        description=(
+            "A deployed commit (per its pipeline attestation) has no associated pull "
+            "request, or its pull request was never approved — the deploy went out "
+            "without the required review gate. Technology Risk Pipeline."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value],
+    ),
 ]
 
 # ── GitLab DevSecOps Rules ────────────────────────────────────────────────────

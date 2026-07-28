@@ -8838,6 +8838,39 @@ def fetch_pipeline_security_results(limit: int = 50) -> list:
     return _run(_do) or []
 
 
+def fetch_deploy_gate_results(limit: int = 50) -> list:
+    """Deploy-gate-bypass audit rows (Technology Risk Pipeline, POL-GH-005) —
+    same shape/idiom as fetch_pipeline_security_results. Every row here
+    represents a real check outcome (approved or not); unlike secret-scan,
+    a clean/approved deploy is still adjudicated and shows up here, so this
+    is a status feed, not a violations-only one."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (server_name)
+                           id, adjudicated_at, source_system, server_name, target_tool,
+                           uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                           policy_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE source_system = 'GITHUB' AND target_tool = 'deploy_gate_audit'
+                    ORDER BY server_name, adjudicated_at DESC
+                    LIMIT %s
+                    """,
+                    (min(limit, 500),),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
 def fetch_secret_scan_results(limit: int = 50) -> list:
     """Real gitleaks scan rows — same shape/idiom as
     fetch_pipeline_security_results. A clean scan is never adjudicated (see

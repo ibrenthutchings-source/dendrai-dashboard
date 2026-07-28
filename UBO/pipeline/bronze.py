@@ -24,6 +24,7 @@ from ..models.uro import (
     EventType,
     PipelineStage,
     RawPayload,
+    RiskDomain,
     SourceSystem,
     URO,
 )
@@ -96,6 +97,11 @@ class GitHubBronzeHandler(BronzeLayerBase):
         # found something (see scm_audit_endpoints._run_github_secret_scan),
         # so this mapping firing is itself already a real positive.
         "gitleaks_scan": EventType.SECRET_DETECTED,
+        # Technology Risk Pipeline: evidence_endpoints.py's attestation-ingest
+        # path synthesizes this event when a deployed commit has no
+        # approved pull request behind it (see scm_audit_endpoints.py's
+        # deploy-gate check, scm_connectors.fetch_github_commit_pr_approval).
+        "deploy_gate_audit": EventType.DEPLOY_GATE_BYPASSED,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
@@ -132,6 +138,13 @@ class GitHubBronzeHandler(BronzeLayerBase):
             },
         )
 
+        # Multi-Domain Risk Pipeline classification — additive, only for the
+        # new deploy-gate-audit event; every other GitHub event (real
+        # webhooks, branch_protection_rule, gitleaks_scan, ...) keeps
+        # domain=None exactly as before.
+        domain = RiskDomain.TECHNOLOGY if gh_event == "deploy_gate_audit" else None
+        sub_domain = "CI_CD" if gh_event == "deploy_gate_audit" else None
+
         return URO(
             timestamp=ts,
             source_system=SourceSystem.GITHUB,
@@ -139,6 +152,8 @@ class GitHubBronzeHandler(BronzeLayerBase):
             actor_id=str(actor_login),
             actor_type=actor_type,
             environment=env,
+            domain=domain,
+            sub_domain=sub_domain,
             raw_payload=RawPayload(
                 content=raw_event,
                 schema_version="GitHub-Webhook-v3",

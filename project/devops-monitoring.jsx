@@ -201,6 +201,8 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
   const [pipelineResults, setPipelineResults] = React.useState([]);
   const [pipelineRunningId, setPipelineRunningId] = React.useState(null);
 
+  const [deployGateResults, setDeployGateResults] = React.useState([]);
+
   const [secretScanResults, setSecretScanResults] = React.useState([]);
   const [secretScanRunningId, setSecretScanRunningId] = React.useState(null);
   const [secretScanNote, setSecretScanNote] = React.useState({});
@@ -253,6 +255,20 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
       .then(d => setPipelineResults(d.results || []))
       .catch(() => setPipelineResults([]));
   }, []);
+
+  const loadDeployGateResults = React.useCallback(() => {
+    return fetch(`${_devopsBase()}/scm-audit/deploy-gate/results`, { credentials: "include" })
+      .then(r => r.json())
+      .then(d => setDeployGateResults(d.results || []))
+      .catch(() => setDeployGateResults([]));
+  }, []);
+  React.useEffect(() => {
+    loadDeployGateResults();
+    if (isPaused) return;
+    const id = setInterval(loadDeployGateResults, 15000);
+    return () => clearInterval(id);
+  }, [isPaused, loadDeployGateResults]);
+
   React.useEffect(() => {
     loadPipelineResults();
     if (isPaused) return;
@@ -529,6 +545,49 @@ function DevopsMonitoringScreen({ onNavigate } = {}) {
                         </button>
                       </td>
                     </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ---- Deploy Gate (Technology Risk Pipeline) ---- */}
+      <div style={{ marginBottom: 24 }}>
+        <SectionLabel>Deploy Gate</SectionLabel>
+        <div className="panel-sub" style={{ marginBottom: 8 }}>
+          Commit-vs-PR-approval check for deployed commits — fires automatically when a CI
+          pipeline posts an attestation (POST /evidence/attestation) naming a repository
+          that's also registered here. A commit with no approved pull request behind it is a
+          deploy-gate bypass (POL-GH-005, CRITICAL).
+        </div>
+
+        {!deployGateResults.length ? (
+          <Empty>No deploy-gate checks yet — these run when a pipeline attestation names a registered repository.</Empty>
+        ) : (
+          <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left" }}>
+                  {["Repository", "Status", "Risk Tier", "Last Checked"].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", color: "var(--ink-4)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {deployGateResults.map(r => (
+                  <tr key={r.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                    <td style={{ padding: "8px 12px", fontFamily: "var(--mono)" }}>{r.server_name}</td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {(r.policy_violations || []).length
+                        ? <DmSeverityPill severity="CRITICAL" />
+                        : <DmSeverityPill severity="INFO" />}
+                    </td>
+                    <td style={{ padding: "8px 12px" }}>{r.risk_tier || "—"}</td>
+                    <td style={{ padding: "8px 12px", color: "var(--ink-3)" }}>
+                      {r.adjudicated_at ? new Date(r.adjudicated_at).toLocaleString() : "—"}
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>
