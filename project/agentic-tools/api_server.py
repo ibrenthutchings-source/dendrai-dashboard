@@ -127,6 +127,7 @@ import scm_audit_endpoints
 import evidence_endpoints
 import risk_waiver_sweep
 import itsm_endpoints
+import infrastructure_monitoring_endpoints
 import itsm_sla_sweep
 import pac_negative_sweep
 import connector_hygiene_sweep
@@ -543,6 +544,10 @@ app.include_router(scm_audit_endpoints.router)
 
 # DevOps Monitoring: SARIF/SAST evidence ingestion, fingerprinting, and signing.
 app.include_router(evidence_endpoints.router)
+
+# Infrastructure Monitoring: Postgres CIS hardening, Railway platform/deployment
+# drift, and connector-credential rotation hygiene.
+app.include_router(infrastructure_monitoring_endpoints.router)
 
 # DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge — ticket lifecycle + breach tracking.
 app.include_router(itsm_endpoints.router)

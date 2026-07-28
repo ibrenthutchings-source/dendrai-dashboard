@@ -8869,6 +8869,56 @@ def fetch_secret_scan_results(limit: int = 50) -> list:
     return _run(_do) or []
 
 
+def fetch_infra_monitoring_results(resource: Optional[str] = None, limit: int = 50) -> list:
+    """Postgres CIS + Railway platform/deployment drift audit rows
+    (postgres_cis_tool.py / railway_iaas_tool.py, via connector_poller.py's
+    scheduled ticks and infrastructure_monitoring_endpoints.py's on-demand
+    'run now' — both write through the same mcp_governance._ingest_system_event
+    path into observability.system_telemetry, unlike the SCM checks above
+    which go through the UBO adjudication pipeline). Unlike SCM/pipeline
+    security, event_type='infrastructure_finding' is written on EVERY poll
+    tick regardless of pass/fail (see postgres_cis_tool.pull_events), so this
+    is a full status matrix, not violations-only. Grouped by (server_name,
+    resource) rather than server_name alone — a single Railway connector
+    covers many services, one event per service instance."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                params: list = ["postgres_cis", "railway_iaas", "infrastructure_finding"]
+                if resource:
+                    query = """
+                        SELECT id, created_at, system_type, server_name, resource,
+                               actor, action, severity, risk_flags, raw_payload
+                        FROM observability.system_telemetry
+                        WHERE system_type IN (%s, %s) AND event_type = %s
+                          AND resource = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """
+                    params += [resource, min(limit, 500)]
+                else:
+                    query = """
+                        SELECT DISTINCT ON (server_name, resource)
+                               id, created_at, system_type, server_name, resource,
+                               actor, action, severity, risk_flags, raw_payload
+                        FROM observability.system_telemetry
+                        WHERE system_type IN (%s, %s) AND event_type = %s
+                        ORDER BY server_name, resource, created_at DESC
+                        LIMIT %s
+                    """
+                    params += [min(limit, 500)]
+                cur.execute(query, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("created_at"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
 def get_observability_24h_counts() -> dict:
     """Rows adjudicated / escalated / PaC-violation-flagged in the last 24h —
     none of the existing observability endpoints (/systems, /holds, /coverage)
