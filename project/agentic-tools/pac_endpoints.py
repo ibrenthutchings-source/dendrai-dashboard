@@ -700,6 +700,45 @@ deny_disclosure_event[msg] if {
         input.disclosure.segment_name
     ])
 }
+
+# ── Financial Risk Pipeline ────────────────────────────────────────────────────
+# Findings ride the generic input.event.* shape (system_telemetry ->
+# mcp_governance._evaluate_pac_policy), same convention as devops_monitoring/
+# infrastructure_monitoring below — distinct from the input.journal.*/
+# input.account_recon.*/etc. shapes P-R2R-001..007 above use, which are
+# evaluated directly by oracle_fusion_endpoints.py against live GL data.
+
+# ── P-FIN-001: Manual Journal Entry Velocity Spike ────────────────────────────
+deny_financial_risk[msg] if {
+    input.event.type == "JE_VELOCITY_ANOMALY"
+    input.event.anomaly == true
+    msg := sprintf("P-FIN-001: manual journal-entry velocity on '%v' is %vσ above baseline (%v/day vs. baseline %v/day)", [
+        input.event.resource,
+        input.event.z_score,
+        input.event.recent_daily_rate,
+        input.event.baseline_daily_mean,
+    ])
+}
+
+# ── P-FIN-002: Liquidity Shift ─────────────────────────────────────────────────
+deny_financial_risk[msg] if {
+    input.event.type == "LIQUIDITY_SHIFT"
+    input.event.shift_detected == true
+    msg := sprintf("P-FIN-002: liquidity shift on '%v' — QoQ ratio delta %vσ below historical norm", [
+        input.event.resource,
+        input.event.worst_z_score,
+    ])
+}
+
+# ── P-FIN-003: Inventory/Sales Divergence (Toxic Bloat) ───────────────────────
+deny_financial_risk[msg] if {
+    input.event.type == "INVENTORY_DIVERGENCE"
+    input.event.divergence_detected == true
+    msg := sprintf("P-FIN-003: inventory/sales divergence on '%v' — ratio delta %vσ above historical norm (toxic bloat)", [
+        input.event.resource,
+        input.event.z_score,
+    ])
+}
 """,
 
 "devops_monitoring": """\

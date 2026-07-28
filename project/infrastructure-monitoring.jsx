@@ -155,7 +155,7 @@ function InfrastructureMonitoringScreen({ onNavigate } = {}) {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {c.display_name}
                     <span className="mono" style={{ fontSize: 10, color: "var(--ink-4)", marginLeft: 8 }}>
-                      {{ postgres_cis: "Postgres CIS", railway_iaas: "Railway platform", aws_iaas: "AWS" }[c.connector_type] || c.connector_type}
+                      {{ postgres_cis: "Postgres CIS", railway_iaas: "Railway platform", aws_iaas: "AWS", ot_heartbeat: "OT/SCADA heartbeat" }[c.connector_type] || c.connector_type}
                     </span>
                   </div>
                   <button type="button" className="btn btn-sm" onClick={() => runConnector(c.id)} disabled={runningId === c.id}>
@@ -193,6 +193,8 @@ function InfrastructureMonitoringScreen({ onNavigate } = {}) {
                           if (r.action === "security_group_open_ingress" && (compliance.open_sensitive_ports || []).length) notes.push(`open ports: ${compliance.open_sensitive_ports.join(", ")}`);
                           if ((r.action === "unencrypted_volume" || r.action === "unencrypted_rds") && compliance.encrypted === false) notes.push("unencrypted at rest");
                           if (r.action === "iam_excessive_session" && compliance.max_session_duration_hours > 12) notes.push(`${compliance.max_session_duration_hours}h max session`);
+                        } else if (c.connector_type === "ot_heartbeat") {
+                          if (compliance.alive === false) notes.push(compliance.error || "no response");
                         }
                         return (
                           <tr key={r.id} style={{ borderBottom: "1px solid var(--line)" }}>

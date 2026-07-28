@@ -19,6 +19,7 @@ import json
 import math
 import os
 import random
+import statistics
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -497,6 +498,237 @@ def compute_altman_zscore(ratios: dict) -> dict:
         "missing_inputs": missing,
         "formula":        "Z'' = 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4",
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 2b — FINANCIAL RISK PIPELINE (Multi-Domain Continuous Risk Pipeline)
+# ══════════════════════════════════════════════════════════════════════════════
+# Three pure calculations on top of data the platform already fetches — XBRL
+# via build_company_xbrl/extract_quarterly_series (same as compute_altman_zscore
+# above), and journal-entry timestamps from whichever ERP source is wired up
+# (oracle_fusion_tool.get_audit_events for public/connected companies,
+# manual_financials_tool's uploaded entries for private ones). No new external
+# connector — see the Multi-Domain Continuous Risk Pipeline plan.
+
+def compute_je_velocity_anomaly(entry_dates: list, window_days: int = 30) -> dict:
+    """
+    Manual journal-entry velocity — daily entry rate in the most recent
+    `window_days` vs. a trailing baseline of the same length immediately
+    before it, flagged when the recent rate is >3σ above the baseline mean
+    (the same statistical idiom the Operational Risk Pipeline spec uses for
+    process-mining variant-speed deviation, reused here for consistency).
+
+    entry_dates: list of ISO-8601 date/datetime strings, one per manual
+    journal entry (any source — Oracle Fusion audit events, NetSuite,
+    manually-uploaded financials). Unparseable entries are skipped, not fatal.
+    """
+    parsed: list[datetime] = []
+    for d in entry_dates or []:
+        try:
+            dt = d if isinstance(d, datetime) else datetime.fromisoformat(str(d).replace("Z", "+00:00"))
+            parsed.append(dt.replace(tzinfo=None) if dt.tzinfo else dt)
+        except (ValueError, TypeError):
+            continue
+
+    if len(parsed) < 4:
+        return {"anomaly": False, "interpretation": "insufficient_data", "entry_count": len(parsed)}
+
+    now = max(parsed)
+    baseline_start = now - timedelta(days=window_days * 2)
+    recent_start = now - timedelta(days=window_days)
+
+    baseline_entries = [d for d in parsed if baseline_start <= d < recent_start]
+    recent_entries = [d for d in parsed if d >= recent_start]
+
+    def _daily_counts(dates: list, start: datetime, end: datetime) -> list:
+        by_day: dict = {}
+        for d in dates:
+            by_day[d.date()] = by_day.get(d.date(), 0) + 1
+        total_days = max((end.date() - start.date()).days, 1)
+        return [by_day.get(start.date() + timedelta(days=i), 0) for i in range(total_days)]
+
+    baseline_daily = _daily_counts(baseline_entries, baseline_start, recent_start)
+    recent_daily = _daily_counts(recent_entries, recent_start, now)
+
+    if len(baseline_daily) < 7 or statistics.pstdev(baseline_daily) == 0:
+        return {"anomaly": False, "interpretation": "insufficient_baseline",
+                "entry_count": len(parsed), "recent_daily_rate": statistics.mean(recent_daily) if recent_daily else 0.0}
+
+    baseline_mean = statistics.mean(baseline_daily)
+    baseline_stdev = statistics.pstdev(baseline_daily)
+    recent_rate = statistics.mean(recent_daily) if recent_daily else 0.0
+    z = (recent_rate - baseline_mean) / baseline_stdev
+
+    return {
+        "anomaly": z > 3.0,
+        "interpretation": "velocity_spike" if z > 3.0 else "normal",
+        "rag_status": "Red" if z > 3.0 else ("Amber" if z > 2.0 else "Green"),
+        "z_score": round(z, 3),
+        "recent_daily_rate": round(recent_rate, 3),
+        "baseline_daily_mean": round(baseline_mean, 3),
+        "baseline_daily_stdev": round(baseline_stdev, 3),
+        "window_days": window_days,
+        "entry_count": len(parsed),
+        "formula": "z = (recent_daily_rate - baseline_mean) / baseline_stdev, flagged at z > 3",
+    }
+
+
+def _quarterly_ratio_series(xbrl: dict, numerator_metric: str, denominator_metric: str,
+                             numerator_adjust=None) -> list:
+    """[{quarter_end, value}] of numerator/denominator per quarter, matched by
+    quarter_end. `numerator_adjust(num_val, denom_val) -> float` optionally
+    transforms the numerator before dividing (e.g. current_assets - inventory
+    for a quick ratio) — see compute_liquidity_shift."""
+    num_q = extract_quarterly_series(xbrl, numerator_metric)
+    denom_q = extract_quarterly_series(xbrl, denominator_metric)
+    denom_map = {p["quarter_end"]: p["value"] for p in denom_q}
+    series = []
+    for p in num_q:
+        denom_val = denom_map.get(p["quarter_end"])
+        if denom_val in (None, 0):
+            continue
+        num_val = p["value"]
+        if numerator_adjust:
+            num_val = numerator_adjust(num_val, p["quarter_end"])
+            if num_val is None:
+                continue
+        series.append({"quarter_end": p["quarter_end"], "value": num_val / denom_val})
+    return sorted(series, key=lambda r: r["quarter_end"])
+
+
+def _latest_qoq_zscore(ratio_series: list) -> Optional[dict]:
+    """QoQ deltas across a ratio time series, z-score of the LATEST delta
+    against the historical distribution of deltas — shared by
+    compute_liquidity_shift and compute_inventory_sales_divergence."""
+    if len(ratio_series) < 5:
+        return None
+    values = [r["value"] for r in ratio_series]
+    deltas = [values[i] - values[i - 1] for i in range(1, len(values))]
+    history, latest = deltas[:-1], deltas[-1]
+    if len(history) < 3 or statistics.pstdev(history) == 0:
+        return None
+    mean, stdev = statistics.mean(history), statistics.pstdev(history)
+    return {
+        "latest_delta": round(latest, 4),
+        "historical_delta_mean": round(mean, 4),
+        "historical_delta_stdev": round(stdev, 4),
+        "z_score": round((latest - mean) / stdev, 3),
+        "latest_value": round(values[-1], 4),
+        "latest_quarter_end": ratio_series[-1]["quarter_end"],
+    }
+
+
+def compute_liquidity_shift(xbrl: dict) -> dict:
+    """
+    Quarter-over-quarter current-ratio/quick-ratio break — a sudden negative
+    swing (z < -3) flags a liquidity shift the point-in-time ratio snapshot
+    (compute_financial_ratios' cash_ratio) wouldn't catch on its own, since
+    that only ever compares the two most recent quarters, not the shift's
+    size relative to the company's own historical quarter-to-quarter noise.
+    """
+    current_ratio_series = _quarterly_ratio_series(xbrl, "CurrentAssets", "CurrentLiabilities")
+    quick_ratio_series = _quarterly_ratio_series(
+        xbrl, "CurrentAssets", "CurrentLiabilities",
+        numerator_adjust=lambda num, qend: (
+            num - next((p["value"] for p in extract_quarterly_series(xbrl, "Inventory") if p["quarter_end"] == qend), 0)
+        ),
+    )
+
+    current_shift = _latest_qoq_zscore(current_ratio_series)
+    quick_shift = _latest_qoq_zscore(quick_ratio_series)
+    if current_shift is None and quick_shift is None:
+        return {"shift_detected": False, "interpretation": "insufficient_data"}
+
+    worst_z = min(
+        (s["z_score"] for s in (current_shift, quick_shift) if s is not None),
+        default=0.0,
+    )
+    shift_detected = worst_z < -3.0
+
+    return {
+        "shift_detected": shift_detected,
+        "interpretation": "liquidity_shift" if shift_detected else "normal",
+        "rag_status": "Red" if shift_detected else ("Amber" if worst_z < -2.0 else "Green"),
+        "worst_z_score": round(worst_z, 3),
+        "current_ratio": current_shift,
+        "quick_ratio": quick_shift,
+        "formula": "z-score of the latest QoQ ratio delta vs. the company's own historical QoQ delta distribution, flagged at z < -3",
+    }
+
+
+def compute_inventory_sales_divergence(xbrl: dict) -> dict:
+    """
+    Company-specific inventory/sales ratio divergence — distinct from the
+    generic FRED ISRATIO macro series (fred_tool.py's economy-wide
+    inventory-to-sales indicator); this computes the same concept against
+    THIS company's own XBRL inventory and revenue. A sharp positive z (ratio
+    rising faster than its own historical QoQ noise) is "toxic bloat" —
+    inventory building up faster than sales can absorb it.
+    """
+    ratio_series = _quarterly_ratio_series(xbrl, "Inventory", "Revenue")
+    shift = _latest_qoq_zscore(ratio_series)
+    if shift is None:
+        return {"divergence_detected": False, "interpretation": "insufficient_data"}
+
+    divergence_detected = shift["z_score"] > 3.0
+    return {
+        "divergence_detected": divergence_detected,
+        "interpretation": "toxic_bloat" if divergence_detected else "normal",
+        "rag_status": "Red" if divergence_detected else ("Amber" if shift["z_score"] > 2.0 else "Green"),
+        **shift,
+        "formula": "z-score of the latest QoQ inventory/revenue ratio delta vs. the company's own historical QoQ delta distribution, flagged at z > 3",
+    }
+
+
+def check_financial_risk_pipeline(ticker: str, xbrl: dict, je_entry_dates: Optional[list] = None) -> dict:
+    """
+    Runs the three Financial Risk Pipeline checks for a ticker/run and, for
+    any that breach threshold, ingests a system_telemetry event through the
+    real UBO Bronze->Silver->Gold->Council pipeline (POL-FIN-001..003 /
+    P-FIN-001..003) — same mechanism Infrastructure Monitoring's
+    connector-driven findings use. mcp_governance is imported lazily so this
+    module doesn't acquire a hard dependency on the governance stack (it's
+    also usable standalone/offline, same as compute_altman_zscore above);
+    ingestion failures are swallowed — never fail the analysis run over it.
+
+    je_entry_dates is optional — without a wired manual-JE source (Oracle
+    Fusion audit events, manually-uploaded financials), the velocity check
+    is skipped, not treated as an error.
+    """
+    results: dict = {}
+    if je_entry_dates:
+        results["je_velocity"] = compute_je_velocity_anomaly(je_entry_dates)
+    results["liquidity_shift"] = compute_liquidity_shift(xbrl)
+    results["inventory_divergence"] = compute_inventory_sales_divergence(xbrl)
+
+    try:
+        import mcp_governance
+    except ImportError:
+        return results
+
+    _CHECKS = (
+        ("je_velocity_anomaly", "je_velocity", "anomaly", "HIGH"),
+        ("liquidity_shift", "liquidity_shift", "shift_detected", "HIGH"),
+        ("inventory_divergence", "inventory_divergence", "divergence_detected", "MEDIUM"),
+    )
+    today = datetime.now(timezone.utc).date().isoformat()
+    for flag_name, result_key, flagged_key, severity in _CHECKS:
+        r = results.get(result_key)
+        if not r or not r.get(flagged_key):
+            continue
+        try:
+            flags = mcp_governance._detect_system_flags({
+                "action": flag_name, "resource": ticker, "severity": severity,
+                "event_type": flag_name, "payload": {flag_name: True},
+            })
+            mcp_governance._ingest_system_event(
+                f"financial-risk:{ticker}", "financial_risk", flag_name,
+                f"{flag_name}:{ticker}:{today}", "predictive_analytics_tool", flag_name, ticker,
+                severity, flags, {flag_name: True, "financial_compliance": r}, None,
+            )
+        except Exception:
+            pass
+    return results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2040,6 +2272,14 @@ def run_full_analysis(
 
     # ── 2b. Altman Z''-Score ──────────────────────────────────────────────────
     result["altman_zscore"] = compute_altman_zscore(ratios)
+
+    # ── 2c. Financial Risk Pipeline (liquidity shift, inventory/sales divergence;
+    #        manual-JE velocity skipped here — no JE source wired into this
+    #        entry point yet, see check_financial_risk_pipeline's docstring) ──
+    try:
+        result["financial_risk_pipeline"] = check_financial_risk_pipeline(ticker, xbrl)
+    except Exception:
+        pass
 
     # ── 3. Risk Scores ────────────────────────────────────────────────────────
     risk_result = compute_risk_scores(ratios, industry)

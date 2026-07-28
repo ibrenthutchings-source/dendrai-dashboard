@@ -350,6 +350,11 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("SYSTEM_TELEMETRY", "INFRASTRUCTURE_FINDING"): "infrastructure_monitoring",
     ("GITHUB", "PIPELINE_MISCONFIGURATION"):          "devops_monitoring",
     ("SYSTEM_TELEMETRY", "PIPELINE_MISCONFIGURATION"): "devops_monitoring",
+    # Financial Risk Pipeline — Record-to-Report-flavored, alongside the
+    # existing P-R2R-001 manual-JE-approval rule.
+    ("SYSTEM_TELEMETRY", "JE_VELOCITY_ANOMALY"):  "record_to_report",
+    ("SYSTEM_TELEMETRY", "LIQUIDITY_SHIFT"):      "record_to_report",
+    ("SYSTEM_TELEMETRY", "INVENTORY_DIVERGENCE"): "record_to_report",
 }
 
 
@@ -1674,6 +1679,14 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("infrastructure_finding")
     if payload.get("pipeline_misconfiguration"):
         flags.add("pipeline_misconfiguration")
+    # Financial Risk Pipeline: explicit signals set by predictive_analytics_tool.py's
+    # compute_je_velocity_anomaly/compute_liquidity_shift/compute_inventory_sales_divergence.
+    if payload.get("je_velocity_anomaly"):
+        flags.add("je_velocity_anomaly")
+    if payload.get("liquidity_shift"):
+        flags.add("liquidity_shift")
+    if payload.get("inventory_divergence"):
+        flags.add("inventory_divergence")
     return sorted(flags)
 
 

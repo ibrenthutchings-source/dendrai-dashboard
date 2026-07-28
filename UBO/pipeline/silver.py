@@ -249,6 +249,35 @@ class SilverConformationLayer(SilverLayerBase):
                         f"({payload.get('check_id', 'unknown check')})"
                     )
 
+        # ── Financial Risk Pipeline rules ────────────────────────────────────
+        elif rule.rule_id == "POL-FIN-001":
+            if uro.event_type == EventType.JE_VELOCITY_ANOMALY:
+                fc = (raw.get("raw_payload") or {}).get("financial_compliance") or {}
+                if fc.get("anomaly"):
+                    return (
+                        f"HIGH: manual journal-entry velocity on '{raw.get('resource', 'unknown')}' "
+                        f"is {fc.get('z_score')}σ above baseline (rate {fc.get('recent_daily_rate')}/day "
+                        f"vs. baseline {fc.get('baseline_daily_mean')}/day)"
+                    )
+
+        elif rule.rule_id == "POL-FIN-002":
+            if uro.event_type == EventType.LIQUIDITY_SHIFT:
+                fc = (raw.get("raw_payload") or {}).get("financial_compliance") or {}
+                if fc.get("shift_detected"):
+                    return (
+                        f"HIGH: liquidity shift on '{raw.get('resource', 'unknown')}' — "
+                        f"QoQ ratio delta {fc.get('worst_z_score')}σ below historical norm"
+                    )
+
+        elif rule.rule_id == "POL-FIN-003":
+            if uro.event_type == EventType.INVENTORY_DIVERGENCE:
+                fc = (raw.get("raw_payload") or {}).get("financial_compliance") or {}
+                if fc.get("divergence_detected"):
+                    return (
+                        f"MEDIUM: inventory/sales divergence on '{raw.get('resource', 'unknown')}' — "
+                        f"ratio delta {fc.get('z_score')}σ above historical norm (toxic bloat)"
+                    )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -612,9 +641,38 @@ class SilverConformationLayer(SilverLayerBase):
                 # protection) since a single poll tick's telemetry row can't hold
                 # both under the same key.
                 **(raw.get("raw_payload") or {}).get("pipeline_compliance", {}),
+                # Financial Risk Pipeline (predictive_analytics_tool.py, event_type
+                # in JE_VELOCITY_ANOMALY/LIQUIDITY_SHIFT/INVENTORY_DIVERGENCE): the
+                # calculation function's own result dict (z_score, rag_status, ...).
+                # Named distinctly from infra_compliance/pipeline_compliance above.
+                **(raw.get("raw_payload") or {}).get("financial_compliance", {}),
             },
+            normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],
             conformation_rules_applied=["System-Telemetry-v1-conform"],
+        )
+
+    @staticmethod
+    def _financial_normalized_attributes(raw: dict[str, Any]) -> "NormalizedAttributes | None":
+        """Multi-Domain Risk Pipeline spec's formal metric shape for the
+        Financial Risk Pipeline's three checks — additive, only populated for
+        those events; every other system_telemetry event returns None here."""
+        fc = (raw.get("raw_payload") or {}).get("financial_compliance")
+        if not fc:
+            return None
+        # compute_liquidity_shift's top-level key is worst_z_score (it picks
+        # the worse of current-ratio/quick-ratio); the other two checks use
+        # z_score directly — see predictive_analytics_tool.py.
+        z = fc.get("z_score") if fc.get("z_score") is not None else fc.get("worst_z_score")
+        if z is None:
+            return None
+        threshold = 3.0 if raw.get("event_type") in ("je_velocity_anomaly", "inventory_divergence") else -3.0
+        return NormalizedAttributes(
+            entity_id=raw.get("resource") or raw.get("server_name"),
+            monitored_metric="z_score",
+            metric_value=z,
+            threshold_limit=threshold,
+            variance=round(z - threshold, 4),
         )
 
     def _conform_generic(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:

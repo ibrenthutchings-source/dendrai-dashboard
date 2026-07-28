@@ -66,6 +66,11 @@ class EventType(str, Enum):
     # ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ─
     INFRASTRUCTURE_FINDING     = "INFRASTRUCTURE_FINDING"
 
+    # ── Financial Risk Pipeline (predictive_analytics_tool.py) ─
+    JE_VELOCITY_ANOMALY        = "JE_VELOCITY_ANOMALY"
+    LIQUIDITY_SHIFT            = "LIQUIDITY_SHIFT"
+    INVENTORY_DIVERGENCE       = "INVENTORY_DIVERGENCE"
+
     # ── SailPoint Identity ────────────────────────────────────
     PRIVILEGE_ESCALATION       = "PRIVILEGE_ESCALATION"
     ORPHANED_ACCOUNT           = "ORPHANED_ACCOUNT"
