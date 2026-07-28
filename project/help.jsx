@@ -46,9 +46,10 @@ const WORKFLOW_STAGES = [
   },
   {
     id: "devopsmonitoring", label: "DevOps Monitoring", icon: "shield",
-    desc: "SCM branch-protection integrity and SARIF/SAST evidence, wired into the same RaC→CaC→PaC and HITL spine as every other category — drift detection, risk waivers, provenance/SBOM attestation, and ITSM SLA tracking, not a separate bolt-on system.",
+    desc: "SCM branch-protection integrity, pipeline/infrastructure configuration posture, and SARIF/SAST evidence, wired into the same RaC→CaC→PaC and HITL spine as every other category — drift detection, risk waivers, provenance/SBOM attestation, connector-credential hygiene, and ITSM SLA tracking, not a separate bolt-on system.",
     items: [
-      { screen: "devopsmonitoring", label: "Branch Integrity & Evidence", desc: "Branch-protection/CODEOWNERS audits, SARIF findings, drift & time-series log, risk waivers, pipeline provenance attestations, and ITSM ticket SLA tracking in one command center." },
+      { screen: "devopsmonitoring", label: "Branch Integrity & Evidence", desc: "Branch-protection/CODEOWNERS audits, GitHub Actions pipeline security, secret scanning, SARIF findings, drift & time-series log, risk waivers, pipeline provenance attestations, and ITSM ticket SLA tracking in one command center." },
+      { screen: "infrastructuremonitoring", label: "Infrastructure Monitoring", desc: "Postgres CIS-style hardening checks and Railway platform/deployment drift for registered infrastructure targets, plus a live view of Intelligenza's own connector-credential rotation hygiene." },
     ],
   },
   {
