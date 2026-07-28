@@ -151,6 +151,22 @@ GITLAB_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Bitbucket DevSecOps Rules ─────────────────────────────────────────────────
+
+BITBUCKET_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-BB-001",
+        name="Branch Restriction Admin Bypass",
+        description=(
+            "A branch-restriction audit (BRANCH_PROTECTION_BYPASSED) that finds no push "
+            "restriction (or one that exempts specific users/groups) means the equivalent "
+            "of enforce_admins=false — automatically CRITICAL."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.BITBUCKET.value],
+    ),
+]
+
 # ── DevOps Monitoring: SARIF/SAST Evidence Rules ──────────────────────────────
 # Findings ride the generic system_telemetry ingestion path (see
 # SystemTelemetryBronzeHandler / evidence_endpoints.py), so this rule is
@@ -351,6 +367,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *SAP_RULES,
     *GITHUB_RULES,
     *GITLAB_RULES,
+    *BITBUCKET_RULES,
     *DEVOPS_EVIDENCE_RULES,
     *PIPELINE_SECURITY_RULES,
     *INFRASTRUCTURE_RULES,

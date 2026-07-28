@@ -46,6 +46,7 @@ except ImportError:
 
 _GITHUB_CODEOWNERS_PATHS = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]
 _GITLAB_CODEOWNERS_PATHS = ["CODEOWNERS", ".gitlab/CODEOWNERS", "docs/CODEOWNERS"]
+_BITBUCKET_CODEOWNERS_PATHS = ["CODEOWNERS", ".bitbucket/CODEOWNERS", "docs/CODEOWNERS"]
 
 _SAST_KEYWORDS = ("sast", "codeql", "snyk", "sonar", "checkmarx", "semgrep", "security")
 _TEST_KEYWORDS = ("test", "unit", "ci", "build")
@@ -156,6 +157,142 @@ def fetch_gitlab_codeowners(project_ref: str, branch: str, token: str,
     return None
 
 
+# ── Bitbucket ─────────────────────────────────────────────────────────────────
+# Bitbucket Cloud API v2.0. Auth via a Repository/Workspace/API Access Token,
+# same Bearer scheme as GitHub — App Passwords (Basic auth) are Bitbucket's
+# older, being-deprecated credential type and intentionally not supported here.
+
+def fetch_bitbucket_branch_restrictions(repo_full_name: str, branch: str, token: str,
+                                         base_url: str = "https://api.bitbucket.org/2.0") -> list:
+    """GET /repositories/{workspace}/{repo_slug}/branch-restrictions, filtered
+    to rules whose `pattern` matches `branch` exactly (Bitbucket also supports
+    glob patterns like release/*, which this exact-match intentionally does
+    not resolve — same conservative default as an unmatched GitHub branch).
+    Returns a list of restriction objects (one per `kind`), unlike GitHub's
+    single protection object — normalize_bitbucket_compliance reads the kinds
+    it needs out of this list."""
+    _require_requests()
+    url = f"{base_url.rstrip('/')}/repositories/{repo_full_name}/branch-restrictions"
+    restrictions: list = []
+    while url:
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"},
+                             params={"pagelen": 50} if "?" not in url else None, timeout=20)
+        if not resp.ok:
+            raise ConnectorError(f"Bitbucket branch restrictions fetch failed ({resp.status_code}): {resp.text[:300]}")
+        body = resp.json()
+        restrictions.extend(body.get("values") or [])
+        url = body.get("next")
+    return [r for r in restrictions if r.get("pattern") == branch]
+
+
+def fetch_bitbucket_codeowners(repo_full_name: str, branch: str, token: str,
+                                base_url: str = "https://api.bitbucket.org/2.0") -> Optional[str]:
+    """Returns CODEOWNERS file content, or None if absent at every conventional
+    path. Unlike GitHub's /contents (JSON+base64), Bitbucket's /src endpoint
+    returns the raw file body directly on 200."""
+    _require_requests()
+    for path in _BITBUCKET_CODEOWNERS_PATHS:
+        url = f"{base_url.rstrip('/')}/repositories/{repo_full_name}/src/{quote(branch, safe='')}/{path}"
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
+        if resp.status_code == 404:
+            continue
+        if not resp.ok:
+            raise ConnectorError(f"Bitbucket CODEOWNERS fetch failed ({resp.status_code}): {resp.text[:300]}")
+        return resp.text or None
+    return None
+
+
+# ── Discovery — list repositories a token can see, for the "auto-discover"
+# picker (scm_audit_endpoints.py's POST /discover). Separate from the
+# fetch_*/normalize_* audit functions above: this runs BEFORE a repo is
+# registered as a connector, so it takes a bare token rather than a stored
+# connector dict. Every list is capped (a handful of pages) so a token with
+# thousands of accessible repos can't turn a picker click into a multi-minute
+# hang; "capped" is surfaced back to the caller so the UI can say so. ─────────
+
+_DISCOVER_MAX_PAGES = 5
+_DISCOVER_PAGE_SIZE = 100
+
+
+def list_github_repos(token: str, base_url: str = "https://api.github.com") -> dict:
+    """GET /user/repos — every repo the token's owner has direct access to
+    (personal + collaborator + org member), across a bounded number of pages."""
+    _require_requests()
+    repos, page = [], 1
+    while page <= _DISCOVER_MAX_PAGES:
+        resp = requests.get(
+            f"{base_url.rstrip('/')}/user/repos",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            params={"per_page": _DISCOVER_PAGE_SIZE, "page": page,
+                    "affiliation": "owner,collaborator,organization_member"},
+            timeout=20,
+        )
+        if not resp.ok:
+            raise ConnectorError(f"GitHub repo listing failed ({resp.status_code}): {resp.text[:300]}")
+        batch = resp.json() or []
+        repos.extend({
+            "repo_ref": r.get("full_name"),
+            "private": r.get("private", True),
+            "default_branch": r.get("default_branch") or "main",
+        } for r in batch)
+        if len(batch) < _DISCOVER_PAGE_SIZE:
+            return {"repositories": repos, "capped": False}
+        page += 1
+    return {"repositories": repos, "capped": True}
+
+
+def list_gitlab_projects(token: str, base_url: str = "https://gitlab.com/api/v4") -> dict:
+    """GET /projects?membership=true — every project the token's owner is a
+    member of, across a bounded number of pages."""
+    _require_requests()
+    projects, page = [], 1
+    while page <= _DISCOVER_MAX_PAGES:
+        resp = requests.get(
+            f"{base_url.rstrip('/')}/projects",
+            headers={"PRIVATE-TOKEN": token},
+            params={"membership": "true", "per_page": _DISCOVER_PAGE_SIZE, "page": page},
+            timeout=20,
+        )
+        if not resp.ok:
+            raise ConnectorError(f"GitLab project listing failed ({resp.status_code}): {resp.text[:300]}")
+        batch = resp.json() or []
+        projects.extend({
+            "repo_ref": p.get("path_with_namespace"),
+            "private": p.get("visibility") != "public",
+            "default_branch": p.get("default_branch") or "main",
+        } for p in batch)
+        if len(batch) < _DISCOVER_PAGE_SIZE:
+            return {"repositories": projects, "capped": False}
+        page += 1
+    return {"repositories": projects, "capped": True}
+
+
+def list_bitbucket_repos(token: str, base_url: str = "https://api.bitbucket.org/2.0") -> dict:
+    """GET /repositories?role=member — every repo across every workspace the
+    token's owner belongs to, across a bounded number of pages (Bitbucket
+    paginates via a `next` URL in the response body, not a page number)."""
+    _require_requests()
+    repos: list = []
+    url = f"{base_url.rstrip('/')}/repositories"
+    params = {"role": "member", "pagelen": _DISCOVER_PAGE_SIZE}
+    for _ in range(_DISCOVER_MAX_PAGES):
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params=params, timeout=20)
+        if not resp.ok:
+            raise ConnectorError(f"Bitbucket repo listing failed ({resp.status_code}): {resp.text[:300]}")
+        body = resp.json()
+        batch = body.get("values") or []
+        repos.extend({
+            "repo_ref": r.get("full_name"),
+            "private": r.get("is_private", True),
+            "default_branch": (r.get("mainbranch") or {}).get("name") or "main",
+        } for r in batch)
+        url = body.get("next")
+        params = None  # `next` already carries the query string
+        if not url:
+            return {"repositories": repos, "capped": False}
+    return {"repositories": repos, "capped": True}
+
+
 # ── Normalization (pure, no I/O) ───────────────────────────────────────────────
 
 def _has_check_matching(status_checks: list, keywords: tuple) -> bool:
@@ -262,4 +399,33 @@ def normalize_gitlab_compliance(protected_branch: dict, approval_rules: list,
         "has_required_test_check": False,
         "codeowners_present": bool(codeowners_text),
         "codeowners_covers_workflows": _codeowners_covers_workflows(codeowners_text),
+    }
+
+
+def normalize_bitbucket_compliance(restrictions: list, codeowners_text: Optional[str]) -> dict:
+    """Best-effort mapping onto the GitHub-shaped vocabulary — see module
+    docstring. Bitbucket's branch-restrictions API is a flat list of `kind`
+    objects rather than one protection resource, so each field below picks
+    out the matching kind. Bitbucket has no admin-bypass toggle like GitHub's
+    enforce_admins; a `push` restriction with no bypassing users/groups is the
+    closest equivalent — same directional-not-precise caveat as GitLab's
+    mapping. Bitbucket Pipelines uses one bitbucket-pipelines.yml file rather
+    than named status checks, so has_required_sast_check/has_required_test_check
+    fall back to whether a require_passing_builds_to_merge restriction exists
+    (can't distinguish check *type* the way GitHub's named contexts can)."""
+    by_kind = {r.get("kind"): r for r in restrictions}
+    push_restriction = by_kind.get("push")
+    enforce_admins = bool(push_restriction) and not (
+        push_restriction.get("users") or push_restriction.get("groups"))
+    approvals = by_kind.get("require_approvals_to_merge") or {}
+    builds_required = "require_passing_builds_to_merge" in by_kind
+    return {
+        "enforce_admins": enforce_admins,
+        "required_approving_review_count": int(approvals.get("value") or 0),
+        "dismiss_stale_reviews": "reset_pullrequest_approvals_on_change" in by_kind,
+        "required_status_checks": [],
+        "has_required_sast_check": builds_required,
+        "has_required_test_check": builds_required,
+        "codeowners_present": bool(codeowners_text),
+        "codeowners_covers_workflows": bool(codeowners_text),
     }

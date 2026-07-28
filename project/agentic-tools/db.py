@@ -8767,14 +8767,15 @@ def fetch_scm_audit_results(resource: Optional[str] = None, limit: int = 50) -> 
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                params: list = ["GITHUB", "GITLAB", "branch_protection_rule", "protected_branch_audit"]
+                params: list = ["GITHUB", "GITLAB", "BITBUCKET",
+                                 "branch_protection_rule", "protected_branch_audit", "branch_restriction_audit"]
                 if resource:
                     query = """
                         SELECT id, adjudicated_at, source_system, server_name, target_tool,
                                uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
                                policy_violations
                         FROM observability.adjudicated_tool_calls
-                        WHERE source_system IN (%s, %s) AND target_tool IN (%s, %s)
+                        WHERE source_system IN (%s, %s, %s) AND target_tool IN (%s, %s, %s)
                           AND server_name = %s
                         ORDER BY adjudicated_at DESC
                         LIMIT %s
@@ -8787,7 +8788,7 @@ def fetch_scm_audit_results(resource: Optional[str] = None, limit: int = 50) -> 
                                uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
                                policy_violations
                         FROM observability.adjudicated_tool_calls
-                        WHERE source_system IN (%s, %s) AND target_tool IN (%s, %s)
+                        WHERE source_system IN (%s, %s, %s) AND target_tool IN (%s, %s, %s)
                         ORDER BY server_name, adjudicated_at DESC
                         LIMIT %s
                     """

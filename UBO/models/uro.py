@@ -25,6 +25,7 @@ class SourceSystem(str, Enum):
     SAP            = "SAP"
     GITHUB         = "GITHUB"
     GITLAB         = "GITLAB"
+    BITBUCKET      = "BITBUCKET"
     SAILPOINT      = "SAILPOINT"
     FRED           = "FRED"
     SEC_EDGAR      = "SEC_EDGAR"

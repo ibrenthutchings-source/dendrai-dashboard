@@ -113,6 +113,16 @@ const CONNECTOR_TYPES = [
       { key: "project_ref", label: "Project (namespace/project or numeric ID)", type: "text", placeholder: "my-group/my-project" },
       { key: "branch", label: "Branch", type: "text", placeholder: "main" },
     ] },
+  { id: "bitbucket_scm", label: "Bitbucket (SCM Audit)",
+    baseUrlPlaceholder: "https://api.bitbucket.org/2.0 (leave blank for bitbucket.org)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "token", label: "Repository/Workspace Access Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "repo_full_name", label: "Repository (workspace/repo_slug)", type: "text", placeholder: "my-workspace/my-repo" },
+      { key: "branch", label: "Branch", type: "text", placeholder: "main" },
+    ] },
   // DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge (itsm_endpoints.py,
   // itsm_jira_tool.py/itsm_servicenow_tool.py). Credentials here are used both
   // to open real tickets (POST /itsm/tickets) and to poll ticket status back.

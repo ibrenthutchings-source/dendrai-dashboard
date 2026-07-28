@@ -68,7 +68,7 @@ except ImportError as exc:
 router = APIRouter(prefix="/scm-audit", tags=["SCM Integrity Auditor"])
 
 _COUNCIL_TIERS = {"CRITICAL", "HIGH", "MEDIUM"}
-_CONNECTOR_TYPES = ("github_scm", "gitlab_scm")
+_CONNECTOR_TYPES = ("github_scm", "gitlab_scm", "bitbucket_scm")
 
 _bronze: Any = None
 _silver: Any = None
@@ -88,15 +88,19 @@ def _get_pipeline():
     return _bronze, _silver, _gold, _council
 
 
-_DEFAULT_BASE_URL = {"github": "https://api.github.com", "gitlab": "https://gitlab.com/api/v4"}
+_DEFAULT_BASE_URL = {
+    "github": "https://api.github.com",
+    "gitlab": "https://gitlab.com/api/v4",
+    "bitbucket": "https://api.bitbucket.org/2.0",
+}
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
 
 class RegisterRepoRequest(BaseModel):
-    provider: str            # "github" | "gitlab"
+    provider: str            # "github" | "gitlab" | "bitbucket"
     display_name: str
-    repo_ref: str             # "owner/repo" (GitHub) or "namespace/project"/numeric id (GitLab)
+    repo_ref: str             # "owner/repo" (GitHub/Bitbucket) or "namespace/project"/numeric id (GitLab)
     branch: str = "main"
     base_url: Optional[str] = None
     token: str
@@ -106,42 +110,121 @@ class RegisterRepoRequest(BaseModel):
     poll_interval_s: int = 1800
 
 
+class DiscoverRequest(BaseModel):
+    provider: str
+    token: str
+    base_url: Optional[str] = None
+
+
+class BulkRegisterItem(BaseModel):
+    repo_ref: str
+    display_name: Optional[str] = None
+    branch: str = "main"
+
+
+class BulkRegisterRequest(BaseModel):
+    provider: str
+    token: str
+    base_url: Optional[str] = None
+    repos: list[BulkRegisterItem]
+    risk_tier: Optional[str] = None
+    data_sensitivity: Optional[str] = None
+    system_owner: Optional[str] = None
+    poll_interval_s: int = 1800
+
+
 # ── Registry (thin wrapper over poll_connectors) ──────────────────────────────
 
-@router.post("/repositories")
-async def register_repository(req: RegisterRepoRequest):
-    if req.provider not in ("github", "gitlab"):
-        raise HTTPException(status_code=422, detail="provider must be 'github' or 'gitlab'")
-    if not req.repo_ref.strip():
+def _register_one(provider: str, display_name: str, repo_ref: str, branch: str,
+                   base_url: Optional[str], token: str, poll_interval_s: int,
+                   risk_tier: Optional[str], data_sensitivity: Optional[str],
+                   system_owner: Optional[str]) -> int:
+    """Shared validation + poll_connectors write behind both the single
+    /repositories POST and the bulk /repositories/bulk POST (the discovery
+    picker's "register selected" action) — one repo, one connector row."""
+    if provider not in ("github", "gitlab", "bitbucket"):
+        raise HTTPException(status_code=422, detail="provider must be 'github', 'gitlab', or 'bitbucket'")
+    if not repo_ref.strip():
         raise HTTPException(status_code=422, detail="repo_ref is required")
-    if not req.token.strip():
+    if not token.strip():
         raise HTTPException(status_code=422, detail="token is required")
 
-    base_url = req.base_url or _DEFAULT_BASE_URL[req.provider]
+    resolved_base_url = base_url or _DEFAULT_BASE_URL[provider]
     try:
-        validate_external_url(base_url, field="base_url")
+        validate_external_url(resolved_base_url, field="base_url")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    extra_key = "repo_full_name" if req.provider == "github" else "project_ref"
+    extra_key = "repo_full_name" if provider in ("github", "bitbucket") else "project_ref"
     connector_id = db.create_poll_connector(
-        connector_type=f"{req.provider}_scm",
-        display_name=req.display_name,
-        base_url=base_url,
+        connector_type=f"{provider}_scm",
+        display_name=display_name,
+        base_url=resolved_base_url,
         auth_type="token",
-        credentials={"token": req.token},
-        extra_config={extra_key: req.repo_ref, "branch": req.branch},
-        poll_interval_s=req.poll_interval_s,
-        risk_tier=req.risk_tier,
-        data_sensitivity=req.data_sensitivity,
-        system_owner=req.system_owner,
+        credentials={"token": token},
+        extra_config={extra_key: repo_ref, "branch": branch},
+        poll_interval_s=poll_interval_s,
+        risk_tier=risk_tier,
+        data_sensitivity=data_sensitivity,
+        system_owner=system_owner,
     )
     if not connector_id:
         raise HTTPException(status_code=500, detail="Failed to register repository")
+    return connector_id
+
+
+@router.post("/repositories")
+async def register_repository(req: RegisterRepoRequest):
+    connector_id = _register_one(
+        req.provider, req.display_name, req.repo_ref, req.branch, req.base_url, req.token,
+        req.poll_interval_s, req.risk_tier, req.data_sensitivity, req.system_owner,
+    )
     return {"id": connector_id, "provider": req.provider, "repo_ref": req.repo_ref, "branch": req.branch}
+
+
+@router.post("/discover")
+async def discover_repositories(req: DiscoverRequest):
+    """List every repository the given token can see for provider — the
+    auto-discover picker's data source. Read-only against the provider's
+    API; nothing is stored until the user picks repos and calls /repositories/bulk."""
+    if req.provider not in ("github", "gitlab", "bitbucket"):
+        raise HTTPException(status_code=422, detail="provider must be 'github', 'gitlab', or 'bitbucket'")
+    if not req.token.strip():
+        raise HTTPException(status_code=422, detail="token is required")
+    base_url = req.base_url or _DEFAULT_BASE_URL[req.provider]
+    try:
+        validate_external_url(base_url, field="base_url")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    lister = {"github": scm_connectors.list_github_repos, "gitlab": scm_connectors.list_gitlab_projects,
+              "bitbucket": scm_connectors.list_bitbucket_repos}[req.provider]
+    try:
+        return await asyncio.to_thread(lister, req.token, base_url)
+    except scm_connectors.ConnectorError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.post("/repositories/bulk")
+async def bulk_register_repositories(req: BulkRegisterRequest):
+    """Register every repo the caller selected from the discovery picker.
+    Best-effort per-repo, same isolation shape as /run-all — one bad repo_ref
+    can't block the rest of the batch from registering."""
+    registered, failed = [], []
+    for item in req.repos:
+        try:
+            connector_id = _register_one(
+                req.provider, item.display_name or item.repo_ref, item.repo_ref, item.branch,
+                req.base_url, req.token, req.poll_interval_s,
+                req.risk_tier, req.data_sensitivity, req.system_owner,
+            )
+            registered.append({"id": connector_id, "repo_ref": item.repo_ref})
+        except HTTPException as exc:
+            failed.append({"repo_ref": item.repo_ref, "error": exc.detail})
+    return {"registered": registered, "failed": failed}
 
 
 def _repo_ref_of(connector: dict) -> str:
@@ -158,7 +241,7 @@ async def list_repositories():
     for c in rows:
         out.append({
             "id":               c["id"],
-            "provider":         "github" if c["connector_type"] == "github_scm" else "gitlab",
+            "provider":         c["connector_type"].removesuffix("_scm"),
             "display_name":     c["display_name"],
             "repo_ref":         _repo_ref_of(c),
             "branch":           (c.get("extra_config") or {}).get("branch"),
@@ -475,6 +558,39 @@ async def _run_gitlab(connector: dict) -> dict:
     )
 
 
+async def _run_bitbucket(connector: dict) -> dict:
+    creds = connector.get("credentials") or {}
+    token = creds.get("token")
+    extra = connector.get("extra_config") or {}
+    repo_full_name = extra.get("repo_full_name")
+    branch = extra.get("branch") or "main"
+    base_url = connector.get("base_url") or _DEFAULT_BASE_URL["bitbucket"]
+    if not repo_full_name or not token:
+        raise HTTPException(status_code=422, detail="Repository is missing repo_full_name or token")
+
+    restrictions = await asyncio.to_thread(
+        scm_connectors.fetch_bitbucket_branch_restrictions, repo_full_name, branch, token, base_url)
+    codeowners = await asyncio.to_thread(
+        scm_connectors.fetch_bitbucket_codeowners, repo_full_name, branch, token, base_url)
+    compliance = scm_connectors.normalize_bitbucket_compliance(restrictions, codeowners)
+
+    raw_event = {
+        "event_type": "branch_restriction_audit",
+        "repository": {"full_name": repo_full_name, "uuid": connector["id"], "is_private": True},
+        "actor": {"username": "scm-audit-engine"},
+        "compliance": compliance,
+        "raw_restrictions": restrictions,
+    }
+    return await _adjudicate(
+        raw_event,
+        UBOSourceSystem.BITBUCKET if _HAS_UBO else None,
+        "branch_restriction_audit", repo_full_name, branch, "bitbucket", compliance,
+    )
+
+
+_RUNNERS = {"github_scm": _run_github, "gitlab_scm": _run_gitlab, "bitbucket_scm": _run_bitbucket}
+
+
 @router.post("/repositories/{repository_id}/run")
 async def run_repository_audit(repository_id: int):
     if not db.is_available():
@@ -483,10 +599,7 @@ async def run_repository_audit(repository_id: int):
     if not connector or connector["connector_type"] not in _CONNECTOR_TYPES:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    if connector["connector_type"] == "github_scm":
-        result = await _run_github(connector)
-    else:
-        result = await _run_gitlab(connector)
+    result = await _RUNNERS[connector["connector_type"]](connector)
 
     db.record_poll_result(repository_id, "error" if result.get("adjudication_error") else "ok",
                            result.get("adjudication_error"))
@@ -561,7 +674,7 @@ async def run_all_audits():
     for c in connectors:
         try:
             full = db.get_poll_connector(c["id"], include_credentials=True)
-            result = await (_run_github(full) if c["connector_type"] == "github_scm" else _run_gitlab(full))
+            result = await _RUNNERS[c["connector_type"]](full)
             db.record_poll_result(c["id"], "error" if result.get("adjudication_error") else "ok",
                                    result.get("adjudication_error"))
         except Exception as exc:
