@@ -1034,6 +1034,10 @@ function App() {
           includeRss:   signalSet.has("industry"),
           includeFred:  signalSet.has("fred"),
           useDb,
+          periodBegin:   cfg.periodBegin,
+          periodEnd:     cfg.periodEnd,
+          persona:       selectedPersona,
+          appetiteLevel: cfg.appetiteLevel,
         });
 
         if (mcpResult._db_id) runIdRef.current = mcpResult._db_id;
@@ -1890,6 +1894,7 @@ function App() {
       rssHighVelCount,
       rssLinkedCount,
       liveMode,
+      mcpMode,
       // HITL adjustments
       riskApprovals,
       scopeApprovals,
@@ -1905,7 +1910,9 @@ function App() {
         `Random Forest features: lags 1–4, rolling mean and std, time index, quarter dummies, and current FRED series values.`,
         `Likelihood proxy from control effectiveness: NONE→9, WEAK→7, ADEQUATE→5, STRONG→3. Impact proxy from inherent_score field.`,
         `Risk appetite threshold: score ≥ 15 = RED, 9–14 = AMBER, < 9 = GREEN (configured: ${cfg.appetiteLevel || "AMBER"}).`,
-        liveMode
+        mcpMode
+          ? `MCP mode active — EDGAR companyfacts and FRED series fetched live via the Python analytics backend.`
+          : liveMode
           ? `Live mode active — EDGAR companyfacts fetched directly from data.sec.gov; FRED loaded from bundled snapshot.`
           : `Live mode inactive — all financial signals derived from mock dataset; EDGAR companyfacts not fetched.`,
         `Peer benchmark data sourced against ${cfg.industry}.`,
@@ -1916,7 +1923,7 @@ function App() {
         ...(riskAppetiteResult?.status === "BREACHED"
           ? [`Risk appetite BREACHED: ${riskAppetiteResult.breaching?.length || 0} risk(s) exceed the ${cfg.appetiteLevel} threshold (≥${riskAppetiteResult.threshold}). Gate 1 mandatory review triggered.`]
           : []),
-        ...(!liveMode
+        ...(!liveMode && !mcpMode
           ? ["Live data mode disabled — EDGAR companyfacts unavailable; all EDGAR-sourced signals derived from mock register."]
           : []),
         ...(adjRiskCount > 0
@@ -1927,7 +1934,7 @@ function App() {
           : []),
       ],
     };
-  }, [hasRun, output, loopLog, signalSet, cfg, velocity, liveMode, riskApprovals, scopeApprovals, profile]);
+  }, [hasRun, output, loopLog, signalSet, cfg, velocity, liveMode, mcpMode, riskApprovals, scopeApprovals, profile]);
 
   // ---- Gate 2 residual risk reductions (for Sankey) ----
   const gate2Reductions = useMemo(() => {

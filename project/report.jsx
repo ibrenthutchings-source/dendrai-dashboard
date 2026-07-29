@@ -11,7 +11,7 @@ function ReportModal({ open, onClose, payload }) {
   const {
     entity, ticker, runId, ts, cfg, signals, risks, baseRisks, top3, riskAppetite,
     objectives, maps, closure, loop, scenarios, greySwan, personas,
-    fredSeries, fredContrCount, rssHighVelCount, rssLinkedCount, liveMode,
+    fredSeries, fredContrCount, rssHighVelCount, rssLinkedCount, liveMode, mcpMode,
     riskApprovals, scopeApprovals,
     assumptions, obstacles, log,
     stageState = {}, stageOutput = {},
@@ -112,7 +112,7 @@ function ReportModal({ open, onClose, payload }) {
             <Row k="MAPs"             v={`${maps.length} generated · ${loop.maps_open || 0} open`}/>
             <Row k="Projected Reduction" v={`${closure.projected_total_risk_reduction_pct || 0}%`}/>
             <Row k="Loop Health"      v={<><RAGChip rag={loop.loop_health || "A"}>{loop.loop_health}</RAGChip> <span className="muted mono" style={{marginLeft: 8}}>impact {loop.audit_impact_score}/25</span></>}/>
-            <Row k="Data Mode"        v={liveMode ? "Live (EDGAR + FRED)" : "Mock / Simulated"}/>
+            <Row k="Data Mode"        v={mcpMode ? "Live (MCP · EDGAR + FRED)" : liveMode ? "Live (EDGAR + FRED)" : "Mock / Simulated"}/>
           </div>
 
           {/* ── Pipeline Execution ───────────────────────────── */}
