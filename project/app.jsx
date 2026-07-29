@@ -534,15 +534,26 @@ function App() {
       runId: runIdRef.current,
       savedAt: Date.now(),
     };
+    // Keyed by the ticker this profile/run actually belongs to (profile is
+    // built by RISK_ENGINE.buildProfile, which always stamps entity.ticker) —
+    // deliberately NOT cfg.ticker, the live config-field input. cfg.ticker was
+    // in this effect's deps until it was found to cause data loss: editing the
+    // ticker field after a run (e.g. typing a new ticker to configure the next
+    // analysis) changes cfg.ticker on every keystroke without re-running the
+    // loop, re-firing this effect each time and overwriting that new, not-yet-
+    // run ticker's last-saved state with this stale profile. Confirmed live in
+    // the production DB — app_config held last_loop_state:S / :SW / :SWK /
+    // :SWKS entries, one per keystroke, each clobbering the previous ticker's
+    // real (zscore-bearing) run with someone else's stale data.
+    const runTicker = profile?.entity?.ticker || cfg.ticker;
     // Write-through: localStorage for instant offline access, DB for persistence.
-    // Keyed per-ticker — see the restore effect above for why.
-    try { localStorage.setItem(`dendrai.lastLoop:${cfg.ticker}`, JSON.stringify(payload)); } catch {}
-    fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(cfg.ticker)}`, {
+    try { localStorage.setItem(`dendrai.lastLoop:${runTicker}`, JSON.stringify(payload)); } catch {}
+    fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(runTicker)}`, {
       method: "PUT",
       headers: _authHeaders(),
       body: JSON.stringify(payload),
     }).catch(() => {});
-  }, [hasRun, output, profile, cfg.ticker]);
+  }, [hasRun, output, profile]);
 
   const auth = window.useAuth ? window.useAuth() : null;
   const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
@@ -1708,10 +1719,14 @@ function App() {
     setGovFetchError(null);
     setGovPeerError(null);
     setAutoCodeYaml(null);
-    try { localStorage.removeItem(`dendrai.lastLoop:${cfg.ticker}`); } catch {}
+    // Clear the run this profile actually belongs to, not whatever's
+    // currently typed in the ticker field — see the persist effect above for
+    // why cfg.ticker can't be trusted here either.
+    const runTicker = profile?.entity?.ticker || cfg.ticker;
+    try { localStorage.removeItem(`dendrai.lastLoop:${runTicker}`); } catch {}
     // Clear the DB row too — otherwise the pre-reset run resurfaces on the
     // next login even though the UI looks freshly reset right now.
-    fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(cfg.ticker)}`, {
+    fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(runTicker)}`, {
       method: "DELETE",
       headers: _authHeaders(),
     }).catch(() => {});
