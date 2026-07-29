@@ -19,6 +19,8 @@ const UserConfigScreenLazy = lazyGlobal(() => import('./user-config.jsx'), 'User
 const TokenUsageScreenLazy = lazyGlobal(() => import('./token-usage.jsx'), 'TokenUsageScreen');
 const ModelHealthScreenLazy = lazyGlobal(() => import('./model-health.jsx'), 'ModelHealthScreen');
 const ContinuousMonitoringScreenLazy = lazyGlobal(() => import('./continuous-monitoring.jsx'), 'ContinuousMonitoringScreen');
+const DevopsMonitoringScreenLazy = lazyGlobal(() => import('./devops-monitoring.jsx'), 'DevopsMonitoringScreen');
+const InfrastructureMonitoringScreenLazy = lazyGlobal(() => import('./infrastructure-monitoring.jsx'), 'InfrastructureMonitoringScreen');
 const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
@@ -561,7 +563,7 @@ function App() {
 
   useEffect(() => {
     if (!prefsHydratedRef.current || !auth?.user) return;
-    fetch("/users/me/preferences", {
+    fetch("/auth/users/me/preferences", {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -1106,6 +1108,12 @@ function App() {
             key_driver: _az.inputs?.x1 < 0 ? "X1 (working capital deficit)" : _az.inputs?.x4 < 0.3 ? "X4 (negative book equity)" : "X3 (operating profitability)",
             thresholds: { distress: 1.1, grey: 2.6 },
           };
+        }
+        // Financial Risk Pipeline: JE velocity / liquidity shift / inventory
+        // divergence — passed straight through, same shape
+        // check_financial_risk_pipeline() returns server-side.
+        if (mcpResult.financial_risk_pipeline) {
+          templateProfile.forecasts.financialRiskPipeline = mcpResult.financial_risk_pipeline;
         }
 
         // Same placeholder problem as mscore/zscore above — templateProfile.ratios
@@ -2016,6 +2024,24 @@ function App() {
           <ScreenAccessGate screenId="continuousmonitoring">
             <div className="panel active">
               <ContinuousMonitoringScreenLazy onNavigate={navigateToScreen} />
+            </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- DevOps Monitoring (SCM integrity + SARIF evidence) ---- */}
+          {activeScreen === "devopsmonitoring" && (
+          <ScreenAccessGate screenId="devopsmonitoring">
+            <div className="panel active">
+              <DevopsMonitoringScreenLazy onNavigate={navigateToScreen} />
+            </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Infrastructure Monitoring (Postgres CIS + Railway drift + connector hygiene) ---- */}
+          {activeScreen === "infrastructuremonitoring" && (
+          <ScreenAccessGate screenId="infrastructuremonitoring">
+            <div className="panel active">
+              <InfrastructureMonitoringScreenLazy onNavigate={navigateToScreen} />
             </div>
           </ScreenAccessGate>
           )}

@@ -64,13 +64,14 @@ CREATE TABLE IF NOT EXISTS auth.sso_identities (
 CREATE INDEX IF NOT EXISTS idx_sso_user ON auth.sso_identities (user_id);
 
 CREATE TABLE IF NOT EXISTS auth.sessions (
-    jti         TEXT         PRIMARY KEY,
-    user_id     BIGINT       NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    expires_at  TIMESTAMPTZ  NOT NULL,
-    revoked     BOOLEAN      NOT NULL DEFAULT FALSE,
-    ip_address  TEXT,
-    user_agent  TEXT
+    jti               TEXT         PRIMARY KEY,
+    user_id           BIGINT       NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    expires_at        TIMESTAMPTZ  NOT NULL,
+    last_activity_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    revoked           BOOLEAN      NOT NULL DEFAULT FALSE,
+    ip_address        TEXT,
+    user_agent        TEXT
 );
 -- Retrofit for auth.users created before manager_id existed — CREATE TABLE IF
 -- NOT EXISTS above never adds columns to an already-existing table.
@@ -79,6 +80,10 @@ ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS manager_id BIGINT REFERENCES aut
 -- PUT /users/me/preferences so they follow the account across browsers and
 -- machines, unlike the tweaks panel's prior in-memory-only state.
 ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS preferences JSONB;
+-- Retrofit for auth.sessions created before the idle timeout existed.
+-- Backfilled to NOW() on add so pre-existing sessions read as freshly active
+-- rather than immediately idle-expiring.
+ALTER TABLE auth.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user
     ON auth.sessions (user_id, expires_at);
@@ -144,8 +149,13 @@ CREATE TABLE IF NOT EXISTS auth.role_screen_permissions (
 CREATE INDEX IF NOT EXISTS idx_role_screen_permissions_role ON auth.role_screen_permissions (role_id);
 """
 
-PW_HISTORY_LIMIT  = 3
-SESSION_TTL_HOURS = int(os.environ.get("AUTH_SESSION_TTL_HOURS", "24"))
+PW_HISTORY_LIMIT     = 3
+SESSION_TTL_HOURS    = int(os.environ.get("AUTH_SESSION_TTL_HOURS", "24"))
+# Absolute idle limit — a session with no touch_session() call in this window
+# is treated as expired even though its JWT/expires_at is still valid. Kept
+# separate from SESSION_TTL_HOURS: that's the hard cap from login regardless
+# of activity, this is the "walked away from the desk" cap.
+IDLE_TIMEOUT_MINUTES = int(os.environ.get("AUTH_IDLE_TIMEOUT_MINUTES", "30"))
 
 
 def init_auth_db() -> bool:
@@ -733,21 +743,51 @@ def create_session(
 
 
 def validate_session(jti: str) -> Optional[int]:
-    """Return user_id if the session is active, else None."""
+    """Return user_id if the session is active and not idle-expired, else None."""
+    user_id, _reason = validate_session_reason(jti)
+    return user_id
+
+
+def validate_session_reason(jti: str) -> tuple[Optional[int], Optional[str]]:
+    """Like validate_session, but also reports why an invalid session is
+    invalid — "idle" (no activity within IDLE_TIMEOUT_MINUTES) vs None (missing,
+    revoked, or past its absolute expires_at) — so callers can surface a
+    specific "signed out due to inactivity" message instead of a generic one."""
     if not jti:
-        return None
+        return None, None
     try:
         with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT user_id FROM auth.sessions "
-                    "WHERE jti = %s AND NOT revoked AND expires_at > NOW()",
-                    (jti,),
+                    "SELECT user_id, last_activity_at <= NOW() - (%s * interval '1 minute') AS is_idle "
+                    "FROM auth.sessions WHERE jti = %s AND NOT revoked AND expires_at > NOW()",
+                    (IDLE_TIMEOUT_MINUTES, jti),
                 )
                 row = cur.fetchone()
-                return row[0] if row else None
+                if not row:
+                    return None, None
+                user_id, is_idle = row
+                return (None, "idle") if is_idle else (user_id, None)
     except Exception:
-        return None
+        return None, None
+
+
+def touch_session(jti: str) -> None:
+    """Bump last_activity_at to now — called from POST /auth/touch, which the
+    frontend hits only on genuine user interaction (not background polling),
+    so idle timeout reflects real engagement rather than silent refresh traffic."""
+    if not jti:
+        return
+    try:
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE auth.sessions SET last_activity_at = NOW() WHERE jti = %s AND NOT revoked",
+                    (jti,),
+                )
+            conn.commit()
+    except Exception:
+        pass
 
 
 def revoke_session(jti: str) -> None:

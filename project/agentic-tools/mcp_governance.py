@@ -72,6 +72,7 @@ except ImportError as exc:
 import db  # project/agentic-tools/db.py — psycopg2 thread pool
 import claude_client  # optional 4th-opinion reviewer for conflicted/low-confidence UROs
 import pac_endpoints  # real Rego/OPA evaluation — see _evaluate_pac_policy below
+import mcp_guards  # SSRF guard for user-supplied connector base_urls
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -323,6 +324,7 @@ def _fetch_unprocessed_system(batch_size: int) -> list[dict]:
 # which process actually applies.
 _SOURCE_SYSTEM_TO_PAC_PROCESS = {
     "GITHUB":           "itgc",              # code/access change management
+    "GITLAB":           "itgc",
     "SAILPOINT":        "itgc",              # IAM — access governance
     "ORACLE_FUSION":     "procure_to_pay",    # existing Oracle Fusion tool surface is procurement/controls-centric
     "SAP":               "record_to_report",  # SAP is typically the financial-close system of record
@@ -330,6 +332,30 @@ _SOURCE_SYSTEM_TO_PAC_PROCESS = {
     "MCP_PROXY":         "itgc",
 }
 _DEFAULT_PAC_PROCESS = "itgc"
+
+# Finer-grained override checked before _SOURCE_SYSTEM_TO_PAC_PROCESS: some
+# event types need a different process than the rest of their source system's
+# traffic. DevOps Monitoring reuses GITHUB/GITLAB (real webhooks still route to
+# itgc) and SYSTEM_TELEMETRY (shared with every other push-model system) as
+# source systems, so process routing can't key on source_system alone here —
+# event_type disambiguates the DevOps-specific subset.
+_SOURCE_EVENT_TO_PAC_PROCESS = {
+    ("GITHUB", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
+    ("GITHUB", "CODE_REVIEW_BYPASSED"):        "devops_monitoring",
+    ("GITLAB", "BRANCH_PROTECTION_BYPASSED"):  "devops_monitoring",
+    ("GITLAB", "CODE_REVIEW_BYPASSED"):        "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "SAST_FINDING"):      "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "SLA_BREACH"):        "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "INFRASTRUCTURE_FINDING"): "infrastructure_monitoring",
+    ("GITHUB", "PIPELINE_MISCONFIGURATION"):          "devops_monitoring",
+    ("SYSTEM_TELEMETRY", "PIPELINE_MISCONFIGURATION"): "devops_monitoring",
+    # Financial Risk Pipeline — Record-to-Report-flavored, alongside the
+    # existing P-R2R-001 manual-JE-approval rule.
+    ("SYSTEM_TELEMETRY", "JE_VELOCITY_ANOMALY"):  "record_to_report",
+    ("SYSTEM_TELEMETRY", "LIQUIDITY_SHIFT"):      "record_to_report",
+    ("SYSTEM_TELEMETRY", "INVENTORY_DIVERGENCE"): "record_to_report",
+}
 
 
 def _evaluate_pac_policy(uro: "URO") -> Optional[dict]:
@@ -346,7 +372,11 @@ def _evaluate_pac_policy(uro: "URO") -> Optional[dict]:
     """
     try:
         source_system = uro.source_system.value if hasattr(uro.source_system, "value") else str(uro.source_system)
-        process = _SOURCE_SYSTEM_TO_PAC_PROCESS.get(source_system, _DEFAULT_PAC_PROCESS)
+        event_type = uro.event_type.value if hasattr(uro.event_type, "value") else str(uro.event_type)
+        process = _SOURCE_EVENT_TO_PAC_PROCESS.get(
+            (source_system, event_type),
+            _SOURCE_SYSTEM_TO_PAC_PROCESS.get(source_system, _DEFAULT_PAC_PROCESS),
+        )
 
         saved = db.get_latest_pac_module(process) if db.is_available() else None
         rego_content = saved["rego_content"] if saved else pac_endpoints._REGO_DEFAULTS.get(process)
@@ -1635,6 +1665,28 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("sod_violation")
     if severity == "CRITICAL" or payload.get("policy_violation"):
         flags.add("policy_violation")
+    # DevOps Monitoring: explicit signals set by github_scm_tool.py/gitlab_scm_tool.py
+    # (branch-protection audits) and evidence_endpoints.py (SARIF findings) rather
+    # than inferred from generic keyword matching — these producers know exactly
+    # which event they're emitting.
+    if payload.get("branch_protection_violation"):
+        flags.add("branch_protection_violation")
+    if payload.get("sast_finding"):
+        flags.add("sast_finding")
+    if payload.get("sla_breach"):
+        flags.add("sla_breach")
+    if payload.get("infrastructure_finding"):
+        flags.add("infrastructure_finding")
+    if payload.get("pipeline_misconfiguration"):
+        flags.add("pipeline_misconfiguration")
+    # Financial Risk Pipeline: explicit signals set by predictive_analytics_tool.py's
+    # compute_je_velocity_anomaly/compute_liquidity_shift/compute_inventory_sales_divergence.
+    if payload.get("je_velocity_anomaly"):
+        flags.add("je_velocity_anomaly")
+    if payload.get("liquidity_shift"):
+        flags.add("liquidity_shift")
+    if payload.get("inventory_divergence"):
+        flags.add("inventory_divergence")
     return sorted(flags)
 
 
@@ -1920,6 +1972,23 @@ async def delete_system(system_id: int):
 # Configured entirely from the app UI, no env vars — see connector_poller.py
 # for the background dispatch loop that actually polls these.
 
+# Connector types whose base_url points at a public SaaS API (github.com,
+# gitlab.com, ...) rather than a customer's own on-prem/VPN-internal system —
+# only these get the SSRF guard. Oracle Fusion/SAP HANA/etc. connectors are
+# legitimately configured with private/internal addresses, so validating
+# those would break real deployments.
+_SSRF_GUARDED_CONNECTOR_TYPES = {"github_scm", "gitlab_scm", "itsm_jira", "itsm_servicenow"}
+
+
+def _validate_connector_base_url(connector_type: str, base_url: Optional[str]) -> None:
+    if not base_url or connector_type not in _SSRF_GUARDED_CONNECTOR_TYPES:
+        return
+    try:
+        mcp_guards.validate_external_url(base_url, field="base_url")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/connectors")
 async def list_connectors():
     """All poll-based connectors. Never includes credentials."""
@@ -1931,10 +2000,12 @@ async def list_connectors():
 async def create_connector(body: dict = Body(...)):
     """Register a new poll connector. Body includes plaintext credentials —
     encrypted before storage, never echoed back."""
+    connector_type = str(body.get("connector_type") or "")[:32]
+    _validate_connector_base_url(connector_type, body.get("base_url"))
     try:
         new_id = await asyncio.to_thread(
             db.create_poll_connector,
-            str(body.get("connector_type") or "")[:32],
+            connector_type,
             str(body.get("display_name") or "")[:128],
             body.get("base_url"),
             str(body.get("auth_type") or "")[:32],
@@ -1954,6 +2025,10 @@ async def create_connector(body: dict = Body(...)):
 @router.put("/connectors/{connector_id}")
 async def update_connector(connector_id: int, body: dict = Body(...)):
     """Update a connector. Omit `credentials` to keep the existing encrypted value."""
+    if body.get("base_url"):
+        existing = await asyncio.to_thread(db.get_poll_connector, connector_id, False)
+        if existing:
+            _validate_connector_base_url(existing["connector_type"], body.get("base_url"))
     try:
         ok = await asyncio.to_thread(
             db.update_poll_connector,

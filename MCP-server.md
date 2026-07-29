@@ -157,25 +157,33 @@ Converts risk lists from three sources (live loop output, PostgreSQL, Excel/CSV)
 ## 8. Policy-as-Code MCP Server
 **File:** [`pac_mcp_server.py`](project/agentic-tools/pac_mcp_server.py)  
 **Server name:** `policy-as-code`  
-**Dependencies:** `pac_endpoints.py`, `db.py`  
+**Dependencies:** `pac_endpoints.py`, `pac_assurance.py`, `pac_negative_sweep.py`, `db.py`  
 **Auth:** None. `DATABASE_URL` optional for persistence; `MCP_READ_ONLY=true` blocks writes.
 
-Manages Rego policy modules for the five Oracle Fusion ERP processes (ITGC, O2C, P2P, R2S, R2R). Handles version history, multi-approver sign-offs, and GitHub / Confluence integration hooks.
+Manages Rego policy modules for seven processes: the five original Oracle Fusion ERP processes (ITGC, O2C, P2P, R2S, R2R) plus DevOps Monitoring and Infrastructure Monitoring. Handles version history, multi-approver sign-offs, GitHub/Confluence integration hooks, and negative-control testing (proving a policy actually catches what it claims to, not just that it evaluates without error).
 
 | Tool | Input | Description |
 |------|-------|-------------|
-| `pac_list_modules` | `process=""` | Latest module metadata for all 5 processes. Falls back to built-in defaults for processes not yet saved. |
+| `pac_list_modules` | `process=""` | Latest module metadata for all processes. Falls back to built-in defaults for processes not yet saved. |
 | `pac_get_module` | `process` | Full Rego content + version + approvals. Falls back to built-in default if no saved version. |
 | `pac_save_module` | `process`, `rego_content`, `version=""`, `module_name=""` | Save a new versioned module. Auto-increments version when omitted. Blocked by `MCP_READ_ONLY`. |
 | `pac_module_history` | `process`, `limit=10` | Version history (newest first). Each entry includes `module_id` for `pac_approve_module`. |
-| `pac_approve_module` | `module_id`, `approver`, `role=""` | Add a named approver sign-off to a specific module version. |
+| `pac_approve_module` | `module_id`, `approver`, `role=""` | Add a named approver sign-off. Also runs the negative-testing gate against the exact version approved and records the result (advisory, not yet blocking). |
 | `pac_get_hooks` | `hook_type=""` | GitHub and/or Confluence hook configs. |
 | `pac_save_hook` | `hook_type`, `repo_url=""`, `branch="main"`, `token=""`, `confluence_url=""`, `space_key=""`, `page_id=""` | Save/update a GitHub or Confluence integration hook. |
 | `pac_get_default` | `process` | Built-in Dendrai Rego default for any process — no DB required. |
 | `pac_validate_rego` | `rego_content` | Static analysis: package declaration, brace balance, deny rule inventory, sprintf format sanity. No OPA binary required. |
 | `pac_diff_modules` | `process`, `context_lines=5` | Unified diff of the two most recent saved versions. |
+| `pac_run_negative_tests` | `process`, `rego_content=""` | Schema-contract check (does every field/event-type it references correspond to something the real pipeline produces) + must-fire/must-not-fire fixture corpus, evaluated through real OPA when available. Persists as audit evidence. Blocked by `MCP_READ_ONLY`. |
+| `pac_negative_test_history` | `process`, `limit=20` | Past negative-control test runs, newest first. |
+| `pac_assurance_summary` | `process=""`, `stale_days=30` | Which policy-enforced controls are proven working (recent real fire and/or passing test) vs. unverified (neither). |
+| `pac_run_negative_sweep_now` | — | Run the periodic full-evaluation sweep for every process immediately instead of waiting for the hourly loop; detects regressions. Blocked by `MCP_READ_ONLY`. |
+| `pac_compliance_scorecard` | `framework="soc2"`, `stale_days=30` | Executive Compliance Scorecard — SOC 2/NIST 800-53/ISO 27001/COSO ERM crosswalk (curated in `framework_mappings.py`, never auto-generated). Reports "mapped" and "verified" separately per criterion. |
+| `pac_check_approval_drift` | `process=""` | Compares what's actually evaluating in production (latest SAVED module) against the latest module version that ever received a real approval sign-off — a mismatch means an unapproved or since-edited module is live. Omit `process` to check every process at once. |
 
-**Processes:** `itgc` · `order_to_cash` · `procure_to_pay` · `receive_to_ship` · `record_to_report`
+**Processes:** `itgc` · `order_to_cash` · `procure_to_pay` · `receive_to_ship` · `record_to_report` · `devops_monitoring` · `infrastructure_monitoring`
+
+**Negative testing today**: only `devops_monitoring` and `infrastructure_monitoring` have real event producers wired to the automated pipeline and a registered fixture corpus — the original five ERP processes were found (via `pac_run_negative_tests`) to reference input fields/roots the automated pipeline has never produced (no real SAP/ERP connector feeds `input.journal.*`/`input.invoice.*`/etc. yet), so they currently fail the schema-contract check. That's the finding, not a bug in the check.
 
 ---
 
@@ -197,6 +205,51 @@ Generates and manages Rego Controls-as-Code artifacts. Synthesises testable cont
 | `cac_evaluate_event` | `rego_content`, `input_event_json` | Heuristic simulation of deny rule evaluation against a sample OPA input event. No OPA binary required. Returns fired / passed / skipped rules with confidence scores. |
 | `cac_export` | `artifact_id=0`, `format="rego"` | Export an artifact as `rego`, `json` (parsed controls array), or `yaml`. Defaults to latest artifact. |
 | `cac_map_to_risks` | `ticker=""`, `run_id=0`, `limit=50` | Token-match controls against `risk_scores` rows → coverage matrix showing mapped controls per risk and uncovered risks. |
+
+---
+
+## 10. DevOps Monitoring MCP Server
+**File:** [`devops_monitoring_mcp_server.py`](project/agentic-tools/devops_monitoring_mcp_server.py)  
+**Server name:** `devops-monitoring`  
+**Dependencies:** `scm_audit_endpoints.py`, `evidence_endpoints.py`, `risk_waiver_sweep.py`, `itsm_sla_sweep.py`, `db.py`  
+**Auth:** None. `DATABASE_URL` required for persistence; `MCP_READ_ONLY=true` blocks writes.
+
+SCM branch-protection auditing (GitHub/GitLab), GitHub Actions pipeline-as-code security auditing, real `gitleaks` secret scanning, SARIF/SAST evidence ingestion (with a tamper-evidence hash chain), the Risk Waiver & Exception Hub, pipeline provenance/attestation, DORA-style change-management metrics, and the ITSM/Jira-ServiceNow SLA Bridge.
+
+| Tool | Input | Description |
+|------|-------|-------------|
+| `scm_list_repositories` | — | Registered GitHub/GitLab repos under audit (no tokens) |
+| `scm_run_audit` | `repository_id` | Run a branch-protection/CODEOWNERS audit now, adjudicated through the full pipeline. Blocked by `MCP_READ_ONLY`. |
+| `scm_run_pipeline_security_audit` | `repository_id` | Run a GitHub Actions workflow-security audit now (token permissions, unpinned actions, risky `pull_request_target`). GitHub-only. Blocked by `MCP_READ_ONLY`. |
+| `scm_run_secret_scan` | `repository_id` | Run a real `gitleaks` scan of the repo's full git history now — the producer for `SECRET_DETECTED` outside a live GitHub Advanced Security webhook. Clones the repo, so slower than the other audits. A clean scan is reported as-is, never adjudicated as a false "compliant". GitHub-only. Blocked by `MCP_READ_ONLY`. |
+| `scm_list_drift` | `resource=""`, `open_only=False`, `limit=100` | Drift/time-series log — controls that flipped between consecutive audits, either direction |
+| `evidence_list_records` | `repository=""`, `severity=""`, `limit=50` | Filtered SARIF evidence records |
+| `evidence_verify_record` | `record_id` | Recompute the HMAC signature for one evidence record — proves it hasn't been tampered with |
+| `evidence_verify_chain` | `limit=0` | Verify the tamper-evidence hash chain across all evidence records — proves trail completeness (no row deleted/reordered), which the per-record HMAC alone can't. `0` verifies the whole chain. |
+| `waiver_list` | `status=""`, `limit=100` | List Risk Waivers (ACTIVE/EXPIRED/REVOKED) |
+| `waiver_sweep_now` | — | Run the automated waiver-expiry sweep immediately. Blocked by `MCP_READ_ONLY`. |
+| `attestation_list` | `commit_sha=""`, `limit=50` | List pipeline provenance/attestation records |
+| `dora_metrics_summary` | `window_days=30` | Deployment frequency / change failure rate / MTTR over the trailing window — real operational evidence for SOC 2 CC8.1. |
+| `itsm_list_tickets` | `status=""`, `external_system=""`, `breached_only=False`, `limit=100` | ITSM tickets tracking findings, with SLA status |
+| `itsm_sla_summary` | — | Open/breached/at-risk-within-24h counts |
+| `itsm_sweep_now` | — | Run the SLA breach-detection sweep immediately. Blocked by `MCP_READ_ONLY`. |
+
+---
+
+## 11. Infrastructure Monitoring MCP Server
+**File:** [`infrastructure_monitoring_mcp_server.py`](project/agentic-tools/infrastructure_monitoring_mcp_server.py)  
+**Server name:** `infrastructure-monitoring`  
+**Dependencies:** `postgres_cis_tool.py`, `railway_iaas_tool.py`, `db.py`  
+**Auth:** None. `DATABASE_URL` required for persistence; `MCP_READ_ONLY=true` blocks writes.
+
+Continuous IaaS/OS/DB configuration auditing — Postgres CIS-style hardening checks, Railway platform/deployment drift, and connector credential rotation hygiene (dogfooded on Intelligenza's own stored credentials). Findings ride the generic `system_telemetry` → adjudication path, so they already surface in Continuous Monitoring / Controls Monitor without any dedicated findings viewer.
+
+| Tool | Input | Description |
+|------|-------|-------------|
+| `iaas_list_targets` | — | Registered Postgres/Railway audit connectors (no credentials) |
+| `iaas_run_postgres_audit` | `connector_id` | Run a Postgres CIS-style hardening audit now. Blocked by `MCP_READ_ONLY`. |
+| `iaas_run_railway_audit` | `connector_id` | Run a Railway platform/deployment drift audit now. Blocked by `MCP_READ_ONLY`. |
+| `iaas_run_connector_hygiene_check` | `stale_days=90` | Check Intelligenza's own stored connector credentials (Oracle Fusion, SAP HANA, GitHub/GitLab PATs, Postgres DSNs, Railway tokens, ...) for rotation staleness now. Blocked by `MCP_READ_ONLY` only when it would actually write (a clean result never writes). |
 
 ---
 
@@ -226,3 +279,5 @@ All servers are registered identically in Claude Code (`.claude/settings.json`) 
 | `risk_as_code_mcp_server.py` | `risk-as-code` | `DATABASE_URL` optional |
 | `pac_mcp_server.py` | `policy-as-code` | `DATABASE_URL` optional |
 | `cac_mcp_server.py` | `controls-as-code` | `DATABASE_URL` optional |
+| `devops_monitoring_mcp_server.py` | `devops-monitoring` | `DATABASE_URL` |
+| `infrastructure_monitoring_mcp_server.py` | `infrastructure-monitoring` | `DATABASE_URL` |
