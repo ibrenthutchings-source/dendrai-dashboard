@@ -1676,7 +1676,8 @@ var FCST_FRED = [
   {id:'DTWEXBGS',name:'USD Trade-Weighted'},
 ];
 var FCST_COLORS = ['#3DFFC0','#5BB3FF','#F0A855','#FF5E5E','#B09FFF'];
-var FRED_API_KEY = '4489d2f6e6f78ed0bc1f9c754ea9b2d8';
+// FRED_API_KEY is injected server-side by dendrai_server.py's /proxy/fred/
+// handler (from the FRED_API_KEY env var) — never shipped to the browser.
 
 // ── SHARED STATE ──────────────────────────────────────────────────
 var fcstData = {};      // {ticker: {kpi: [{q,v}]}}
@@ -1882,7 +1883,7 @@ async function fcstFetchFRED(){
   for(var i=0;i<FCST_FRED.length;i++){
     var s=FCST_FRED[i];
     try{
-      var r=await fetch('/proxy/fred/series/observations?series_id='+s.id+'&api_key='+FRED_API_KEY+'&file_type=json&frequency=q&sort_order=asc&limit=30');
+      var r=await fetch('/proxy/fred/series/observations?series_id='+s.id+'&file_type=json&frequency=q&sort_order=asc&limit=30');
       var d=await r.json();
       var obs=(d.observations||[]).filter(function(o){return o.value!=='.'&&o.value!='';}).map(function(o){return{date:o.date,v:parseFloat(o.value)};});
       out.push(Object.assign({},s,{data:obs}));

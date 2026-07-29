@@ -197,10 +197,12 @@ The dashboard is protected by a JWT-based auth system integrated into `api_serve
 
 ### Default accounts
 
-| Username | Password | Role | Notes |
-|---|---|---|---|
-| `admin` | `Admin@Dendrai1!` | admin | Must change password on first login |
-| `dendrai` | `Dendrai@Pass1!` | user | Must change password on first login |
+Two local accounts (`admin`, `dendrai`) are seeded on first startup against a fresh database. Their initial passwords are **not** hardcoded — set `AUTH_SEED_ADMIN_PASSWORD` / `AUTH_SEED_USER_PASSWORD` before first boot, or leave them unset and a random one-time password is generated and printed to the startup logs. Both accounts must change their password at first login regardless.
+
+| Username | Role | Notes |
+|---|---|---|
+| `admin` | admin | Must change password on first login |
+| `dendrai` | user | Must change password on first login |
 
 ### Features
 
