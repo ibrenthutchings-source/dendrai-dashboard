@@ -90,6 +90,10 @@ window.MCP = (function () {
       include_rss:      opts.includeRss      !== false,
       include_fred:     opts.includeFred     !== false,
       use_db:           opts.useDb           || false,
+      period_begin:     opts.periodBegin     || '',
+      period_end:       opts.periodEnd       || '',
+      persona:          opts.persona         || '',
+      appetite_level:   opts.appetiteLevel   || '',
     });
   }
 

@@ -614,6 +614,10 @@ class FullAnalysisRequest(BaseModel):
     forecast_metric: str = "Revenue"
     include_rss: bool = True
     include_fred: bool = True
+    period_begin: str = ""
+    period_end: str = ""
+    persona: str = ""
+    appetite_level: str = ""
 
 class RiskFactorsRequest(BaseModel):
     ticker: str
@@ -693,6 +697,10 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
         "data_mode": "mcp",
         "forecast_metric": req.forecast_metric,
         "forecast_horizon": req.forecast_horizon,
+        "period_begin": req.period_begin or None,
+        "period_end": req.period_end or None,
+        "persona": req.persona or None,
+        "appetite_level": req.appetite_level or None,
     }
     run_id = db.create_risk_loop_run(company_id, run_config)
     if not run_id:
