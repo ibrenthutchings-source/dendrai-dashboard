@@ -341,6 +341,43 @@ function App() {
   const [govLastRefresh, setGovLastRefresh] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
 
+  // ---- Pipeline screen: user-chosen peer overlay for the KPI charts + gauges ----
+  // Separate from govPeerData above, which is auto-discovered SIC/10-K peers
+  // used only for the M-Score/Z-Score gauge peer-rank. This is a single,
+  // explicitly-picked comparison company, overlaid on every forecast chart.
+  const [peerCompareTicker, setPeerCompareTicker] = useState("");
+  const [peerCompareData, setPeerCompareData] = useState(null);
+  const [peerCompareLoading, setPeerCompareLoading] = useState(false);
+  const [peerCompareError, setPeerCompareError] = useState(null);
+
+  const loadPeerCompare = useCallback(async (rawTicker) => {
+    const t = (rawTicker || "").trim().toUpperCase();
+    if (!t) return;
+    setPeerCompareLoading(true);
+    setPeerCompareError(null);
+    try {
+      const res = await MCP.fetchFullAnalysis(t, { includeRss: false, includeFred: false });
+      setPeerCompareData({
+        ticker: res.ticker || t,
+        companyName: res.company_name || t,
+        forecasts: _peerForecastBundle(res),
+        zscore: res.altman_zscore?.z_score,
+        mscore: res.beneish_mscore?.m_score,
+      });
+    } catch (e) {
+      setPeerCompareError(e.message || "Peer fetch failed");
+      setPeerCompareData(null);
+    } finally {
+      setPeerCompareLoading(false);
+    }
+  }, []);
+
+  const clearPeerCompare = useCallback(() => {
+    setPeerCompareTicker("");
+    setPeerCompareData(null);
+    setPeerCompareError(null);
+  }, []);
+
   // ---- Audit Scope: DB-backed fallback when Assess Enterprise Risk hasn't
   // been run in this session ----
   const [savedAuditScope, setSavedAuditScope] = useState(null); // { run_id, run_at, objectives }
