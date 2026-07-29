@@ -1530,7 +1530,7 @@ def get_macro_leading_indicators(
         from pathlib import Path
         out_path = Path(output_file) if output_file else Path(f"{ticker.upper()}_fred_macro.json")
         result = _fred_run_analysis(ticker=ticker, api_key=fred_key, min_r=min_r,
-                                    lags=lag_list, output_path=out_path)
+                                    lags=lag_list, output_path=out_path, industry=industry)
         return {"source": "live_fred_analysis", "result": result}
     except Exception as e:
         return {
