@@ -344,35 +344,48 @@ function App() {
   // ---- Pipeline screen: peer overlay for the KPI charts + gauges ----
   // The pick list itself is govPeerData.peers (10-K named competitors, falling
   // back to same-SIC peers — see PeerComparePicker in pipeline.jsx); this state
-  // is just which one is currently selected and its fetched comparison data.
-  const [peerCompareData, setPeerCompareData] = useState(null);
+  // is which ones are currently selected (up to MAX_PEER_COMPARE, else the
+  // charts get unreadable) and their fetched comparison data. Mirrored in
+  // pipeline.jsx's own MAX_PEER_COMPARE for the picker's "at capacity" UI —
+  // keep the two in sync if this changes.
+  const MAX_PEER_COMPARE = 4;
+  const [peerCompareList, setPeerCompareList] = useState([]); // [{ticker, companyName, forecasts, zscore, mscore}]
   const [peerCompareLoading, setPeerCompareLoading] = useState(false);
   const [peerCompareError, setPeerCompareError] = useState(null);
 
-  const loadPeerCompare = useCallback(async (rawTicker) => {
+  const addPeerCompare = useCallback(async (rawTicker) => {
     const t = (rawTicker || "").trim().toUpperCase();
-    if (!t) return;
+    if (!t || peerCompareList.some(p => p.ticker === t)) return;
+    if (peerCompareList.length >= MAX_PEER_COMPARE) {
+      setPeerCompareError(`Up to ${MAX_PEER_COMPARE} peers at a time — remove one first.`);
+      return;
+    }
     setPeerCompareLoading(true);
     setPeerCompareError(null);
     try {
       const res = await MCP.fetchFullAnalysis(t, { includeRss: false, includeFred: false });
-      setPeerCompareData({
+      const peer = {
         ticker: res.ticker || t,
         companyName: res.company_name || t,
         forecasts: _peerForecastBundle(res),
         zscore: res.altman_zscore?.z_score,
         mscore: res.beneish_mscore?.m_score,
-      });
+      };
+      setPeerCompareList(list => list.some(p => p.ticker === peer.ticker) ? list : [...list, peer]);
     } catch (e) {
       setPeerCompareError(e.message || "Peer fetch failed");
-      setPeerCompareData(null);
     } finally {
       setPeerCompareLoading(false);
     }
+  }, [peerCompareList]);
+
+  const removePeerCompare = useCallback((ticker) => {
+    setPeerCompareList(list => list.filter(p => p.ticker !== ticker));
+    setPeerCompareError(null);
   }, []);
 
   const clearPeerCompare = useCallback(() => {
-    setPeerCompareData(null);
+    setPeerCompareList([]);
     setPeerCompareError(null);
   }, []);
 
@@ -2217,10 +2230,11 @@ function App() {
                 risks={output.s2?.risks || (hasRun ? profile?.risks : null) || []}
                 companyName={hasRun ? (profile?.entity?.name || "") : ""}
                 peerData={govPeerData}
-                peerCompareData={peerCompareData}
+                peerCompareList={peerCompareList}
                 peerCompareLoading={peerCompareLoading}
                 peerCompareError={peerCompareError}
-                onLoadPeerCompare={loadPeerCompare}
+                onAddPeerCompare={addPeerCompare}
+                onRemovePeerCompare={removePeerCompare}
                 onClearPeerCompare={clearPeerCompare}
                 ratios={hasRun ? (profile?.ratios || {}) : {}}
                 events={events} />

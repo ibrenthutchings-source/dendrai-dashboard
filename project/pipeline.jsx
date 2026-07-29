@@ -31,9 +31,9 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     enabledFeedIds = [], onRssSignalsReady = null,
                     flowMeta = null, onOpenMainFlow = null,
                     risks = [], companyName = "", peerData = null,
-                    peerCompareData = null,
+                    peerCompareList = [],
                     peerCompareLoading = false, peerCompareError = null,
-                    onLoadPeerCompare = null, onClearPeerCompare = null,
+                    onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null,
                     ratios = {}, events = [] }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s1Extra = {
@@ -47,7 +47,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     onRssSignalsReady,
     onAddObjective,
     peerData,
-    peerCompareData,
+    peerCompareList,
   };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
@@ -113,8 +113,9 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                 <PipelinePanel label="Forecasts">
                   <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
                     peerData={peerData}
-                    peerCompareData={peerCompareData} peerCompareLoading={peerCompareLoading}
-                    peerCompareError={peerCompareError} onLoadPeerCompare={onLoadPeerCompare} onClearPeerCompare={onClearPeerCompare}/>
+                    peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+                    peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+                    onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}/>
                   {GeoSegKPI && (
                     <GeoSegKPI
                       data={forecasts}
@@ -265,19 +266,28 @@ function Connector({ active }) {
   );
 }
 
-// Renders a single-entity ForecastChart, or a two-entity MultiSeriesForecastChart
-// when a peer is selected and has data for this metric. Used by every KPI chart
-// on this screen so "compare against peer" behaves identically everywhere —
-// peer: { ticker, history, forecast } from _peerForecastBundle (app.jsx).
-function ComparableChart({ history, forecast, unit, color, decimals, chartMetrics, peer, seriesName = "This company" }) {
-  if (peer?.history?.length && peer?.forecast?.length) {
+// Stable per-peer color, by order-added — kept distinct from the vivid accent
+// colors the subject's own line already uses per chart (--acc/--amber/--violet/
+// etc.), so a peer reads as "peer" on every chart even though the subject's
+// own color changes chart to chart. Cycled if MAX_PEER_COMPARE ever grows
+// past 4 (must stay in sync with app.jsx's MAX_PEER_COMPARE).
+const MAX_PEER_COMPARE = 4;
+const _PEER_PALETTE = ["#8a8fa3", "#c98a4b", "#5b9bd5", "#9b6fd1"];
+
+// Renders a single-entity ForecastChart, or a multi-entity MultiSeriesForecastChart
+// when one or more peers are selected and have data for this metric. Used by
+// every KPI chart on this screen so "compare against peers" behaves identically
+// everywhere — peers: [{ ticker, history, forecast }] from _peerSeriesListFor.
+function ComparableChart({ history, forecast, unit, color, decimals, chartMetrics, peers, seriesName = "This company" }) {
+  const activePeers = (peers || []).filter(p => p?.history?.length && p?.forecast?.length);
+  if (activePeers.length > 0) {
     const MSC = window.MultiSeriesForecastChart;
     if (!MSC) return null;
     return React.createElement(MSC, {
       unit, decimals,
       series: [
         { name: seriesName, color, history, forecast },
-        { name: peer.ticker, color: "var(--ink-3)", history: peer.history, forecast: peer.forecast },
+        ...activePeers.map((p, i) => ({ name: p.ticker, color: _PEER_PALETTE[i % _PEER_PALETTE.length], history: p.history, forecast: p.forecast })),
       ],
     });
   }
@@ -286,70 +296,76 @@ function ComparableChart({ history, forecast, unit, color, decimals, chartMetric
   return React.createElement(FC, { history, forecast, unit, color, decimals, chartMetrics });
 }
 
-// Runs backtest on history, passes metrics to ComparableChart so the caption
-// still appears once no peer is selected (MultiSeriesForecastChart has no
-// metrics caption — comparing forecast accuracy isn't the point of a peer
-// overlay).
-// {ticker, history, forecast} for a given chart metric key, or null when no
-// peer is selected or it has no data for that metric — shared by every panel
-// that renders KPI charts (S1Body's detailed stage body, ForecastChartsInline's
-// always-visible summary) so "compare against peer" behaves identically in both.
-function _peerSeriesFor(peerCompareData, key) {
-  return peerCompareData?.forecasts?.[key]
-    ? { ticker: peerCompareData.ticker, ...peerCompareData.forecasts[key] }
-    : null;
+// [{ticker, history, forecast}] for a given chart metric key, one entry per
+// selected peer that has data for that metric — shared by every panel that
+// renders KPI charts (S1Body's detailed stage body, ForecastChartsInline's
+// always-visible summary) so "compare against peers" behaves identically in both.
+function _peerSeriesListFor(peerCompareList, key) {
+  return (peerCompareList || [])
+    .filter(p => p.forecasts?.[key])
+    .map(p => ({ ticker: p.ticker, ...p.forecasts[key] }));
 }
 
-// One control, reused everywhere a peer can be picked — see the Pipeline-level
+// One control, reused everywhere peers can be picked — see the Pipeline-level
 // comment above s1Extra for why this is a single shared piece of state rather
 // than a picker per chart. Sourced from peerData.peers — the same 10-K named-
 // competitor / SIC-fallback list (/edgar/peers) already used for the M-Score/
-// Z-Score gauge peer-rank — rather than free-text ticker entry, so the
-// comparison is always a company the filer itself names as a competitor (or,
-// failing that, a same-SIC peer), not an arbitrary unrelated ticker.
-function PeerComparePicker({ peerData = null, peerCompareData = null,
+// Z-Score gauge peer-rank — rather than free-text ticker entry, so every
+// comparison is a company the filer itself names as a competitor (or, failing
+// that, a same-SIC peer), not an arbitrary unrelated ticker. Selected peers
+// render as removable chips; up to MAX_PEER_COMPARE at once keeps the charts
+// legible.
+function PeerComparePicker({ peerData = null, peerCompareList = [],
                               peerCompareLoading = false, peerCompareError = null,
-                              onLoadPeerCompare = null, onClearPeerCompare = null }) {
-  if (!onLoadPeerCompare) return null;
-  const peers = (peerData?.peers || []).filter(p => p.ticker);
+                              onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null }) {
+  if (!onAddPeerCompare) return null;
+  const selected = new Set(peerCompareList.map(p => p.ticker));
+  const available = (peerData?.peers || []).filter(p => p.ticker && !selected.has(p.ticker));
+  const atMax = peerCompareList.length >= MAX_PEER_COMPARE;
   return (
     <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6}}>
       <Icon name="user" size={13}/>
-      <span style={{fontSize:11.5, fontWeight:600, color:"var(--ink-2)"}}>Compare against peer</span>
-      {peerCompareData ? (
-        <span className="tag mono" style={{display:"flex", alignItems:"center", gap:6}}>
-          {peerCompareData.ticker}
-          <button type="button" onClick={onClearPeerCompare} title="Remove peer"
+      <span style={{fontSize:11.5, fontWeight:600, color:"var(--ink-2)"}}>Compare against peers</span>
+      {peerCompareList.map((p, i) => (
+        <span key={p.ticker} className="tag mono" style={{display:"flex", alignItems:"center", gap:6, borderLeft:`3px solid ${_PEER_PALETTE[i % _PEER_PALETTE.length]}`, paddingLeft:6}}>
+          {p.ticker}
+          <button type="button" onClick={() => onRemovePeerCompare && onRemovePeerCompare(p.ticker)} title="Remove peer"
             style={{background:"none", border:"none", cursor:"pointer", padding:0, display:"flex", color:"inherit"}}>
             <Icon name="x" size={10}/>
           </button>
         </span>
-      ) : peers.length > 0 ? (
+      ))}
+      {atMax ? (
+        <span style={{fontSize:10, color:"var(--ink-3)"}}>Up to {MAX_PEER_COMPARE} peers — remove one to add another.</span>
+      ) : available.length > 0 ? (
         <select
           value=""
           disabled={peerCompareLoading}
-          onChange={e => { if (e.target.value) onLoadPeerCompare(e.target.value); }}
+          onChange={e => { if (e.target.value) onAddPeerCompare(e.target.value); }}
           style={{fontSize:11, padding:"4px 8px", border:"1px solid var(--line)", borderRadius:6, fontFamily:"Geist Mono, monospace", background:"var(--surface)", color:"var(--ink)", maxWidth:280}}
         >
-          <option value="">{peerCompareLoading ? "Loading…" : `Select a 10-K peer (${peers.length})…`}</option>
-          {peers.map(p => (
+          <option value="">{peerCompareLoading ? "Loading…" : `+ Add a 10-K peer (${available.length})…`}</option>
+          {available.map(p => (
             <option key={p.ticker} value={p.ticker}>{p.ticker} — {p.company_name}</option>
           ))}
         </select>
-      ) : (
+      ) : peerCompareList.length === 0 ? (
         <span style={{fontSize:10.5, color:"var(--ink-3)"}}>
           {peerData ? "No 10-K competitors identified for this company." : "Loading 10-K peer list…"}
         </span>
+      ) : null}
+      {peerCompareList.length > 1 && (
+        <button type="button" className="btn btn-sm" onClick={onClearPeerCompare} style={{fontSize:10}}>Clear all</button>
       )}
       {peerCompareError && <span style={{fontSize:10.5, color:"var(--red-ink)"}}>{peerCompareError}</span>}
-      {peers.length > 0 && !peerCompareData && !peerCompareError && (
+      {peerCompareList.length === 0 && available.length > 0 && !peerCompareError && (
         <span style={{fontSize:10, color:"var(--ink-3)"}}>{peerData?.peer_source === "10-K named competitors" ? "From the company's own 10-K" : "Same-SIC peers"} — overlays on every chart and gauge below.</span>
       )}
     </div>
   );
 }
 
-function FCWithMetrics({ history, forecast, unit, color, decimals, peer }) {
+function FCWithMetrics({ history, forecast, unit, color, decimals, peers }) {
   const [metrics, setMetrics] = React.useState(null);
   React.useEffect(() => {
     if (!history?.length || !window.BACKTESTING || !window.FORECASTING) return;
@@ -358,11 +374,11 @@ function FCWithMetrics({ history, forecast, unit, color, decimals, peer }) {
       setMetrics(bt?.results?.ensemble ?? null);
     } catch (e) {}
   }, [history]);
-  return <ComparableChart history={history} forecast={forecast} unit={unit} color={color} decimals={decimals} chartMetrics={metrics} peer={peer}/>;
+  return <ComparableChart history={history} forecast={forecast} unit={unit} color={color} decimals={decimals} chartMetrics={metrics} peers={peers}/>;
 }
 
-function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareData,
-                                 peerCompareLoading, peerCompareError, onLoadPeerCompare, onClearPeerCompare }) {
+function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
+                                 peerCompareLoading, peerCompareError, onAddPeerCompare, onRemovePeerCompare, onClearPeerCompare }) {
   const [tick, setTick] = React.useState(0);
   React.useEffect(() => {
     if (!window.ForecastChart) {
@@ -375,8 +391,9 @@ function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareData,
   const picker = (
     <PeerComparePicker
       peerData={peerData}
-      peerCompareData={peerCompareData} peerCompareLoading={peerCompareLoading}
-      peerCompareError={peerCompareError} onLoadPeerCompare={onLoadPeerCompare} onClearPeerCompare={onClearPeerCompare}
+      peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+      peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+      onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
     />
   );
   if (!forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>No forecast data — run the loop first.</div>;
@@ -402,7 +419,7 @@ function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareData,
               </div>
             )}
           </div>
-          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)" peer={_peerSeriesFor(peerCompareData, 'revenue')}/>
+          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)" peers={_peerSeriesListFor(peerCompareList, 'revenue')}/>
         </div>
       )}
       {mg?.history?.length > 0 && (
@@ -415,7 +432,7 @@ function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareData,
               </div>
             )}
           </div>
-          <FCWithMetrics history={mg.history.slice(-16)} forecast={mg.forecast} unit="%" color="var(--violet)" peer={_peerSeriesFor(peerCompareData, 'margin')}/>
+          <FCWithMetrics history={mg.history.slice(-16)} forecast={mg.forecast} unit="%" color="var(--violet)" peers={_peerSeriesListFor(peerCompareList, 'margin')}/>
         </div>
       )}
       {livefacts && (
@@ -886,7 +903,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareData={s1Extra?.peerCompareData}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -997,14 +1014,14 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
 }
 
 function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null,
-                  peerCompareData = null }) {
+                  peerCompareList = [] }) {
   // The picker control itself lives in the always-visible "Forecasts" panel
   // (ForecastChartsInline) so it's impossible to miss — this stage body only
-  // consumes the resulting peerCompareData, via the same _peerSeriesFor helper.
-  const peerSeries = (key) => _peerSeriesFor(peerCompareData, key);
+  // consumes the resulting peerCompareList, via the same _peerSeriesListFor helper.
+  const peerSeries = (key) => _peerSeriesListFor(peerCompareList, key);
   const gaugePeers = [
     ...(peerData?.peers || []),
-    ...(peerCompareData ? [{ ticker: peerCompareData.ticker, z_score: peerCompareData.zscore, m_score: peerCompareData.mscore }] : []),
+    ...peerCompareList.map(p => ({ ticker: p.ticker, z_score: p.zscore, m_score: p.mscore })),
   ];
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
@@ -1284,7 +1301,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
             </div>
-            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2} peer={peerSeries('revenue')}/>
+            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2} peers={peerSeries('revenue')}/>
             {forecasts.revenue.monteCarlo && (
               <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:6, display:"flex", gap:14, flexWrap:"wrap"}}>
                 <span>Monte Carlo · {forecasts.revenue.monteCarlo.nSims} sims</span>
@@ -1324,7 +1341,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
             </div>
-            <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)" peer={peerSeries('margin')}/>
+            <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)" peers={peerSeries('margin')}/>
             {(() => {
               const lastF = forecasts.margin.forecast.slice(-1)[0]?.base;
               if (lastF == null) return null;
@@ -1360,7 +1377,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
               Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
               Persistent EPS compression raises financial-reporting and liquidity risk scores.
             </div>
-            <FCWithMetrics history={forecasts.eps.history.slice(-16)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)" peer={peerSeries('eps')}/>
+            <FCWithMetrics history={forecasts.eps.history.slice(-16)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)" peers={peerSeries('eps')}/>
           </div>
         );
       })()}
@@ -1376,7 +1393,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               EBIT ÷ Revenue. Forecast: {lastF?.toFixed(2)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
             </div>
-            <FCWithMetrics history={forecasts.opMargin.history.slice(-16)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838" peer={peerSeries('opMargin')}/>
+            <FCWithMetrics history={forecasts.opMargin.history.slice(-16)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838" peers={peerSeries('opMargin')}/>
           </div>
         );
       })()}
@@ -1392,7 +1409,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
             </div>
-            <FCWithMetrics history={forecasts.ebitda.history.slice(-16)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)" peer={peerSeries('ebitda')}/>
+            <FCWithMetrics history={forecasts.ebitda.history.slice(-16)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)" peers={peerSeries('ebitda')}/>
           </div>
         );
       })()}
@@ -1406,7 +1423,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
             </div>
-            <ComparableChart history={forecasts.netIncome.history.slice(-16)} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)" peer={peerSeries('netIncome')}/>
+            <ComparableChart history={forecasts.netIncome.history.slice(-16)} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)" peers={peerSeries('netIncome')}/>
           </div>
         );
       })()}
@@ -1420,7 +1437,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
             </div>
-            <ComparableChart history={forecasts.fcf.history.slice(-16)} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52" peer={peerSeries('fcf')}/>
+            <ComparableChart history={forecasts.fcf.history.slice(-16)} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52" peers={peerSeries('fcf')}/>
           </div>
         );
       })()}
