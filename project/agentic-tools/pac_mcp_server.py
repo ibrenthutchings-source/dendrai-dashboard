@@ -41,6 +41,11 @@ Claude Code — add to .claude/settings.json in your project:
     pac_get_default     Built-in Rego default for a process — no DB required
     pac_validate_rego   Validate Rego syntax and package structure
     pac_diff_modules    Side-by-side diff of the two most recent module versions
+    pac_run_negative_tests   Schema-contract check + must-fire/must-not-fire corpus (write-guarded)
+    pac_negative_test_history  Past negative-control test runs for a process
+    pac_assurance_summary     Which policy-enforced controls are proven working vs. unverified
+    pac_run_negative_sweep_now  Run the periodic full-evaluation sweep for every process now (write-guarded)
+    pac_compliance_scorecard   Framework coverage (SOC 2/NIST/ISO/COSO) — mapped vs. verified controls
 
 ── Environment variables ─────────────────────────────────────────────────────
 
@@ -51,6 +56,7 @@ Claude Code — add to .claude/settings.json in your project:
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import os
@@ -65,6 +71,9 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 from mcp_guards import audit_log, cap_output, check_rate_limit, check_read_only, validate_enum
 import db
+import pac_approval_drift
+import pac_assurance
+import pac_negative_sweep
 from pac_endpoints import (
     _PROCESS_LABELS,
     _REGO_DEFAULTS,
@@ -631,6 +640,191 @@ def pac_diff_modules(process: str, context_lines: int = 5) -> str:
         return f"Error: {exc}"
     except Exception as exc:
         return f"Error diffing modules for '{process}': {exc}"
+
+
+@mcp.tool()
+def pac_run_negative_tests(process: str, rego_content: str = "") -> str:
+    """
+    Run negative testing against a process's Rego: a schema-contract check
+    (does every input.event.<field>/event-type literal it references
+    correspond to something the real adjudication pipeline actually
+    produces — see pac_contracts.py) plus a must-fire/must-not-fire fixture
+    corpus (does it actually catch the known-bad cases it claims to —
+    pac_negative_tests.py). Persists the result as audit evidence
+    (observability.pac_test_runs) and updates each exercised control's
+    last_verified_at/last_test_passed.
+
+    Only devops_monitoring has a registered fixture corpus today — every
+    other built-in process currently fails the contract check (no real
+    producer wires their input fields yet), which is itself the finding.
+
+    Blocked when MCP_READ_ONLY=true (writes a test-run row).
+
+    Args:
+        process:      Process to test — e.g. 'devops_monitoring', 'itgc'
+        rego_content: Optional — test this Rego instead of whatever is
+                      currently saved (or the built-in default) for the process
+    """
+    try:
+        check_read_only("pac_run_negative_tests")
+        check_rate_limit("pac_run_negative_tests")
+        proc = _require_process(process)
+        audit_log("pac_run_negative_tests", process=proc)
+
+        content = rego_content.strip()
+        module_id = None
+        if not content:
+            saved = db.get_latest_pac_module(proc) if db.is_available() else None
+            if saved:
+                content = saved["rego_content"]
+                module_id = saved.get("id")
+            else:
+                content = _REGO_DEFAULTS.get(proc, "")
+        if not content:
+            return f"Error: no Rego content available for process '{proc}'"
+
+        result = pac_assurance.evaluate_and_record(
+            proc, content, module_id=module_id, triggered_by="manual", triggered_by_user="mcp"
+        )
+        return cap_output(json.dumps(result, indent=2, default=str))
+    except ValueError as exc:
+        return f"Error: {exc}"
+    except Exception as exc:
+        return f"Error running negative tests for '{process}': {exc}"
+
+
+@mcp.tool()
+def pac_negative_test_history(process: str, limit: int = 20) -> str:
+    """
+    Past negative-control test runs for a process, newest first — audit
+    evidence that a control was actually tested, and when, not just a claim
+    that it was.
+
+    Args:
+        process: Process name
+        limit:   Max rows to return (capped at 500)
+    """
+    try:
+        check_rate_limit("pac_negative_test_history")
+        proc = _require_process(process)
+        audit_log("pac_negative_test_history", process=proc)
+
+        if not db.is_available():
+            return json.dumps({"process": proc, "runs": [], "note": "Database not configured"}, indent=2)
+
+        runs = db.list_pac_test_runs(process=proc, limit=limit)
+        return cap_output(json.dumps({"process": proc, "runs": runs}, indent=2, default=str))
+    except ValueError as exc:
+        return f"Error: {exc}"
+    except Exception as exc:
+        return f"Error fetching negative-test history for '{process}': {exc}"
+
+
+@mcp.tool()
+def pac_assurance_summary(process: str = "", stale_days: int = 30) -> str:
+    """
+    Which policy-enforced controls are currently proven working (a recent
+    real production fire and/or a passing negative-control test within
+    stale_days) vs. unverified (neither) — the silent-rule-detection view.
+    An unverified control isn't necessarily broken, but nothing currently
+    proves it works.
+
+    Args:
+        process:    Optional filter — restrict to one process
+        stale_days: How many days without evidence counts as unverified (default 30)
+    """
+    try:
+        check_rate_limit("pac_assurance_summary")
+        proc = _require_process(process) if process.strip() else None
+        audit_log("pac_assurance_summary", process=proc or "(all)")
+
+        summary = pac_assurance.assurance_summary(process=proc, stale_days=stale_days)
+        return cap_output(json.dumps(summary, indent=2, default=str))
+    except ValueError as exc:
+        return f"Error: {exc}"
+    except Exception as exc:
+        return f"Error computing assurance summary: {exc}"
+
+
+@mcp.tool()
+def pac_compliance_scorecard(framework: str = "soc2", stale_days: int = 30) -> str:
+    """
+    Executive Compliance Scorecard — for one framework, every criterion any
+    control is mapped to (curated in framework_mappings.py, never auto-
+    generated), how many controls map to it, and how many are actually
+    PROVEN working (real production fire and/or a passing negative-control
+    test within stale_days) rather than just mapped on paper. "Mapped" and
+    "verified" are always reported separately.
+
+    Args:
+        framework: 'soc2' | 'nist_800_53' | 'iso_27001' | 'coso'
+        stale_days: Evidence older than this doesn't count as current (default 30)
+    """
+    try:
+        check_rate_limit("pac_compliance_scorecard")
+        audit_log("pac_compliance_scorecard", framework=framework)
+        if not db.is_available():
+            return json.dumps({"framework": framework, "criteria": [], "note": "Database not configured"}, indent=2)
+        result = db.get_compliance_scorecard(framework, stale_days=stale_days)
+        return cap_output(json.dumps(result, indent=2, default=str))
+    except Exception as exc:
+        return f"Error computing compliance scorecard: {exc}"
+
+
+@mcp.tool()
+def pac_run_negative_sweep_now() -> str:
+    """
+    Run the periodic full-evaluation negative-testing sweep immediately,
+    instead of waiting for the hourly background loop — tests every
+    registered process's currently-live Rego (latest saved module, or the
+    built-in default) and persists the result as audit evidence. Also
+    detects regressions: a process that passed its previous sweep and fails
+    this one gets logged as a warning even if its Rego text didn't change
+    (a Silver-layer conformer edit elsewhere can break a contract just as
+    easily as editing the policy itself).
+
+    Blocked when MCP_READ_ONLY=true (this writes test-run rows).
+    """
+    try:
+        check_read_only("pac_run_negative_sweep_now")
+        check_rate_limit("pac_run_negative_sweep_now")
+        audit_log("pac_run_negative_sweep_now")
+
+        results = asyncio.run(pac_negative_sweep.sweep_once())
+        summary = {
+            proc: {"ok": r["ok"], "contract_ok": r["contract"]["ok"], "corpus": r["corpus"].get("ok"),
+                   "approval_drifted": r.get("approval_drift", {}).get("drifted")}
+            for proc, r in results.items()
+        }
+        return json.dumps({"processes_tested": len(results), "results": summary}, indent=2)
+    except Exception as exc:
+        return f"Error running negative-testing sweep: {exc}"
+
+
+@mcp.tool()
+def pac_check_approval_drift(process: str = "") -> str:
+    """
+    Compare what's actually being evaluated in production for a PaC process
+    (the latest SAVED module — see pac_approval_drift.py's module docstring
+    for why saving alone is enough to go live, with no approval gate) against
+    the latest version that ever received a real approval sign-off. A
+    mismatch means an unapproved or since-edited module is currently
+    adjudicating real events for that process — this is the one thing that
+    surfaces that gap, since nothing today blocks it from happening.
+
+    Args:
+        process: A specific process id, or "" (default) to check every
+            known process at once.
+    """
+    try:
+        check_rate_limit("pac_check_approval_drift")
+        if process:
+            result = pac_approval_drift.check_process_drift(process)
+        else:
+            result = pac_approval_drift.check_all_processes()
+        return cap_output(json.dumps(result, indent=2, default=str))
+    except Exception as exc:
+        return f"Error checking approval drift: {exc}"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

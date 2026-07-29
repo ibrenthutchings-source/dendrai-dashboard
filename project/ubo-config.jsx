@@ -90,6 +90,113 @@ const CONNECTOR_TYPES = [
       { key: "token_secret", label: "Token Secret", type: "password" },
     ],
     extraFields: [ { key: "account_id", label: "Account ID", type: "text", placeholder: "1234567 or 1234567_SB1" } ] },
+  // DevOps Monitoring: branch-protection/CODEOWNERS auditing (scm_audit_endpoints.py,
+  // github_scm_tool.py/gitlab_scm_tool.py). Registered here like every other connector;
+  // results and on-demand audits surface on the DevOps Monitoring screen.
+  { id: "github_scm", label: "GitHub (SCM Audit)",
+    baseUrlPlaceholder: "https://api.github.com (leave blank for github.com)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "token", label: "Personal Access Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "repo_full_name", label: "Repository (owner/repo)", type: "text", placeholder: "my-org/my-repo" },
+      { key: "branch", label: "Branch", type: "text", placeholder: "main" },
+    ] },
+  { id: "gitlab_scm", label: "GitLab (SCM Audit)",
+    baseUrlPlaceholder: "https://gitlab.com/api/v4 (leave blank for gitlab.com)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "token", label: "Personal/Project Access Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "project_ref", label: "Project (namespace/project or numeric ID)", type: "text", placeholder: "my-group/my-project" },
+      { key: "branch", label: "Branch", type: "text", placeholder: "main" },
+    ] },
+  { id: "bitbucket_scm", label: "Bitbucket (SCM Audit)",
+    baseUrlPlaceholder: "https://api.bitbucket.org/2.0 (leave blank for bitbucket.org)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "token", label: "Repository/Workspace Access Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "repo_full_name", label: "Repository (workspace/repo_slug)", type: "text", placeholder: "my-workspace/my-repo" },
+      { key: "branch", label: "Branch", type: "text", placeholder: "main" },
+    ] },
+  // DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge (itsm_endpoints.py,
+  // itsm_jira_tool.py/itsm_servicenow_tool.py). Credentials here are used both
+  // to open real tickets (POST /itsm/tickets) and to poll ticket status back.
+  { id: "itsm_jira", label: "Jira (ITSM SLA Bridge)",
+    baseUrlPlaceholder: "https://mycompany.atlassian.net",
+    credentialFields: [
+      { key: "email", label: "Account Email", type: "text" },
+      { key: "api_token", label: "API Token", type: "password" },
+    ],
+    extraFields: [
+      { key: "project_key", label: "Project Key", type: "text", placeholder: "SEC" },
+    ] },
+  { id: "itsm_servicenow", label: "ServiceNow (ITSM SLA Bridge)",
+    baseUrlPlaceholder: "https://mycompany.service-now.com",
+    credentialFields: [
+      { key: "username", label: "Username", type: "text" },
+      { key: "password", label: "Password", type: "password" },
+    ],
+    extraFields: [] },
+  // Infrastructure Monitoring: continuous IaaS/OS/DB configuration audit
+  // (postgres_cis_tool.py). No REST base_url — the connection string IS
+  // the credential (host/port/dbname all encoded in the DSN), so Base URL
+  // is left unused/optional here.
+  { id: "postgres_cis", label: "Postgres (CIS Hardening Audit)",
+    baseUrlPlaceholder: "(unused — connection details are in the DSN below)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "dsn", label: "Connection String (postgresql://user:pass@host:port/db?sslmode=require)", type: "password" },
+    ],
+    extraFields: [
+      { key: "resource_label", label: "Resource Label", type: "text", placeholder: "primary-db" },
+    ] },
+  // Infrastructure Monitoring: Railway platform/deployment drift
+  // (railway_iaas_tool.py). api_token should be a real Railway Account/Team
+  // API token (Railway dashboard -> Account Settings -> Tokens), not a CLI
+  // OAuth session token. No REST base_url — the Railway GraphQL endpoint is
+  // fixed, so Base URL is left unused/optional here too.
+  { id: "railway_iaas", label: "Railway (Platform Drift Audit)",
+    baseUrlPlaceholder: "(unused — audits the Railway GraphQL API directly)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "api_token", label: "Railway API Token (Account/Team token, not a CLI session token)", type: "password" },
+    ],
+    extraFields: [
+      { key: "environment_id", label: "Railway Environment ID", type: "text", placeholder: "e.g. from the dashboard URL" },
+      { key: "approved_public_service_ids", label: "Approved Public Service IDs (comma-separated)", type: "text", placeholder: "svc-id-1,svc-id-2" },
+    ] },
+  // Technology Risk Pipeline: AWS cloud configuration drift + IAM lease
+  // duration (aws_iaas_tool.py). Fill EITHER Role ARN (recommended — no
+  // long-lived keys) OR the access-key pair, not both.
+  { id: "aws_iaas", label: "AWS (Cloud Drift + IAM Lease Audit)",
+    baseUrlPlaceholder: "(unused — audits the AWS API directly)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "role_arn", label: "Role ARN (recommended — sts:AssumeRole, no long-lived keys)", type: "text", placeholder: "arn:aws:iam::123456789012:role/dendrai-readonly-audit" },
+      { key: "access_key_id", label: "Access Key ID (only if not using Role ARN)", type: "text" },
+      { key: "secret_access_key", label: "Secret Access Key (only if not using Role ARN)", type: "password" },
+      { key: "session_token", label: "Session Token (optional, temporary credentials only)", type: "password" },
+    ],
+    extraFields: [
+      { key: "regions", label: "Regions (comma-separated)", type: "text", placeholder: "us-east-1,us-west-2" },
+      { key: "max_session_duration_hours", label: "Max IAM Session Duration (hours)", type: "text", placeholder: "12" },
+    ] },
+  // Technology Risk Pipeline: generic OT/SCADA device keep-alive monitoring
+  // (ot_heartbeat_tool.py) — HTTP health-check only, not a real fieldbus
+  // protocol; see that module's docstring for scope.
+  { id: "ot_heartbeat", label: "OT/SCADA Heartbeat (Generic HTTP)",
+    baseUrlPlaceholder: "(unused — each device URL is set below)",
+    baseUrlOptional: true,
+    credentialFields: [],
+    extraFields: [
+      { key: "devices", label: "Devices (comma-separated name=url pairs)", type: "text", placeholder: "pump-01=http://10.0.1.5/health,valve-12=http://10.0.1.9/health" },
+      { key: "timeout_s", label: "Timeout (seconds)", type: "text", placeholder: "5" },
+    ] },
 ];
 
 function _uboConfigBase() {
@@ -646,7 +753,7 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
 
   const typeInfo = CONNECTOR_TYPES.find(t => t.id === form.connector_type) || CONNECTOR_TYPES[0];
   const isEdit = !!initial?.id;
-  const valid = form.display_name.trim() && form.base_url.trim() &&
+  const valid = form.display_name.trim() && (typeInfo.baseUrlOptional || form.base_url.trim()) &&
     (isEdit || typeInfo.credentialFields.some(f => (form.credentials[f.key] || "").trim()));
 
   function handleSave() {
@@ -655,7 +762,7 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
     onSave({
       connector_type: form.connector_type,
       display_name: form.display_name.trim(),
-      base_url: form.base_url.trim(),
+      base_url: form.base_url.trim() || null,
       auth_type: form.connector_type, // one auth scheme per connector type in this framework
       poll_interval_s: Number(form.poll_interval_s) || 1800,
       extra_config: form.extra_config,
@@ -688,7 +795,7 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
       </div>
 
       <div className="field" style={{ marginBottom: 0 }}>
-        <label className="field-label">Base URL / host *</label>
+        <label className="field-label">Base URL / host{typeInfo.baseUrlOptional ? "" : " *"}</label>
         <input className="input" value={form.base_url}
           onChange={e => set("base_url", e.target.value)}
           placeholder={typeInfo.baseUrlPlaceholder}

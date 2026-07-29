@@ -80,6 +80,28 @@ Event → EventType:
 
 Schema version: `"GitHub-Webhook-v3"`
 
+#### `GitLabBronzeHandler`
+
+DevOps Monitoring — mirrors `GitHubBronzeHandler` almost line for line (branch-protection + CODEOWNERS fields instead of push/PR fields). Fed by real GitLab webhooks and by `scm_audit_endpoints.py` / `gitlab_scm_tool.py`'s synthesized `protected_branch_audit` events, both carrying the same normalized `compliance` sub-dict shape as the GitHub path (`scm_connectors.normalize_gitlab_compliance`).
+
+| Raw Field | Mapped To |
+|---|---|
+| `created_at` | `URO.timestamp` |
+| `X-Gitlab-Event` / `event_type` | `URO.event_type` (via ACTION_MAP) |
+| `user.username` | `URO.actor_id` |
+| `project.id` | `environment.account_id` |
+| `project.path_with_namespace` | `environment.tags` |
+
+Event → EventType:
+| Event | EventType |
+|---|---|
+| `protected_branch_audit` | `BRANCH_PROTECTION_BYPASSED` |
+| `merge_request` | `CODE_REVIEW_BYPASSED` |
+| `push` | `FORCE_PUSH_MAIN` |
+| `vulnerability` | `DEPENDENCY_VULNERABILITY` |
+
+Schema version: `"GitLab-Webhook-v4"`
+
 #### `SailPointBronzeHandler`
 
 Maps SailPoint IdentityNow activity stream events.
@@ -127,6 +149,37 @@ Flag → EventType (priority order):
 
 Schema version: `"MCP-Telemetry-v1"`
 
+#### `SystemTelemetryBronzeHandler`
+
+Generic enterprise-system handler: every poll-connector adapter (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite) and every DevOps Monitoring / Infrastructure Monitoring adapter (SCM audits, SARIF evidence, ITSM SLA breaches, Postgres CIS checks, Railway platform drift) ultimately lands here via `observability.system_telemetry`, distinguished only by which risk flags each producer sets — see `mcp_governance._detect_system_flags()`.
+
+| Raw Field | Mapped To |
+|---|---|
+| `created_at` / `timestamp` | `URO.timestamp` |
+| `risk_flags[]` | `URO.event_type` (via FLAG_EVENT_MAP) |
+| `actor` | `URO.actor_id` |
+| `system_type` | `environment.provider` |
+| `server_name`, `event_type`, `severity` | `environment.tags` |
+
+Flag → EventType:
+| Flag | EventType | Set by |
+|---|---|---|
+| `sod_violation` | `SOD_VIOLATION` | Generic keyword/heuristic detection |
+| `privileged_access` | `PRIVILEGE_ESCALATION` | Generic keyword/heuristic detection |
+| `sensitive_resource` | `SENSITIVE_RESOURCE_ACCESS` | Generic keyword/heuristic detection |
+| `policy_violation` | `POLICY_VIOLATION` | `severity == CRITICAL` or explicit payload flag |
+| `branch_protection_violation` | `BRANCH_PROTECTION_BYPASSED` | `github_scm_tool.py` / `gitlab_scm_tool.py` (explicit — not inferred) |
+| `sast_finding` | `SAST_FINDING` | `evidence_endpoints.py` SARIF ingestion (explicit) |
+| `sla_breach` | `SLA_BREACH` | `itsm_sla_sweep.py`'s hourly breach sweep (explicit) |
+| `infrastructure_finding` | `INFRASTRUCTURE_FINDING` | `postgres_cis_tool.py` / `railway_iaas_tool.py` / `connector_hygiene_sweep.py` (explicit) |
+| `pipeline_misconfiguration` | `PIPELINE_MISCONFIGURATION` | `github_scm_tool.py`'s scheduled poll (explicit — a second event per tick, alongside `branch_protection_violation`) |
+
+The last five flags are set directly by their producers rather than inferred from generic keyword matching — those producers know exactly which event they're emitting, so there's no ambiguity to heuristically resolve.
+
+On the GITHUB source-system path (not SYSTEM_TELEMETRY), `bronze.py`'s `GitHubBronzeHandler._ACTION_MAP` separately maps `scm_audit_endpoints.py`'s synthesized on-demand event names directly to `EventType`: `"workflow_security_audit"` → `PIPELINE_MISCONFIGURATION`, `"gitleaks_scan"` → `SECRET_DETECTED` (only ever sent when a real gitleaks scan actually found something — a clean scan is never adjudicated).
+
+Schema version: `"System-Telemetry-v1"`
+
 ---
 
 ## Silver Layer — `pipeline/silver.py`
@@ -147,10 +200,14 @@ Routes to a source-specific conformer based on `uro.source_system`. Each conform
 | Source | resource_type | Key risk_indicators |
 |---|---|---|
 | SAP | `"SAP_OBJECT"` | amount, currency, cost_center, approver, actor_groups |
-| GitHub | `"git_repository"` | ref, forced, cvss_score, secret_type, commits_count, is_admin |
+| GitHub | `"git_repository"` | ref, forced, cvss_score, secret_type, commits_count, is_admin, secret_finding_count, secret_rule_ids (gitleaks), + spread `compliance` sub-dict (enforce_admins, required_approving_review_count, … / pipeline-security fields for `PIPELINE_MISCONFIGURATION` events — has_write_all_permissions, unpinned_action_count, has_risky_pull_request_target, …) |
+| GitLab | `"git_repository"` | ref, commits_count, + spread `compliance` sub-dict (same shape as GitHub's) |
 | SailPoint | `"identity"` | role_count, last_login_days, access_request_id, entitlements |
 | MCP Proxy | `"mcp_tool"` | risk_flags, flag_count, execution_time_ms, error_message, narrative |
+| System Telemetry | `"enterprise_system_resource"` | risk_flags, flag_count, severity, rule_id, cwe (SARIF), external_system/external_ticket_key/finding_hash/sla_due_at (ITSM), + spread `compliance`/`infra_compliance`/`pipeline_compliance` sub-dict (SCM branch-protection / Postgres CIS + Railway drift + connector credential hygiene / pipeline-as-code security) |
 | Generic | `"unknown"` | All non-reserved fields passed through |
+
+`compliance`/`infra_compliance` are spread into `risk_indicators` (not nested) specifically so `mcp_governance._evaluate_pac_policy`'s real Rego evaluation — which flattens `conformed_payload.risk_indicators` straight into `input.event.*` — sees the exact same field names regardless of whether the event came from a live webhook or a scheduled poll-connector audit. See [integrations.md](integrations.md) for that flattening and `pac_contracts.py`'s per-process schema-contract declarations, which is what caught this shape actually needing to match in the first place.
 
 The `narrative` field in the MCP conformer is set to a plain-English description such as:
 > `"MCP tool 'edgar_company_info' on server 'edgar' flagged: bypass_keyword, large_payload"`

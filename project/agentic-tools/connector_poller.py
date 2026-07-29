@@ -34,9 +34,18 @@ from datetime import datetime, timedelta, timezone
 
 import db
 import dynamics365_tool
+import github_scm_tool
+import gitlab_scm_tool
+import itsm_jira_tool
+import aws_iaas_tool
+import bitbucket_scm_tool
+import itsm_servicenow_tool
 import mcp_governance
 import netsuite_tool
 import oracle_fusion_tool
+import ot_heartbeat_tool
+import postgres_cis_tool
+import railway_iaas_tool
 import sailpoint_tool
 import sap_hana_tool
 
@@ -53,6 +62,15 @@ _ADAPTERS = {
     "sailpoint":      sailpoint_tool,
     "dynamics365":    dynamics365_tool,
     "netsuite":       netsuite_tool,
+    "github_scm":     github_scm_tool,
+    "gitlab_scm":     gitlab_scm_tool,
+    "bitbucket_scm":  bitbucket_scm_tool,
+    "itsm_jira":       itsm_jira_tool,
+    "itsm_servicenow": itsm_servicenow_tool,
+    "postgres_cis":    postgres_cis_tool,
+    "railway_iaas":    railway_iaas_tool,
+    "aws_iaas":        aws_iaas_tool,
+    "ot_heartbeat":    ot_heartbeat_tool,
 }
 
 

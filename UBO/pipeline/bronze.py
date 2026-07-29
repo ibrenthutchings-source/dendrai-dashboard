@@ -24,6 +24,7 @@ from ..models.uro import (
     EventType,
     PipelineStage,
     RawPayload,
+    RiskDomain,
     SourceSystem,
     URO,
 )
@@ -88,6 +89,19 @@ class GitHubBronzeHandler(BronzeLayerBase):
         "push":                   EventType.FORCE_PUSH_MAIN,
         "dependabot_alert":       EventType.DEPENDENCY_VULNERABILITY,
         "pull_request_review":    EventType.CODE_REVIEW_BYPASSED,
+        # DevOps Monitoring: scm_audit_endpoints.py's on-demand pipeline-security
+        # audit synthesizes this event name, same convention as branch_protection_rule.
+        "workflow_security_audit": EventType.PIPELINE_MISCONFIGURATION,
+        # DevOps Monitoring: scm_audit_endpoints.py's on-demand gitleaks secret
+        # scan synthesizes this event name — only sent when gitleaks actually
+        # found something (see scm_audit_endpoints._run_github_secret_scan),
+        # so this mapping firing is itself already a real positive.
+        "gitleaks_scan": EventType.SECRET_DETECTED,
+        # Technology Risk Pipeline: evidence_endpoints.py's attestation-ingest
+        # path synthesizes this event when a deployed commit has no
+        # approved pull request behind it (see scm_audit_endpoints.py's
+        # deploy-gate check, scm_connectors.fetch_github_commit_pr_approval).
+        "deploy_gate_audit": EventType.DEPLOY_GATE_BYPASSED,
     }
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
@@ -124,6 +138,14 @@ class GitHubBronzeHandler(BronzeLayerBase):
             },
         )
 
+        # Multi-Domain Risk Pipeline classification — additive, only for the
+        # Technology-domain events (deploy-gate audit, real Dependabot alert
+        # webhooks); every other GitHub event (branch_protection_rule,
+        # gitleaks_scan, push, ...) keeps domain=None exactly as before.
+        _TECH_SUB_DOMAIN = {"deploy_gate_audit": "CI_CD", "dependabot_alert": "CVE_SLA"}
+        domain = RiskDomain.TECHNOLOGY if gh_event in _TECH_SUB_DOMAIN else None
+        sub_domain = _TECH_SUB_DOMAIN.get(gh_event)
+
         return URO(
             timestamp=ts,
             source_system=SourceSystem.GITHUB,
@@ -131,9 +153,125 @@ class GitHubBronzeHandler(BronzeLayerBase):
             actor_id=str(actor_login),
             actor_type=actor_type,
             environment=env,
+            domain=domain,
+            sub_domain=sub_domain,
             raw_payload=RawPayload(
                 content=raw_event,
                 schema_version="GitHub-Webhook-v3",
+            ),
+            pipeline_stage=PipelineStage.BRONZE,
+        )
+
+
+class GitLabBronzeHandler(BronzeLayerBase):
+    """
+    Ingests GitLab events — both real webhook payloads and the synthetic
+    branch-protection audit events scm_audit_endpoints.py produces (same
+    shape convention as GitHubBronzeHandler's synthetic branch_protection_rule
+    events: a "compliance" sub-dict carrying the structured check results,
+    consumed by SilverConformationLayer._conform_gitlab).
+    """
+
+    source_system = SourceSystem.GITLAB
+
+    _ACTION_MAP: dict[str, EventType] = {
+        "protected_branch_audit": EventType.BRANCH_PROTECTION_BYPASSED,
+        "merge_request":          EventType.CODE_REVIEW_BYPASSED,
+        "push":                   EventType.FORCE_PUSH_MAIN,
+        "vulnerability":          EventType.DEPENDENCY_VULNERABILITY,
+    }
+
+    async def ingest(self, raw_event: dict[str, Any]) -> URO:
+        ts_raw = (
+            raw_event.get("created_at")
+            or raw_event.get("timestamp")
+        )
+        ts = _parse_ts(ts_raw)
+
+        gl_event = str(raw_event.get("X-Gitlab-Event") or raw_event.get("event_type", "push"))
+        event_type = self._ACTION_MAP.get(gl_event, EventType.ANOMALY)
+
+        actor_login = (
+            raw_event.get("user", {}).get("username")
+            or raw_event.get("actor", "UNKNOWN")
+        )
+
+        project = raw_event.get("project", {})
+        env = CloudEnvironment(
+            provider="GitLab",
+            account_id=str(project.get("id", "")),
+            tags={
+                "namespace":  project.get("namespace", ""),
+                "repo":       project.get("path_with_namespace", ""),
+                "visibility": project.get("visibility", "private"),
+            },
+        )
+
+        return URO(
+            timestamp=ts,
+            source_system=SourceSystem.GITLAB,
+            event_type=event_type,
+            actor_id=str(actor_login),
+            actor_type=ActorType.HUMAN,
+            environment=env,
+            raw_payload=RawPayload(
+                content=raw_event,
+                schema_version="GitLab-Webhook-v4",
+            ),
+            pipeline_stage=PipelineStage.BRONZE,
+        )
+
+
+class BitbucketBronzeHandler(BronzeLayerBase):
+    """
+    Ingests the synthetic branch-restriction audit events
+    scm_audit_endpoints.py produces (same shape convention as
+    GitHubBronzeHandler/GitLabBronzeHandler's synthetic events: a
+    "compliance" sub-dict carrying the structured check results, consumed by
+    SilverConformationLayer._conform_bitbucket). Bitbucket Cloud has no
+    equivalent push-based webhook this platform subscribes to yet, so this
+    handler only ever sees on-demand "run now" audits, not live webhooks.
+    """
+
+    source_system = SourceSystem.BITBUCKET
+
+    _ACTION_MAP: dict[str, EventType] = {
+        "branch_restriction_audit": EventType.BRANCH_PROTECTION_BYPASSED,
+    }
+
+    async def ingest(self, raw_event: dict[str, Any]) -> URO:
+        ts_raw = raw_event.get("created_at") or raw_event.get("timestamp")
+        ts = _parse_ts(ts_raw)
+
+        bb_event = str(raw_event.get("event_type", "branch_restriction_audit"))
+        event_type = self._ACTION_MAP.get(bb_event, EventType.ANOMALY)
+
+        actor_login = (
+            raw_event.get("actor", {}).get("username")
+            or raw_event.get("actor", "UNKNOWN")
+        )
+
+        repo = raw_event.get("repository", {})
+        env = CloudEnvironment(
+            provider="Bitbucket",
+            account_id=str(repo.get("uuid", "")),
+            tags={
+                "workspace":  repo.get("workspace", ""),
+                "repo":       repo.get("full_name", ""),
+                "visibility": "private" if repo.get("is_private", True) else "public",
+            },
+        )
+
+        return URO(
+            timestamp=ts,
+            source_system=SourceSystem.BITBUCKET,
+            event_type=event_type,
+            actor_id=str(actor_login),
+            actor_type=ActorType.HUMAN,
+            environment=env,
+            raw_payload=RawPayload(
+                content=raw_event,
+                schema_version="Bitbucket-Audit-v2",
             ),
             pipeline_stage=PipelineStage.BRONZE,
         )
@@ -275,7 +413,34 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         "privileged_access":  EventType.PRIVILEGE_ESCALATION,
         "sensitive_resource": EventType.SENSITIVE_RESOURCE_ACCESS,
         "policy_violation":   EventType.POLICY_VIOLATION,
+        # DevOps Monitoring: scheduled poll-connector audits (github_scm_tool.py /
+        # gitlab_scm_tool.py) and evidence_endpoints.py's SARIF webhook both ride
+        # this generic system_telemetry path — see mcp_governance._detect_system_flags.
+        "branch_protection_violation": EventType.BRANCH_PROTECTION_BYPASSED,
+        "sast_finding":                EventType.SAST_FINDING,
+        # ITSM SLA Bridge: itsm_sla_sweep.py re-ingests an overdue ticket's
+        # underlying finding tagged with this flag — see risk_waiver_sweep.py's
+        # near-identical "waiver expired, re-open as failing" precedent.
+        "sla_breach":                  EventType.SLA_BREACH,
+        # Infrastructure Monitoring: postgres_cis_tool.py / railway_iaas_tool.py
+        # poll-connector audits set this explicit flag on findings.
+        "infrastructure_finding":      EventType.INFRASTRUCTURE_FINDING,
+        # DevOps Monitoring: github_scm_tool.py's scheduled poll additionally
+        # runs a pipeline-as-code (workflow YAML) audit each tick alongside
+        # its branch-protection check — see pipeline_security_connectors.py.
+        "pipeline_misconfiguration":   EventType.PIPELINE_MISCONFIGURATION,
+        # Financial Risk Pipeline: predictive_analytics_tool.py's three
+        # calculation functions set the matching flag on the ingested event.
+        "je_velocity_anomaly":  EventType.JE_VELOCITY_ANOMALY,
+        "liquidity_shift":      EventType.LIQUIDITY_SHIFT,
+        "inventory_divergence": EventType.INVENTORY_DIVERGENCE,
     }
+
+    # Multi-Domain Risk Pipeline classification for the Financial-domain flags
+    # above — additive, only for those three; every other system_telemetry
+    # event (SoD, privileged access, DevOps/Infra findings, ...) keeps
+    # domain=None exactly as before.
+    _FINANCIAL_FLAGS = {"je_velocity_anomaly", "liquidity_shift", "inventory_divergence"}
 
     async def ingest(self, raw_event: dict[str, Any]) -> URO:
         ts = _parse_ts(raw_event.get("created_at") or raw_event.get("timestamp"))
@@ -303,6 +468,9 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
             },
         )
 
+        domain = RiskDomain.FINANCIAL if self._FINANCIAL_FLAGS.intersection(risk_flags) else None
+        sub_domain = "RECORD_TO_REPORT" if domain else None
+
         return URO(
             timestamp=ts,
             source_system=SourceSystem.SYSTEM_TELEMETRY,
@@ -310,6 +478,8 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
             actor_id=actor,
             actor_type=ActorType.HUMAN,
             environment=env,
+            domain=domain,
+            sub_domain=sub_domain,
             raw_payload=RawPayload(
                 content={
                     **{k: str(v) if hasattr(v, "hex") else v for k, v in raw_event.items()}
@@ -335,6 +505,8 @@ class BronzeIngestionLayer:
         self._handlers: dict[SourceSystem, BronzeLayerBase] = {
             SourceSystem.SAP:        SAPBronzeHandler(),
             SourceSystem.GITHUB:     GitHubBronzeHandler(),
+            SourceSystem.GITLAB:     GitLabBronzeHandler(),
+            SourceSystem.BITBUCKET:  BitbucketBronzeHandler(),
             SourceSystem.SAILPOINT:  SailPointBronzeHandler(),
             SourceSystem.MCP_PROXY:  McpProxyBronzeHandler(),
             SourceSystem.SYSTEM_TELEMETRY: SystemTelemetryBronzeHandler(),

@@ -17,6 +17,7 @@ from typing import Any
 from ..models.uro import (
     ConformedPayload,
     EventType,
+    NormalizedAttributes,
     PipelineStage,
     SourceSystem,
     URO,
@@ -46,6 +47,8 @@ class SilverConformationLayer(SilverLayerBase):
         conformers = {
             SourceSystem.SAP:        self._conform_sap,
             SourceSystem.GITHUB:     self._conform_github,
+            SourceSystem.GITLAB:     self._conform_gitlab,
+            SourceSystem.BITBUCKET:  self._conform_bitbucket,
             SourceSystem.SAILPOINT:  self._conform_sailpoint,
             SourceSystem.MCP_PROXY:  self._conform_mcp_proxy,
             SourceSystem.SYSTEM_TELEMETRY: self._conform_system_telemetry,
@@ -138,6 +141,142 @@ class SilverConformationLayer(SilverLayerBase):
                 cvss = raw.get("cvss_score") or raw.get("severity_score")
                 if cvss is None:
                     return "DEPENDENCY_VULNERABILITY event missing cvss_score field"
+
+        elif rule.rule_id == "POL-GH-006":
+            if uro.event_type == EventType.DEPENDENCY_VULNERABILITY:
+                severity = str(raw.get("severity") or "").upper()
+                state = str(raw.get("state") or "open").lower()
+                first_detected = raw.get("first_detected_at") or raw.get("created_at")
+                if severity in ("CRITICAL", "HIGH") and state == "open" and first_detected:
+                    try:
+                        detected_ts = first_detected if isinstance(first_detected, datetime) else datetime.fromisoformat(str(first_detected).replace("Z", "+00:00"))
+                        if detected_ts.tzinfo is None:
+                            detected_ts = detected_ts.replace(tzinfo=timezone.utc)
+                        age_days = (now - detected_ts).total_seconds() / 86400
+                    except (ValueError, TypeError):
+                        age_days = None
+                    if age_days is not None and age_days > 14:
+                        repo = raw.get("repository", {}).get("full_name", "unknown")
+                        return (
+                            f"CRITICAL: {severity} vulnerability on '{repo}' has been open "
+                            f"{age_days:.0f} days — exceeds the 14-day remediation SLA"
+                        )
+
+        elif rule.rule_id == "POL-GH-004":
+            if uro.event_type == EventType.BRANCH_PROTECTION_BYPASSED and uro.source_system == SourceSystem.GITHUB:
+                compliance = raw.get("compliance") or {}
+                if compliance.get("enforce_admins") is False:
+                    repo = raw.get("repository", {}).get("full_name", "unknown")
+                    return (
+                        f"CRITICAL: branch protection on '{repo}' does not "
+                        "enforce rules for administrators — admins can bypass every required check"
+                    )
+
+        elif rule.rule_id == "POL-GH-005":
+            if uro.event_type == EventType.DEPLOY_GATE_BYPASSED and uro.source_system == SourceSystem.GITHUB:
+                gate = raw.get("gate_approval") or {}
+                if not gate.get("approved"):
+                    repo = raw.get("repository", {}).get("full_name", "unknown")
+                    reason = "no associated pull request" if not gate.get("has_pr") else "pull request never approved"
+                    return (
+                        f"CRITICAL: commit '{raw.get('commit_sha', 'unknown')[:12]}' deployed to "
+                        f"'{repo}' with {reason} — required review gate was bypassed"
+                    )
+
+        # ── GitLab rules ──────────────────────────────────────────────────────
+        elif rule.rule_id == "POL-GL-001":
+            if uro.event_type == EventType.BRANCH_PROTECTION_BYPASSED and uro.source_system == SourceSystem.GITLAB:
+                compliance = raw.get("compliance") or {}
+                if compliance.get("enforce_admins") is False:
+                    repo = raw.get("project", {}).get("path_with_namespace", "unknown")
+                    return (
+                        f"CRITICAL: protected branch on '{repo}' allows admin/maintainer "
+                        "bypass of required checks"
+                    )
+
+        # ── Bitbucket rules ───────────────────────────────────────────────────
+        elif rule.rule_id == "POL-BB-001":
+            if uro.event_type == EventType.BRANCH_PROTECTION_BYPASSED and uro.source_system == SourceSystem.BITBUCKET:
+                compliance = raw.get("compliance") or {}
+                if compliance.get("enforce_admins") is False:
+                    repo = raw.get("repository", {}).get("full_name", "unknown")
+                    return (
+                        f"CRITICAL: branch restrictions on '{repo}' do not block direct "
+                        "pushes for all users — admins/exempted users can bypass required checks"
+                    )
+
+        # ── DevOps Monitoring: SARIF/SAST evidence rules ─────────────────────
+        elif rule.rule_id == "POL-DEVOPS-001":
+            if uro.event_type == EventType.SAST_FINDING:
+                severity = str(raw.get("severity") or "").upper()
+                if severity in ("CRITICAL", "HIGH"):
+                    rule_ref = (raw.get("raw_payload") or {}).get("rule_id", "unknown-rule")
+                    return (
+                        f"{severity}: SARIF finding '{rule_ref}' on '{raw.get('resource', 'unknown')}' "
+                        "— remediation SLA clock started"
+                    )
+
+        elif rule.rule_id == "POL-DEVOPS-002":
+            if uro.event_type == EventType.SLA_BREACH:
+                payload = raw.get("raw_payload") or {}
+                return (
+                    f"ITSM ticket '{payload.get('external_ticket_key', 'unknown')}' for finding "
+                    f"'{payload.get('finding_hash', 'unknown')}' breached its remediation SLA "
+                    f"(due {payload.get('sla_due_at', 'unknown')})"
+                )
+
+        # ── DevOps Monitoring: Pipeline-as-Code (CI/CD workflow) audit ────────
+        elif rule.rule_id == "POL-DEVOPS-003":
+            if uro.event_type == EventType.PIPELINE_MISCONFIGURATION:
+                compliance = raw.get("compliance") or (raw.get("raw_payload") or {}).get("pipeline_compliance") or {}
+                repo = (raw.get("repository") or {}).get("full_name") or raw.get("resource") or "unknown"
+                if compliance.get("has_risky_pull_request_target"):
+                    return (
+                        f"CRITICAL: workflow on '{repo}' triggers on pull_request_target with an "
+                        "untrusted PR-head checkout — a fork PR can execute code with write-scoped secrets"
+                    )
+                if compliance.get("has_write_all_permissions"):
+                    return f"Workflow permissions on '{repo}' are write-all — broader than least-privilege"
+
+        # ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ────────────
+        elif rule.rule_id == "POL-INFRA-001":
+            if uro.event_type == EventType.INFRASTRUCTURE_FINDING:
+                payload = raw.get("raw_payload") or {}
+                severity = str(raw.get("severity") or "").upper()
+                if severity in ("CRITICAL", "HIGH"):
+                    return (
+                        f"{severity}: infrastructure finding on '{raw.get('resource', 'unknown')}' "
+                        f"({payload.get('check_id', 'unknown check')})"
+                    )
+
+        # ── Financial Risk Pipeline rules ────────────────────────────────────
+        elif rule.rule_id == "POL-FIN-001":
+            if uro.event_type == EventType.JE_VELOCITY_ANOMALY:
+                fc = (raw.get("raw_payload") or {}).get("financial_compliance") or {}
+                if fc.get("anomaly"):
+                    return (
+                        f"HIGH: manual journal-entry velocity on '{raw.get('resource', 'unknown')}' "
+                        f"is {fc.get('z_score')}σ above baseline (rate {fc.get('recent_daily_rate')}/day "
+                        f"vs. baseline {fc.get('baseline_daily_mean')}/day)"
+                    )
+
+        elif rule.rule_id == "POL-FIN-002":
+            if uro.event_type == EventType.LIQUIDITY_SHIFT:
+                fc = (raw.get("raw_payload") or {}).get("financial_compliance") or {}
+                if fc.get("shift_detected"):
+                    return (
+                        f"HIGH: liquidity shift on '{raw.get('resource', 'unknown')}' — "
+                        f"QoQ ratio delta {fc.get('worst_z_score')}σ below historical norm"
+                    )
+
+        elif rule.rule_id == "POL-FIN-003":
+            if uro.event_type == EventType.INVENTORY_DIVERGENCE:
+                fc = (raw.get("raw_payload") or {}).get("financial_compliance") or {}
+                if fc.get("divergence_detected"):
+                    return (
+                        f"MEDIUM: inventory/sales divergence on '{raw.get('resource', 'unknown')}' — "
+                        f"ratio delta {fc.get('z_score')}σ above historical norm (toxic bloat)"
+                    )
 
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
@@ -279,15 +418,120 @@ class SilverConformationLayer(SilverLayerBase):
                 "ref":           raw.get("ref"),
                 "forced":        raw.get("forced", False),
                 "cvss_score":    raw.get("cvss_score") or raw.get("severity_score"),
+                # Technology Risk Pipeline: CVE remediation SLA aging (POL-GH-006) —
+                # "severity"/"state"/"first_detected_at" are the flat fields that
+                # rule reads directly off raw_payload; surfaced here too for
+                # dashboards that only look at conformed risk_indicators.
+                "severity":        raw.get("severity"),
+                "state":           raw.get("state"),
+                "first_detected_at": raw.get("first_detected_at") or raw.get("created_at"),
                 "secret_type":   raw.get("alert", {}).get("secret_type"),
                 "commits_count": len(raw.get("commits", [])),
                 "is_admin":      raw.get("sender", {}).get("site_admin", False),
+                # DevOps Monitoring: scm_audit_endpoints.py synthesizes a
+                # branch_protection_rule event with a "compliance" sub-dict
+                # (enforce_admins, required_approving_review_count, ...) —
+                # spread here so PaC's devops_monitoring Rego can reference
+                # input.event.enforce_admins etc. Absent on real GitHub
+                # webhook payloads, so this is a no-op for those.
+                **(raw.get("compliance") or {}),
+                # DevOps Monitoring: secret_scanner_connectors.py's gitleaks scan
+                # (event_type=='gitleaks_scan') attaches redacted findings under
+                # "secret_findings" — surfaced as a count + distinct rule ids
+                # rather than the findings themselves (which still carry
+                # file/commit/author detail useful for triage, but no secret
+                # value — already redacted by parse_gitleaks_report()).
+                "secret_finding_count": len(raw.get("secret_findings") or []),
+                "secret_rule_ids": sorted({
+                    f.get("rule_id") for f in (raw.get("secret_findings") or []) if f.get("rule_id")
+                }),
+                # Technology Risk Pipeline: evidence_endpoints.py's deploy-gate
+                # check attaches PR-approval lookup results under "gate_approval".
+                **(raw.get("gate_approval") or {}),
             },
+            normalized_attributes=self._technology_normalized_attributes(raw),
             affected_entities=[
                 repo.get("full_name", ""),
                 str(raw.get("sender", {}).get("login", "")),
             ],
             conformation_rules_applied=["GitHub-Webhook-v3-conform"],
+        )
+
+    @staticmethod
+    def _technology_normalized_attributes(raw: dict[str, Any]) -> "NormalizedAttributes | None":
+        """Multi-Domain Risk Pipeline spec's formal metric shape for the
+        Technology-domain GitHub checks (deploy-gate bypass, CVE SLA aging) —
+        additive, only populated for those events; every other GitHub event
+        returns None here (unchanged risk_indicators-only path)."""
+        gate = raw.get("gate_approval")
+        if gate is not None:
+            approved = 1.0 if gate.get("approved") else 0.0
+            return NormalizedAttributes(
+                entity_id=raw.get("repository", {}).get("full_name"),
+                monitored_metric="deploy_gate_approved",
+                metric_value=approved,
+                threshold_limit=1.0,
+                variance=approved - 1.0,
+            )
+
+        first_detected = raw.get("first_detected_at") or raw.get("created_at")
+        if first_detected:
+            try:
+                detected_ts = first_detected if isinstance(first_detected, datetime) else datetime.fromisoformat(str(first_detected).replace("Z", "+00:00"))
+                if detected_ts.tzinfo is None:
+                    detected_ts = detected_ts.replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(tz=timezone.utc) - detected_ts).total_seconds() / 86400
+            except (ValueError, TypeError):
+                return None
+            return NormalizedAttributes(
+                entity_id=raw.get("repository", {}).get("full_name"),
+                monitored_metric="cve_age_days",
+                metric_value=round(age_days, 1),
+                threshold_limit=14.0,
+                variance=round(age_days - 14.0, 1),
+            )
+        return None
+
+    def _conform_gitlab(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
+        project = raw.get("project", {})
+        return ConformedPayload(
+            resource_id=project.get("path_with_namespace") or str(project.get("id", "")),
+            resource_type="git_repository",
+            action=raw.get("X-Gitlab-Event") or raw.get("event_type") or "push",
+            outcome="success" if not raw.get("error") else "failure",
+            risk_indicators={
+                "ref":           raw.get("ref"),
+                "commits_count": len(raw.get("commits", [])),
+                # Same convention as _conform_github: scm_audit_endpoints.py's
+                # synthesized protected_branch_audit event carries its
+                # structured findings under "compliance".
+                **(raw.get("compliance") or {}),
+            },
+            affected_entities=[
+                project.get("path_with_namespace", ""),
+                str(raw.get("user", {}).get("username", "")),
+            ],
+            conformation_rules_applied=["GitLab-Webhook-v4-conform"],
+        )
+
+    def _conform_bitbucket(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
+        repo = raw.get("repository", {})
+        return ConformedPayload(
+            resource_id=repo.get("full_name") or str(repo.get("uuid", "")),
+            resource_type="git_repository",
+            action=raw.get("event_type") or "branch_restriction_audit",
+            outcome="success" if not raw.get("error") else "failure",
+            risk_indicators={
+                # Same convention as _conform_github/_conform_gitlab:
+                # scm_audit_endpoints.py's synthesized branch_restriction_audit
+                # event carries its structured findings under "compliance".
+                **(raw.get("compliance") or {}),
+            },
+            affected_entities=[
+                repo.get("full_name", ""),
+                str(raw.get("actor", {}).get("username", "")),
+            ],
+            conformation_rules_applied=["Bitbucket-Webhook-v2-conform"],
         )
 
     def _conform_sailpoint(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:
@@ -362,9 +606,73 @@ class SilverConformationLayer(SilverLayerBase):
                 "system_type":  raw.get("system_type"),
                 "event_id":     raw.get("event_id"),
                 "narrative":    narrative,
+                # DevOps Monitoring evidence findings (event_type=='sast_finding')
+                # carry rule/CWE detail in the nested raw_payload — surfaced here
+                # so PaC's devops_monitoring Rego and the Silver POL-DEVOPS-001
+                # rule can reference them without re-parsing raw_payload.
+                "rule_id":      (raw.get("raw_payload") or {}).get("rule_id"),
+                "cwe":          (raw.get("raw_payload") or {}).get("cwe"),
+                # DevOps Monitoring scheduled branch-protection audits (github_scm_tool.py /
+                # gitlab_scm_tool.py, event_type=='branch_protection_violation') carry the
+                # same normalized compliance dict scm_audit_endpoints.py's on-demand path
+                # embeds under raw_event["compliance"] for the GITHUB/GITLAB source-system
+                # path — spread the same fields here so the devops_monitoring Rego sees
+                # identical input.event.* fields regardless of which path produced the URO.
+                # No-op (all None) for every other poll-connector type's telemetry.
+                **(raw.get("raw_payload") or {}).get("compliance", {}),
+                # ITSM SLA Bridge (itsm_sla_sweep.py, event_type=='sla_breach'):
+                # ticket/finding identifiers so the devops_monitoring Rego's
+                # deny_sla_breach rule and any downstream review UI can trace
+                # the breach back to its ticket without re-parsing raw_payload.
+                "external_system":      (raw.get("raw_payload") or {}).get("external_system"),
+                "external_ticket_key":  (raw.get("raw_payload") or {}).get("external_ticket_key"),
+                "finding_hash":         (raw.get("raw_payload") or {}).get("finding_hash"),
+                "sla_due_at":           (raw.get("raw_payload") or {}).get("sla_due_at"),
+                # Infrastructure Monitoring (postgres_cis_tool.py/railway_iaas_tool.py,
+                # event_type=='infrastructure_finding'): the normalized compliance
+                # dict iaas_connectors.normalize_postgres_compliance()/
+                # normalize_railway_compliance() produces, spread the same way
+                # scm_audit_endpoints.py's "compliance" sub-dict is above.
+                **(raw.get("raw_payload") or {}).get("infra_compliance", {}),
+                # DevOps Monitoring: Pipeline-as-Code audit (github_pipeline_tool.py,
+                # event_type=='pipeline_misconfiguration'): the normalized dict
+                # pipeline_security_connectors.normalize_pipeline_compliance()
+                # produces. Named distinctly from "compliance" above (SCM branch
+                # protection) since a single poll tick's telemetry row can't hold
+                # both under the same key.
+                **(raw.get("raw_payload") or {}).get("pipeline_compliance", {}),
+                # Financial Risk Pipeline (predictive_analytics_tool.py, event_type
+                # in JE_VELOCITY_ANOMALY/LIQUIDITY_SHIFT/INVENTORY_DIVERGENCE): the
+                # calculation function's own result dict (z_score, rag_status, ...).
+                # Named distinctly from infra_compliance/pipeline_compliance above.
+                **(raw.get("raw_payload") or {}).get("financial_compliance", {}),
             },
+            normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],
             conformation_rules_applied=["System-Telemetry-v1-conform"],
+        )
+
+    @staticmethod
+    def _financial_normalized_attributes(raw: dict[str, Any]) -> "NormalizedAttributes | None":
+        """Multi-Domain Risk Pipeline spec's formal metric shape for the
+        Financial Risk Pipeline's three checks — additive, only populated for
+        those events; every other system_telemetry event returns None here."""
+        fc = (raw.get("raw_payload") or {}).get("financial_compliance")
+        if not fc:
+            return None
+        # compute_liquidity_shift's top-level key is worst_z_score (it picks
+        # the worse of current-ratio/quick-ratio); the other two checks use
+        # z_score directly — see predictive_analytics_tool.py.
+        z = fc.get("z_score") if fc.get("z_score") is not None else fc.get("worst_z_score")
+        if z is None:
+            return None
+        threshold = 3.0 if raw.get("event_type") in ("je_velocity_anomaly", "inventory_divergence") else -3.0
+        return NormalizedAttributes(
+            entity_id=raw.get("resource") or raw.get("server_name"),
+            monitored_metric="z_score",
+            metric_value=z,
+            threshold_limit=threshold,
+            variance=round(z - threshold, 4),
         )
 
     def _conform_generic(self, raw: dict[str, Any], uro: URO) -> ConformedPayload:

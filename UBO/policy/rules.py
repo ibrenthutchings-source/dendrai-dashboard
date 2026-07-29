@@ -122,6 +122,180 @@ GITHUB_RULES: list[PolicyRule] = [
         severity="MEDIUM",
         applies_to=[SourceSystem.GITHUB.value],
     ),
+    PolicyRule(
+        rule_id="POL-GH-004",
+        name="Branch Protection Admin Bypass",
+        description=(
+            "A branch-protection audit (BRANCH_PROTECTION_BYPASSED) that finds "
+            "enforce_admins == false means administrators can bypass every other "
+            "required check — automatically CRITICAL regardless of the other checks."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value],
+    ),
+    PolicyRule(
+        rule_id="POL-GH-005",
+        name="Deploy Gate Bypass",
+        description=(
+            "A deployed commit (per its pipeline attestation) has no associated pull "
+            "request, or its pull request was never approved — the deploy went out "
+            "without the required review gate. Technology Risk Pipeline."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value],
+    ),
+    PolicyRule(
+        rule_id="POL-GH-006",
+        name="CVE Remediation SLA Breach",
+        description=(
+            "A still-open CRITICAL/HIGH dependency vulnerability has exceeded the "
+            "14-day remediation SLA. Technology Risk Pipeline."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value],
+    ),
+]
+
+# ── GitLab DevSecOps Rules ────────────────────────────────────────────────────
+
+GITLAB_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-GL-001",
+        name="Protected Branch Admin Bypass",
+        description=(
+            "A protected-branch audit (BRANCH_PROTECTION_BYPASSED) that finds GitLab's "
+            "admin/maintainer bypass allowed means the equivalent of enforce_admins=false — "
+            "automatically CRITICAL."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITLAB.value],
+    ),
+]
+
+# ── Bitbucket DevSecOps Rules ─────────────────────────────────────────────────
+
+BITBUCKET_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-BB-001",
+        name="Branch Restriction Admin Bypass",
+        description=(
+            "A branch-restriction audit (BRANCH_PROTECTION_BYPASSED) that finds no push "
+            "restriction (or one that exempts specific users/groups) means the equivalent "
+            "of enforce_admins=false — automatically CRITICAL."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.BITBUCKET.value],
+    ),
+]
+
+# ── DevOps Monitoring: SARIF/SAST Evidence Rules ──────────────────────────────
+# Findings ride the generic system_telemetry ingestion path (see
+# SystemTelemetryBronzeHandler / evidence_endpoints.py), so this rule is
+# keyed to SourceSystem.SYSTEM_TELEMETRY rather than GITHUB/GITLAB.
+
+DEVOPS_EVIDENCE_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-DEVOPS-001",
+        name="SARIF Finding SLA Severity Floor",
+        description=(
+            "SAST_FINDING events at CRITICAL or HIGH severity start a remediation SLA "
+            "clock (7 days / 30 days respectively) and must be escalated at ingestion, "
+            "not left for the next periodic scan."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-DEVOPS-002",
+        name="ITSM Ticket SLA Breach",
+        description=(
+            "A ticket linked to a DevOps Monitoring finding (branch-protection "
+            "weakness or SARIF finding) was not resolved before its SLA due date — "
+            "the finding is re-escalated as failing, same as an expired risk waiver."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
+# ── DevOps Monitoring: Pipeline-as-Code (CI/CD workflow) audit ────────────────
+# Findings ride either the GITHUB on-demand path (scm_audit_endpoints.py's
+# synthesized workflow_security_audit event) or the SYSTEM_TELEMETRY scheduled
+# poll path (github_pipeline_tool.py via github_scm_tool.py) — see
+# pipeline_security_connectors.py for the underlying workflow YAML analysis.
+
+PIPELINE_SECURITY_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-DEVOPS-003",
+        name="GitHub Actions Workflow Security",
+        description=(
+            "A pipeline-as-code audit found a write-all GITHUB_TOKEN permissions grant, "
+            "or a pull_request_target trigger combined with an untrusted PR-head checkout "
+            "(the classic fork-PR code-execution pattern) — both are automatically "
+            "escalated regardless of any other finding."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.GITHUB.value, SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
+# ── Infrastructure Monitoring: IaaS/OS/DB continuous audit ────────────────────
+
+INFRASTRUCTURE_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-INFRA-001",
+        name="Infrastructure Configuration Finding Severity Floor",
+        description=(
+            "A continuous IaaS/DB configuration audit (postgres_cis_tool.py / "
+            "railway_iaas_tool.py) found a CRITICAL or HIGH severity finding — "
+            "e.g. SSL not enforced, weak password encryption, or a service "
+            "unexpectedly exposed to the public internet."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
+# ── Financial Risk Pipeline ────────────────────────────────────────────────────
+# Findings ride the SYSTEM_TELEMETRY path (predictive_analytics_tool.py's three
+# calculation functions, via mcp_governance._ingest_system_event) — same idiom
+# as Infrastructure Monitoring above.
+
+FINANCIAL_RISK_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-FIN-001",
+        name="Manual Journal Entry Velocity Spike",
+        description=(
+            "The manual journal-entry rate over the trailing 30 days is more than "
+            "3 standard deviations above the company's own historical baseline — "
+            "a pattern consistent with post-close manipulation or a broken control."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-FIN-002",
+        name="Liquidity Shift",
+        description=(
+            "A quarter-over-quarter current-ratio or quick-ratio break more than 3 "
+            "standard deviations below the company's own historical QoQ noise — a "
+            "sudden liquidity deterioration the point-in-time ratio snapshot alone "
+            "would not flag as unusual."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-FIN-003",
+        name="Inventory/Sales Divergence (Toxic Bloat)",
+        description=(
+            "Inventory is growing faster than revenue can absorb, by more than 3 "
+            "standard deviations against the company's own historical QoQ ratio "
+            "movement — an early obsolescence/write-down risk signal."
+        ),
+        severity="MEDIUM",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
 ]
 
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
@@ -255,6 +429,12 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *CORE_RULES,
     *SAP_RULES,
     *GITHUB_RULES,
+    *GITLAB_RULES,
+    *BITBUCKET_RULES,
+    *DEVOPS_EVIDENCE_RULES,
+    *PIPELINE_SECURITY_RULES,
+    *INFRASTRUCTURE_RULES,
+    *FINANCIAL_RISK_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

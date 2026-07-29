@@ -17,6 +17,12 @@ Router prefix: /pac
     POST /pac/hooks/github/sync           Pull .rego files from the configured repo path and import them
     POST /pac/cac/generate                Generate Controls-as-Code Rego from controls library
     GET  /pac/cac/latest                  Get the latest CaC artifact
+
+    -- Negative testing (pac_contracts.py / pac_negative_tests.py / pac_assurance.py) --
+    POST /pac/negative-tests/run/{process}      Run schema-contract + must-fire/must-not-fire corpus
+    GET  /pac/negative-tests/history/{process}  Past test runs (audit evidence)
+    GET  /pac/assurance                         Which controls are proven working vs. unverified
+    GET  /pac/compliance-scorecard               Framework coverage (SOC 2/NIST/ISO/COSO) — mapped vs. verified
 """
 
 from __future__ import annotations
@@ -40,6 +46,8 @@ from pydantic import BaseModel
 
 import claude_client
 import db
+import pac_assurance
+import pac_contracts
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pac", tags=["pac"])
@@ -60,6 +68,8 @@ _BUILTIN_PROCESS_IDS = {
     "procure_to_pay",
     "receive_to_ship",
     "record_to_report",
+    "devops_monitoring",
+    "infrastructure_monitoring",
 }
 
 
@@ -80,6 +90,8 @@ _PROCESS_LABELS = {
     "procure_to_pay":  "Procure to Pay",
     "receive_to_ship": "Receive to Ship",
     "record_to_report": "Record to Report",
+    "devops_monitoring": "DevOps Monitoring",
+    "infrastructure_monitoring": "Infrastructure Monitoring",
 }
 
 # Assigned round-robin to processes auto-registered by sync_github (a folder
@@ -96,6 +108,8 @@ _PROCESS_ID_PREFIX = {
     "procure_to_pay":  "P2P",
     "receive_to_ship": "R2S",
     "record_to_report": "R2R",
+    "devops_monitoring": "DEVOPS",
+    "infrastructure_monitoring": "INFRA",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -686,6 +700,240 @@ deny_disclosure_event[msg] if {
         input.disclosure.segment_name
     ])
 }
+
+# ── Financial Risk Pipeline ────────────────────────────────────────────────────
+# Findings ride the generic input.event.* shape (system_telemetry ->
+# mcp_governance._evaluate_pac_policy), same convention as devops_monitoring/
+# infrastructure_monitoring below — distinct from the input.journal.*/
+# input.account_recon.*/etc. shapes P-R2R-001..007 above use, which are
+# evaluated directly by oracle_fusion_endpoints.py against live GL data.
+
+# ── P-FIN-001: Manual Journal Entry Velocity Spike ────────────────────────────
+deny_financial_risk[msg] if {
+    input.event.type == "JE_VELOCITY_ANOMALY"
+    input.event.anomaly == true
+    msg := sprintf("P-FIN-001: manual journal-entry velocity on '%v' is %vσ above baseline (%v/day vs. baseline %v/day)", [
+        input.event.resource,
+        input.event.z_score,
+        input.event.recent_daily_rate,
+        input.event.baseline_daily_mean,
+    ])
+}
+
+# ── P-FIN-002: Liquidity Shift ─────────────────────────────────────────────────
+deny_financial_risk[msg] if {
+    input.event.type == "LIQUIDITY_SHIFT"
+    input.event.shift_detected == true
+    msg := sprintf("P-FIN-002: liquidity shift on '%v' — QoQ ratio delta %vσ below historical norm", [
+        input.event.resource,
+        input.event.worst_z_score,
+    ])
+}
+
+# ── P-FIN-003: Inventory/Sales Divergence (Toxic Bloat) ───────────────────────
+deny_financial_risk[msg] if {
+    input.event.type == "INVENTORY_DIVERGENCE"
+    input.event.divergence_detected == true
+    msg := sprintf("P-FIN-003: inventory/sales divergence on '%v' — ratio delta %vσ above historical norm (toxic bloat)", [
+        input.event.resource,
+        input.event.z_score,
+    ])
+}
+""",
+
+"devops_monitoring": """\
+# DevOps Monitoring — SCM Integrity + SARIF/SAST Evidence + Pipeline Security
+# Package:  controls.devops.monitoring
+# Process:  DevOps Monitoring
+# Version:  1.1
+# Approved by: CISO, VP Engineering
+# Last Revised: 2026-07-26
+# Description: Branch-protection/CODEOWNERS compliance for GitHub & GitLab
+#   repositories, severity-based SLA triggers for ingested SARIF/SAST
+#   findings, and GitHub Actions workflow-as-code security (token
+#   permissions, unpinned actions, pull_request_target). Evaluated against
+#   the synthesized events scm_audit_endpoints.py, evidence_endpoints.py,
+#   and pipeline_security_connectors.py produce — see their module docstrings.
+
+package controls.devops.monitoring
+
+import future.keywords.in
+import future.keywords.if
+
+# ── DEVOPS-001: Admin Bypass (CRITICAL) ──────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
+    input.event.enforce_admins == false
+    msg := sprintf("DEVOPS-001: Branch protection on '%v' does not enforce rules for administrators — admins can bypass required checks (CRITICAL)", [input.event.resource])
+}
+
+# ── DEVOPS-002: Minimum Approving Reviews ────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
+    input.event.required_approving_review_count < 1
+    msg := sprintf("DEVOPS-002: Branch '%v' requires zero approving reviews before merge", [input.event.resource])
+}
+
+# ── DEVOPS-003: Stale Review Dismissal ───────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
+    input.event.dismiss_stale_reviews == false
+    msg := sprintf("DEVOPS-003: Branch '%v' does not dismiss stale reviews when new commits are pushed", [input.event.resource])
+}
+
+# ── DEVOPS-004: Required Security/Test Status Checks ─────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
+    input.event.has_required_sast_check == false
+    msg := sprintf("DEVOPS-004: Branch '%v' has no required SAST/security status check", [input.event.resource])
+}
+
+deny_branch_protection[msg] if {
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
+    input.event.has_required_test_check == false
+    msg := sprintf("DEVOPS-004: Branch '%v' has no required unit-test status check", [input.event.resource])
+}
+
+# ── DEVOPS-005/006: CODEOWNERS Coverage ──────────────────────────────────────
+deny_branch_protection[msg] if {
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
+    not input.event.codeowners_present
+    msg := sprintf("DEVOPS-005: Repository for '%v' has no CODEOWNERS file", [input.event.resource])
+}
+
+deny_branch_protection[msg] if {
+    input.event.type == "BRANCH_PROTECTION_BYPASSED"
+    input.event.codeowners_present == true
+    input.event.codeowners_covers_workflows == false
+    msg := sprintf("DEVOPS-006: CODEOWNERS for '%v' does not cover the CI/workflow definition path", [input.event.resource])
+}
+
+# ── DEVOPS-007/008: SARIF Evidence Severity SLA ──────────────────────────────
+# Critical = 7-day resolution target, High = 30-day (spec thresholds).
+deny_evidence_finding[msg] if {
+    input.event.severity == "CRITICAL"
+    msg := sprintf("DEVOPS-007: CRITICAL SARIF finding '%v' on '%v' — 7-day remediation SLA applies", [input.event.rule_id, input.event.resource])
+}
+
+deny_evidence_finding[msg] if {
+    input.event.severity == "HIGH"
+    msg := sprintf("DEVOPS-008: HIGH SARIF finding '%v' on '%v' — 30-day remediation SLA applies", [input.event.rule_id, input.event.resource])
+}
+
+# ── DEVOPS-009: ITSM Ticket SLA Breach ───────────────────────────────────────
+deny_sla_breach[msg] if {
+    input.event.type == "SLA_BREACH"
+    msg := sprintf("DEVOPS-009: ITSM ticket '%v' (%v) for finding '%v' breached its remediation SLA (due %v)", [input.event.external_ticket_key, input.event.external_system, input.event.finding_hash, input.event.sla_due_at])
+}
+
+# ── DEVOPS-010: Workflow Permissions Least-Privilege ─────────────────────────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.has_write_all_permissions == true
+    msg := sprintf("DEVOPS-010: A workflow in '%v' grants write-all GITHUB_TOKEN permissions — scope to only what each job needs", [input.event.resource])
+}
+
+# ── DEVOPS-011: Missing Explicit Permissions Block ───────────────────────────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.workflows_without_permissions > 0
+    msg := sprintf("DEVOPS-011: %v workflow(s) in '%v' have no explicit permissions block — token scope depends on a repo/org default that can silently change", [input.event.workflows_without_permissions, input.event.resource])
+}
+
+# ── DEVOPS-012: Unpinned Third-Party Actions ─────────────────────────────────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.unpinned_action_count > 0
+    msg := sprintf("DEVOPS-012: %v action reference(s) in '%v' are pinned to a mutable tag/branch rather than a commit SHA — a compromised upstream tag changes what runs with no change on this side", [input.event.unpinned_action_count, input.event.resource])
+}
+
+# ── DEVOPS-013: Risky pull_request_target + Untrusted Checkout (CRITICAL) ────
+deny_pipeline_security[msg] if {
+    input.event.type == "PIPELINE_MISCONFIGURATION"
+    input.event.has_risky_pull_request_target == true
+    msg := sprintf("DEVOPS-013: A workflow in '%v' triggers on pull_request_target and checks out the PR head — a fork PR can execute arbitrary code with write-scoped secrets (CRITICAL)", [input.event.resource])
+}
+""",
+
+"infrastructure_monitoring": """\
+# Infrastructure Monitoring — Continuous IaaS/OS/DB Configuration Audit
+# Package:  controls.infrastructure.monitoring
+# Process:  Infrastructure Monitoring
+# Version:  1.1
+# Approved by: CISO, VP Engineering
+# Last Revised: 2026-07-27
+# Description: Postgres CIS-style hardening checks (postgres_cis_tool.py),
+#   Railway platform/deployment drift (railway_iaas_tool.py), and
+#   Intelligenza's own connector-credential rotation hygiene
+#   (connector_hygiene.py). Evaluated against
+#   iaas_connectors.normalize_postgres_compliance()'s output, spread
+#   into input.event.* the same way scm_audit_endpoints.py's "compliance"
+#   sub-dict is for the devops_monitoring module.
+
+package controls.infrastructure.monitoring
+
+import future.keywords.in
+import future.keywords.if
+
+# ── INFRA-001: TLS/SSL Enforcement ───────────────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.ssl_enabled == false
+    msg := sprintf("INFRA-001: Postgres instance '%v' does not enforce SSL — connections can be made in plaintext (CRITICAL)", [input.event.resource])
+}
+
+# ── INFRA-002: Password Encryption Scheme ────────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.password_encryption != "scram-sha-256"
+    msg := sprintf("INFRA-002: Postgres instance '%v' uses '%v' password encryption instead of scram-sha-256", [input.event.resource, input.event.password_encryption])
+}
+
+# ── INFRA-003: Superuser Sprawl ──────────────────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.superuser_count > 2
+    msg := sprintf("INFRA-003: Postgres instance '%v' has %v superuser roles — excess superusers widen the blast radius of a single compromised credential", [input.event.resource, input.event.superuser_count])
+}
+
+# ── INFRA-004: Unencrypted Active Connections ────────────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.unencrypted_connection_count > 0
+    msg := sprintf("INFRA-004: Postgres instance '%v' has %v active connection(s) not using SSL", [input.event.resource, input.event.unencrypted_connection_count])
+}
+
+# ── INFRA-005: Connection/Disconnection Audit Logging ────────────────────────
+deny_db_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.log_connections == false
+    msg := sprintf("INFRA-005: Postgres instance '%v' does not log connections — a compromised credential's access can't be reconstructed after the fact", [input.event.resource])
+}
+
+# ── INFRA-006: Public Network Exposure (Railway) ─────────────────────────────
+deny_railway_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.unexpected_public_domain == true
+    msg := sprintf("INFRA-006: Service '%v' has a public domain that isn't in the approved baseline — verify this exposure was intentional", [input.event.resource])
+}
+
+# ── INFRA-007: Deployment Provenance Mismatch (Railway) ──────────────────────
+deny_railway_config[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.image_digest_mismatch == true
+    msg := sprintf("INFRA-007: Running deployment for '%v' does not match the last approved image digest — verify what's actually deployed", [input.event.resource])
+}
+
+# ── INFRA-008: Connector Credential Rotation Staleness ───────────────────────
+# Dogfooded on Intelligenza's own observability.poll_connectors credential
+# store (connector_hygiene.py) — the one Infrastructure Monitoring check
+# with no external system to poll; the system being checked is Intelligenza
+# itself.
+deny_connector_hygiene[msg] if {
+    input.event.type == "INFRASTRUCTURE_FINDING"
+    input.event.stale_connector_count > 0
+    msg := sprintf("INFRA-008: %v stored connector credential(s) have not been rotated in over the staleness threshold (oldest: %v days) — see the Connector Hygiene panel for which ones", [input.event.stale_connector_count, input.event.oldest_credential_age_days])
+}
 """,
 
 }
@@ -797,6 +1045,50 @@ def _rule_coverage(rego_content: str) -> dict:
     return {"total": total, "with_control_id": with_id}
 
 
+def _parse_opa_bindings(bindings: dict) -> tuple[list[dict], list[dict]]:
+    """
+    Pure parsing step, split out of _run_real_opa_eval so it's unit-testable
+    against a captured OPA response shape without needing the opa binary
+    installed (this repo's local dev/test environment has no OPA on PATH —
+    only the Docker image does — so a bug here can otherwise hide behind
+    every test silently running the heuristic fallback instead).
+
+    `bindings` is `parsed["result"][0]["expressions"][0]["value"]` from a
+    real `opa eval -f json` response: {rule_name: rule_value, ...} for every
+    rule under the queried package.
+    """
+    fired: list[dict] = []
+    passed: list[dict] = []
+    for key, val in bindings.items():
+        if not (key.startswith("deny") or key.startswith("allow")):
+            continue
+        # A Rego partial-set rule (`deny_x[msg] if { ...; msg := "..." }`)
+        # is serialized by `opa eval -f json` as a JSON OBJECT whose keys
+        # are the set's members — e.g. {"DEVOPS-001: ...": true} — never
+        # a JSON array, even for a single-member set. A dict here looked
+        # enough like "the rule's raw value" that _extract_control_id was
+        # called on the whole dict instead of each message, so control_id
+        # was silently None for every real-OPA evaluation (the heuristic
+        # fallback parses Rego source per rule-block and never hit this).
+        # Flatten to one finding per individual message, matching that
+        # per-rule-block granularity.
+        if isinstance(val, dict):
+            messages = list(val.keys())
+        elif isinstance(val, list):
+            messages = val
+        elif val in (None, False, {}, [], set()):
+            messages = []
+        else:
+            messages = [val]
+
+        if not messages:
+            passed.append({"rule": key, "value": val, "control_id": None})
+            continue
+        for msg in messages:
+            fired.append({"rule": key, "value": msg, "control_id": _extract_control_id(msg)})
+    return fired, passed
+
+
 def _run_real_opa_eval(rego_content: str, input_event: dict) -> dict:
     """
     Run the actual OPA binary against a Rego module and input document.
@@ -843,14 +1135,7 @@ def _run_real_opa_eval(rego_content: str, input_event: dict) -> dict:
         except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"could not parse opa eval output: {exc}")
 
-        fired: list[dict] = []
-        passed: list[dict] = []
-        for key, val in bindings.items():
-            if not (key.startswith("deny") or key.startswith("allow")):
-                continue
-            entry = {"rule": key, "value": val, "control_id": _extract_control_id(val)}
-            is_empty = val in (None, False, [], {}, set())
-            (passed if is_empty else fired).append(entry)
+        fired, passed = _parse_opa_bindings(bindings)
 
         return {
             "evaluation": "opa eval (authoritative)",
@@ -1247,7 +1532,18 @@ async def get_module_history(process: str):
 
 @router.post("/modules/{process}/approve")
 async def approve_module(process: str, req: ApproveModuleRequest):
-    """Add an approver sign-off for a module version."""
+    """Add an approver sign-off for a module version.
+
+    Also runs the negative-testing gate (schema-contract check + must-fire/
+    must-not-fire corpus) against the EXACT version being approved and
+    persists the result as audit evidence — but does not (yet) block the
+    approval on failure. Advisory rather than blocking on purpose: today
+    every built-in process except devops_monitoring fails the contract check
+    (see pac_contracts.py's module docstring — no real producer wires their
+    input fields yet), so a hard block would make this endpoint unusable for
+    5 of 6 processes with no warning. The result is returned in the response
+    so the approver sees it before deciding, and it's on record either way.
+    """
     if process not in _valid_processes():
         raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
 
@@ -1261,7 +1557,113 @@ async def approve_module(process: str, req: ApproveModuleRequest):
     if not approval_id:
         raise HTTPException(status_code=500, detail="Failed to save approval")
 
-    return {"saved": True, "approval_id": approval_id, "approver": req.approver, "role": req.role}
+    negative_test_result = None
+    module = db.get_pac_module_by_id(req.module_id)
+    if module:
+        negative_test_result = pac_assurance.evaluate_and_record(
+            process, module["rego_content"], module_id=req.module_id,
+            triggered_by="approval_gate", triggered_by_user=req.approver.strip(),
+        )
+
+    return {
+        "saved": True, "approval_id": approval_id, "approver": req.approver, "role": req.role,
+        "negative_test_result": negative_test_result,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Negative testing (pac_contracts.py / pac_negative_tests.py / pac_assurance.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RunNegativeTestRequest(BaseModel):
+    rego_content: Optional[str] = None  # omit to test the currently-saved (or default) module
+    triggered_by: str = "manual"
+    triggered_by_user: Optional[str] = None
+
+
+@router.post("/negative-tests/run/{process}")
+async def run_negative_tests(process: str, req: RunNegativeTestRequest):
+    """Run the schema-contract check and must-fire/must-not-fire corpus
+    against a process's Rego — either an explicit rego_content (e.g. the
+    Rego Editor's unsaved draft) or, if omitted, whatever is currently live
+    (the latest saved module, falling back to the built-in default)."""
+    if process not in _valid_processes():
+        raise HTTPException(status_code=400, detail=f"Unknown process '{process}'")
+
+    rego_content = req.rego_content
+    module_id = None
+    if not rego_content:
+        saved = db.get_latest_pac_module(process) if db.is_available() else None
+        if saved:
+            rego_content = saved["rego_content"]
+            module_id = saved.get("id")
+        else:
+            rego_content = _REGO_DEFAULTS.get(process)
+    if not rego_content:
+        raise HTTPException(status_code=404, detail=f"No Rego content available for process '{process}'")
+
+    return pac_assurance.evaluate_and_record(
+        process, rego_content, module_id=module_id,
+        triggered_by=req.triggered_by, triggered_by_user=req.triggered_by_user,
+    )
+
+
+@router.get("/negative-tests/history/{process}")
+async def get_negative_test_history(process: str, limit: int = 50):
+    """Past negative-control test runs for a process — audit evidence that
+    a control was actually tested, and when."""
+    if not db.is_available():
+        return {"process": process, "runs": []}
+    return {"process": process, "runs": db.list_pac_test_runs(process=process, limit=limit)}
+
+
+@router.get("/assurance")
+async def get_assurance(process: Optional[str] = None, stale_days: int = 30):
+    """Which policy-enforced controls are currently proven working (recent
+    real production fire and/or a passing negative-control test) vs.
+    unverified (neither) — the silent-rule-detection view."""
+    return pac_assurance.assurance_summary(process=process, stale_days=stale_days)
+
+
+@router.get("/compliance-scorecard")
+async def get_compliance_scorecard(framework: str = "soc2", stale_days: int = 30):
+    """
+    Executive Compliance Scorecard — for one framework
+    ('soc2' | 'nist_800_53' | 'iso_27001' | 'coso'), every criterion any
+    control_id is mapped to (framework_mappings.py, curated — never
+    auto-generated), how many controls map to it, and how many of those are
+    actually PROVEN working per the negative-testing assurance metadata
+    (last_fired_at/last_test_passed), not just mapped on paper.
+
+    "Mapped" and "verified" are reported separately and never conflated — a
+    criterion can be 100% mapped and 0% verified, and that's the honest
+    number to show, not a green checkmark a compliance mapping alone
+    doesn't earn.
+    """
+    if not db.is_available():
+        return {"framework": framework, "criteria": [], "note": "Database not configured"}
+    return db.get_compliance_scorecard(framework, stale_days=stale_days)
+
+
+@router.get("/approval-drift")
+async def get_approval_drift(process: Optional[str] = None):
+    """
+    Compare what's actually being evaluated in production (the latest SAVED
+    module for a process) against the latest version that ever received a
+    real approval sign-off — see pac_approval_drift.py's module docstring
+    for why a save alone is enough to go live, with no approval gate today.
+    A mismatch (drifted=True) means an unapproved or since-edited module is
+    currently adjudicating real events.
+
+    Args:
+        process: A specific process id, or omit to check every known process.
+    """
+    import pac_approval_drift  # local import: pac_approval_drift imports this module
+                                # for _REGO_DEFAULTS/_valid_processes, so importing it
+                                # back at module level here would be circular.
+    if process:
+        return pac_approval_drift.check_process_drift(process)
+    return pac_approval_drift.check_all_processes()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

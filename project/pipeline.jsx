@@ -1117,6 +1117,57 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         );
       })()}
 
+      {/* Financial Risk Pipeline — JE velocity / liquidity shift / inventory divergence */}
+      {forecasts?.financialRiskPipeline && (() => {
+        const frp = forecasts.financialRiskPipeline;
+        const cards = [
+          { key: "je_velocity", label: "Manual JE Velocity", data: frp.je_velocity, flag: "anomaly",
+            detail: d => `z = ${d.z_score}σ (${d.recent_daily_rate}/day vs. baseline ${d.baseline_daily_mean}/day)` },
+          { key: "liquidity_shift", label: "Liquidity Shift", data: frp.liquidity_shift, flag: "shift_detected",
+            detail: d => `worst QoQ z = ${d.worst_z_score}σ` },
+          { key: "inventory_divergence", label: "Inventory/Sales Divergence", data: frp.inventory_divergence, flag: "divergence_detected",
+            detail: d => `QoQ ratio z = ${d.z_score}σ` },
+        ].filter(c => c.data && c.data.interpretation !== "insufficient_data" && c.data.interpretation !== "insufficient_baseline");
+
+        if (!cards.length) return null;
+
+        return (
+          <div className="stage-detail">
+            <h5>Financial Risk Pipeline — journal-entry velocity, liquidity, and inventory signals beyond the point-in-time Z/M-Score snapshot above</h5>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, marginTop: 8 }}>
+              {cards.map(c => {
+                const flagged = !!c.data[c.flag];
+                const tone = flagged ? (c.data.rag_status === "Red" ? "red" : "amber") : "green";
+                return (
+                  <div key={c.key} style={{
+                    padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line)",
+                    background: tone === "red" ? "var(--red-soft)" : tone === "amber" ? "var(--amber-soft)" : "var(--surface-2,var(--surface))",
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: tone === "red" ? "var(--red-ink)" : tone === "amber" ? "var(--amber-ink)" : "var(--ink-2)" }}>
+                      {c.label}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 2 }}>
+                      {flagged ? "Flagged — " : "Normal — "}{c.detail(c.data)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {cards.some(c => c.data[c.flag]) && onAddObjective && (
+              <AuditorTakeaway
+                tone="amber"
+                actionLabel="Add to scope"
+                onAction={() => onAddObjective(
+                  `Review ${cards.filter(c => c.data[c.flag]).map(c => c.label.toLowerCase()).join(", ")} — Financial Risk Pipeline flagged a statistically significant deviation from historical baseline.`
+                )}
+              >
+                One or more Financial Risk Pipeline checks flagged a deviation beyond the company's own historical noise — worth a targeted review this cycle.
+              </AuditorTakeaway>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Revenue forecast chart */}
       {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
         const FC = window.ForecastChart;

@@ -19,19 +19,34 @@ RUN apt-get update \
     && curl -fsSL -o /opa "https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_amd64_static" \
     && chmod +x /opa
 
+# gitleaks static binary — same throwaway-fetch pattern as OPA above, powering
+# the DevOps Monitoring secret-scanning producer (secret_scanner_connectors.py's
+# _find_gitleaks_binary/scan_repo_for_secrets), the real producer for the
+# SECRET_DETECTED EventType outside a live GitHub Advanced Security webhook.
+FROM debian:bookworm-slim AS gitleaks-fetch
+ARG GITLEAKS_VERSION=8.28.0
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates tar \
+    && curl -fsSL -o /tmp/gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+    && tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks \
+    && chmod +x /tmp/gitleaks
+
 # Production stage — Python 3.12 + nginx (Debian slim)
 # Uses Debian so that scipy/numpy pre-built wheels install without compilation.
 FROM python:3.12-slim AS runner
 
-# Install nginx and remove the default conflicting site
+# Install nginx and git (git is required to clone repos for secret scanning —
+# see secret_scanner_connectors.py) and remove the default conflicting site
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nginx \
+    && apt-get install -y --no-install-recommends nginx git \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/default
 
-# Install the real OPA binary fetched above.
+# Install the real OPA and gitleaks binaries fetched above.
 COPY --from=opa-fetch /opa /usr/local/bin/opa
 RUN /usr/local/bin/opa version
+COPY --from=gitleaks-fetch /tmp/gitleaks /usr/local/bin/gitleaks
+RUN /usr/local/bin/gitleaks version
 
 # Install Python API dependencies
 WORKDIR /app/agentic-tools

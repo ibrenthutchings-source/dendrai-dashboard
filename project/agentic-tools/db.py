@@ -568,6 +568,15 @@ CREATE TABLE IF NOT EXISTS approval_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_approval_tasks_manager ON approval_tasks (manager_id, status);
 CREATE INDEX IF NOT EXISTS idx_approval_tasks_run ON approval_tasks (run_id, gate_type);
+-- DevOps Monitoring's devops_scm_exception gate_type has no risk_loop_runs
+-- association — a NULL run_id still satisfies the FK (NULL never violates a
+-- REFERENCES constraint), same reasoning as adjudicated_tool_calls.session_id
+-- above. Known limitation: two devops_scm_exception submissions for the same
+-- item_ref both have run_id=NULL, and Postgres treats NULLs as distinct for
+-- UNIQUE(run_id, gate_type, item_ref) — so they insert as two rows rather
+-- than upserting one. Acceptable for now; risk_waivers' own unique-active-hash
+-- index is what actually prevents two simultaneous ACTIVE waivers.
+ALTER TABLE approval_tasks ALTER COLUMN run_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
@@ -1030,6 +1039,52 @@ CREATE TABLE IF NOT EXISTS controls_catalog (
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_controls_catalog_process ON controls_catalog (process);
+
+-- Negative-testing assurance metadata (PaC negative-control effort, see
+-- pac_contracts.py/pac_negative_tests.py). "We have 400 controls" and "we
+-- have 400 controls, 12 of which nothing proves are working" are very
+-- different claims — these columns are what makes the second one answerable.
+-- last_fired_at: most recent real production adjudication whose
+--   policy_violations included this control_id (db.get_control_fire_stats).
+-- last_verified_at/last_test_passed: most recent negative-control corpus run
+--   (pac_negative_tests.run_corpus) that exercised a must-fire fixture for
+--   this control_id, and whether it passed.
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_fired_at     TIMESTAMPTZ;
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_verified_at  TIMESTAMPTZ;
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS last_test_passed BOOLEAN;
+
+-- Framework crosswalk metadata (Executive Compliance Scorecard). Curated
+-- mappings only (db.seed_framework_mappings, called once at startup from a
+-- static Python dict — see framework_mappings.py) — never LLM-generated or
+-- auto-inferred, same "no ungrounded generation" guardrail as RaC/CaC
+-- (commit 2b98f45's retired Framework Sync). A control_id with no mapping
+-- row here simply isn't scored against any framework yet; that's an honest
+-- gap, not hidden by a fabricated mapping.
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS soc2_criteria   TEXT[];  -- e.g. {CC6.1,CC7.2}
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS nist_800_53     TEXT[];  -- e.g. {AC-3,AU-2,SC-8}
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS iso_27001       TEXT[];  -- e.g. {A.9.4.1,A.12.4.1}
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS coso_component  VARCHAR(64);  -- COSO ERM 2017 component name
+
+-- One row per negative-control corpus run (pac_negative_tests.run_corpus),
+-- whether triggered manually, by a module-approval gate, or the periodic
+-- sweep (P1a) — this is audit evidence ("prove the control was tested on
+-- date X"), not a log line, so it's a table with its own retention, not
+-- something that scrolls out of application logs.
+CREATE TABLE IF NOT EXISTS observability.pac_test_runs (
+    id                BIGSERIAL    PRIMARY KEY,
+    process           VARCHAR(64)  NOT NULL,
+    module_id         BIGINT       REFERENCES pac_policy_modules(id),  -- NULL when testing the built-in default
+    triggered_by      VARCHAR(32)  NOT NULL,  -- 'manual' | 'approval_gate' | 'scheduled_sweep'
+    triggered_by_user  VARCHAR(128),
+    contract_ok       BOOLEAN,
+    contract_findings  JSONB,
+    total             INTEGER      NOT NULL,
+    passed            INTEGER      NOT NULL,
+    failed            INTEGER      NOT NULL,
+    results           JSONB        NOT NULL,   -- full per-fixture results, for drill-down
+    run_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pac_test_runs_process ON observability.pac_test_runs (process, run_at DESC);
 
 -- Policy-as-Code business processes: was a hardcoded 5-entry Python set
 -- (VALID_PROCESSES); now a real table so sync_github() can register a new
@@ -1561,6 +1616,12 @@ CREATE INDEX IF NOT EXISTS idx_poll_connectors_active ON observability.poll_conn
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS risk_tier        VARCHAR(16);
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS data_sensitivity VARCHAR(32);
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS system_owner     VARCHAR(128);
+-- Infrastructure Monitoring: connector credential rotation hygiene
+-- (connector_hygiene.py). Distinct from updated_at, which bumps on ANY
+-- field edit (display_name, poll_interval_s, ...) — this column changes
+-- ONLY when the credentials themselves are rotated, so it's an honest
+-- "credential age" signal rather than "row last touched for any reason".
+ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS credentials_rotated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 -- Generic system telemetry: any registered system pushes events here via REST.
 -- Enterprise systems (Saviynt, SAP, Oracle Fusion, ServiceNow, etc.) authenticate
@@ -1658,6 +1719,175 @@ DELETE FROM xbrl_data_points d USING xbrl_data_points dup
       AND d.id > dup.id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_xbrl_dp_unique
     ON xbrl_data_points (series_id, period_end, form, source);
+
+-- DevOps Monitoring: append-only, immutable SARIF/SAST evidence log (evidence_endpoints.py).
+-- Nothing else in the schema carries SARIF's per-finding shape (rule/CWE/CVE/file/line) or
+-- the dedup-fingerprint + cryptographic-signature requirements, so this is a purpose-built
+-- table rather than a reuse of system_telemetry (which HIGH/CRITICAL findings ALSO get
+-- mirrored into, for adjudication — see evidence_endpoints.py's ingest handler).
+CREATE TABLE IF NOT EXISTS observability.evidence_records (
+    id              BIGSERIAL    PRIMARY KEY,
+    ingested_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    repository      VARCHAR(256) NOT NULL,
+    commit_sha      VARCHAR(64),
+    pipeline_run_id VARCHAR(128),
+    source          VARCHAR(32)  NOT NULL DEFAULT 'other',  -- github_actions | gitlab_ci | snyk | sonarqube | checkmarx | other
+    rule_id         VARCHAR(256),
+    severity        VARCHAR(16)  NOT NULL DEFAULT 'INFO',   -- CRITICAL | HIGH | MEDIUM | LOW | INFO
+    cwe             VARCHAR(32),
+    cve             VARCHAR(32),
+    file_path       TEXT,
+    line_number     INTEGER,
+    line_snippet    TEXT,
+    fingerprint     CHAR(64)     NOT NULL,  -- SHA256(repository|file_path|rule_id|line_snippet)
+    author          VARCHAR(256),
+    approver        VARCHAR(256),
+    scan_status     VARCHAR(16)  NOT NULL DEFAULT 'FAIL',   -- PASS | FAIL
+    raw_sarif       JSONB,
+    record_json     JSONB        NOT NULL,   -- canonical payload the signature below covers
+    signature       CHAR(64)     NOT NULL    -- HMAC-SHA256(record_json, EVIDENCE_SIGNING_KEY)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_fingerprint_commit
+    ON observability.evidence_records (fingerprint, commit_sha);
+CREATE INDEX IF NOT EXISTS idx_evidence_repository
+    ON observability.evidence_records (repository, ingested_at DESC);
+-- Tamper-evidence chain: a per-record HMAC (signature above) proves a row's
+-- OWN content wasn't altered, but proves nothing about whether a row was
+-- deleted or reordered out from between its neighbors — that requires a
+-- link to the prior row. chain_hash = sha256(prev_row.chain_hash + this
+-- row's signature), computed under an advisory lock at insert time (see
+-- insert_evidence_record) so concurrent inserts can't fork the chain.
+-- Nullable because pre-existing rows from before this column existed have
+-- no prior chain_hash to link from — verify_evidence_chain() only walks
+-- rows where chain_hash IS NOT NULL and documents that boundary rather than
+-- fabricating a retroactive chain over rows that were never signed for it.
+ALTER TABLE observability.evidence_records ADD COLUMN IF NOT EXISTS chain_hash CHAR(64);
+CREATE INDEX IF NOT EXISTS idx_evidence_severity
+    ON observability.evidence_records (severity, ingested_at DESC);
+
+-- DevOps Monitoring: last-known compliance snapshot per repo, so each new audit
+-- (scheduled poll or on-demand run) has something to diff against. Not the
+-- audit history itself (that's system_telemetry / adjudicated_tool_calls) —
+-- just "what did we see last time", overwritten every audit.
+CREATE TABLE IF NOT EXISTS observability.scm_repository_state (
+    resource     VARCHAR(256) PRIMARY KEY,   -- e.g. "org/repo@main"
+    compliance   JSONB        NOT NULL,
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- DevOps Monitoring: drift/time-series log. Catches "2am override" style
+-- incidents — an admin temporarily weakens a control, merges, restores it —
+-- that a webhook-only or single-snapshot system would never see, because the
+-- state is compliant again by the time anyone looks. Populated by comparing
+-- each audit's compliance dict against scm_repository_state's prior value
+-- (see scm_connectors.diff_compliance / db.record_scm_audit_snapshot).
+CREATE TABLE IF NOT EXISTS observability.scm_drift_events (
+    id              BIGSERIAL    PRIMARY KEY,
+    resource        VARCHAR(256) NOT NULL,
+    control_name    VARCHAR(64)  NOT NULL,
+    expected_state  JSONB        NOT NULL,
+    actual_state    JSONB        NOT NULL,
+    direction       VARCHAR(16)  NOT NULL,   -- regressed | improved
+    detected_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_scm_drift_open
+    ON observability.scm_drift_events (resource, control_name)
+    WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_scm_drift_resource
+    ON observability.scm_drift_events (resource, detected_at DESC);
+
+-- DevOps Monitoring: Risk Waiver & Exception Hub. A preparer requests a waiver
+-- via the existing HITL approval_tasks workflow (gate_type='devops_scm_exception',
+-- see approvals_endpoints.py); when a manager approves it, one row lands here.
+-- Kept as its own table (rather than living only in approval_tasks.adjustments
+-- JSONB) because automated expiry needs an indexed, queryable expires_at — you
+-- cannot efficiently sweep JSONB-buried dates across many rows.
+CREATE TABLE IF NOT EXISTS observability.risk_waivers (
+    id                   BIGSERIAL    PRIMARY KEY,
+    vulnerability_hash   CHAR(64)     NOT NULL,  -- evidence_records.fingerprint or a scm control key
+    reason               TEXT         NOT NULL,
+    compensating_control TEXT,
+    approved_by          VARCHAR(128) NOT NULL,
+    approval_task_id     BIGINT       REFERENCES approval_tasks(id),
+    expires_at           TIMESTAMPTZ  NOT NULL,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    status               VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE'  -- ACTIVE | EXPIRED | REVOKED
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_risk_waivers_active_hash
+    ON observability.risk_waivers (vulnerability_hash) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_risk_waivers_expiry
+    ON observability.risk_waivers (expires_at) WHERE status = 'ACTIVE';
+
+-- DevOps Monitoring: pipeline provenance/attestation metadata (SLSA-adjacent).
+-- Stores what a CI run claims about itself — OIDC identity claims, SLSA
+-- provenance statement, a hash (never the raw values) of its environment
+-- variables so an injected SKIP_TESTS=true/DISABLE_SAST=1 flag is detectable,
+-- runner metadata, an optional Cosign/Sigstore bundle, and an SBOM. See
+-- attestation.py for the (structural, not full Sigstore-trust-root) validation
+-- this data gets — real cryptographic verification requires the actual `cosign`
+-- binary and network access to Rekor, which this environment does not assume.
+CREATE TABLE IF NOT EXISTS observability.pipeline_attestations (
+    id                BIGSERIAL    PRIMARY KEY,
+    commit_sha        VARCHAR(64)  NOT NULL,
+    pipeline_run_id   VARCHAR(128),
+    oidc_actor        VARCHAR(256),
+    oidc_claims       JSONB,
+    slsa_provenance   JSONB,
+    slsa_level        SMALLINT,             -- 0-3, structural estimate — see attestation.validate_slsa_provenance
+    env_vars_hash     CHAR(64),
+    runner_type       VARCHAR(32),          -- github-hosted | self-hosted | gitlab-shared | gitlab-self-managed | other
+    runner_id         VARCHAR(256),
+    container_image_sha VARCHAR(128),
+    cosign_bundle     JSONB,
+    cosign_verified    VARCHAR(16),         -- true | false | unknown (no cosign binary available)
+    sbom_format       VARCHAR(16),          -- cyclonedx | spdx
+    sbom              JSONB,
+    license_risk      BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_attestations_commit
+    ON observability.pipeline_attestations (commit_sha, created_at DESC);
+
+-- DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge. A ticket is opened
+-- against an external ITSM system for a finding (SARIF evidence fingerprint
+-- or an SCM control key — same key space as risk_waivers.vulnerability_hash),
+-- and its remediation SLA is tracked here rather than only in the external
+-- system, so a breach can be detected and re-escalated even if nobody is
+-- watching Jira/ServiceNow (see itsm_sla_sweep.py). Kept as its own table for
+-- the same reason as scm_drift_events/risk_waivers: an indexed sla_due_at is
+-- required for the sweep, which JSONB-buried dates can't give efficiently.
+CREATE TABLE IF NOT EXISTS observability.itsm_tickets (
+    id                    BIGSERIAL    PRIMARY KEY,
+    finding_hash          CHAR(64)     NOT NULL,  -- evidence_records.fingerprint or an scm control key
+    external_system       VARCHAR(16)  NOT NULL,  -- jira | servicenow
+    external_ticket_key   VARCHAR(64)  NOT NULL,  -- e.g. 'SEC-142' (Jira) or 'INC0012345' (ServiceNow)
+    connector_id          BIGINT       REFERENCES observability.poll_connectors(id),
+    summary               TEXT,
+    severity              VARCHAR(16)  NOT NULL,  -- CRITICAL | HIGH | MEDIUM | LOW
+    status                VARCHAR(24)  NOT NULL DEFAULT 'open',  -- open | in_progress | resolved | closed | cancelled
+    sla_hours             INTEGER      NOT NULL,
+    sla_due_at            TIMESTAMPTZ  NOT NULL,
+    sla_breached_at       TIMESTAMPTZ,
+    created_by            VARCHAR(128),
+    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_itsm_tickets_active_hash
+    ON observability.itsm_tickets (finding_hash)
+    WHERE status NOT IN ('closed', 'cancelled');
+-- DORA metrics (dora_metrics.py / compute_dora_metrics): MTTR needs a real
+-- resolution timestamp, not updated_at (which bumps on ANY field change,
+-- same reason poll_connectors got its own credentials_rotated_at rather
+-- than reusing updated_at) — set only on the open/in_progress -> resolved
+-- transition by update_itsm_ticket_status, mirroring model_health alerts'
+-- existing resolved_at precedent.
+ALTER TABLE observability.itsm_tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_itsm_tickets_sla_sweep
+    ON observability.itsm_tickets (sla_due_at)
+    WHERE sla_breached_at IS NULL AND status NOT IN ('closed', 'cancelled');
+CREATE INDEX IF NOT EXISTS idx_itsm_tickets_system
+    ON observability.itsm_tickets (external_system, status);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -3502,7 +3732,7 @@ def get_sox_hitl_gate_status(run_id: int) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def upsert_approval_task(
-    run_id: int,
+    run_id: Optional[int],
     gate_type: str,
     item_ref: str,
     item_label: Optional[str],
@@ -3747,7 +3977,12 @@ def get_approval_task(task_id: int) -> Optional[dict]:
 
 
 def get_approval_inbox(manager_id: int) -> list:
-    """Items awaiting this user's review, newest-submitted first."""
+    """Items awaiting this user's review, newest-submitted first.
+
+    LEFT JOIN (not INNER) — devops_scm_exception tasks have run_id=NULL (no
+    risk_loop_runs association; see approval_tasks.run_id's DROP NOT NULL
+    migration above), and an INNER JOIN would silently drop them from every
+    manager's inbox instead of just leaving ticker NULL for those rows."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -3757,7 +3992,7 @@ def get_approval_inbox(manager_id: int) -> list:
                            t.adjustments, t.rationale, t.prepared_by_name, t.prepared_at, r.ticker,
                            t.ai_suggested, t.ai_accepted
                     FROM approval_tasks t
-                    JOIN risk_loop_runs r ON r.id = t.run_id
+                    LEFT JOIN risk_loop_runs r ON r.id = t.run_id
                     WHERE t.manager_id = %s AND t.status = 'submitted'
                     ORDER BY t.prepared_at DESC
                     """,
@@ -7041,6 +7276,41 @@ def get_latest_pac_module(process: str) -> Optional[dict]:
     return _run(_do)
 
 
+def get_latest_approved_pac_module(process: str) -> Optional[dict]:
+    """The newest module version for a process that has EVER received an
+    approval sign-off — may be OLDER than get_latest_pac_module's result,
+    since saving a new draft (PUT /pac/modules/{process}) doesn't require or
+    wait for approval before becoming the version real adjudication
+    evaluates. Used by pac_approval_drift.py to detect exactly that gap:
+    the live module and the latest APPROVED module are not necessarily the
+    same row."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT m.id, m.process, m.module_name, m.rego_content, m.version,
+                           m.source_format, m.last_revised_at, m.created_at
+                    FROM pac_policy_modules m
+                    WHERE m.process = %s
+                      AND EXISTS (SELECT 1 FROM pac_policy_approvals a WHERE a.module_id = m.id)
+                    ORDER BY m.created_at DESC
+                    LIMIT 1
+                    """,
+                    (process,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "process": row[1], "module_name": row[2],
+                    "rego_content": row[3], "version": row[4], "source_format": row[5],
+                    "last_revised_at": row[6].isoformat() if row[6] else None,
+                    "created_at": row[7].isoformat() if row[7] else None,
+                }
+    return _run(_do)
+
+
 def list_pac_modules() -> list:
     """Return the latest module for every process that has been saved."""
     def _do():
@@ -7119,7 +7389,9 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                     clauses.append("source = %s"); params.append(source)
                 where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
                 cur.execute(
-                    f"SELECT control_id, name, description, process, source, created_at "
+                    f"SELECT control_id, name, description, process, source, created_at, "
+                    f"       last_fired_at, last_verified_at, last_test_passed, "
+                    f"       soc2_criteria, nist_800_53, iso_27001, coso_component "
                     f"FROM controls_catalog {where} ORDER BY control_id",
                     params,
                 )
@@ -7128,6 +7400,11 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                         "control_id": r[0], "name": r[1], "description": r[2],
                         "process": r[3], "source": r[4],
                         "created_at": r[5].isoformat() if r[5] else None,
+                        "last_fired_at": r[6].isoformat() if r[6] else None,
+                        "last_verified_at": r[7].isoformat() if r[7] else None,
+                        "last_test_passed": r[8],
+                        "soc2_criteria": r[9] or [], "nist_800_53": r[10] or [],
+                        "iso_27001": r[11] or [], "coso_component": r[12],
                     }
                     for r in cur.fetchall()
                 ]
@@ -7139,7 +7416,9 @@ def get_control(control_id: str) -> Optional[dict]:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT control_id, name, description, process, source, created_at "
+                    "SELECT control_id, name, description, process, source, created_at, "
+                    "       last_fired_at, last_verified_at, last_test_passed, "
+                    "       soc2_criteria, nist_800_53, iso_27001, coso_component "
                     "FROM controls_catalog WHERE control_id = %s",
                     (control_id,),
                 )
@@ -7150,8 +7429,370 @@ def get_control(control_id: str) -> Optional[dict]:
                     "control_id": row[0], "name": row[1], "description": row[2],
                     "process": row[3], "source": row[4],
                     "created_at": row[5].isoformat() if row[5] else None,
+                    "last_fired_at": row[6].isoformat() if row[6] else None,
+                    "last_verified_at": row[7].isoformat() if row[7] else None,
+                    "last_test_passed": row[8],
+                    "soc2_criteria": row[9] or [], "nist_800_53": row[10] or [],
+                    "iso_27001": row[11] or [], "coso_component": row[12],
                 }
     return _run(_do)
+
+
+def upsert_framework_mapping(control_id: str, soc2_criteria: Optional[list] = None,
+                              nist_800_53: Optional[list] = None, iso_27001: Optional[list] = None,
+                              coso_component: Optional[str] = None) -> bool:
+    """Set framework crosswalk metadata for one control. No-ops (returns
+    False) if control_id doesn't exist yet — mappings are seeded after
+    controls_catalog itself (see seed_framework_mappings, called after
+    _seed_controls_catalog in api_server.py's startup sequence)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE controls_catalog
+                    SET soc2_criteria = %s, nist_800_53 = %s, iso_27001 = %s,
+                        coso_component = %s, updated_at = NOW()
+                    WHERE control_id = %s
+                    """,
+                    (soc2_criteria, nist_800_53, iso_27001, coso_component, control_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+_SCORECARD_ARRAY_COL = {"soc2": "soc2_criteria", "nist_800_53": "nist_800_53", "iso_27001": "iso_27001"}
+
+
+def _aggregate_scorecard_rows(rows: list, stale_days: int = 30) -> list:
+    """
+    Pure aggregation step, split out of get_compliance_scorecard so it's
+    unit-testable with fake rows — no DB connection needed (mirrors
+    _parse_opa_bindings' reasoning in pac_endpoints.py: a bug in aggregation
+    logic shouldn't require a live Postgres connection to catch).
+
+    rows: [(criterion, control_id, last_test_passed, last_fired_at), ...] —
+    last_fired_at is a timezone-aware datetime or None.
+
+    Deliberately two different numbers, never conflated: "mapped" (a human
+    curated this crosswalk in framework_mappings.py) and "verified" (P0's
+    negative-testing assurance metadata actually backs it up). A criterion
+    can be fully mapped and 0% verified — that's the honest state to
+    surface, not a green checkmark a mapping alone hasn't earned.
+    """
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+    by_criterion: dict[str, dict] = {}
+    for criterion, control_id, last_test_passed, last_fired_at in rows:
+        bucket = by_criterion.setdefault(criterion, {"criterion": criterion, "control_ids": [], "verified_control_ids": []})
+        bucket["control_ids"].append(control_id)
+        fired_recently = bool(last_fired_at) and last_fired_at > cutoff
+        if last_test_passed or fired_recently:
+            bucket["verified_control_ids"].append(control_id)
+
+    criteria = []
+    for c in sorted(by_criterion.values(), key=lambda x: x["criterion"]):
+        criteria.append({
+            "criterion": c["criterion"],
+            "control_ids": sorted(set(c["control_ids"])),
+            "total_controls": len(set(c["control_ids"])),
+            "verified_controls": len(set(c["verified_control_ids"])),
+        })
+    return criteria
+
+
+def get_compliance_scorecard(framework: str, stale_days: int = 30) -> dict:
+    """
+    Executive Compliance Scorecard: for one framework
+    ('soc2' | 'nist_800_53' | 'iso_27001' | 'coso'), every distinct
+    criterion any control is mapped to, how many controls map to it, and
+    how many are actually PROVEN working — see _aggregate_scorecard_rows.
+    """
+    if framework not in ("soc2", "nist_800_53", "iso_27001", "coso"):
+        return {"framework": framework, "criteria": [], "error": f"Unknown framework '{framework}'"}
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if framework == "coso":
+                    cur.execute(
+                        """
+                        SELECT coso_component, control_id, last_test_passed, last_fired_at
+                        FROM controls_catalog WHERE coso_component IS NOT NULL
+                        """,
+                    )
+                else:
+                    array_col = _SCORECARD_ARRAY_COL[framework]
+                    cur.execute(
+                        f"""
+                        SELECT unnest({array_col}) AS criterion, control_id, last_test_passed, last_fired_at
+                        FROM controls_catalog WHERE {array_col} IS NOT NULL
+                        """,
+                    )
+                return cur.fetchall()
+
+    rows = _run(_do) or []
+    criteria = _aggregate_scorecard_rows(rows, stale_days=stale_days)
+    fully_verified = sum(1 for c in criteria if c["total_controls"] > 0 and c["verified_controls"] == c["total_controls"])
+    return {
+        "framework": framework,
+        "criteria": criteria,
+        "total_criteria": len(criteria),
+        "fully_verified_criteria": fully_verified,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DORA-style change-management metrics (SOC 2 CC8.1 operational evidence)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _aggregate_dora_metrics(window_days: int, attestation_count: int, ticket_count: int,
+                             resolved_ticket_hours: list) -> dict:
+    """
+    Pure aggregation, split out of compute_dora_metrics for testability —
+    same reasoning as _aggregate_scorecard_rows.
+
+    Two of DORA's four metrics, computed from data this platform actually
+    ingests (not fabricated): pipeline_attestations (one row per CI pipeline
+    run — evidence_endpoints.py's POST /evidence/attestation) as the
+    deployment-frequency proxy, and itsm_tickets (findings escalated into a
+    real Jira/ServiceNow ticket) as the change-failure/incident proxy.
+
+    deployment_frequency_per_day: attestation_count / window_days.
+    change_failure_rate: ticket_count / attestation_count — the fraction of
+        pipeline runs in the window that produced a finding serious enough
+        to open an incident ticket. None (not 0) when attestation_count==0 —
+        a rate with no denominator is undefined, not "zero failures".
+    mttr_hours: mean of resolved_ticket_hours — None when no ticket resolved
+        in the window, not 0 (0 would falsely claim instant resolution).
+
+    Lead Time for Changes (DORA's fourth metric) is deliberately NOT
+    computed — see dora_metrics.py's module docstring for why.
+    """
+    deployment_frequency_per_day = round(attestation_count / window_days, 3) if window_days > 0 else None
+    change_failure_rate = round(ticket_count / attestation_count, 3) if attestation_count > 0 else None
+    mttr_hours = round(sum(resolved_ticket_hours) / len(resolved_ticket_hours), 2) if resolved_ticket_hours else None
+    return {
+        "window_days": window_days,
+        "deployment_count": attestation_count,
+        "deployment_frequency_per_day": deployment_frequency_per_day,
+        "incident_ticket_count": ticket_count,
+        "change_failure_rate": change_failure_rate,
+        "resolved_ticket_count": len(resolved_ticket_hours),
+        "mttr_hours": mttr_hours,
+    }
+
+
+def compute_dora_metrics(window_days: int = 30) -> dict:
+    """Real deployment-frequency / change-failure-rate / MTTR metrics over
+    the trailing window_days — see _aggregate_dora_metrics for the exact
+    proxies and their honest-null semantics."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.pipeline_attestations "
+                    "WHERE created_at >= NOW() - (%s || ' days')::interval",
+                    (window_days,),
+                )
+                attestation_count = cur.fetchone()[0]
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.itsm_tickets "
+                    "WHERE created_at >= NOW() - (%s || ' days')::interval",
+                    (window_days,),
+                )
+                ticket_count = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0
+                    FROM observability.itsm_tickets
+                    WHERE resolved_at IS NOT NULL
+                      AND created_at >= NOW() - (%s || ' days')::interval
+                    """,
+                    (window_days,),
+                )
+                resolved_ticket_hours = [r[0] for r in cur.fetchall() if r[0] is not None]
+
+                return attestation_count, ticket_count, resolved_ticket_hours
+    result = _run(_do)
+    if result is None:
+        return _aggregate_dora_metrics(window_days, 0, 0, []) | {"note": "Database not configured"}
+    return _aggregate_dora_metrics(window_days, *result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PaC negative-testing assurance (pac_contracts.py / pac_negative_tests.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_control_fire_stats(control_id: str, window_days: int = 30) -> dict:
+    """Real-production evidence a control is doing something: the most
+    recent adjudicated_tool_calls row whose policy_violations included this
+    control_id, and how many times in the trailing window. NULL/0 doesn't
+    necessarily mean the control is broken — it may just mean the underlying
+    bad state hasn't occurred recently — but combined with no passing
+    negative-control test, it means nothing currently proves this control
+    works at all (see list_unverified_controls)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT MAX(adjudicated_at),
+                           COUNT(*) FILTER (WHERE adjudicated_at > NOW() - (%s || ' days')::interval)
+                    FROM observability.adjudicated_tool_calls
+                    WHERE %s = ANY(policy_violations)
+                    """,
+                    (window_days, control_id),
+                )
+                last_fired_at, fire_count = cur.fetchone()
+                return {
+                    "control_id": control_id,
+                    "last_fired_at": last_fired_at.isoformat() if last_fired_at else None,
+                    "fire_count_window": int(fire_count or 0),
+                    "window_days": window_days,
+                }
+    return _run(_do) or {"control_id": control_id, "last_fired_at": None, "fire_count_window": 0, "window_days": window_days}
+
+
+def update_control_verification(control_id: str, passed: bool, verified_at=None) -> bool:
+    """Record the outcome of the most recent negative-control fixture that
+    exercised this control_id. Called once per control_id after a corpus run
+    (pac_negative_tests.run_corpus), not once per fixture — a control tested
+    by two fixtures gets the AND of their results via the caller, not two
+    competing writes here."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE controls_catalog
+                    SET last_verified_at = COALESCE(%s, NOW()), last_test_passed = %s, updated_at = NOW()
+                    WHERE control_id = %s
+                    """,
+                    (verified_at, passed, control_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def refresh_control_fire_stats(control_ids: Optional[list] = None) -> int:
+    """Batch-refresh last_fired_at for every control (or a given subset)
+    from real adjudication history. Cheap to run often — a single query per
+    control_id, no full-table scan needed thanks to the GIN-able
+    policy_violations = ANY(...) pattern already used elsewhere on this table."""
+    ids = control_ids if control_ids is not None else [c["control_id"] for c in list_controls(source="pac_rego")]
+    updated = 0
+    for control_id in ids:
+        stats = get_control_fire_stats(control_id)
+        if stats["last_fired_at"]:
+            def _do(cid=control_id, ts=stats["last_fired_at"]):
+                with _conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE controls_catalog SET last_fired_at = %s WHERE control_id = %s",
+                            (ts, cid),
+                        )
+                        return cur.rowcount > 0
+            if _run(_do, default=False):
+                updated += 1
+    return updated
+
+
+def list_unverified_controls(process: Optional[str] = None, stale_days: int = 30) -> list:
+    """Controls that are 'policy-enforced' (source='pac_rego') but have
+    NEITHER fired in real production within stale_days NOR passed a
+    negative-control test within stale_days — the silent-rule / unverified-
+    policy signal from the negative-testing plan: a control nothing currently
+    proves is working."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                # Placeholder order must match their literal position in the
+                # SQL text below: any "process = %s" (inside `where`) comes
+                # first, then the two stale_days interval comparisons.
+                clauses = ["source = 'pac_rego'"]
+                params: list = []
+                if process:
+                    clauses.append("process = %s")
+                    params.append(process)
+                where = " AND ".join(clauses)
+                params.extend([stale_days, stale_days])
+                cur.execute(
+                    f"""
+                    SELECT control_id, name, process, last_fired_at, last_verified_at, last_test_passed
+                    FROM controls_catalog
+                    WHERE {where}
+                      AND (last_fired_at IS NULL OR last_fired_at < NOW() - (%s || ' days')::interval)
+                      AND (last_test_passed IS NOT TRUE OR last_verified_at < NOW() - (%s || ' days')::interval)
+                    ORDER BY process, control_id
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("last_fired_at", "last_verified_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def insert_pac_test_run(process: str, module_id: Optional[int], triggered_by: str,
+                         triggered_by_user: Optional[str], contract_ok: Optional[bool],
+                         contract_findings: Optional[list], total: int, passed: int,
+                         failed: int, results: list) -> Optional[int]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.pac_test_runs
+                        (process, module_id, triggered_by, triggered_by_user,
+                         contract_ok, contract_findings, total, passed, failed, results)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb)
+                    RETURNING id
+                    """,
+                    (process, module_id, triggered_by, triggered_by_user, contract_ok,
+                     Json(contract_findings or []), total, passed, failed, Json(results)),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_pac_test_runs(process: Optional[str] = None, limit: int = 50) -> list:
+    def _do():
+        filters, params = [], []
+        if process:
+            filters.append("process = %s"); params.append(process)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, process, module_id, triggered_by, triggered_by_user,
+                           contract_ok, contract_findings, total, passed, failed, results, run_at
+                    FROM observability.pac_test_runs
+                    {where}
+                    ORDER BY run_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("run_at"):
+                        d["run_at"] = d["run_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 def get_pac_module_history(process: str, limit: int = 20) -> list:
@@ -7177,6 +7818,33 @@ def get_pac_module_history(process: str, limit: int = 20) -> list:
                     for r in cur.fetchall()
                 ]
     return _run(_do) or []
+
+
+def get_pac_module_by_id(module_id: int) -> Optional[dict]:
+    """Fetch one module version by id, rego_content included — needed by the
+    negative-testing approval gate (pac_assurance.evaluate_and_record), which
+    must test the EXACT version being approved, not just 'whatever is
+    currently latest for the process' (those can differ mid-review)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, process, module_name, rego_content, version, last_revised_at, created_at
+                    FROM pac_policy_modules WHERE id = %s
+                    """,
+                    (module_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "process": row[1], "module_name": row[2],
+                    "rego_content": row[3], "version": row[4],
+                    "last_revised_at": row[5].isoformat() if row[5] else None,
+                    "created_at": row[6].isoformat() if row[6] else None,
+                }
+    return _run(_do)
 
 
 def save_pac_approval(module_id: int, approver: str, role: Optional[str] = None) -> Optional[int]:
@@ -7218,6 +7886,12 @@ _BUILTIN_PAC_PROCESSES = [
     {"id": "record_to_report", "label": "Record to Report", "short_label": "R2R", "control_prefix": "R2R",
      "color": "#ef4444", "icon": "📊",
      "description": "Journal Entry → Sub-ledger → GL Close → Financial Statements — Oracle GL, SLA, FAH, Financial Reporting modules."},
+    {"id": "devops_monitoring", "label": "DevOps Monitoring", "short_label": "DevOps", "control_prefix": "DEVOPS",
+     "color": "#22d3ee", "icon": "🛠️",
+     "description": "SCM branch-protection auditing and SARIF/SAST evidence ingestion — GitHub/GitLab repo integrity, CODEOWNERS coverage, and vulnerability severity SLAs."},
+    {"id": "infrastructure_monitoring", "label": "Infrastructure Monitoring", "short_label": "Infra", "control_prefix": "INFRA",
+     "color": "#a855f7", "icon": "🖥️",
+     "description": "Continuous IaaS/OS/DB configuration audit — Postgres CIS-style hardening checks and Railway platform/deployment drift."},
 ]
 
 
@@ -7232,6 +7906,27 @@ def seed_builtin_pac_processes() -> int:
         ):
             created += 1
     return created
+
+
+def seed_framework_mappings() -> int:
+    """Idempotently apply framework_mappings.FRAMEWORK_MAPPINGS to
+    controls_catalog. Must run AFTER _seed_controls_catalog (api_server.py's
+    startup order) — upsert_framework_mapping no-ops for a control_id that
+    doesn't exist yet. Safe to re-run: always overwrites with the current
+    curated dict, so an edit to framework_mappings.py takes effect on next
+    restart without a manual migration."""
+    import framework_mappings
+    updated = 0
+    for control_id, mapping in framework_mappings.FRAMEWORK_MAPPINGS.items():
+        if upsert_framework_mapping(
+            control_id,
+            soc2_criteria=mapping.get("soc2_criteria"),
+            nist_800_53=mapping.get("nist_800_53"),
+            iso_27001=mapping.get("iso_27001"),
+            coso_component=mapping.get("coso_component"),
+        ):
+            updated += 1
+    return updated
 
 
 def create_pac_process(process_id: str, label: str, short_label: str, *,
@@ -7571,7 +8266,7 @@ def list_poll_connectors(include_credentials: bool = False) -> list:
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                cols = "id, connector_type, display_name, base_url, auth_type, extra_config, poll_interval_s, active, last_poll_at, last_poll_status, last_poll_error, created_at, updated_at, created_by, risk_tier, data_sensitivity, system_owner"
+                cols = "id, connector_type, display_name, base_url, auth_type, extra_config, poll_interval_s, active, last_poll_at, last_poll_status, last_poll_error, created_at, updated_at, created_by, risk_tier, data_sensitivity, system_owner, credentials_rotated_at"
                 if include_credentials:
                     cols += ", credentials_enc"
                 cur.execute(f"SELECT {cols} FROM observability.poll_connectors ORDER BY created_at DESC")
@@ -7587,9 +8282,10 @@ def list_poll_connectors(include_credentials: bool = False) -> list:
                         "updated_at": r[12].isoformat() if r[12] else None,
                         "created_by": r[13],
                         "risk_tier": r[14], "data_sensitivity": r[15], "system_owner": r[16],
+                        "credentials_rotated_at": r[17].isoformat() if r[17] else None,
                     }
                     if include_credentials:
-                        d["credentials"] = decrypt_credentials(r[17]) if r[17] else {}
+                        d["credentials"] = decrypt_credentials(r[18]) if r[18] else {}
                     out.append(d)
                 return out
     return _run(_do) or []
@@ -7624,6 +8320,7 @@ def update_poll_connector(connector_id: int, *, display_name: Optional[str] = No
     if credentials is not None:
         sets.append("credentials_enc = %s")
         params.append(encrypt_credentials(credentials))
+        sets.append("credentials_rotated_at = NOW()")
     if not sets:
         return False
     sets.append("updated_at = NOW()")
@@ -7637,6 +8334,38 @@ def update_poll_connector(connector_id: int, *, display_name: Optional[str] = No
                 )
                 return cur.rowcount > 0
     return _run(_do, default=False) or False
+
+
+def list_connectors_with_stale_credentials(stale_days: int = 90) -> list:
+    """Active connectors whose credential hasn't been rotated in over
+    stale_days — the producer for INFRA-008 (connector_hygiene.py). Only
+    active connectors count: a disabled connector's stale credential isn't
+    an active exposure. Dogfoods Infrastructure Monitoring on Intelligenza's
+    own credential store (Oracle Fusion, SAP HANA, GitHub/GitLab PATs,
+    Postgres DSNs, Railway tokens, ...), not just external audit targets."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, connector_type, display_name, credentials_rotated_at,
+                           EXTRACT(DAY FROM NOW() - credentials_rotated_at)::int AS credential_age_days
+                    FROM observability.poll_connectors
+                    WHERE active = TRUE
+                      AND credentials_rotated_at < NOW() - (%s || ' days')::interval
+                    ORDER BY credentials_rotated_at ASC
+                    """,
+                    (stale_days,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("credentials_rotated_at"):
+                        d["credentials_rotated_at"] = d["credentials_rotated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 def delete_poll_connector(connector_id: int) -> bool:
@@ -7662,6 +8391,882 @@ def record_poll_result(connector_id: int, status: str, error: Optional[str] = No
                     (status, error, connector_id),
                 )
     _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: SARIF/SAST evidence records (observability.evidence_records)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Fixed seed for the first record in the tamper-evidence chain — documented,
+# not secret (the chain's integrity comes from linking, not from this value
+# being unguessable). Arbitrary Postgres advisory-lock key for serializing
+# chain_hash computation across concurrent inserts (same session-scoped
+# xact-lock idiom Postgres recommends for "compute next value, insert" races).
+EVIDENCE_CHAIN_GENESIS_HASH = "0" * 64
+_EVIDENCE_CHAIN_LOCK_KEY = 918_273_645
+
+
+def _evidence_chain_hash(prev_hash: Optional[str], signature: str) -> str:
+    """Pure chain-link function, extracted for testability without a real
+    DB connection — same reasoning as pac_endpoints._parse_opa_bindings /
+    _aggregate_scorecard_rows. prev_hash=None (a fresh table, or the row
+    before this one was a pre-chain legacy row) is treated as genesis."""
+    import hashlib
+    return hashlib.sha256(((prev_hash or EVIDENCE_CHAIN_GENESIS_HASH) + signature).encode("utf-8")).hexdigest()
+
+
+def insert_evidence_record(
+    repository: str, commit_sha: Optional[str], pipeline_run_id: Optional[str],
+    source: str, rule_id: Optional[str], severity: str, cwe: Optional[str], cve: Optional[str],
+    file_path: Optional[str], line_number: Optional[int], line_snippet: Optional[str],
+    fingerprint: str, author: Optional[str], approver: Optional[str], scan_status: str,
+    raw_sarif: Optional[dict], record_json: dict, signature: str,
+) -> Optional[int]:
+    """Insert one immutable evidence row. Returns None (no row id) when
+    (fingerprint, commit_sha) already exists — the same finding re-ingested
+    from a repeated scan of the same commit, not a new occurrence.
+
+    Also computes and stores chain_hash = sha256(prev_chain_hash + signature)
+    under a Postgres advisory transaction lock, so two concurrent ingests
+    can't both read the same "previous" row and fork the tamper-evidence
+    chain — see verify_evidence_chain()."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_EVIDENCE_CHAIN_LOCK_KEY,))
+                cur.execute(
+                    "SELECT chain_hash FROM observability.evidence_records ORDER BY id DESC LIMIT 1"
+                )
+                prev_row = cur.fetchone()
+                prev_hash = prev_row[0] if prev_row else None
+                chain_hash = _evidence_chain_hash(prev_hash, signature)
+                cur.execute(
+                    """
+                    INSERT INTO observability.evidence_records (
+                        repository, commit_sha, pipeline_run_id, source, rule_id, severity,
+                        cwe, cve, file_path, line_number, line_snippet, fingerprint,
+                        author, approver, scan_status, raw_sarif, record_json, signature, chain_hash
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s
+                    )
+                    ON CONFLICT (fingerprint, commit_sha) DO NOTHING
+                    RETURNING id
+                    """,
+                    (repository, commit_sha, pipeline_run_id, source, rule_id, severity,
+                     cwe, cve, file_path, line_number, line_snippet, fingerprint,
+                     author, approver, scan_status,
+                     Json(raw_sarif) if raw_sarif is not None else None, Json(record_json), signature, chain_hash),
+                )
+                row = cur.fetchone()
+            return row[0] if row else None
+    return _run(_do)
+
+
+def list_evidence_records(repository: Optional[str] = None, severity: Optional[str] = None,
+                           commit_sha: Optional[str] = None, limit: int = 100) -> list:
+    """Filtered list, newest first — feeds the Evidence Inspector modal."""
+    def _do():
+        filters, params = [], []
+        if repository:
+            filters.append("repository = %s"); params.append(repository)
+        if severity:
+            filters.append("severity = %s"); params.append(severity.upper())
+        if commit_sha:
+            filters.append("commit_sha = %s"); params.append(commit_sha)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, ingested_at, repository, commit_sha, pipeline_run_id, source,
+                           rule_id, severity, cwe, cve, file_path, line_number, line_snippet,
+                           fingerprint, author, approver, scan_status
+                    FROM observability.evidence_records
+                    {where}
+                    ORDER BY ingested_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("ingested_at"):
+                        d["ingested_at"] = d["ingested_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_evidence_record(record_id: int) -> Optional[dict]:
+    """Full row including raw_sarif/record_json/signature — used by the
+    /evidence/records/{id}/verify endpoint to recompute the HMAC."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, ingested_at, repository, commit_sha, pipeline_run_id, source,
+                           rule_id, severity, cwe, cve, file_path, line_number, line_snippet,
+                           fingerprint, author, approver, scan_status, raw_sarif, record_json, signature
+                    FROM observability.evidence_records
+                    WHERE id = %s
+                    """,
+                    (record_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                if d.get("ingested_at"):
+                    d["ingested_at"] = d["ingested_at"].isoformat()
+                return d
+    return _run(_do)
+
+
+def verify_evidence_chain(limit: Optional[int] = None) -> dict:
+    """Walk observability.evidence_records in insertion order and recompute
+    each row's chain_hash from the previous chained row's chain_hash plus
+    this row's own signature. This is what actually proves trail
+    completeness: a per-record HMAC (checked by GET
+    /evidence/records/{id}/verify) proves a row's OWN content wasn't
+    altered, but says nothing about whether a row was deleted from between
+    its neighbors — only the chain linkage can catch that, since a deleted
+    row's absence breaks the next surviving row's expected chain_hash.
+
+    Only walks rows where chain_hash IS NOT NULL — rows inserted before this
+    column existed have nothing to link from and are deliberately excluded
+    rather than folded into a fabricated retroactive chain (see the column's
+    comment in the schema).
+
+    Returns {"valid", "checked", "break_at_id", "unchained_legacy_count"}.
+    valid=True with checked=0 means there is nothing yet to verify (a fresh
+    or all-legacy table), not a pass — callers should treat that distinctly
+    from a real, non-empty, unbroken chain.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.evidence_records WHERE chain_hash IS NULL"
+                )
+                unchained_legacy_count = cur.fetchone()[0]
+                q = ("SELECT id, signature, chain_hash FROM observability.evidence_records "
+                     "WHERE chain_hash IS NOT NULL ORDER BY id ASC")
+                if limit:
+                    cur.execute(q + " LIMIT %s", (limit,))
+                else:
+                    cur.execute(q)
+                rows = cur.fetchall()
+
+        prev_hash = None
+        checked = 0
+        for rid, signature, stored_chain_hash in rows:
+            expected = _evidence_chain_hash(prev_hash, signature)
+            checked += 1
+            if expected != stored_chain_hash:
+                return {"valid": False, "checked": checked, "break_at_id": rid,
+                        "unchained_legacy_count": unchained_legacy_count}
+            prev_hash = stored_chain_hash
+        return {"valid": True, "checked": checked, "break_at_id": None,
+                "unchained_legacy_count": unchained_legacy_count}
+    return _run(_do, default={"valid": False, "checked": 0, "break_at_id": None,
+                               "unchained_legacy_count": 0, "error": "query failed"})
+
+
+def get_scm_repository_state(resource: str) -> Optional[dict]:
+    """Last-known compliance dict for one repo (server_name/repo_ref@branch), or
+    None if this is the first audit ever recorded for it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT compliance FROM observability.scm_repository_state WHERE resource = %s",
+                    (resource,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def record_scm_audit_snapshot(resource: str, compliance: dict) -> list:
+    """Diff `compliance` against the last-recorded state for `resource` (via
+    scm_connectors.diff_compliance), persist the new state, and open/resolve
+    scm_drift_events rows for whatever changed. Returns the list of drift
+    events detected THIS call (empty on a repo's very first audit, and empty
+    when nothing changed since the last one).
+
+    Called after every audit — both the scheduled poll-connector path
+    (github_scm_tool.py/gitlab_scm_tool.py) and the on-demand "run now" path
+    (scm_audit_endpoints.py) — so a control that's flipped and flipped back
+    between two consecutive audits still leaves a resolved drift_events row,
+    which is the whole point (catching a short-lived "2am override")."""
+    import scm_connectors as _scm_connectors
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT compliance FROM observability.scm_repository_state WHERE resource = %s",
+                    (resource,),
+                )
+                row = cur.fetchone()
+                baseline = row[0] if row else None
+
+                cur.execute(
+                    """
+                    INSERT INTO observability.scm_repository_state (resource, compliance, updated_at)
+                    VALUES (%s, %s::jsonb, NOW())
+                    ON CONFLICT (resource) DO UPDATE SET compliance = EXCLUDED.compliance, updated_at = NOW()
+                    """,
+                    (resource, Json(compliance)),
+                )
+
+                if baseline is None:
+                    return []
+
+                diffs = _scm_connectors.diff_compliance(baseline, compliance)
+                detected: list[dict] = []
+                for d in diffs:
+                    if d["direction"] == "regressed":
+                        cur.execute(
+                            """
+                            INSERT INTO observability.scm_drift_events
+                                (resource, control_name, expected_state, actual_state, direction)
+                            VALUES (%s, %s, %s::jsonb, %s::jsonb, 'regressed')
+                            RETURNING id, detected_at
+                            """,
+                            (resource, d["control_name"], Json(d["expected_state"]), Json(d["actual_state"])),
+                        )
+                        new_id, detected_at = cur.fetchone()
+                        detected.append({**d, "id": new_id, "detected_at": detected_at.isoformat(), "resource": resource})
+                    else:  # improved -> auto-resolve the most recent open regression for this control
+                        cur.execute(
+                            """
+                            UPDATE observability.scm_drift_events
+                            SET resolved_at = NOW()
+                            WHERE id = (
+                                SELECT id FROM observability.scm_drift_events
+                                WHERE resource = %s AND control_name = %s AND resolved_at IS NULL
+                                ORDER BY detected_at DESC LIMIT 1
+                            )
+                            RETURNING id
+                            """,
+                            (resource, d["control_name"]),
+                        )
+                        resolved = cur.fetchone()
+                        if resolved:
+                            detected.append({**d, "id": resolved[0], "resource": resource})
+            return detected
+    return _run(_do) or []
+
+
+def list_scm_drift_events(resource: Optional[str] = None, open_only: bool = False, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if resource:
+            filters.append("resource = %s"); params.append(resource)
+        if open_only:
+            filters.append("resolved_at IS NULL")
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, resource, control_name, expected_state, actual_state, direction,
+                           detected_at, resolved_at
+                    FROM observability.scm_drift_events
+                    {where}
+                    ORDER BY detected_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("detected_at"):
+                        d["detected_at"] = d["detected_at"].isoformat()
+                    if d.get("resolved_at"):
+                        d["resolved_at"] = d["resolved_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: Risk Waiver & Exception Hub (observability.risk_waivers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_risk_waiver(vulnerability_hash: str, reason: str, compensating_control: Optional[str],
+                        approved_by: str, approval_task_id: Optional[int], expires_at) -> Optional[int]:
+    """Insert an ACTIVE waiver. Only one ACTIVE waiver per vulnerability_hash
+    can exist (idx_risk_waivers_active_hash) — approving a new one for an
+    already-waived hash should REVOKE the old one first (the approvals
+    endpoint checks this), not silently collide."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.risk_waivers
+                        (vulnerability_hash, reason, compensating_control, approved_by,
+                         approval_task_id, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (vulnerability_hash, reason, compensating_control, approved_by,
+                     approval_task_id, expires_at),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_risk_waivers(status: Optional[str] = None, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if status:
+            filters.append("status = %s"); params.append(status.upper())
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, vulnerability_hash, reason, compensating_control, approved_by,
+                           approval_task_id, expires_at, created_at, status
+                    FROM observability.risk_waivers
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("expires_at", "created_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_active_waiver(vulnerability_hash: str) -> Optional[dict]:
+    rows = [w for w in list_risk_waivers(status="ACTIVE", limit=500) if w["vulnerability_hash"] == vulnerability_hash]
+    return rows[0] if rows else None
+
+
+def revoke_risk_waiver(waiver_id: int) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE observability.risk_waivers SET status = 'REVOKED' WHERE id = %s AND status = 'ACTIVE'",
+                    (waiver_id,),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def expire_overdue_waivers() -> list:
+    """Flip ACTIVE -> EXPIRED for every waiver past its expires_at. Returns the
+    rows just expired so the caller (risk_waiver_sweep.py) can re-open/re-escalate
+    each one — 'automated expiry' means the control goes back to failing, not
+    that the waiver silently lapses with no one told."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.risk_waivers
+                    SET status = 'EXPIRED'
+                    WHERE status = 'ACTIVE' AND expires_at < NOW()
+                    RETURNING id, vulnerability_hash, reason, compensating_control, approved_by, expires_at
+                    """,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("expires_at"):
+                        d["expires_at"] = d["expires_at"].isoformat()
+                    rows.append(d)
+            return rows
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: pipeline provenance/attestation (observability.pipeline_attestations)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def insert_pipeline_attestation(
+    commit_sha: str, pipeline_run_id: Optional[str], oidc_actor: Optional[str],
+    oidc_claims: Optional[dict], slsa_provenance: Optional[dict], slsa_level: Optional[int],
+    env_vars_hash: Optional[str], runner_type: Optional[str], runner_id: Optional[str],
+    container_image_sha: Optional[str], cosign_bundle: Optional[dict], cosign_verified: Optional[str],
+    sbom_format: Optional[str], sbom: Optional[dict], license_risk: bool,
+) -> Optional[int]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.pipeline_attestations (
+                        commit_sha, pipeline_run_id, oidc_actor, oidc_claims, slsa_provenance,
+                        slsa_level, env_vars_hash, runner_type, runner_id, container_image_sha,
+                        cosign_bundle, cosign_verified, sbom_format, sbom, license_risk
+                    ) VALUES (
+                        %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s
+                    )
+                    RETURNING id
+                    """,
+                    (commit_sha, pipeline_run_id, oidc_actor,
+                     Json(oidc_claims) if oidc_claims is not None else None,
+                     Json(slsa_provenance) if slsa_provenance is not None else None,
+                     slsa_level, env_vars_hash, runner_type, runner_id, container_image_sha,
+                     Json(cosign_bundle) if cosign_bundle is not None else None,
+                     cosign_verified, sbom_format,
+                     Json(sbom) if sbom is not None else None, license_risk),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_pipeline_attestations(commit_sha: Optional[str] = None, limit: int = 50) -> list:
+    def _do():
+        filters, params = [], []
+        if commit_sha:
+            filters.append("commit_sha = %s"); params.append(commit_sha)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, commit_sha, pipeline_run_id, oidc_actor, slsa_level, env_vars_hash,
+                           runner_type, runner_id, container_image_sha, cosign_verified,
+                           sbom_format, license_risk, created_at
+                    FROM observability.pipeline_attestations
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("created_at"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_pipeline_attestation(attestation_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, commit_sha, pipeline_run_id, oidc_actor, oidc_claims, slsa_provenance,
+                           slsa_level, env_vars_hash, runner_type, runner_id, container_image_sha,
+                           cosign_bundle, cosign_verified, sbom_format, sbom, license_risk, created_at
+                    FROM observability.pipeline_attestations
+                    WHERE id = %s
+                    """,
+                    (attestation_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                if d.get("created_at"):
+                    d["created_at"] = d["created_at"].isoformat()
+                return d
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge (observability.itsm_tickets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ITSM_TICKET_COLUMNS = (
+    "id, finding_hash, external_system, external_ticket_key, connector_id, summary, "
+    "severity, status, sla_hours, sla_due_at, sla_breached_at, created_by, created_at, updated_at"
+)
+_ITSM_TIMESTAMP_FIELDS = ("sla_due_at", "sla_breached_at", "created_at", "updated_at")
+
+
+def _itsm_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _ITSM_TIMESTAMP_FIELDS:
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def create_itsm_ticket(finding_hash: str, external_system: str, external_ticket_key: str,
+                        connector_id: Optional[int], summary: Optional[str], severity: str,
+                        sla_hours: int, sla_due_at, created_by: str) -> Optional[int]:
+    """Insert a ticket tracking row. Only one open (non-closed/cancelled)
+    ticket per finding_hash can exist (idx_itsm_tickets_active_hash) — the
+    caller is expected to check get_open_ticket_for_finding first and reuse
+    it rather than opening a duplicate against the same finding."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.itsm_tickets
+                        (finding_hash, external_system, external_ticket_key, connector_id,
+                         summary, severity, sla_hours, sla_due_at, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (finding_hash, external_system, external_ticket_key, connector_id,
+                     summary, severity.upper(), sla_hours, sla_due_at, created_by),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_itsm_tickets(status: Optional[str] = None, external_system: Optional[str] = None,
+                       breached_only: bool = False, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if status:
+            filters.append("status = %s"); params.append(status.lower())
+        if external_system:
+            filters.append("external_system = %s"); params.append(external_system.lower())
+        if breached_only:
+            filters.append("sla_breached_at IS NOT NULL")
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_ITSM_TICKET_COLUMNS}
+                    FROM observability.itsm_tickets
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_itsm_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_itsm_ticket(ticket_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_ITSM_TICKET_COLUMNS} FROM observability.itsm_tickets WHERE id = %s",
+                    (ticket_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _itsm_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def get_open_ticket_for_finding(finding_hash: str) -> Optional[dict]:
+    rows = [t for t in list_itsm_tickets(limit=500) if t["finding_hash"] == finding_hash
+            and t["status"] not in ("closed", "cancelled")]
+    return rows[0] if rows else None
+
+
+def get_itsm_ticket_by_external_key(external_system: str, external_ticket_key: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_ITSM_TICKET_COLUMNS} FROM observability.itsm_tickets
+                    WHERE external_system = %s AND external_ticket_key = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (external_system.lower(), external_ticket_key),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _itsm_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def update_itsm_ticket_status(ticket_id: int, status: str) -> bool:
+    """Reconciles our record with the external system's current status —
+    called by itsm_jira_tool.py/itsm_servicenow_tool.py's poll adapter and by
+    the webhook path for real-time closure. Does not touch sla_breached_at —
+    that's itsm_sla_sweep.py's job, run independently of ticket status so a
+    late-arriving 'resolved' doesn't erase the fact that it missed its SLA.
+
+    Sets resolved_at exactly once, on the transition INTO resolved/closed —
+    the DORA MTTR metric (compute_dora_metrics) needs a real resolution
+    timestamp, not updated_at (which bumps on any field change). Re-closing
+    an already-resolved ticket (idempotent re-sync) leaves resolved_at as
+    the FIRST resolution time, not the latest sync — COALESCE keeps it from
+    being overwritten on every subsequent poll."""
+    status = status.lower()
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if status in ("resolved", "closed"):
+                    cur.execute(
+                        "UPDATE observability.itsm_tickets "
+                        "SET status = %s, updated_at = NOW(), resolved_at = COALESCE(resolved_at, NOW()) "
+                        "WHERE id = %s",
+                        (status, ticket_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE observability.itsm_tickets SET status = %s, updated_at = NOW(), resolved_at = NULL "
+                        "WHERE id = %s",
+                        (status, ticket_id),
+                    )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def expire_overdue_sla() -> list:
+    """Flag every open ticket past its sla_due_at with sla_breached_at, once.
+    Returns the rows just flagged so the caller (itsm_sla_sweep.py) can
+    re-escalate each one's underlying finding — mirrors expire_overdue_waivers'
+    'automated expiry re-opens the finding, doesn't silently lapse' contract."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.itsm_tickets
+                    SET sla_breached_at = NOW()
+                    WHERE sla_breached_at IS NULL AND status NOT IN ('closed', 'cancelled')
+                      AND sla_due_at < NOW()
+                    RETURNING id, finding_hash, external_system, external_ticket_key, severity, sla_due_at
+                    """,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("sla_due_at"):
+                        d["sla_due_at"] = d["sla_due_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def fetch_scm_audit_results(resource: Optional[str] = None, limit: int = 50) -> list:
+    """SCM branch-protection audit rows (scm_audit_endpoints.py's on-demand
+    'run now' path and real GitHub/GitLab webhooks both land here via
+    github_endpoints._write_adjudication). Without `resource`, returns the
+    single latest row per repo (server_name) — the Branch Integrity Matrix
+    feed; with it, full history for that one repo, newest first."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                params: list = ["GITHUB", "GITLAB", "BITBUCKET",
+                                 "branch_protection_rule", "protected_branch_audit", "branch_restriction_audit"]
+                if resource:
+                    query = """
+                        SELECT id, adjudicated_at, source_system, server_name, target_tool,
+                               uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                               policy_violations
+                        FROM observability.adjudicated_tool_calls
+                        WHERE source_system IN (%s, %s, %s) AND target_tool IN (%s, %s, %s)
+                          AND server_name = %s
+                        ORDER BY adjudicated_at DESC
+                        LIMIT %s
+                    """
+                    params += [resource, min(limit, 500)]
+                else:
+                    query = """
+                        SELECT DISTINCT ON (server_name)
+                               id, adjudicated_at, source_system, server_name, target_tool,
+                               uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                               policy_violations
+                        FROM observability.adjudicated_tool_calls
+                        WHERE source_system IN (%s, %s, %s) AND target_tool IN (%s, %s, %s)
+                        ORDER BY server_name, adjudicated_at DESC
+                        LIMIT %s
+                    """
+                    params += [min(limit, 500)]
+                cur.execute(query, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def fetch_pipeline_security_results(limit: int = 50) -> list:
+    """Pipeline-as-code (GitHub Actions workflow) audit rows — same shape and
+    idiom as fetch_scm_audit_results, filtered to the distinct
+    workflow_security_audit target_tool scm_audit_endpoints.py's on-demand
+    path and github_scm_tool.py's scheduled poll both write. Single-value
+    filter (not IN, unlike branch protection) since this check is GitHub-only."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (server_name)
+                           id, adjudicated_at, source_system, server_name, target_tool,
+                           uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                           policy_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE source_system = 'GITHUB' AND target_tool = 'workflow_security_audit'
+                    ORDER BY server_name, adjudicated_at DESC
+                    LIMIT %s
+                    """,
+                    (min(limit, 500),),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def fetch_deploy_gate_results(limit: int = 50) -> list:
+    """Deploy-gate-bypass audit rows (Technology Risk Pipeline, POL-GH-005) —
+    same shape/idiom as fetch_pipeline_security_results. Every row here
+    represents a real check outcome (approved or not); unlike secret-scan,
+    a clean/approved deploy is still adjudicated and shows up here, so this
+    is a status feed, not a violations-only one."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (server_name)
+                           id, adjudicated_at, source_system, server_name, target_tool,
+                           uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                           policy_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE source_system = 'GITHUB' AND target_tool = 'deploy_gate_audit'
+                    ORDER BY server_name, adjudicated_at DESC
+                    LIMIT %s
+                    """,
+                    (min(limit, 500),),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def fetch_secret_scan_results(limit: int = 50) -> list:
+    """Real gitleaks scan rows — same shape/idiom as
+    fetch_pipeline_security_results. A clean scan is never adjudicated (see
+    scm_audit_endpoints._adjudicate_secret_scan), so every row returned here
+    represents an actual finding, never a false 'compliant' status."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (server_name)
+                           id, adjudicated_at, source_system, server_name, target_tool,
+                           uro_id, risk_score, risk_tier, final_verdict, requires_human_review,
+                           policy_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE source_system = 'GITHUB' AND target_tool = 'gitleaks_scan'
+                    ORDER BY server_name, adjudicated_at DESC
+                    LIMIT %s
+                    """,
+                    (min(limit, 500),),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("adjudicated_at"):
+                        d["adjudicated_at"] = d["adjudicated_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def fetch_infra_monitoring_results(resource: Optional[str] = None, limit: int = 50) -> list:
+    """Postgres CIS + Railway platform/deployment drift audit rows
+    (postgres_cis_tool.py / railway_iaas_tool.py, via connector_poller.py's
+    scheduled ticks and infrastructure_monitoring_endpoints.py's on-demand
+    'run now' — both write through the same mcp_governance._ingest_system_event
+    path into observability.system_telemetry, unlike the SCM checks above
+    which go through the UBO adjudication pipeline). Unlike SCM/pipeline
+    security, event_type='infrastructure_finding' is written on EVERY poll
+    tick regardless of pass/fail (see postgres_cis_tool.pull_events), so this
+    is a full status matrix, not violations-only. Grouped by (server_name,
+    resource) rather than server_name alone — a single Railway connector
+    covers many services, one event per service instance."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                params: list = ["postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat", "infrastructure_finding"]
+                if resource:
+                    query = """
+                        SELECT id, created_at, system_type, server_name, resource,
+                               actor, action, severity, risk_flags, raw_payload
+                        FROM observability.system_telemetry
+                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
+                          AND resource = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """
+                    params += [resource, min(limit, 500)]
+                else:
+                    query = """
+                        SELECT DISTINCT ON (server_name, resource)
+                               id, created_at, system_type, server_name, resource,
+                               actor, action, severity, risk_flags, raw_payload
+                        FROM observability.system_telemetry
+                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
+                        ORDER BY server_name, resource, created_at DESC
+                        LIMIT %s
+                    """
+                    params += [min(limit, 500)]
+                cur.execute(query, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("created_at"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
 
 
 def get_observability_24h_counts() -> dict:

@@ -54,7 +54,11 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `OKTA_CLIENT_ID` + `OKTA_CLIENT_SECRET` + `OKTA_DOMAIN` | Okta SSO | All three required to enable Okta login. |
 | `AUTH_SESSION_TTL_HOURS` | Authentication | JWT session lifetime (default `24`). |
 | `AUTH_COOKIE_SECURE` | Authentication | Set to `false` only for HTTP-only local dev (default `true`). |
-| `MCP_READ_ONLY` | PaC / CaC MCP servers | Set to `true` to block all write operations from the PAC and CaC MCP servers. |
+| `MCP_READ_ONLY` | PaC / CaC / DevOps Monitoring / Infrastructure Monitoring MCP servers | Set to `true` to block all write operations from these MCP servers. |
+| `OPA_BINARY` | Policy-as-Code (authoritative evaluation) | Path to a real OPA binary. Falls back to `opa` on PATH, then to a labelled Python heuristic simulation if neither is found. The Docker image (`project/Dockerfile`) always installs a real OPA binary — only local dev without OPA on PATH runs the heuristic. |
+| `GITHUB_WEBHOOK_SECRET` | GitHub webhook / DevOps Monitoring | HMAC-SHA256 secret for verifying `POST /github/webhook` deliveries. Skipped (with a warning) if unset — always set it in production. |
+| `CONNECTOR_ENCRYPTION_KEY` | Poll-based connectors (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS) | Fernet key encrypting connector credentials at rest (`observability.poll_connectors.credentials_enc`). Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Connector CRUD returns HTTP 503 without it. |
+| `EVIDENCE_SIGNING_KEY` | DevOps Monitoring (SARIF evidence) | HMAC-SHA256 key signing `observability.evidence_records` rows so `/evidence/records/{id}/verify` can prove they haven't been tampered with. Unset falls back to signing with an empty key (logged as insecure — set explicitly in production). |
 | `MCP_ALERT_WEBHOOK_URL` | Dendrai UBO Governance Brain | Slack-compatible webhook URL. When set, ESCALATE verdicts POST a JSON alert payload. |
 | `MCP_GOV_POLL_INTERVAL_S` | Dendrai UBO Governance Brain | Seconds between governance poll cycles (default `30`). |
 | `MCP_GOV_BATCH_SIZE` | Dendrai UBO Governance Brain | Telemetry rows processed per poll cycle (default `20`). |
@@ -266,7 +270,7 @@ Or for Claude Desktop, add the same block to `~/.claude/claude_desktop_config.js
 
 ### Policy-as-Code (`pac_endpoints.py` + `pac_mcp_server.py`)
 
-Manages Rego policy modules for five Oracle Fusion ERP processes (ITGC, O2C, P2P, R2S, R2R). Each process ships with a production-grade built-in Rego default; saved versions are stored immutably with version history and multi-approver sign-offs.
+Manages Rego policy modules for seven processes: the five original Oracle Fusion ERP processes (ITGC, O2C, P2P, R2S, R2R) plus `devops_monitoring` and `infrastructure_monitoring`. Each process ships with a production-grade built-in Rego default; saved versions are stored immutably with version history and multi-approver sign-offs.
 
 **REST endpoints (prefix `/api/pac`):**
 
@@ -276,14 +280,35 @@ Manages Rego policy modules for five Oracle Fusion ERP processes (ITGC, O2C, P2P
 | `GET` | `/pac/modules/{process}` | Full Rego + approvals for a process |
 | `PUT` | `/pac/modules/{process}` | Save a new versioned module |
 | `GET` | `/pac/modules/{process}/history` | Version history (last 20) |
-| `POST` | `/pac/modules/{process}/approve` | Add approver sign-off |
+| `POST` | `/pac/modules/{process}/approve` | Add approver sign-off; also runs the negative-testing gate against the exact version approved (advisory) |
 | `GET` | `/pac/hooks` | All external hook configs |
 | `PUT` | `/pac/hooks/{hook_type}` | Save/update GitHub or Confluence hook |
 | `POST` | `/pac/cac/generate` | Generate Controls-as-Code Rego from a controls list |
 | `GET` | `/pac/cac/latest` | Most recent CaC artifact |
 | `GET` | `/pac/defaults/{process}` | Built-in default Rego (no DB) |
+| `POST` | `/pac/negative-tests/run/{process}` | Schema-contract check + must-fire/must-not-fire fixture corpus |
+| `GET` | `/pac/negative-tests/history/{process}` | Past negative-control test runs (audit evidence) |
+| `GET` | `/pac/assurance` | Which policy-enforced controls are proven working vs. unverified |
+| `GET` | `/pac/compliance-scorecard` | Executive Compliance Scorecard — SOC 2/NIST/ISO/COSO framework coverage, mapped vs. verified |
+| `GET` | `/pac/approval-drift` | Compares what's actually evaluating (latest saved module) against the latest module that ever received a real approval sign-off, per process |
 
-**MCP server:** `pac_mcp_server.py` — 10 tools. See `mcp.md` → `policy-as-code`.
+**MCP server:** `pac_mcp_server.py` — 16 tools. See `mcp.md` → `policy-as-code`.
+
+#### Negative testing (`pac_contracts.py` + `pac_negative_tests.py` + `pac_assurance.py` + `pac_negative_sweep.py`)
+
+A Rego rule that references a field or event-type literal the real adjudication pipeline never produces (`mcp_governance._evaluate_pac_policy` — see "Dendrai UBO Governance Brain" below) evaluates without error and silently never fires — indistinguishable from a policy that found nothing wrong. Two independent checks close that gap, plus assurance metadata that tracks which controls are actually proven working:
+
+- **Schema-contract check** (`pac_contracts.check_module_contract`) — static analysis: every `input.event.<field>` reference must be in the process's declared `PROCESS_CONTRACTS["allowed_fields"]`, every `input.event.type == "..."` literal must be a real `EventType` that actually routes to that process, and any top-level `input.<root>.*` reference other than `event` is flagged (the pipeline only ever constructs `{"event": {...}}`). This is how the original five ERP process modules were found to be dead-by-construction — real-sounding SAP/ERP policy language with no producer ever feeding `input.journal.*`/`input.invoice.*`/etc.
+- **Must-fire/must-not-fire corpus** (`pac_negative_tests.run_corpus`) — curated fixtures per process, run through the real `evaluate_policy_event` (authoritative OPA when available, labelled heuristic fallback otherwise). Only `devops_monitoring` and `infrastructure_monitoring` have a registered corpus today.
+- **Assurance metadata + periodic sweep** (`pac_assurance.evaluate_and_record`, `pac_negative_sweep.py`'s hourly background task) — persists every test run to `observability.pac_test_runs` and updates `controls_catalog.last_fired_at`/`last_verified_at`/`last_test_passed`, so `db.list_unverified_controls()` answers "which controls does nothing currently prove are working," not just "how many controls exist." The sweep also detects regressions — a process that passed last sweep and fails this one, even if its Rego text didn't change (a Silver-layer conformer edit can break a contract just as easily as editing the policy itself).
+
+#### Executive Compliance Scorecard (`framework_mappings.py`)
+
+Curated (never auto-generated — same guardrail as the retired Framework Sync pattern, commit `2b98f45`) SOC 2 / NIST SP 800-53 / ISO 27001 / COSO ERM crosswalk for policy-enforced controls. `GET /pac/compliance-scorecard?framework=soc2|nist_800_53|iso_27001|coso` reports, per criterion, how many controls are *mapped* to it vs. how many are actually *verified* (per the assurance metadata above) — deliberately two separate numbers, since a criterion can be 100% mapped and 0% verified. Edit `framework_mappings.FRAMEWORK_MAPPINGS` directly to correct or extend a mapping; `test_compliance_scorecard.py` asserts every `DEVOPS-*`/`INFRA-*` control_id the Rego defaults actually define has a mapping, so new rules can't silently go unmapped.
+
+#### Approval/Evaluation Drift Detection (`pac_approval_drift.py`)
+
+A real governance gap found while building the negative-testing sweep: `db.get_latest_pac_module(process)` (what `_evaluate_pac_policy` actually evaluates) returns the most recently **saved** module — `pac_policy_modules` has no status/approved column, so saving a draft via `PUT /pac/modules/{process}` makes it live in production before any approval; the negative-testing gate on `POST /modules/{process}/approve` is advisory and runs strictly afterward. `check_process_drift(process)` compares the content hash of what's live against the content hash of the latest module version that ever received a real approval — a mismatch means an unapproved or since-edited module is currently adjudicating real events. Run via `GET /pac/approval-drift`, the `pac_check_approval_drift` MCP tool, or automatically as part of the hourly negative-testing sweep (logged as a warning); shown as a red banner on the Policy-as-Code screen when any process has drifted.
 
 ---
 
@@ -294,6 +319,63 @@ Generates and manages Rego Controls-as-Code artifacts. Synthesises testable cont
 **MCP server:** `cac_mcp_server.py` — 8 tools. See `mcp.md` → `controls-as-code`.
 
 CaC artifacts are stored in the `controls_as_code_artifacts` table and indexed via vector embeddings for semantic search.
+
+---
+
+### DevOps Monitoring (`scm_connectors.py` + `scm_audit_endpoints.py` + `evidence_endpoints.py` + `devops_monitoring_mcp_server.py`)
+
+SCM branch-protection auditing (GitHub/GitLab), GitHub Actions pipeline-as-code security auditing, real `gitleaks` secret scanning, SARIF/SAST evidence ingestion (with a tamper-evidence hash chain), drift detection, the Risk Waiver & Exception Hub, pipeline provenance/attestation, and DORA-style change-management metrics — all riding the same Bronze→Silver→Gold→Council pipeline every other source uses, not a parallel system. See [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for the full architecture.
+
+**Repos are registered as poll connectors** on the Dendrai UBO Configuration screen (`connector_type` `github_scm`/`gitlab_scm`), the same way Oracle Fusion/SAP HANA/etc. are — no bespoke registration form. Pipeline-security auditing and secret scanning both reuse the same registered repo+token rather than requiring a second registration.
+
+**REST endpoints (prefix `/api/scm-audit`):** `POST/GET/DELETE /repositories`, `POST /repositories/{id}/run`, `POST /repositories/{id}/run-pipeline-security`, `POST /repositories/{id}/run-secret-scan`, `POST /run-all`, `GET /results`, `GET /results/history`, `GET /pipeline-security/results`, `GET /secret-scan/results`, `GET /drift`, `GET /waivers`, `POST /waivers/{id}/revoke`
+
+**REST endpoints (prefix `/api/evidence`):** `POST /webhook` (SARIF ingestion, Bearer-key auth), `GET /records`, `GET /records/{id}/verify`, `GET /chain/verify` (tamper-evidence hash-chain verification), `GET /dora-metrics`, `POST /attestation`, `GET /attestations`, `GET /attestations/{id}`
+
+**Any SARIF-producing scanner works out of the box** — `source` is a free-text field, no per-tool code required. Verified against real Trivy output (container/dependency CVE scanning): correctly extracts CVSS-based severity and CVE IDs, though Trivy's SARIF never tags a CWE (CVE/GHSA-centric, unlike CodeQL) — see [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for a copy-pasteable GitHub Actions recipe.
+
+**Pipeline-as-code security** (`pipeline_security_connectors.py`): static analysis of every `.github/workflows/*.yml` — write-all `GITHUB_TOKEN` permissions, unpinned third-party actions, and `pull_request_target` combined with an untrusted PR-head checkout (CRITICAL — the fork-PR code-execution pattern). No runtime execution.
+
+**Real secret scanning** (`secret_scanner_connectors.py`): a real `gitleaks` binary scans the repo's full git history — the producer for `SECRET_DETECTED` outside a paid GitHub Advanced Security webhook. Secret values are never persisted, logged, or returned; a clean scan is never adjudicated as a false "compliant". Requires `gitleaks` + `git` in the runtime image (`project/Dockerfile`).
+
+**Tamper-evidence hash chain**: every `evidence_records` insert computes `chain_hash = sha256(prev.chain_hash + this.signature)` under an advisory lock — proves no row was deleted/reordered, which the per-record HMAC alone can't.
+
+**MCP server:** `devops_monitoring_mcp_server.py` — 15 tools (SCM audit, pipeline security, secret scan, drift, evidence, chain verification, waivers, attestations, DORA metrics, ITSM). See `mcp.md` → `devops-monitoring`.
+
+**Background sweeps:** `risk_waiver_sweep.py` (hourly — expires overdue waivers, re-opens the underlying finding), `itsm_sla_sweep.py` (hourly — flags overdue ITSM tickets, re-escalates the finding).
+
+---
+
+### ITSM/Jira-ServiceNow SLA Bridge (`itsm_connectors.py` + `itsm_endpoints.py` + `itsm_sla_sweep.py`)
+
+Opens a real Jira/ServiceNow ticket for a DevOps Monitoring finding and tracks its remediation SLA independent of the external system. SLA hours are severity-based: CRITICAL 48h, HIGH 168h (7d), MEDIUM 240h (10d), LOW 720h (30d).
+
+**REST endpoints (prefix `/api/itsm`):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/itsm/tickets` | Open a real ticket via a registered `itsm_jira`/`itsm_servicenow` connector |
+| `GET` | `/itsm/tickets` | Filtered list (status, external_system, breached_only) |
+| `GET` | `/itsm/tickets/{id}` | Single ticket |
+| `POST` | `/itsm/tickets/{id}/sync` | Resync one ticket's status from the external system now |
+| `POST` | `/itsm/webhook` | Real-time status push (Jira Automation / ServiceNow Business Rule), Bearer-key auth |
+| `GET` | `/itsm/sla-summary` | Open/breached/at-risk-24h counts |
+
+Status reconciliation (`itsm_jira_tool.py`/`itsm_servicenow_tool.py` poll adapters) and SLA breach detection (`itsm_sla_sweep.py`) are deliberately separate concerns — a ticket that's never synced still gets its SLA breach detected on schedule.
+
+---
+
+### Infrastructure Monitoring (`iaas_connectors.py` + `postgres_cis_tool.py` + `railway_iaas_tool.py` + `infrastructure_monitoring_mcp_server.py`)
+
+Continuous IaaS/OS/DB configuration audit. Railway (and most PaaS hosting) is immutable-container, no-SSH infrastructure — classic OS-level CIS benchmarks aren't auditable or applicable, so this covers what actually is: SQL-queryable Postgres configuration, and the Railway platform/deployment metadata exposed via its GraphQL API.
+
+- **Postgres CIS-style hardening** (`postgres_cis_tool.py`, connector_type `postgres_cis`): SSL enforcement, password encryption scheme, superuser count, live unencrypted connections, connection logging. Read-only — a `pg_read_all_settings`/`pg_monitor` role is sufficient, superuser is not required.
+- **Railway platform/deployment drift** (`railway_iaas_tool.py`, connector_type `railway_iaas`): unexpected public domain exposure (against a connector-configured allow-list) and deployment image digest with no matching pipeline attestation (`observability.pipeline_attestations.container_image_sha` — reports "unknown," never a fabricated finding, until at least one real attestation exists to compare against).
+- **Connector credential rotation hygiene** (`connector_hygiene.py` + `connector_hygiene_sweep.py`, daily): the one check with no external system to poll — the system being checked is Intelligenza itself. Flags any active `poll_connectors` row whose credential (`credentials_rotated_at`, bumped only on an actual credential change, never on any other field edit) exceeds the staleness threshold (default 90 days).
+
+No dedicated findings viewer — findings ride the generic `system_telemetry` → adjudication path and surface in Continuous Monitoring / Controls Monitor automatically.
+
+**MCP server:** `infrastructure_monitoring_mcp_server.py` — 4 tools. See `mcp.md` → `infrastructure-monitoring`.
 
 ---
 
@@ -473,6 +555,7 @@ Set `DATABASE_URL` to enable a PostgreSQL-backed schema covering:
 - AI analysis outputs and token usage
 - **Policy-as-Code modules** (`pac_policy_modules`, `pac_policy_approvals`, `pac_external_hooks`)
 - **Controls-as-Code artifacts** (`controls_as_code_artifacts`)
+- **Controls catalog + assurance metadata** (`controls_catalog` — `last_fired_at`/`last_verified_at`/`last_test_passed` per control_id)
 - **Authentication** (`auth.users`, `auth.password_history`, `auth.sso_identities`, `auth.sessions`)
 - **MCP observability** — `observability` schema:
   - `mcp_telemetry` — every JSON-RPC call logged by the proxy
@@ -481,6 +564,13 @@ Set `DATABASE_URL` to enable a PostgreSQL-backed schema covering:
   - `tool_call_suppressions` — suppression allowlist rules
   - `tool_latency_summary` — materialized view: P50/P95/P99 per tool
   - `flagged_calls` — view: telemetry rows with at least one risk flag
+  - `poll_connectors` — Fernet-encrypted credentials for every scheduled poll-based connector (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS)
+  - `evidence_records` — immutable, HMAC-signed SARIF findings log
+  - `scm_repository_state` / `scm_drift_events` — last-known-good branch-protection snapshot + drift/time-series log ("2am override" detection)
+  - `risk_waivers` — time-boxed, hash-keyed HITL-approved exceptions, auto-expired hourly
+  - `pipeline_attestations` — OIDC/SLSA/env-hash/Cosign/SBOM pipeline provenance
+  - `itsm_tickets` — Jira/ServiceNow tickets tracking findings, with SLA due/breach timestamps
+  - `pac_test_runs` — negative-control test run history (schema-contract + corpus results), audit evidence
 
 Without `DATABASE_URL` the pipeline runs in stateless mode — all data is returned in the API response but nothing is persisted.
 

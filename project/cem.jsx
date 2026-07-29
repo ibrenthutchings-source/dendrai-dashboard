@@ -589,7 +589,7 @@ function UBOGovPanel({ initialTab } = {}) {
       const next = [...prev];
       [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
       if (paneOrderHydratedRef.current) {
-        fetch("/users/me/preferences", {
+        fetch("/auth/users/me/preferences", {
           method: "PUT", credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ uboPaneOrder: next }),
