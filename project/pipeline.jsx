@@ -31,7 +31,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
                     enabledFeedIds = [], onRssSignalsReady = null,
                     flowMeta = null, onOpenMainFlow = null,
                     risks = [], companyName = "", peerData = null,
-                    peerCompareTicker = "", onSetPeerCompareTicker = null, peerCompareData = null,
+                    peerCompareData = null,
                     peerCompareLoading = false, peerCompareError = null,
                     onLoadPeerCompare = null, onClearPeerCompare = null,
                     ratios = {}, events = [] }) {
@@ -112,7 +112,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               return (
                 <PipelinePanel label="Forecasts">
                   <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
-                    peerCompareTicker={peerCompareTicker} onSetPeerCompareTicker={onSetPeerCompareTicker}
+                    peerData={peerData}
                     peerCompareData={peerCompareData} peerCompareLoading={peerCompareLoading}
                     peerCompareError={peerCompareError} onLoadPeerCompare={onLoadPeerCompare} onClearPeerCompare={onClearPeerCompare}/>
                   {GeoSegKPI && (
@@ -302,11 +302,16 @@ function _peerSeriesFor(peerCompareData, key) {
 
 // One control, reused everywhere a peer can be picked — see the Pipeline-level
 // comment above s1Extra for why this is a single shared piece of state rather
-// than a picker per chart.
-function PeerComparePicker({ peerCompareTicker = "", onSetPeerCompareTicker = null, peerCompareData = null,
+// than a picker per chart. Sourced from peerData.peers — the same 10-K named-
+// competitor / SIC-fallback list (/edgar/peers) already used for the M-Score/
+// Z-Score gauge peer-rank — rather than free-text ticker entry, so the
+// comparison is always a company the filer itself names as a competitor (or,
+// failing that, a same-SIC peer), not an arbitrary unrelated ticker.
+function PeerComparePicker({ peerData = null, peerCompareData = null,
                               peerCompareLoading = false, peerCompareError = null,
                               onLoadPeerCompare = null, onClearPeerCompare = null }) {
   if (!onLoadPeerCompare) return null;
+  const peers = (peerData?.peers || []).filter(p => p.ticker);
   return (
     <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6}}>
       <Icon name="user" size={13}/>
@@ -319,23 +324,26 @@ function PeerComparePicker({ peerCompareTicker = "", onSetPeerCompareTicker = nu
             <Icon name="x" size={10}/>
           </button>
         </span>
+      ) : peers.length > 0 ? (
+        <select
+          value=""
+          disabled={peerCompareLoading}
+          onChange={e => { if (e.target.value) onLoadPeerCompare(e.target.value); }}
+          style={{fontSize:11, padding:"4px 8px", border:"1px solid var(--line)", borderRadius:6, fontFamily:"Geist Mono, monospace", background:"var(--surface)", color:"var(--ink)", maxWidth:280}}
+        >
+          <option value="">{peerCompareLoading ? "Loading…" : `Select a 10-K peer (${peers.length})…`}</option>
+          {peers.map(p => (
+            <option key={p.ticker} value={p.ticker}>{p.ticker} — {p.company_name}</option>
+          ))}
+        </select>
       ) : (
-        <>
-          <input
-            value={peerCompareTicker}
-            onChange={e => onSetPeerCompareTicker && onSetPeerCompareTicker(e.target.value.toUpperCase())}
-            onKeyDown={e => { if (e.key === "Enter" && peerCompareTicker.trim()) onLoadPeerCompare(peerCompareTicker); }}
-            placeholder="Ticker (e.g. MSFT)" disabled={peerCompareLoading}
-            style={{fontSize:11, padding:"4px 8px", border:"1px solid var(--line)", borderRadius:6, width:120, fontFamily:"Geist Mono, monospace", background:"var(--surface)", color:"var(--ink)"}}
-          />
-          <button className="btn btn-sm" disabled={peerCompareLoading || !peerCompareTicker.trim()} onClick={() => onLoadPeerCompare(peerCompareTicker)}>
-            {peerCompareLoading ? <><span className="spin"/> Loading…</> : "Add"}
-          </button>
-        </>
+        <span style={{fontSize:10.5, color:"var(--ink-3)"}}>
+          {peerData ? "No 10-K competitors identified for this company." : "Loading 10-K peer list…"}
+        </span>
       )}
       {peerCompareError && <span style={{fontSize:10.5, color:"var(--red-ink)"}}>{peerCompareError}</span>}
-      {!peerCompareData && !peerCompareError && (
-        <span style={{fontSize:10, color:"var(--ink-3)"}}>Overlays as a reference line on every KPI chart and gauge on this screen.</span>
+      {peers.length > 0 && !peerCompareData && !peerCompareError && (
+        <span style={{fontSize:10, color:"var(--ink-3)"}}>{peerData?.peer_source === "10-K named competitors" ? "From the company's own 10-K" : "Same-SIC peers"} — overlays on every chart and gauge below.</span>
       )}
     </div>
   );
@@ -353,7 +361,7 @@ function FCWithMetrics({ history, forecast, unit, color, decimals, peer }) {
   return <ComparableChart history={history} forecast={forecast} unit={unit} color={color} decimals={decimals} chartMetrics={metrics} peer={peer}/>;
 }
 
-function ForecastChartsInline({ forecasts, livefacts, peerCompareTicker, onSetPeerCompareTicker, peerCompareData,
+function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareData,
                                  peerCompareLoading, peerCompareError, onLoadPeerCompare, onClearPeerCompare }) {
   const [tick, setTick] = React.useState(0);
   React.useEffect(() => {
@@ -366,7 +374,7 @@ function ForecastChartsInline({ forecasts, livefacts, peerCompareTicker, onSetPe
   const FC = window.ForecastChart;
   const picker = (
     <PeerComparePicker
-      peerCompareTicker={peerCompareTicker} onSetPeerCompareTicker={onSetPeerCompareTicker}
+      peerData={peerData}
       peerCompareData={peerCompareData} peerCompareLoading={peerCompareLoading}
       peerCompareError={peerCompareError} onLoadPeerCompare={onLoadPeerCompare} onClearPeerCompare={onClearPeerCompare}
     />
