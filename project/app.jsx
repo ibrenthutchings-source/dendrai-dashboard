@@ -341,11 +341,10 @@ function App() {
   const [govLastRefresh, setGovLastRefresh] = useState(null);
   const [activeGovTab, setActiveGovTab] = useState("overview");
 
-  // ---- Pipeline screen: user-chosen peer overlay for the KPI charts + gauges ----
-  // Separate from govPeerData above, which is auto-discovered SIC/10-K peers
-  // used only for the M-Score/Z-Score gauge peer-rank. This is a single,
-  // explicitly-picked comparison company, overlaid on every forecast chart.
-  const [peerCompareTicker, setPeerCompareTicker] = useState("");
+  // ---- Pipeline screen: peer overlay for the KPI charts + gauges ----
+  // The pick list itself is govPeerData.peers (10-K named competitors, falling
+  // back to same-SIC peers — see PeerComparePicker in pipeline.jsx); this state
+  // is just which one is currently selected and its fetched comparison data.
   const [peerCompareData, setPeerCompareData] = useState(null);
   const [peerCompareLoading, setPeerCompareLoading] = useState(false);
   const [peerCompareError, setPeerCompareError] = useState(null);
@@ -373,7 +372,6 @@ function App() {
   }, []);
 
   const clearPeerCompare = useCallback(() => {
-    setPeerCompareTicker("");
     setPeerCompareData(null);
     setPeerCompareError(null);
   }, []);
@@ -2219,8 +2217,6 @@ function App() {
                 risks={output.s2?.risks || (hasRun ? profile?.risks : null) || []}
                 companyName={hasRun ? (profile?.entity?.name || "") : ""}
                 peerData={govPeerData}
-                peerCompareTicker={peerCompareTicker}
-                onSetPeerCompareTicker={setPeerCompareTicker}
                 peerCompareData={peerCompareData}
                 peerCompareLoading={peerCompareLoading}
                 peerCompareError={peerCompareError}
