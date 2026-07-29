@@ -2219,6 +2219,13 @@ function App() {
                 risks={output.s2?.risks || (hasRun ? profile?.risks : null) || []}
                 companyName={hasRun ? (profile?.entity?.name || "") : ""}
                 peerData={govPeerData}
+                peerCompareTicker={peerCompareTicker}
+                onSetPeerCompareTicker={setPeerCompareTicker}
+                peerCompareData={peerCompareData}
+                peerCompareLoading={peerCompareLoading}
+                peerCompareError={peerCompareError}
+                onLoadPeerCompare={loadPeerCompare}
+                onClearPeerCompare={clearPeerCompare}
                 ratios={hasRun ? (profile?.ratios || {}) : {}}
                 events={events} />
             )}
@@ -2641,6 +2648,63 @@ function WhatChangedDigest({ ticker, hasRun }) {
       {hasMaterial && <div className="wcd-rows">{changes.map(changeLine)}</div>}
     </div>
   );
+}
+
+// ---- Peer comparison chart series (Pipeline screen) ----
+// Builds the same {history, forecast} shape used for the subject company's
+// KPI charts (see the MCP-mode branch of _runLoopBody above), from a peer
+// ticker's own /predictive/full-analysis result — so MultiSeriesForecastChart
+// can overlay it directly. Deliberately mirrors rather than shares that
+// logic: the subject-company path also drives Monte Carlo bands, gate state,
+// and DB persistence, none of which a side comparison should touch.
+function _peerForecastBundle(mcpResult) {
+  const { fcLabels } = RISK_ENGINE.quarterBoundaries();
+  const toQL = (d) => { if (!d) return null; const [y, m] = d.slice(0, 7).split('-').map(Number); return `Q${Math.ceil(m / 3)}-${String(y).slice(-2)}`; };
+  const mapQ = (series, scale, digits) =>
+    (series || []).slice(-20).map(p => ({ q: toQL(p.quarter_end) || p.quarter_end, v: +(p.value / scale).toFixed(digits) }));
+  const linFc = (hist, digits) => {
+    if (!hist?.length) return [];
+    const last = hist[hist.length - 1].v;
+    const step = hist.length >= 2 ? (last - hist[hist.length - 2].v) * 0.5 : 0;
+    return fcLabels.map((q, i) => ({ q, base: +(last + step * (i + 1)).toFixed(digits) }));
+  };
+  const ensembleFc = (fc, digits, scale = 1) =>
+    fc?.forecasts?.length
+      ? fc.forecasts.map((f, i) => ({ q: fcLabels[i] || `H${i + 1}`, base: +(f.point / scale).toFixed(digits) }))
+      : null;
+
+  const bundle = {};
+  const fc = mcpResult.forecast;
+  if (fc?.history?.length) {
+    const h = mapQ(fc.history, 1e6, 0);
+    if (h.length >= 4) bundle.revenue = { history: h, forecast: ensembleFc(fc, 0, 1e6) ?? linFc(h, 0) };
+  }
+  if (fc?.margin_history?.length) {
+    const h = mapQ(fc.margin_history, 1, 1);
+    if (h.length >= 4) bundle.margin = { history: h, forecast: ensembleFc(fc.margin_forecast, 1) ?? linFc(h, 1) };
+  }
+  const as = mcpResult.analyst_series;
+  if (as?.eps?.length >= 4) {
+    const h = mapQ(as.eps, 1, 2);
+    bundle.eps = { history: h, forecast: ensembleFc(as.eps_forecast, 2) ?? linFc(h, 2) };
+  }
+  if (as?.op_margin?.length >= 4) {
+    const h = mapQ(as.op_margin, 1, 1);
+    bundle.opMargin = { history: h, forecast: ensembleFc(as.op_margin_forecast, 1) ?? linFc(h, 1) };
+  }
+  if (as?.net_income?.length >= 4) {
+    const h = mapQ(as.net_income, 1e6, 0);
+    bundle.netIncome = { history: h, forecast: linFc(h, 0) };
+  }
+  if (as?.ebitda?.length >= 4) {
+    const h = mapQ(as.ebitda, 1e6, 0);
+    bundle.ebitda = { history: h, forecast: linFc(h, 0) };
+  }
+  if (as?.fcf?.length >= 4) {
+    const h = mapQ(as.fcf, 1e6, 0);
+    bundle.fcf = { history: h, forecast: linFc(h, 0) };
+  }
+  return bundle;
 }
 
 // ---- Next Best Action rail (quasi-facilitated navigation) ----
