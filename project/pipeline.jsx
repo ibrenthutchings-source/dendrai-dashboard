@@ -408,7 +408,6 @@ function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
   const mgDelta  = lastMg != null && fcMg != null ? (fcMg - lastMg) * 100 : null;
   return (
     <div style={{display:"flex", flexDirection:"column", gap:18}}>
-      {picker}
       {rev?.history?.length > 0 && (
         <div>
           <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
@@ -419,6 +418,11 @@ function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
               </div>
             )}
           </div>
+          {/* Peer selector lives on this chart specifically (it's the primary
+              KPI users compare against peers on) but the selection is shared
+              app-wide state, so picking a peer here also overlays it on the
+              margin chart, the M-Score/Z-Score gauges, and S1Body's detail view. */}
+          {picker}
           <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)" peers={_peerSeriesListFor(peerCompareList, 'revenue')}/>
         </div>
       )}
