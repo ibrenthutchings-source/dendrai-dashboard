@@ -47,13 +47,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     onRssSignalsReady,
     onAddObjective,
     peerData,
-    peerCompareTicker,
-    onSetPeerCompareTicker,
     peerCompareData,
-    peerCompareLoading,
-    peerCompareError,
-    onLoadPeerCompare,
-    onClearPeerCompare,
   };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
@@ -117,7 +111,10 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
               const GeoSegKPI = window.GeoSegmentKPISection;
               return (
                 <PipelinePanel label="Forecasts">
-                  <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}/>
+                  <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
+                    peerCompareTicker={peerCompareTicker} onSetPeerCompareTicker={onSetPeerCompareTicker}
+                    peerCompareData={peerCompareData} peerCompareLoading={peerCompareLoading}
+                    peerCompareError={peerCompareError} onLoadPeerCompare={onLoadPeerCompare} onClearPeerCompare={onClearPeerCompare}/>
                   {GeoSegKPI && (
                     <GeoSegKPI
                       data={forecasts}
@@ -293,6 +290,57 @@ function ComparableChart({ history, forecast, unit, color, decimals, chartMetric
 // still appears once no peer is selected (MultiSeriesForecastChart has no
 // metrics caption — comparing forecast accuracy isn't the point of a peer
 // overlay).
+// {ticker, history, forecast} for a given chart metric key, or null when no
+// peer is selected or it has no data for that metric — shared by every panel
+// that renders KPI charts (S1Body's detailed stage body, ForecastChartsInline's
+// always-visible summary) so "compare against peer" behaves identically in both.
+function _peerSeriesFor(peerCompareData, key) {
+  return peerCompareData?.forecasts?.[key]
+    ? { ticker: peerCompareData.ticker, ...peerCompareData.forecasts[key] }
+    : null;
+}
+
+// One control, reused everywhere a peer can be picked — see the Pipeline-level
+// comment above s1Extra for why this is a single shared piece of state rather
+// than a picker per chart.
+function PeerComparePicker({ peerCompareTicker = "", onSetPeerCompareTicker = null, peerCompareData = null,
+                              peerCompareLoading = false, peerCompareError = null,
+                              onLoadPeerCompare = null, onClearPeerCompare = null }) {
+  if (!onLoadPeerCompare) return null;
+  return (
+    <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6}}>
+      <Icon name="user" size={13}/>
+      <span style={{fontSize:11.5, fontWeight:600, color:"var(--ink-2)"}}>Compare against peer</span>
+      {peerCompareData ? (
+        <span className="tag mono" style={{display:"flex", alignItems:"center", gap:6}}>
+          {peerCompareData.ticker}
+          <button type="button" onClick={onClearPeerCompare} title="Remove peer"
+            style={{background:"none", border:"none", cursor:"pointer", padding:0, display:"flex", color:"inherit"}}>
+            <Icon name="x" size={10}/>
+          </button>
+        </span>
+      ) : (
+        <>
+          <input
+            value={peerCompareTicker}
+            onChange={e => onSetPeerCompareTicker && onSetPeerCompareTicker(e.target.value.toUpperCase())}
+            onKeyDown={e => { if (e.key === "Enter" && peerCompareTicker.trim()) onLoadPeerCompare(peerCompareTicker); }}
+            placeholder="Ticker (e.g. MSFT)" disabled={peerCompareLoading}
+            style={{fontSize:11, padding:"4px 8px", border:"1px solid var(--line)", borderRadius:6, width:120, fontFamily:"Geist Mono, monospace", background:"var(--surface)", color:"var(--ink)"}}
+          />
+          <button className="btn btn-sm" disabled={peerCompareLoading || !peerCompareTicker.trim()} onClick={() => onLoadPeerCompare(peerCompareTicker)}>
+            {peerCompareLoading ? <><span className="spin"/> Loading…</> : "Add"}
+          </button>
+        </>
+      )}
+      {peerCompareError && <span style={{fontSize:10.5, color:"var(--red-ink)"}}>{peerCompareError}</span>}
+      {!peerCompareData && !peerCompareError && (
+        <span style={{fontSize:10, color:"var(--ink-3)"}}>Overlays as a reference line on every KPI chart and gauge on this screen.</span>
+      )}
+    </div>
+  );
+}
+
 function FCWithMetrics({ history, forecast, unit, color, decimals, peer }) {
   const [metrics, setMetrics] = React.useState(null);
   React.useEffect(() => {
@@ -305,7 +353,8 @@ function FCWithMetrics({ history, forecast, unit, color, decimals, peer }) {
   return <ComparableChart history={history} forecast={forecast} unit={unit} color={color} decimals={decimals} chartMetrics={metrics} peer={peer}/>;
 }
 
-function ForecastChartsInline({ forecasts, livefacts }) {
+function ForecastChartsInline({ forecasts, livefacts, peerCompareTicker, onSetPeerCompareTicker, peerCompareData,
+                                 peerCompareLoading, peerCompareError, onLoadPeerCompare, onClearPeerCompare }) {
   const [tick, setTick] = React.useState(0);
   React.useEffect(() => {
     if (!window.ForecastChart) {
@@ -315,6 +364,13 @@ function ForecastChartsInline({ forecasts, livefacts }) {
   }, [tick]);
 
   const FC = window.ForecastChart;
+  const picker = (
+    <PeerComparePicker
+      peerCompareTicker={peerCompareTicker} onSetPeerCompareTicker={onSetPeerCompareTicker}
+      peerCompareData={peerCompareData} peerCompareLoading={peerCompareLoading}
+      peerCompareError={peerCompareError} onLoadPeerCompare={onLoadPeerCompare} onClearPeerCompare={onClearPeerCompare}
+    />
+  );
   if (!forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>No forecast data — run the loop first.</div>;
   if (!FC) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Loading chart engine…</div>;
   const rev = forecasts.revenue;
@@ -327,6 +383,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
   const mgDelta  = lastMg != null && fcMg != null ? (fcMg - lastMg) * 100 : null;
   return (
     <div style={{display:"flex", flexDirection:"column", gap:18}}>
+      {picker}
       {rev?.history?.length > 0 && (
         <div>
           <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
@@ -337,7 +394,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
               </div>
             )}
           </div>
-          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)"/>
+          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)" peer={_peerSeriesFor(peerCompareData, 'revenue')}/>
         </div>
       )}
       {mg?.history?.length > 0 && (
@@ -350,7 +407,7 @@ function ForecastChartsInline({ forecasts, livefacts }) {
               </div>
             )}
           </div>
-          <FCWithMetrics history={mg.history.slice(-16)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
+          <FCWithMetrics history={mg.history.slice(-16)} forecast={mg.forecast} unit="%" color="var(--violet)" peer={_peerSeriesFor(peerCompareData, 'margin')}/>
         </div>
       )}
       {livefacts && (
@@ -821,7 +878,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareTicker={s1Extra?.peerCompareTicker} onSetPeerCompareTicker={s1Extra?.onSetPeerCompareTicker} peerCompareData={s1Extra?.peerCompareData} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onLoadPeerCompare={s1Extra?.onLoadPeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareData={s1Extra?.peerCompareData}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -932,13 +989,11 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
 }
 
 function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null,
-                  peerCompareTicker = "", onSetPeerCompareTicker = null, peerCompareData = null, peerCompareLoading = false, peerCompareError = null, onLoadPeerCompare = null, onClearPeerCompare = null }) {
-  // {ticker, history, forecast} for a given chart metric, or null when no peer
-  // is selected or the peer has no data for that metric — ComparableChart
-  // falls back to the normal single-series chart in either case.
-  const peerSeries = (key) => (peerCompareData?.forecasts?.[key]
-    ? { ticker: peerCompareData.ticker, ...peerCompareData.forecasts[key] }
-    : null);
+                  peerCompareData = null }) {
+  // The picker control itself lives in the always-visible "Forecasts" panel
+  // (ForecastChartsInline) so it's impossible to miss — this stage body only
+  // consumes the resulting peerCompareData, via the same _peerSeriesFor helper.
+  const peerSeries = (key) => _peerSeriesFor(peerCompareData, key);
   const gaugePeers = [
     ...(peerData?.peers || []),
     ...(peerCompareData ? [{ ticker: peerCompareData.ticker, z_score: peerCompareData.zscore, m_score: peerCompareData.mscore }] : []),
@@ -1210,41 +1265,6 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           </div>
         );
       })()}
-
-      {/* Peer comparison picker — one selection overlays every KPI chart below
-          plus the M-Score/Z-Score gauges above, via peerSeries()/gaugePeers. */}
-      {onLoadPeerCompare && (
-        <div className="stage-detail" style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap"}}>
-          <Icon name="user" size={13}/>
-          <span style={{fontSize:11.5, fontWeight:600, color:"var(--ink-2)"}}>Compare against peer</span>
-          {peerCompareData ? (
-            <span className="tag mono" style={{display:"flex", alignItems:"center", gap:6}}>
-              {peerCompareData.ticker}
-              <button type="button" onClick={onClearPeerCompare} title="Remove peer"
-                style={{background:"none", border:"none", cursor:"pointer", padding:0, display:"flex", color:"inherit"}}>
-                <Icon name="x" size={10}/>
-              </button>
-            </span>
-          ) : (
-            <>
-              <input
-                value={peerCompareTicker}
-                onChange={e => onSetPeerCompareTicker && onSetPeerCompareTicker(e.target.value.toUpperCase())}
-                onKeyDown={e => { if (e.key === "Enter" && peerCompareTicker.trim()) onLoadPeerCompare(peerCompareTicker); }}
-                placeholder="Ticker (e.g. MSFT)" disabled={peerCompareLoading}
-                style={{fontSize:11, padding:"4px 8px", border:"1px solid var(--line)", borderRadius:6, width:120, fontFamily:"Geist Mono, monospace", background:"var(--surface)", color:"var(--ink)"}}
-              />
-              <button className="btn btn-sm" disabled={peerCompareLoading || !peerCompareTicker.trim()} onClick={() => onLoadPeerCompare(peerCompareTicker)}>
-                {peerCompareLoading ? <><span className="spin"/> Loading…</> : "Add"}
-              </button>
-            </>
-          )}
-          {peerCompareError && <span style={{fontSize:10.5, color:"var(--red-ink)"}}>{peerCompareError}</span>}
-          {!peerCompareData && !peerCompareError && (
-            <span style={{fontSize:10, color:"var(--ink-3)"}}>Overlays as a reference line on the charts and gauges below.</span>
-          )}
-        </div>
-      )}
 
       {/* Revenue forecast chart */}
       {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
