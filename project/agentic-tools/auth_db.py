@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
+import string
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -856,25 +858,41 @@ def set_screen_permissions(user_id: int, perms: list) -> bool:
 
 
 # ── Seed default users ────────────────────────────────────────────────────────
+# Initial passwords are never hardcoded — each account's password comes from
+# its env var below, or a random one-time password generated (and logged once)
+# if that env var is unset. Both accounts still force a change at first login
+# (must_change_pw=True), but a fixed literal in source would let anyone with
+# repo read access log in before that change happens.
+
+_SEED_PW_ALPHABET = string.ascii_uppercase + string.ascii_lowercase + string.digits + "!@#$%^&*()-_=+"
 
 _SEED_USERS = [
     {
-        "username":      "admin",
-        "email":         "admin@dendrai.local",
-        "display_name":  "Administrator",
-        "role":          "admin",
-        "password":      "Admin@Dendrai1!",
+        "username":       "admin",
+        "email":          "admin@dendrai.local",
+        "display_name":   "Administrator",
+        "role":           "admin",
+        "password_env":   "AUTH_SEED_ADMIN_PASSWORD",
         "must_change_pw": True,
     },
     {
-        "username":      "dendrai",
-        "email":         "dendrai@dendrai.local",
-        "display_name":  "Dendrai User",
-        "role":          "user",
-        "password":      "Dendrai@Pass1!",
+        "username":       "dendrai",
+        "email":          "dendrai@dendrai.local",
+        "display_name":   "Dendrai User",
+        "role":           "user",
+        "password_env":   "AUTH_SEED_USER_PASSWORD",
         "must_change_pw": True,
     },
 ]
+
+
+def _seed_password(env_var: str) -> tuple[str, bool]:
+    """Returns (password, was_generated) for a seed account — the env var's
+    value if set, else a fresh random one-time password."""
+    configured = os.environ.get(env_var, "").strip()
+    if configured:
+        return configured, False
+    return "".join(secrets.choice(_SEED_PW_ALPHABET) for _ in range(20)), True
 
 
 def seed_default_users() -> int:
@@ -890,7 +908,8 @@ def seed_default_users() -> int:
     for u in _SEED_USERS:
         if get_user_by_username(u["username"]):
             continue
-        pw_hash = pwd_ctx.hash(u["password"])
+        password, generated = _seed_password(u["password_env"])
+        pw_hash = pwd_ctx.hash(password)
         uid = create_user(
             username=u["username"],
             email=u["email"],
@@ -911,6 +930,12 @@ def seed_default_users() -> int:
             except Exception:
                 pass
             created += 1
-            logger.info("Seeded user: %s (role=%s, must_change_pw=%s)",
-                        u["username"], u["role"], u["must_change_pw"])
+            if generated:
+                logger.warning(
+                    "Seeded user '%s' with a generated one-time password (record it now, "
+                    "it will not be shown again): %s", u["username"], password,
+                )
+            else:
+                logger.info("Seeded user: %s (role=%s, must_change_pw=%s)",
+                            u["username"], u["role"], u["must_change_pw"])
     return created
