@@ -1065,27 +1065,6 @@ ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS nist_800_53     TEXT[];  -
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS iso_27001       TEXT[];  -- e.g. {A.9.4.1,A.12.4.1}
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS coso_component  VARCHAR(64);  -- COSO ERM 2017 component name
 
--- One row per negative-control corpus run (pac_negative_tests.run_corpus),
--- whether triggered manually, by a module-approval gate, or the periodic
--- sweep (P1a) — this is audit evidence ("prove the control was tested on
--- date X"), not a log line, so it's a table with its own retention, not
--- something that scrolls out of application logs.
-CREATE TABLE IF NOT EXISTS observability.pac_test_runs (
-    id                BIGSERIAL    PRIMARY KEY,
-    process           VARCHAR(64)  NOT NULL,
-    module_id         BIGINT       REFERENCES pac_policy_modules(id),  -- NULL when testing the built-in default
-    triggered_by      VARCHAR(32)  NOT NULL,  -- 'manual' | 'approval_gate' | 'scheduled_sweep'
-    triggered_by_user  VARCHAR(128),
-    contract_ok       BOOLEAN,
-    contract_findings  JSONB,
-    total             INTEGER      NOT NULL,
-    passed            INTEGER      NOT NULL,
-    failed            INTEGER      NOT NULL,
-    results           JSONB        NOT NULL,   -- full per-fixture results, for drill-down
-    run_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_pac_test_runs_process ON observability.pac_test_runs (process, run_at DESC);
-
 -- Policy-as-Code business processes: was a hardcoded 5-entry Python set
 -- (VALID_PROCESSES); now a real table so sync_github() can register a new
 -- process discovered in a synced repo instead of silently skipping it.
@@ -1412,6 +1391,30 @@ END $$;
 # self-healing on every container start — no manual psql run required.
 _OBSERVABILITY_DDL = """
 CREATE SCHEMA IF NOT EXISTS observability;
+
+-- One row per negative-control corpus run (pac_negative_tests.run_corpus),
+-- whether triggered manually, by a module-approval gate, or the periodic
+-- sweep (P1a) — this is audit evidence ("prove the control was tested on
+-- date X"), not a log line, so it's a table with its own retention, not
+-- something that scrolls out of application logs.
+-- Lives here (not in _DDL) because it targets the observability schema
+-- created on the line above — _DDL runs first and fails outright on a fresh
+-- database if it references a schema that doesn't exist yet.
+CREATE TABLE IF NOT EXISTS observability.pac_test_runs (
+    id                BIGSERIAL    PRIMARY KEY,
+    process           VARCHAR(64)  NOT NULL,
+    module_id         BIGINT       REFERENCES pac_policy_modules(id),  -- NULL when testing the built-in default
+    triggered_by      VARCHAR(32)  NOT NULL,  -- 'manual' | 'approval_gate' | 'scheduled_sweep'
+    triggered_by_user  VARCHAR(128),
+    contract_ok       BOOLEAN,
+    contract_findings  JSONB,
+    total             INTEGER      NOT NULL,
+    passed            INTEGER      NOT NULL,
+    failed            INTEGER      NOT NULL,
+    results           JSONB        NOT NULL,   -- full per-fixture results, for drill-down
+    run_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pac_test_runs_process ON observability.pac_test_runs (process, run_at DESC);
 
 CREATE TABLE IF NOT EXISTS observability.mcp_sessions (
     session_id      UUID         PRIMARY KEY,
