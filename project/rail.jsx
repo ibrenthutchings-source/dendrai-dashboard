@@ -76,60 +76,61 @@ function RiskTable({ risks, selectedId, onSelect }) {
         <tbody>
           {risks.map(r => {
             const isSel = selectedId === r.id;
+            const qs = isSel ? projectQuarters(r) : null;
             return (
-              <tr key={r.id} onClick={() => onSelect(isSel ? null : r.id)} style={isSel ? {background: "var(--acc-soft)"} : null}>
-                <td><span className={`rag-dot ${r.rag}`}/></td>
-                <td className="risk-name">
-                  <b>{r.name}</b>
-                  <div className="cat">{r.id} · {r.category}</div>
-                </td>
-                <td><span className="mono" style={{color: scoreColorInk(r.score), fontWeight: 500}}>{fmt2(r.score)}</span></td>
-                <td><VelocityPill v={r.velocity}/></td>
-                <td><Sparkline data={r.hist} w={62} h={16} color={scoreColor(r.score)} min={histMin} max={histMax}/></td>
-                <td><span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{r.ce}</span></td>
-              </tr>
+              <React.Fragment key={r.id}>
+                <tr onClick={() => onSelect(isSel ? null : r.id)} style={isSel ? {background: "var(--acc-soft)"} : null}>
+                  <td><span className={`rag-dot ${r.rag}`}/></td>
+                  <td className="risk-name">
+                    <b>{r.name}</b>
+                    <div className="cat">{r.id} · {r.category}</div>
+                  </td>
+                  <td><span className="mono" style={{color: scoreColorInk(r.score), fontWeight: 500}}>{fmt2(r.score)}</span></td>
+                  <td><VelocityPill v={r.velocity}/></td>
+                  <td><Sparkline data={r.hist} w={62} h={16} color={scoreColor(r.score)} min={histMin} max={histMax}/></td>
+                  <td><span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{r.ce}</span></td>
+                </tr>
+                {isSel && (
+                  <tr>
+                    <td colSpan={6} style={{padding: 0, border: "none"}}>
+                      <div className="mt-8 mb-8" style={{background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius: 10, padding: 14}}>
+                        <div style={{display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom: 8}}>
+                          <div>
+                            <div style={{fontSize: 12.5, fontWeight: 500}}>{r.name}</div>
+                            <div style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 2}}>{r.id} · {r.category} · {r.ce}</div>
+                          </div>
+                          <button className="btn btn-sm btn-ghost" onClick={() => onSelect(null)}><Icon name="x" size={11}/></button>
+                        </div>
+                        <div style={{fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.55, marginBottom: 10}}>{r.narrative}</div>
+                        {r.filingSnippet && (
+                          <div style={{background:"var(--blue-soft)", border:"1px solid var(--line)", borderRadius:7, padding:"8px 10px", marginBottom:10}}>
+                            <div style={{fontSize:10, fontWeight:600, letterSpacing:".05em", textTransform:"uppercase", color:"var(--blue-ink)", marginBottom:4}}>
+                              10-K Item 1A · {r.filingDate || "Filing"}
+                            </div>
+                            <div style={{fontSize:11, color:"var(--ink-2)", lineHeight:1.6}}>{r.filingSnippet}</div>
+                          </div>
+                        )}
+                        <div className="sec-lbl" style={{marginBottom: 6}}>4-Quarter Projection</div>
+                        <div style={{display:"flex", gap: 4}}>
+                          {["Now", "Q1", "Q2", "Q3", "Q4"].map((q, i) => {
+                            const sc = i === 0 ? r.score : qs[i-1];
+                            return (
+                              <div key={q} style={{flex: 1, background: "var(--surface)", borderRadius: 6, padding: "6px 4px", border: "1px solid var(--line)", textAlign:"center"}}>
+                                <div className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{q}</div>
+                                <div className="mono" style={{fontSize: 14, fontWeight: 500, color: scoreColorInk(sc), marginTop: 2}}>{fmt2(sc)}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             );
           })}
         </tbody>
       </table>
-
-      {selectedId && (() => {
-        const r = risks.find(x => x.id === selectedId);
-        if (!r) return null;
-        const qs = projectQuarters(r);
-        return (
-          <div className="mt-16" style={{background:"var(--surface-2)", border:"1px solid var(--line)", borderRadius: 10, padding: 14}}>
-            <div style={{display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom: 8}}>
-              <div>
-                <div style={{fontSize: 12.5, fontWeight: 500}}>{r.name}</div>
-                <div style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 2}}>{r.id} · {r.category} · {r.ce}</div>
-              </div>
-              <button className="btn btn-sm btn-ghost" onClick={() => onSelect(null)}><Icon name="x" size={11}/></button>
-            </div>
-            <div style={{fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.55, marginBottom: 10}}>{r.narrative}</div>
-            {r.filingSnippet && (
-              <div style={{background:"var(--blue-soft)", border:"1px solid var(--line)", borderRadius:7, padding:"8px 10px", marginBottom:10}}>
-                <div style={{fontSize:10, fontWeight:600, letterSpacing:".05em", textTransform:"uppercase", color:"var(--blue-ink)", marginBottom:4}}>
-                  10-K Item 1A · {r.filingDate || "Filing"}
-                </div>
-                <div style={{fontSize:11, color:"var(--ink-2)", lineHeight:1.6}}>{r.filingSnippet}</div>
-              </div>
-            )}
-            <div className="sec-lbl" style={{marginBottom: 6}}>4-Quarter Projection</div>
-            <div style={{display:"flex", gap: 4}}>
-              {["Now", "Q1", "Q2", "Q3", "Q4"].map((q, i) => {
-                const sc = i === 0 ? r.score : qs[i-1];
-                return (
-                  <div key={q} style={{flex: 1, background: "var(--surface)", borderRadius: 6, padding: "6px 4px", border: "1px solid var(--line)", textAlign:"center"}}>
-                    <div className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{q}</div>
-                    <div className="mono" style={{fontSize: 14, fontWeight: 500, color: scoreColorInk(sc), marginTop: 2}}>{fmt2(sc)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })()}
     </>
   );
 }
