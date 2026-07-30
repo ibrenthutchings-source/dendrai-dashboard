@@ -43,6 +43,7 @@ import itsm_servicenow_tool
 import mcp_governance
 import netsuite_tool
 import oracle_fusion_tool
+import oracle_hcm_tool
 import ot_heartbeat_tool
 import postgres_cis_tool
 import railway_iaas_tool
@@ -58,6 +59,7 @@ _TICK_S = float(os.environ.get("CONNECTOR_POLLER_TICK_S", "60"))
 
 _ADAPTERS = {
     "oracle_fusion": oracle_fusion_tool,
+    "oracle_hcm":    oracle_hcm_tool,
     "sap_hana":      sap_hana_tool,
     "sailpoint":      sailpoint_tool,
     "dynamics365":    dynamics365_tool,

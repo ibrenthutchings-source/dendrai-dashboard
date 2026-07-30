@@ -100,6 +100,15 @@ class EventType(str, Enum):
     SENSITIVE_RESOURCE_ACCESS   = "SENSITIVE_RESOURCE_ACCESS"    # sensitive_resource flag
     SYSTEM_GOVERNANCE_VIOLATION = "SYSTEM_GOVERNANCE_VIOLATION"  # 2+ flags simultaneously
 
+    # ── Hire-to-Retire (oracle_hcm_tool.py) ────────────────────
+    # Payroll SoD conflicts reuse the existing SOD_VIOLATION event type (same
+    # "sod_violation" risk flag every other source sets) rather than a new
+    # PAYROLL_SOD_VIOLATION — see bronze.py's SystemTelemetryBronzeHandler
+    # docstring: "reuse existing EventTypes where the semantics already match."
+    GHOST_EMPLOYEE_SUSPECTED           = "GHOST_EMPLOYEE_SUSPECTED"
+    UNAUTHORIZED_PAY_RATE_CHANGE       = "UNAUTHORIZED_PAY_RATE_CHANGE"
+    TERMINATED_EMPLOYEE_ACCESS_RETAINED = "TERMINATED_EMPLOYEE_ACCESS_RETAINED"
+
 
 class RiskDomain(str, Enum):
     """Four enterprise risk categories from the Multi-Domain Continuous Risk

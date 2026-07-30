@@ -355,6 +355,10 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("SYSTEM_TELEMETRY", "JE_VELOCITY_ANOMALY"):  "record_to_report",
     ("SYSTEM_TELEMETRY", "LIQUIDITY_SHIFT"):      "record_to_report",
     ("SYSTEM_TELEMETRY", "INVENTORY_DIVERGENCE"): "record_to_report",
+    # Hire-to-Retire — oracle_hcm_tool.py payroll findings.
+    ("SYSTEM_TELEMETRY", "GHOST_EMPLOYEE_SUSPECTED"):            "hire_to_retire",
+    ("SYSTEM_TELEMETRY", "UNAUTHORIZED_PAY_RATE_CHANGE"):        "hire_to_retire",
+    ("SYSTEM_TELEMETRY", "TERMINATED_EMPLOYEE_ACCESS_RETAINED"): "hire_to_retire",
 }
 
 
@@ -1687,6 +1691,15 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("liquidity_shift")
     if payload.get("inventory_divergence"):
         flags.add("inventory_divergence")
+    # Hire-to-Retire: explicit signals set by oracle_hcm_tool.py's payroll
+    # findings — same "producer knows exactly which event it's emitting"
+    # pattern as the Financial Risk Pipeline flags above.
+    if payload.get("ghost_employee_suspected"):
+        flags.add("ghost_employee_suspected")
+    if payload.get("unauthorized_pay_rate_change"):
+        flags.add("unauthorized_pay_rate_change")
+    if payload.get("terminated_employee_access_retained"):
+        flags.add("terminated_employee_access_retained")
     return sorted(flags)
 
 
