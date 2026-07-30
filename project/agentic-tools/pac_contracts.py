@@ -197,6 +197,12 @@ _VENDOR_RISK_FIELDS = frozenset({
     "concentration_pct", "threshold_pct", "window_days",
 })
 
+# Fields ai_governance_sweep.py and ai_governance_endpoints.py contribute via
+# the "ai_governance_detail" raw_payload key.
+_AI_GOVERNANCE_FIELDS = frozenset({
+    "system_name", "vendor", "risk_tier", "assessment_expires_at",
+})
+
 
 # ── Per-process contract ──────────────────────────────────────────────────────
 # allowed_fields: every input.event.<field> a module for this process may
@@ -220,7 +226,7 @@ PROCESS_CONTRACTS: dict[str, dict] = {
         },
     },
     "itgc": {
-        "allowed_fields": _GIT_FIELDS | _SYSTEM_TELEMETRY_FIELDS | _MCP_FIELDS | _SAILPOINT_FIELDS,
+        "allowed_fields": _GIT_FIELDS | _SYSTEM_TELEMETRY_FIELDS | _MCP_FIELDS | _SAILPOINT_FIELDS | _AI_GOVERNANCE_FIELDS,
         "allowed_event_types": None,
     },
     "record_to_report": {

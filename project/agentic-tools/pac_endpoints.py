@@ -224,6 +224,29 @@ deny_monitoring_event[msg] if {
     not input.monitoring.alert_triggered
     msg := sprintf("ITGC-MO-02: Oracle Fusion user '%v' has %v failed login attempts with no security alert triggered", [input.monitoring.username, input.monitoring.failed_login_attempts])
 }
+
+# ── AI Governance (ISO/IEC 42001 AI-05/AI-06) ─────────────────────────────────
+# Findings ride the generic input.event.* shape (system_telemetry ->
+# mcp_governance._evaluate_pac_policy) — ai_governance_sweep.py's assessment-
+# expiry sweep and ai_governance_endpoints.py's inline human-oversight check.
+
+# ── ITGC-AI-05: Third-Party AI Tool Assessment ────────────────────────────────
+deny_ai_governance[msg] if {
+    input.event.type == "AI_ASSESSMENT_OVERDUE"
+    msg := sprintf("ITGC-AI-05: AI system '%v' (%v risk) third-party assessment expired on %v", [
+        input.event.system_name,
+        input.event.risk_tier,
+        input.event.assessment_expires_at,
+    ])
+}
+
+# ── ITGC-AI-06: Human Oversight of AI Systems ─────────────────────────────────
+deny_ai_governance[msg] if {
+    input.event.type == "AI_HUMAN_OVERSIGHT_MISSING"
+    msg := sprintf("ITGC-AI-06: AI system '%v' requires human oversight but has no defined human review point on file", [
+        input.event.system_name,
+    ])
+}
 """,
 
 "order_to_cash": """\
