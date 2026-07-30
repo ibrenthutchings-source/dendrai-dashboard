@@ -70,6 +70,7 @@ _BUILTIN_PROCESS_IDS = {
     "record_to_report",
     "devops_monitoring",
     "infrastructure_monitoring",
+    "hire_to_retire",
 }
 
 
@@ -92,6 +93,7 @@ _PROCESS_LABELS = {
     "record_to_report": "Record to Report",
     "devops_monitoring": "DevOps Monitoring",
     "infrastructure_monitoring": "Infrastructure Monitoring",
+    "hire_to_retire": "Hire to Retire",
 }
 
 # Assigned round-robin to processes auto-registered by sync_github (a folder
@@ -110,6 +112,7 @@ _PROCESS_ID_PREFIX = {
     "record_to_report": "R2R",
     "devops_monitoring": "DEVOPS",
     "infrastructure_monitoring": "INFRA",
+    "hire_to_retire": "H2R",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -933,6 +936,53 @@ deny_connector_hygiene[msg] if {
     input.event.type == "INFRASTRUCTURE_FINDING"
     input.event.stale_connector_count > 0
     msg := sprintf("INFRA-008: %v stored connector credential(s) have not been rotated in over the staleness threshold (oldest: %v days) — see the Connector Hygiene panel for which ones", [input.event.stale_connector_count, input.event.oldest_credential_age_days])
+}
+""",
+
+"hire_to_retire": """\
+# Hire-to-Retire — Payroll/HR Continuous Audit
+# Package:  controls.hire_to_retire
+# Process:  Hire to Retire
+# Version:  1.0
+# Approved by: CHRO, Controller
+# Last Revised: 2026-07-30
+# Description: Oracle Fusion HCM payroll findings (oracle_hcm_tool.py) —
+#   ghost-employee detection, unauthorized pay-rate changes, and
+#   terminated-employee access retention. Evaluated against
+#   UBO/pipeline/silver.py's "payroll_detail" spread, the same pattern
+#   the Financial Risk Pipeline's "financial_compliance" spread uses.
+#   Payroll SoD conflicts route through the existing SOD_VIOLATION event
+#   type/itgc-style check, not through this module.
+
+package controls.hire_to_retire
+
+import future.keywords.in
+import future.keywords.if
+
+# ── H2R-001: Ghost Employee ──────────────────────────────────────────────────
+deny_payroll[msg] if {
+    input.event.type == "GHOST_EMPLOYEE_SUSPECTED"
+    msg := sprintf("H2R-001: Active payroll run for employee '%v' who was terminated on %v (pay period ending %v) — ghost-employee pattern", [
+        input.event.employee_id, input.event.termination_date, input.event.pay_period_end
+    ])
+}
+
+# ── H2R-002: Unauthorized Pay Rate Change ────────────────────────────────────
+deny_payroll[msg] if {
+    input.event.type == "UNAUTHORIZED_PAY_RATE_CHANGE"
+    input.event.second_approver == false
+    msg := sprintf("H2R-002: Pay-rate change of %v%% for employee '%v' ($%v -> $%v) has no second approver on file", [
+        input.event.pay_rate_change_pct, input.event.employee_id, input.event.prior_pay_rate, input.event.new_pay_rate
+    ])
+}
+
+# ── H2R-003: Terminated Employee Access Retained ─────────────────────────────
+deny_payroll[msg] if {
+    input.event.type == "TERMINATED_EMPLOYEE_ACCESS_RETAINED"
+    input.event.days_since_termination > 7
+    msg := sprintf("H2R-003: Employee '%v' still has active system access %v days after termination on %v", [
+        input.event.employee_id, input.event.days_since_termination, input.event.termination_date
+    ])
 }
 """,
 
