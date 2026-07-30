@@ -54,7 +54,7 @@ import os
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import attestation
@@ -62,9 +62,17 @@ import db
 import dora_metrics
 import mcp_governance
 import scm_audit_endpoints
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger("ubo.evidence")
 router = APIRouter(prefix="/evidence", tags=["Evidence Ingestion"])
+
+# Screen gating applied per-route, not at the router level: /evidence/webhook
+# and /evidence/attestation are both external-system Bearer-key-authenticated
+# ingestion endpoints (see api_server.py's _AUTH_EXEMPT for /evidence/webhook;
+# /attestation shares the same auth model per its own docstring) with no user
+# session to check a screen permission against.
+_SCREEN_ID = "devopsmonitoring"
 
 SIGNING_KEY = os.environ.get("EVIDENCE_SIGNING_KEY", "")
 
@@ -355,14 +363,15 @@ async def _check_deploy_gate_for_attestation(repository: Optional[str], commit_s
 
 
 @router.get("/attestations")
-async def list_attestations(commit_sha: Optional[str] = None, limit: int = 50):
+async def list_attestations(commit_sha: Optional[str] = None, limit: int = 50,
+                             current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         return {"attestations": []}
     return {"attestations": db.list_pipeline_attestations(commit_sha=commit_sha, limit=limit)}
 
 
 @router.get("/attestations/{attestation_id}")
-async def get_attestation(attestation_id: int):
+async def get_attestation(attestation_id: int, current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
     record = db.get_pipeline_attestation(attestation_id)
@@ -375,7 +384,8 @@ async def get_attestation(attestation_id: int):
 
 @router.get("/records")
 async def list_records(repository: Optional[str] = None, severity: Optional[str] = None,
-                        commit_sha: Optional[str] = None, limit: int = 100):
+                        commit_sha: Optional[str] = None, limit: int = 100,
+                        current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         return {"records": []}
     return {"records": db.list_evidence_records(
@@ -383,7 +393,7 @@ async def list_records(repository: Optional[str] = None, severity: Optional[str]
 
 
 @router.get("/records/{record_id}/verify")
-async def verify_record(record_id: int):
+async def verify_record(record_id: int, current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
     record = db.get_evidence_record(record_id)
@@ -398,7 +408,7 @@ async def verify_record(record_id: int):
 
 
 @router.get("/chain/verify")
-async def verify_chain(limit: Optional[int] = None):
+async def verify_chain(limit: Optional[int] = None, current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     """Tamper-evidence chain verification — proves trail completeness (no
     row deleted or reordered), which the per-record HMAC above cannot: that
     check only proves a row's own content wasn't altered. See
@@ -410,7 +420,7 @@ async def verify_chain(limit: Optional[int] = None):
 
 
 @router.get("/dora-metrics")
-async def get_dora_metrics(window_days: int = 30):
+async def get_dora_metrics(window_days: int = 30, current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     """Deployment frequency / change failure rate / MTTR — real operational
     evidence for SOC 2 CC8.1, computed from pipeline_attestations and
     itsm_tickets. See dora_metrics.py's module docstring for the exact

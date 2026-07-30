@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 import auth_db
 import db
-from auth_endpoints import get_current_user, require_admin
+from auth_endpoints import require_admin, require_screen_permission
 
 router = APIRouter(prefix="/approvals", tags=["Approval Workflow"])
 
@@ -58,7 +58,7 @@ def _display_name(user: dict) -> str:
 
 
 @router.post("/prepare")
-def prepare_item(req: PrepareRequest, current_user: dict = Depends(get_current_user)):
+def prepare_item(req: PrepareRequest, current_user: dict = Depends(require_screen_permission("approvals", edit=True))):
     """
     Record the preparer's disposition on a single gate item. Preparer identity
     comes from the session, not the request body. If disposition is 'adjusted',
@@ -104,7 +104,7 @@ def prepare_item(req: PrepareRequest, current_user: dict = Depends(get_current_u
 
 
 @router.post("/review")
-def review_item(req: ReviewRequest, current_user: dict = Depends(get_current_user)):
+def review_item(req: ReviewRequest, current_user: dict = Depends(require_screen_permission("approvals", edit=True))):
     """Manager decision on a submitted item. 403s if the caller isn't the assigned manager."""
     if req.decision not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="decision must be 'approved' or 'rejected'")
@@ -177,7 +177,7 @@ def _create_waiver_from_task(task: dict, approved_by: str) -> None:
 
 
 @router.get("/inbox")
-def get_inbox(current_user: dict = Depends(get_current_user)):
+def get_inbox(current_user: dict = Depends(require_screen_permission("approvals"))):
     """Items currently awaiting the logged-in user's review, across all gate types."""
     if not db.is_available():
         return {"items": []}
@@ -185,7 +185,7 @@ def get_inbox(current_user: dict = Depends(get_current_user)):
 
 
 @router.get("/status/{run_id}")
-def get_run_status(run_id: int, gate_type: Optional[str] = Query(default=None), current_user: dict = Depends(get_current_user)):
+def get_run_status(run_id: int, gate_type: Optional[str] = Query(default=None), current_user: dict = Depends(require_screen_permission("approvals"))):
     """All approval tasks for a run — used to restore Gate 1/2/S1/S2 UI state on reload."""
     if not db.is_available():
         return {"tasks": []}

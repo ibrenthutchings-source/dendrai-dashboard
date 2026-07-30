@@ -41,16 +41,23 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import claude_client
 import db
 import pac_assurance
 import pac_contracts
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/pac", tags=["pac"])
+# Router-level dependency: every /pac/* route requires at least read access
+# to the Policy-as-Code Engine screen (nav id "policycode") — closes the gap
+# where the screen-permission matrix only ever hid the nav item on the
+# frontend without the backend re-checking it (see auth_endpoints.require_
+# screen_permission's docstring). No route here is an external-system
+# webhook, so uniform router-level gating is safe.
+router = APIRouter(prefix="/pac", tags=["pac"], dependencies=[Depends(require_screen_permission("policycode"))])
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Supported processes

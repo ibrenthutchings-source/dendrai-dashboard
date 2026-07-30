@@ -37,7 +37,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 import aws_iaas_tool
 import connector_hygiene
@@ -46,9 +46,13 @@ import mcp_governance
 import ot_heartbeat_tool
 import postgres_cis_tool
 import railway_iaas_tool
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger("ubo.infrastructure_monitoring")
-router = APIRouter(prefix="/infra-monitoring", tags=["Infrastructure Monitoring"])
+# Router-level: backs the "Infrastructure Monitoring" screen (nav id
+# "infrastructuremonitoring") — see require_screen_permission's docstring.
+router = APIRouter(prefix="/infra-monitoring", tags=["Infrastructure Monitoring"],
+                    dependencies=[Depends(require_screen_permission("infrastructuremonitoring"))])
 
 _CONNECTOR_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat")
 _ADAPTERS = {
