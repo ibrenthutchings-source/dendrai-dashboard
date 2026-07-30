@@ -249,7 +249,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 
 .panel {
   display: none;
-  flex: 1; overflow-y: auto; overflow-x: auto;
+  flex: 1; min-width: 0; overflow-y: auto; overflow-x: auto;
   padding: 20px 24px;
   flex-direction: column;
 }
@@ -2615,7 +2615,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .scope-gantt-bar-lbl { position: relative; font-size: 9.5px; font-weight: 600; padding: 0 7px; font-family: "Geist Mono", monospace; white-space: nowrap; }
 
 /* ---- Code screens (Risk-as-Code / Policy-as-Code) ---- */
-.code-screen { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.code-screen { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .code-actions { display: flex; align-items: center; gap: 8px; }
 .code-status { font-size: 10.5px; font-family: "Geist Mono", monospace; }
 .code-status.ok { color: var(--green-ink); }

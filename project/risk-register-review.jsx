@@ -2297,7 +2297,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           overflowX:auto div, but this flex column's cross-axis has no width
           constraint of its own, so without this the wide table could push the
           whole screen wider instead of scrolling in place. */}
-      <div style={{ flex:1, overflowY:"auto", overflowX:"auto" }}>
+      <div style={{ flex:1, minWidth:0, overflowY:"auto", overflowX:"auto" }}>
 
         {/* ── Internal Register tab ── */}
         {activeTab === "internal" && (
