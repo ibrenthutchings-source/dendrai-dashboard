@@ -87,6 +87,22 @@ def test_hire_to_retire_rego_passes_its_own_contract():
     assert result["unroutable_event_types"] == []
 
 
+def test_record_to_report_event_shaped_rules_pass_their_contract():
+    """record_to_report's original P-R2R-001..007 rules key on input.journal.*/
+    input.account_recon.*/etc, which check_module_contract already knows are
+    unproducible today (see pac_contracts.py's module docstring) — that's a
+    pre-existing, accepted gap, not something this test re-litigates. This
+    test locks in the *input.event.*-shaped* additions instead (Financial
+    Risk Pipeline P-FIN-* and Treasury R2R-TREAS-*): no unknown fields, no
+    invalid/unroutable event types, for the portion of the module that is
+    actually reachable by the automated pipeline."""
+    rego = pe._REGO_DEFAULTS["record_to_report"]
+    result = pc.check_module_contract("record_to_report", rego)
+    assert result["unknown_fields"] == [], result["findings"]
+    assert result["invalid_event_types"] == [], result["findings"]
+    assert result["unroutable_event_types"] == [], result["findings"]
+
+
 def test_check_module_contract_catches_the_original_bug_shape():
     """Reproduces the exact defect this module exists to catch, as a
     standalone fixture independent of whatever pac_endpoints.py ships today."""
