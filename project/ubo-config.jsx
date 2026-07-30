@@ -65,6 +65,7 @@ const CONNECTOR_TYPES = [
     extraFields: [
       { key: "wire_min_approvers", label: "Wire Transfer Min. Approvers", type: "text", placeholder: "2" },
       { key: "bank_recon_sla_days", label: "Bank Recon SLA (days)", type: "text", placeholder: "5" },
+      { key: "vendor_concentration_threshold_pct", label: "Vendor Concentration Threshold %", type: "text", placeholder: "25" },
     ] },
   // Hire-to-Retire: payroll/HR continuous audit (oracle_hcm_tool.py). Same
   // Oracle Fusion Cloud tenant/credential shape as oracle_fusion above (HCM

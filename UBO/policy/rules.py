@@ -394,6 +394,35 @@ TRADE_COMPLIANCE_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Continuous Third-Party/Vendor Risk Rules ───────────────────────────────────
+
+VENDOR_RISK_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-VEN-001",
+        name="Vendor SOC 2 Report Expired",
+        description=(
+            "A vendor's SOC 2 report has expired with no renewal on file — "
+            "the control-reliance basis for that vendor relationship has "
+            "lapsed. Turns VM-01 (Vendor Security Assessment) from a "
+            "point-in-time checklist item into a continuously monitored one."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-VEN-002",
+        name="Vendor Spend Concentration Breach",
+        description=(
+            "A single vendor accounts for more than the configured share of "
+            "trailing-window P2P spend — concentration risk per VM-02 "
+            "(Supply Chain Resilience): a disruption at that vendor has "
+            "outsized impact with no diversification to absorb it."
+        ),
+        severity="MEDIUM",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
 
 SAILPOINT_RULES: list[PolicyRule] = [
@@ -534,6 +563,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *HIRE_TO_RETIRE_RULES,
     *TREASURY_RULES,
     *TRADE_COMPLIANCE_RULES,
+    *VENDOR_RISK_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

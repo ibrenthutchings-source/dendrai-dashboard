@@ -400,7 +400,11 @@ deny_invoice_event[msg] if {
 # ── P-P2P-003: Vendor Master Data ────────────────────────────────────────────
 # Oracle Fusion Supplier Model: Dual-control for sensitive field changes
 deny_vendor_event[msg] if {
-    input.event.type == "vendor_master_change"
+    # NOTE: real EventType enum value is "VENDOR_MASTER_CHANGE" (uppercase) —
+    # fixed from the original lowercase "vendor_master_change" literal, the
+    # same dead-rule bug shape pac_contracts.py exists to catch (see its
+    # module docstring re: devops_monitoring's branch_protection_rule bug).
+    input.event.type == "VENDOR_MASTER_CHANGE"
     input.event.field in ["bank_account_number", "bank_routing_number", "payment_method", "tax_id"]
     not input.event.dual_approved
     msg := sprintf("P2P-P003: Vendor bank detail change to '%v' for supplier '%v' requires dual approval — Oracle Fusion Supplier Model control", [
@@ -409,6 +413,10 @@ deny_vendor_event[msg] if {
     ])
 }
 
+# NOTE: "new_vendor_activation" has no corresponding EventType today (no
+# producer emits it) — left as documented, pre-existing debt rather than
+# invented a new EventType speculatively; see check_module_contract's
+# invalid_event_types output for this module.
 deny_vendor_event[msg] if {
     input.event.type == "new_vendor_activation"
     not input.event.due_diligence_completed
