@@ -75,6 +75,18 @@ def test_devops_monitoring_rego_passes_its_own_contract():
     assert result["unroutable_event_types"] == []
 
 
+def test_hire_to_retire_rego_passes_its_own_contract():
+    """Same tripwire as test_devops_monitoring_rego_passes_its_own_contract,
+    for the Hire-to-Retire module added alongside oracle_hcm_tool.py."""
+    rego = pe._REGO_DEFAULTS["hire_to_retire"]
+    result = pc.check_module_contract("hire_to_retire", rego)
+    assert result["ok"], result["findings"]
+    assert result["unproducible_roots"] == []
+    assert result["unknown_fields"] == []
+    assert result["invalid_event_types"] == []
+    assert result["unroutable_event_types"] == []
+
+
 def test_check_module_contract_catches_the_original_bug_shape():
     """Reproduces the exact defect this module exists to catch, as a
     standalone fixture independent of whatever pac_endpoints.py ships today."""

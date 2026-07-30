@@ -153,6 +153,15 @@ _INFRA_FIELDS = frozenset({
     "stale_connector_count", "oldest_credential_age_days", "stale_connectors",
 })
 
+# Fields oracle_hcm_tool.py contributes via its "payroll_detail" raw_payload
+# key, spread by UBO/pipeline/silver.py's _conform_system_telemetry the same
+# way _INFRA_FIELDS is for postgres_cis_tool.py/railway_iaas_tool.py.
+_PAYROLL_FIELDS = frozenset({
+    "employee_id", "termination_date", "pay_period_end",
+    "prior_pay_rate", "new_pay_rate", "pay_rate_change_pct", "second_approver",
+    "days_since_termination",
+})
+
 
 # ── Per-process contract ──────────────────────────────────────────────────────
 # allowed_fields: every input.event.<field> a module for this process may
@@ -186,6 +195,14 @@ PROCESS_CONTRACTS: dict[str, dict] = {
     "infrastructure_monitoring": {
         "allowed_fields": _INFRA_FIELDS,
         "allowed_event_types": {"INFRASTRUCTURE_FINDING"},
+    },
+    "hire_to_retire": {
+        "allowed_fields": _PAYROLL_FIELDS,
+        "allowed_event_types": {
+            "GHOST_EMPLOYEE_SUSPECTED",
+            "UNAUTHORIZED_PAY_RATE_CHANGE",
+            "TERMINATED_EMPLOYEE_ACCESS_RETAINED",
+        },
     },
 }
 
