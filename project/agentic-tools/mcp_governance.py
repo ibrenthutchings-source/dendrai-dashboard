@@ -359,6 +359,13 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("SYSTEM_TELEMETRY", "GHOST_EMPLOYEE_SUSPECTED"):            "hire_to_retire",
     ("SYSTEM_TELEMETRY", "UNAUTHORIZED_PAY_RATE_CHANGE"):        "hire_to_retire",
     ("SYSTEM_TELEMETRY", "TERMINATED_EMPLOYEE_ACCESS_RETAINED"): "hire_to_retire",
+    # Treasury & Cash Management — oracle_fusion_tool.py findings, routed into
+    # the existing record_to_report process (same precedent as the Financial
+    # Risk Pipeline's JE_VELOCITY_ANOMALY/etc. above — Treasury is R2R-adjacent,
+    # no new process needed).
+    ("SYSTEM_TELEMETRY", "WIRE_TRANSFER_SINGLE_APPROVAL"):  "record_to_report",
+    ("SYSTEM_TELEMETRY", "BANK_RECON_OVERDUE"):             "record_to_report",
+    ("SYSTEM_TELEMETRY", "FX_HEDGE_DOCUMENTATION_MISSING"): "record_to_report",
 }
 
 
@@ -1700,6 +1707,14 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("unauthorized_pay_rate_change")
     if payload.get("terminated_employee_access_retained"):
         flags.add("terminated_employee_access_retained")
+    # Treasury & Cash Management: explicit signals set by oracle_fusion_tool.py's
+    # treasury checks.
+    if payload.get("wire_transfer_single_approval"):
+        flags.add("wire_transfer_single_approval")
+    if payload.get("bank_recon_overdue"):
+        flags.add("bank_recon_overdue")
+    if payload.get("fx_hedge_documentation_missing"):
+        flags.add("fx_hedge_documentation_missing")
     return sorted(flags)
 
 

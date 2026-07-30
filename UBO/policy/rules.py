@@ -336,6 +336,45 @@ HIRE_TO_RETIRE_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Treasury & Cash Management Rules (oracle_fusion_tool.py) ──────────────────
+
+TREASURY_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-TREAS-001",
+        name="Wire Transfer Single Approval",
+        description=(
+            "A wire transfer was processed with only one approver — the "
+            "dual-approval control every outbound wire is expected to carry "
+            "was bypassed or never configured."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-TREAS-002",
+        name="Bank Reconciliation Overdue",
+        description=(
+            "A bank account's reconciliation is overdue against the expected "
+            "cadence — unreconciled cash positions delay detection of "
+            "unauthorized transactions or booking errors."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-TREAS-003",
+        name="FX Hedge Documentation Missing",
+        description=(
+            "An FX hedge position has no completed hedge-accounting "
+            "documentation on file — required to qualify for hedge accounting "
+            "treatment under ASC 815; missing documentation forces mark-to-"
+            "market treatment and P&L volatility."
+        ),
+        severity="MEDIUM",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
 
 SAILPOINT_RULES: list[PolicyRule] = [
@@ -474,6 +513,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *INFRASTRUCTURE_RULES,
     *FINANCIAL_RISK_RULES,
     *HIRE_TO_RETIRE_RULES,
+    *TREASURY_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

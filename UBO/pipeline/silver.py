@@ -310,6 +310,35 @@ class SilverConformationLayer(SilverLayerBase):
                         f"{pd.get('termination_date', 'unknown date')}"
                     )
 
+        # ── Treasury & Cash Management rules (oracle_fusion_tool.py) ─────────
+        elif rule.rule_id == "POL-TREAS-001":
+            if uro.event_type == EventType.WIRE_TRANSFER_SINGLE_APPROVAL:
+                td = (raw.get("raw_payload") or {}).get("treasury_detail") or {}
+                return (
+                    f"HIGH: wire transfer '{td.get('payment_id', 'unknown')}' for "
+                    f"{td.get('currency', '')} {td.get('amount', 'unknown amount')} was processed "
+                    f"with only {td.get('approver_count', 1)} approver — dual-approval control bypassed"
+                )
+
+        elif rule.rule_id == "POL-TREAS-002":
+            if uro.event_type == EventType.BANK_RECON_OVERDUE:
+                td = (raw.get("raw_payload") or {}).get("treasury_detail") or {}
+                days = td.get("days_overdue")
+                if days is not None and int(days) > 0:
+                    return (
+                        f"HIGH: bank account '{td.get('bank_account', 'unknown')}' reconciliation is "
+                        f"{days} day(s) overdue — last reconciled {td.get('last_reconciled_date', 'unknown date')}"
+                    )
+
+        elif rule.rule_id == "POL-TREAS-003":
+            if uro.event_type == EventType.FX_HEDGE_DOCUMENTATION_MISSING:
+                td = (raw.get("raw_payload") or {}).get("treasury_detail") or {}
+                return (
+                    f"MEDIUM: FX hedge '{td.get('hedge_id', 'unknown')}' on "
+                    f"{td.get('currency_pair', 'unknown pair')} (notional {td.get('notional_amount', 'unknown')}) "
+                    "has no completed hedge-accounting documentation on file"
+                )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -684,6 +713,12 @@ class SilverConformationLayer(SilverLayerBase):
                 # finding detail — employee/pay-rate/termination fields the
                 # hire_to_retire Rego module and POL-HR-* rules read.
                 **(raw.get("raw_payload") or {}).get("payroll_detail", {}),
+                # Treasury & Cash Management (oracle_fusion_tool.py, event_type
+                # in WIRE_TRANSFER_SINGLE_APPROVAL/BANK_RECON_OVERDUE/
+                # FX_HEDGE_DOCUMENTATION_MISSING): routed into record_to_report
+                # (see mcp_governance._SOURCE_EVENT_TO_PAC_PROCESS) alongside
+                # the Financial Risk Pipeline's financial_compliance fields.
+                **(raw.get("raw_payload") or {}).get("treasury_detail", {}),
             },
             normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],

@@ -59,7 +59,13 @@ const CONNECTOR_TYPES = [
       { key: "client_id", label: "OAuth Client ID (optional — overrides username/password)", type: "text" },
       { key: "client_secret", label: "OAuth Client Secret", type: "password" },
     ],
-    extraFields: [] },
+    // Treasury & Cash Management checks (oracle_fusion_tool.py) ride this
+    // same connector/poll schedule — see oracle_hcm's extraFields for the
+    // matching Hire-to-Retire pattern.
+    extraFields: [
+      { key: "wire_min_approvers", label: "Wire Transfer Min. Approvers", type: "text", placeholder: "2" },
+      { key: "bank_recon_sla_days", label: "Bank Recon SLA (days)", type: "text", placeholder: "5" },
+    ] },
   // Hire-to-Retire: payroll/HR continuous audit (oracle_hcm_tool.py). Same
   // Oracle Fusion Cloud tenant/credential shape as oracle_fusion above (HCM
   // is a separate REST API family on the same host), registered as its own
