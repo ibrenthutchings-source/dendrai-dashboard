@@ -29,13 +29,20 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import db
 import itsm_connectors
+from auth_endpoints import require_screen_permission
 
 router = APIRouter(prefix="/itsm", tags=["ITSM SLA Bridge"])
+
+# Screen gating applied per-route rather than at the router level (unlike
+# scm_audit/pac/sox/etc.) because /itsm/webhook is an external-system Bearer-
+# key-authenticated endpoint — see api_server.py's _AUTH_EXEMPT — that has no
+# user session to check a screen permission against at all.
+_SCREEN_ID = "devopsmonitoring"
 
 _JIRA_TYPE = "itsm_jira"
 _SERVICENOW_TYPE = "itsm_servicenow"
@@ -52,7 +59,7 @@ class CreateTicketBody(BaseModel):
 
 
 @router.post("/tickets")
-async def create_ticket(body: CreateTicketBody):
+async def create_ticket(body: CreateTicketBody, current_user: dict = Depends(require_screen_permission(_SCREEN_ID, edit=True))):
     """Opens a real ticket in the external system, then records it here with
     a computed SLA due date. Reuses an existing open ticket for the same
     finding_hash rather than opening a duplicate (idx_itsm_tickets_active_hash
@@ -115,7 +122,8 @@ async def create_ticket(body: CreateTicketBody):
 
 @router.get("/tickets")
 async def list_tickets(status: Optional[str] = None, external_system: Optional[str] = None,
-                        breached_only: bool = False, limit: int = 100):
+                        breached_only: bool = False, limit: int = 100,
+                        current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         return {"tickets": []}
     return {"tickets": db.list_itsm_tickets(
@@ -123,7 +131,7 @@ async def list_tickets(status: Optional[str] = None, external_system: Optional[s
 
 
 @router.get("/tickets/{ticket_id}")
-async def get_ticket(ticket_id: int):
+async def get_ticket(ticket_id: int, current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
     ticket = db.get_itsm_ticket(ticket_id)
@@ -133,7 +141,7 @@ async def get_ticket(ticket_id: int):
 
 
 @router.post("/tickets/{ticket_id}/sync")
-async def sync_ticket(ticket_id: int):
+async def sync_ticket(ticket_id: int, current_user: dict = Depends(require_screen_permission(_SCREEN_ID, edit=True))):
     """Resync one ticket's status from the external system right now, instead
     of waiting for the next scheduled poll — the manual 'Test'-button
     equivalent for a single ticket."""
@@ -221,7 +229,7 @@ async def itsm_webhook(request: Request, body: WebhookBody):
 
 
 @router.get("/sla-summary")
-async def sla_summary():
+async def sla_summary(current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         return {"open": 0, "breached": 0, "at_risk_24h": 0}
     tickets = db.list_itsm_tickets(limit=500)

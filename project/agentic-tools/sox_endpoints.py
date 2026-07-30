@@ -34,13 +34,17 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 import db
 from sox_scoping_tool import run_sox_scoping
+from auth_endpoints import require_screen_permission
 
-router = APIRouter(prefix="/sox", tags=["SOX Scoping"])
+# Router-level: SOX Scoping backs the "SOX Control Pulse" screen (nav id
+# "sox") — see auth_endpoints.require_screen_permission's docstring.
+router = APIRouter(prefix="/sox", tags=["SOX Scoping"],
+                    dependencies=[Depends(require_screen_permission("sox"))])
 
 
 # ── Request / Response models ──────────────────────────────────────────────────

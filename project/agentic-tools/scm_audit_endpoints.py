@@ -41,7 +41,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import db
@@ -50,6 +50,7 @@ import pipeline_security_connectors
 import scm_connectors
 import secret_scanner_connectors
 from mcp_guards import validate_external_url
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger("ubo.scm_audit")
 
@@ -65,7 +66,11 @@ try:
 except ImportError as exc:
     logger.warning("UBO not importable — SCM audits will be logged only: %s", exc)
 
-router = APIRouter(prefix="/scm-audit", tags=["SCM Integrity Auditor"])
+# Router-level: SCM Integrity Auditor findings surface on the "Branch
+# Integrity & Evidence" screen (nav id "devopsmonitoring") — see
+# require_screen_permission's docstring for why this is needed at all.
+router = APIRouter(prefix="/scm-audit", tags=["SCM Integrity Auditor"],
+                    dependencies=[Depends(require_screen_permission("devopsmonitoring"))])
 
 _COUNCIL_TIERS = {"CRITICAL", "HIGH", "MEDIUM"}
 _CONNECTOR_TYPES = ("github_scm", "gitlab_scm", "bitbucket_scm")

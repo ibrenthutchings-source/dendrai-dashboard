@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import db
 import mcp_governance
 import risks_as_code
-from auth_endpoints import get_current_user
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/evidence-pack", tags=["Evidence Pack"])
 
 
 @router.get("/{run_id}")
-async def get_evidence_pack(run_id: int, current_user: dict = Depends(get_current_user)):
+async def get_evidence_pack(run_id: int, current_user: dict = Depends(require_screen_permission("pipeline"))):
     """Assemble the full evidence bundle for one pipeline run."""
     run = db.get_run_meta_for_evidence_pack(run_id)
     if not run:

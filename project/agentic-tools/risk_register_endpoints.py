@@ -23,15 +23,22 @@ import os
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 import db
 from pac_endpoints import _controls_to_rego
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/risk-register", tags=["risk-register"])
+# Router-level: primary home is the "Risk & Control Ledger" screen (nav id
+# "rrreview") — see auth_endpoints.require_screen_permission's docstring.
+# Note: risk-register data also renders inside other screens (Risk Radar,
+# Risk Sankey/graph views); if an admin ever restricts "rrreview" for a
+# role, watch for those cross-screen views losing data too.
+router = APIRouter(prefix="/risk-register", tags=["risk-register"],
+                    dependencies=[Depends(require_screen_permission("rrreview"))])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
