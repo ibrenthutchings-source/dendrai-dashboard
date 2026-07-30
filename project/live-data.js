@@ -208,21 +208,32 @@ window.LIVE = (function () {
   function pickConcept(facts, names, unit) {
     if (!facts.facts || !facts.facts["us-gaap"]) return null;
     const ns = facts.facts["us-gaap"];
+    // Filers often carry multiple tag aliases for the same line item (e.g. the
+    // legacy "Revenues" tag alongside "RevenueFromContractWithCustomer..." after
+    // adopting ASC 606) — the old tag's last data point can be years stale even
+    // though it still technically "exists" in companyfacts. Evaluate every alias
+    // and keep whichever one's latest point is most recent, rather than taking
+    // the first alias found — otherwise a stale tag silently wins just because
+    // it's earlier in the alias list.
+    let best = null;
     for (const n of names) {
-      if (ns[n] && ns[n].units && ns[n].units[unit]) {
-        const series = ns[n].units[unit];
-        const annual = series
-          .filter((x) => x.form === "10-K" && x.fp === "FY")
-          .sort((a, b) => (a.end < b.end ? 1 : -1));
-        const latest = annual[0] || series[series.length - 1];
-        return {
-          concept: n,
-          latestAnnual: latest ? { val: latest.val, end: latest.end, accn: latest.accn } : null,
-          series: series.slice(-24),
-        };
+      if (!(ns[n] && ns[n].units && ns[n].units[unit])) continue;
+      const series = ns[n].units[unit];
+      const annual = series
+        .filter((x) => x.form === "10-K" && x.fp === "FY")
+        .sort((a, b) => (a.end < b.end ? 1 : -1));
+      const latest = annual[0] || series[series.length - 1];
+      if (!latest) continue;
+      if (!best || latest.end > best.latest.end) {
+        best = { concept: n, latest, series };
       }
     }
-    return null;
+    if (!best) return null;
+    return {
+      concept: best.concept,
+      latestAnnual: { val: best.latest.val, end: best.latest.end, accn: best.latest.accn },
+      series: best.series.slice(-24),
+    };
   }
 
   // ---- FRED — bundled snapshot ----
