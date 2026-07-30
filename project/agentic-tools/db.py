@@ -2012,6 +2012,18 @@ def init_db() -> bool:
     try:
         # connect_timeout=8 keeps DNS failures fast (vs. OS default ~75 s).
         dsn = url if "connect_timeout" in url else url + ("&" if "?" in url else "?") + "connect_timeout=8"
+        # Enforce encryption in transit rather than trusting DATABASE_URL alone
+        # to have specified it — a bare/copy-pasted DSN would otherwise connect
+        # over plaintext TCP with no signal anything is wrong. Only applied when
+        # the DSN doesn't already declare a mode, so an operator's explicit
+        # choice (including a deliberate "disable" for a local/private-network
+        # Postgres) is always respected. DATABASE_SSL_MODE overrides the
+        # "require" default for environments where TLS genuinely isn't
+        # available (e.g. a local dev Postgres with no cert).
+        if "sslmode" not in dsn:
+            ssl_mode = os.environ.get("DATABASE_SSL_MODE", "require").strip()
+            if ssl_mode:
+                dsn = dsn + "&" + "sslmode=" + ssl_mode
         _pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=dsn)
         conn = _pool.getconn()
         try:
@@ -8289,6 +8301,31 @@ def decrypt_credentials(token: bytes) -> dict:
         raise EncryptionKeyMissing(
             "Could not decrypt connector credentials — CONNECTOR_ENCRYPTION_KEY has "
             "changed since these were saved, or the value is corrupted."
+        )
+
+
+def encrypt_sensitive_json(data: dict) -> str:
+    """Encrypt an arbitrary JSON-able dict with the same Fernet scheme as
+    connector credentials (CONNECTOR_ENCRYPTION_KEY) — used for sub-payloads
+    that carry compensation/bank/wire-transfer data (e.g. system_telemetry's
+    payroll_detail / treasury_detail, see mcp_governance._ingest_system_event).
+    Returns text (Fernet tokens are already URL-safe base64) rather than raw
+    bytes so the result drops straight into a JSONB column value."""
+    import json as _json
+    return _fernet().encrypt(_json.dumps(data).encode()).decode("ascii")
+
+
+def decrypt_sensitive_json(token: str | bytes) -> dict:
+    """Inverse of encrypt_sensitive_json()."""
+    import json as _json
+    if isinstance(token, str):
+        token = token.encode("ascii")
+    try:
+        return _json.loads(_fernet().decrypt(token).decode())
+    except InvalidToken:
+        raise EncryptionKeyMissing(
+            "Could not decrypt sensitive data — CONNECTOR_ENCRYPTION_KEY has "
+            "changed since it was saved, or the value is corrupted."
         )
 
 

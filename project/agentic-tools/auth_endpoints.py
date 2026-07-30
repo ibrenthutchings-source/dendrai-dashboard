@@ -407,6 +407,37 @@ def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     return current_user
 
 
+def require_screen_permission(screen_id: str, edit: bool = False):
+    """FastAPI dependency factory — the backend enforcement counterpart to
+    the screen_permissions matrix nav.jsx already uses to hide nav items.
+
+    Until now that matrix was frontend-only: GET /auth/me hands a user's
+    effective permissions to the UI to decide what to render, but no data
+    endpoint re-checked it, so a screen hidden from the nav was still fully
+    reachable by calling its API directly with a valid session cookie. This
+    closes that gap by making a route depend on the same effective-
+    permission lookup the frontend already gets.
+
+    Mirrors auth_db.screen_permissions' own resolution rules: admins bypass
+    entirely (never locked out, matching admin_get/set_screen_permissions'
+    behavior), and a screen_id with no explicit row for this user or their
+    role means "allowed" — this is a blocklist, not an allowlist, so a
+    screen nobody has configured permissions for yet stays reachable rather
+    than silently 403ing every caller.
+    """
+    def _check(current_user: dict = Depends(get_current_user)) -> dict:
+        if current_user.get("role") == "admin":
+            return current_user
+        perms = auth_db.get_effective_screen_permissions(current_user["id"], current_user.get("role", "user"))
+        entry = perms.get(screen_id)
+        if entry is not None:
+            key = "can_edit" if edit else "can_read"
+            if not entry.get(key, True):
+                raise HTTPException(status_code=403, detail=f"You do not have access to '{screen_id}'")
+        return current_user
+    return _check
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/sso/providers", summary="List enabled SSO providers")
