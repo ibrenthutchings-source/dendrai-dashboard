@@ -190,6 +190,13 @@ _TRADE_COMPLIANCE_FIELDS = frozenset({
     "list_source", "entity_number",
 })
 
+# Fields vendor_risk_sweep.py and oracle_fusion_tool.py's vendor concentration
+# check contribute via the "vendor_risk_detail" raw_payload key.
+_VENDOR_RISK_FIELDS = frozenset({
+    "vendor_name", "critical", "soc2_expires_at",
+    "concentration_pct", "threshold_pct", "window_days",
+})
+
 
 # ── Per-process contract ──────────────────────────────────────────────────────
 # allowed_fields: every input.event.<field> a module for this process may
@@ -220,7 +227,7 @@ PROCESS_CONTRACTS: dict[str, dict] = {
         "allowed_fields": _SAP_FIELDS | _FINANCIAL_RISK_FIELDS | _TREASURY_FIELDS,
         "allowed_event_types": None,
     },
-    "procure_to_pay":   {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
+    "procure_to_pay":   {"allowed_fields": _SAP_FIELDS | _VENDOR_RISK_FIELDS, "allowed_event_types": None},
     "order_to_cash":    {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
     "receive_to_ship":  {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
     "infrastructure_monitoring": {

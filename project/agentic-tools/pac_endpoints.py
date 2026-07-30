@@ -468,6 +468,31 @@ deny_sod_event[msg] if {
         input.user.username
     ])
 }
+
+# ── Continuous Third-Party/Vendor Risk ────────────────────────────────────────
+# Findings ride the generic input.event.* shape (system_telemetry ->
+# mcp_governance._evaluate_pac_policy) — vendor_risk_sweep.py (SOC 2 expiry)
+# and oracle_fusion_tool.py's spend-concentration check.
+
+# ── P-VEN-001: Vendor SOC 2 Report Expired ────────────────────────────────────
+deny_vendor_risk[msg] if {
+    input.event.type == "VENDOR_SOC2_EXPIRED"
+    msg := sprintf("P-VEN-001: vendor '%v' SOC 2 report expired on %v — no current attestation on file", [
+        input.event.vendor_name,
+        input.event.soc2_expires_at,
+    ])
+}
+
+# ── P-VEN-002: Vendor Spend Concentration Breach ──────────────────────────────
+deny_vendor_risk[msg] if {
+    input.event.type == "VENDOR_CONCENTRATION_BREACH"
+    msg := sprintf("P-VEN-002: vendor '%v' accounts for %v%% of trailing %v-day P2P spend — exceeds the %v%% concentration threshold", [
+        input.event.vendor_name,
+        input.event.concentration_pct,
+        input.event.window_days,
+        input.event.threshold_pct,
+    ])
+}
 """,
 
 "receive_to_ship": """\
