@@ -441,6 +441,12 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         "ghost_employee_suspected":            EventType.GHOST_EMPLOYEE_SUSPECTED,
         "unauthorized_pay_rate_change":         EventType.UNAUTHORIZED_PAY_RATE_CHANGE,
         "terminated_employee_access_retained":  EventType.TERMINATED_EMPLOYEE_ACCESS_RETAINED,
+        # Treasury & Cash Management: oracle_fusion_tool.py's treasury checks
+        # set these explicit flags — same producer-driven pattern as every
+        # other flag in this map.
+        "wire_transfer_single_approval": EventType.WIRE_TRANSFER_SINGLE_APPROVAL,
+        "bank_recon_overdue":            EventType.BANK_RECON_OVERDUE,
+        "fx_hedge_documentation_missing": EventType.FX_HEDGE_DOCUMENTATION_MISSING,
     }
 
     # Multi-Domain Risk Pipeline classification for the Financial-domain flags

@@ -742,6 +742,42 @@ deny_financial_risk[msg] if {
         input.event.z_score,
     ])
 }
+
+# ── Treasury & Cash Management ─────────────────────────────────────────────────
+# Findings ride the same generic input.event.* shape as the Financial Risk
+# Pipeline section above — oracle_fusion_tool.py's treasury checks.
+
+# ── R2R-TREAS-001: Wire Transfer Single Approval ──────────────────────────────
+deny_treasury[msg] if {
+    input.event.type == "WIRE_TRANSFER_SINGLE_APPROVAL"
+    msg := sprintf("R2R-TREAS-001: wire transfer '%v' for %v %v was processed with only %v approver — dual-approval control bypassed", [
+        input.event.payment_id,
+        input.event.currency,
+        input.event.amount,
+        input.event.approver_count,
+    ])
+}
+
+# ── R2R-TREAS-002: Bank Reconciliation Overdue ────────────────────────────────
+deny_treasury[msg] if {
+    input.event.type == "BANK_RECON_OVERDUE"
+    input.event.days_overdue > 0
+    msg := sprintf("R2R-TREAS-002: bank account '%v' reconciliation is %v day(s) overdue — last reconciled %v", [
+        input.event.bank_account,
+        input.event.days_overdue,
+        input.event.last_reconciled_date,
+    ])
+}
+
+# ── R2R-TREAS-003: FX Hedge Documentation Missing ─────────────────────────────
+deny_treasury[msg] if {
+    input.event.type == "FX_HEDGE_DOCUMENTATION_MISSING"
+    msg := sprintf("R2R-TREAS-003: FX hedge '%v' on %v (notional %v) has no completed hedge-accounting documentation on file", [
+        input.event.hedge_id,
+        input.event.currency_pair,
+        input.event.notional_amount,
+    ])
+}
 """,
 
 "devops_monitoring": """\

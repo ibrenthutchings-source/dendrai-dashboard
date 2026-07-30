@@ -109,6 +109,11 @@ class EventType(str, Enum):
     UNAUTHORIZED_PAY_RATE_CHANGE       = "UNAUTHORIZED_PAY_RATE_CHANGE"
     TERMINATED_EMPLOYEE_ACCESS_RETAINED = "TERMINATED_EMPLOYEE_ACCESS_RETAINED"
 
+    # ── Treasury & Cash Management (oracle_fusion_tool.py) ─────
+    WIRE_TRANSFER_SINGLE_APPROVAL      = "WIRE_TRANSFER_SINGLE_APPROVAL"
+    BANK_RECON_OVERDUE                 = "BANK_RECON_OVERDUE"
+    FX_HEDGE_DOCUMENTATION_MISSING     = "FX_HEDGE_DOCUMENTATION_MISSING"
+
 
 class RiskDomain(str, Enum):
     """Four enterprise risk categories from the Multi-Domain Continuous Risk

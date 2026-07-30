@@ -162,6 +162,27 @@ _PAYROLL_FIELDS = frozenset({
     "days_since_termination",
 })
 
+# Fields predictive_analytics_tool.py's Financial Risk Pipeline checks
+# contribute (spread via silver.py's "financial_compliance" raw_payload key).
+# Pre-existing gap found while adding Treasury below: P-FIN-001..003 in the
+# record_to_report Rego module already referenced these, but they were never
+# declared here — check_module_contract was correctly flagging them as
+# unknown_fields. Fixed alongside the Treasury addition since it's the same
+# process's contract declaration.
+_FINANCIAL_RISK_FIELDS = frozenset({
+    "anomaly", "z_score", "recent_daily_rate", "baseline_daily_mean",
+    "shift_detected", "worst_z_score", "divergence_detected",
+})
+
+# Fields oracle_fusion_tool.py's Treasury & Cash Management checks contribute
+# via its "treasury_detail" raw_payload key, spread by silver.py the same way
+# _PAYROLL_FIELDS is for oracle_hcm_tool.py.
+_TREASURY_FIELDS = frozenset({
+    "payment_id", "amount", "currency", "approver_count",
+    "bank_account", "last_reconciled_date", "days_overdue",
+    "hedge_id", "currency_pair", "notional_amount",
+})
+
 
 # ── Per-process contract ──────────────────────────────────────────────────────
 # allowed_fields: every input.event.<field> a module for this process may
@@ -188,7 +209,10 @@ PROCESS_CONTRACTS: dict[str, dict] = {
         "allowed_fields": _GIT_FIELDS | _SYSTEM_TELEMETRY_FIELDS | _MCP_FIELDS | _SAILPOINT_FIELDS,
         "allowed_event_types": None,
     },
-    "record_to_report": {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
+    "record_to_report": {
+        "allowed_fields": _SAP_FIELDS | _FINANCIAL_RISK_FIELDS | _TREASURY_FIELDS,
+        "allowed_event_types": None,
+    },
     "procure_to_pay":   {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
     "order_to_cash":    {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
     "receive_to_ship":  {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
