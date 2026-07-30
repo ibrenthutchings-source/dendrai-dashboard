@@ -115,6 +115,24 @@ def test_trade_compliance_rego_passes_its_own_contract():
     assert result["unroutable_event_types"] == []
 
 
+def test_procure_to_pay_vendor_risk_rules_pass_their_contract():
+    """Same shape as test_record_to_report_event_shaped_rules_pass_their_contract:
+    procure_to_pay's original P-P2P-* rules have pre-existing, documented gaps
+    (input.purchase_order.*/input.invoice.*/etc unproducible roots, and a
+    "new_vendor_activation" event type with no real producer) — not
+    re-litigated here. This locks in the P-VEN-001/002 additions: no unknown
+    fields for the vendor_risk_detail-derived fields, and the
+    VENDOR_MASTER_CHANGE typo fix (was the lowercase "vendor_master_change",
+    the same dead-rule bug shape as the original devops_monitoring bug)."""
+    rego = pe._REGO_DEFAULTS["procure_to_pay"]
+    result = pc.check_module_contract("procure_to_pay", rego)
+    assert "vendor_name" not in result["unknown_fields"]
+    assert "concentration_pct" not in result["unknown_fields"]
+    assert "soc2_expires_at" not in result["unknown_fields"]
+    assert "vendor_master_change" not in result["invalid_event_types"]
+    assert result["unroutable_event_types"] == []
+
+
 def test_check_module_contract_catches_the_original_bug_shape():
     """Reproduces the exact defect this module exists to catch, as a
     standalone fixture independent of whatever pac_endpoints.py ships today."""
