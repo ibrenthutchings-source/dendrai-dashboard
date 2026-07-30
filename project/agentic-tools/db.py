@@ -1845,6 +1845,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_risk_profiles_name
 CREATE INDEX IF NOT EXISTS idx_vendor_risk_profiles_soc2_expiry
     ON observability.vendor_risk_profiles (soc2_expires_at) WHERE status = 'CURRENT';
 
+-- AI Governance: the audited company's OWN AI system usage — distinct from
+-- observability.mcp_telemetry, which inventories only this platform's own
+-- MCP tool calls (see ai-inventory.jsx). This is a manual attestation
+-- register, not a live connector — there's no API to poll for "unauthorized
+-- shadow AI usage" the way there is for GitHub secrets or SAP journal
+-- entries, so an auditor records each known AI system here (AI-05: Third-
+-- Party AI Tool Assessment). requires_human_oversight/human_oversight_defined
+-- back AI-06 (Human Oversight of AI Systems): a gap between them is flagged
+-- immediately on save (ai_governance_endpoints.py), not swept — it's a
+-- static configuration gap, not something that decays with time the way a
+-- SOC 2 report's coverage window does. assessment_expires_at IS swept
+-- (ai_governance_sweep.py), same CURRENT->EXPIRED status-flip pattern as
+-- vendor_risk_profiles.soc2_expires_at.
+CREATE TABLE IF NOT EXISTS observability.ai_system_registry (
+    id                        BIGSERIAL    PRIMARY KEY,
+    system_name               VARCHAR(256) NOT NULL,
+    vendor                    VARCHAR(256),
+    business_owner            VARCHAR(256),
+    risk_tier                 VARCHAR(16)  NOT NULL DEFAULT 'MEDIUM',  -- LOW | MEDIUM | HIGH
+    requires_human_oversight  BOOLEAN      NOT NULL DEFAULT FALSE,
+    human_oversight_defined   BOOLEAN      NOT NULL DEFAULT FALSE,
+    last_assessment_date      DATE,
+    assessment_expires_at     DATE,
+    status                    VARCHAR(16)  NOT NULL DEFAULT 'CURRENT',  -- CURRENT | EXPIRED
+    created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_system_registry_name
+    ON observability.ai_system_registry (system_name);
+CREATE INDEX IF NOT EXISTS idx_ai_system_registry_assessment_expiry
+    ON observability.ai_system_registry (assessment_expires_at) WHERE status = 'CURRENT';
+
 -- DevOps Monitoring: pipeline provenance/attestation metadata (SLSA-adjacent).
 -- Stores what a CI run claims about itself — OIDC identity claims, SLSA
 -- provenance statement, a hash (never the raw values) of its environment
@@ -8917,6 +8949,102 @@ def expire_overdue_vendor_soc2() -> list:
                     d = dict(zip(cols, r))
                     if d.get("soc2_expires_at"):
                         d["soc2_expires_at"] = d["soc2_expires_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Governance (observability.ai_system_registry)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_ai_system(
+    system_name: str, vendor: Optional[str] = None, business_owner: Optional[str] = None,
+    risk_tier: str = "MEDIUM", requires_human_oversight: bool = False,
+    human_oversight_defined: bool = False,
+    last_assessment_date: Optional[str] = None, assessment_expires_at: Optional[str] = None,
+) -> Optional[int]:
+    """Create or update an AI system's governance profile. A fresh
+    assessment date resets status back to CURRENT, same "un-expire" semantics
+    as upsert_vendor_risk_profile."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.ai_system_registry
+                        (system_name, vendor, business_owner, risk_tier,
+                         requires_human_oversight, human_oversight_defined,
+                         last_assessment_date, assessment_expires_at, status, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'CURRENT', NOW())
+                    ON CONFLICT (system_name) DO UPDATE SET
+                        vendor = EXCLUDED.vendor,
+                        business_owner = EXCLUDED.business_owner,
+                        risk_tier = EXCLUDED.risk_tier,
+                        requires_human_oversight = EXCLUDED.requires_human_oversight,
+                        human_oversight_defined = EXCLUDED.human_oversight_defined,
+                        last_assessment_date = EXCLUDED.last_assessment_date,
+                        assessment_expires_at = EXCLUDED.assessment_expires_at,
+                        status = 'CURRENT',
+                        updated_at = NOW()
+                    RETURNING id
+                    """,
+                    (system_name, vendor, business_owner, risk_tier,
+                     requires_human_oversight, human_oversight_defined,
+                     last_assessment_date, assessment_expires_at),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_ai_systems(high_risk_only: bool = False) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, system_name, vendor, business_owner, risk_tier,
+                           requires_human_oversight, human_oversight_defined,
+                           last_assessment_date, assessment_expires_at, status,
+                           created_at, updated_at
+                    FROM observability.ai_system_registry
+                    WHERE (%s = FALSE OR risk_tier = 'HIGH')
+                    ORDER BY system_name
+                    """,
+                    (high_risk_only,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("last_assessment_date", "assessment_expires_at", "created_at", "updated_at"):
+                        if d.get(k) is not None:
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def expire_overdue_ai_assessments() -> list:
+    """Flip CURRENT -> EXPIRED for every AI system past its
+    assessment_expires_at. Mirrors expire_overdue_vendor_soc2 exactly."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.ai_system_registry
+                    SET status = 'EXPIRED', updated_at = NOW()
+                    WHERE status = 'CURRENT' AND assessment_expires_at < NOW()
+                    RETURNING id, system_name, vendor, risk_tier, assessment_expires_at
+                    """,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("assessment_expires_at"):
+                        d["assessment_expires_at"] = d["assessment_expires_at"].isoformat()
                     rows.append(d)
                 return rows
     return _run(_do) or []

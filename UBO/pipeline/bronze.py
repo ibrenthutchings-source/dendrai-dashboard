@@ -454,6 +454,10 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         # expiry sweep and oracle_fusion_tool.py's spend-concentration check.
         "vendor_soc2_expired":         EventType.VENDOR_SOC2_EXPIRED,
         "vendor_concentration_breach": EventType.VENDOR_CONCENTRATION_BREACH,
+        # AI Governance: ai_governance_sweep.py's assessment-expiry sweep and
+        # ai_governance_endpoints.py's inline human-oversight-gap check.
+        "ai_assessment_overdue":       EventType.AI_ASSESSMENT_OVERDUE,
+        "ai_human_oversight_missing":  EventType.AI_HUMAN_OVERSIGHT_MISSING,
     }
 
     # Multi-Domain Risk Pipeline classification for the Financial-domain flags
