@@ -350,6 +350,27 @@ class SilverConformationLayer(SilverLayerBase):
                     "— zero-tolerance, transact only after compliance clearance"
                 )
 
+        # ── Continuous Third-Party/Vendor Risk rules ──────────────────────────
+        elif rule.rule_id == "POL-VEN-001":
+            if uro.event_type == EventType.VENDOR_SOC2_EXPIRED:
+                vd = (raw.get("raw_payload") or {}).get("vendor_risk_detail") or {}
+                return (
+                    f"HIGH: vendor '{vd.get('vendor_name', 'unknown')}'"
+                    f"{' (critical)' if vd.get('critical') else ''} SOC 2 report expired on "
+                    f"{vd.get('soc2_expires_at', 'unknown date')} — no current attestation on file"
+                )
+
+        elif rule.rule_id == "POL-VEN-002":
+            if uro.event_type == EventType.VENDOR_CONCENTRATION_BREACH:
+                vd = (raw.get("raw_payload") or {}).get("vendor_risk_detail") or {}
+                pct = vd.get("concentration_pct")
+                if pct is not None:
+                    return (
+                        f"MEDIUM: vendor '{vd.get('vendor_name', 'unknown')}' accounts for "
+                        f"{pct}% of trailing {vd.get('window_days', 90)}-day P2P spend — exceeds the "
+                        f"{vd.get('threshold_pct', 'configured')}% concentration threshold"
+                    )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -733,6 +754,10 @@ class SilverConformationLayer(SilverLayerBase):
                 # Export Control / Trade Compliance (denied_party_screening_tool.py,
                 # event_type == EXPORT_CONTROL_MATCH): CSL screening hit detail.
                 **(raw.get("raw_payload") or {}).get("trade_compliance_detail", {}),
+                # Continuous Third-Party/Vendor Risk (vendor_risk_sweep.py /
+                # oracle_fusion_tool.py, event_type in VENDOR_SOC2_EXPIRED/
+                # VENDOR_CONCENTRATION_BREACH): routed into procure_to_pay.
+                **(raw.get("raw_payload") or {}).get("vendor_risk_detail", {}),
             },
             normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],

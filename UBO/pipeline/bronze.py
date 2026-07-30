@@ -450,6 +450,10 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         # Export Control / Trade Compliance: denied_party_screening_tool.py's
         # Consolidated Screening List match.
         "export_control_match": EventType.EXPORT_CONTROL_MATCH,
+        # Continuous Third-Party/Vendor Risk: vendor_risk_sweep.py's SOC 2
+        # expiry sweep and oracle_fusion_tool.py's spend-concentration check.
+        "vendor_soc2_expired":         EventType.VENDOR_SOC2_EXPIRED,
+        "vendor_concentration_breach": EventType.VENDOR_CONCENTRATION_BREACH,
     }
 
     # Multi-Domain Risk Pipeline classification for the Financial-domain flags

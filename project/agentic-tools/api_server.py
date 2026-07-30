@@ -131,10 +131,12 @@ import scm_audit_endpoints
 import evidence_endpoints
 import risk_waiver_sweep
 import itsm_endpoints
+import vendor_risk_endpoints
 import infrastructure_monitoring_endpoints
 import itsm_sla_sweep
 import pac_negative_sweep
 import connector_hygiene_sweep
+import vendor_risk_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -283,6 +285,12 @@ async def lifespan(application: FastAPI):
             _connector_hygiene_sweep_task = asyncio.create_task(connector_hygiene_sweep.start_sweep())
             logger.info("Connector credential hygiene sweep task started")
 
+        # Continuous Third-Party/Vendor Risk: vendor SOC 2 expiry sweep.
+        _vendor_risk_sweep_task = None
+        if db.is_available():
+            _vendor_risk_sweep_task = asyncio.create_task(vendor_risk_sweep.start_sweep())
+            logger.info("Vendor risk SOC 2 expiry sweep task started")
+
         # Background DB reconnect loop — retries every 30 s if startup DB init failed.
         # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
         # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -319,6 +327,9 @@ async def lifespan(application: FastAPI):
                     if _connector_hygiene_sweep_task is None:
                         asyncio.create_task(connector_hygiene_sweep.start_sweep())
                         logger.info("Connector credential hygiene sweep started after DB reconnect")
+                    if _vendor_risk_sweep_task is None:
+                        asyncio.create_task(vendor_risk_sweep.start_sweep())
+                        logger.info("Vendor risk SOC 2 expiry sweep started after DB reconnect")
 
         _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -327,7 +338,8 @@ async def lifespan(application: FastAPI):
         finally:
             _reconnect_task.cancel()
             for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task,
-                             _itsm_sla_sweep_task, _pac_negative_sweep_task, _connector_hygiene_sweep_task):
+                             _itsm_sla_sweep_task, _pac_negative_sweep_task, _connector_hygiene_sweep_task,
+                             _vendor_risk_sweep_task):
                 if _bg_task is not None:
                     _bg_task.cancel()
                     try:
@@ -564,6 +576,9 @@ app.include_router(infrastructure_monitoring_endpoints.router)
 
 # DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge — ticket lifecycle + breach tracking.
 app.include_router(itsm_endpoints.router)
+
+# Continuous Third-Party/Vendor Risk: vendor SOC 2 register CRUD.
+app.include_router(vendor_risk_endpoints.router)
 
 # ── MCP Streamable-HTTP mounts ─────────────────────────────────────────────────
 # Each FastMCP instance is mounted as an ASGI sub-app so claude.ai can connect

@@ -1822,6 +1822,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_risk_waivers_active_hash
 CREATE INDEX IF NOT EXISTS idx_risk_waivers_expiry
     ON observability.risk_waivers (expires_at) WHERE status = 'ACTIVE';
 
+-- Continuous Third-Party/Vendor Risk: the auditor-maintained register of which
+-- vendors are "critical" and what their current SOC 2 report's coverage
+-- window is — turns VM-01/VM-02's static control-library entries into a
+-- live-monitored program. status flips CURRENT -> EXPIRED the same way
+-- risk_waivers.status flips ACTIVE -> EXPIRED, so vendor_risk_sweep.py's
+-- UPDATE...RETURNING only returns vendors newly crossing expiry each tick
+-- instead of re-flagging the same expired vendor on every sweep.
+CREATE TABLE IF NOT EXISTS observability.vendor_risk_profiles (
+    id                BIGSERIAL    PRIMARY KEY,
+    vendor_name       VARCHAR(256) NOT NULL,
+    vendor_id         VARCHAR(128),          -- ERP supplier ID, when known (oracle_fusion_tool.py SupplierId)
+    critical          BOOLEAN      NOT NULL DEFAULT FALSE,
+    soc2_report_date  DATE,
+    soc2_expires_at   DATE,
+    status            VARCHAR(16)  NOT NULL DEFAULT 'CURRENT',  -- CURRENT | EXPIRED
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_risk_profiles_name
+    ON observability.vendor_risk_profiles (vendor_name);
+CREATE INDEX IF NOT EXISTS idx_vendor_risk_profiles_soc2_expiry
+    ON observability.vendor_risk_profiles (soc2_expires_at) WHERE status = 'CURRENT';
+
 -- DevOps Monitoring: pipeline provenance/attestation metadata (SLSA-adjacent).
 -- Stores what a CI run claims about itself — OIDC identity claims, SLSA
 -- provenance statement, a hash (never the raw values) of its environment
@@ -8809,6 +8832,93 @@ def expire_overdue_waivers() -> list:
                         d["expires_at"] = d["expires_at"].isoformat()
                     rows.append(d)
             return rows
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Continuous Third-Party/Vendor Risk (observability.vendor_risk_profiles)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_vendor_risk_profile(
+    vendor_name: str, vendor_id: Optional[str] = None, critical: bool = False,
+    soc2_report_date: Optional[str] = None, soc2_expires_at: Optional[str] = None,
+) -> Optional[int]:
+    """Create or update a vendor's risk profile. A new/renewed SOC 2 date
+    resets status back to CURRENT — an auditor uploading a fresh report is
+    exactly the "un-expire" action, mirroring how a new risk_waivers row
+    naturally supersedes the old ACTIVE-vs-EXPIRED state."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.vendor_risk_profiles
+                        (vendor_name, vendor_id, critical, soc2_report_date, soc2_expires_at, status, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, 'CURRENT', NOW())
+                    ON CONFLICT (vendor_name) DO UPDATE SET
+                        vendor_id = EXCLUDED.vendor_id,
+                        critical = EXCLUDED.critical,
+                        soc2_report_date = EXCLUDED.soc2_report_date,
+                        soc2_expires_at = EXCLUDED.soc2_expires_at,
+                        status = 'CURRENT',
+                        updated_at = NOW()
+                    RETURNING id
+                    """,
+                    (vendor_name, vendor_id, critical, soc2_report_date, soc2_expires_at),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_vendor_risk_profiles(critical_only: bool = False) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, vendor_name, vendor_id, critical, soc2_report_date,
+                           soc2_expires_at, status, created_at, updated_at
+                    FROM observability.vendor_risk_profiles
+                    WHERE (%s = FALSE OR critical = TRUE)
+                    ORDER BY vendor_name
+                    """,
+                    (critical_only,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("soc2_report_date", "soc2_expires_at", "created_at", "updated_at"):
+                        if d.get(k) is not None:
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def expire_overdue_vendor_soc2() -> list:
+    """Flip CURRENT -> EXPIRED for every vendor past its soc2_expires_at.
+    Returns the rows just expired so vendor_risk_sweep.py can raise a fresh
+    finding for each one — mirrors expire_overdue_waivers exactly."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.vendor_risk_profiles
+                    SET status = 'EXPIRED', updated_at = NOW()
+                    WHERE status = 'CURRENT' AND soc2_expires_at < NOW()
+                    RETURNING id, vendor_name, vendor_id, critical, soc2_expires_at
+                    """,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("soc2_expires_at"):
+                        d["soc2_expires_at"] = d["soc2_expires_at"].isoformat()
+                    rows.append(d)
+                return rows
     return _run(_do) or []
 
 

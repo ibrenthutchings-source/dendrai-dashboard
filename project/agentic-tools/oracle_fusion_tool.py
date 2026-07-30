@@ -675,6 +675,52 @@ def check_fx_hedge_documentation(
             "fetched_at": _now(), "count": len(findings), "findings": findings}
 
 
+_VENDOR_CONCENTRATION_THRESHOLD_PCT = float(os.environ.get("VENDOR_CONCENTRATION_THRESHOLD_PCT", "25.0"))
+_VENDOR_CONCENTRATION_WINDOW_DAYS = int(os.environ.get("VENDOR_CONCENTRATION_WINDOW_DAYS", "90"))
+
+
+def check_vendor_concentration(
+    date_from: str = "",
+    threshold_pct: float = _VENDOR_CONCENTRATION_THRESHOLD_PCT,
+    window_days: int = _VENDOR_CONCENTRATION_WINDOW_DAYS,
+    max_items: int = 500,
+    client: Optional[OracleFusionClient] = None,
+) -> dict:
+    """Aggregate trailing-window payment spend by supplier and flag any
+    vendor whose share of total spend exceeds threshold_pct — VM-02 (Supply
+    Chain Resilience) concentration risk."""
+    c = client or OracleFusionClient()
+
+    params: dict[str, Any] = {}
+    if date_from:
+        params["q"] = f"PaymentDate>='{date_from}'"
+    try:
+        items = c._get_all(c._fscm_url("paymentProcessRequests"), params=params, max_items=max_items)
+    except Exception as exc:
+        return {"error": str(exc), "findings": [], "count": 0}
+
+    by_supplier: dict[str, float] = {}
+    for p in items:
+        supplier = p.get("SupplierName") or p.get("supplierName") or "Unknown"
+        amount = p.get("PaymentAmount") or p.get("paymentAmount") or 0
+        by_supplier[supplier] = by_supplier.get(supplier, 0) + float(amount)
+
+    total = sum(by_supplier.values())
+    findings = []
+    if total > 0:
+        for supplier, amount in by_supplier.items():
+            pct = round(amount / total * 100, 2)
+            if pct >= threshold_pct:
+                findings.append({
+                    "vendor_name": supplier, "amount": amount,
+                    "concentration_pct": pct, "total_spend": total,
+                })
+
+    return {"source": "Oracle Fusion FSCM — Payment Process Requests (Concentration)",
+            "fetched_at": _now(), "threshold_pct": threshold_pct, "window_days": window_days,
+            "total_spend": total, "count": len(findings), "findings": findings}
+
+
 def _days_since(date_str: Optional[str], sla_days: int) -> Optional[int]:
     """Days past sla_days since date_str. None on missing/bad input."""
     if not date_str:
@@ -1002,6 +1048,33 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
                 "treasury_detail": {
                     "hedge_id": f["hedge_id"], "currency_pair": f["currency_pair"],
                     "notional_amount": f["notional_amount"],
+                },
+            },
+        })
+
+    # Continuous Third-Party/Vendor Risk: spend-concentration check rides this
+    # same connector/poll schedule — see vendor_risk_sweep.py for the other
+    # half (SOC 2 expiry), which is DB-only and doesn't need ERP access.
+    concentration_threshold = float((extra_config or {}).get("vendor_concentration_threshold_pct")
+                                     or _VENDOR_CONCENTRATION_THRESHOLD_PCT)
+    concentration = check_vendor_concentration(date_from=date_from, threshold_pct=concentration_threshold, client=client)
+    if concentration.get("error"):
+        raise RuntimeError(concentration["error"])
+    for f in concentration["findings"]:
+        events.append({
+            "event_id":   f"vendor-concentration:{f['vendor_name']}:{today}",
+            "event_type": "vendor_concentration_breach",
+            "actor":      "oracle_fusion_tool",
+            "action":     "vendor_spend_concentration_audit",
+            "resource":   f"vendor/{f['vendor_name']}",
+            "severity":   "MEDIUM",
+            "raw_payload": {
+                "vendor_concentration_breach": True,
+                "vendor_risk_detail": {
+                    "vendor_name": f["vendor_name"],
+                    "concentration_pct": f["concentration_pct"],
+                    "threshold_pct": concentration_threshold,
+                    "window_days": _VENDOR_CONCENTRATION_WINDOW_DAYS,
                 },
             },
         })

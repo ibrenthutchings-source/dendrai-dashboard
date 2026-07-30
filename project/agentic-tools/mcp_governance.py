@@ -371,6 +371,11 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     # a match touches both vendor (P2P) and customer (O2C) master data, and a
     # dedicated process keeps every sanctioned-party hit in one audit trail.
     ("SYSTEM_TELEMETRY", "EXPORT_CONTROL_MATCH"): "trade_compliance",
+    # Continuous Third-Party/Vendor Risk — reuses procure_to_pay (no new
+    # process — vendor risk is P2P-adjacent, per the existing VM-01/VM-02
+    # control-library entries already living under the Vendor category).
+    ("SYSTEM_TELEMETRY", "VENDOR_SOC2_EXPIRED"):         "procure_to_pay",
+    ("SYSTEM_TELEMETRY", "VENDOR_CONCENTRATION_BREACH"): "procure_to_pay",
 }
 
 
@@ -1724,6 +1729,12 @@ def _detect_system_flags(event: dict) -> list[str]:
     # denied_party_screening_tool.py's CSL screening pass.
     if payload.get("export_control_match"):
         flags.add("export_control_match")
+    # Continuous Third-Party/Vendor Risk: explicit signals set by
+    # vendor_risk_sweep.py and oracle_fusion_tool.py's vendor checks.
+    if payload.get("vendor_soc2_expired"):
+        flags.add("vendor_soc2_expired")
+    if payload.get("vendor_concentration_breach"):
+        flags.add("vendor_concentration_breach")
     return sorted(flags)
 
 

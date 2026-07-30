@@ -117,6 +117,10 @@ class EventType(str, Enum):
     # ── Export Control / Trade Compliance (denied_party_screening_tool.py) ─
     EXPORT_CONTROL_MATCH               = "EXPORT_CONTROL_MATCH"
 
+    # ── Continuous Third-Party/Vendor Risk (vendor_risk_sweep.py, oracle_fusion_tool.py) ─
+    VENDOR_SOC2_EXPIRED                = "VENDOR_SOC2_EXPIRED"
+    VENDOR_CONCENTRATION_BREACH        = "VENDOR_CONCENTRATION_BREACH"
+
 
 class RiskDomain(str, Enum):
     """Four enterprise risk categories from the Multi-Domain Continuous Risk
