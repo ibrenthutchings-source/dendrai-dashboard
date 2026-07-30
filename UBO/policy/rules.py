@@ -375,6 +375,25 @@ TREASURY_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Export Control / Trade Compliance Rules (denied_party_screening_tool.py) ──
+
+TRADE_COMPLIANCE_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-TC-001",
+        name="Restricted-Party Match",
+        description=(
+            "A vendor or customer master record matched a name on the "
+            "Consolidated Screening List (OFAC SDN, BIS Entity List, or "
+            "another U.S. government restricted-party list) — zero-tolerance, "
+            "same severity tier as a GitHub secret exposure. Transacting with "
+            "a sanctioned party carries civil and criminal export-control "
+            "liability regardless of intent."
+        ),
+        severity="CRITICAL",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
 
 SAILPOINT_RULES: list[PolicyRule] = [
@@ -514,6 +533,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *FINANCIAL_RISK_RULES,
     *HIRE_TO_RETIRE_RULES,
     *TREASURY_RULES,
+    *TRADE_COMPLIANCE_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

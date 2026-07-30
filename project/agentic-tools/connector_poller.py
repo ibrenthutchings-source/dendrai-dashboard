@@ -33,6 +33,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import db
+import denied_party_screening_tool
 import dynamics365_tool
 import github_scm_tool
 import gitlab_scm_tool
@@ -60,6 +61,7 @@ _TICK_S = float(os.environ.get("CONNECTOR_POLLER_TICK_S", "60"))
 _ADAPTERS = {
     "oracle_fusion": oracle_fusion_tool,
     "oracle_hcm":    oracle_hcm_tool,
+    "denied_party_screening": denied_party_screening_tool,
     "sap_hana":      sap_hana_tool,
     "sailpoint":      sailpoint_tool,
     "dynamics365":    dynamics365_tool,

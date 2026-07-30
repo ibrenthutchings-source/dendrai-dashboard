@@ -82,6 +82,22 @@ const CONNECTOR_TYPES = [
       { key: "pay_rate_threshold_pct", label: "Pay-Rate Change Threshold %", type: "text", placeholder: "25" },
       { key: "access_revoke_window_days", label: "Access Revoke Window (days)", type: "text", placeholder: "7" },
     ] },
+  // Export Control / Trade Compliance: screens the same Oracle Fusion tenant's
+  // vendor/customer master against the U.S. government Consolidated Screening
+  // List (denied_party_screening_tool.py). Needs both Oracle Fusion access
+  // (to read the master data) and a free api.trade.gov API key (screening).
+  { id: "denied_party_screening", label: "Denied-Party Screening (Trade Compliance)",
+    baseUrlPlaceholder: "https://mycompany.fa.us6.oraclecloud.com",
+    credentialFields: [
+      { key: "username", label: "Oracle Fusion Username", type: "text" },
+      { key: "password", label: "Oracle Fusion Password", type: "password" },
+      { key: "client_id", label: "OAuth Client ID (optional — overrides username/password)", type: "text" },
+      { key: "client_secret", label: "OAuth Client Secret", type: "password" },
+      { key: "api_key", label: "Trade.gov API Key", type: "password" },
+    ],
+    extraFields: [
+      { key: "match_threshold", label: "CSL Match Score Threshold (0-100)", type: "text", placeholder: "85" },
+    ] },
   { id: "sap_hana", label: "SAP HANA",
     baseUrlPlaceholder: "myhana.example.com",
     credentialFields: [

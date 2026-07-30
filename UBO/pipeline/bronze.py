@@ -447,6 +447,9 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         "wire_transfer_single_approval": EventType.WIRE_TRANSFER_SINGLE_APPROVAL,
         "bank_recon_overdue":            EventType.BANK_RECON_OVERDUE,
         "fx_hedge_documentation_missing": EventType.FX_HEDGE_DOCUMENTATION_MISSING,
+        # Export Control / Trade Compliance: denied_party_screening_tool.py's
+        # Consolidated Screening List match.
+        "export_control_match": EventType.EXPORT_CONTROL_MATCH,
     }
 
     # Multi-Domain Risk Pipeline classification for the Financial-domain flags

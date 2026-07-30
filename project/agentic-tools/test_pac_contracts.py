@@ -103,6 +103,18 @@ def test_record_to_report_event_shaped_rules_pass_their_contract():
     assert result["unroutable_event_types"] == [], result["findings"]
 
 
+def test_trade_compliance_rego_passes_its_own_contract():
+    """Same tripwire as test_hire_to_retire_rego_passes_its_own_contract, for
+    the Trade Compliance module added alongside denied_party_screening_tool.py."""
+    rego = pe._REGO_DEFAULTS["trade_compliance"]
+    result = pc.check_module_contract("trade_compliance", rego)
+    assert result["ok"], result["findings"]
+    assert result["unproducible_roots"] == []
+    assert result["unknown_fields"] == []
+    assert result["invalid_event_types"] == []
+    assert result["unroutable_event_types"] == []
+
+
 def test_check_module_contract_catches_the_original_bug_shape():
     """Reproduces the exact defect this module exists to catch, as a
     standalone fixture independent of whatever pac_endpoints.py ships today."""

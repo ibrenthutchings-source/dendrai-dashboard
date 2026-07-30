@@ -339,6 +339,17 @@ class SilverConformationLayer(SilverLayerBase):
                     "has no completed hedge-accounting documentation on file"
                 )
 
+        # ── Export Control / Trade Compliance rules (denied_party_screening_tool.py) ─
+        elif rule.rule_id == "POL-TC-001":
+            if uro.event_type == EventType.EXPORT_CONTROL_MATCH:
+                tc = (raw.get("raw_payload") or {}).get("trade_compliance_detail") or {}
+                return (
+                    f"CRITICAL: {tc.get('party_type', 'party')} '{tc.get('party_name', 'unknown')}' matched "
+                    f"'{tc.get('matched_name', 'unknown')}' on the {tc.get('list_source', 'restricted-party')} "
+                    f"list (score {tc.get('match_score', 'unknown')}, entity {tc.get('entity_number', 'unknown')}) "
+                    "— zero-tolerance, transact only after compliance clearance"
+                )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -719,6 +730,9 @@ class SilverConformationLayer(SilverLayerBase):
                 # (see mcp_governance._SOURCE_EVENT_TO_PAC_PROCESS) alongside
                 # the Financial Risk Pipeline's financial_compliance fields.
                 **(raw.get("raw_payload") or {}).get("treasury_detail", {}),
+                # Export Control / Trade Compliance (denied_party_screening_tool.py,
+                # event_type == EXPORT_CONTROL_MATCH): CSL screening hit detail.
+                **(raw.get("raw_payload") or {}).get("trade_compliance_detail", {}),
             },
             normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],
