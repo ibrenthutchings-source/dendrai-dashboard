@@ -133,6 +133,22 @@ def test_procure_to_pay_vendor_risk_rules_pass_their_contract():
     assert result["unroutable_event_types"] == []
 
 
+def test_itgc_ai_governance_rules_pass_their_contract():
+    """Same shape as the record_to_report/procure_to_pay locked-in-additions
+    tests: itgc's original rules have extensive pre-existing, documented gaps
+    (input.access_review.*/input.backup.*/input.monitoring.* unproducible
+    roots, and six invalid event-type literals like "user_provisioning") —
+    not re-litigated here. This locks in the ITGC-AI-05/AI-06 additions."""
+    rego = pe._REGO_DEFAULTS["itgc"]
+    result = pc.check_module_contract("itgc", rego)
+    assert "system_name" not in result["unknown_fields"]
+    assert "risk_tier" not in result["unknown_fields"]
+    assert "assessment_expires_at" not in result["unknown_fields"]
+    assert "AI_ASSESSMENT_OVERDUE" not in result["invalid_event_types"]
+    assert "AI_HUMAN_OVERSIGHT_MISSING" not in result["invalid_event_types"]
+    assert result["unroutable_event_types"] == []
+
+
 def test_check_module_contract_catches_the_original_bug_shape():
     """Reproduces the exact defect this module exists to catch, as a
     standalone fixture independent of whatever pac_endpoints.py ships today."""
