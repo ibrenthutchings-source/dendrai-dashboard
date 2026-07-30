@@ -434,6 +434,13 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         "je_velocity_anomaly":  EventType.JE_VELOCITY_ANOMALY,
         "liquidity_shift":      EventType.LIQUIDITY_SHIFT,
         "inventory_divergence": EventType.INVENTORY_DIVERGENCE,
+        # Hire-to-Retire: oracle_hcm_tool.py sets these explicit flags on
+        # payroll findings. A payroll SoD conflict (same actor can both
+        # create and approve a pay-rate change) sets the existing generic
+        # "sod_violation" flag above rather than a payroll-specific one.
+        "ghost_employee_suspected":            EventType.GHOST_EMPLOYEE_SUSPECTED,
+        "unauthorized_pay_rate_change":         EventType.UNAUTHORIZED_PAY_RATE_CHANGE,
+        "terminated_employee_access_retained":  EventType.TERMINATED_EMPLOYEE_ACCESS_RETAINED,
     }
 
     # Multi-Domain Risk Pipeline classification for the Financial-domain flags

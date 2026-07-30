@@ -298,6 +298,44 @@ FINANCIAL_RISK_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── Hire-to-Retire Rules (oracle_hcm_tool.py) ─────────────────────────────────
+
+HIRE_TO_RETIRE_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-HR-001",
+        name="Ghost Employee Suspected",
+        description=(
+            "An active payroll run includes an employee whose termination date "
+            "has already passed — a pattern consistent with a ghost-employee "
+            "payroll fraud scheme or a broken termination-to-payroll handoff."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-HR-002",
+        name="Unauthorized Pay Rate Change",
+        description=(
+            "A pay-rate change beyond the configured threshold was processed "
+            "with no second approver on file — a segregation-of-duties gap in "
+            "the payroll change-control process."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-HR-003",
+        name="Terminated Employee Access Retained",
+        description=(
+            "A terminated employee's system access was not revoked within the "
+            "expected window — offboarding process failure with ongoing "
+            "unauthorized-access risk."
+        ),
+        severity="MEDIUM",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
 
 SAILPOINT_RULES: list[PolicyRule] = [
@@ -435,6 +473,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *PIPELINE_SECURITY_RULES,
     *INFRASTRUCTURE_RULES,
     *FINANCIAL_RISK_RULES,
+    *HIRE_TO_RETIRE_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

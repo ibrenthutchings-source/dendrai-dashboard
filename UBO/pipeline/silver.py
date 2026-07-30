@@ -278,6 +278,39 @@ class SilverConformationLayer(SilverLayerBase):
                         f"ratio delta {fc.get('z_score')}σ above historical norm (toxic bloat)"
                     )
 
+        # ── Hire-to-Retire rules (oracle_hcm_tool.py) ────────────────────────
+        elif rule.rule_id == "POL-HR-001":
+            if uro.event_type == EventType.GHOST_EMPLOYEE_SUSPECTED:
+                pd = (raw.get("raw_payload") or {}).get("payroll_detail") or {}
+                if pd.get("ghost_employee_suspected"):
+                    return (
+                        f"HIGH: active pay run for employee '{pd.get('employee_id', 'unknown')}' "
+                        f"who was terminated on {pd.get('termination_date', 'unknown date')} — "
+                        "ghost-employee pattern"
+                    )
+
+        elif rule.rule_id == "POL-HR-002":
+            if uro.event_type == EventType.UNAUTHORIZED_PAY_RATE_CHANGE:
+                pd = (raw.get("raw_payload") or {}).get("payroll_detail") or {}
+                pct = pd.get("pay_rate_change_pct")
+                if pct is not None and not pd.get("second_approver"):
+                    return (
+                        f"HIGH: pay-rate change of {pct}% for employee "
+                        f"'{pd.get('employee_id', 'unknown')}' (${pd.get('prior_pay_rate')} → "
+                        f"${pd.get('new_pay_rate')}) has no second approver on file"
+                    )
+
+        elif rule.rule_id == "POL-HR-003":
+            if uro.event_type == EventType.TERMINATED_EMPLOYEE_ACCESS_RETAINED:
+                pd = (raw.get("raw_payload") or {}).get("payroll_detail") or {}
+                days = pd.get("days_since_termination")
+                if days is not None and int(days) > 7:
+                    return (
+                        f"MEDIUM: employee '{pd.get('employee_id', 'unknown')}' still has active "
+                        f"system access {days} days after termination on "
+                        f"{pd.get('termination_date', 'unknown date')}"
+                    )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -646,6 +679,12 @@ class SilverConformationLayer(SilverLayerBase):
                 # calculation function's own result dict (z_score, rag_status, ...).
                 # Named distinctly from infra_compliance/pipeline_compliance above.
                 **(raw.get("raw_payload") or {}).get("financial_compliance", {}),
+                # Hire-to-Retire (oracle_hcm_tool.py, event_type in
+                # GHOST_EMPLOYEE_SUSPECTED/UNAUTHORIZED_PAY_RATE_CHANGE/
+                # TERMINATED_EMPLOYEE_ACCESS_RETAINED/SOD_VIOLATION): payroll
+                # finding detail — employee/pay-rate/termination fields the
+                # hire_to_retire Rego module and POL-HR-* rules read.
+                **(raw.get("raw_payload") or {}).get("payroll_detail", {}),
             },
             normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],
