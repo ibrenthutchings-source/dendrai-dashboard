@@ -60,6 +60,22 @@ const CONNECTOR_TYPES = [
       { key: "client_secret", label: "OAuth Client Secret", type: "password" },
     ],
     extraFields: [] },
+  // Hire-to-Retire: payroll/HR continuous audit (oracle_hcm_tool.py). Same
+  // Oracle Fusion Cloud tenant/credential shape as oracle_fusion above (HCM
+  // is a separate REST API family on the same host), registered as its own
+  // connector since polling schedule/results are per-connector.
+  { id: "oracle_hcm", label: "Oracle Fusion HCM",
+    baseUrlPlaceholder: "https://mycompany.fa.us6.oraclecloud.com",
+    credentialFields: [
+      { key: "username", label: "Username", type: "text" },
+      { key: "password", label: "Password", type: "password" },
+      { key: "client_id", label: "OAuth Client ID (optional — overrides username/password)", type: "text" },
+      { key: "client_secret", label: "OAuth Client Secret", type: "password" },
+    ],
+    extraFields: [
+      { key: "pay_rate_threshold_pct", label: "Pay-Rate Change Threshold %", type: "text", placeholder: "25" },
+      { key: "access_revoke_window_days", label: "Access Revoke Window (days)", type: "text", placeholder: "7" },
+    ] },
   { id: "sap_hana", label: "SAP HANA",
     baseUrlPlaceholder: "myhana.example.com",
     credentialFields: [

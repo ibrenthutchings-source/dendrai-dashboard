@@ -235,6 +235,13 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
     today = datetime.now(timezone.utc).date().isoformat()
     events: list[dict] = []
 
+    # extra_config is per-connector, set in the UBO Configuration UI — falls
+    # back to the env-var default (standalone/env-var mode) when a UI-configured
+    # connector didn't override it, same pattern as postgres_cis_tool.py's
+    # resource_label.
+    pay_rate_threshold_pct = float(extra_config.get("pay_rate_threshold_pct") or _PAY_RATE_THRESHOLD_PCT)
+    access_revoke_window_days = int(extra_config.get("access_revoke_window_days") or _ACCESS_REVOKE_WINDOW_DAYS)
+
     ghosts = check_ghost_employees(since_iso=since_iso, client=client)
     if ghosts.get("error"):
         raise RuntimeError(ghosts["error"])
@@ -256,7 +263,7 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
             },
         })
 
-    pay_changes = check_pay_rate_changes(since_iso=since_iso, client=client)
+    pay_changes = check_pay_rate_changes(since_iso=since_iso, threshold_pct=pay_rate_threshold_pct, client=client)
     if pay_changes.get("error"):
         raise RuntimeError(pay_changes["error"])
     for f in pay_changes["findings"]:
@@ -279,7 +286,7 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
             },
         })
 
-    access = check_access_retention(client=client)
+    access = check_access_retention(window_days=access_revoke_window_days, client=client)
     if access.get("error"):
         raise RuntimeError(access["error"])
     for f in access["findings"]:

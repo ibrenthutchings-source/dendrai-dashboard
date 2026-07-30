@@ -7895,6 +7895,9 @@ _BUILTIN_PAC_PROCESSES = [
     {"id": "infrastructure_monitoring", "label": "Infrastructure Monitoring", "short_label": "Infra", "control_prefix": "INFRA",
      "color": "#a855f7", "icon": "🖥️",
      "description": "Continuous IaaS/OS/DB configuration audit — Postgres CIS-style hardening checks and Railway platform/deployment drift."},
+    {"id": "hire_to_retire", "label": "Hire to Retire", "short_label": "H2R", "control_prefix": "H2R",
+     "color": "#f472b6", "icon": "🧑‍💼",
+     "description": "Payroll/HR continuous audit — ghost-employee detection, unauthorized pay-rate changes, and terminated-employee access retention via Oracle Fusion HCM."},
 ]
 
 

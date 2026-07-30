@@ -282,12 +282,11 @@ class SilverConformationLayer(SilverLayerBase):
         elif rule.rule_id == "POL-HR-001":
             if uro.event_type == EventType.GHOST_EMPLOYEE_SUSPECTED:
                 pd = (raw.get("raw_payload") or {}).get("payroll_detail") or {}
-                if pd.get("ghost_employee_suspected"):
-                    return (
-                        f"HIGH: active pay run for employee '{pd.get('employee_id', 'unknown')}' "
-                        f"who was terminated on {pd.get('termination_date', 'unknown date')} — "
-                        "ghost-employee pattern"
-                    )
+                return (
+                    f"HIGH: active pay run for employee '{pd.get('employee_id', 'unknown')}' "
+                    f"who was terminated on {pd.get('termination_date', 'unknown date')} — "
+                    "ghost-employee pattern"
+                )
 
         elif rule.rule_id == "POL-HR-002":
             if uro.event_type == EventType.UNAUTHORIZED_PAY_RATE_CHANGE:
@@ -296,7 +295,7 @@ class SilverConformationLayer(SilverLayerBase):
                 if pct is not None and not pd.get("second_approver"):
                     return (
                         f"HIGH: pay-rate change of {pct}% for employee "
-                        f"'{pd.get('employee_id', 'unknown')}' (${pd.get('prior_pay_rate')} → "
+                        f"'{pd.get('employee_id', 'unknown')}' (${pd.get('prior_pay_rate')} -> "
                         f"${pd.get('new_pay_rate')}) has no second approver on file"
                     )
 
