@@ -528,6 +528,20 @@ class _DendraiAuthMiddleware(_BaseHTTPMiddleware):
 app.add_middleware(_DendraiAuthMiddleware)
 logger.info("Dendrai auth middleware registered")
 
+class _HSTSMiddleware(_BaseHTTPMiddleware):
+    """Asserts the app's own transport-security policy on every response
+    instead of relying solely on the hosting platform's edge TLS termination
+    to keep clients on HTTPS — a browser that's seen this header once will
+    refuse to downgrade to plain HTTP for the max-age window, even if a
+    future request is somehow offered one."""
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        return response
+
+app.add_middleware(_HSTSMiddleware)
+logger.info("HSTS middleware registered")
+
 # AI-augmented endpoints (recommendations #1–#4). Active only when ANTHROPIC_API_KEY
 # is set; otherwise each route returns 503 and the deterministic pipeline is unaffected.
 app.include_router(ai_endpoints.router)

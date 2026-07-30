@@ -18,11 +18,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import db
-from auth_endpoints import get_current_user
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/vendor-risk", tags=["Vendor Risk"])
+
+# No dedicated nav item exists for this register yet (it's reached today only
+# via direct API), but the screen-permission matrix is a generic string-keyed
+# table (see auth_db.py's screen_permissions DDL) — an admin can already
+# restrict "vendor_risk" for a role/user via the existing
+# PUT /auth/admin/roles/{id}/permissions or /auth/admin/screen-permissions/{id}
+# endpoints even without a nav button pointing at it.
+_SCREEN_ID = "vendor_risk"
 
 
 class VendorRiskProfileRequest(BaseModel):
@@ -35,7 +43,7 @@ class VendorRiskProfileRequest(BaseModel):
 
 @router.get("")
 async def list_vendor_risk_profiles(critical_only: bool = False,
-                                     current_user: dict = Depends(get_current_user)):
+                                     current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"profiles": db.list_vendor_risk_profiles(critical_only=critical_only)}
@@ -43,7 +51,7 @@ async def list_vendor_risk_profiles(critical_only: bool = False,
 
 @router.put("")
 async def upsert_vendor_risk_profile(req: VendorRiskProfileRequest,
-                                      current_user: dict = Depends(get_current_user)):
+                                      current_user: dict = Depends(require_screen_permission(_SCREEN_ID, edit=True))):
     """Create or update a vendor's risk profile — also the mechanism for
     clearing an EXPIRED status by recording a freshly renewed SOC 2 report."""
     if not db.is_available():

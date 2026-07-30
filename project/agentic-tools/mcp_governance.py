@@ -280,7 +280,17 @@ def _fetch_unprocessed(batch_size: int) -> list[dict]:
 def _fetch_unprocessed_system(batch_size: int) -> list[dict]:
     """Fetch up to batch_size unprocessed flagged rows from system_telemetry —
     the generic REST-ingest path for non-MCP monitored systems (Saviynt, SAP,
-    ServiceNow, etc.)."""
+    ServiceNow, etc.).
+
+    raw_payload must be selected here — Silver's _conform_system_telemetry
+    and _check_rule read detail sub-dicts (payroll_detail, treasury_detail,
+    trade_compliance_detail, vendor_risk_detail, ai_governance_detail) off
+    raw.get("raw_payload"), where `raw` is exactly the dict this function
+    returns (see bronze.py's SystemTelemetryBronzeHandler.ingest, which
+    passes the row straight through as raw_payload.content). Without this
+    column those detail-field rules silently evaluate against {} in real
+    production processing — they only ever appeared to work in synthetic
+    smoke tests that constructed the URO's raw_payload by hand."""
     if not db.is_available():
         return []
     try:
@@ -289,7 +299,8 @@ def _fetch_unprocessed_system(batch_size: int) -> list[dict]:
                 cur.execute(
                     """
                     SELECT id, created_at, server_name, system_type, event_type,
-                           event_id, actor, action, resource, severity, risk_flags
+                           event_id, actor, action, resource, severity, risk_flags,
+                           raw_payload
                     FROM observability.system_telemetry
                     WHERE array_length(risk_flags, 1) > 0
                       AND processed_at IS NULL
@@ -1252,6 +1263,11 @@ async def _process_one(row: dict) -> bool:
         # Bronze: map raw telemetry/system dict → URO (strip internal routing marker
         # before it lands in the audit-grade raw_payload)
         raw_event = {k: v for k, v in row.items() if k != "_origin"}
+        if origin == "system" and raw_event.get("raw_payload"):
+            # Restore plaintext payroll_detail/treasury_detail (encrypted at
+            # rest by _ingest_system_event) — decrypt here, at the pipeline
+            # boundary, so bronze/silver never have to know encryption exists.
+            raw_event["raw_payload"] = _decrypt_sensitive_details(raw_event["raw_payload"])
         uro = await bronze.ingest(raw_event, ubo_source)
 
         # Silver: conform + Policy-as-Code
@@ -1775,6 +1791,53 @@ def _get_system_by_api_key(api_key: str) -> dict | None:
         return None
 
 
+# Sub-keys of raw_payload carrying data sensitive enough to encrypt at rest
+# rather than leave as plain JSONB — compensation history (payroll_detail:
+# prior/new pay rate) and wire-transfer/bank-reconciliation detail
+# (treasury_detail). Encrypted transparently on the way in here and decrypted
+# back to plaintext in _process_one before Bronze ever sees the row, so
+# UBO/pipeline code stays entirely encryption-agnostic — see
+# db.encrypt_sensitive_json/decrypt_sensitive_json.
+_SENSITIVE_DETAIL_KEYS = ("payroll_detail", "treasury_detail")
+
+
+def _encrypt_sensitive_details(raw_payload: dict) -> dict:
+    """Replace any _SENSITIVE_DETAIL_KEYS sub-dict in raw_payload with an
+    encrypted `<key>_enc` string. Falls back to storing the sub-dict as
+    plaintext (with a warning) if CONNECTOR_ENCRYPTION_KEY isn't configured —
+    a missing encryption key must not silently drop a HIGH-severity payroll/
+    treasury finding from the audit trail."""
+    result = dict(raw_payload)
+    for key in _SENSITIVE_DETAIL_KEYS:
+        detail = result.pop(key, None)
+        if not detail:
+            continue
+        try:
+            result[f"{key}_enc"] = db.encrypt_sensitive_json(detail)
+        except Exception as exc:
+            logger.warning(
+                "Could not encrypt %s (storing as plaintext — set CONNECTOR_ENCRYPTION_KEY "
+                "to enable at-rest encryption for this field): %s", key, exc,
+            )
+            result[key] = detail
+    return result
+
+
+def _decrypt_sensitive_details(raw_payload: dict) -> dict:
+    """Inverse of _encrypt_sensitive_details() — restores plaintext
+    payroll_detail/treasury_detail sub-dicts so bronze/silver see exactly the
+    same shape they always have."""
+    result = dict(raw_payload)
+    for key in _SENSITIVE_DETAIL_KEYS:
+        enc = result.pop(f"{key}_enc", None)
+        if enc:
+            try:
+                result[key] = db.decrypt_sensitive_json(enc)
+            except Exception as exc:
+                logger.warning("Could not decrypt %s: %s", key, exc)
+    return result
+
+
 def _ingest_system_event(
     server_name: str,
     system_type: str,
@@ -1795,6 +1858,8 @@ def _ingest_system_event(
         return None
     try:
         import json as _json
+        if raw_payload:
+            raw_payload = _encrypt_sensitive_details(raw_payload)
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(

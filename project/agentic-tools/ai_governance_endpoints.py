@@ -23,11 +23,16 @@ from pydantic import BaseModel
 
 import db
 import mcp_governance
-from auth_endpoints import get_current_user
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai-governance", tags=["AI Governance"])
+
+# Same rationale as vendor_risk_endpoints.py's _SCREEN_ID: no dedicated nav
+# item exists yet, but the screen-permission matrix is generic and already
+# configurable for this screen_id via the admin roles/screen-permissions API.
+_SCREEN_ID = "ai_governance"
 
 
 class AiSystemRequest(BaseModel):
@@ -43,7 +48,7 @@ class AiSystemRequest(BaseModel):
 
 @router.get("")
 async def list_ai_systems(high_risk_only: bool = False,
-                           current_user: dict = Depends(get_current_user)):
+                           current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"systems": db.list_ai_systems(high_risk_only=high_risk_only)}
@@ -51,7 +56,7 @@ async def list_ai_systems(high_risk_only: bool = False,
 
 @router.put("")
 async def upsert_ai_system(req: AiSystemRequest,
-                            current_user: dict = Depends(get_current_user)):
+                            current_user: dict = Depends(require_screen_permission(_SCREEN_ID, edit=True))):
     """Create or update an AI system's governance profile. Also the
     mechanism for clearing an EXPIRED assessment status by recording a fresh
     assessment date."""
