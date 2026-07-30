@@ -366,6 +366,11 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("SYSTEM_TELEMETRY", "WIRE_TRANSFER_SINGLE_APPROVAL"):  "record_to_report",
     ("SYSTEM_TELEMETRY", "BANK_RECON_OVERDUE"):             "record_to_report",
     ("SYSTEM_TELEMETRY", "FX_HEDGE_DOCUMENTATION_MISSING"): "record_to_report",
+    # Export Control / Trade Compliance — denied_party_screening_tool.py.
+    # Own process rather than splitting across procure_to_pay/order_to_cash:
+    # a match touches both vendor (P2P) and customer (O2C) master data, and a
+    # dedicated process keeps every sanctioned-party hit in one audit trail.
+    ("SYSTEM_TELEMETRY", "EXPORT_CONTROL_MATCH"): "trade_compliance",
 }
 
 
@@ -1715,6 +1720,10 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("bank_recon_overdue")
     if payload.get("fx_hedge_documentation_missing"):
         flags.add("fx_hedge_documentation_missing")
+    # Export Control / Trade Compliance: explicit signal set by
+    # denied_party_screening_tool.py's CSL screening pass.
+    if payload.get("export_control_match"):
+        flags.add("export_control_match")
     return sorted(flags)
 
 

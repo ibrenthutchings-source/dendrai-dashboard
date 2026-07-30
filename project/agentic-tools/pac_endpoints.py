@@ -71,6 +71,7 @@ _BUILTIN_PROCESS_IDS = {
     "devops_monitoring",
     "infrastructure_monitoring",
     "hire_to_retire",
+    "trade_compliance",
 }
 
 
@@ -94,6 +95,7 @@ _PROCESS_LABELS = {
     "devops_monitoring": "DevOps Monitoring",
     "infrastructure_monitoring": "Infrastructure Monitoring",
     "hire_to_retire": "Hire to Retire",
+    "trade_compliance": "Trade Compliance",
 }
 
 # Assigned round-robin to processes auto-registered by sync_github (a folder
@@ -113,6 +115,7 @@ _PROCESS_ID_PREFIX = {
     "devops_monitoring": "DEVOPS",
     "infrastructure_monitoring": "INFRA",
     "hire_to_retire": "H2R",
+    "trade_compliance": "TC",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1018,6 +1021,38 @@ deny_payroll[msg] if {
     input.event.days_since_termination > 7
     msg := sprintf("H2R-003: Employee '%v' still has active system access %v days after termination on %v", [
         input.event.employee_id, input.event.days_since_termination, input.event.termination_date
+    ])
+}
+""",
+
+"trade_compliance": """\
+# Export Control / Trade Compliance — Restricted-Party Screening
+# Package:  controls.trade_compliance
+# Process:  Trade Compliance
+# Version:  1.0
+# Approved by: General Counsel, VP Trade Compliance
+# Last Revised: 2026-07-30
+# Description: denied_party_screening_tool.py's Consolidated Screening List
+#   (OFAC SDN + BIS Entity List + other U.S. government restricted-party
+#   lists) screen against active vendor and customer master data. Replaces
+#   the prior RSS-keyword-tagging "export control" proxy signal with a real
+#   screening control.
+
+package controls.trade_compliance
+
+import future.keywords.in
+import future.keywords.if
+
+# ── TC-001: Restricted-Party Match ────────────────────────────────────────────
+deny_screening[msg] if {
+    input.event.type == "EXPORT_CONTROL_MATCH"
+    msg := sprintf("TC-001: %v '%v' matched '%v' on the %v list (score %v, entity %v) — zero-tolerance, transact only after compliance clearance", [
+        input.event.party_type,
+        input.event.party_name,
+        input.event.matched_name,
+        input.event.list_source,
+        input.event.match_score,
+        input.event.entity_number,
     ])
 }
 """,

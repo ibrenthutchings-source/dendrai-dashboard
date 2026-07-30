@@ -7898,6 +7898,9 @@ _BUILTIN_PAC_PROCESSES = [
     {"id": "hire_to_retire", "label": "Hire to Retire", "short_label": "H2R", "control_prefix": "H2R",
      "color": "#f472b6", "icon": "🧑‍💼",
      "description": "Payroll/HR continuous audit — ghost-employee detection, unauthorized pay-rate changes, and terminated-employee access retention via Oracle Fusion HCM."},
+    {"id": "trade_compliance", "label": "Trade Compliance", "short_label": "TC", "control_prefix": "TC",
+     "color": "#dc2626", "icon": "🚫",
+     "description": "Export control / restricted-party screening — vendor and customer master data screened against the U.S. government Consolidated Screening List (OFAC SDN, BIS Entity List)."},
 ]
 
 

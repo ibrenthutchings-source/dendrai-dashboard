@@ -114,6 +114,9 @@ class EventType(str, Enum):
     BANK_RECON_OVERDUE                 = "BANK_RECON_OVERDUE"
     FX_HEDGE_DOCUMENTATION_MISSING     = "FX_HEDGE_DOCUMENTATION_MISSING"
 
+    # ── Export Control / Trade Compliance (denied_party_screening_tool.py) ─
+    EXPORT_CONTROL_MATCH               = "EXPORT_CONTROL_MATCH"
+
 
 class RiskDomain(str, Enum):
     """Four enterprise risk categories from the Multi-Domain Continuous Risk

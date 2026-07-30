@@ -183,6 +183,13 @@ _TREASURY_FIELDS = frozenset({
     "hedge_id", "currency_pair", "notional_amount",
 })
 
+# Fields denied_party_screening_tool.py contributes via its
+# "trade_compliance_detail" raw_payload key.
+_TRADE_COMPLIANCE_FIELDS = frozenset({
+    "party_type", "party_name", "matched_name", "match_score",
+    "list_source", "entity_number",
+})
+
 
 # ── Per-process contract ──────────────────────────────────────────────────────
 # allowed_fields: every input.event.<field> a module for this process may
@@ -227,6 +234,10 @@ PROCESS_CONTRACTS: dict[str, dict] = {
             "UNAUTHORIZED_PAY_RATE_CHANGE",
             "TERMINATED_EMPLOYEE_ACCESS_RETAINED",
         },
+    },
+    "trade_compliance": {
+        "allowed_fields": _TRADE_COMPLIANCE_FIELDS,
+        "allowed_event_types": {"EXPORT_CONTROL_MATCH"},
     },
 }
 
