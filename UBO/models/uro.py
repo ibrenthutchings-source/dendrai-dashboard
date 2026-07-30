@@ -121,6 +121,10 @@ class EventType(str, Enum):
     VENDOR_SOC2_EXPIRED                = "VENDOR_SOC2_EXPIRED"
     VENDOR_CONCENTRATION_BREACH        = "VENDOR_CONCENTRATION_BREACH"
 
+    # ── AI Governance (ai_governance_sweep.py, ai_governance_endpoints.py) ─
+    AI_ASSESSMENT_OVERDUE              = "AI_ASSESSMENT_OVERDUE"
+    AI_HUMAN_OVERSIGHT_MISSING         = "AI_HUMAN_OVERSIGHT_MISSING"
+
 
 class RiskDomain(str, Enum):
     """Four enterprise risk categories from the Multi-Domain Continuous Risk

@@ -423,6 +423,34 @@ VENDOR_RISK_RULES: list[PolicyRule] = [
     ),
 ]
 
+# ── AI Governance Rules ─────────────────────────────────────────────────────────
+
+AI_GOVERNANCE_RULES: list[PolicyRule] = [
+    PolicyRule(
+        rule_id="POL-AI-001",
+        name="AI System Assessment Overdue",
+        description=(
+            "An AI system's third-party assessment (ISO/IEC 42001 AI-05) has "
+            "expired with no renewal on file — the due-diligence basis for "
+            "continued use of that system has lapsed."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+    PolicyRule(
+        rule_id="POL-AI-002",
+        name="AI Human Oversight Missing",
+        description=(
+            "An AI system flagged as requiring human oversight (ISO/IEC 42001 "
+            "AI-06) has no defined human review point or override mechanism "
+            "on file — AI-assisted decisions from this system have no "
+            "documented check before they take effect."
+        ),
+        severity="HIGH",
+        applies_to=[SourceSystem.SYSTEM_TELEMETRY.value],
+    ),
+]
+
 # ── SailPoint Identity Rules ──────────────────────────────────────────────────
 
 SAILPOINT_RULES: list[PolicyRule] = [
@@ -564,6 +592,7 @@ POLICY_REGISTRY: list[PolicyRule] = [
     *TREASURY_RULES,
     *TRADE_COMPLIANCE_RULES,
     *VENDOR_RISK_RULES,
+    *AI_GOVERNANCE_RULES,
     *SAILPOINT_RULES,
     *MCP_RULES,
     *SYSTEM_RULES,

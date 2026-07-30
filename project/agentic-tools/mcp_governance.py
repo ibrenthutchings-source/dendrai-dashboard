@@ -376,6 +376,11 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     # control-library entries already living under the Vendor category).
     ("SYSTEM_TELEMETRY", "VENDOR_SOC2_EXPIRED"):         "procure_to_pay",
     ("SYSTEM_TELEMETRY", "VENDOR_CONCENTRATION_BREACH"): "procure_to_pay",
+    # AI Governance — reuses itgc (IT General Controls). AI-01..06 sit under
+    # the Technology domain alongside every other ITGC-category control;
+    # no new process needed for this first slice (AI-05/AI-06 coverage).
+    ("SYSTEM_TELEMETRY", "AI_ASSESSMENT_OVERDUE"):      "itgc",
+    ("SYSTEM_TELEMETRY", "AI_HUMAN_OVERSIGHT_MISSING"): "itgc",
 }
 
 
@@ -1735,6 +1740,12 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("vendor_soc2_expired")
     if payload.get("vendor_concentration_breach"):
         flags.add("vendor_concentration_breach")
+    # AI Governance: explicit signals set by ai_governance_sweep.py and
+    # ai_governance_endpoints.py.
+    if payload.get("ai_assessment_overdue"):
+        flags.add("ai_assessment_overdue")
+    if payload.get("ai_human_oversight_missing"):
+        flags.add("ai_human_oversight_missing")
     return sorted(flags)
 
 

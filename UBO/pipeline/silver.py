@@ -371,6 +371,24 @@ class SilverConformationLayer(SilverLayerBase):
                         f"{vd.get('threshold_pct', 'configured')}% concentration threshold"
                     )
 
+        # ── AI Governance rules ────────────────────────────────────────────────
+        elif rule.rule_id == "POL-AI-001":
+            if uro.event_type == EventType.AI_ASSESSMENT_OVERDUE:
+                ad = (raw.get("raw_payload") or {}).get("ai_governance_detail") or {}
+                return (
+                    f"HIGH: AI system '{ad.get('system_name', 'unknown')}' "
+                    f"({ad.get('risk_tier', 'unknown')} risk) third-party assessment expired on "
+                    f"{ad.get('assessment_expires_at', 'unknown date')} — AI-05 assessment lapsed"
+                )
+
+        elif rule.rule_id == "POL-AI-002":
+            if uro.event_type == EventType.AI_HUMAN_OVERSIGHT_MISSING:
+                ad = (raw.get("raw_payload") or {}).get("ai_governance_detail") or {}
+                return (
+                    f"HIGH: AI system '{ad.get('system_name', 'unknown')}' requires human oversight "
+                    "but has no defined human review point on file — AI-06 control gap"
+                )
+
         # ── SailPoint rules ──────────────────────────────────────────────────
         elif rule.rule_id == "POL-SP-001":
             if uro.event_type == EventType.PRIVILEGE_ESCALATION:
@@ -758,6 +776,10 @@ class SilverConformationLayer(SilverLayerBase):
                 # oracle_fusion_tool.py, event_type in VENDOR_SOC2_EXPIRED/
                 # VENDOR_CONCENTRATION_BREACH): routed into procure_to_pay.
                 **(raw.get("raw_payload") or {}).get("vendor_risk_detail", {}),
+                # AI Governance (ai_governance_sweep.py / ai_governance_endpoints.py,
+                # event_type in AI_ASSESSMENT_OVERDUE/AI_HUMAN_OVERSIGHT_MISSING):
+                # routed into itgc.
+                **(raw.get("raw_payload") or {}).get("ai_governance_detail", {}),
             },
             normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],
