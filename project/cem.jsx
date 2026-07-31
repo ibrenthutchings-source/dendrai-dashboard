@@ -472,7 +472,7 @@ function RiskPulseTimeline({ adjudicated, onSelect, onMoveUp, onMoveDown, canMov
 // RiskPulseTimeline as a reorderable top-level pane, visible regardless of
 // which tab is active — it's the one thing on this screen that actually
 // needs a human to act on it.
-function HumanReviewQueuePane({ humanReview, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
+function HumanReviewQueuePane({ humanReview, onMoveUp, onMoveDown, canMoveUp, canMoveDown, expanded, onExpandToggle, onReview }) {
   if (!humanReview.length) return null;
   return (
     <div style={{ borderBottom: "1px solid var(--line)" }}>
@@ -485,9 +485,19 @@ function HumanReviewQueuePane({ humanReview, onMoveUp, onMoveDown, canMoveUp, ca
           <PaneMoveButtons onMoveUp={onMoveUp} onMoveDown={onMoveDown} canMoveUp={canMoveUp} canMoveDown={canMoveDown} />
         </span>
       </div>
+      {/* Reuses UBOAdjRow (same component the Adjudications tab uses) rather
+          than a stripped-down row, so escalation cause — adjudicator
+          reasoning, per-agent council votes, conflict flags — is one click
+          away here too, not only in a different tab. */}
       <div style={{ padding: "0 18px 10px" }}>
         {humanReview.slice(0, 5).map((r, i) => (
-          <UBOReviewRow key={i} row={r} />
+          <UBOAdjRow
+            key={r.id ?? i}
+            row={r}
+            expanded={expanded.has(r.id ?? `hr-${i}`)}
+            onToggle={() => onExpandToggle(r.id ?? `hr-${i}`)}
+            onReview={onReview}
+          />
         ))}
         {humanReview.length > 5 && (
           <div style={{ fontSize: 11, color: "var(--ink-3)", padding: "4px 0" }}>
@@ -777,7 +787,17 @@ function UBOGovPanel({ initialTab } = {}) {
           onMoveUp: () => movePane(key, -1), onMoveDown: () => movePane(key, 1),
           canMoveUp: i > 0, canMoveDown: i < paneOrder.length - 1,
         };
-        if (key === "humanReview") return <HumanReviewQueuePane key={key} humanReview={humanReview} {...moveProps} />;
+        if (key === "humanReview") return (
+          <HumanReviewQueuePane key={key} humanReview={humanReview} expanded={expanded}
+            onExpandToggle={(k) => {
+              const next = new Set(expanded);
+              next.has(k) ? next.delete(k) : next.add(k);
+              setExpanded(next);
+            }}
+            onReview={submitReview}
+            {...moveProps}
+          />
+        );
         if (key === "analytics") return (
           <AnalyticsPane key={key} rawRows={rawRows} adjudicated={adjudicated} onSelect={(row) => {
             setTab("adjudications");
@@ -943,22 +963,6 @@ function UBOGovPanel({ initialTab } = {}) {
           <SuppressionsTab suppressions={suppressions} onAdd={addSuppression} onDelete={deleteSuppression} />
         )}
       </div>
-    </div>
-  );
-}
-
-function UBOReviewRow({ row }) {
-  const ts = _UBO_TIER_STYLE[row.risk_tier] || _UBO_TIER_STYLE.LOW;
-  return (
-    <div className="ubo-review-row">
-      <span className="ubo-tier-badge" style={{background:ts.bg,color:ts.ink}}>{row.risk_tier || "—"}</span>
-      <span className="mono" style={{fontSize:11,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-        {row.target_tool || "unknown"}
-      </span>
-      <span style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>{row.server_name}</span>
-      <span className="mono" style={{fontSize:11,color:"var(--red-ink)",fontWeight:600,flexShrink:0}}>
-        {row.risk_score != null ? row.risk_score.toFixed(3) : "—"}
-      </span>
     </div>
   );
 }
@@ -1819,8 +1823,68 @@ function CoverageSuppressRow({ row, onSuppress, onDone }) {
   );
 }
 
+// Fetched lazily on expand (not prefetched for every row) — most coverage
+// reports have far more rows than a reviewer will ever click into.
+function CoverageDetailPanel({ serverName, targetTool, kind }) {
+  const [detail, setDetail] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const base = _uboBase();
+    const params = new URLSearchParams({ server_name: serverName || "", target_tool: targetTool || "", kind });
+    fetch(`${base}/observability/coverage/detail?${params.toString()}`, { credentials: "include", headers: _cemAuthHdr() })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(d => { if (!cancelled) setDetail(d); })
+      .catch(e => { if (!cancelled) setErr(e.message); });
+    return () => { cancelled = true; };
+  }, [serverName, targetTool, kind]);
+
+  if (err) return <div style={{fontSize:11,color:"var(--red-ink)"}}>Failed to load detail: {err}</div>;
+  if (!detail) return <div style={{fontSize:11,color:"var(--ink-3)"}}><span className="spin"/> Loading detail…</div>;
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      <div>
+        <div className="cem-section-lbl">Proposed resolution</div>
+        <div className="rca-box">{detail.proposed_resolution}</div>
+      </div>
+      {detail.rule_references.length > 0 && (
+        <div style={{fontSize:10.5,color:"var(--ink-3)"}}>
+          Referenced in: {detail.rule_references.join(", ")}
+        </div>
+      )}
+      <div>
+        <div className="cem-section-lbl">Recent calls ({detail.recent_samples.length})</div>
+        {detail.recent_samples.length === 0 ? (
+          <div style={{fontSize:10.5,color:"var(--ink-3)"}}>No sample calls available.</div>
+        ) : (
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {detail.recent_samples.map((s, i) => (
+              <div key={i} style={{
+                display:"flex", alignItems:"baseline", gap:10, fontSize:10.5,
+                padding:"4px 8px", borderRadius:4, background:"var(--surface-1)", border:"1px solid var(--line)",
+              }}>
+                <span className="mono" style={{color:"var(--ink-3)",flexShrink:0}}>
+                  {s.ts ? new Date(s.ts).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "—"}
+                </span>
+                {s.status && <span style={{flexShrink:0}}>{s.status}</span>}
+                {s.severity && <span style={{flexShrink:0}}>{s.severity}</span>}
+                {s.actor && <span style={{color:"var(--ink-3)",flexShrink:0}}>actor: {s.actor}</span>}
+                {s.resource && <span style={{color:"var(--ink-2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.resource}</span>}
+                {s.error_message && <span style={{color:"var(--red-ink)"}}>{s.error_message}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CoverageTab({ coverage, loading, onSuppress }) {
   const [justSuppressed, setJustSuppressed] = useState(new Set());
+  const [expandedRows, setExpandedRows] = useState(new Set());
 
   if (loading && coverage.length === 0) return (
     <div style={{padding:"32px 18px",textAlign:"center",color:"var(--ink-3)",fontSize:12}}>
@@ -1851,8 +1915,15 @@ function CoverageTab({ coverage, loading, onSuppress }) {
             {visible.map((r, i) => {
               const isBlind = (r.flag_rate || 0) === 0;
               const rowKey = `${r.server_name}::${r.target_tool}`;
+              const isExpanded = expandedRows.has(rowKey);
+              const toggleExpanded = () => setExpandedRows(prev => {
+                const next = new Set(prev);
+                next.has(rowKey) ? next.delete(rowKey) : next.add(rowKey);
+                return next;
+              });
               return (
-                <tr key={i}>
+              <React.Fragment key={i}>
+                <tr>
                   <td>
                     <span style={{
                       fontSize:9,fontWeight:600,padding:"1px 6px",borderRadius:999,
@@ -1871,7 +1942,9 @@ function CoverageTab({ coverage, loading, onSuppress }) {
                   </td>
                   <td>
                     {isBlind
-                      ? <span style={{color:"var(--amber-ink)",fontSize:10,fontWeight:700,fontFamily:"'Geist Mono',monospace"}}>⚠ BLIND SPOT</span>
+                      ? <span onClick={toggleExpanded} style={{cursor:"pointer",color:"var(--amber-ink)",fontSize:10,fontWeight:700,fontFamily:"'Geist Mono',monospace"}}>
+                          ⚠ BLIND SPOT {isExpanded ? "▲" : "▼"}
+                        </span>
                       : <span style={{color:"var(--green-ink)",fontSize:10,fontWeight:700,fontFamily:"'Geist Mono',monospace"}}>✓ COVERED</span>
                     }
                   </td>
@@ -1882,6 +1955,14 @@ function CoverageTab({ coverage, loading, onSuppress }) {
                     )}
                   </td>
                 </tr>
+                {isBlind && isExpanded && (
+                  <tr>
+                    <td colSpan={8} style={{background:"var(--surface-1)",padding:"10px 14px"}}>
+                      <CoverageDetailPanel serverName={r.server_name} targetTool={r.target_tool} kind={r.kind} />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
               );
             })}
           </tbody>

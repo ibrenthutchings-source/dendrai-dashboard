@@ -1452,6 +1452,117 @@ async def tool_coverage():
     return {"rows": rows, "count": len(rows), "blind_spots": blind_spots}
 
 
+def _fetch_coverage_samples(server_name: str, target_tool: str, kind: str, limit: int = 5) -> list[dict]:
+    """Most recent raw calls for one (server_name, target_tool) coverage row —
+    lets a reviewer eyeball a few real payloads instead of judging a blind
+    spot from the flag_rate number alone."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                if kind == "mcp":
+                    cur.execute(
+                        """
+                        SELECT ts, status, error_message, execution_time_ms, risk_flags
+                        FROM observability.mcp_telemetry
+                        WHERE direction = 'response' AND server_name = %s AND target_tool = %s
+                        ORDER BY ts DESC LIMIT %s
+                        """,
+                        (server_name, target_tool, limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT created_at AS ts, actor, resource, severity, event_type, risk_flags
+                        FROM observability.system_telemetry
+                        WHERE server_name = %s AND action = %s
+                        ORDER BY created_at DESC LIMIT %s
+                        """,
+                        (server_name, target_tool, limit),
+                    )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    if d.get("ts") and hasattr(d["ts"], "isoformat"):
+                        d["ts"] = d["ts"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("_fetch_coverage_samples error: %s", exc)
+        return []
+
+
+def _find_rule_references(target_tool: str) -> list[str]:
+    """Best-effort: which PaC processes' Rego content mentions this tool/action
+    by name at all (live-saved module if one exists, else the built-in
+    default — same fallback pac_approval_drift.py uses). A case-insensitive
+    substring match, not a real Rego parse — good enough to distinguish 'no
+    rule anywhere references this' from 'a rule exists but has never fired',
+    which call for very different proposed resolutions."""
+    if not target_tool:
+        return []
+    import pac_endpoints
+    needle = target_tool.lower()
+    processes = set(pac_endpoints._REGO_DEFAULTS.keys())
+    if db.is_available():
+        try:
+            processes |= pac_endpoints._valid_processes()
+        except Exception:
+            pass
+    matches = []
+    for process in sorted(processes):
+        content = None
+        if db.is_available():
+            saved = db.get_latest_pac_module(process)
+            content = saved["rego_content"] if saved else None
+        if content is None:
+            content = pac_endpoints._REGO_DEFAULTS.get(process, "")
+        if content and needle in content.lower():
+            matches.append(process)
+    return matches
+
+
+@router.get("/coverage/detail")
+async def coverage_detail(server_name: str, target_tool: str, kind: str = "mcp"):
+    """
+    Drill-down for one coverage row — recent sample calls plus a proposed
+    resolution, so clicking a blind spot gives an operator enough to actually
+    decide (author a rule / suppress / leave for now) instead of just a
+    flag_rate number.
+    """
+    samples = await asyncio.to_thread(_fetch_coverage_samples, server_name, target_tool, kind)
+    rule_matches = await asyncio.to_thread(_find_rule_references, target_tool)
+
+    if rule_matches:
+        proposed_resolution = (
+            f"A policy rule already references '{target_tool}' by name in the "
+            f"{'process' if len(rule_matches) == 1 else 'processes'} {', '.join(rule_matches)}, "
+            "but it has never actually fired despite real calls. That can mean the "
+            "activity genuinely never met the rule's condition — or that the rule is "
+            "silently unreachable (referencing a field/event-type the pipeline never "
+            "produces, the same failure class the PaC contract checker exists to catch). "
+            f"Check the contract report for {rule_matches[0]} before assuming this is fine."
+        )
+    else:
+        proposed_resolution = (
+            f"No Policy-as-Code rule currently references '{target_tool}' by name in any "
+            "process. Either author a rule for it in the Policy-as-Code Engine, or — if "
+            "the activity is genuinely low-risk — use Suppress to record that as a "
+            "reviewed, documented decision rather than leaving it an open question."
+        )
+
+    return {
+        "server_name": server_name,
+        "target_tool": target_tool,
+        "kind": kind,
+        "recent_samples": samples,
+        "rule_references": rule_matches,
+        "proposed_resolution": proposed_resolution,
+    }
+
+
 # ── Suppression allowlist endpoints ───────────────────────────────────────────
 
 @router.get("/suppressions")
