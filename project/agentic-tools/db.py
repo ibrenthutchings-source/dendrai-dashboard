@@ -306,6 +306,38 @@ CREATE TABLE IF NOT EXISTS altman_zscores (
     missing_inputs TEXT[]
 );
 
+-- Forecast accuracy tracking: one row per (ticker, metric, target quarter,
+-- horizon, model) point forecast ever made. predicted_value is recorded the
+-- moment a forecast is produced; actual_value is filled in later, once that
+-- quarter's real XBRL data arrives (see reconcile_forecast_actuals). This is
+-- what lets the forecasting ensemble eventually be judged against genuinely
+-- new out-of-sample evidence quarter over quarter, rather than only the
+-- walk-forward backtest re-run over the same fixed history every time —
+-- with real 13-quarter-ish histories that backtest has as few as 4-5
+-- out-of-sample steps to calibrate ensemble weights from.
+-- ON CONFLICT DO NOTHING on insert: if this (ticker, metric, target_quarter,
+-- horizon, model) combination was already forecast once, keep the ORIGINAL
+-- prediction — the whole point is capturing what was genuinely predicted
+-- ahead of time, not letting a later, hindsight-informed re-run overwrite it.
+CREATE TABLE IF NOT EXISTS forecast_accuracy_history (
+    id                  BIGSERIAL PRIMARY KEY,
+    company_id          INT REFERENCES companies(id),
+    ticker              VARCHAR(16) NOT NULL,
+    metric              VARCHAR(64) NOT NULL,
+    forecast_made_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    target_quarter_end  DATE NOT NULL,
+    horizon             SMALLINT NOT NULL,
+    model               VARCHAR(32) NOT NULL,
+    predicted_value     DOUBLE PRECISION NOT NULL,
+    actual_value        DOUBLE PRECISION,
+    reconciled_at       TIMESTAMPTZ,
+    UNIQUE (ticker, metric, target_quarter_end, horizon, model)
+);
+CREATE INDEX IF NOT EXISTS idx_forecast_accuracy_ticker
+    ON forecast_accuracy_history (ticker, metric, target_quarter_end);
+CREATE INDEX IF NOT EXISTS idx_forecast_accuracy_unreconciled
+    ON forecast_accuracy_history (ticker, metric) WHERE actual_value IS NULL;
+
 CREATE TABLE IF NOT EXISTS risk_scores (
     id             SERIAL PRIMARY KEY,
     run_id         INT          NOT NULL REFERENCES risk_loop_runs(id),
@@ -4774,6 +4806,106 @@ def get_financial_ratios_history(limit_runs: int = 200) -> list:
                         d[k] = float(d[k]) if d[k] is not None else None
                     rows.append(d)
                 rows.reverse()  # oldest-first, matching get_backtest_trend's ordering
+                return rows
+    return _run(_do) or []
+
+
+def record_forecast(ticker: str, metric: str, target_quarter_end: str, horizon: int,
+                     model: str, predicted_value: float, company_id: Optional[int] = None) -> None:
+    """Record one point forecast for later accuracy reconciliation. Silently
+    no-ops (ON CONFLICT DO NOTHING) if this exact (ticker, metric,
+    target_quarter_end, horizon, model) was already forecast — see
+    forecast_accuracy_history's DDL comment for why the original prediction
+    is kept rather than overwritten by a later re-run."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO forecast_accuracy_history
+                        (company_id, ticker, metric, target_quarter_end, horizon, model, predicted_value)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (ticker, metric, target_quarter_end, horizon, model) DO NOTHING
+                    """,
+                    (company_id, ticker.upper(), metric, target_quarter_end, horizon, model, predicted_value),
+                )
+            conn.commit()
+    _run(_do)
+
+
+def reconcile_forecast_actuals(ticker: str, metric: str, actuals: list) -> int:
+    """
+    Fill in actual_value for any past forecasts whose target quarter now has
+    real data. `actuals`: [{"quarter_end": "YYYY-MM-DD", "value": float}, ...]
+    (the same shape extract_quarterly_series returns). Only touches rows
+    that don't already have an actual recorded — a forecast's accuracy
+    record, once reconciled, doesn't change on a later re-run. Returns the
+    number of rows reconciled.
+    """
+    if not actuals:
+        return 0
+    def _do():
+        n = 0
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                for a in actuals:
+                    if a.get("value") is None or not a.get("quarter_end"):
+                        continue
+                    cur.execute(
+                        """
+                        UPDATE forecast_accuracy_history
+                        SET actual_value = %s, reconciled_at = NOW()
+                        WHERE ticker = %s AND metric = %s AND target_quarter_end = %s
+                          AND actual_value IS NULL
+                        """,
+                        (a["value"], ticker.upper(), metric, a["quarter_end"]),
+                    )
+                    n += cur.rowcount
+            conn.commit()
+        return n
+    return _run(_do) or 0
+
+
+def get_forecast_accuracy_history(ticker: Optional[str] = None, metric: Optional[str] = None,
+                                   model: Optional[str] = None, reconciled_only: bool = False,
+                                   limit: int = 500) -> list:
+    """Reconciled (and pending) forecast-vs-actual records, for future
+    calibration/reporting use. reconciled_only=True returns only rows where
+    a real actual_value has landed."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                filters, params = [], []
+                if ticker:
+                    filters.append("ticker = %s"); params.append(ticker.upper())
+                if metric:
+                    filters.append("metric = %s"); params.append(metric)
+                if model:
+                    filters.append("model = %s"); params.append(model)
+                if reconciled_only:
+                    filters.append("actual_value IS NOT NULL")
+                where = ("WHERE " + " AND ".join(filters)) if filters else ""
+                params.append(min(limit, 2000))
+                cur.execute(
+                    f"""
+                    SELECT ticker, metric, target_quarter_end, horizon, model,
+                           predicted_value, actual_value, forecast_made_at, reconciled_at
+                    FROM forecast_accuracy_history
+                    {where}
+                    ORDER BY target_quarter_end DESC, ticker, metric, horizon
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = ["ticker", "metric", "target_quarter_end", "horizon", "model",
+                        "predicted_value", "actual_value", "forecast_made_at", "reconciled_at"]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("target_quarter_end", "forecast_made_at", "reconciled_at"):
+                        if d.get(k) and hasattr(d[k], "isoformat"):
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
                 return rows
     return _run(_do) or []
 
