@@ -406,11 +406,15 @@ def _record_and_reconcile_forecasts(ticker: Optional[str], company_id: Optional[
             if h is None:
                 continue
             target_qend = _add_quarters_to_qend(last_qend, h)
-            db.record_forecast(ticker, metric_name, target_qend, h, "Ensemble", entry["point"], company_id)
+            # float(...) defensively — psycopg2 can't adapt a numpy scalar
+            # (e.g. np.float64) if one ever leaks through from a model leg;
+            # cast at this DB-write boundary rather than trusting every
+            # upstream forecast function to have cast internally.
+            db.record_forecast(ticker, metric_name, target_qend, h, "Ensemble", float(entry["point"]), company_id)
             for model_name, comp in (fc.get("components") or {}).items():
                 pts = comp.get("forecasts", [])
                 if h - 1 < len(pts):
-                    db.record_forecast(ticker, metric_name, target_qend, h, model_name, pts[h - 1]["point"], company_id)
+                    db.record_forecast(ticker, metric_name, target_qend, h, model_name, float(pts[h - 1]["point"]), company_id)
     except Exception:
         pass
 
@@ -2077,7 +2081,7 @@ def fit_random_forest(series: list[float], horizon: int = 4, fred_matrix: Option
         sigma = float(np.std(preds)) if len(preds) > 1 else 1e-8
         sigma = max(sigma, 1e-8)
         abs_t = n + h
-        trend_value = trend_coefs[0] + trend_coefs[1] * abs_t
+        trend_value = float(trend_coefs[0] + trend_coefs[1] * abs_t)
         point = resid_point + trend_value
         forecasts.append({
             "horizon":  h + 1,
