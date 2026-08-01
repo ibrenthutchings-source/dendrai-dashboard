@@ -246,18 +246,63 @@ def compute_financial_ratios(xbrl: dict) -> dict:
 
 
 def extract_quarterly_series(xbrl: dict, metric: str) -> list[dict]:
-    """Return [{quarter_end, value}, ...] sorted oldest-first, deduplicated by period end."""
-    pts = _quarterly_pts(xbrl.get(metric, {}))
+    """Return [{quarter_end, value}, ...] sorted oldest-first, deduplicated by
+    period end.
+
+    Q4 is synthesized as FY (10-K annual) minus the preceding three
+    standalone quarters when all four are available. SEC XBRL never reports
+    a standalone Q4 fact directly — 10-Qs only ever cover Q1-Q3; Q4's
+    contribution only ever appears baked into the 10-K's full-year total.
+    Without this, every 4th point in every EDGAR-derived quarterly series
+    (and every chart/forecast built from it) would silently have a gap —
+    and worse, any consumer computing quarter-over-quarter deltas across
+    that gap would really be comparing Q3 to the FOLLOWING year's Q1 (a
+    ~9-month gap) while presenting it as a single quarter's change.
+    """
+    metric_data = xbrl.get(metric, {})
+    q_pts = _quarterly_pts(metric_data)
+    a_pts = _annual_pts(metric_data)
+
     # Keep the most recently filed entry per period end date (amended filings supersede originals)
     by_end: dict = {}
-    for p in pts:
+    for p in q_pts:
         end = p.get("end")
         if not end:
             continue
         if end not in by_end or p.get("filed", "") > by_end[end].get("filed", ""):
             by_end[end] = p
+
+    # Derive Q4 per fiscal year-end: FY minus the 3 most recent standalone
+    # quarters ending before it, only when those 3 fall within a plausible
+    # ~9-12 month lookback window (250-400 days from the earliest of the
+    # three to the year-end) — guards against bridging an unrelated gap in
+    # sparse history rather than genuinely adjacent Q1/Q2/Q3.
+    sorted_q_ends = sorted(by_end.keys())
+    for a in a_pts:
+        a_end, a_val = a.get("end"), a.get("val")
+        if not a_end or a_val is None or a_end in by_end:
+            continue
+        preceding = [e for e in sorted_q_ends if e < a_end][-3:]
+        if len(preceding) != 3:
+            continue
+        try:
+            span_days = (datetime.fromisoformat(a_end) - datetime.fromisoformat(preceding[0])).days
+        except ValueError:
+            continue
+        if not (250 <= span_days <= 400):
+            continue
+        q4_val = a_val - sum(by_end[e]["val"] for e in preceding)
+        by_end[a_end] = {"end": a_end, "val": q4_val, "start": None,
+                          "filed": a.get("filed", ""), "synthesized": True}
+        sorted_q_ends.append(a_end)
+        sorted_q_ends.sort()
+
     pts_sorted = sorted(by_end.values(), key=lambda p: p.get("end", ""))
-    return [{"quarter_end": p["end"], "value": p["val"], "start": p.get("start")} for p in pts_sorted]
+    return [
+        {"quarter_end": p["end"], "value": p["val"], "start": p.get("start"),
+         "synthesized": p.get("synthesized", False)}
+        for p in pts_sorted
+    ]
 
 
 def extract_monthly_series(company_id: Optional[int], metric: str) -> list[dict]:

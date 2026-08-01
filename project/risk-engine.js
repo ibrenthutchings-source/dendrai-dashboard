@@ -1548,27 +1548,67 @@ window.RISK_ENGINE = (function () {
   }
 
   // ── Build Forecasts from EDGAR quarterly series ─────────────
+  // Turn a raw SEC companyfacts .series array (form/fp/start/end/val/filed)
+  // into a deduplicated, duration-guarded, Q4-synthesized quarterly series.
+  //
+  // Two independent EDGAR data-quality problems, both fixed here:
+  //  1. fp alone doesn't reliably identify a standalone 3-month period — a
+  //     10-Q reports BOTH the 3-month figure AND a year-to-date cumulative
+  //     figure (6-month at Q2, 9-month at Q3) side by side, and both can
+  //     share the same fp (e.g. fp='Q3' on both) AND the same period `end`
+  //     date (only `start` differs: Jul1 vs Jan1). Filtering on fp alone
+  //     lets the YTD figure through, and since dedup-by-end just keeps
+  //     whichever was filed more recently, a chart can end up plotting the
+  //     cumulative 9-month total as if it were Q3 alone — a value ~3x too
+  //     large that looks like "adding to the total over the entire year."
+  //     Fixed with a real duration check (60-110 days) whenever `start` is
+  //     present (SEC companyfacts always includes it).
+  //  2. Q4 is never reported as its own standalone fact at all — 10-Qs only
+  //     ever cover Q1-Q3; Q4's contribution is only visible baked into the
+  //     10-K's full-year total. Left alone, every 4th point in the chart is
+  //     a gap. Synthesized here as FY (10-K annual) minus the 3 preceding
+  //     standalone quarters, guarded to a plausible ~9-12 month span so a
+  //     sparse-history gap can't accidentally bridge unrelated quarters.
+  function deriveQuarterlyWithQ4(series) {
+    if (!Array.isArray(series)) return [];
+    const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
+    const isThreeMonths = x => {
+      if (!x.start || !x.end) return true; // no duration info to check — trust fp alone
+      const days = (new Date(x.end) - new Date(x.start)) / 86400000;
+      return days >= 60 && days <= 110;
+    };
+    const byEnd = {};
+    series
+      .filter(x => x.form === '10-Q' && isStandaloneQ(x) && isThreeMonths(x))
+      .forEach(x => {
+        if (!x.end) return;
+        if (!(x.end in byEnd) || (x.filed || '') > (byEnd[x.end].filed || ''))
+          byEnd[x.end] = x;
+      });
+
+    const annual = series.filter(x => x.form === '10-K' && x.fp === 'FY' && x.val != null && x.end);
+    let sortedEnds = Object.keys(byEnd).sort();
+    annual.forEach(a => {
+      if (a.end in byEnd) return;
+      const preceding = sortedEnds.filter(e => e < a.end).slice(-3);
+      if (preceding.length !== 3) return;
+      const spanDays = (new Date(a.end) - new Date(preceding[0])) / 86400000;
+      if (spanDays < 250 || spanDays > 400) return;
+      const q4Val = a.val - preceding.reduce((sum, e) => sum + byEnd[e].val, 0);
+      byEnd[a.end] = { end: a.end, val: q4Val, filed: a.filed || '', fp: 'Q4', form: '10-Q', synthesized: true };
+      sortedEnds = Object.keys(byEnd).sort();
+    });
+
+    return Object.values(byEnd).sort((a, b) => a.end > b.end ? 1 : -1);
+  }
+
   function buildForecasts(ratios, ticker, industry, fin) {
     const { lastY, lastQ, fcLabels, defaultLatestQ } = _quarterBoundaries();
-    // Shared helper — keeps only standalone quarterly periods (Q1/Q2/Q3/Q4),
-    // excluding YTD cumulative entries (H1, 9M, etc.) that some companies tag
-    // with fp values outside the Q1-Q4 set in EDGAR XBRL.
-    const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
 
     const histQuarters = [];
-    if (fin?.revenue?.series) {
-      // Deduplicate by end date before sorting: for any two entries with the same
-      // period-end (standalone Q vs YTD), prefer the more recently filed one.
-      const revByEnd = {};
-      fin.revenue.series
-        .filter(x => x.form === '10-Q' && isStandaloneQ(x))
-        .forEach(x => {
-          if (!x.end) return;
-          if (!(x.end in revByEnd) || (x.filed || '') > (revByEnd[x.end].filed || ''))
-            revByEnd[x.end] = x;
-        });
-      Object.values(revByEnd)
-        .sort((a, b) => a.end > b.end ? 1 : -1)
+    const revQuarterly = deriveQuarterlyWithQ4(fin?.revenue?.series);
+    if (revQuarterly.length) {
+      revQuarterly
         .slice(-12)
         .forEach(q => {
           const label = edgarDateToQLabel(q.end) || q.fp;
@@ -1600,13 +1640,12 @@ window.RISK_ENGINE = (function () {
 
     const histMargins = [];
     if (fin?.cogs?.series && fin?.revenue?.series) {
+      const revQ  = deriveQuarterlyWithQ4(fin.revenue.series);
+      const cogsQ = deriveQuarterlyWithQ4(fin.cogs.series);
       const revMap = {};
-      fin.revenue.series
-        .filter(x => x.form === '10-Q' && isStandaloneQ(x))
-        .forEach(x => { if (x.end) revMap[x.end] = x.val; });
-      fin.cogs.series
-        .filter(x => x.form === '10-Q' && isStandaloneQ(x) && revMap[x.end])
-        .sort((a, b) => a.end > b.end ? 1 : -1)
+      revQ.forEach(x => { revMap[x.end] = x.val; });
+      cogsQ
+        .filter(c => revMap[c.end] != null)
         .slice(-12)
         .forEach(c => {
           const rv = revMap[c.end];
@@ -1618,13 +1657,12 @@ window.RISK_ENGINE = (function () {
     // Fallback: use GrossProfit series directly if COGS-based matching gave < 4 quarters
     if (histMargins.length < 4 && fin?.grossProfit?.series && fin?.revenue?.series) {
       histMargins.length = 0;
+      const revQ2 = deriveQuarterlyWithQ4(fin.revenue.series);
+      const gpQ   = deriveQuarterlyWithQ4(fin.grossProfit.series);
       const revMap2 = {};
-      fin.revenue.series
-        .filter(x => x.form === '10-Q' && isStandaloneQ(x))
-        .forEach(x => { if (x.end) revMap2[x.end] = x.val; });
-      fin.grossProfit.series
-        .filter(x => x.form === '10-Q' && isStandaloneQ(x) && revMap2[x.end])
-        .sort((a, b) => a.end > b.end ? 1 : -1)
+      revQ2.forEach(x => { revMap2[x.end] = x.val; });
+      gpQ
+        .filter(p => revMap2[p.end] != null)
         .slice(-12)
         .forEach(p => {
           const rv = revMap2[p.end];
