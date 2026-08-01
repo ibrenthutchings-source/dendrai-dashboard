@@ -360,8 +360,64 @@ def build_company_xbrl(ticker: str) -> tuple[dict, dict]:
     return xbrl, meta
 
 
+def _add_quarters_to_qend(qend: str, n: int) -> str:
+    """Add n quarters to a 'YYYY-MM-DD' quarter-end date string. Self-
+    contained (doesn't reuse fred_tool's _add_quarters) so forecast-accuracy
+    recording works regardless of whether FRED is configured/importable."""
+    y, m, d = (int(x) for x in qend.split("-"))
+    total_months = (y * 12 + (m - 1)) + n * 3
+    new_y, new_m0 = divmod(total_months, 12)
+    new_m = new_m0 + 1
+    next_month = datetime(new_y + 1, 1, 1) if new_m == 12 else datetime(new_y, new_m + 1, 1)
+    return (next_month - timedelta(days=1)).date().isoformat()
+
+
+def _record_and_reconcile_forecasts(ticker: Optional[str], company_id: Optional[int],
+                                     metric_name: str, q_series: list, fc: dict) -> None:
+    """Best-effort forecast-accuracy bookkeeping: reconcile past forecasts
+    for this metric against the quarterly actuals just extracted (so a
+    forecast made N quarters ago gets its real outcome filled in once it's
+    available), then record this run's new point forecasts — the ensemble
+    blend and each component leg — for future reconciliation. See
+    forecast_accuracy_history's DDL comment in db.py for why this exists:
+    walk_forward_backtest's own accuracy numbers are recomputed over the
+    same fixed history every time, capped at a handful of out-of-sample
+    steps for this platform's typical ~13-quarter series; this table is what
+    lets genuinely new evidence accumulate quarter over quarter instead.
+    Never raises — this bookkeeping must not break the forecast itself."""
+    if not ticker:
+        return
+    try:
+        import db
+        if not db.is_available():
+            return
+    except ImportError:
+        return
+    try:
+        db.reconcile_forecast_actuals(ticker, metric_name, q_series)
+    except Exception:
+        pass
+    try:
+        last_qend = q_series[-1]["quarter_end"] if q_series else None
+        if not last_qend:
+            return
+        for entry in fc.get("forecasts", []):
+            h = entry.get("horizon")
+            if h is None:
+                continue
+            target_qend = _add_quarters_to_qend(last_qend, h)
+            db.record_forecast(ticker, metric_name, target_qend, h, "Ensemble", entry["point"], company_id)
+            for model_name, comp in (fc.get("components") or {}).items():
+                pts = comp.get("forecasts", [])
+                if h - 1 < len(pts):
+                    db.record_forecast(ticker, metric_name, target_qend, h, model_name, pts[h - 1]["point"], company_id)
+    except Exception:
+        pass
+
+
 def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[dict] = None,
-                            forecast_horizon: int = 4) -> dict:
+                            forecast_horizon: int = 4, ticker: Optional[str] = None,
+                            company_id: Optional[int] = None) -> dict:
     """
     Compute analyst KPI quarterly time series from XBRL:
       eps, op_income, op_margin, net_income, fcf, ebitda
@@ -390,11 +446,12 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[
                             eps_q, macro_info, eps_key, forecast_horizon)
                     bt  = walk_forward_backtest(vals, fred_matrix=fred_matrix)
                     fc  = compute_ensemble_forecast(vals, horizon=4, weights=bt.get("calibrated_weights"),
-                                                     fred_matrix=fred_matrix)
+                                                     fred_matrix=fred_matrix, backtest_sigmas=backtest_sigmas_from(bt))
                     if fred_meta:
                         fc["fred_features_used"] = fred_meta
                     result["eps_forecast"] = fc
                     result["eps_backtest"] = bt
+                    _record_and_reconcile_forecasts(ticker, company_id, "eps", eps_q, fc)
                 except Exception:
                     pass
             break
@@ -425,11 +482,13 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[
                     om_fc = compute_ensemble_forecast(
                         om_vals, horizon=4,
                         weights=om_bt.get("calibrated_weights"), fred_matrix=fred_matrix,
+                        backtest_sigmas=backtest_sigmas_from(om_bt),
                     )
                     if fred_meta:
                         om_fc["fred_features_used"] = fred_meta
                     result["op_margin_forecast"] = om_fc
                     result["op_margin_backtest"] = om_bt
+                    _record_and_reconcile_forecasts(ticker, company_id, "op_margin", op_margin, om_fc)
                 except Exception:
                     pass
 
@@ -446,11 +505,12 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[
                         ni_q, macro_info, "NetIncome", forecast_horizon)
                 ni_bt = walk_forward_backtest(ni_vals, fred_matrix=fred_matrix)
                 ni_fc = compute_ensemble_forecast(ni_vals, horizon=4, weights=ni_bt.get("calibrated_weights"),
-                                                   fred_matrix=fred_matrix)
+                                                   fred_matrix=fred_matrix, backtest_sigmas=backtest_sigmas_from(ni_bt))
                 if fred_meta:
                     ni_fc["fred_features_used"] = fred_meta
                 result["net_income_forecast"] = ni_fc
                 result["net_income_backtest"] = ni_bt
+                _record_and_reconcile_forecasts(ticker, company_id, "net_income", ni_q, ni_fc)
             except Exception:
                 pass
 
@@ -486,11 +546,12 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[
                             ebitda_sorted, macro_info, "EBITDA", forecast_horizon)
                     eb_bt = walk_forward_backtest(eb_vals, fred_matrix=fred_matrix)
                     eb_fc = compute_ensemble_forecast(eb_vals, horizon=4, weights=eb_bt.get("calibrated_weights"),
-                                                       fred_matrix=fred_matrix)
+                                                       fred_matrix=fred_matrix, backtest_sigmas=backtest_sigmas_from(eb_bt))
                     if fred_meta:
                         eb_fc["fred_features_used"] = fred_meta
                     result["ebitda_forecast"] = eb_fc
                     result["ebitda_backtest"] = eb_bt
+                    _record_and_reconcile_forecasts(ticker, company_id, "ebitda", ebitda_sorted, eb_fc)
                 except Exception:
                     pass
 
@@ -1545,8 +1606,8 @@ def _build_fred_feature_matrix(
     macro_info: dict,
     metric: str,
     horizon: int,
-    top_n: int = 5,
-) -> tuple[Optional[dict], list]:
+    top_n: int = 3,
+) -> tuple[Optional[dict], Optional[dict]]:
     """
     Build lag-aligned FRED feature arrays for the Random Forest forecasting leg.
 
@@ -1559,15 +1620,33 @@ def _build_fred_feature_matrix(
     would be used to predict that quarter. Missing/future readings fall back
     to the nearest earlier known value.
 
+    KNOWN LIMITATION (not fixed here, documented instead): `hits` is a
+    correlation screen computed once upstream (fred_tool.run_analysis) over
+    this company's FULL available history — including quarters that later
+    become backtest targets in walk_forward_backtest. Selecting "best
+    correlated of many candidates" and then backtesting against the same
+    history that selection saw is a multiple-comparisons leak: some
+    indicators will correlate by chance over a ~13-quarter history, and nothing
+    in the backtest can catch this because the selection never changes fold
+    to fold. A fully correct fix means recomputing the correlation screen
+    per expanding-window fold using only that fold's training data — a
+    change to fred_tool.py's correlation engine (used by several other
+    features), not just this function, so it's out of scope here. top_n was
+    cut from 5 to 3 as a partial, cheap mitigation (fewer candidates
+    screened = less multiple-comparisons exposure), and the caveat below is
+    surfaced in the returned meta so FRED-augmented accuracy claims can be
+    read with appropriate skepticism rather than silently.
+
     Returns (fred_matrix, meta) — fred_matrix is None if nothing usable was
-    found (no key, no hits, or no series data), meta describes what was used.
+    found (no key, no hits, or no series data); meta is a dict
+    {"indicators": [...], "leakage_caveat": "..."} or None.
     """
     if not _HAS_FRED or not q_series:
-        return None, []
+        return None, None
 
     hits = (macro_info.get("correlation_results") or {}).get(metric, [])
     if not hits:
-        return None, []
+        return None, None
 
     selected = sorted(hits, key=lambda h: abs(h.get("pearson_r", 0)), reverse=True)[:top_n]
     macro_series_map = macro_info.get("fred_macro_series") or {}
@@ -1580,7 +1659,7 @@ def _build_fred_feature_matrix(
         positions_q.append(_fred_add_quarters(last_q, h) if last_q else None)
 
     matrix: dict = {}
-    meta: list = []
+    indicators: list = []
 
     for hit in selected:
         sid = hit.get("series_id")
@@ -1610,7 +1689,7 @@ def _build_fred_feature_matrix(
                 arr.append(last_known)
 
         matrix[sid] = arr
-        meta.append({
+        indicators.append({
             "series_id":    sid,
             "name":         hit.get("name", sid),
             "lag_quarters": lag,
@@ -1618,7 +1697,17 @@ def _build_fred_feature_matrix(
         })
 
     if not matrix:
-        return None, []
+        return None, None
+    meta = {
+        "indicators": indicators,
+        "top_n": top_n,
+        "leakage_caveat": (
+            "These indicators were selected by correlation over this company's full "
+            "available history, not re-selected per backtest fold — some may be "
+            "selected by chance rather than real signal. Read the Random Forest leg's "
+            "backtested accuracy with that in mind, especially over short histories."
+        ),
+    }
     return matrix, meta
 
 
@@ -1626,9 +1715,49 @@ def _build_fred_feature_matrix(
 # SECTION 7 — TIME-SERIES FORECASTING
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _ols(X, y):
-    """OLS via numpy least squares. Returns (coefficients, residuals, sigma)."""
-    coefs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+# Mild L2 shrinkage for the regression-based forecast legs. Chosen with
+# features standardized to unit variance first (see _ols below), so this
+# value is comparable across callers regardless of each feature's raw scale
+# (a raw/unstandardized penalty would under-shrink large-scale regressors
+# like Prophet-like's time index relative to its unit-scale Fourier terms).
+# _RIDGE_LAMBDA=2.0 is deliberately mild — Prophet-like fits 6 parameters on
+# as few as 8 observations (2 spare degrees of freedom), which is where this
+# matters most; ARIMA's 3-4 parameters are already parsimonious enough that
+# this mostly just adds a small safety margin.
+_RIDGE_LAMBDA = 2.0
+
+
+def _ols(X, y, ridge_lambda: float = 0.0, intercept_col: Optional[int] = None):
+    """
+    OLS via numpy least squares, with optional ridge (L2) shrinkage.
+    Returns (coefficients, residuals, sigma).
+
+    When ridge_lambda > 0: non-intercept columns are standardized to unit
+    variance before the penalty is applied (so the penalty is comparable
+    across differently-scaled regressors), then coefficients are rescaled
+    back to the original feature space — `X @ coefs` still works normally
+    on the caller's original, unstandardized X. `intercept_col`, if given,
+    is excluded from standardization and from the penalty (standard ridge
+    practice — shrinking the intercept toward zero has no justification).
+    """
+    if ridge_lambda > 0:
+        n_features = X.shape[1]
+        X_work = X.astype(float).copy()
+        scales = np.ones(n_features)
+        for j in range(n_features):
+            if j == intercept_col:
+                continue
+            s = float(np.std(X_work[:, j]))
+            if s > 1e-8:
+                scales[j] = s
+                X_work[:, j] = X_work[:, j] / s
+        penalty = np.eye(n_features) * ridge_lambda
+        if intercept_col is not None:
+            penalty[intercept_col, intercept_col] = 0.0
+        coefs_scaled = np.linalg.solve(X_work.T @ X_work + penalty, X_work.T @ y)
+        coefs = coefs_scaled / scales
+    else:
+        coefs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
     fitted    = X @ coefs
     residuals = y - fitted
     sigma     = float(np.std(residuals))
@@ -1667,7 +1796,7 @@ def fit_arima(series: list[float], p: int = 2, d: int = 1, q: int = 1,
     y_ar = y_diff[p:]
     cols = [y_diff[p - k - 1: m - k - 1] for k in range(p)] + [np.ones(m - p)]
     X_ar = np.column_stack(cols)
-    ar_coefs, ar_resid, _ = _ols(X_ar, y_ar)
+    ar_coefs, ar_resid, _ = _ols(X_ar, y_ar, ridge_lambda=_RIDGE_LAMBDA, intercept_col=p)
     ar_phi   = ar_coefs[:p]
     ar_const = float(ar_coefs[p])
 
@@ -1676,7 +1805,7 @@ def fit_arima(series: list[float], p: int = 2, d: int = 1, q: int = 1,
     if q > 0 and len(ar_resid) > q + 2:
         y_ma = ar_resid[q:]
         X_ma = np.column_stack([ar_resid[q - k - 1: len(ar_resid) - k - 1] for k in range(q)])
-        ma_theta, _, _ = _ols(X_ma, y_ma)
+        ma_theta, _, _ = _ols(X_ma, y_ma, ridge_lambda=_RIDGE_LAMBDA)
 
     # ── 4. Estimate σ ─────────────────────────────────────────────────────────
     final_resid = ar_resid.copy()
@@ -1761,7 +1890,7 @@ def fit_prophet_like(series: list[float], horizon: int = 4) -> dict:
         np.sin(4 * math.pi * t / P),
         np.cos(4 * math.pi * t / P),
     ])
-    coefs, resid, sigma = _ols(X, y)
+    coefs, resid, sigma = _ols(X, y, ridge_lambda=_RIDGE_LAMBDA, intercept_col=0)
     sigma = max(sigma, 1e-8)
 
     t_fc = np.arange(n, n + horizon, dtype=float)
@@ -1804,10 +1933,17 @@ class _TreeNode:
         return self.right.predict(x)
 
 
-def _best_split(X, y):
+def _best_split(X, y, feature_subset=None):
+    """`feature_subset`, when given, restricts candidate split features to
+    that subset — this is what makes the ensemble a real Random Forest
+    rather than plain bagging: without per-split feature subsampling, every
+    tree sees every feature at every split, so bootstrap resampling alone
+    does far less to decorrelate the trees (they tend to pick the same
+    dominant feature near the root every time)."""
     best_score, best_feat, best_thresh = float("inf"), None, None
     n, n_feat = X.shape
-    for f in range(n_feat):
+    feat_indices = feature_subset if feature_subset is not None else range(n_feat)
+    for f in feat_indices:
         vals = np.unique(X[:, f])
         for i in range(len(vals) - 1):
             thresh = (vals[i] + vals[i + 1]) / 2.0
@@ -1821,37 +1957,58 @@ def _best_split(X, y):
     return best_feat, best_thresh
 
 
-def _build_tree(X, y, depth=0, max_depth=4):
+def _build_tree(X, y, rng, depth=0, max_depth=4, max_features=None):
     node = _TreeNode()
     if depth >= max_depth or len(y) < 4:
         node.value = float(np.mean(y))
         return node
-    feat, thresh = _best_split(X, y)
+    n_feat = X.shape[1]
+    feature_subset = None
+    if max_features is not None and max_features < n_feat:
+        feature_subset = rng.sample(range(n_feat), max_features)
+    feat, thresh = _best_split(X, y, feature_subset=feature_subset)
     if feat is None:
         node.value = float(np.mean(y))
         return node
     mask = X[:, feat] <= thresh
     node.feature, node.threshold = feat, thresh
-    node.left  = _build_tree(X[mask],  y[mask],  depth + 1, max_depth)
-    node.right = _build_tree(X[~mask], y[~mask], depth + 1, max_depth)
+    node.left  = _build_tree(X[mask],  y[mask],  rng, depth + 1, max_depth, max_features)
+    node.right = _build_tree(X[~mask], y[~mask], rng, depth + 1, max_depth, max_features)
     return node
+
+
+def _fit_linear_trend(y: np.ndarray) -> np.ndarray:
+    """Simple intercept+slope OLS trend line (no ridge needed — only 2
+    parameters). Used to detrend the series before it reaches Random Forest,
+    see fit_random_forest's docstring for why."""
+    n = len(y)
+    t = np.arange(n, dtype=float)
+    X = np.column_stack([np.ones(n), t])
+    coefs, _, _ = _ols(X, y)
+    return coefs
 
 
 def _make_rf_features(y_hist: np.ndarray, fred_matrix: Optional[dict] = None) -> np.ndarray:
     """
-    Build feature vector for the next forecast from history array.
-    `len(y_hist)` doubles as the absolute position index into `fred_matrix`
-    (both the training loop and the forecast loop grow `y_hist` by exactly
-    one element per step, so this always lines up).
+    Build feature vector for the next forecast from a (detrended) history
+    array. `len(y_hist)` doubles as the absolute position index into
+    `fred_matrix` (both the training loop and the forecast loop grow
+    `y_hist` by exactly one element per step, so this always lines up).
+
+    Deliberately no raw time-index feature: handing a tree a monotonically
+    increasing index is a leakage-prone shortcut (with only a handful of
+    training rows, a tree can just split on "index == this recent value" and
+    call it learning). The series is detrended by the caller instead, so
+    this only has to describe recent level/seasonal structure — genuinely
+    learnable from a handful of lags — not re-derive "time is passing".
     """
     n = len(y_hist)
     lags  = [y_hist[n - k - 1] if k < n else 0.0 for k in range(4)]
     win   = y_hist[-4:] if n >= 4 else y_hist
     rmean = float(np.mean(win))
     rstd  = float(np.std(win)) if len(win) > 1 else 0.0
-    tidx  = float(n)
     qtr   = float((n % 4) + 1)
-    feats = lags + [rmean, rstd, tidx, qtr]
+    feats = lags + [rmean, rstd, qtr]
     if fred_matrix:
         for arr in fred_matrix.values():
             feats.append(arr[n] if n < len(arr) else (arr[-1] if arr else 0.0))
@@ -1861,11 +2018,22 @@ def _make_rf_features(y_hist: np.ndarray, fred_matrix: Optional[dict] = None) ->
 def fit_random_forest(series: list[float], horizon: int = 4, fred_matrix: Optional[dict] = None,
                       n_trees: int = 25, max_depth: int = 4, seed: int = 42) -> dict:
     """
-    Random Forest: 25 bootstrap trees, depth 4.
-    Features: lags 1–4, rolling mean/std (window 4), time index, quarter,
-    plus (when `fred_matrix` is given) one lag-aligned FRED reading per
-    selected indicator — see _build_fred_feature_matrix.
-    Seeded for reproducibility. CI from tree prediction variance.
+    Random Forest: 25 bootstrap trees, depth 4, with per-split feature
+    subsampling (max_features ~= sqrt(n_features), the textbook RF
+    decorrelation step — see _best_split's docstring).
+
+    Fit on a DETRENDED copy of the series (linear trend removed via
+    _fit_linear_trend, added back at forecast time) rather than the raw
+    series with a time-index feature — with only ~9-13 training rows this
+    matters: a raw index feature is trivial for a tree to overfit to
+    directly, whereas the detrended target only contains level/seasonal
+    residual structure for the model to actually learn from.
+
+    Features: lags 1–4, rolling mean/std (window 4), quarter, plus (when
+    `fred_matrix` is given) one lag-aligned FRED reading per selected
+    indicator — see _build_fred_feature_matrix. Seeded for reproducibility.
+    CI from tree prediction variance (does not include trend-extrapolation
+    uncertainty, which this simplified linear trend does not model).
     """
     if not _HAS_NUMPY:
         return {"error": "numpy required", "model": "Random Forest", "forecasts": []}
@@ -1875,13 +2043,19 @@ def fit_random_forest(series: list[float], horizon: int = 4, fred_matrix: Option
     if n < 8:
         return {"error": "need ≥8 observations", "model": "Random Forest", "forecasts": []}
 
-    # Build supervised dataset: (features_at_t, y[t]) for t in [4, n-1]
+    trend_coefs = _fit_linear_trend(y)
+    y_detrended = y - (trend_coefs[0] + trend_coefs[1] * np.arange(n, dtype=float))
+
+    # Build supervised dataset: (features_at_t, y_detrended[t]) for t in [4, n-1]
     rows_X, rows_y = [], []
     for t in range(4, n):
-        rows_X.append(_make_rf_features(y[:t], fred_matrix))
-        rows_y.append(y[t])
+        rows_X.append(_make_rf_features(y_detrended[:t], fred_matrix))
+        rows_y.append(y_detrended[t])
     X_all = np.array(rows_X)
     y_all = np.array(rows_y)
+
+    n_features_total = X_all.shape[1]
+    max_features = max(1, round(math.sqrt(n_features_total)))
 
     rng = random.Random(seed)
 
@@ -1891,40 +2065,55 @@ def fit_random_forest(series: list[float], horizon: int = 4, fred_matrix: Option
         idx = [rng.randint(0, len(y_all) - 1) for _ in range(len(y_all))]
         X_b = X_all[idx]
         y_b = y_all[idx]
-        trees.append(_build_tree(X_b, y_b, max_depth=max_depth))
+        trees.append(_build_tree(X_b, y_b, rng, max_depth=max_depth, max_features=max_features))
 
-    # Forecast
-    hist = list(y)
+    # Forecast — walk forward in DETRENDED space, add the trend back per step
+    hist = list(y_detrended)
     forecasts = []
     for h in range(horizon):
         feat  = _make_rf_features(np.array(hist), fred_matrix)
         preds = [t.predict(feat) for t in trees]
-        point = float(np.mean(preds))
+        resid_point = float(np.mean(preds))
         sigma = float(np.std(preds)) if len(preds) > 1 else 1e-8
         sigma = max(sigma, 1e-8)
+        abs_t = n + h
+        trend_value = trend_coefs[0] + trend_coefs[1] * abs_t
+        point = resid_point + trend_value
         forecasts.append({
             "horizon":  h + 1,
             "point":    round(point, 4),
             "ci_lower": round(point - 1.96 * sigma * math.sqrt(h + 1), 4),
             "ci_upper": round(point + 1.96 * sigma * math.sqrt(h + 1), 4),
         })
-        hist.append(point)
+        hist.append(resid_point)
 
     return {
         "model":   "Random Forest",
-        "params":  {"n_trees": n_trees, "max_depth": max_depth, "seed": seed},
+        "params":  {"n_trees": n_trees, "max_depth": max_depth, "seed": seed, "max_features": max_features},
         "forecasts": forecasts,
     }
 
 
 def compute_ensemble_forecast(series: list[float], horizon: int = 4,
                               weights: Optional[dict] = None,
-                              fred_matrix: Optional[dict] = None) -> dict:
+                              fred_matrix: Optional[dict] = None,
+                              backtest_sigmas: Optional[dict] = None) -> dict:
     """
     Equal-weight (1/3) blend of ARIMA, Prophet-like, Random Forest.
     After backtesting, weights are recalibrated by inverse-MAPE.
     `fred_matrix`, when given, feeds lag-aligned FRED indicators into the
     Random Forest leg only — ARIMA/Prophet-like remain univariate.
+
+    `backtest_sigmas`, when given ({model_name: resid_std}, e.g. from
+    walk_forward_backtest()'s model_metrics[name]["resid_std"]), replaces the
+    blended-CI approach below with one derived from each leg's REAL
+    out-of-sample backtest error instead of blending each leg's own in-sample
+    fit sigma. In-sample sigma is measured on the same data that already
+    minimized it — always optimistic, and severely so for Prophet-like
+    (6 parameters fit on as few as 8 points leaves almost no spare degrees of
+    freedom). The two legs' widths are combined as a weighted-variance sum
+    (assumes the legs' errors are roughly independent — a simplification, but
+    a far more honest starting point than reusing in-sample sigma).
     """
     arima  = fit_arima(series, horizon=horizon)
     prophet = fit_prophet_like(series, horizon=horizon)
@@ -1937,6 +2126,16 @@ def compute_ensemble_forecast(series: list[float], horizon: int = 4,
         w = {name: 1.0 / 3.0 for name in names}
     else:
         w = weights
+
+    combined_sigma = None
+    if backtest_sigmas:
+        combined_var = sum(
+            (w.get(name, 0.0) ** 2) * (backtest_sigmas[name] ** 2)
+            for name in names
+            if backtest_sigmas.get(name) is not None
+        )
+        if combined_var > 0:
+            combined_sigma = math.sqrt(combined_var)
 
     forecasts = []
     for h in range(horizon):
@@ -1958,6 +2157,9 @@ def compute_ensemble_forecast(series: list[float], horizon: int = 4,
             blend_pt /= total_w
             blend_lo /= total_w
             blend_hi /= total_w
+        if combined_sigma is not None:
+            blend_lo = blend_pt - 1.96 * combined_sigma * math.sqrt(h + 1)
+            blend_hi = blend_pt + 1.96 * combined_sigma * math.sqrt(h + 1)
         forecasts.append({
             "horizon":   h + 1,
             "point":     round(blend_pt, 4),
@@ -1971,6 +2173,7 @@ def compute_ensemble_forecast(series: list[float], horizon: int = 4,
         "weights":    w,
         "components": {n: m for n, m in zip(names, models)},
         "forecasts":  forecasts,
+        "ci_source": "out_of_sample_backtest" if combined_sigma is not None else "in_sample_fit",
     }
 
 
@@ -2029,6 +2232,15 @@ def _backtest_model(series: list[float], model_fn, min_train: int = 8,
             actuals.append(series[t])
 
     dm = _directional_metrics(actuals, preds)
+    # Real out-of-sample residual spread — computed from actual expanding-
+    # window errors, not each model's own in-sample fit sigma (which is
+    # optimistic: it's measured on the same data that already minimized it).
+    # Needs >=3 points for a std worth reporting; None below that rather
+    # than a number built on 1-2 residuals.
+    resid_std = (
+        float(np.std(np.array(actuals) - np.array(preds)))
+        if len(actuals) >= 3 else None
+    )
     return {
         "n_observations":  n,
         "n_backtest_steps": len(actuals),
@@ -2038,6 +2250,7 @@ def _backtest_model(series: list[float], model_fn, min_train: int = 8,
         "precision": dm["precision"],
         "recall":    dm["recall"],
         "f1":        dm["f1"],
+        "resid_std": resid_std,
     }
 
 
@@ -2076,11 +2289,51 @@ def walk_forward_backtest(series: list[float], fred_matrix: Optional[dict] = Non
     else:
         weights = {"ARIMA": 1/3, "Prophet-like": 1/3, "Random Forest": 1/3}
 
+    # Shrink toward equal-weight in proportion to how few out-of-sample
+    # backtest steps actually back the calibration up. With min_train=8 and
+    # this platform's typical ~13-quarter series, a "calibrated" weight can
+    # rest on as few as 4-5 real out-of-sample points — treating that as
+    # fully trustworthy risks locking the ensemble onto whichever model got
+    # lucky over a handful of steps. alpha = k/(k+n_steps) is the standard
+    # empirical-Bayes-style shrinkage form: few steps -> alpha near 1 (mostly
+    # equal-weight); many steps -> alpha near 0 (mostly trust the
+    # calibration). k=8 means ~5 steps (this platform's common case) still
+    # gets pulled more than halfway to equal-weight, while ~20+ steps is
+    # treated as trustworthy enough to mostly keep as-is.
+    _SHRINKAGE_K = 8.0
+    n_steps = min((results[name]["n_backtest_steps"] for name in weights if name in results), default=0)
+    alpha = _SHRINKAGE_K / (_SHRINKAGE_K + n_steps)
+    equal_w = 1.0 / len(weights) if weights else 0.0
+    shrunk_weights = {
+        name: round(alpha * equal_w + (1 - alpha) * w, 4)
+        for name, w in weights.items()
+    }
+
     return {
         "model_metrics":       results,
-        "calibrated_weights":  weights,
-        "note": "Weights are inverse-MAPE normalized; pass to compute_ensemble_forecast(weights=...)",
+        "raw_calibrated_weights": weights,
+        "calibrated_weights":  shrunk_weights,
+        "weight_shrinkage": {"alpha": round(alpha, 4), "n_backtest_steps": n_steps, "k": _SHRINKAGE_K},
+        "note": (
+            "calibrated_weights are inverse-MAPE weights shrunk toward equal-weight "
+            "based on how many out-of-sample backtest steps were available (see "
+            "weight_shrinkage); raw_calibrated_weights is the unshrunk inverse-MAPE "
+            "value for reference. Pass calibrated_weights to compute_ensemble_forecast(weights=...)."
+        ),
     }
+
+
+def backtest_sigmas_from(bt: dict) -> Optional[dict]:
+    """Extract {model_name: resid_std} from a walk_forward_backtest() result
+    for compute_ensemble_forecast(backtest_sigmas=...) — the out-of-sample
+    residual spread each model actually produced during backtesting, used to
+    build honest ensemble CI width instead of blending each leg's in-sample
+    fit sigma. Returns None if bt has no usable model_metrics (e.g. the
+    {"error": ...} shape walk_forward_backtest returns for too-short series)."""
+    metrics = bt.get("model_metrics") if bt else None
+    if not metrics:
+        return None
+    return {name: r.get("resid_std") for name, r in metrics.items()}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2357,6 +2610,7 @@ def run_forecast_backtest(xbrl: dict, macro_info: Optional[dict], forecast_metri
             calibrated_w = bt.get("calibrated_weights")
             out["forecast"] = compute_ensemble_forecast(
                 vals, horizon=forecast_horizon, weights=calibrated_w, fred_matrix=fred_matrix,
+                backtest_sigmas=backtest_sigmas_from(bt),
             )
             out["forecast"]["metric"]  = forecast_metric
             out["forecast"]["quarters"] = [p["quarter_end"] for p in q_series]
@@ -2406,6 +2660,7 @@ def run_forecast_backtest(xbrl: dict, macro_info: Optional[dict], forecast_metri
                     gm_fc = compute_ensemble_forecast(
                         gm_vals, horizon=forecast_horizon,
                         weights=gm_bt.get("calibrated_weights"), fred_matrix=gm_fred_matrix,
+                        backtest_sigmas=backtest_sigmas_from(gm_bt),
                     )
                     if gm_fred_meta:
                         gm_fc["fred_features_used"] = gm_fred_meta
@@ -2526,6 +2781,7 @@ def run_full_analysis(
 
     # ── 11. Analyst KPI Series (EPS, OpMargin, NetIncome, FCF, EBITDA) ───────
     q_series = extract_quarterly_series(xbrl, forecast_metric)
-    result["analyst_series"] = compute_analyst_series(xbrl, q_series or [], macro_info, forecast_horizon)
+    result["analyst_series"] = compute_analyst_series(xbrl, q_series or [], macro_info, forecast_horizon,
+                                                        ticker=ticker, company_id=company_id)
 
     return result
