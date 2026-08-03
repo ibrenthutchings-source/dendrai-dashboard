@@ -139,13 +139,14 @@ def test_webhook_rejects_invalid_json_even_with_valid_signature(client):
     assert resp.status_code == 400
 
 
-def test_webhook_secret_scanning_alert_is_adjudicated_critical(client):
+def test_webhook_secret_scanning_alert_is_scored_critical_with_policy_violation(client):
     """POL-GH-001 (policy.md): 'Any SECRET_DETECTED event is automatically
     CRITICAL... zero-tolerance.' Gold's base weight for SECRET_DETECTED is
     0.95 (UBO/pipeline/gold.py) — high enough alone to land CRITICAL even
-    before the policy penalty. This proves the listener catches a real
-    control-state signal (a leaked secret) and reports a real, correctly
-    severe verdict — not a 200 OK that silently dropped the payload."""
+    before the policy penalty. This is the deterministic half of the catch:
+    Gold's risk_tier/risk_score and Silver's policy_violations are pure
+    functions of event_type and don't depend on how much narrative text the
+    payload carries, so this is guaranteed regardless of payload richness."""
     resp = _signed_post(
         client,
         {
@@ -160,10 +161,74 @@ def test_webhook_secret_scanning_alert_is_adjudicated_critical(client):
     assert data["received"] is True
     assert data["adjudicated"] is True
     assert data["risk_tier"] == "CRITICAL"
+    assert data["risk_score"] == 1.0
+    assert any("zero-tolerance" in v.lower() for v in data["policy_violations"]), data["policy_violations"]
+
+
+def test_webhook_secret_scanning_alert_council_verdict_does_not_corroborate_the_policy_hit(client):
+    """A real, verified gap, not a hypothetical: even though the event above
+    is scored CRITICAL with a fired zero-tolerance policy violation, the
+    Council's own verdict (the field that actually drives requires_human_review
+    on the SYNCHRONOUS response GitHub's webhook dashboard sees) comes back
+    CLEAR for a realistic secret_scanning_alert payload — because
+    UBO/agents/linguist.py's `_analyse_github` only ever reads
+    `commits[].message`; it never looks at `alert.secret_type` or anything
+    else a real secret_scanning_alert delivery carries. The Quant correctly
+    abstains (INSUFFICIENT_DATA — SECRET_DETECTED is in its own non_quant_types
+    list), and Linguist sees an empty `commits` array and returns a clean
+    CLEAR with no signals, not an abstention.
+
+    This is a mutation-testable regression guard on that specific gap: if
+    Linguist is ever taught to read alert.secret_type, this test's assertions
+    will need updating (a welcome failure) — but until then, this documents
+    that a GitHub secret-scanning alert relies entirely on the deterministic
+    Silver/Gold layer (asserted above) for its severity signal, not on
+    independent corroboration from the heuristic Council. The async
+    _write_adjudication background task (github_endpoints.py) additionally
+    checks a Policy-as-Code Rego module, but GITHUB routes to the 'itgc'
+    process by default (mcp_governance._SOURCE_SYSTEM_TO_PAC_PROCESS), which
+    has no SECRET_DETECTED-specific deny rule either — so this gap is not
+    closed by the async path for this event type."""
+    resp = _signed_post(
+        client,
+        {
+            "repository": {"full_name": "acme/api", "id": 12345, "visibility": "private"},
+            "sender": {"login": "octocat"},
+            "alert": {"secret_type": "aws_access_key_id"},
+        },
+        event="secret_scanning_alert",
+    )
+    data = resp.json()
+    assert data["risk_tier"] == "CRITICAL"  # the catch happened
+    assert data["verdict"] == "CLEAR"       # but isn't independently corroborated
+    assert data["requires_human_review"] is False
+
+
+def test_webhook_secret_scanning_alert_escalates_once_commit_narrative_carries_signal(client):
+    """Positive control proving the Council CAN and DOES escalate a
+    SECRET_DETECTED event once there's narrative for the Linguist to read —
+    isolating the gap above to 'GitHub's real secret_scanning_alert payload
+    shape has no commits array', not 'the Council can never escalate a
+    secret-detection event'. A commit message containing a suppression
+    keyword (_COMMIT_SUPPRESSION: 'force', 'no-verify', ...) is exactly the
+    kind of narrative-transactional divergence UBO/agents/linguist.py is
+    built to catch."""
+    resp = _signed_post(
+        client,
+        {
+            "repository": {"full_name": "acme/api", "id": 12345, "visibility": "private"},
+            "sender": {"login": "octocat"},
+            "alert": {"secret_type": "aws_access_key_id"},
+            "commits": [
+                {"message": "force push to bypass the secret scan, no-verify", "added": [], "modified": [], "removed": []},
+            ],
+        },
+        event="secret_scanning_alert",
+    )
+    data = resp.json()
+    assert data["risk_tier"] == "CRITICAL"
     assert data["verdict"] == "ESCALATE"
     assert data["requires_human_review"] is True
-    assert any("zero-tolerance" in v.lower() or "secret" in v.lower()
-               for v in data["policy_violations"]), data["policy_violations"]
 
 
 def test_webhook_unrecognized_event_type_is_low_risk_and_auto_cleared(client):
