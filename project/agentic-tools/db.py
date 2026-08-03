@@ -16,8 +16,10 @@ Usage:
     ...
 """
 
+import contextvars
 import logging
 import os
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
@@ -66,6 +68,28 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 _pool: Optional["pg_pool.ThreadedConnectionPool"] = None
+
+# ── Multi-tenant connection routing ──────────────────────────────────────────
+# In TENANT_MODE=single (default), nothing below is used — every function
+# keeps going through the single global `_pool` above, unchanged.
+#
+# In TENANT_MODE=multi, api_server.py's resolution middleware calls
+# bind_tenant_pool(tenant_id, dsn) once at the top of each request (after
+# resolving the Host header via control_plane.resolve_tenant), which sets
+# _current_tenant for the remainder of that request/task. _conn() below
+# prefers the tenant-scoped pool whenever one is bound, so ~85 tables' worth
+# of existing call sites (db.upsert_company, db.save_financial_ratios, ...)
+# need zero changes — they transparently talk to the right tenant's database
+# because the context var, not a function argument, carries the routing.
+#
+# Fails closed: if TENANT_MODE=multi and no tenant is bound, _conn() raises
+# rather than silently falling back to a shared/default database.
+_current_tenant: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "db_current_tenant", default=None
+)
+_tenant_pools: dict[str, "pg_pool.ThreadedConnectionPool"] = {}
+_tenant_pool_last_used: dict[str, float] = {}
+_MAX_TENANT_POOLS = int(os.environ.get("TENANT_POOL_CACHE_SIZE", "50"))
 
 # Embedding dimension — must match the model used to generate vectors.
 # text-embedding-3-small / ada-002 → 1536  |  text-embedding-3-large → 3072
@@ -2054,8 +2078,79 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHE
 # Pool management
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _build_dsn(url: str) -> str:
+    # connect_timeout=8 keeps DNS failures fast (vs. OS default ~75 s).
+    dsn = url if "connect_timeout" in url else url + ("&" if "?" in url else "?") + "connect_timeout=8"
+    # Enforce encryption in transit rather than trusting the URL alone to have
+    # specified it — a bare/copy-pasted DSN would otherwise connect over
+    # plaintext TCP with no signal anything is wrong. Only applied when the
+    # DSN doesn't already declare a mode, so an operator's explicit choice
+    # (including a deliberate "disable" for a local/private-network Postgres)
+    # is always respected. DATABASE_SSL_MODE overrides the "require" default
+    # for environments where TLS genuinely isn't available.
+    if "sslmode" not in dsn:
+        ssl_mode = os.environ.get("DATABASE_SSL_MODE", "require").strip()
+        if ssl_mode:
+            dsn = dsn + "&" + "sslmode=" + ssl_mode
+    return dsn
+
+
+def _apply_schema(pool: "pg_pool.ThreadedConnectionPool") -> None:
+    """Apply core DDL/migrations (raises on failure) plus the optional
+    observability and pgvector schemas (best-effort — non-fatal if Postgres
+    lacks permissions for CREATE SCHEMA/EXTENSION, e.g. a restricted managed
+    DB user). Shared by init_db() (legacy global pool, TENANT_MODE=single)
+    and init_tenant_db() (one fresh tenant database, TENANT_MODE=multi) so
+    every tenant gets the identical, unmodified schema."""
+    conn = pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_DDL)
+            cur.execute(_MIGRATIONS)  # reconcile column drift on existing tables
+        conn.commit()
+    finally:
+        pool.putconn(conn)
+    logger.info("PostgreSQL database initialized (tables + migrations applied)")
+
+    obs_conn = pool.getconn()
+    try:
+        with obs_conn.cursor() as cur:
+            cur.execute(_OBSERVABILITY_DDL)
+            cur.execute(_OBSERVABILITY_MIGRATIONS)  # runs after DDL — targets tables _DDL/_OBSERVABILITY_DDL just created
+        obs_conn.commit()
+        logger.info("Observability schema ready (mcp_sessions, mcp_telemetry, adjudicated_tool_calls)")
+    except Exception as exc:
+        obs_conn.rollback()
+        logger.warning("Observability schema init failed (non-fatal): %s", exc)
+    finally:
+        pool.putconn(obs_conn)
+
+    # pgvector extension + embeddings table — optional; logged as warning if absent.
+    # _PGVECTOR_READY is process-wide, not per-pool: under TENANT_MODE=multi
+    # every tenant is provisioned through this same function, so pgvector
+    # availability is expected to be uniform across tenants. It's a
+    # feature-availability flag only (whether _conn() registers the vector
+    # type), not a data-isolation boundary, so this coarseness is deliberate.
+    global _PGVECTOR_READY
+    vec_conn = pool.getconn()
+    try:
+        with vec_conn.cursor() as cur:
+            cur.execute(_PGVECTOR_DDL_TEMPLATE.format(dim=EMBEDDING_DIM))
+            cur.execute(_PGVECTOR_MIGRATIONS)
+        vec_conn.commit()
+        _PGVECTOR_READY = True
+        logger.info("pgvector extension ready (EMBEDDING_DIM=%d)", EMBEDDING_DIM)
+    except Exception as exc:
+        vec_conn.rollback()
+        logger.warning("pgvector not available — embedding features disabled: %s", exc)
+    finally:
+        pool.putconn(vec_conn)
+
+
 def init_db() -> bool:
-    """Initialize the thread-safe connection pool and create all tables."""
+    """Initialize the legacy single-tenant global connection pool
+    (TENANT_MODE=single, the default). Under TENANT_MODE=multi this is not
+    called at request time at all — see init_tenant_db()/bind_tenant_pool()."""
     global _pool
     if _pool is not None:
         return True  # already connected — don't clobber a live pool
@@ -2068,72 +2163,95 @@ def init_db() -> bool:
         logger.info("DATABASE_URL not set — database persistence disabled")
         return False
     try:
-        # connect_timeout=8 keeps DNS failures fast (vs. OS default ~75 s).
-        dsn = url if "connect_timeout" in url else url + ("&" if "?" in url else "?") + "connect_timeout=8"
-        # Enforce encryption in transit rather than trusting DATABASE_URL alone
-        # to have specified it — a bare/copy-pasted DSN would otherwise connect
-        # over plaintext TCP with no signal anything is wrong. Only applied when
-        # the DSN doesn't already declare a mode, so an operator's explicit
-        # choice (including a deliberate "disable" for a local/private-network
-        # Postgres) is always respected. DATABASE_SSL_MODE overrides the
-        # "require" default for environments where TLS genuinely isn't
-        # available (e.g. a local dev Postgres with no cert).
-        if "sslmode" not in dsn:
-            ssl_mode = os.environ.get("DATABASE_SSL_MODE", "require").strip()
-            if ssl_mode:
-                dsn = dsn + "&" + "sslmode=" + ssl_mode
-        _pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=dsn)
-        conn = _pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(_DDL)
-                cur.execute(_MIGRATIONS)  # reconcile column drift on existing tables
-            conn.commit()
-        finally:
-            _pool.putconn(conn)
-        logger.info("PostgreSQL database initialized (tables + migrations applied)")
+        _pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=_build_dsn(url))
+        _apply_schema(_pool)
     except Exception as exc:
         logger.error("Database init failed: %s", exc)
         _pool = None
         return False
-
-    # Observability schema — telemetry + governance tables.  Optional: non-fatal if Postgres
-    # lacks permissions for CREATE SCHEMA (e.g. restricted managed DB users).
-    obs_conn = _pool.getconn()
-    try:
-        with obs_conn.cursor() as cur:
-            cur.execute(_OBSERVABILITY_DDL)
-            cur.execute(_OBSERVABILITY_MIGRATIONS)  # runs after DDL — targets tables _DDL/_OBSERVABILITY_DDL just created
-        obs_conn.commit()
-        logger.info("Observability schema ready (mcp_sessions, mcp_telemetry, adjudicated_tool_calls)")
-    except Exception as exc:
-        obs_conn.rollback()
-        logger.warning("Observability schema init failed (non-fatal): %s", exc)
-    finally:
-        _pool.putconn(obs_conn)
-
-    # pgvector extension + embeddings table — optional; logged as warning if absent.
-    global _PGVECTOR_READY
-    vec_conn = _pool.getconn()
-    try:
-        with vec_conn.cursor() as cur:
-            cur.execute(_PGVECTOR_DDL_TEMPLATE.format(dim=EMBEDDING_DIM))
-            cur.execute(_PGVECTOR_MIGRATIONS)
-        vec_conn.commit()
-        _PGVECTOR_READY = True
-        logger.info("pgvector extension ready (EMBEDDING_DIM=%d)", EMBEDDING_DIM)
-    except Exception as exc:
-        vec_conn.rollback()
-        logger.warning("pgvector not available — embedding features disabled: %s", exc)
-    finally:
-        _pool.putconn(vec_conn)
-
     return True
 
 
+def init_tenant_db(dsn: str) -> bool:
+    """Provision a fresh tenant database: apply the full schema (identical
+    to init_db()'s) against an arbitrary DSN, independent of the legacy
+    global pool. Called once per tenant at provisioning time by
+    provision_tenant.py — NOT on every request; per-request routing uses
+    bind_tenant_pool() against the small long-lived pool it maintains."""
+    if not _HAS_PSYCOPG2:
+        raise RuntimeError("psycopg2 not installed — run: pip install psycopg2-binary")
+    tmp_pool = pg_pool.ThreadedConnectionPool(1, 2, dsn=_build_dsn(dsn))
+    try:
+        _apply_schema(tmp_pool)
+    finally:
+        tmp_pool.closeall()
+    return True
+
+
+def bind_tenant_pool(tenant_id: str, dsn: str) -> None:
+    """Lazily create (or reuse) a small connection pool for this tenant and
+    make it the target for every db.* call made in the current
+    request/task context. Called once, at the top of each request, by
+    api_server.py's tenant-resolution middleware — never by application/
+    business-logic code, which should keep calling db.* exactly as before."""
+    if tenant_id not in _tenant_pools:
+        if len(_tenant_pools) >= _MAX_TENANT_POOLS:
+            _evict_lru_tenant_pool()
+        _tenant_pools[tenant_id] = pg_pool.ThreadedConnectionPool(1, 3, dsn=_build_dsn(dsn))
+    _tenant_pool_last_used[tenant_id] = time.monotonic()
+    _current_tenant.set(tenant_id)
+
+
+def unbind_tenant() -> None:
+    """Clear the tenant bound to the current request/task context. Call in a
+    `finally` at request end so a later single-tenant-mode call site (or a
+    stray background task without its own binding) never inherits a
+    previous request's tenant by accident."""
+    _current_tenant.set(None)
+
+
+def _evict_lru_tenant_pool() -> None:
+    """Bound _tenant_pools' size (TENANT_POOL_CACHE_SIZE, default 50) by
+    closing the least-recently-bound tenant's pool. At "tens of tenants"
+    this should rarely trigger; it exists so an operator provisioning far
+    more tenants than expected degrades to reconnecting a cold pool on next
+    use, rather than exhausting the server's max_connections."""
+    if not _tenant_pool_last_used:
+        return
+    oldest_tenant = min(_tenant_pool_last_used, key=_tenant_pool_last_used.get)
+    pool = _tenant_pools.pop(oldest_tenant, None)
+    _tenant_pool_last_used.pop(oldest_tenant, None)
+    if pool is not None:
+        pool.closeall()
+
+
+def _active_pool() -> Optional["pg_pool.ThreadedConnectionPool"]:
+    """The pool _conn()/is_available()/_run() should use: the tenant pool
+    bound to the current request/task if one is set, else the legacy global
+    pool (single-tenant mode). Fails closed — if a tenant is bound but its
+    pool is somehow missing, that's a bug in the caller (bind_tenant_pool()
+    wasn't awaited/applied), not a reason to silently fall back to the
+    global pool, which in TENANT_MODE=multi may not even be initialized."""
+    tenant_id = _current_tenant.get()
+    if tenant_id is not None:
+        pool = _tenant_pools.get(tenant_id)
+        if pool is None:
+            raise RuntimeError(
+                f"db._current_tenant is set to {tenant_id!r} but no pool is bound for it — "
+                "bind_tenant_pool() must be called before any db.* call in this request."
+            )
+        return pool
+    return _pool
+
+
 def is_available() -> bool:
-    """Return True when a live connection pool is configured."""
-    return _pool is not None
+    """Return True when a connection pool is available for the current
+    context — the tenant pool bound to this request, or the legacy global
+    pool in single-tenant mode."""
+    try:
+        return _active_pool() is not None
+    except RuntimeError:
+        return False
 
 
 @contextmanager
@@ -2151,9 +2269,10 @@ def _conn():
     the connection (close=True) so the pool opens a fresh one next time,
     instead of recycling a corpse.
     """
-    if _pool is None:
+    pool = _active_pool()
+    if pool is None:
         raise RuntimeError("Database not initialized")
-    conn = _pool.getconn()
+    conn = pool.getconn()
     broken = False
     try:
         if _HAS_PGVECTOR and _PGVECTOR_READY:
@@ -2170,7 +2289,7 @@ def _conn():
             broken = True
         raise
     finally:
-        _pool.putconn(conn, close=broken)
+        pool.putconn(conn, close=broken)
 
 
 get_conn = _conn   # public alias used by mcp_governance and github_endpoints
@@ -2182,7 +2301,7 @@ def ping() -> dict:
     Returns a dict with keys: connected, pgvector, pg_version, vector_version, error.
     Never raises — safe to call at startup or in a health-check endpoint.
     """
-    if _pool is None:
+    if not is_available():
         return {"connected": False, "pgvector": False, "error": "pool not initialised"}
     try:
         with _conn() as conn:
@@ -2215,7 +2334,7 @@ def _run(fn, default=None, on_error=None):
     do" (e.g. reoptimization_tool.py's create_risk_loop_run call: without
     this, a schema-mismatch INSERT failure and an ordinary empty result both
     just produce None, and the caller can't tell which happened)."""
-    if _pool is None:
+    if not is_available():
         return default
     try:
         return fn()
@@ -8431,10 +8550,32 @@ class EncryptionKeyMissing(RuntimeError):
     """CONNECTOR_ENCRYPTION_KEY is not set — cannot encrypt/decrypt connector credentials."""
 
 
+# Multi-tenant connector-key binding — mirrors auth_endpoints.py's
+# bind_tenant_secret()/_active_jwt_secret() pattern. In TENANT_MODE=single
+# (default) nothing here is used and _fernet() falls through to the module
+# env var, unchanged. In TENANT_MODE=multi, api_server.py's resolution
+# middleware binds each tenant's own CONNECTOR_ENCRYPTION_KEY for the
+# duration of the request, so one tenant's key can never decrypt another
+# tenant's connector credentials / system_telemetry sensitive payloads —
+# though under database-per-tenant that data isn't even reachable across
+# tenants in the first place; this is defense in depth on top of that.
+_tenant_connector_key: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "db_tenant_connector_key", default=None
+)
+
+
+def bind_tenant_connector_key(key: str) -> None:
+    _tenant_connector_key.set(key)
+
+
+def unbind_tenant_connector_key() -> None:
+    _tenant_connector_key.set(None)
+
+
 def _fernet() -> "Fernet":
     if not _HAS_CRYPTOGRAPHY:
         raise EncryptionKeyMissing("cryptography package not installed — run: pip install cryptography")
-    key = os.environ.get("CONNECTOR_ENCRYPTION_KEY", "").strip()
+    key = _tenant_connector_key.get() or os.environ.get("CONNECTOR_ENCRYPTION_KEY", "").strip()
     if not key:
         raise EncryptionKeyMissing(
             "CONNECTOR_ENCRYPTION_KEY is not set — generate one with "

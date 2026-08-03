@@ -38,6 +38,7 @@ Dependencies (pip install):
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
 import os
@@ -139,29 +140,71 @@ def _generate_password(length: int = 14) -> str:
             return pw
 
 
+# ── Multi-tenant JWT secret binding ──────────────────────────────────────────
+# In TENANT_MODE=single (default), nothing here is used — every token is
+# signed/verified with the module-level _JWT_SECRET, exactly as before.
+#
+# In TENANT_MODE=multi, api_server.py's resolution middleware calls
+# bind_tenant_secret(tenant_id, jwt_secret) once at the top of each request,
+# after resolving the Host header. A JWT is then both (a) signed/verified
+# with that tenant's own secret, and (b) carries an explicit tenant_id claim
+# that's independently cross-checked against the resolved tenant on every
+# decode — two layers, so a future bug in secret provisioning (e.g. a
+# copy-paste reusing a key across tenants) doesn't by itself become a
+# cross-tenant auth bypass.
+_tenant_jwt_secret: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "auth_tenant_jwt_secret", default=None
+)
+_tenant_id_ctx: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "auth_tenant_id", default=None
+)
+
+
+def bind_tenant_secret(tenant_id: str, jwt_secret: str) -> None:
+    _tenant_jwt_secret.set(jwt_secret)
+    _tenant_id_ctx.set(tenant_id)
+
+
+def unbind_tenant_secret() -> None:
+    _tenant_jwt_secret.set(None)
+    _tenant_id_ctx.set(None)
+
+
+def _active_jwt_secret() -> str:
+    return _tenant_jwt_secret.get() or _JWT_SECRET
+
+
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 
 def _create_jwt(user: dict, jti: str) -> str:
     if not _HAS_JWT:
         raise HTTPException(status_code=503, detail="PyJWT not installed")
     payload = {
-        "sub":      str(user["id"]),
-        "username": user["username"],
-        "role":     user["role"],
-        "jti":      jti,
-        "iat":      datetime.now(timezone.utc),
-        "exp":      datetime.now(timezone.utc) + timedelta(hours=_SESSION_HOURS),
+        "sub":       str(user["id"]),
+        "username":  user["username"],
+        "role":      user["role"],
+        "jti":       jti,
+        "tenant_id": _tenant_id_ctx.get(),
+        "iat":       datetime.now(timezone.utc),
+        "exp":       datetime.now(timezone.utc) + timedelta(hours=_SESSION_HOURS),
     }
-    return _pyjwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+    return _pyjwt.encode(payload, _active_jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
 def decode_jwt(token: str) -> Optional[dict]:
     if not _HAS_JWT or not token:
         return None
     try:
-        return _pyjwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+        payload = _pyjwt.decode(token, _active_jwt_secret(), algorithms=[_JWT_ALGORITHM])
     except Exception:
         return None
+    bound_tenant = _tenant_id_ctx.get()
+    if bound_tenant is not None and payload.get("tenant_id") != bound_tenant:
+        # Verified against the current request's tenant secret, but minted
+        # for a different tenant's origin — reject independently of the key
+        # check above rather than trusting a shared/misprovisioned key.
+        return None
+    return payload
 
 
 # ── Cookie helpers ────────────────────────────────────────────────────────────
