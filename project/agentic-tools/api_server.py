@@ -68,6 +68,7 @@ MCP Streamable-HTTP (add these URLs to claude.ai → Settings → Integrations):
 import argparse
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 import os
 import threading
@@ -114,6 +115,7 @@ from rss_ingest_service import (
 )
 from edgar_tool import _8K_ITEMS as EDGAR_8K_ITEMS
 import db
+import control_plane
 import manual_financials_tool
 
 import ai_endpoints
@@ -199,24 +201,86 @@ logger = logging.getLogger(__name__)
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
+async def _run_cycle_for_all_tenants(cycle_fn, label: str) -> None:
+    """Run one cycle_fn() invocation per active tenant, with that tenant's
+    db pool + all secrets bound for exactly the duration of its own call —
+    the multi-tenant equivalent of each sweep module's single-tenant
+    "run one cycle against the global DB" call. cycle_fn is one of the
+    existing sweep_once()/_process_batch()/_poll_due_connectors()-style
+    functions, completely unmodified: this wrapper is the only new surface
+    area, the inner logic (already covered by each module's own tests)
+    doesn't change at all.
+
+    One tenant's cycle raising doesn't stop the others' — logged and
+    skipped, same as every sweep's own tick-level except handler already
+    does for a single-tenant failure."""
+    for tenant in control_plane.list_active_tenants():
+        try:
+            secrets = control_plane.get_tenant_secrets(tenant.id)
+        except control_plane.TenantNotFound:
+            logger.warning("%s: tenant %s has no secrets provisioned — skipping", label, tenant.slug)
+            continue
+        db.bind_tenant_pool(tenant.id, tenant.db_dsn)
+        db.bind_tenant_connector_key(secrets.connector_encryption_key)
+        auth_endpoints.bind_tenant_secret(tenant.id, secrets.auth_jwt_secret)
+        evidence_endpoints.bind_tenant_secret(secrets.evidence_signing_key)
+        try:
+            await cycle_fn()
+        except Exception:
+            logger.exception("%s failed for tenant %s", label, tenant.slug)
+        finally:
+            db.unbind_tenant()
+            db.unbind_tenant_connector_key()
+            auth_endpoints.unbind_tenant_secret()
+            evidence_endpoints.unbind_tenant_secret()
+
+
+async def _multi_tenant_loop(cycle_fn, tick_s: float, label: str) -> None:
+    """TENANT_MODE=multi's replacement for a sweep module's own start_sweep()/
+    start_polling(): identical infinite-loop-with-sleep shape, but each tick
+    iterates every active tenant (_run_cycle_for_all_tenants) instead of
+    running once against a single global DB."""
+    logger.info("%s (multi-tenant) started (tick=%.0fs)", label, tick_s)
+    while True:
+        try:
+            await asyncio.sleep(tick_s)
+            await _run_cycle_for_all_tenants(cycle_fn, label)
+        except asyncio.CancelledError:
+            logger.info("%s (multi-tenant) stopped", label)
+            break
+        except Exception as exc:
+            logger.warning("%s (multi-tenant) tick error: %s", label, exc)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    db_ready = db.init_db()
-    logger.info("Database persistence: %s", "ENABLED" if db_ready else "DISABLED (set DATABASE_URL to enable)")
-    if db_ready:
-        # Seed static reference data into DB on first startup (idempotent)
-        risk_register_endpoints.seed_static_data()
-        _seed_cem_templates()
-        _seed_ticker_cik()
-        _seed_controls_catalog()
-        db.seed_builtin_pac_processes()
-        db.seed_framework_mappings()
-        logger.info("Static reference data seeded")
-        # Auth schema + default users
-        if auth_db.init_auth_db():
-            seeded = auth_db.seed_default_users()
-            if seeded:
-                logger.info("Auth: seeded %d default user(s)", seeded)
+    db_ready = False
+    if control_plane.is_multi_tenant():
+        # TENANT_MODE=multi: there is no single DATABASE_URL to initialize
+        # at process startup — each request binds its own tenant database
+        # via _TenantResolutionMiddleware. Only the control plane (the
+        # tenant registry itself) is process-global and needs eager init.
+        # Per-tenant schema init happens once, at provisioning time
+        # (db.init_tenant_db(), see provision_tenant.py), not here.
+        control_plane.init_control_db()
+        logger.info("Multi-tenant mode: control plane initialized; per-request tenant binding active")
+    else:
+        db_ready = db.init_db()
+        logger.info("Database persistence: %s", "ENABLED" if db_ready else "DISABLED (set DATABASE_URL to enable)")
+        if db_ready:
+            # Seed static reference data into DB on first startup (idempotent)
+            risk_register_endpoints.seed_static_data()
+            _seed_cem_templates()
+            _seed_ticker_cik()
+            _seed_controls_catalog()
+            db.seed_builtin_pac_processes()
+            db.seed_framework_mappings()
+            logger.info("Static reference data seeded")
+            # Auth schema + default users
+            if auth_db.init_auth_db():
+                seeded = auth_db.seed_default_users()
+                if seeded:
+                    logger.info("Auth: seeded %d default user(s)", seeded)
     # FastMCP Streamable-HTTP requires each server's session_manager task group to be
     # initialized during app lifespan. Starlette does not automatically propagate
     # lifespan events to mounted sub-apps, so we initialize them here explicitly.
@@ -237,120 +301,147 @@ async def lifespan(application: FastAPI):
             except Exception as exc:
                 logger.warning("MCP session manager init failed for %s: %s", inst_name, exc)
 
-        # Start MCP Governance polling (non-blocking background task)
-        _gov_task = None
-        if _HAS_MCP_GOVERNANCE and db.is_available():
-            _gov_task = asyncio.create_task(mcp_governance.start_polling())
-            logger.info("MCP governance polling task started")
-        elif _HAS_MCP_GOVERNANCE:
-            logger.info("MCP governance available but DB not ready — polling not started")
+        _gov_task = _connector_task = _drift_task = None
+        _waiver_sweep_task = _itsm_sla_sweep_task = _pac_negative_sweep_task = None
+        _connector_hygiene_sweep_task = _vendor_risk_sweep_task = _ai_governance_sweep_task = None
+        _reconnect_task = None
+        _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
-        # Poll-based connectors (Oracle Fusion / SAP HANA / SailPoint / Dynamics 365 /
-        # NetSuite) — dispatch loop only; which connectors actually poll is entirely
-        # UI-configured (observability.poll_connectors), not gated by env vars here.
-        _connector_task = None
-        if _HAS_CONNECTOR_POLLER and db.is_available():
-            _connector_task = asyncio.create_task(connector_poller.start_polling())
-            logger.info("Connector poller task started")
-        elif _HAS_CONNECTOR_POLLER:
-            logger.info("Connector poller available but DB not ready — polling not started")
+        if control_plane.is_multi_tenant():
+            # One generic per-tenant scheduler per sweep (_multi_tenant_loop,
+            # defined above lifespan()) instead of one instance of each sweep
+            # against a single global DB that doesn't exist in this mode.
+            # Each module's sweep_once()/_process_batch()/etc. is unchanged —
+            # only which database/secrets are bound before calling it differs.
+            if _HAS_MCP_GOVERNANCE:
+                _multi_tenant_bg_tasks.append(asyncio.create_task(
+                    _multi_tenant_loop(mcp_governance._process_batch, mcp_governance.POLL_INTERVAL_S, "MCP governance poll")
+                ))
+            if _HAS_CONNECTOR_POLLER:
+                _multi_tenant_bg_tasks.append(asyncio.create_task(
+                    _multi_tenant_loop(connector_poller._poll_due_connectors, connector_poller._TICK_S, "Connector poller")
+                ))
+            _multi_tenant_bg_tasks.extend([
+                asyncio.create_task(_multi_tenant_loop(
+                    lambda: asyncio.to_thread(_check_model_health_drift_once),
+                    _MODEL_HEALTH_CHECK_INTERVAL_S, "Model Health drift watch",
+                )),
+                asyncio.create_task(_multi_tenant_loop(risk_waiver_sweep.sweep_once, risk_waiver_sweep._TICK_S, "Risk waiver expiry sweep")),
+                asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
+                asyncio.create_task(_multi_tenant_loop(pac_negative_sweep.sweep_once, pac_negative_sweep._TICK_S, "PaC negative-testing sweep")),
+                asyncio.create_task(_multi_tenant_loop(connector_hygiene_sweep.sweep_once, connector_hygiene_sweep._TICK_S, "Connector credential hygiene sweep")),
+                asyncio.create_task(_multi_tenant_loop(vendor_risk_sweep.sweep_once, vendor_risk_sweep._TICK_S, "Vendor risk SOC 2 expiry sweep")),
+                asyncio.create_task(_multi_tenant_loop(ai_governance_sweep.sweep_once, ai_governance_sweep._TICK_S, "AI Governance assessment expiry sweep")),
+            ])
+            logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
+                        len(_multi_tenant_bg_tasks))
+        else:
+            # Start MCP Governance polling (non-blocking background task)
+            if _HAS_MCP_GOVERNANCE and db.is_available():
+                _gov_task = asyncio.create_task(mcp_governance.start_polling())
+                logger.info("MCP governance polling task started")
+            elif _HAS_MCP_GOVERNANCE:
+                logger.info("MCP governance available but DB not ready — polling not started")
 
-        # Model Health drift watch — periodic (not per-request) so alerting can't
-        # spam the webhook on every page view of the on-demand /model-health/summary
-        # endpoint. See model_health_drift_watch() below.
-        _drift_task = None
-        if db.is_available():
-            _drift_task = asyncio.create_task(model_health_drift_watch())
-            logger.info("Model Health drift watch task started")
+            # Poll-based connectors (Oracle Fusion / SAP HANA / SailPoint / Dynamics 365 /
+            # NetSuite) — dispatch loop only; which connectors actually poll is entirely
+            # UI-configured (observability.poll_connectors), not gated by env vars here.
+            if _HAS_CONNECTOR_POLLER and db.is_available():
+                _connector_task = asyncio.create_task(connector_poller.start_polling())
+                logger.info("Connector poller task started")
+            elif _HAS_CONNECTOR_POLLER:
+                logger.info("Connector poller available but DB not ready — polling not started")
 
-        # DevOps Monitoring: Risk Waiver & Exception Hub automated expiry sweep.
-        _waiver_sweep_task = None
-        if db.is_available():
-            _waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
-            logger.info("Risk waiver expiry sweep task started")
+            # Model Health drift watch — periodic (not per-request) so alerting can't
+            # spam the webhook on every page view of the on-demand /model-health/summary
+            # endpoint. See model_health_drift_watch() below.
+            if db.is_available():
+                _drift_task = asyncio.create_task(model_health_drift_watch())
+                logger.info("Model Health drift watch task started")
 
-        # DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge breach-detection sweep.
-        _itsm_sla_sweep_task = None
-        if db.is_available():
-            _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
-            logger.info("ITSM SLA breach sweep task started")
+            # DevOps Monitoring: Risk Waiver & Exception Hub automated expiry sweep.
+            if db.is_available():
+                _waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
+                logger.info("Risk waiver expiry sweep task started")
 
-        # Policy-as-Code negative-testing periodic full evaluation (P1).
-        _pac_negative_sweep_task = None
-        if db.is_available():
-            _pac_negative_sweep_task = asyncio.create_task(pac_negative_sweep.start_sweep())
-            logger.info("PaC negative-testing sweep task started")
+            # DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge breach-detection sweep.
+            if db.is_available():
+                _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
+                logger.info("ITSM SLA breach sweep task started")
 
-        # Infrastructure Monitoring: connector credential rotation hygiene sweep.
-        _connector_hygiene_sweep_task = None
-        if db.is_available():
-            _connector_hygiene_sweep_task = asyncio.create_task(connector_hygiene_sweep.start_sweep())
-            logger.info("Connector credential hygiene sweep task started")
+            # Policy-as-Code negative-testing periodic full evaluation (P1).
+            if db.is_available():
+                _pac_negative_sweep_task = asyncio.create_task(pac_negative_sweep.start_sweep())
+                logger.info("PaC negative-testing sweep task started")
 
-        # Continuous Third-Party/Vendor Risk: vendor SOC 2 expiry sweep.
-        _vendor_risk_sweep_task = None
-        if db.is_available():
-            _vendor_risk_sweep_task = asyncio.create_task(vendor_risk_sweep.start_sweep())
-            logger.info("Vendor risk SOC 2 expiry sweep task started")
+            # Infrastructure Monitoring: connector credential rotation hygiene sweep.
+            if db.is_available():
+                _connector_hygiene_sweep_task = asyncio.create_task(connector_hygiene_sweep.start_sweep())
+                logger.info("Connector credential hygiene sweep task started")
 
-        # AI Governance: AI system assessment expiry sweep.
-        _ai_governance_sweep_task = None
-        if db.is_available():
-            _ai_governance_sweep_task = asyncio.create_task(ai_governance_sweep.start_sweep())
-            logger.info("AI Governance assessment expiry sweep task started")
+            # Continuous Third-Party/Vendor Risk: vendor SOC 2 expiry sweep.
+            if db.is_available():
+                _vendor_risk_sweep_task = asyncio.create_task(vendor_risk_sweep.start_sweep())
+                logger.info("Vendor risk SOC 2 expiry sweep task started")
 
-        # Background DB reconnect loop — retries every 30 s if startup DB init failed.
-        # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
-        # stalling the event loop (which would cause 502s on all in-flight requests).
-        async def _db_reconnect_loop():
-            while True:
-                await asyncio.sleep(30)
-                if db.is_available():
-                    continue
-                logger.info("DB not available — retrying connection…")
-                connected = await asyncio.to_thread(db.init_db)
-                if connected:
-                    logger.info("DB reconnected successfully")
-                    await asyncio.to_thread(risk_register_endpoints.seed_static_data)
-                    await asyncio.to_thread(_seed_cem_templates)
-                    await asyncio.to_thread(_seed_ticker_cik)
-                    if _HAS_MCP_GOVERNANCE and _gov_task is None:
-                        asyncio.create_task(mcp_governance.start_polling())
-                        logger.info("MCP governance polling started after DB reconnect")
-                    if _HAS_CONNECTOR_POLLER and _connector_task is None:
-                        asyncio.create_task(connector_poller.start_polling())
-                        logger.info("Connector poller started after DB reconnect")
-                    if _drift_task is None:
-                        asyncio.create_task(model_health_drift_watch())
-                        logger.info("Model Health drift watch started after DB reconnect")
-                    if _waiver_sweep_task is None:
-                        asyncio.create_task(risk_waiver_sweep.start_sweep())
-                        logger.info("Risk waiver expiry sweep started after DB reconnect")
-                    if _itsm_sla_sweep_task is None:
-                        asyncio.create_task(itsm_sla_sweep.start_sweep())
-                        logger.info("ITSM SLA breach sweep started after DB reconnect")
-                    if _pac_negative_sweep_task is None:
-                        asyncio.create_task(pac_negative_sweep.start_sweep())
-                        logger.info("PaC negative-testing sweep started after DB reconnect")
-                    if _connector_hygiene_sweep_task is None:
-                        asyncio.create_task(connector_hygiene_sweep.start_sweep())
-                        logger.info("Connector credential hygiene sweep started after DB reconnect")
-                    if _vendor_risk_sweep_task is None:
-                        asyncio.create_task(vendor_risk_sweep.start_sweep())
-                        logger.info("Vendor risk SOC 2 expiry sweep started after DB reconnect")
-                    if _ai_governance_sweep_task is None:
-                        asyncio.create_task(ai_governance_sweep.start_sweep())
-                        logger.info("AI Governance assessment expiry sweep started after DB reconnect")
+            # AI Governance: AI system assessment expiry sweep.
+            if db.is_available():
+                _ai_governance_sweep_task = asyncio.create_task(ai_governance_sweep.start_sweep())
+                logger.info("AI Governance assessment expiry sweep task started")
 
-        _reconnect_task = asyncio.create_task(_db_reconnect_loop())
+            # Background DB reconnect loop — retries every 30 s if startup DB init failed.
+            # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
+            # stalling the event loop (which would cause 502s on all in-flight requests).
+            async def _db_reconnect_loop():
+                while True:
+                    await asyncio.sleep(30)
+                    if db.is_available():
+                        continue
+                    logger.info("DB not available — retrying connection…")
+                    connected = await asyncio.to_thread(db.init_db)
+                    if connected:
+                        logger.info("DB reconnected successfully")
+                        await asyncio.to_thread(risk_register_endpoints.seed_static_data)
+                        await asyncio.to_thread(_seed_cem_templates)
+                        await asyncio.to_thread(_seed_ticker_cik)
+                        if _HAS_MCP_GOVERNANCE and _gov_task is None:
+                            asyncio.create_task(mcp_governance.start_polling())
+                            logger.info("MCP governance polling started after DB reconnect")
+                        if _HAS_CONNECTOR_POLLER and _connector_task is None:
+                            asyncio.create_task(connector_poller.start_polling())
+                            logger.info("Connector poller started after DB reconnect")
+                        if _drift_task is None:
+                            asyncio.create_task(model_health_drift_watch())
+                            logger.info("Model Health drift watch started after DB reconnect")
+                        if _waiver_sweep_task is None:
+                            asyncio.create_task(risk_waiver_sweep.start_sweep())
+                            logger.info("Risk waiver expiry sweep started after DB reconnect")
+                        if _itsm_sla_sweep_task is None:
+                            asyncio.create_task(itsm_sla_sweep.start_sweep())
+                            logger.info("ITSM SLA breach sweep started after DB reconnect")
+                        if _pac_negative_sweep_task is None:
+                            asyncio.create_task(pac_negative_sweep.start_sweep())
+                            logger.info("PaC negative-testing sweep started after DB reconnect")
+                        if _connector_hygiene_sweep_task is None:
+                            asyncio.create_task(connector_hygiene_sweep.start_sweep())
+                            logger.info("Connector credential hygiene sweep started after DB reconnect")
+                        if _vendor_risk_sweep_task is None:
+                            asyncio.create_task(vendor_risk_sweep.start_sweep())
+                            logger.info("Vendor risk SOC 2 expiry sweep started after DB reconnect")
+                        if _ai_governance_sweep_task is None:
+                            asyncio.create_task(ai_governance_sweep.start_sweep())
+                            logger.info("AI Governance assessment expiry sweep started after DB reconnect")
+
+            _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
         try:
             yield
         finally:
-            _reconnect_task.cancel()
+            if _reconnect_task is not None:
+                _reconnect_task.cancel()
             for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task,
                              _itsm_sla_sweep_task, _pac_negative_sweep_task, _connector_hygiene_sweep_task,
-                             _vendor_risk_sweep_task, _ai_governance_sweep_task):
+                             _vendor_risk_sweep_task, _ai_governance_sweep_task, *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
                     try:
@@ -425,6 +516,69 @@ def _seed_controls_catalog() -> None:
     logger.info("Seeded %d controls into controls_catalog", count)
 
 
+# ── Tenant resolution (multi-tenancy) ────────────────────────────────────────
+# A no-op unless TENANT_MODE=multi (see control_plane.py). A plain ASGI
+# middleware — not BaseHTTPMiddleware — deliberately: it runs call_next
+# (self.app) in the *same* coroutine/task, so the contextvars it sets
+# (db.bind_tenant_pool, auth_endpoints.bind_tenant_secret, etc.) are
+# guaranteed to propagate into every downstream handler. BaseHTTPMiddleware
+# has historically run request handling in a way that doesn't always give
+# that guarantee, which is not a risk worth taking on the layer this whole
+# tenant-isolation design rests on.
+_tenant_api_key: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "tenant_api_key", default=None
+)
+
+
+class _TenantResolutionMiddleware:
+    """First middleware in the stack — resolves the Host header to a
+    tenant, binds db.py's tenant-scoped connection pool and every
+    per-tenant secret (JWT signing key, evidence signing key, connector
+    encryption key, write-guard API key) for the duration of the request,
+    and rejects an unknown/suspended tenant before any downstream code
+    (CORS, telemetry, auth, a route handler) touches a database or secret."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not control_plane.is_multi_tenant():
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        host = headers.get(b"host", b"").decode("latin-1")
+        slug = host.split(":")[0].split(".")[0].strip().lower()
+
+        try:
+            tenant = control_plane.resolve_tenant(slug)
+            secrets = control_plane.get_tenant_secrets(tenant.id)
+        except control_plane.TenantNotFound:
+            response = JSONResponse({"detail": "Unknown tenant"}, status_code=404)
+            await response(scope, receive, send)
+            return
+        except control_plane.ControlPlaneUnavailable as exc:
+            logger.error("Control plane unavailable: %s", exc)
+            response = JSONResponse({"detail": "Service temporarily unavailable"}, status_code=503)
+            await response(scope, receive, send)
+            return
+
+        db.bind_tenant_pool(tenant.id, tenant.db_dsn)
+        db.bind_tenant_connector_key(secrets.connector_encryption_key)
+        auth_endpoints.bind_tenant_secret(tenant.id, secrets.auth_jwt_secret)
+        evidence_endpoints.bind_tenant_secret(secrets.evidence_signing_key)
+        _tenant_api_key.set(secrets.api_key)
+        scope.setdefault("state", {})["tenant"] = tenant
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            db.unbind_tenant()
+            db.unbind_tenant_connector_key()
+            auth_endpoints.unbind_tenant_secret()
+            evidence_endpoints.unbind_tenant_secret()
+            _tenant_api_key.set(None)
+
+
 app = FastAPI(
     title="Dendrai MCP API",
     version="2.0.0",
@@ -432,26 +586,53 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Registered before CORS so it's the outermost layer (Starlette executes
+# add_middleware calls in the order added, first-added = outermost = runs
+# first) — every other middleware and every route handler runs inside a
+# resolved tenant context, or the request never reaches them.
+app.add_middleware(_TenantResolutionMiddleware)
+
+# Under TENANT_MODE=multi, an arbitrary third-party origin must not be able
+# to read responses from a tenant's own subdomain (browsers otherwise let a
+# malicious page fetch() cross-origin and read back anything not gated by
+# the SameSite=Strict session cookie — e.g. an X-API-Key-guarded write
+# endpoint called from attacker-controlled JS holding a leaked key). Locked
+# to TENANT_ROOT_DOMAIN's subdomains once multi-tenancy is on; unchanged
+# (wildcard) for today's single-tenant deployments so nothing here can
+# break an existing deployment that hasn't opted in.
+if control_plane.is_multi_tenant():
+    _tenant_root_domain = os.environ.get("TENANT_ROOT_DOMAIN", "dendrai.ai")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=rf"^https://([a-z0-9-]+\.)?{re.escape(_tenant_root_domain)}$",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # ── Write-endpoint authentication ──────────────────────────────────────────────
 # Set DENDRAI_API_KEY (Railway env var) and VITE_API_KEY (same value, build-time
 # Vite var) to protect mutating endpoints from unauthenticated external writes.
+# Under TENANT_MODE=multi, _tenant_api_key (bound by _TenantResolutionMiddleware
+# above) takes priority over the shared env var — a global key would otherwise
+# let any tenant write to any other tenant now reachable from the same process.
 _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 _REQUIRED_API_KEY = os.environ.get("DENDRAI_API_KEY", "")
 
 async def _require_api_key(key: str | None = Security(_API_KEY_HEADER)) -> None:
-    if not _REQUIRED_API_KEY:
+    required = _tenant_api_key.get() or _REQUIRED_API_KEY
+    if not required:
         raise HTTPException(
             status_code=503,
             detail="DENDRAI_API_KEY not configured — set this env var to enable write endpoints",
         )
-    if key != _REQUIRED_API_KEY:
+    if key != required:
         raise HTTPException(status_code=403, detail="Invalid or missing X-API-Key header")
 
 # ── SSRF blocklist for rss-proxy ───────────────────────────────────────────────

@@ -46,6 +46,7 @@ but are not pushed through adjudication — nothing to escalate.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import hmac
 import json
@@ -75,6 +76,29 @@ router = APIRouter(prefix="/evidence", tags=["Evidence Ingestion"])
 _SCREEN_ID = "devopsmonitoring"
 
 SIGNING_KEY = os.environ.get("EVIDENCE_SIGNING_KEY", "")
+
+# Multi-tenant signing-key binding — mirrors auth_endpoints.py's
+# bind_tenant_secret()/_active_jwt_secret() pattern. In TENANT_MODE=single
+# (default) nothing here is used and every record is signed with the
+# module-level SIGNING_KEY above, unchanged. In TENANT_MODE=multi,
+# api_server.py's resolution middleware binds each tenant's own
+# EVIDENCE_SIGNING_KEY for the duration of the request, so one tenant's
+# webhook secret can never sign or verify another tenant's evidence records.
+_tenant_signing_key: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "evidence_tenant_signing_key", default=None
+)
+
+
+def bind_tenant_secret(signing_key: str) -> None:
+    _tenant_signing_key.set(signing_key)
+
+
+def unbind_tenant_secret() -> None:
+    _tenant_signing_key.set(None)
+
+
+def _active_signing_key() -> str:
+    return _tenant_signing_key.get() or SIGNING_KEY
 
 
 class SigningKeyMissing(RuntimeError):
@@ -178,14 +202,15 @@ def compute_fingerprint(repository: str, file_path: Optional[str], rule_id: str,
 
 
 def sign_record(record_json: dict) -> str:
-    if not SIGNING_KEY:
+    key = _active_signing_key()
+    if not key:
         raise SigningKeyMissing(
             "EVIDENCE_SIGNING_KEY is not set — cannot sign or verify evidence records. "
             "Generate one with `python -c \"import secrets; print(secrets.token_hex(32))\"` "
             "and set it before ingesting or verifying evidence."
         )
     canonical = json.dumps(record_json, sort_keys=True, separators=(",", ":"))
-    return hmac.new(SIGNING_KEY.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 # ── Webhook ────────────────────────────────────────────────────────────────────
@@ -210,7 +235,7 @@ async def evidence_webhook(request: Request, body: EvidenceWebhookBody):
 
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
-    if not SIGNING_KEY:
+    if not _active_signing_key():
         raise HTTPException(status_code=503, detail="EVIDENCE_SIGNING_KEY not configured — cannot sign evidence records")
 
     system = await asyncio.to_thread(mcp_governance._get_system_by_api_key, api_key)
