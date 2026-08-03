@@ -1829,6 +1829,22 @@ async def get_compliance_scorecard(framework: str = "soc2", stale_days: int = 30
     return db.get_compliance_scorecard(framework, stale_days=stale_days)
 
 
+@router.get("/control-flow-map")
+async def get_control_flow_map(days: int = 30):
+    """
+    Process-mining view of the adjudication log: a directly-follows-graph
+    (source system -> risk tier -> verdict -> fired control) built from
+    REAL observability.adjudicated_tool_calls rows over the last `days`
+    days, not the static control catalog structure risk-sankey.jsx renders.
+    Control nodes carry their SOC 2/NIST/ISO/COSO crosswalk (from
+    controls_catalog) so the frontend can show multi-framework mapping on
+    hover without a 5th column.
+    """
+    if not db.is_available():
+        return {"nodes": [], "links": [], "note": "Database not configured"}
+    return db.get_control_flow_map(days=days)
+
+
 @router.get("/approval-drift")
 async def get_approval_drift(process: Optional[str] = None):
     """
