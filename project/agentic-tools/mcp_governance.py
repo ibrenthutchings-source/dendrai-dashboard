@@ -1945,7 +1945,7 @@ def _get_system_by_api_key(api_key: str) -> dict | None:
                         # it rather than fail the whole lookup; another row
                         # (or the legacy fallback below) may still match.
                         continue
-                    if True:
+                    if stored_key and hmac.compare_digest(stored_key, api_key):
                         return d
 
                 # Legacy fallback: plaintext UUID column, only for systems
