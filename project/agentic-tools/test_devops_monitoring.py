@@ -171,7 +171,8 @@ def test_fingerprint_matches_manual_sha256():
     assert evidence_endpoints.compute_fingerprint("org/repo", "app/db.py", "py/sql-injection", "snippet") == expected
 
 
-def test_sign_record_round_trip_and_tamper_detection():
+def test_sign_record_round_trip_and_tamper_detection(monkeypatch):
+    monkeypatch.setattr(evidence_endpoints, "SIGNING_KEY", "test-signing-key")
     record = {"repository": "org/repo", "rule_id": "py/sql-injection", "severity": "CRITICAL"}
     sig = evidence_endpoints.sign_record(record)
     # Same record (even reconstructed fresh, key order irrelevant — sign_record sorts) -> same signature.

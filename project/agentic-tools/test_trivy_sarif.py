@@ -125,11 +125,12 @@ def test_parse_sarif_trivy_file_path_and_line_extracted():
     assert findings["CVE-2026-13676"]["line_number"] == 2482
 
 
-def test_compute_fingerprint_and_sign_record_work_on_trivy_findings():
+def test_compute_fingerprint_and_sign_record_work_on_trivy_findings(monkeypatch):
     """End-to-end: a Trivy finding must fingerprint and HMAC-sign the same
     way any other SARIF source's finding does — no Trivy-specific branch
     needed anywhere in the ingestion path, confirming P2b needs no new code,
     only documentation of what already works."""
+    monkeypatch.setattr(evidence_endpoints, "SIGNING_KEY", "test-signing-key")
     f = evidence_endpoints.parse_sarif(TRIVY_SARIF_SAMPLE)[1]  # CVE-2026-13676
     fingerprint = evidence_endpoints.compute_fingerprint(
         "org/repo", f["file_path"], f["rule_id"], f["line_snippet"])

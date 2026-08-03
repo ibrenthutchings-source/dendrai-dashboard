@@ -30,11 +30,14 @@ logged but never crash the api_server process.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
+import secrets
 import sys
 import urllib.request
+import uuid as _uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -1613,7 +1616,7 @@ def _fetch_systems() -> list[dict]:
                         s.description, s.active, s.governance_tiers,
                         s.blocking_tools, s.alert_webhook,
                         s.created_at, s.updated_at, s.created_by,
-                        s.ingest_api_key,
+                        s.ingest_api_key, s.ingest_api_key_enc,
                         s.risk_tier, s.data_sensitivity, s.system_owner,
                         COALESCE(mt.total_calls,   0) + COALESCE(st.total_calls,   0) AS total_calls,
                         COALESCE(mt.flagged_calls, 0) + COALESCE(st.flagged_calls, 0) AS flagged_calls,
@@ -1648,8 +1651,22 @@ def _fetch_systems() -> list[dict]:
                     for tf in ("created_at", "updated_at", "last_seen"):
                         if d.get(tf) and hasattr(d[tf], "isoformat"):
                             d[tf] = d[tf].isoformat()
-                    if d.get("ingest_api_key"):
+                    enc = d.pop("ingest_api_key_enc", None)
+                    if enc:
+                        # New-style: decrypt for display. A missing/rotated
+                        # CONNECTOR_ENCRYPTION_KEY must not break the whole
+                        # systems list — surface it per-row instead.
+                        try:
+                            d["ingest_api_key"] = db.decrypt_sensitive_json(enc).get("key")
+                        except db.EncryptionKeyMissing:
+                            d["ingest_api_key"] = None
+                            d["ingest_api_key_error"] = "Cannot decrypt — CONNECTOR_ENCRYPTION_KEY missing or changed"
+                    elif d.get("ingest_api_key"):
+                        # Legacy: plaintext UUID column, for systems created
+                        # before ingest_api_key_enc existed.
                         d["ingest_api_key"] = str(d["ingest_api_key"])
+                    else:
+                        d["ingest_api_key"] = None
                     rows.append(d)
                 return rows
     except Exception as exc:
@@ -1671,7 +1688,19 @@ def _create_system(
     data_sensitivity: str | None = None,
     system_owner: str | None = None,
 ) -> int | None:
+    """Register a system and issue it a fresh ingest API key, encrypted at
+    rest (CONNECTOR_ENCRYPTION_KEY) rather than the plaintext UUID legacy
+    systems used — a DB backup/leak no longer hands over a directly-usable
+    bearer credential. ingest_api_key is left NULL for new rows (overriding
+    its gen_random_uuid() column default) since ingest_api_key_enc is now
+    the source of truth."""
     if not db.is_available():
+        return None
+    try:
+        api_key = secrets.token_urlsafe(32)
+        api_key_enc = db.encrypt_sensitive_json({"key": api_key})
+    except db.EncryptionKeyMissing as exc:
+        logger.warning("_create_system: cannot issue ingest API key — %s", exc)
         return None
     try:
         with db.get_conn() as conn:
@@ -1681,8 +1710,9 @@ def _create_system(
                     INSERT INTO observability.monitored_systems
                         (display_name, server_name, server_type, description, active,
                          governance_tiers, blocking_tools, alert_webhook, created_by,
-                         risk_tier, data_sensitivity, system_owner)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         risk_tier, data_sensitivity, system_owner,
+                         ingest_api_key, ingest_api_key_enc)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -1698,6 +1728,8 @@ def _create_system(
                         (risk_tier or None),
                         (data_sensitivity or None),
                         (system_owner[:128] if system_owner else None),
+                        None,          # ingest_api_key — explicitly NULL, overriding the column default
+                        api_key_enc,
                     ),
                 )
                 row = cur.fetchone()
@@ -1876,19 +1908,59 @@ def _detect_system_flags(event: dict) -> list[str]:
     return sorted(flags)
 
 
+_SYSTEM_LOOKUP_COLS = "id, display_name, server_name, server_type, active, governance_tiers, alert_webhook"
+
+
 def _get_system_by_api_key(api_key: str) -> dict | None:
-    """Look up a monitored system by its ingest API key."""
+    """Look up a monitored system by its ingest API key.
+
+    Checks the encrypted column first — decrypt-and-constant-time-compare
+    over the (small — single digits to low tens, same scale as
+    db.get_poll_connector's own full-table-scan precedent) set of active
+    systems that have a key. Falls back to the legacy plaintext UUID column
+    only for systems created before ingest_api_key_enc existed; new systems
+    never populate that column (see _create_system), so this fallback path
+    shrinks to zero as systems get rotated onto the encrypted scheme.
+    """
     if not db.is_available() or not api_key:
         return None
     try:
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    SELECT id, display_name, server_name, server_type, active,
-                           governance_tiers, alert_webhook
+                    f"""
+                    SELECT {_SYSTEM_LOOKUP_COLS}, ingest_api_key_enc
                     FROM observability.monitored_systems
-                    WHERE ingest_api_key = %s::uuid AND active = TRUE
+                    WHERE active = TRUE AND ingest_api_key_enc IS NOT NULL
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    enc = d.pop("ingest_api_key_enc")
+                    try:
+                        stored_key = db.decrypt_sensitive_json(enc).get("key", "")
+                    except db.EncryptionKeyMissing:
+                        # Can't decrypt this row (key missing/rotated) — skip
+                        # it rather than fail the whole lookup; another row
+                        # (or the legacy fallback below) may still match.
+                        continue
+                    if stored_key and hmac.compare_digest(stored_key, api_key):
+                        return d
+
+                # Legacy fallback: plaintext UUID column, only for systems
+                # never migrated to ingest_api_key_enc. Guard the ::uuid cast
+                # — a new-style token_urlsafe key isn't UUID-shaped and would
+                # otherwise raise a cast error instead of just "no match".
+                try:
+                    _uuid.UUID(api_key)
+                except ValueError:
+                    return None
+                cur.execute(
+                    f"""
+                    SELECT {_SYSTEM_LOOKUP_COLS}
+                    FROM observability.monitored_systems
+                    WHERE ingest_api_key = %s::uuid AND active = TRUE AND ingest_api_key_enc IS NULL
                     """,
                     (api_key,),
                 )
@@ -1899,6 +1971,40 @@ def _get_system_by_api_key(api_key: str) -> dict | None:
                 return dict(zip(cols, row))
     except Exception as exc:
         logger.warning("_get_system_by_api_key error: %s", exc)
+        return None
+
+
+def _rotate_system_api_key(system_id: int) -> str | None:
+    """Issue a fresh, encrypted ingest API key for an existing system,
+    immediately invalidating whatever key it had before (legacy plaintext or
+    a previous encrypted one) — the explicit migration path off the legacy
+    ingest_api_key column for a system that predates ingest_api_key_enc.
+    Returns the new plaintext key (shown once via the caller's response,
+    same as it's shown on every /systems list load for encrypted rows)."""
+    if not db.is_available():
+        return None
+    try:
+        api_key = secrets.token_urlsafe(32)
+        api_key_enc = db.encrypt_sensitive_json({"key": api_key})
+    except db.EncryptionKeyMissing as exc:
+        logger.warning("_rotate_system_api_key: cannot issue new key — %s", exc)
+        return None
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.monitored_systems
+                    SET ingest_api_key = NULL, ingest_api_key_enc = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (api_key_enc, system_id),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return api_key if updated > 0 else None
+    except Exception as exc:
+        logger.warning("_rotate_system_api_key error (id=%s): %s", system_id, exc)
         return None
 
 
@@ -2198,6 +2304,19 @@ async def delete_system(system_id: int):
     """Deactivate a monitored system (soft delete)."""
     ok = await asyncio.to_thread(_delete_system, system_id)
     return {"ok": ok, "id": system_id}
+
+
+@router.post("/systems/{system_id}/rotate-key")
+async def rotate_system_api_key(system_id: int):
+    """Issue a fresh, encrypted ingest API key for this system, invalidating
+    whatever it had before. The explicit migration path for a system still
+    on the legacy plaintext ingest_api_key column — after this call it's on
+    ingest_api_key_enc like any newly-created system. The caller must update
+    the external system's configured Bearer token to the returned key."""
+    new_key = await asyncio.to_thread(_rotate_system_api_key, system_id)
+    if new_key is None:
+        raise HTTPException(status_code=404, detail="System not found, or key rotation failed")
+    return {"ok": True, "id": system_id, "ingest_api_key": new_key}
 
 
 # ── Poll-based connectors CRUD ──────────────────────────────────────────────────
