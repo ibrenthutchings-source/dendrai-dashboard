@@ -1,177 +1,51 @@
-# Dendrai Intelligenza — Dashboard
+# Dendrai — the audit-grade control plane for AI agents
 
-A React/Vite risk governance dashboard implementing a six-stage continuous audit loop with live signal ingestion, AI-assisted risk scoring, HITL gate review, and scenario planning.
+**Your agents are already in production. Dendrai is what lets you defend that decision.**
 
-## Running the app
+Dendrai sits in front of every action your AI agents take, enforces policy your own people wrote
+and approved, escalates the risky calls to a named human, and writes the evidence your auditor,
+board, and regulator will ask for. Agent pilots don't stall on model quality — they stall at the
+sign-off meeting, when Legal, Audit, or the board asks for a defensible record nobody can produce.
+Dendrai is the wedge into that meeting.
 
-```bash
-cd project
-npm install
-npm run dev        # Vite dev server at http://localhost:5173
-```
+This repo is the full running system: the React/Vite dashboard, the Python governance backend
+(`project/agentic-tools/`), the UBO Governance Brain adjudication pipeline (`UBO/`), and the MCP
+servers that expose it to Claude Code / Claude Desktop.
 
-## Project structure
+The sales narrative (one-pager, 10-slide deck, sample pilot deliverable) lives on the `gtm`
+branch, not yet merged here — ask if you need it linked from this README. For what to trust and
+what's still open in the AI/algorithmic components, see
+[`project/MODEL_CARD.md`](project/MODEL_CARD.md).
 
-```
-project/
-  src/main.jsx        — entry point; imports all component modules
-  app.jsx             — root component; state, pipeline orchestration, routing
-  pipeline.jsx        — six-stage pipeline UI + substep rendering
-  rail.jsx            — Live Register right-hand panel (Risks · Heatmap · Loop)
-  nav.jsx             — left navigation (Configuration · Execution · Governance Intelligence)
-  report.jsx          — Loop Report modal + Override modal
-  scenarios.jsx       — Grey Swan Scenarios panel
-  ai-chat-panel.jsx   — slide-out AI chat panel (Claude / Gemini)
-  styles-modules.css  — all component CSS
-```
+---
 
-## Architecture
+## What Dendrai does
 
-- **State**: All pipeline state lives in `app.jsx` (`stageState`, `output`, `gateState`). Persisted to `localStorage` as `dendrai.lastLoop` on each loop run; restored on page load.
-- **Pipeline**: Six sequential stages (`s1`–`s6`) plus an optional `s7` for scenarios/personas. HITL gates after Stage 2 (Gate 1 — risk review) and Stage 3 (Gate 2 — scope review).
-- **Global components**: Each component file registers itself on `window` (e.g. `window.ForecastChart`, `window.RiskFlowSankey`, `window.ScenariosPanel`) so pipeline sub-panels can poll and mount them lazily.
-- **Live mode**: When enabled, fetches EDGAR companyfacts from `data.sec.gov` and FRED macro data from bundled snapshot. Disabled = mock dataset.
+1. **Intercepts.** Every agent tool call is ingested as a governed event — one endpoint, any
+   framework (MCP, LangChain, OpenAI function calling, or a custom loop).
+2. **Adjudicates.** Each event runs Bronze→Silver→Gold into a Council of three independent
+   evaluators (quantitative, narrative, systemic) plus an Adjudicator, producing a verdict —
+   **CLEAR / MONITOR / ESCALATE** — with a composite risk score and conflict flags.
+3. **Enforces.** Policy-as-Code runs on the real Open Policy Agent binary, not a pattern matcher.
+   A fired deny rule vetoes the ensemble outright and forces human review — a control your people
+   wrote and approved outranks anything the scoring says.
+4. **Escalates.** Escalated calls land in an approval inbox with preparer/reviewer separation and
+   multi-approver sign-off. A named human decides, and that decision is recorded against the AI's.
+5. **Proves it.** Every event, verdict, policy hit, and human decision is written to a
+   tamper-evident, hash-chained evidence record, mapped to SOC 2, NIST SP 800-53, ISO 27001, and
+   COSO — verifiable on demand, not reconstructed after the fact from application logs.
 
-## AI Chat panel
+The LLM reviewer in this pipeline can only ever **escalate** a verdict — never talk one down —
+and it's only consulted on cases the deterministic ensemble already flagged for a human. That
+asymmetry is enforced in code, not a prompt instruction.
 
-A slide-out conversational interface accessible from the **"Ask Claude" / "Ask Gemini" button** in the top-right header. Click the button to open; click again (or press ✕) to close.
+## Framework-agnostic — one endpoint, any agent
 
-- **Claude mode** — full agentic tool-use loop: Claude can call EDGAR, FRED, RSS, and the quant analytics suite to answer questions with live data. Requires `ANTHROPIC_API_KEY` in `.env` and `api_server.py` running.
-- **Gemini mode** — conversational streaming with the current dashboard context (entity, risk register) injected as system context. Requires a Gemini API key entered in Setup.
-- **Suggestions** — the empty state shows three context-aware prompts based on the current ticker.
-- **Tool trace** — while Claude fetches data you see each tool call appear live before the response streams in.
-
-**Configuration** (Setup → AI Chat Assistant):
-- Provider: Claude or Gemini
-- Button label: free-form text (default "Ask Claude" / "Ask Gemini")
-- Gemini API key: stored in browser `localStorage`; get one at [aistudio.google.com](https://aistudio.google.com)
-
-## Screens (left navigation)
-
-| Nav item | Description |
-|---|---|
-| Setup | Configuration — ticker, industry, audit focus, signal sources, AI chat provider |
-| Pipeline | Six-stage loop execution with HITL gates |
-| Controls Monitor | KRI / control-effectiveness tracker |
-| MAPs | Management Action Plans dashboard |
-| Notifications | Live signal notifications |
-| Audit Scope | Audit objectives and sprint plan |
-| Risk-as-Code | YAML risk register editor with live Generate CaC button |
-| Policy-as-Code | Rego policy editor — 7 processes (5 ERP + DevOps Monitoring + Infrastructure Monitoring), version history, multi-approver sign-off, GitHub/Confluence hooks, animated process flow map, negative-control testing (Negative Testing tab) |
-| DevOps Monitoring | Branch Integrity Matrix, Pipeline Security (GitHub Actions workflow audit), Secret Scanning (real `gitleaks`), Evidence Inspector (with tamper-evidence hash-chain verification), Drift Timeline, Risk Waivers, Pipeline Attestations, ITSM Tickets & SLA — SCM/SARIF/ITSM/Infrastructure findings all ride the same UBO adjudication pipeline as every other category |
-| Grey Swan Scenarios | Bear / Base / Bull scenarios + Grey Swan cascade |
-| Governance Intelligence | Board, exec comp, shareholder proposals, peer benchmarking |
-
-## Live Register rail (right panel — Pipeline screen only)
-
-Three tabs: **Risks** · **Heatmap** · **Loop**
-
-## Loop Report
-
-Opened via the "Loop Report" button in the pipeline header (enabled after a loop run completes). Includes:
-
-1. Executive Summary
-2. **Pipeline Execution** — all six stages with status, metrics, tasks, and stage reasoning
-3. Methodology — signal source breakdown and scoring model
-4. Changes to Risks & Audit Plan — HITL adjustments
-5. Risk Register — 4-quarter score projections
-6. Audit Objectives
-7. Management Action Plans
-8. Scenario Outlook (Bear / Base / Bull)
-9. Grey Swan Risk
-10. Stakeholder Highlights
-11. Analytical Assumptions
-12. Obstacles & Flags
-13. Audit Trail
-
-An "Generate AI report" button (Claude API) produces a board-ready narrative if an API key is configured.
-
-## Key fixes and changes (post-handoff)
-
-- **CSS bug**: `.stage-body { display: none }` in `styles-modules.css` requires the `.open` class to show content. React conditional rendering (`{isOpen && <div className="stage-body">}`) never added `.open`, making all stage body content invisible. Fixed by adding `open` to `className` in `Stage` and `PipelinePanel` components in `pipeline.jsx`.
-- **Risk Flow Sankey visibility**: Was gated on Stage 5 completion (required two HITL approvals). Moved to show immediately after Stage 2 completes, alongside Forecast charts.
-- **Forecast + Risk Flow charts**: Both appear after Stage 2 completes without requiring HITL gate approval.
-- **Live Register rail**: Removed Notifs, Persona, and Scenarios tabs. Rail now shows only Risks · Heatmap · Loop.
-- **Grey Swan Scenarios**: Moved from the Live Register rail to a dedicated center-pane screen, accessible via "Grey Swan Scenarios" in the left navigation.
-- **Loop Report — Pipeline Execution section**: Added a full per-stage breakdown showing each stage's status, key metrics, task list (signals / risks / objectives / MAPs / recommendations), and stage reasoning trace.
-- **Bug fix**: `narr.result.summary` (undefined variable) corrected to `narrativeResult.summary` in `pipeline.jsx`.
-
-## Agentic tools backend
-
-The Python backend (`project/agentic-tools/`) exposes all data and analytics as a REST API on `http://localhost:8001` and as individual MCP servers for Claude Code / Claude Desktop.
-
-```bash
-cd project/agentic-tools
-pip install fastapi uvicorn pydantic python-dotenv requests anthropic \
-            feedparser httpx psycopg2-binary mcp pyyaml \
-            "passlib[bcrypt]" PyJWT
-# Optional: Gemini support for the AI chat panel
-pip install google-generativeai
-cp .env.example .env   # fill in API keys
-python api_server.py   # → http://localhost:8001/docs
-```
-
-### Data sources
-
-| Module | What it provides | Credentials needed |
-|---|---|---|
-| EDGAR | SEC 10-K/10-Q/8-K/DEF 14A filings, XBRL financials, peer companies | None (public) |
-| FRED | Macro leading-indicator correlations | `FRED_API_KEY` (free) |
-| RSS | Industry news + five compliance feeds (BIS, CISA, SEC, Fed, EPA) | None (public) |
-| Predictive Analytics | Ten risk models: M-Score, forecasting, scenarios, grey swan | None |
-| Risks-as-Code | OSCAL + COSO ERM YAML artifacts from live risk register | None |
-| **Policy-as-Code** | **Rego modules for 5 Oracle Fusion ERP processes, version history, approvals** | None |
-| **Controls-as-Code** | **CaC Rego generation, test harness synthesis, risk coverage matrix** | None |
-| AI endpoints | HITL gate recommendations, narrative analysis, persona briefs, **AI chat** | `ANTHROPIC_API_KEY` |
-| **Oracle Fusion** | **Control library, test results, deficiencies, SOD violations, audit trail** | **See below** |
-
-### Oracle Fusion controls integration
-
-The Oracle Fusion module (`oracle_fusion_tool.py`) pulls automated control data from Oracle Fusion Cloud and makes it available through the REST API and as MCP tools for Claude.
-
-**What it pulls:**
-- **Control library** — all active RMCS control definitions with type, frequency, and effectiveness rating
-- **Control test results** — operating effectiveness evidence (pass/fail, exceptions noted)
-- **Control issues** — open deficiencies with severity, root cause, and remediation plan
-- **User role assignments** — SCIM 2.0 access listings for access certification reviews
-- **SOD violations** — segregation-of-duties conflicts with conflicting role pairs
-- **Audit trail** — FSCM transaction audit events by module (AP, AR, GL, Procurement, HCM)
-- **Control health summary** — aggregated RAG status + risk signals compatible with the Dendrai risk register
-
-**Setup (add to `project/agentic-tools/.env`):**
-```bash
-# Basic auth — quickest to configure
-ORACLE_FUSION_HOST=https://mycompany.fa.us6.oraclecloud.com
-ORACLE_FUSION_USERNAME=svc_dendrai
-ORACLE_FUSION_PASSWORD=your_password
-
-# OAuth 2.0 — recommended for production (takes priority over basic auth)
-ORACLE_FUSION_CLIENT_ID=your_client_id
-ORACLE_FUSION_CLIENT_SECRET=your_client_secret
-```
-
-The service account needs read access to Oracle Risk Management Cloud (RMCS), FSCM Audit, and Oracle IDCS / Identity Domains (SCIM). See `project/agentic-tools/README.md` for full Oracle Fusion setup instructions, endpoint reference, MCP server configuration, and module codes.
-
-**Key endpoints once configured:**
-```
-GET  /oracle-fusion/status          — connectivity check
-GET  /oracle-fusion/summary         — aggregated control health (start here)
-POST /oracle-fusion/sod-violations  — SOD violations by risk level
-POST /oracle-fusion/control-issues  — open deficiencies
-POST /oracle-fusion/audit-events    — transaction audit trail
-```
-
-**MCP tools for Claude** — run any `*_mcp_server.py` and add it to `.claude/settings.json`. See `MCP-server.md` for the complete tool reference for all nine MCP servers.
-
-See `project/agentic-tools/README.md` for the complete backend reference.
-
-## Governing non-MCP AI agents
-
-The Dendrai UBO™ Governance Brain's adjudication pipeline (Bronze → Silver → Gold → Council, see `project/cem.jsx`
-and `project/agentic-tools/mcp_governance.py`) is **not MCP-only**. MCP tool calls reach it via the telemetry
-proxy, but any other AI agent framework — LangChain, OpenAI function calling, a custom agent loop, or any
-non-MCP system — can report tool calls to the same generic ingestion endpoint and receive the identical
-Council review, risk scoring, and HITL escalation as MCP traffic:
+The adjudication pipeline (Bronze → Silver → Gold → Council, see `project/agentic-tools/mcp_governance.py`)
+is **not MCP-only**. MCP tool calls reach it via the telemetry proxy, but any other agent
+framework — LangChain, OpenAI function calling, a custom agent loop, or any non-MCP system — can
+report tool calls to the same generic ingestion endpoint and get the identical Council review,
+risk scoring, and HITL escalation as MCP traffic:
 
 ```bash
 curl -X POST https://<host>/observability/telemetry/ingest \
@@ -187,73 +61,126 @@ curl -X POST https://<host>/observability/telemetry/ingest \
   }'
 ```
 
-The `ingest_api_key` is issued per registered system in **Dendrai UBO™ Configuration → Monitored Systems**.
-A LangChain callback handler or an OpenAI function-calling wrapper needs only to POST its tool-call events
-here — no MCP server required.
+`ingest_api_key` is issued per registered system in **Dendrai UBO™ Configuration → Monitored
+Systems**, encrypted at rest, and revocable independently of every other system's key. A LangChain
+callback handler or an OpenAI function-calling wrapper needs only to POST its tool-call events
+here — no MCP server required. Inbound webhook listeners (GitHub, SARIF/evidence, ITSM) and 16
+poll-based connector types (Oracle Fusion, SAP HANA, SailPoint, ...) feed the same pipeline through
+the same generic path — see [`project/agentic-tools/README.md`](project/agentic-tools/README.md#background-loops--listeners)
+for the full inventory of what's listening and how often.
+
+## Expands from the same engine
+
+The adjudication pipeline isn't agent-only. Point it at the rest of the estate and the evidence
+chain, control mapping, and approval workflow all carry over — this is the platform the wedge
+opens the door to, not a separate product:
+
+| | |
+|---|---|
+| **ERP** | Oracle Fusion RMCS, SAP, NetSuite, Dynamics 365 — SoD violations, control test results, deficiencies |
+| **Identity** | SailPoint — privilege escalation, orphaned accounts, certification failures |
+| **DevOps** | Branch-protection drift, secret scanning, pipeline security, SARIF findings, DORA change metrics |
+| **Cloud** | Postgres CIS hardening, platform drift, connector credential hygiene |
+| **Third-party / Vendor risk** | Continuous SOC 2 coverage tracking, expiry re-escalation |
+| **AI Governance** | Third-party AI tool assessment tracking, human-oversight gap detection |
+| **Enterprise risk** | Continuous risk register → audit scope → management action plans → board report |
+
+The **Dendrai Intelligenza** dashboard in this repo is that platform's front end: a six-stage
+continuous audit loop (signal intake → risk scoring → HITL gate review → scope → management
+action plans → closure/calibration) built on live SEC EDGAR/FRED/RSS data, ten deterministic
+risk/forecasting models, and the same Claude-powered advisory layer used elsewhere in the
+pipeline — see [`project/README.md`](project/README.md) for the full feature reference.
+
+---
+
+## Running the app
+
+```bash
+cd project
+npm install
+npm run dev        # Vite dev server at http://localhost:5173
+```
+
+```bash
+cd project/agentic-tools
+pip install -r requirements.txt
+cp .env.example .env   # fill in API keys — see project/agentic-tools/README.md
+python api_server.py   # → http://localhost:8001/docs
+```
+
+Enable **MCP mode** in the sidebar to route data through the Python backend instead of the JS
+fetch layer. See [`project/agentic-tools/README.md`](project/agentic-tools/README.md) for the
+complete backend reference — environment variables, every tool module, the background loops and
+listeners inventory, and the standalone MCP servers for Claude Code / Claude Desktop.
+
+### Project structure
+
+```
+project/
+  src/main.jsx        — entry point; imports all component modules
+  app.jsx             — root component; state, pipeline orchestration, routing
+  pipeline.jsx         — six-stage pipeline UI + substep rendering
+  rail.jsx            — Live Register right-hand panel (Risks · Heatmap · Loop)
+  nav.jsx             — left navigation (Configuration · Execution · Governance Intelligence)
+  report.jsx          — Loop Report modal + Override modal
+  scenarios.jsx       — Grey Swan Scenarios panel
+  ai-chat-panel.jsx   — slide-out AI chat panel (Claude / Gemini)
+  agentic-tools/      — Python governance backend + UBO adjudication pipeline
+  styles-modules.css  — all component CSS
+
+UBO/                  — the Governance Brain: Bronze/Silver/Gold/Council pipeline, policy rules
+mcp-server/           — standalone Node.js MCP server (EDGAR/FRED tools)
+gtm/                  — sales narrative, one-pager, pilot deliverable sample
+```
+
+### Dashboard screens (left navigation)
+
+| Nav item | Description |
+|---|---|
+| Setup | Configuration — ticker, industry, audit focus, signal sources, AI chat provider |
+| Pipeline | Six-stage loop execution with HITL gates |
+| Controls Monitor | KRI / control-effectiveness tracker |
+| MAPs | Management Action Plans dashboard |
+| Notifications | Live signal notifications |
+| Audit Scope | Audit objectives and sprint plan |
+| Risk-as-Code | YAML risk register editor with live Generate CaC button |
+| Policy-as-Code | Rego policy editor — 7 processes (5 ERP + DevOps Monitoring + Infrastructure Monitoring), version history, multi-approver sign-off, negative-control testing |
+| DevOps Monitoring | Branch Integrity Matrix, Pipeline Security, Secret Scanning (real `gitleaks`), Evidence Inspector (tamper-evidence hash-chain), Drift Timeline, Risk Waivers, Pipeline Attestations, ITSM Tickets & SLA — all riding the same UBO adjudication pipeline as agent governance |
+| Grey Swan Scenarios | Bear / Base / Bull scenarios + Grey Swan cascade |
+| Governance Intelligence | Board, exec comp, shareholder proposals, peer benchmarking |
+
+The **Live Register rail** (right panel, Pipeline screen only) has three tabs: Risks · Heatmap ·
+Loop. The **Loop Report** (header button, enabled after a run completes) is the board-ready output —
+executive summary, per-stage execution detail, methodology, HITL changes, scenario outlook, and
+audit trail — with an optional Claude-generated narrative on top of the deterministic numbers.
+
+### AI Chat panel
+
+A slide-out conversational interface ("Ask Claude" / "Ask Gemini", top-right header). Claude mode
+runs a full agentic tool-use loop (EDGAR, FRED, RSS, quant analytics) and requires
+`ANTHROPIC_API_KEY` + `api_server.py` running; Gemini mode is conversational streaming with the
+current dashboard context injected, using a browser-stored API key from Setup.
+
+---
 
 ## Authentication
 
-The dashboard is protected by a JWT-based auth system integrated into `api_server.py`.
+JWT-based auth integrated into `api_server.py`. Two local accounts (`admin`, `dendrai`) are seeded
+on first startup — initial passwords come from `AUTH_SEED_ADMIN_PASSWORD` /
+`AUTH_SEED_USER_PASSWORD`, or a random one-time password printed to the startup logs; both force a
+password change at first login.
 
-### Default accounts
+- **Local login** — bcrypt hashing, rate-limited to 5 attempts / IP / 15 minutes
+- **SSO** — Microsoft/Azure AD, Google Workspace, GitHub, Okta (PKCE OAuth 2.0, JIT provisioning) —
+  a provider only appears on the login screen once its env vars are fully set
+- **JWT sessions** — HS256-signed, HTTP-only + Secure + SameSite=Strict cookies, 24-hour TTL
+  (`AUTH_JWT_SECRET` required for stable sessions across restarts)
+- **Password policy** — 8+ chars, upper/lower/digit/special, last-3 history check
 
-Two local accounts (`admin`, `dendrai`) are seeded on first startup against a fresh database. Their initial passwords are **not** hardcoded — set `AUTH_SEED_ADMIN_PASSWORD` / `AUTH_SEED_USER_PASSWORD` before first boot, or leave them unset and a random one-time password is generated and printed to the startup logs. Both accounts must change their password at first login regardless.
-
-| Username | Role | Notes |
-|---|---|---|
-| `admin` | admin | Must change password on first login |
-| `dendrai` | user | Must change password on first login |
-
-### Features
-
-- **Local login** — bcrypt password hashing, rate-limited to 5 attempts / IP / 15 minutes
-- **SSO** — Microsoft/Azure AD, Google Workspace, GitHub, Okta (PKCE OAuth 2.0, JIT provisioning)
-- **JWT sessions** — HS256-signed tokens stored as HTTP-only, Secure, SameSite=Strict cookies (24-hour TTL)
-- **Password policy** — 8+ chars, upper, lower, digit, special character; last-3 password history check
-- **Force password change** — both seed accounts have `must_change_pw = true`
-
-### Environment variables for auth
-
-```bash
-# Required for stable JWT sessions across restarts
-AUTH_JWT_SECRET=your-long-random-secret
-
-# Required for OAuth redirect URIs to work
-PUBLIC_URL=https://your-app.railway.app
-
-# Microsoft Azure AD (optional)
-AZURE_CLIENT_ID=...
-AZURE_CLIENT_SECRET=...
-AZURE_TENANT_ID=...
-
-# Google Workspace (optional)
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-
-# GitHub (optional)
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-
-# Okta (optional)
-OKTA_CLIENT_ID=...
-OKTA_CLIENT_SECRET=...
-OKTA_DOMAIN=your-org.okta.com
-```
-
-SSO providers only appear on the login screen when all required env vars for that provider are set.
-
-### Auth endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/auth/login` | Local username + password login |
-| `POST` | `/auth/logout` | Revoke session cookie |
-| `GET` | `/auth/me` | Current user info |
-| `POST` | `/auth/change-password` | Change password (history-checked) |
-| `GET` | `/auth/sso/providers` | List enabled SSO providers |
-| `GET` | `/auth/sso/{provider}/start` | Begin OAuth PKCE flow |
-| `GET` | `/auth/sso/{provider}/callback` | OAuth callback + JIT provisioning |
+See [`project/agentic-tools/README.md`](project/agentic-tools/README.md#authentication-auth_dbpy--auth_endpointspy)
+for the full environment variable list and auth endpoint reference.
 
 ## Backend (dendrai-app)
 
-See `dendrai-app/README.md` for the Express backend, Docker setup, and production deployment instructions.
+See [`dendrai-app/README.md`](dendrai-app/README.md) for the Express backend, Docker setup, and
+production deployment instructions.
