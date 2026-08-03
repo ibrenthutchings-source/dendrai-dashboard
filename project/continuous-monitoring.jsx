@@ -7,6 +7,7 @@
 
    Data comes from GET /api/mcp/observability/command-center.
    ============================================================ */
+import { ControlFlowMap } from "./control-flow-map.jsx";
 
 function _cmBase() {
   return (window.MCP_API_BASE || "/api/mcp") + "/observability";
@@ -268,6 +269,10 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
               )}
             </div>
           </div>
+
+          <div style={{ height: 28 }} />
+
+          <ControlFlowMap />
         </>
       )}
     </div>

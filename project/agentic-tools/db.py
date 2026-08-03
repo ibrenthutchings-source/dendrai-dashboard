@@ -7926,6 +7926,95 @@ def get_compliance_scorecard(framework: str, stale_days: int = 30) -> dict:
     }
 
 
+def _build_control_flow_map(event_rows: list, control_meta_by_id: dict) -> dict:
+    """
+    Pure aggregation step, split out of get_control_flow_map so it's
+    unit-testable with fake rows — no DB connection needed (mirrors
+    _aggregate_scorecard_rows's reasoning above).
+
+    event_rows: [(source_system, risk_tier, final_verdict, policy_violations), ...]
+    control_meta_by_id: {control_id: {name, soc2_criteria, nist_800_53, iso_27001, coso_component}}
+
+    Builds a directly-follows-graph over REAL adjudicated events — contrast
+    risk-sankey.jsx's Controls->Frameworks->Domains, which renders the
+    curated control catalog's static structure (what controls exist), not
+    observed event flow (what actually happened and how often). Here:
+    source_system -> risk_tier -> final_verdict -> control_id, one edge per
+    fired control, edge value = real observed event count.
+
+    An event with no fired control (policy_violations empty — most
+    adjudicated events, since most don't trip a policy rule) terminates at
+    the verdict node. No fabricated control edge for it — that would
+    overstate how often controls actually fire.
+    """
+    node_seen: dict[str, dict] = {}
+    link_counts: dict[tuple, int] = {}
+
+    def _node(node_id: str, label: str, node_type: str, **extra) -> None:
+        if node_id not in node_seen:
+            node_seen[node_id] = {"id": node_id, "label": label, "type": node_type, **extra}
+
+    def _link(a: str, b: str) -> None:
+        link_counts[(a, b)] = link_counts.get((a, b), 0) + 1
+
+    for source_system, risk_tier, final_verdict, policy_violations in event_rows:
+        sys_id  = f"sys:{source_system or 'UNKNOWN'}"
+        tier_id = f"tier:{risk_tier or 'UNKNOWN'}"
+        verd_id = f"verdict:{final_verdict or 'UNKNOWN'}"
+        _node(sys_id, source_system or "UNKNOWN", "system")
+        _node(tier_id, risk_tier or "UNKNOWN", "tier")
+        _node(verd_id, final_verdict or "UNKNOWN", "verdict")
+        _link(sys_id, tier_id)
+        _link(tier_id, verd_id)
+
+        for control_id in (policy_violations or []):
+            ctrl_id = f"ctrl:{control_id}"
+            _node(ctrl_id, control_id, "control", **control_meta_by_id.get(control_id, {}))
+            _link(verd_id, ctrl_id)
+
+    links = [{"source": a, "target": b, "value": v} for (a, b), v in link_counts.items()]
+    return {"nodes": list(node_seen.values()), "links": links}
+
+
+def get_control_flow_map(days: int = 30) -> dict:
+    """
+    Real event flow -> control -> framework, mined from
+    observability.adjudicated_tool_calls over the last `days` days. See
+    _build_control_flow_map for the graph-building logic.
+    """
+    def _events():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT source_system, risk_tier, final_verdict, policy_violations "
+                    "FROM observability.adjudicated_tool_calls "
+                    "WHERE adjudicated_at > NOW() - (%s || ' days')::interval",
+                    (days,),
+                )
+                return cur.fetchall()
+    event_rows = _run(_events) or []
+
+    control_ids = sorted({c for row in event_rows for c in (row[3] or [])})
+    control_meta_by_id: dict = {}
+    if control_ids:
+        def _controls():
+            with _conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT control_id, name, soc2_criteria, nist_800_53, iso_27001, coso_component "
+                        "FROM controls_catalog WHERE control_id = ANY(%s)",
+                        (control_ids,),
+                    )
+                    return cur.fetchall()
+        for r in (_run(_controls) or []):
+            control_meta_by_id[r[0]] = {
+                "name": r[1], "soc2_criteria": r[2] or [], "nist_800_53": r[3] or [],
+                "iso_27001": r[4] or [], "coso_component": r[5],
+            }
+
+    return _build_control_flow_map(event_rows, control_meta_by_id)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DORA-style change-management metrics (SOC 2 CC8.1 operational evidence)
 # ─────────────────────────────────────────────────────────────────────────────
