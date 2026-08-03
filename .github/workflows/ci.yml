@@ -42,4 +42,11 @@ jobs:
 
       - name: Run pytest
         working-directory: project/agentic-tools
-        run: python -m pytest tests -v
+        # Runs every test_*.py in this directory, not just tests/ — the ~200
+        # DB-free tests at the agentic-tools root (test_evidence_chain.py,
+        # test_pac_approval_drift.py, test_compliance_scorecard.py,
+        # test_pac_negative_tests.py, etc.) previously never ran in CI because
+        # `pytest tests` only collects the tests/ subfolder. Discovered while
+        # adding test_mcp_governance_adjudication.py — see that file's
+        # docstring for what it covers.
+        run: python -m pytest -v
