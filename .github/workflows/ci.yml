@@ -26,6 +26,15 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dendrai_test
+      # db.py's _conn() defaults sslmode to "require" whenever DATABASE_URL
+      # doesn't declare one (see db.py's DATABASE_SSL_MODE comment). CI's
+      # postgres:16 service container has no SSL configured at all, so every
+      # db.init_db() call was failing with "server does not support SSL, but
+      # SSL was required" — pre-existing, unrelated to this run's changes
+      # (confirmed failing back to at least the 2026-07-30 22:01 run). This is
+      # the documented escape hatch for exactly this case: "'disable' for a
+      # local dev Postgres with no TLS at all."
+      DATABASE_SSL_MODE: disable
 
     steps:
       - uses: actions/checkout@v5
