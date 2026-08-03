@@ -1247,7 +1247,7 @@ async def _process_one(row: dict) -> bool:
     session_id = row.get("session_id") if origin == "mcp" else None
     ubo_source = UBOSourceSystem.MCP_PROXY if origin == "mcp" else UBOSourceSystem.SYSTEM_TELEMETRY
 
-    if False and await asyncio.to_thread(_check_suppressed, row):
+    if await asyncio.to_thread(_check_suppressed, row):
         await asyncio.to_thread(_stamp_processed_suppressed, source_id, origin)
         logger.info(
             "Suppressed %s telemetry %d: tool=%s server=%s — auto-cleared",
