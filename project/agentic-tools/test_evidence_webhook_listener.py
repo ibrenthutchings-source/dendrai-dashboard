@@ -25,8 +25,10 @@ refuses to run open-loop when its dependency is down."
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import db
@@ -83,6 +85,20 @@ def test_webhook_fails_closed_when_database_unavailable(client):
 @pytest.fixture
 def db_available(monkeypatch):
     monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(evidence_endpoints, "SIGNING_KEY", "test-signing-key")
+
+
+def test_webhook_fails_closed_when_signing_key_unconfigured(client, monkeypatch):
+    """Regression guard for the fail-open bug: EVIDENCE_SIGNING_KEY unset used
+    to make sign_record() sign with an empty key (forgeable by anyone) rather
+    than refuse. It must now refuse outright — same 503-class failure as the
+    database-unavailable case above, checked before the API key is even
+    looked up (matching that check's ordering)."""
+    monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(evidence_endpoints, "SIGNING_KEY", "")
+    resp = _post(client)
+    assert resp.status_code == 503
+    assert "EVIDENCE_SIGNING_KEY" in resp.json()["detail"]
 
 
 def test_webhook_rejects_unknown_api_key(client, db_available, monkeypatch):
@@ -154,6 +170,34 @@ def test_webhook_skips_duplicate_findings_without_re_escalating(client, db_avail
     assert data["skipped_duplicate_count"] == 2
     assert data["escalated_count"] == 0
     assert calls["n"] == 0
+
+
+# ── GET /evidence/records/{id}/verify — called directly (bypassing the auth
+# ── dependency chain, which needs a full session/cookie setup); FastAPI route
+# ── functions are plain async callables, so current_user can just be passed. ─
+
+def test_verify_record_returns_503_when_signing_key_unconfigured(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(evidence_endpoints, "SIGNING_KEY", "")
+    monkeypatch.setattr(db, "get_evidence_record", lambda rid: {
+        "record_json": {"repository": "acme/api"}, "signature": "deadbeef", "fingerprint": "f" * 64,
+    })
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(evidence_endpoints.verify_record(1, current_user={"role": "admin"}))
+    assert exc_info.value.status_code == 503
+    assert "EVIDENCE_SIGNING_KEY" in exc_info.value.detail
+
+
+def test_verify_record_works_once_signing_key_is_configured(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(evidence_endpoints, "SIGNING_KEY", "test-signing-key")
+    record_json = {"repository": "acme/api", "rule_id": "py/sql-injection"}
+    real_signature = evidence_endpoints.sign_record(record_json)
+    monkeypatch.setattr(db, "get_evidence_record", lambda rid: {
+        "record_json": record_json, "signature": real_signature, "fingerprint": "f" * 64,
+    })
+    result = asyncio.run(evidence_endpoints.verify_record(1, current_user={"role": "admin"}))
+    assert result["valid"] is True
 
 
 def test_webhook_empty_sarif_is_a_clean_no_op(client, db_available, monkeypatch):

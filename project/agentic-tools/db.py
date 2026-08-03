@@ -1613,6 +1613,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_systems_server_name
 ALTER TABLE observability.monitored_systems
     ADD COLUMN IF NOT EXISTS ingest_api_key UUID NOT NULL DEFAULT gen_random_uuid();
 
+-- Encrypted replacement for the plaintext ingest_api_key column above
+-- (security fix: a DB backup/leak previously handed over every registered
+-- system's live bearer credential directly, with no protection layer the
+-- way local account passwords get via bcrypt). New systems store a
+-- high-entropy secret here, Fernet-encrypted with CONNECTOR_ENCRYPTION_KEY
+-- (mcp_governance._create_system) instead of relying on the ingest_api_key
+-- column's gen_random_uuid() default. ingest_api_key is kept, nullable-in-
+-- practice-for-new-rows, purely so systems created before this migration
+-- keep working without forced key rotation — mcp_governance._get_system_by_api_key
+-- checks ingest_api_key_enc first and falls back to the legacy column only
+-- for rows that never got one. See mcp_governance._rotate_system_api_key
+-- for migrating an existing system onto the encrypted column on demand.
+ALTER TABLE observability.monitored_systems
+    ADD COLUMN IF NOT EXISTS ingest_api_key_enc TEXT;
+
+-- New systems no longer populate the legacy plaintext column at all (see
+-- _create_system) — DROP NOT NULL so that explicit NULL insert succeeds,
+-- and DROP DEFAULT so gen_random_uuid() can never mint a second, unencrypted,
+-- equally-valid credential alongside ingest_api_key_enc for a new row.
+-- Existing rows' values are left untouched; they still authenticate via the
+-- legacy fallback in mcp_governance._get_system_by_api_key until rotated.
+ALTER TABLE observability.monitored_systems
+    ALTER COLUMN ingest_api_key DROP NOT NULL;
+ALTER TABLE observability.monitored_systems
+    ALTER COLUMN ingest_api_key DROP DEFAULT;
+
 -- AI system inventory / risk-tiering (idempotent) — the classification fields
 -- a NIST AI RMF "Map" inventory or EU AI Act system register expects: how
 -- risky is this system, what does it touch, who owns it. Mirrored onto

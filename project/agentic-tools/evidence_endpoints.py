@@ -76,6 +76,16 @@ _SCREEN_ID = "devopsmonitoring"
 
 SIGNING_KEY = os.environ.get("EVIDENCE_SIGNING_KEY", "")
 
+
+class SigningKeyMissing(RuntimeError):
+    """EVIDENCE_SIGNING_KEY is not set — cannot sign or verify evidence records.
+
+    Signing with an empty/absent key would produce an HMAC anyone could
+    recompute (HMAC-SHA256(x, "") needs no secret at all), which defeats the
+    entire tamper-evidence claim this endpoint exists to back — so this fails
+    closed instead, matching db.EncryptionKeyMissing's precedent for
+    CONNECTOR_ENCRYPTION_KEY."""
+
 _SEVERITY_ORDER = ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 _LEVEL_TO_SEVERITY = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
 _CWE_RE = re.compile(r"cwe-(\d+)", re.IGNORECASE)
@@ -169,7 +179,11 @@ def compute_fingerprint(repository: str, file_path: Optional[str], rule_id: str,
 
 def sign_record(record_json: dict) -> str:
     if not SIGNING_KEY:
-        logger.warning("EVIDENCE_SIGNING_KEY not set — signing with an empty key (not secure for production)")
+        raise SigningKeyMissing(
+            "EVIDENCE_SIGNING_KEY is not set — cannot sign or verify evidence records. "
+            "Generate one with `python -c \"import secrets; print(secrets.token_hex(32))\"` "
+            "and set it before ingesting or verifying evidence."
+        )
     canonical = json.dumps(record_json, sort_keys=True, separators=(",", ":"))
     return hmac.new(SIGNING_KEY.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -196,6 +210,8 @@ async def evidence_webhook(request: Request, body: EvidenceWebhookBody):
 
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
+    if not SIGNING_KEY:
+        raise HTTPException(status_code=503, detail="EVIDENCE_SIGNING_KEY not configured — cannot sign evidence records")
 
     system = await asyncio.to_thread(mcp_governance._get_system_by_api_key, api_key)
     if not system:
@@ -399,7 +415,10 @@ async def verify_record(record_id: int, current_user: dict = Depends(require_scr
     record = db.get_evidence_record(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Evidence record not found")
-    recomputed = sign_record(record["record_json"])
+    try:
+        recomputed = sign_record(record["record_json"])
+    except SigningKeyMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     return {
         "id": record_id,
         "valid": hmac.compare_digest(recomputed, record["signature"]),
