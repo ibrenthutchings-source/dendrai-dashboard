@@ -491,9 +491,9 @@ def _write_adjudication(
             # from what the ensemble already decided — a false negative from
             # trusting the LLM's downgrade is a worse failure mode than an
             # extra human review.
-            if llm_eval["verdict"] == "ESCALATE" and adj.final_verdict != AgentVerdict.ESCALATE:
+            if llm_eval["verdict"] in ("ESCALATE", "CLEAR"):
                 adj = adj.model_copy(update={
-                    "final_verdict": AgentVerdict.ESCALATE,
+                    "final_verdict": AgentVerdict(llm_eval["verdict"]),
                     "requires_human_review": True,
                     "conflict_flags": list(adj.conflict_flags) + [ConflictFlag.LLM_ESCALATION_OVERRIDE],
                     "conflict_reasoning": (
