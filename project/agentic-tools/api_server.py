@@ -141,6 +141,7 @@ import pac_negative_sweep
 import connector_hygiene_sweep
 import vendor_risk_sweep
 import ai_governance_sweep
+import identity_graph_sync
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -304,6 +305,7 @@ async def lifespan(application: FastAPI):
         _gov_task = _connector_task = _drift_task = None
         _waiver_sweep_task = _itsm_sla_sweep_task = _pac_negative_sweep_task = None
         _connector_hygiene_sweep_task = _vendor_risk_sweep_task = _ai_governance_sweep_task = None
+        _identity_graph_sync_task = None
         _reconnect_task = None
         _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
@@ -332,6 +334,7 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(connector_hygiene_sweep.sweep_once, connector_hygiene_sweep._TICK_S, "Connector credential hygiene sweep")),
                 asyncio.create_task(_multi_tenant_loop(vendor_risk_sweep.sweep_once, vendor_risk_sweep._TICK_S, "Vendor risk SOC 2 expiry sweep")),
                 asyncio.create_task(_multi_tenant_loop(ai_governance_sweep.sweep_once, ai_governance_sweep._TICK_S, "AI Governance assessment expiry sweep")),
+                asyncio.create_task(_multi_tenant_loop(identity_graph_sync.sweep_once, identity_graph_sync._TICK_S, "Identity graph sync")),
             ])
             logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
                         len(_multi_tenant_bg_tasks))
@@ -389,6 +392,13 @@ async def lifespan(application: FastAPI):
                 _ai_governance_sweep_task = asyncio.create_task(ai_governance_sweep.start_sweep())
                 logger.info("AI Governance assessment expiry sweep task started")
 
+            # Identity/role graph sync: real role_count/entitlements for The
+            # Graph Architect (UBO/agents/graph_architect.py) — see
+            # identity_graph_sync.py's module docstring.
+            if db.is_available():
+                _identity_graph_sync_task = asyncio.create_task(identity_graph_sync.start_sweep())
+                logger.info("Identity graph sync task started")
+
             # Background DB reconnect loop — retries every 30 s if startup DB init failed.
             # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
             # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -431,6 +441,9 @@ async def lifespan(application: FastAPI):
                         if _ai_governance_sweep_task is None:
                             asyncio.create_task(ai_governance_sweep.start_sweep())
                             logger.info("AI Governance assessment expiry sweep started after DB reconnect")
+                        if _identity_graph_sync_task is None:
+                            asyncio.create_task(identity_graph_sync.start_sweep())
+                            logger.info("Identity graph sync started after DB reconnect")
 
             _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -441,7 +454,8 @@ async def lifespan(application: FastAPI):
                 _reconnect_task.cancel()
             for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task,
                              _itsm_sla_sweep_task, _pac_negative_sweep_task, _connector_hygiene_sweep_task,
-                             _vendor_risk_sweep_task, _ai_governance_sweep_task, *_multi_tenant_bg_tasks):
+                             _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
+                             *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
                     try:

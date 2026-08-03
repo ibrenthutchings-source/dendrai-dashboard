@@ -1276,6 +1276,22 @@ async def _process_one(row: dict) -> bool:
         # Silver: conform + Policy-as-Code
         uro = await silver.conform(uro)
 
+        # Real identity/role data, when available, for the actor who
+        # triggered this event. No Silver conformer for MCP proxy or
+        # system_telemetry events ever sets role_count/entitlements — see
+        # identity_graph_sync.py's module docstring — so without this,
+        # The Graph Architect's blast-radius/SPoF checks always operate on
+        # zeroed inputs. The guard means this never overrides a conformer
+        # that already supplied real data (e.g. a future real SailPoint
+        # entitlement pull), only fills in when it's still at the default.
+        if uro.conformed_payload and uro.actor_id and not uro.conformed_payload.risk_indicators.get("role_count"):
+            role_count = await asyncio.to_thread(db.get_identity_role_count, uro.actor_id)
+            if role_count:
+                uro.conformed_payload.risk_indicators["role_count"] = role_count
+                uro.conformed_payload.risk_indicators["entitlements"] = await asyncio.to_thread(
+                    db.get_identity_role_names, uro.actor_id
+                )
+
         # Gold: risk score + tier
         uro = await gold.score(uro)
 

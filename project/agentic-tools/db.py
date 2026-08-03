@@ -1708,6 +1708,43 @@ ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS system_owner 
 -- "credential age" signal rather than "row last touched for any reason".
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS credentials_rotated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+-- Identity/role graph: real user<->role edges pulled from connectors that
+-- expose them (currently Oracle Fusion's SCIM Users/Groups API via
+-- identity_graph_sync.py). Feeds The Graph Architect's blast-radius/SPoF
+-- checks (UBO/agents/graph_architect.py) with real role_count/entitlements
+-- instead of the zeroed defaults every other event path leaves them at —
+-- see mcp_governance.py's _process_one() enrichment step.
+CREATE TABLE IF NOT EXISTS observability.identity_role_edges (
+    id           BIGSERIAL    PRIMARY KEY,
+    connector_id BIGINT       NOT NULL REFERENCES observability.poll_connectors(id) ON DELETE CASCADE,
+    username     VARCHAR(255) NOT NULL,
+    role_name    VARCHAR(255) NOT NULL,
+    role_id      VARCHAR(255),
+    fetched_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (connector_id, username, role_name)
+);
+CREATE INDEX IF NOT EXISTS idx_identity_role_edges_username ON observability.identity_role_edges (username);
+
+-- Segregation-of-Duties violations pulled from the same sync (Oracle Risk
+-- Management Cloud's segregationOfDutiesViolations). Persisted now; raising
+-- these as adjudicated events is a separate follow-up (see identity_graph_sync.py
+-- module docstring) — this table only backs list_open_sod_violations_for_user()
+-- today.
+CREATE TABLE IF NOT EXISTS observability.sod_violations (
+    id             BIGSERIAL    PRIMARY KEY,
+    connector_id   BIGINT       NOT NULL REFERENCES observability.poll_connectors(id) ON DELETE CASCADE,
+    violation_id   VARCHAR(255) NOT NULL,
+    username       VARCHAR(255) NOT NULL,
+    policy_name    VARCHAR(255),
+    conflict_roles JSONB,
+    risk_level     VARCHAR(16),
+    status         VARCHAR(32),
+    detected_date  TIMESTAMPTZ,
+    fetched_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (connector_id, violation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sod_violations_username ON observability.sod_violations (username);
+
 -- Generic system telemetry: any registered system pushes events here via REST.
 -- Enterprise systems (Saviynt, SAP, Oracle Fusion, ServiceNow, etc.) authenticate
 -- with their per-system ingest_api_key and POST structured events to /observability/telemetry/ingest.
@@ -8734,6 +8771,128 @@ def update_poll_connector(connector_id: int, *, display_name: Optional[str] = No
                 )
                 return cur.rowcount > 0
     return _run(_do, default=False) or False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Identity/role graph (observability.identity_role_edges, .sod_violations)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_identity_role_edges(connector_id: int, assignments: list) -> int:
+    """Full-refresh a connector's identity<->role edges: delete every edge
+    previously recorded for this connector, then insert the current set —
+    so a role revoked upstream actually disappears here instead of
+    accumulating forever. `assignments` items need `username`/`role`, with
+    optional `role_id` (matches oracle_fusion_tool.get_user_roles()'s
+    ["assignments"] shape)."""
+    rows = [
+        (connector_id, a.get("username") or "", a.get("role") or "", a.get("role_id") or None)
+        for a in assignments
+        if a.get("username") and a.get("role")
+    ]
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM observability.identity_role_edges WHERE connector_id = %s",
+                    (connector_id,),
+                )
+                if rows:
+                    execute_values(
+                        cur,
+                        "INSERT INTO observability.identity_role_edges "
+                        "(connector_id, username, role_name, role_id) VALUES %s "
+                        "ON CONFLICT (connector_id, username, role_name) DO NOTHING",
+                        rows,
+                    )
+                return len(rows)
+    return _run(_do, default=0) or 0
+
+
+def upsert_sod_violations(connector_id: int, violations: list) -> int:
+    """Full-refresh a connector's open SoD violations. `violations` items
+    match oracle_fusion_tool.get_sod_violations()'s ["violations"] shape
+    (violation_id, username, policy_name, conflict_roles, risk_level, status,
+    detected_date)."""
+    rows = [
+        (connector_id, v.get("violation_id") or "", v.get("username") or "",
+         v.get("policy_name") or None, Json(v.get("conflict_roles") or []),
+         v.get("risk_level") or None, v.get("status") or None,
+         v.get("detected_date") or None)
+        for v in violations
+        if v.get("violation_id") and v.get("username")
+    ]
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM observability.sod_violations WHERE connector_id = %s",
+                    (connector_id,),
+                )
+                if rows:
+                    execute_values(
+                        cur,
+                        "INSERT INTO observability.sod_violations "
+                        "(connector_id, violation_id, username, policy_name, conflict_roles, "
+                        " risk_level, status, detected_date) VALUES %s "
+                        "ON CONFLICT (connector_id, violation_id) DO NOTHING",
+                        rows,
+                    )
+                return len(rows)
+    return _run(_do, default=0) or 0
+
+
+def get_identity_role_count(username: str) -> int:
+    """Total role edges for this username across every connector — an
+    identity can exist in more than one connected system, and the field
+    this feeds (The Graph Architect's role_count) was always a single
+    number, so summing is the closest match to that existing shape."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.identity_role_edges WHERE username = %s",
+                    (username,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else 0
+    return _run(_do, default=0) or 0
+
+
+def get_identity_role_names(username: str) -> list:
+    """Role/entitlement names for this username, across every connector —
+    feeds The Graph Architect's `entitlements` list (only its length is used
+    by _estimate_blast(), but the names themselves are useful evidence)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT role_name FROM observability.identity_role_edges WHERE username = %s "
+                    "ORDER BY role_name",
+                    (username,),
+                )
+                return [r[0] for r in cur.fetchall()]
+    return _run(_do, default=[]) or []
+
+
+def list_open_sod_violations_for_user(username: str) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT violation_id, policy_name, conflict_roles, risk_level, status, detected_date "
+                    "FROM observability.sod_violations WHERE username = %s AND status = 'Open' "
+                    "ORDER BY detected_date DESC NULLS LAST",
+                    (username,),
+                )
+                return [
+                    {
+                        "violation_id": r[0], "policy_name": r[1], "conflict_roles": r[2],
+                        "risk_level": r[3], "status": r[4],
+                        "detected_date": r[5].isoformat() if r[5] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do, default=[]) or []
 
 
 def list_connectors_with_stale_credentials(stale_days: int = 90) -> list:
