@@ -57,8 +57,8 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `MCP_READ_ONLY` | PaC / CaC / DevOps Monitoring / Infrastructure Monitoring MCP servers | Set to `true` to block all write operations from these MCP servers. |
 | `OPA_BINARY` | Policy-as-Code (authoritative evaluation) | Path to a real OPA binary. Falls back to `opa` on PATH, then to a labelled Python heuristic simulation if neither is found. The Docker image (`project/Dockerfile`) always installs a real OPA binary — only local dev without OPA on PATH runs the heuristic. |
 | `GITHUB_WEBHOOK_SECRET` | GitHub webhook / DevOps Monitoring | HMAC-SHA256 secret for verifying `POST /github/webhook` deliveries. Skipped (with a warning) if unset — always set it in production. |
-| `CONNECTOR_ENCRYPTION_KEY` | Poll-based connectors (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS) | Fernet key encrypting connector credentials at rest (`observability.poll_connectors.credentials_enc`). Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Connector CRUD returns HTTP 503 without it. |
-| `EVIDENCE_SIGNING_KEY` | DevOps Monitoring (SARIF evidence) | HMAC-SHA256 key signing `observability.evidence_records` rows so `/evidence/records/{id}/verify` can prove they haven't been tampered with. Unset falls back to signing with an empty key (logged as insecure — set explicitly in production). |
+| `CONNECTOR_ENCRYPTION_KEY` | Poll-based connectors (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS); Monitored Systems ingest API keys; encrypted `payroll_detail`/`treasury_detail` telemetry sub-payloads | Fernet key. Encrypts connector credentials at rest (`observability.poll_connectors.credentials_enc`), each Monitored System's ingest API key (`observability.monitored_systems.ingest_api_key_enc` — see `POST /observability/systems`), and sensitive telemetry detail sub-dicts. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Connector CRUD and new-system registration return HTTP 503/`None` without it — this was previously a plaintext UUID column for ingest keys; see `POST /observability/systems/{id}/rotate-key` to migrate a pre-existing system off the legacy column. |
+| `EVIDENCE_SIGNING_KEY` | DevOps Monitoring (SARIF evidence) | HMAC-SHA256 key signing `observability.evidence_records` rows so `/evidence/records/{id}/verify` can prove they haven't been tampered with. **Required** — `/evidence/webhook` and `/evidence/records/{id}/verify` return HTTP 503 if unset, rather than signing with an empty key (an empty-key HMAC needs no secret to recompute, which would make every record forgeable). Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
 | `MCP_ALERT_WEBHOOK_URL` | Dendrai UBO Governance Brain | Slack-compatible webhook URL. When set, ESCALATE verdicts POST a JSON alert payload. |
 | `MCP_GOV_POLL_INTERVAL_S` | Dendrai UBO Governance Brain | Seconds between governance poll cycles (default `30`). |
 | `MCP_GOV_BATCH_SIZE` | Dendrai UBO Governance Brain | Telemetry rows processed per poll cycle (default `20`). |
@@ -69,6 +69,39 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `PROXY_FREQ_THRESHOLD` | Telemetry Proxy | Call-count threshold within window before `high_frequency` fires (default `10`). |
 | `PROXY_WRITE_TIMEOUT_S` | Telemetry Proxy | Seconds before a DB write is silently cancelled (default `2.0`). |
 | `PROXY_LOG_LEVEL` | Telemetry Proxy | Log verbosity: `DEBUG`, `INFO`, `WARNING` (default `WARNING`). |
+
+---
+
+## Background loops & listeners
+
+Every mechanism below runs as an `asyncio` task started in `api_server.py`'s lifespan (the pollers/sweeps) or as a FastAPI route (the webhook listeners) — none require a separate worker process or cron. All are best-effort: an individual failure (one connector, one row, one tick) is caught, logged, and never takes down the loop or the API server. This table is the map; each module's own section below has the detail. It is not agent/AI-specific — most of it governs ERP, identity, DevOps, and infrastructure telemetry with no AI agent involved at all; the Dendrai UBO Governance Brain (MCP telemetry) is one row among many, not the whole picture.
+
+**Inbound listeners (push — an external system calls us):**
+
+| Listener | Endpoint | Auth | Catches |
+|---|---|---|---|
+| GitHub Webhook Listener | `POST /github/webhook` | HMAC-SHA256 (`GITHUB_WEBHOOK_SECRET`) | Real-time GitHub events (secret scanning, branch protection, pushes, Dependabot, pipeline security) → full Bronze→Silver→Gold→Council adjudication |
+| Evidence/SARIF Webhook | `POST /evidence/webhook` | Bearer `ingest_api_key` | SARIF findings from any CI/SAST tool; HIGH/CRITICAL findings additionally escalate through adjudication |
+| ITSM Webhook | `POST /itsm/webhook` | Bearer `ingest_api_key` | Real-time ticket status push from a Jira Automation rule / ServiceNow Business Rule |
+| Generic Telemetry Ingest | `POST /observability/telemetry/ingest` | Bearer `ingest_api_key` | Any other registered system (or non-MCP AI agent — LangChain, OpenAI function calling, a custom loop) — see "Monitored Systems" below and the top-level README's "Governing non-MCP AI agents" |
+
+**Outbound pollers (pull — we call an external system) and periodic sweeps:**
+
+| Loop | Cadence | Catches |
+|---|---|---|
+| `mcp_governance.start_polling()` | `MCP_GOV_POLL_INTERVAL_S` (default 30s) | Flagged `mcp_telemetry`/`system_telemetry` rows → full adjudication pipeline |
+| `connector_poller.start_polling()` | `CONNECTOR_POLLER_TICK_S` tick (default 60s), per-connector `poll_interval_s` (default 1800s) | All 16 pull-model connector types (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab/Bitbucket SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS, AWS IaaS, OT heartbeat, denied-party screening, Oracle HCM) |
+| `risk_waiver_sweep.py` | Hourly | Expired risk waivers — re-opens the underlying SAST finding as failing |
+| `itsm_sla_sweep.py` | Hourly | ITSM tickets that blew their remediation SLA |
+| `pac_negative_sweep.py` | Hourly | Regressions in Policy-as-Code negative-test coverage (a process that passed last sweep and fails this one) |
+| `connector_hygiene_sweep.py` | Daily | Poll-connector credentials overdue for rotation (default 90 days) — the one check with no external system, Intelligenza checking itself |
+| `vendor_risk_sweep.py` | Daily | Vendor SOC 2 reports past their expiry date |
+| `ai_governance_sweep.py` | Daily | AI system assessments past their expiry date |
+| `model_health_drift_watch()` (`api_server.py`) | `MODEL_HEALTH_CHECK_INTERVAL_S` (default 6h) | PSI drift on financial ratios, FRED macro regime, and AI-suggestion acceptance rate — opens a tracked incident, deduplicated against any already-open one for that metric |
+
+**Outbound reporting (the "report" half — turns a caught signal into a notification):**
+
+`mcp_governance._post_webhook_alert()` / `_dispatch_alert()` — a Slack-compatible POST to `MCP_ALERT_WEBHOOK_URL`, fired on every ESCALATE verdict and every newly-opened Model Health drift incident. Silently a no-op if the URL isn't configured; a delivery failure is logged and swallowed, never breaks the caller (adjudication, or the drift watcher).
 
 ---
 
@@ -379,6 +412,34 @@ No dedicated findings viewer — findings ride the generic `system_telemetry` �
 
 ---
 
+### Continuous Third-Party/Vendor Risk (`vendor_risk_endpoints.py` + `vendor_risk_sweep.py`)
+
+Auditor-maintained register (VM-01, Vendor Security Assessment) of which vendors are "critical" and their current SOC 2 report coverage window — turns the assessment from a point-in-time checklist item into a continuously monitored one. Vendor spend-concentration breaches (`VENDOR_CONCENTRATION_BREACH`) are checked separately, from live ERP payment data, by `oracle_fusion_tool.py`'s poll-connector `pull_events()` rather than this register.
+
+**REST endpoints (prefix `/vendor-risk`):** `GET ""` (list, optional `critical_only`), `PUT ""` (create/update a vendor's profile — recording a fresh `soc2_expires_at` also clears an EXPIRED status).
+
+**Background sweep:** `vendor_risk_sweep.py` (daily) — flips any `CURRENT` profile past its `soc2_expires_at` to `EXPIRED` and re-ingests a fresh `vendor_soc2_expired` finding through the normal adjudication pipeline, same "control reliance basis has lapsed, goes back to failing" semantics as the DevOps Monitoring risk-waiver sweep below.
+
+---
+
+### AI Governance (`ai_governance_endpoints.py` + `ai_governance_sweep.py`)
+
+Auditor-maintained register of the audited company's own AI system usage (AI-05 Third-Party AI Tool Assessment, AI-06 Human Oversight) — distinct from `observability.mcp_telemetry`/`ai-inventory.jsx`, which only inventories *this platform's own* MCP tool calls. Saving a system that requires human oversight but has none defined raises an `AI_HUMAN_OVERSIGHT_MISSING` finding immediately (AI-06 — a static configuration gap, not something that decays with time).
+
+**REST endpoints (prefix `/ai-governance`):** `GET ""` (list, optional `high_risk_only`), `PUT ""` (create/update a system's governance profile).
+
+**Background sweep:** `ai_governance_sweep.py` (daily) — the AI-05 time-based half: flips any `CURRENT` assessment past its `assessment_expires_at` to `EXPIRED` and re-ingests a fresh `ai_assessment_overdue` finding, mirroring `vendor_risk_sweep.py`'s shape exactly.
+
+---
+
+### Poll-Connector Dispatch Loop (`connector_poller.py`)
+
+The single scheduler behind every pull-model connector — Oracle Fusion, Oracle HCM, SAP HANA, SailPoint, Dynamics 365, NetSuite, denied-party screening, GitHub/GitLab/Bitbucket SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS, AWS IaaS, OT heartbeat (16 adapter types as of this writing). Adding a 17th means one new adapter module plus one `_ADAPTERS` entry — no new scheduler code.
+
+Ticks every `CONNECTOR_POLLER_TICK_S` seconds (default `60`) and polls whichever registered connectors are actually due, per that connector's own `poll_interval_s` (configured per-connector in the Dendrai UBO Configuration screen, default `1800`/30min — not an env var). Each adapter's `pull_events()` output is normalized and fed into `mcp_governance._ingest_system_event`, the same `system_telemetry` insert path GitHub-sourced and internal-sweep-sourced events already go through — `mcp_governance.start_polling()` picks up any resulting flagged row and adjudicates it exactly as it would any other source. A connector whose `pull_events()` raises, or whose credentials can't be decrypted (`CONNECTOR_ENCRYPTION_KEY` missing/rotated), is skipped for that tick and recorded via `record_poll_result(..., "error", ...)` — never crashes the loop or blocks other connectors in the same tick.
+
+---
+
 ### Authentication (`auth_db.py` + `auth_endpoints.py`)
 
 JWT-based auth system integrated into `api_server.py`. Provides local login with bcrypt hashing, four SSO providers via PKCE OAuth 2.0, and JIT provisioning for new SSO users.
@@ -538,6 +599,18 @@ Adjudication results are written to `observability.adjudicated_tool_calls`. Star
 | `GET` | `/suppressions` | Active + inactive suppression rules |
 | `POST` | `/suppressions` | Add a suppression rule — body: `{server_name, target_tool, tool_args_hash, reason}` |
 | `DELETE` | `/suppressions/{id}` | Soft-delete (deactivate) a rule |
+
+#### Monitored Systems — push-model ingestion for non-MCP agents/systems
+
+Any external system (a LangChain/OpenAI/custom-loop agent, Saviynt, SAP, ServiceNow, ...) that isn't behind an MCP server registers here to get a per-system, revocable ingest API key, then POSTs its own events to `POST /observability/telemetry/ingest` with `Authorization: Bearer <ingest_api_key>` — the framework-agnostic path described in the top-level README's "Governing non-MCP AI agents." The key is issued encrypted at rest (`CONNECTOR_ENCRYPTION_KEY`, see the environment variable table above) rather than as a plaintext UUID.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/systems` | All registered systems, with activity stats and the (decrypted, for display) ingest API key |
+| `POST` | `/systems` | Register a new system — issues a fresh encrypted ingest API key |
+| `PUT` | `/systems/{id}` | Update a system's config (does not touch its key) |
+| `DELETE` | `/systems/{id}` | Deactivate (soft delete) |
+| `POST` | `/systems/{id}/rotate-key` | Issue a fresh encrypted key, invalidating the old one — the migration path for a system still on the legacy plaintext `ingest_api_key` column |
 
 ---
 
