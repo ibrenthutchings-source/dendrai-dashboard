@@ -272,80 +272,89 @@ import future.keywords.in
 import future.keywords.if
 
 # ── P-OTC-001: Revenue Recognition (ASC 606 / IFRS 15) ───────────────────────
-# Oracle Fusion Revenue Management module
+# Oracle Fusion Revenue Management module. Fields ride the generic
+# input.event.* shape (system_telemetry -> mcp_governance._evaluate_pac_policy
+# -> UBO/pipeline/silver.py's erp_transaction_detail spread), flat and
+# txn_/contract_-prefixed, matching every other process's convention rather
+# than a nested input.transaction/.contract root the pipeline never
+# constructs — see pac_contracts.py's module docstring for why nested roots
+# are dead by construction.
 deny_revenue_event[msg] if {
-    input.transaction.type == "revenue_recognition"
-    not input.transaction.performance_obligation_satisfied
+    input.event.txn_type == "revenue_recognition"
+    not input.event.txn_performance_obligation_satisfied
     msg := sprintf("OTC-P001: Revenue $%v recognized for order '%v' before performance obligation satisfied — ASC 606 violation", [
-        input.transaction.amount,
-        input.transaction.order_number
+        input.event.txn_amount,
+        input.event.txn_order_number
     ])
 }
 
 deny_revenue_event[msg] if {
-    input.contract.value > 1000000
-    not input.contract.reviewed_by_legal
+    input.event.contract_value > 1000000
+    not input.event.contract_reviewed_by_legal
     msg := sprintf("OTC-P001: High-value contract '%v' ($%v) recognized without legal review in Oracle Fusion Revenue Management", [
-        input.contract.id,
-        input.contract.value
+        input.event.contract_id,
+        input.event.contract_value
     ])
 }
 
 deny_revenue_event[msg] if {
-    input.transaction.type == "variable_consideration"
-    not input.transaction.constrained_estimate_documented
-    msg := sprintf("OTC-P001: Variable consideration for contract '%v' lacks constrained estimate documentation (ASC 606-10-32)", [input.transaction.contract_id])
+    input.event.txn_type == "variable_consideration"
+    not input.event.txn_constrained_estimate_documented
+    msg := sprintf("OTC-P001: Variable consideration for contract '%v' lacks constrained estimate documentation (ASC 606-10-32)", [input.event.txn_contract_id])
 }
 
 # ── P-OTC-002: Credit Management ─────────────────────────────────────────────
 # Oracle Fusion Order Management: Credit check integration
 deny_order_event[msg] if {
-    input.sales_order.status == "booked"
-    input.customer.credit_limit > 0
-    input.sales_order.total > input.customer.credit_limit
-    not input.sales_order.credit_override_approved_by
+    input.event.so_status == "booked"
+    input.event.customer_credit_limit > 0
+    input.event.so_total > input.event.customer_credit_limit
+    not input.event.so_credit_override_approved_by
     msg := sprintf("OTC-P002: Sales order '%v' ($%v) exceeds customer credit limit ($%v) — override approval required in Oracle Fusion", [
-        input.sales_order.order_number,
-        input.sales_order.total,
-        input.customer.credit_limit
+        input.event.so_order_number,
+        input.event.so_total,
+        input.event.customer_credit_limit
     ])
 }
 
 # ── P-OTC-003: Billing Accuracy ───────────────────────────────────────────────
 # Oracle Fusion AR: AutoInvoice and billing controls
 deny_billing_event[msg] if {
-    input.invoice.type == "manual"
-    not input.invoice.approved_by
-    input.invoice.amount > 10000
+    input.event.inv_type == "manual"
+    not input.event.inv_approved_by
+    input.event.inv_amount > 10000
     msg := sprintf("OTC-P003: Manual invoice '%v' for $%v requires manager approval in Oracle Fusion AR (>$10K threshold)", [
-        input.invoice.invoice_number,
-        input.invoice.amount
+        input.event.inv_number,
+        input.event.inv_amount
     ])
 }
 
 deny_billing_event[msg] if {
-    input.invoice.billing_date > input.invoice.shipment_date
-    input.invoice.days_billed_before_shipment > 30
+    input.event.inv_billing_date > input.event.inv_shipment_date
+    input.event.inv_days_billed_before_shipment > 30
     msg := sprintf("OTC-P003: Invoice '%v' billed %v days before shipment — premature revenue risk in Oracle Fusion AR", [
-        input.invoice.invoice_number,
-        input.invoice.days_billed_before_shipment
+        input.event.inv_number,
+        input.event.inv_days_billed_before_shipment
     ])
 }
 
 # ── P-OTC-004: Cash Application ───────────────────────────────────────────────
 # Oracle Fusion AR: Cash receipts and unapplied cash monitoring
 deny_cash_event[msg] if {
-    input.cash_receipt.unapplied_days > 30
+    input.event.cash_unapplied_days > 30
     msg := sprintf("OTC-P004: Cash receipt '%v' ($%v) unapplied for %v days — Oracle Fusion AR SLA breach", [
-        input.cash_receipt.receipt_number,
-        input.cash_receipt.amount,
-        input.cash_receipt.unapplied_days
+        input.event.cash_receipt_number,
+        input.event.cash_amount,
+        input.event.cash_unapplied_days
     ])
 }
 
 # ── P-OTC-005: Customer Master Data Integrity ─────────────────────────────────
 deny_customer_event[msg] if {
-    input.event.type == "customer_master_change"
+    # NOTE: real EventType enum value is "CUSTOMER_MASTER_CHANGE" (uppercase)
+    # — same dead-rule-by-literal-case bug shape as the vendor-master rule
+    # below (P-P2P-003)/pac_contracts.py's module docstring.
+    input.event.type == "CUSTOMER_MASTER_CHANGE"
     input.event.field in ["bank_account", "payment_terms", "billing_address", "tax_id"]
     not input.event.dual_approved
     msg := sprintf("OTC-P005: Customer master change to '%v' for customer '%v' requires dual approval in Oracle Fusion Customer Model", [
@@ -356,13 +365,13 @@ deny_customer_event[msg] if {
 
 # ── P-OTC-006: Accounts Receivable Aging ─────────────────────────────────────
 deny_ar_event[msg] if {
-    input.ar_balance.days_outstanding > 90
-    input.ar_balance.amount > 50000
-    not input.ar_balance.collection_action_documented
+    input.event.ar_days_outstanding > 90
+    input.event.ar_amount > 50000
+    not input.event.ar_collection_action_documented
     msg := sprintf("OTC-P006: AR balance $%v for customer '%v' is %v days outstanding without documented collection action in Oracle Fusion", [
-        input.ar_balance.amount,
-        input.ar_balance.customer_name,
-        input.ar_balance.days_outstanding
+        input.event.ar_amount,
+        input.event.ar_customer_name,
+        input.event.ar_days_outstanding
     ])
 }
 """,
@@ -383,47 +392,53 @@ import future.keywords.in
 import future.keywords.if
 
 # ── P-P2P-001: Purchase Order Approval Thresholds ────────────────────────────
-# Oracle Fusion Procurement: Approval Management Engine (AME)
+# Oracle Fusion Procurement: Approval Management Engine (AME). Fields ride
+# the generic input.event.* shape, flat and po_/inv_-prefixed — same
+# reasoning as order_to_cash's P-OTC-001 above.
 deny_po_event[msg] if {
-    input.purchase_order.total > 50000
-    not input.purchase_order.vp_approved
+    input.event.po_total > 50000
+    not input.event.po_vp_approved
     msg := sprintf("P2P-P001: PO '%v' for $%v requires VP approval in Oracle Fusion Procurement (>$50K threshold)", [
-        input.purchase_order.po_number,
-        input.purchase_order.total
+        input.event.po_number,
+        input.event.po_total
     ])
 }
 
 deny_po_event[msg] if {
-    input.purchase_order.total > 250000
-    not input.purchase_order.cfo_approved
+    input.event.po_total > 250000
+    not input.event.po_cfo_approved
     msg := sprintf("P2P-P001: PO '%v' for $%v requires CFO approval in Oracle Fusion Procurement (>$250K threshold)", [
-        input.purchase_order.po_number,
-        input.purchase_order.total
+        input.event.po_number,
+        input.event.po_total
     ])
 }
 
 deny_po_event[msg] if {
-    input.purchase_order.type == "blanket"
-    not input.purchase_order.annual_review_completed
-    msg := sprintf("P2P-P001: Blanket PO '%v' lacks annual review documentation in Oracle Fusion Procurement", [input.purchase_order.po_number])
+    input.event.po_type == "blanket"
+    not input.event.po_annual_review_completed
+    msg := sprintf("P2P-P001: Blanket PO '%v' lacks annual review documentation in Oracle Fusion Procurement", [input.event.po_number])
 }
 
 # ── P-P2P-002: Three-Way Match (PO / GR / Invoice) ───────────────────────────
-# Oracle Fusion Payables: Automated invoice matching
+# Oracle Fusion Payables: Automated invoice matching. po_total doubles as the
+# PO's amount for the match-variance comparison below (the original draft
+# used a separate purchase_order.amount field for this same real-world
+# quantity — standardized on one field name rather than porting that
+# inconsistency into the flat shape).
 deny_invoice_event[msg] if {
-    input.invoice.matching_type == "3_way"
-    abs(input.invoice.amount - input.purchase_order.amount) > input.purchase_order.amount * 0.05
+    input.event.inv_matching_type == "3_way"
+    abs(input.event.inv_amount - input.event.po_total) > input.event.po_total * 0.05
     msg := sprintf("P2P-P002: Three-way match variance for invoice '%v' exceeds 5%% tolerance — Oracle Fusion AP hold applied, manual review required", [
-        input.invoice.invoice_number
+        input.event.inv_number
     ])
 }
 
 deny_invoice_event[msg] if {
-    input.invoice.amount > 10000
-    not input.goods_receipt.confirmed
+    input.event.inv_amount > 10000
+    not input.event.goods_receipt_confirmed
     msg := sprintf("P2P-P002: Invoice '%v' ($%v) processed without confirmed goods receipt in Oracle Fusion — three-way match incomplete", [
-        input.invoice.invoice_number,
-        input.invoice.amount
+        input.event.inv_number,
+        input.event.inv_amount
     ])
 }
 
@@ -455,47 +470,47 @@ deny_vendor_event[msg] if {
 
 # ── P-P2P-004: Duplicate Invoice Detection ────────────────────────────────────
 deny_invoice_event[msg] if {
-    input.invoice.duplicate_score > 0.85
-    not input.invoice.duplicate_override_reason
+    input.event.inv_duplicate_score > 0.85
+    not input.event.inv_duplicate_override_reason
     msg := sprintf("P2P-P004: Potential duplicate invoice '%v' (score: %v) in Oracle Fusion AP — manual review required before payment", [
-        input.invoice.invoice_number,
-        input.invoice.duplicate_score
+        input.event.inv_number,
+        input.event.inv_duplicate_score
     ])
 }
 
 # ── P-P2P-005: Payment Run Authorization ─────────────────────────────────────
 deny_payment_event[msg] if {
-    input.payment_batch.total > 100000
-    not input.payment_batch.treasury_approved
+    input.event.pay_batch_total > 100000
+    not input.event.pay_batch_treasury_approved
     msg := sprintf("P2P-P005: Oracle Fusion payment batch '%v' ($%v) requires Treasury approval before release (>$100K threshold)", [
-        input.payment_batch.batch_name,
-        input.payment_batch.total
+        input.event.pay_batch_name,
+        input.event.pay_batch_total
     ])
 }
 
 deny_payment_event[msg] if {
-    input.payment.type == "wire_transfer"
-    not input.payment.two_factor_confirmed
+    input.event.pay_type == "wire_transfer"
+    not input.event.pay_two_factor_confirmed
     msg := sprintf("P2P-P005: Wire transfer '%v' ($%v) requires two-factor confirmation in Oracle Fusion Payables", [
-        input.payment.payment_id,
-        input.payment.amount
+        input.event.pay_id,
+        input.event.pay_amount
     ])
 }
 
 # ── P-P2P-006: Segregation of Duties ─────────────────────────────────────────
 deny_sod_event[msg] if {
-    "AP_INVOICE_ENTRY" in input.user.oracle_roles
-    "AP_PAYMENT_APPROVAL" in input.user.oracle_roles
+    "AP_INVOICE_ENTRY" in input.event.user_oracle_roles
+    "AP_PAYMENT_APPROVAL" in input.event.user_oracle_roles
     msg := sprintf("P2P-P006: SoD violation — Oracle Fusion user '%v' holds conflicting AP Invoice Entry and Payment Approval roles", [
-        input.user.username
+        input.event.user_username
     ])
 }
 
 deny_sod_event[msg] if {
-    "PO_BUYER" in input.user.oracle_roles
-    "AP_INVOICE_APPROVAL" in input.user.oracle_roles
+    "PO_BUYER" in input.event.user_oracle_roles
+    "AP_INVOICE_APPROVAL" in input.event.user_oracle_roles
     msg := sprintf("P2P-P006: SoD violation — Oracle Fusion user '%v' can both create POs and approve invoices (P2P cycle conflict)", [
-        input.user.username
+        input.event.user_username
     ])
 }
 

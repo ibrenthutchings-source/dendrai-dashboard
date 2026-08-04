@@ -458,6 +458,19 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         # ai_governance_endpoints.py's inline human-oversight-gap check.
         "ai_assessment_overdue":       EventType.AI_ASSESSMENT_OVERDUE,
         "ai_human_oversight_missing":  EventType.AI_HUMAN_OVERSIGHT_MISSING,
+        # Order-to-Cash / Procure-to-Pay: generate_o2c_p2p_synthetic_log.py
+        # (and any future real Oracle Fusion O2C/P2P producer) sets these.
+        "revenue_recognition_event":  EventType.REVENUE_RECOGNITION_EVENT,
+        "sales_order_credit_event":   EventType.SALES_ORDER_CREDIT_EVENT,
+        "billing_event":              EventType.BILLING_EVENT,
+        "cash_application_event":     EventType.CASH_APPLICATION_EVENT,
+        "customer_master_change":     EventType.CUSTOMER_MASTER_CHANGE,
+        "ar_aging_event":             EventType.AR_AGING_EVENT,
+        "purchase_order_event":       EventType.PURCHASE_ORDER_EVENT,
+        "invoice_match_event":        EventType.INVOICE_MATCH_EVENT,
+        "vendor_master_change":       EventType.VENDOR_MASTER_CHANGE,
+        "payment_run_event":          EventType.PAYMENT_RUN_EVENT,
+        "procurement_sod_conflict":   EventType.PROCUREMENT_SOD_CONFLICT,
     }
 
     # Multi-Domain Risk Pipeline classification for the Financial-domain flags

@@ -203,6 +203,40 @@ _AI_GOVERNANCE_FIELDS = frozenset({
     "system_name", "vendor", "risk_tier", "assessment_expires_at",
 })
 
+# Fields generate_o2c_p2p_synthetic_log.py (and any future real Oracle
+# Fusion O2C/P2P producer) contributes via the "erp_transaction_detail"
+# raw_payload key. Flat, po_/inv_/so_/cash_/ar_/pay_/txn_/contract_/user_-
+# prefixed rather than nested objects — matches every other process's
+# convention (Treasury/Payroll/SCM/Infra above), not the nested
+# input.purchase_order.*/input.invoice.* roots the original order_to_cash/
+# procure_to_pay Rego shipped with, which pac_contracts.check_module_
+# contract correctly flagged as unproducible (see this module's docstring).
+# "field"/"dual_approved"/"customer_name"/"vendor_name" are shared with the
+# customer/vendor master-change rules, which already referenced flat
+# input.event.* fields before this addition.
+_ERP_TRANSACTION_FIELDS = frozenset({
+    # Order-to-Cash
+    "txn_type", "txn_performance_obligation_satisfied", "txn_amount",
+    "txn_order_number", "txn_constrained_estimate_documented", "txn_contract_id",
+    "contract_value", "contract_reviewed_by_legal", "contract_id",
+    "so_status", "so_total", "so_order_number", "so_credit_override_approved_by",
+    "customer_credit_limit",
+    "inv_type", "inv_approved_by", "inv_billing_date", "inv_shipment_date",
+    "inv_days_billed_before_shipment",
+    "cash_unapplied_days", "cash_receipt_number", "cash_amount",
+    "field", "dual_approved", "customer_name",
+    "ar_days_outstanding", "ar_amount", "ar_customer_name", "ar_collection_action_documented",
+    # Procure-to-Pay
+    "po_total", "po_vp_approved", "po_number", "po_cfo_approved", "po_type",
+    "po_annual_review_completed",
+    "inv_matching_type", "inv_amount", "inv_number", "goods_receipt_confirmed",
+    "inv_duplicate_score", "inv_duplicate_override_reason",
+    "vendor_name",
+    "pay_batch_total", "pay_batch_treasury_approved", "pay_batch_name",
+    "pay_type", "pay_two_factor_confirmed", "pay_id", "pay_amount",
+    "user_oracle_roles", "user_username",
+})
+
 
 # ── Per-process contract ──────────────────────────────────────────────────────
 # allowed_fields: every input.event.<field> a module for this process may
@@ -233,8 +267,21 @@ PROCESS_CONTRACTS: dict[str, dict] = {
         "allowed_fields": _SAP_FIELDS | _FINANCIAL_RISK_FIELDS | _TREASURY_FIELDS,
         "allowed_event_types": None,
     },
-    "procure_to_pay":   {"allowed_fields": _SAP_FIELDS | _VENDOR_RISK_FIELDS, "allowed_event_types": None},
-    "order_to_cash":    {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
+    "procure_to_pay": {
+        "allowed_fields": _SAP_FIELDS | _VENDOR_RISK_FIELDS | _ERP_TRANSACTION_FIELDS,
+        "allowed_event_types": {
+            "PURCHASE_ORDER_EVENT", "INVOICE_MATCH_EVENT", "VENDOR_MASTER_CHANGE",
+            "PAYMENT_RUN_EVENT", "PROCUREMENT_SOD_CONFLICT",
+            "VENDOR_SOC2_EXPIRED", "VENDOR_CONCENTRATION_BREACH",
+        },
+    },
+    "order_to_cash": {
+        "allowed_fields": _SAP_FIELDS | _ERP_TRANSACTION_FIELDS,
+        "allowed_event_types": {
+            "REVENUE_RECOGNITION_EVENT", "SALES_ORDER_CREDIT_EVENT", "BILLING_EVENT",
+            "CASH_APPLICATION_EVENT", "CUSTOMER_MASTER_CHANGE", "AR_AGING_EVENT",
+        },
+    },
     "receive_to_ship":  {"allowed_fields": _SAP_FIELDS, "allowed_event_types": None},
     "infrastructure_monitoring": {
         "allowed_fields": _INFRA_FIELDS,

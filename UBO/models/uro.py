@@ -125,6 +125,29 @@ class EventType(str, Enum):
     AI_ASSESSMENT_OVERDUE              = "AI_ASSESSMENT_OVERDUE"
     AI_HUMAN_OVERSIGHT_MISSING         = "AI_HUMAN_OVERSIGHT_MISSING"
 
+    # ── Order-to-Cash / Procure-to-Pay (Oracle Fusion ERP transactions) ────
+    # One per controls.oracle_fusion.order_to_cash/procure_to_pay Rego
+    # rule-group (pac_endpoints.py) — the real producer these modules lacked
+    # until generate_o2c_p2p_synthetic_log.py / mcp_governance.py's
+    # _detect_system_flags + _SOURCE_EVENT_TO_PAC_PROCESS wiring. P2P's
+    # vendor-master rule reuses VENDOR_MASTER_CHANGE above rather than a new
+    # type (same "reuse existing EventTypes where the semantics already
+    # match" precedent as GHOST_EMPLOYEE_SUSPECTED et al.). P2P's SoD rule
+    # gets its own PROCUREMENT_SOD_CONFLICT rather than reusing the generic
+    # SOD_VIOLATION — that type is already shared by SAP and Hire-to-Retire
+    # payroll SoD; routing it to procure_to_pay would silently re-route
+    # existing payroll SoD events.
+    REVENUE_RECOGNITION_EVENT   = "REVENUE_RECOGNITION_EVENT"
+    SALES_ORDER_CREDIT_EVENT    = "SALES_ORDER_CREDIT_EVENT"
+    BILLING_EVENT               = "BILLING_EVENT"
+    CASH_APPLICATION_EVENT      = "CASH_APPLICATION_EVENT"
+    CUSTOMER_MASTER_CHANGE      = "CUSTOMER_MASTER_CHANGE"
+    AR_AGING_EVENT              = "AR_AGING_EVENT"
+    PURCHASE_ORDER_EVENT        = "PURCHASE_ORDER_EVENT"
+    INVOICE_MATCH_EVENT         = "INVOICE_MATCH_EVENT"
+    PAYMENT_RUN_EVENT           = "PAYMENT_RUN_EVENT"
+    PROCUREMENT_SOD_CONFLICT    = "PROCUREMENT_SOD_CONFLICT"
+
 
 class RiskDomain(str, Enum):
     """Four enterprise risk categories from the Multi-Domain Continuous Risk

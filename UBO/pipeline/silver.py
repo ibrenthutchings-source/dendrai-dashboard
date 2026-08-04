@@ -780,6 +780,16 @@ class SilverConformationLayer(SilverLayerBase):
                 # event_type in AI_ASSESSMENT_OVERDUE/AI_HUMAN_OVERSIGHT_MISSING):
                 # routed into itgc.
                 **(raw.get("raw_payload") or {}).get("ai_governance_detail", {}),
+                # Order-to-Cash / Procure-to-Pay (generate_o2c_p2p_synthetic_log.py,
+                # event_type in REVENUE_RECOGNITION_EVENT/SALES_ORDER_CREDIT_EVENT/
+                # BILLING_EVENT/CASH_APPLICATION_EVENT/CUSTOMER_MASTER_CHANGE/
+                # AR_AGING_EVENT/PURCHASE_ORDER_EVENT/INVOICE_MATCH_EVENT/
+                # VENDOR_MASTER_CHANGE/PAYMENT_RUN_EVENT/PROCUREMENT_SOD_CONFLICT):
+                # routed into order_to_cash/procure_to_pay. Flat po_*/inv_*/so_*/
+                # cash_*/ar_*/contract_*/txn_*-prefixed fields, matching every
+                # other sub-dict above — see pac_contracts.py's
+                # _ERP_TRANSACTION_FIELDS for the full declared set.
+                **(raw.get("raw_payload") or {}).get("erp_transaction_detail", {}),
             },
             normalized_attributes=self._financial_normalized_attributes(raw),
             affected_entities=[server, str(raw.get("actor", ""))],
