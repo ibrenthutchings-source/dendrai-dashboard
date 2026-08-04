@@ -822,8 +822,247 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
     procBarRef.current?.scrollBy({ left: dir * 220, behavior: "smooth" });
   }
 
+  // ── Plain-Language Policies tab ──────────────────────────────────────────
+  // Upload the prose policy the org actually wrote, keep it as the source of
+  // record, let Claude draft the Rego, and gate that draft behind a human
+  // review before it can ever become a live module (POST
+  // /pac/conversions/{id}/decision is the only path that publishes). See
+  // pac_policy_docs.py's module docstring for why this exists alongside the
+  // fire-and-forget GitHub sync path.
+  const pdAuth = window.useAuth ? window.useAuth() : null;
+  const reviewerName = pdAuth?.user?.display_name || pdAuth?.user?.username || "";
+
+  const [docs,        setDocs]        = useState([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [docsErr,     setDocsErr]     = useState(null);
+  const [selDocId,    setSelDocId]    = useState(null);
+  const [docDetail,   setDocDetail]   = useState(null);
+  const [docLoading,  setDocLoading]  = useState(false);
+
+  const [pdMode,      setPdMode]      = useState("file");     // "file" | "paste"
+  const [pdFile,      setPdFile]      = useState(null);
+  const [pdTitle,     setPdTitle]     = useState("");
+  const [pdText,      setPdText]      = useState("");
+  const [pdUploading, setPdUploading] = useState(false);
+  const [pdMsg,       setPdMsg]       = useState(null);        // { kind, msg }
+
+  const [pdGuidance,  setPdGuidance]  = useState("");
+  const [converting,  setConverting]  = useState(false);
+
+  // Review workspace for one conversion. draft is local until "Save Draft" —
+  // the backend re-validates on every write, so what the queue reports always
+  // describes the text actually stored.
+  const [selConvId,   setSelConvId]   = useState(null);
+  const [convDraft,   setConvDraft]   = useState("");
+  const [convOrig,    setConvOrig]    = useState("");
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [showGen,     setShowGen]     = useState(false);       // show untouched model output
+  const [revNotes,    setRevNotes]    = useState("");
+  const [revRole,     setRevRole]     = useState("");
+  const [deciding,    setDeciding]    = useState(false);
+  const [revMsg,      setRevMsg]      = useState(null);
+
+  const pendingReviewCount = docs.reduce((n, d) => n + Number(d.pending_review_count || 0), 0);
+
+  const loadDocs = useCallback((process) => {
+    setDocsLoading(true); setDocsErr(null);
+    return fetch(`/api/pac/policy-docs?process=${encodeURIComponent(process)}`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(d => setDocs(d.documents || []))
+      .catch(e => { setDocs([]); setDocsErr(e.message || "Failed to load"); })
+      .finally(() => setDocsLoading(false));
+  }, []);
+
+  const loadDocDetail = useCallback((docId) => {
+    if (!docId) { setDocDetail(null); return Promise.resolve(); }
+    setDocLoading(true);
+    return fetch(`/api/pac/policy-docs/${docId}`, { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(d => {
+        setDocDetail(d);
+        // Open the conversion that actually needs a decision, falling back to
+        // the newest one, so clicking a document lands on the work to be done.
+        const convs = d.conversions || [];
+        const open = convs.find(c => c.status === "pending_review" || c.status === "changes_requested") || convs[0];
+        setSelConvId(open?.id || null);
+        setConvDraft(open?.draft_rego || "");
+        setConvOrig(open?.draft_rego || "");
+      })
+      .catch(() => setDocDetail(null))
+      .finally(() => setDocLoading(false));
+  }, []);
+
+  // Documents are per-process, same as modules — switching the process tab
+  // clears the selection rather than showing another process's document.
+  useEffect(() => {
+    if (mainTab !== "policydocs") return;
+    setSelDocId(null); setDocDetail(null); setSelConvId(null);
+    setPdMsg(null); setRevMsg(null);
+    loadDocs(activeProcess);
+  }, [mainTab, activeProcess, loadDocs]);
+
+  useEffect(() => { loadDocDetail(selDocId); }, [selDocId, loadDocDetail]);
+
+  const selConv = (docDetail?.conversions || []).find(c => c.id === selConvId) || null;
+  const convDirty = selConv ? convDraft !== convOrig : false;
+  const convOpen  = selConv ? ["pending_review", "changes_requested"].includes(selConv.status) : false;
+
+  async function handleUploadDoc() {
+    setPdMsg(null);
+    const isFile = pdMode === "file";
+    if (isFile && !pdFile) { setPdMsg({ kind:"err", msg:"Choose a file first." }); return; }
+    if (!isFile && !pdText.trim()) { setPdMsg({ kind:"err", msg:"Paste the policy text first." }); return; }
+    if (!isFile && !pdTitle.trim()) { setPdMsg({ kind:"err", msg:"Give the policy a title." }); return; }
+
+    setPdUploading(true);
+    try {
+      let r;
+      if (isFile) {
+        // multipart — no Content-Type header, the browser must set the boundary
+        const fd = new FormData();
+        fd.append("file", pdFile);
+        fd.append("process", activeProcess);
+        if (pdTitle.trim())  fd.append("title", pdTitle.trim());
+        if (reviewerName)    fd.append("uploaded_by", reviewerName);
+        const { "Content-Type": _drop, ...authOnly } = _codeAuthHeaders();
+        r = await fetch("/api/pac/policy-docs/upload", { method:"POST", headers: authOnly, body: fd });
+      } else {
+        r = await fetch("/api/pac/policy-docs", {
+          method:"POST", headers:_codeAuthHeaders(),
+          body: JSON.stringify({
+            process: activeProcess, title: pdTitle.trim(), text: pdText,
+            uploaded_by: reviewerName || null,
+          }),
+        });
+      }
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setPdMsg({ kind:"err", msg: d.detail || `Upload failed (${r.status})` }); return; }
+
+      setPdMsg({
+        kind: d.duplicate_of ? "warn" : "ok",
+        msg: d.duplicate_of
+          ? `Saved (${d.text_length.toLocaleString()} chars) — note: identical text was already uploaded as "${d.duplicate_of.title}".`
+          : `Saved "${d.title}" — ${d.text_length.toLocaleString()} characters. Convert it when ready.`,
+      });
+      setPdFile(null); setPdText(""); setPdTitle("");
+      await loadDocs(activeProcess);
+      setSelDocId(d.document_id);
+    } catch (e) {
+      setPdMsg({ kind:"err", msg:`Network error — ${e.message}` });
+    } finally {
+      setPdUploading(false);
+    }
+  }
+
+  async function handleConvertDoc(docId) {
+    setConverting(true); setPdMsg(null); setRevMsg(null);
+    try {
+      const r = await fetch(`/api/pac/policy-docs/${docId}/convert`, {
+        method:"POST", headers:_codeAuthHeaders(),
+        body: JSON.stringify({ guidance: pdGuidance.trim() || null }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setPdMsg({ kind:"err", msg: d.detail || `Conversion failed (${r.status})` }); return; }
+      setPdGuidance("");
+      await loadDocs(activeProcess);
+      await loadDocDetail(docId);
+      setPdMsg({
+        kind: d.syntax_valid ? "ok" : "warn",
+        msg: d.syntax_valid
+          ? `Draft ready for review — ${(d.control_ids||[]).length} control ID${(d.control_ids||[]).length === 1 ? "" : "s"} found.`
+          : "Draft ready, but it does not pass Rego validation yet — fix it below before approving.",
+      });
+    } catch (e) {
+      setPdMsg({ kind:"err", msg:`Network error — ${e.message}` });
+    } finally {
+      setConverting(false);
+    }
+  }
+
+  async function handleSaveDraft() {
+    if (!selConvId || !convDraft.trim()) return;
+    setSavingDraft(true); setRevMsg(null);
+    try {
+      const r = await fetch(`/api/pac/conversions/${selConvId}/draft`, {
+        method:"PUT", headers:_codeAuthHeaders(),
+        body: JSON.stringify({ rego_content: convDraft }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setRevMsg({ kind:"err", msg: d.detail || `Save failed (${r.status})` }); return; }
+      // Reload so the conversion row's stored syntax verdict / control IDs
+      // (recomputed server-side on write) replace the pre-edit ones.
+      await loadDocDetail(selDocId);
+      setRevMsg({
+        kind: d.syntax_valid ? "ok" : "warn",
+        msg: d.syntax_valid ? "Draft saved — passes Rego validation."
+                            : `Draft saved, but still invalid: ${(d.syntax_errors||[]).join("; ")}`,
+      });
+    } catch (e) {
+      setRevMsg({ kind:"err", msg:`Network error — ${e.message}` });
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  async function handleDecision(decision) {
+    if (!selConvId) return;
+    if (!reviewerName.trim()) {
+      setRevMsg({ kind:"err", msg:"No signed-in user to attribute this review to." });
+      return;
+    }
+    if (decision !== "approve" && !revNotes.trim()) {
+      setRevMsg({ kind:"err", msg:"Say why — a rejection or change request without a reason isn't a review." });
+      return;
+    }
+    if (convDirty) {
+      setRevMsg({ kind:"err", msg:"Save your draft edits before deciding — otherwise you'd be approving different text." });
+      return;
+    }
+    setDeciding(true); setRevMsg(null);
+    try {
+      const r = await fetch(`/api/pac/conversions/${selConvId}/decision`, {
+        method:"POST", headers:_codeAuthHeaders(),
+        body: JSON.stringify({
+          decision, reviewer: reviewerName,
+          reviewer_role: revRole.trim() || null,
+          notes: revNotes.trim() || null,
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setRevMsg({ kind:"err", msg: d.detail || `Decision failed (${r.status})` }); return; }
+      setRevNotes("");
+      await loadDocs(activeProcess);
+      await loadDocDetail(selDocId);
+      if (d.published_module_id) {
+        // The approved Rego IS the live module now — pull it into the editor
+        // so the next screen the reviewer sees isn't stale.
+        await loadModule(activeProcess);
+        setRevMsg({ kind:"ok", msg:`Approved and published as v${d.published_version} — now live in the Rego Editor. It still needs its own sign-off there.` });
+      } else {
+        setRevMsg({ kind:"ok", msg: decision === "reject" ? "Rejected. The document can be re-converted with guidance." : "Changes requested — the draft stays editable." });
+      }
+    } catch (e) {
+      setRevMsg({ kind:"err", msg:`Network error — ${e.message}` });
+    } finally {
+      setDeciding(false);
+    }
+  }
+
+  async function handleDeleteDoc(docId) {
+    if (!window.confirm("Delete this policy document and its conversion drafts? Any module already published from it stays live.")) return;
+    try {
+      const r = await fetch(`/api/pac/policy-docs/${docId}`, { method:"DELETE", headers:_codeAuthHeaders() });
+      if (!r.ok) { setPdMsg({ kind:"err", msg:`Delete failed (${r.status})` }); return; }
+      if (selDocId === docId) { setSelDocId(null); setDocDetail(null); }
+      await loadDocs(activeProcess);
+    } catch (e) {
+      setPdMsg({ kind:"err", msg:`Network error — ${e.message}` });
+    }
+  }
+
   const MAIN_TABS = [
     { id:"editor",    label:"Rego Editor" },
+    { id:"policydocs", label:"Plain-Language Policies", badge: pendingReviewCount || null },
     { id:"sources",   label:"External Sources" },
     { id:"narrative", label:"Narrative & Flow Map" },
     { id:"coverage",  label:"Control Coverage" },
@@ -1010,6 +1249,11 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
             className={"pac-main-tab" + (mainTab === t.id ? " active" : "")}
             onClick={() => setMainTab(t.id)}>
             {t.label}
+            {t.badge ? (
+              <span className="pac-tab-badge" title={`${t.badge} conversion${t.badge === 1 ? "" : "s"} awaiting human review`}>
+                {t.badge}
+              </span>
+            ) : null}
           </button>
         ))}
       </div>
@@ -1207,7 +1451,294 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
         </>
       )}
 
-      {/* ── TAB 2: External Sources ── */}
+      {/* ── TAB 2: Plain-Language Policies (upload → convert → HITL review) ── */}
+      {mainTab === "policydocs" && (
+        <div className="pac-docs-wrap">
+          {/* Left rail: intake + document list */}
+          <div className="pac-docs-rail">
+            <div className="pac-hook-card">
+              <div className="pac-hook-title">
+                Add a policy
+                <span className="pac-hook-badge github">{proc.shortLabel || proc.label}</span>
+              </div>
+
+              <div className="pac-docs-modeswitch">
+                {[{ id:"file", label:"Upload file" }, { id:"paste", label:"Paste text" }].map(m => (
+                  <button key={m.id}
+                    className={"btn btn-sm" + (pdMode === m.id ? " btn-acc" : "")}
+                    onClick={() => { setPdMode(m.id); setPdMsg(null); }}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+
+              {pdMode === "file" ? (
+                <>
+                  <div className="pac-hook-input-row">
+                    <label>Policy file</label>
+                    <input type="file" className="code-input"
+                      accept=".md,.markdown,.txt,.text,.rst,.rego,.json,.yaml,.yml,.csv,.pdf,.docx"
+                      onChange={e => { setPdFile(e.target.files?.[0] || null); setPdMsg(null); }} />
+                  </div>
+                  <div className="pac-hook-input-row">
+                    <label>Title <span style={{ fontWeight:400, color:"var(--ink-3)" }}>(optional)</span></label>
+                    <input className="code-input" value={pdTitle} placeholder="Defaults to the filename"
+                      onChange={e => setPdTitle(e.target.value)} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="pac-hook-input-row">
+                    <label>Title</label>
+                    <input className="code-input" value={pdTitle} placeholder="Segregation of Duties Standard"
+                      onChange={e => setPdTitle(e.target.value)} />
+                  </div>
+                  <div className="pac-hook-input-row">
+                    <label>Policy text</label>
+                    <textarea className="code-editor mono" spellCheck={true} value={pdText}
+                      onChange={e => setPdText(e.target.value)}
+                      placeholder={"Paste the policy as it is written, in plain language.\n\ne.g. \"No single user may both create a supplier and approve a payment to that supplier. Any exception requires documented CFO approval and must be reviewed within 5 business days.\""}
+                      style={{ minHeight:150, resize:"vertical", fontSize:11, lineHeight:1.6, padding:8 }} />
+                  </div>
+                </>
+              )}
+
+              <div className="pac-hook-actions">
+                <button className="btn btn-sm btn-acc" onClick={handleUploadDoc} disabled={pdUploading}>
+                  {pdUploading ? "Saving…" : "Save Policy"}
+                </button>
+              </div>
+
+              {pdMsg && (
+                <div className={"code-status " + (pdMsg.kind === "ok" ? "ok" : pdMsg.kind === "warn" ? "warn" : "err")}
+                  style={{ fontSize:10, lineHeight:1.55 }}>
+                  {pdMsg.msg}
+                </div>
+              )}
+
+              <p style={{ fontSize:10, color:"var(--ink-3)", lineHeight:1.6, margin:0 }}>
+                Stored verbatim as the source of record — nothing is converted or published until you ask.
+                Accepts <code>.md</code>, <code>.txt</code>, <code>.docx</code>, and text-layer <code>.pdf</code>
+                {" "}(scanned image PDFs have no extractable text and are rejected rather than stored blank).
+              </p>
+            </div>
+
+            <div className="pac-docs-list">
+              <div className="pac-meta-label" style={{ display:"flex", alignItems:"center", gap:6 }}>
+                {proc.label} policies
+                <span style={{ marginLeft:"auto", fontWeight:400, textTransform:"none", letterSpacing:0 }}>
+                  {docsLoading ? "loading…" : `${docs.length}`}
+                </span>
+              </div>
+
+              {docsErr && <div className="code-status err" style={{ fontSize:10 }}>{docsErr}</div>}
+              {!docsLoading && !docsErr && docs.length === 0 && (
+                <div style={{ fontSize:10.5, color:"var(--ink-3)", lineHeight:1.6, padding:"6px 2px" }}>
+                  No policy documents for {proc.label} yet. Upload the written policy above and it becomes the
+                  traceable source behind this process's Rego.
+                </div>
+              )}
+
+              {docs.map(d => (
+                <button key={d.id}
+                  className={"pac-doc-row" + (selDocId === d.id ? " active" : "")}
+                  onClick={() => setSelDocId(d.id)}>
+                  <div className="pac-doc-row-head">
+                    <span className="pac-doc-title">{d.title}</span>
+                    <span className={"pac-doc-status " + d.status}>{d.status.replace("_", " ")}</span>
+                  </div>
+                  <div className="pac-doc-row-meta mono">
+                    {d.filename || "pasted"} · {Number(d.text_length || 0).toLocaleString()} chars
+                    {d.created_at ? ` · ${new Date(d.created_at).toLocaleDateString()}` : ""}
+                  </div>
+                  {Number(d.pending_review_count) > 0 && (
+                    <div className="pac-doc-pending">● {d.pending_review_count} awaiting review</div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Right pane: source prose + the HITL review workspace */}
+          <div className="pac-docs-detail">
+            {!selDocId ? (
+              <div className="pac-docs-empty">
+                <div style={{ fontWeight:700, fontSize:12, marginBottom:6 }}>Plain language in, reviewed policy out</div>
+                <div style={{ fontSize:11, lineHeight:1.7, color:"var(--ink-3)", maxWidth:520 }}>
+                  Upload the policy your organisation actually wrote. Claude drafts the equivalent Rego, but that
+                  draft never becomes live policy on its own — it waits here until a person reads it against the
+                  source text, edits it, and approves or rejects it. The approval is what publishes a new module
+                  version, and both the original prose and the untouched model output are kept as evidence.
+                </div>
+              </div>
+            ) : docLoading ? (
+              <div className="pac-docs-empty">Loading…</div>
+            ) : !docDetail ? (
+              <div className="pac-docs-empty">Could not load this document.</div>
+            ) : (
+              <>
+                <div className="pac-docs-detail-head">
+                  <div style={{ minWidth:0 }}>
+                    <div style={{ fontWeight:700, fontSize:13 }}>{docDetail.title}</div>
+                    <div className="mono" style={{ fontSize:9.5, color:"var(--ink-3)", marginTop:2 }}>
+                      {docDetail.filename || "pasted text"} · {docDetail.doc_text.length.toLocaleString()} chars
+                      {docDetail.uploaded_by ? ` · by ${docDetail.uploaded_by}` : ""}
+                      {docDetail.created_at ? ` · ${new Date(docDetail.created_at).toLocaleString()}` : ""}
+                    </div>
+                  </div>
+                  <span style={{ flex:1 }} />
+                  <button className="btn btn-sm btn-acc" onClick={() => handleConvertDoc(docDetail.id)} disabled={converting}>
+                    <Icon name="spark" size={11}/> {converting ? "Converting…" : (docDetail.conversions?.length ? "Re-convert" : "Convert to Rego")}
+                  </button>
+                  <button className="btn btn-sm" onClick={() => handleDeleteDoc(docDetail.id)}>Delete</button>
+                </div>
+
+                <div className="pac-hook-input-row" style={{ padding:"0 16px 8px" }}>
+                  <label>Conversion guidance <span style={{ fontWeight:400, color:"var(--ink-3)" }}>(optional — steers the draft)</span></label>
+                  <input className="code-input" value={pdGuidance}
+                    placeholder="e.g. only the segregation-of-duties section; events come from the Oracle AP feed"
+                    onChange={e => setPdGuidance(e.target.value)} />
+                </div>
+
+                <div className="pac-docs-split">
+                  {/* Source of record */}
+                  <div className="pac-docs-source">
+                    <div className="pac-rego-head">
+                      <span style={{ color:proc.color }}>■</span> Source policy (as written)
+                    </div>
+                    <pre className="pac-docs-prose">{docDetail.doc_text}</pre>
+                  </div>
+
+                  {/* Review workspace */}
+                  <div className="pac-docs-review">
+                    {(docDetail.conversions || []).length === 0 ? (
+                      <div className="pac-docs-empty" style={{ padding:24 }}>
+                        <div style={{ fontSize:11, lineHeight:1.7, color:"var(--ink-3)", maxWidth:420 }}>
+                          No draft yet. "Convert to Rego" asks Claude to translate this document into
+                          <code> deny_*[msg]</code> rules using this process's <code>{proc.shortLabel || activeProcess}</code>
+                          {" "}control-ID prefix. The result lands here for review — it is not written to the module.
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {docDetail.conversions.length > 1 && (
+                          <div className="pac-conv-tabs">
+                            {docDetail.conversions.map((c, i) => (
+                              <button key={c.id}
+                                className={"pac-conv-tab" + (selConvId === c.id ? " active" : "")}
+                                onClick={() => { setSelConvId(c.id); setConvDraft(c.draft_rego || ""); setConvOrig(c.draft_rego || ""); setRevMsg(null); }}>
+                                Draft {docDetail.conversions.length - i}
+                                <span className={"pac-conv-status " + c.status}>{c.status.replace("_", " ")}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {selConv && (
+                          <>
+                            <div className="pac-rego-head">
+                              <span className={"pac-syntax-badge " + (selConv.syntax_valid ? "ok" : "bad")}
+                                title={selConv.syntax_valid ? "Passes Rego validation" : (selConv.syntax_errors || []).join("; ")}>
+                                {selConv.syntax_valid ? "✓ Valid Rego" : "✗ Invalid Rego"}
+                              </span>
+                              {(selConv.control_ids || []).length > 0 && (
+                                <span className="mono" style={{ fontSize:9.5, color:"var(--ink-3)" }}>
+                                  {selConv.control_ids.join(", ")}
+                                </span>
+                              )}
+                              {convDirty && <span className="dirty-dot" title="Unsaved edits">●</span>}
+                              <span style={{ flex:1 }} />
+                              {selConv.model && <span className="mono" style={{ fontSize:9, color:"var(--ink-3)" }}>{selConv.model}</span>}
+                              <button className="btn btn-sm" style={{ fontSize:9.5 }} onClick={() => setShowGen(v => !v)}
+                                title="The untouched model output, kept for audit — your edits are diffed against it">
+                                {showGen ? "Hide original" : "Original output"}
+                              </button>
+                            </div>
+
+                            {!selConv.syntax_valid && (selConv.syntax_errors || []).length > 0 && (
+                              <div className="code-status err mono" style={{ fontSize:9.5, margin:"0 12px", lineHeight:1.5 }}>
+                                {selConv.syntax_errors.join("; ")}
+                              </div>
+                            )}
+
+                            {showGen ? (
+                              <pre className="pac-docs-prose mono" style={{ fontSize:10.5 }}>{selConv.generated_rego}</pre>
+                            ) : (
+                              <textarea className="code-editor mono" spellCheck={false}
+                                value={convDraft} onChange={e => setConvDraft(e.target.value)}
+                                readOnly={!convOpen}
+                                title={convOpen ? "" : "This conversion is closed — its text is frozen as reviewed"}
+                                style={{ flex:1, resize:"none", fontSize:11, lineHeight:1.6, padding:"10px 14px",
+                                         opacity: convOpen ? 1 : 0.75 }} />
+                            )}
+
+                            {convOpen ? (
+                              <div className="pac-docs-decision">
+                                <div className="pac-docs-decision-row">
+                                  <input className="code-input" value={revRole} placeholder="Your role (e.g. Control Owner)"
+                                    onChange={e => setRevRole(e.target.value)} style={{ maxWidth:200 }} />
+                                  <input className="code-input" value={revNotes} placeholder="Review notes — required to reject or request changes"
+                                    onChange={e => setRevNotes(e.target.value)} style={{ flex:1 }} />
+                                </div>
+                                <div className="pac-docs-decision-row">
+                                  <button className="btn btn-sm" onClick={handleSaveDraft} disabled={!convDirty || savingDraft}>
+                                    {savingDraft ? "Saving…" : "Save Draft"}
+                                  </button>
+                                  <span style={{ flex:1 }} />
+                                  <button className="btn btn-sm" onClick={() => handleDecision("request_changes")} disabled={deciding}>
+                                    Request Changes
+                                  </button>
+                                  <button className="btn btn-sm btn-danger" onClick={() => handleDecision("reject")} disabled={deciding}>
+                                    Reject
+                                  </button>
+                                  <button className="btn btn-sm btn-acc" onClick={() => handleDecision("approve")}
+                                    disabled={deciding || !selConv.syntax_valid || convDirty}
+                                    title={!selConv.syntax_valid ? "Invalid Rego cannot be published — fix and save the draft first"
+                                          : convDirty ? "Save your edits first" : "Publish as a new module version"}>
+                                    {deciding ? "Working…" : "Approve & Publish"}
+                                  </button>
+                                </div>
+                                <div style={{ fontSize:9.5, color:"var(--ink-3)", lineHeight:1.6 }}>
+                                  Signing as <strong>{reviewerName || "— not signed in —"}</strong>. Approving publishes this
+                                  text as a new version of <code className="mono">controls.oracle_fusion.{activeProcess}</code>.
+                                  That attests the Rego faithfully implements the policy above — the module still needs its
+                                  own sign-off in the Rego Editor.
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="pac-docs-decision">
+                                <div style={{ fontSize:10.5, lineHeight:1.7 }}>
+                                  <strong>{selConv.status === "approved" ? "Approved" : "Rejected"}</strong>
+                                  {selConv.reviewer ? ` by ${selConv.reviewer}` : ""}
+                                  {selConv.reviewer_role ? ` (${selConv.reviewer_role})` : ""}
+                                  {selConv.reviewed_at ? ` on ${new Date(selConv.reviewed_at).toLocaleString()}` : ""}
+                                  {selConv.published_module_id ? ` · published as module #${selConv.published_module_id}` : ""}
+                                  {selConv.review_notes && (
+                                    <div style={{ color:"var(--ink-3)", marginTop:4 }}>“{selConv.review_notes}”</div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {revMsg && (
+                              <div className={"code-status " + (revMsg.kind === "ok" ? "ok" : revMsg.kind === "warn" ? "warn" : "err")}
+                                style={{ fontSize:10, margin:"0 12px 12px", lineHeight:1.55 }}>
+                                {revMsg.msg}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── TAB 3: External Sources ── */}
       {mainTab === "sources" && (
         <div className="pac-sources-grid">
           {/* GitHub */}
@@ -1320,7 +1851,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
         </div>
       )}
 
-      {/* ── TAB 3: Narrative & Flow Map ── */}
+      {/* ── TAB 4: Narrative & Flow Map ── */}
       {mainTab === "narrative" && (
         <div className="pac-narrative-wrap">
           <div className="pac-narrative-prose">
@@ -1341,7 +1872,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
         </div>
       )}
 
-      {/* ── TAB 4: Control Coverage ── */}
+      {/* ── TAB 5: Control Coverage ── */}
       {mainTab === "coverage" && (
         <div style={{ padding:"18px 20px", overflow:"auto" }}>
           {covLoading && <div style={{ fontSize:12, color:"var(--ink-3)" }}>Loading coverage…</div>}
@@ -1497,7 +2028,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
         </div>
       )}
 
-      {/* ── TAB 5: Negative Testing ── */}
+      {/* ── TAB 6: Negative Testing ── */}
       {mainTab === "negtest" && (
         <div style={{ padding:"18px 20px", overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12, marginBottom:16 }}>

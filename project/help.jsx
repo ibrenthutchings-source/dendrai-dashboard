@@ -25,7 +25,7 @@ const WORKFLOW_STAGES = [
     desc: "Turn risk and control language into machine-enforceable code — Risk-as-Code, an OPA-backed Policy-as-Code engine, and a coverage view of what's actually automated vs. manual.",
     items: [
       { screen: "riskcode", label: "Risk-as-Code Editor", desc: "Version-controlled risk definitions as OSCAL/COSO YAML — risk logic becomes a diffable, auditable artifact instead of a spreadsheet." },
-      { screen: "policycode", label: "Policy-as-Code Engine", desc: "Author policies in OPA/Rego and evaluate them against live control data — enforceable, testable governance rather than PDF policy." },
+      { screen: "policycode", label: "Policy-as-Code Engine", desc: "Author policies in OPA/Rego and evaluate them against live control data — enforceable, testable governance rather than PDF policy. Upload the plain-language policy you already wrote and the engine drafts the Rego for it, but a human must review the draft against the source text and approve it before it becomes a live module." },
       { screen: "coverage", label: "Coverage Gap Analysis", desc: "The automated-vs-manual heatmap — surfaces exactly which risks still lack a control, a test, or a quant model behind them." },
     ],
   },

@@ -2620,6 +2620,7 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .code-status { font-size: 10.5px; font-family: "Geist Mono", monospace; }
 .code-status.ok { color: var(--green-ink); }
 .code-status.err { color: var(--red-ink); }
+.code-status.warn { color: var(--amber-ink); }
 .code-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; flex: 1; min-height: 360px; }
 .code-pane { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); min-height: 0; }
 .code-pane-head { padding: 8px 12px; font-size: 11px; color: var(--ink-3); background: var(--surface-2); border-bottom: 1px solid var(--line); }
