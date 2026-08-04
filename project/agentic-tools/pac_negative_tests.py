@@ -21,15 +21,14 @@ Two things this corpus is for for, deliberately kept separate:
      file) — proving on a schedule, not just at edit time, that every
      control this platform claims to enforce still does.
 
-Only devops_monitoring gets real fixtures here. pac_contracts.py already
-proved the other five built-in processes (itgc, order_to_cash,
-procure_to_pay, receive_to_ship, record_to_report) reference input roots
-the automated pipeline never constructs — writing must-fire fixtures for
-input.journal.*/input.invoice.*/etc. would just be testing a manual
-POST /pac/evaluate sandbox scenario, not anything the real system does.
-That would be exactly the theater this whole effort exists to eliminate.
-Corpora for those processes belong in the same commit that wires a real
-producer for them, not before.
+Only processes with a real producer wired get fixtures here. pac_contracts.py
+already proved the remaining built-in processes (itgc, receive_to_ship,
+record_to_report) reference input roots the automated pipeline never
+constructs — writing must-fire fixtures for input.journal.*/input.invoice.*/
+etc. would just be testing a manual POST /pac/evaluate sandbox scenario, not
+anything the real system does. That would be exactly the theater this whole
+effort exists to eliminate. Corpora for those processes belong in the same
+commit that wires a real producer for them, not before.
 """
 
 from __future__ import annotations
@@ -48,102 +47,6 @@ class Fixture:
     expected_control_id: Optional[str] = None  # required when expect == "fire"
     rationale: str = ""
 
-
-# ── devops_monitoring corpus ───────────────────────────────────────────────
-# Mirrors the real shapes _evaluate_pac_policy constructs: base fields
-# (type/resource/resource_type/action/outcome) plus whichever of
-# scm_connectors.normalize_*_compliance's or evidence_endpoints' fields the
-# scenario needs — see pac_contracts.PROCESS_CONTRACTS['devops_monitoring'].
-
-_FULLY_COMPLIANT_SCM = {
-    "enforce_admins": True, "required_approving_review_count": 2,
-    "dismiss_stale_reviews": True, "has_required_sast_check": True,
-    "has_required_test_check": True, "codeowners_present": True,
-    "codeowners_covers_workflows": True,
-}
-
-DEVOPS_MONITORING_FIXTURES: list[Fixture] = [
-    Fixture(
-        name="admin_bypass_must_fire",
-        input_event={"event": {**_FULLY_COMPLIANT_SCM, "type": "BRANCH_PROTECTION_BYPASSED",
-                                "resource": "org/repo@main", "enforce_admins": False}},
-        expect="fire", expected_control_id="DEVOPS-001",
-        rationale="Admins can bypass required checks — the single most severe SCM finding.",
-    ),
-    Fixture(
-        name="zero_required_reviews_must_fire",
-        input_event={"event": {**_FULLY_COMPLIANT_SCM, "type": "BRANCH_PROTECTION_BYPASSED",
-                                "resource": "org/repo@main", "required_approving_review_count": 0}},
-        expect="fire", expected_control_id="DEVOPS-002",
-        rationale="Merge requires zero approvals.",
-    ),
-    Fixture(
-        name="stale_reviews_not_dismissed_must_fire",
-        input_event={"event": {**_FULLY_COMPLIANT_SCM, "type": "BRANCH_PROTECTION_BYPASSED",
-                                "resource": "org/repo@main", "dismiss_stale_reviews": False}},
-        expect="fire", expected_control_id="DEVOPS-003",
-        rationale="A stale approval survives new commits.",
-    ),
-    Fixture(
-        name="no_sast_check_must_fire",
-        input_event={"event": {**_FULLY_COMPLIANT_SCM, "type": "BRANCH_PROTECTION_BYPASSED",
-                                "resource": "org/repo@main", "has_required_sast_check": False}},
-        expect="fire", expected_control_id="DEVOPS-004",
-        rationale="No required security scan gate before merge.",
-    ),
-    Fixture(
-        name="no_codeowners_must_fire",
-        input_event={"event": {**_FULLY_COMPLIANT_SCM, "type": "BRANCH_PROTECTION_BYPASSED",
-                                "resource": "org/repo@main", "codeowners_present": False}},
-        expect="fire", expected_control_id="DEVOPS-005",
-        rationale="No CODEOWNERS file at all — nobody is a mandatory reviewer.",
-    ),
-    Fixture(
-        name="codeowners_missing_workflow_coverage_must_fire",
-        input_event={"event": {**_FULLY_COMPLIANT_SCM, "type": "BRANCH_PROTECTION_BYPASSED",
-                                "resource": "org/repo@main", "codeowners_covers_workflows": False}},
-        expect="fire", expected_control_id="DEVOPS-006",
-        rationale="CI workflow definitions can be modified without security review.",
-    ),
-    Fixture(
-        name="fully_compliant_branch_must_be_silent",
-        input_event={"event": {**_FULLY_COMPLIANT_SCM, "type": "BRANCH_PROTECTION_BYPASSED",
-                                "resource": "org/repo@main"}},
-        expect="silent",
-        rationale="Every control satisfied — a false positive here is exactly what "
-                   "erodes trust in the policy and trains reviewers to ignore it.",
-    ),
-    Fixture(
-        name="critical_sarif_finding_must_fire",
-        input_event={"event": {"type": "SAST_FINDING", "severity": "CRITICAL",
-                                "rule_id": "py/sql-injection", "resource": "app/db.py"}},
-        expect="fire", expected_control_id="DEVOPS-007",
-        rationale="CRITICAL SARIF finding must start the 7-day remediation SLA.",
-    ),
-    Fixture(
-        name="high_sarif_finding_must_fire",
-        input_event={"event": {"type": "SAST_FINDING", "severity": "HIGH",
-                                "rule_id": "py/weak-crypto", "resource": "app/crypto.py"}},
-        expect="fire", expected_control_id="DEVOPS-008",
-        rationale="HIGH SARIF finding must start the 30-day remediation SLA.",
-    ),
-    Fixture(
-        name="low_sarif_finding_must_be_silent",
-        input_event={"event": {"type": "SAST_FINDING", "severity": "LOW",
-                                "rule_id": "py/unused-import", "resource": "app/utils.py"}},
-        expect="silent",
-        rationale="LOW findings are logged as evidence but don't carry an SLA — "
-                   "firing here would mean every scan escalates something.",
-    ),
-    Fixture(
-        name="itsm_sla_breach_must_fire",
-        input_event={"event": {"type": "SLA_BREACH", "external_system": "jira",
-                                "external_ticket_key": "SEC-142", "finding_hash": "abc123",
-                                "sla_due_at": "2026-01-01T00:00:00Z", "resource": "SEC-142"}},
-        expect="fire", expected_control_id="DEVOPS-009",
-        rationale="A ticket that missed its remediation SLA must re-escalate the finding.",
-    ),
-]
 
 # ── infrastructure_monitoring corpus ────────────────────────────────────────
 # Mirrors iaas_connectors.normalize_postgres_compliance()'s output shape.
@@ -440,7 +343,6 @@ PROCURE_TO_PAY_FIXTURES: list[Fixture] = [
 ]
 
 CORPORA: dict[str, list[Fixture]] = {
-    "devops_monitoring": DEVOPS_MONITORING_FIXTURES,
     "infrastructure_monitoring": INFRASTRUCTURE_MONITORING_FIXTURES,
     "order_to_cash": ORDER_TO_CASH_FIXTURES,
     "procure_to_pay": PROCURE_TO_PAY_FIXTURES,

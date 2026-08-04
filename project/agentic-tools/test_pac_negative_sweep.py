@@ -23,9 +23,9 @@ def test_sweep_once_covers_every_builtin_process():
     assert set(results.keys()) == set(pac_endpoints._REGO_DEFAULTS.keys())
 
 
-def test_sweep_once_devops_monitoring_passes():
+def test_sweep_once_infrastructure_monitoring_passes():
     results = asyncio.run(pns.sweep_once())
-    assert results["devops_monitoring"]["ok"] is True
+    assert results["infrastructure_monitoring"]["ok"] is True
 
 
 def test_sweep_once_original_builtins_fail_by_construction():
@@ -51,15 +51,15 @@ def test_sweep_once_original_builtins_fail_by_construction():
 def test_sweep_once_order_to_cash_now_passes():
     """order_to_cash now has a real producer (generate_o2c_p2p_synthetic_log.py,
     routed via mcp_governance._SOURCE_EVENT_TO_PAC_PROCESS) — the sweep must
-    report it as passing, matching devops_monitoring."""
+    report it as passing, matching infrastructure_monitoring."""
     results = asyncio.run(pns.sweep_once())
     assert results["order_to_cash"]["ok"] is True
 
 
 def test_rego_for_process_falls_back_to_builtin_default_without_db():
     assert not db.is_available()  # documents the precondition
-    rego, module_id = pns._rego_for_process("devops_monitoring")
-    assert rego == pac_endpoints._REGO_DEFAULTS["devops_monitoring"]
+    rego, module_id = pns._rego_for_process("infrastructure_monitoring")
+    assert rego == pac_endpoints._REGO_DEFAULTS["infrastructure_monitoring"]
     assert module_id is None
 
 

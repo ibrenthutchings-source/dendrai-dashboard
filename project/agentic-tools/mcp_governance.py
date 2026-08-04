@@ -349,21 +349,11 @@ _DEFAULT_PAC_PROCESS = "itgc"
 
 # Finer-grained override checked before _SOURCE_SYSTEM_TO_PAC_PROCESS: some
 # event types need a different process than the rest of their source system's
-# traffic. DevOps Monitoring reuses GITHUB/GITLAB (real webhooks still route to
-# itgc) and SYSTEM_TELEMETRY (shared with every other push-model system) as
-# source systems, so process routing can't key on source_system alone here —
-# event_type disambiguates the DevOps-specific subset.
+# traffic (SYSTEM_TELEMETRY in particular is shared by every push-model
+# system), so process routing can't key on source_system alone here —
+# event_type disambiguates the subset.
 _SOURCE_EVENT_TO_PAC_PROCESS = {
-    ("GITHUB", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
-    ("GITHUB", "CODE_REVIEW_BYPASSED"):        "devops_monitoring",
-    ("GITLAB", "BRANCH_PROTECTION_BYPASSED"):  "devops_monitoring",
-    ("GITLAB", "CODE_REVIEW_BYPASSED"):        "devops_monitoring",
-    ("SYSTEM_TELEMETRY", "SAST_FINDING"):      "devops_monitoring",
-    ("SYSTEM_TELEMETRY", "BRANCH_PROTECTION_BYPASSED"): "devops_monitoring",
-    ("SYSTEM_TELEMETRY", "SLA_BREACH"):        "devops_monitoring",
     ("SYSTEM_TELEMETRY", "INFRASTRUCTURE_FINDING"): "infrastructure_monitoring",
-    ("GITHUB", "PIPELINE_MISCONFIGURATION"):          "devops_monitoring",
-    ("SYSTEM_TELEMETRY", "PIPELINE_MISCONFIGURATION"): "devops_monitoring",
     # Financial Risk Pipeline — Record-to-Report-flavored, alongside the
     # existing P-R2R-001 manual-JE-approval rule.
     ("SYSTEM_TELEMETRY", "JE_VELOCITY_ANOMALY"):  "record_to_report",
@@ -1880,20 +1870,8 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("sod_violation")
     if severity == "CRITICAL" or payload.get("policy_violation"):
         flags.add("policy_violation")
-    # DevOps Monitoring: explicit signals set by github_scm_tool.py/gitlab_scm_tool.py
-    # (branch-protection audits) and evidence_endpoints.py (SARIF findings) rather
-    # than inferred from generic keyword matching — these producers know exactly
-    # which event they're emitting.
-    if payload.get("branch_protection_violation"):
-        flags.add("branch_protection_violation")
-    if payload.get("sast_finding"):
-        flags.add("sast_finding")
-    if payload.get("sla_breach"):
-        flags.add("sla_breach")
     if payload.get("infrastructure_finding"):
         flags.add("infrastructure_finding")
-    if payload.get("pipeline_misconfiguration"):
-        flags.add("pipeline_misconfiguration")
     # Financial Risk Pipeline: explicit signals set by predictive_analytics_tool.py's
     # compute_je_velocity_anomaly/compute_liquidity_shift/compute_inventory_sales_divergence.
     if payload.get("je_velocity_anomaly"):
