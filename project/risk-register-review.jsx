@@ -76,6 +76,19 @@ async function _loadControlsFromApi() {
 // the shared control library without importing this module directly.
 Object.assign(window, { MASTER_CONTROLS, loadControlsFromApi: _loadControlsFromApi });
 
+// PaC controls_catalog — the shared control_id vocabulary used to link a
+// register control to the real (or manual) control it corresponds to.
+let PAC_CATALOG_CONTROLS = [];
+
+async function _loadPacCatalogFromApi() {
+  try {
+    const res = await fetch("/api/pac/controls/coverage");
+    if (!res.ok) return;
+    const data = await res.json();
+    PAC_CATALOG_CONTROLS = data.controls || [];
+  } catch (_) {}
+}
+
 async function _loadMatrixConfigFromApi() {
   try {
     const res = await fetch("/api/risk-register/matrix-config");
@@ -231,6 +244,9 @@ function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto
     <div style={{ display:"flex", alignItems:"center", gap:4, padding:"2px 6px", borderRadius:4, background:"var(--surface-2,#f5f5f5)", border:"1px solid var(--line,#e0e0e0)", fontSize:10 }}>
       <span className="mono" style={{ fontWeight:600, color:"var(--ink-2,#555)" }}>{ctrlRef}</span>
       {ctrl && <span style={{ color:"var(--ink-3,#888)" }}>{ctrl.name}</span>}
+      {ctrl?.pac_control_id && (
+        <span title={`Enforced by PaC control ${ctrl.pac_control_id}`} style={{ fontSize:9, color:"var(--acc,#2563eb)" }}>⚡{ctrl.pac_control_id}</span>
+      )}
       {isAuto && <span style={{ fontSize:9, color:"var(--ink-3,#888)", fontStyle:"italic" }}>auto</span>}
       <button
         title={generateCode ? "Remove from code generation" : "Include in code generation"}
@@ -283,7 +299,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [newCtrl, setNewCtrl] = useState({ ref: "", name: "", framework: "", desc: "" });
+  const [newCtrl, setNewCtrl] = useState({ ref: "", name: "", framework: "", desc: "", pacControlId: "" });
   const [refIsAuto, setRefIsAuto] = useState(true);
   const [createErr, setCreateErr] = useState("");
 
@@ -293,7 +309,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
 
   function openCreateForm() {
     const fw = newCtrl.framework || frameworkOptions[0];
-    setNewCtrl({ ref: _nextRefForFramework(fw), name: "", framework: fw, desc: "" });
+    setNewCtrl({ ref: _nextRefForFramework(fw), name: "", framework: fw, desc: "", pacControlId: "" });
     setRefIsAuto(true);
     setCreateOpen(true);
     setPickerOpen(false);
@@ -310,6 +326,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
     if (CTRL_BY_REF[ref]) { setCreateErr(`${ref} already exists in the control library.`); return; }
     if (!/^[A-Za-z]/.test(ref)) { setCreateErr("Reference must start with a letter."); return; }
     if (!newCtrl.name.trim()) { setCreateErr("Control name is required."); return; }
+    const pacControlId = newCtrl.pacControlId.trim().toUpperCase() || null;
     const ctrl = {
       ref,
       framework: newCtrl.framework.trim() || "Custom",
@@ -318,21 +335,24 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
       domain: "Custom",
       description: newCtrl.desc.trim(),
       desc: newCtrl.desc.trim(),
+      pac_control_id: pacControlId,
     };
     // Persist to DB
     try {
-      await fetch("/api/risk-register/controls", {
+      const res = await fetch("/api/risk-register/controls", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ctrl),
       });
+      const data = await res.json().catch(() => null);
+      if (data && data.saved === false) { setCreateErr(data.detail || "Could not create control."); return; }
     } catch (_) {}
     // Update module-level lookup so other components can use the new control immediately
     MASTER_CONTROLS.push(ctrl);
     CTRL_BY_REF[ref] = ctrl;
     onAddManual(riskKey, ref);
     setCreateOpen(false);
-    setNewCtrl({ ref: "", name: "", framework: "", desc: "" });
+    setNewCtrl({ ref: "", name: "", framework: "", desc: "", pacControlId: "" });
     setRefIsAuto(true);
     setCreateErr("");
   }
@@ -480,6 +500,25 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
               rows={2}
               style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}
             />
+          </div>
+          <div>
+            <label style={{ fontSize:9, fontWeight:600, color:"var(--ink-2,#555)", display:"block", marginBottom:2 }}>
+              Link to PaC control <span style={{ fontWeight:400, color:"var(--ink-3,#888)" }}>(optional)</span>
+            </label>
+            <select
+              className="dendrai-input"
+              value={newCtrl.pacControlId}
+              onChange={e => setNewCtrl(p => ({ ...p, pacControlId: e.target.value }))}
+              style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box", cursor:"pointer" }}
+              title="Marks this as the register's copy of a real, policy-enforced control"
+            >
+              <option value="">Not linked</option>
+              {PAC_CATALOG_CONTROLS.map(c => (
+                <option key={c.control_id} value={c.control_id}>
+                  {c.control_id} — {c.name}{c.source === "pac_rego" ? " (enforced)" : ""}
+                </option>
+              ))}
+            </select>
           </div>
           {createErr && (
             <div style={{ fontSize:9, color:"var(--red,#e53)" }}>{createErr}</div>
@@ -1010,6 +1049,11 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                           {ctrl.framework}
                                         </span>
                                       )}
+                                      {ctrl?.pac_control_id && (
+                                        <span title={`Enforced by PaC control ${ctrl.pac_control_id}`} style={{ fontSize: 8, color: "var(--acc,#2563eb)", whiteSpace: "nowrap" }}>
+                                          ⚡{ctrl.pac_control_id}
+                                        </span>
+                                      )}
                                     </div>
                                     {ctrl?.desc && (
                                       <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.5, fontStyle: "italic" }}>
@@ -1112,6 +1156,27 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ControlCoverageMatrix({ ctrlStates }) {
+  const [, bump] = useState(0);
+  const [linkSaving, setLinkSaving] = useState(null); // ref currently being saved
+
+  async function handleSetPacLink(ref, pacControlId) {
+    setLinkSaving(ref);
+    try {
+      const res = await fetch(`/api/risk-register/controls/${encodeURIComponent(ref)}/pac-link`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pac_control_id: pacControlId || null }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.saved !== false) {
+        const ctrl = CTRL_BY_REF[ref];
+        if (ctrl) ctrl.pac_control_id = pacControlId || null;
+        bump(n => n + 1);
+      }
+    } catch (_) {}
+    setLinkSaving(null);
+  }
+
   // Derive the full set of frameworks and controls at render time so we pick up
   // any DB-loaded controls that were appended to MASTER_CONTROLS.
   const allFws = [...new Set(MASTER_CONTROLS.map(c => c.framework || "Internal"))].sort((a, b) => {
@@ -1159,6 +1224,7 @@ function ControlCoverageMatrix({ ctrlStates }) {
             {allFws.map(fw => (
               <th key={fw} style={{ ...thStyle, minWidth: 80, textAlign: "center" }}>{fw}</th>
             ))}
+            <th style={{ ...thStyle, minWidth: 160 }}>PaC Link</th>
           </tr>
         </thead>
         <tbody>
@@ -1213,6 +1279,29 @@ function ControlCoverageMatrix({ ctrlStates }) {
                       ) : null}
                     </td>
                   ))}
+                  {/* PaC link */}
+                  <td style={{ ...tdStyle, borderTop: isGroupStart ? "2px solid var(--line,#d8d8d8)" : undefined }}>
+                    <select
+                      value={ctrl.pac_control_id || ""}
+                      disabled={linkSaving === ctrl.ref}
+                      onChange={e => handleSetPacLink(ctrl.ref, e.target.value)}
+                      style={{
+                        fontSize: 9, padding: "2px 4px", width: "100%", boxSizing: "border-box",
+                        borderRadius: 3, border: "1px solid var(--line,#ddd)",
+                        background: ctrl.pac_control_id ? "rgba(37,99,235,0.06)" : "var(--surface,#fff)",
+                        color: ctrl.pac_control_id ? "var(--acc,#2563eb)" : "var(--ink-3,#888)",
+                        cursor: "pointer",
+                      }}
+                      title="Link this register control to the real PaC control it corresponds to"
+                    >
+                      <option value="">Not linked</option>
+                      {PAC_CATALOG_CONTROLS.map(c => (
+                        <option key={c.control_id} value={c.control_id}>
+                          {c.control_id}{c.source === "pac_rego" ? " ⚡" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
                 </tr>
               );
             })
@@ -1330,6 +1419,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   useEffect(() => {
     (async () => {
       await _loadControlsFromApi();
+      await _loadPacCatalogFromApi();
       setControlsKey(k => k + 1);
     })();
     (async () => {
