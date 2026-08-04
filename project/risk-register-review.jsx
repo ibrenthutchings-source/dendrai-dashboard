@@ -730,7 +730,60 @@ function OutputPanel({ yaml, onClose, onDownload }) {
 // Framework Matrix view
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Sticky, viewport-bottom-pinned horizontal scrollbar for a wide table,
+// scroll-synced with the table's own overflow-x region via `targetRef`.
+//
+// Why this exists instead of just `overflow-x:auto` on the table wrapper:
+// a wrapper tall enough to hold every row puts its native horizontal
+// scrollbar at the very bottom of the (possibly very long) table — below
+// the fold until the page is scrolled all the way down. Bounding the
+// wrapper's own height with overflow-y:auto "fixes" that but creates a
+// second, nested vertical scrollbar next to the page's real one, which is
+// confusing (two scrollbars on the right). This bar instead stays
+// perfectly still at the bottom of the actual page scroll region — one
+// real vertical scrollbar, one always-reachable horizontal control.
+function StickyHScrollBar({ targetRef, contentWidth }) {
+  const barRef = useRef(null);
+  const syncing = useRef(false);
+
+  useEffect(() => {
+    const body = targetRef.current;
+    const bar = barRef.current;
+    if (!body || !bar) return;
+    const onBodyScroll = () => {
+      if (syncing.current) { syncing.current = false; return; }
+      syncing.current = true;
+      bar.scrollLeft = body.scrollLeft;
+    };
+    body.addEventListener("scroll", onBodyScroll);
+    return () => body.removeEventListener("scroll", onBodyScroll);
+  }, []);
+
+  function onBarScroll() {
+    if (syncing.current) { syncing.current = false; return; }
+    if (barRef.current && targetRef.current) {
+      syncing.current = true;
+      targetRef.current.scrollLeft = barRef.current.scrollLeft;
+    }
+  }
+
+  return (
+    <div
+      ref={barRef}
+      onScroll={onBarScroll}
+      style={{
+        overflowX: "auto", overflowY: "hidden", maxWidth: "100%",
+        position: "sticky", bottom: 0, height: 14,
+        background: "var(--surface,#fff)", borderTop: "1px solid var(--line,#eee)",
+      }}
+    >
+      <div style={{ minWidth: contentWidth, height: 1 }} />
+    </div>
+  );
+}
+
 function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, onRemoveFramework, savingRows, savedAt }) {
+  const scrollWrapRef = useRef(null);
   // Row-level wording edit state
   const [editingRows, setEditingRows] = useState(new Set());
   const [rowDrafts, setRowDrafts]     = useState({});
@@ -874,6 +927,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     padding: "10px 10px", verticalAlign: "top",
     borderBottom: "1px solid var(--line,#eee)", borderRight: "1px solid var(--line,#f0f0f0)",
   };
+  const matrixMinWidth = `${340 + fwCols.length * 200}px`;
 
   return (
     <div>
@@ -883,8 +937,8 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
         </div>
       )}
 
-      <div style={{ overflowX: "auto", overflowY: "hidden", maxWidth: "100%" }}>
-        <table style={{ width: "100%", minWidth: `${340 + fwCols.length * 200}px`, borderCollapse: "collapse", fontSize: 11 }}>
+      <div ref={scrollWrapRef} style={{ overflowX: "auto", maxWidth: "100%" }}>
+        <table style={{ width: "100%", minWidth: matrixMinWidth, borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
             <tr>
               <th style={{ ...thStyle, width: 160, minWidth: 140 }}>
@@ -1157,6 +1211,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
           </tbody>
         </table>
       </div>
+      <StickyHScrollBar targetRef={scrollWrapRef} contentWidth={matrixMinWidth} />
     </div>
   );
 }
@@ -1169,6 +1224,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 function ControlCoverageMatrix({ ctrlStates }) {
   const [, bump] = useState(0);
   const [linkSaving, setLinkSaving] = useState(null); // ref currently being saved
+  const scrollWrapRef = useRef(null);
 
   async function handleSetPacLink(ref, pacControlId) {
     setLinkSaving(ref);
@@ -1223,10 +1279,12 @@ function ControlCoverageMatrix({ ctrlStates }) {
     borderBottom: "1px solid var(--line,#eee)", borderRight: "1px solid var(--line,#f0f0f0)",
     fontSize: 11,
   };
+  const coverageMinWidth = `${390 + allFws.length * 80}px`;
 
   return (
-    <div style={{ overflowX: "auto", overflowY: "hidden", maxWidth: "100%" }}>
-      <table style={{ width: "100%", minWidth: `${390 + allFws.length * 80}px`, borderCollapse: "collapse", fontSize: 11 }}>
+    <div>
+    <div ref={scrollWrapRef} style={{ overflowX: "auto", maxWidth: "100%" }}>
+      <table style={{ width: "100%", minWidth: coverageMinWidth, borderCollapse: "collapse", fontSize: 11 }}>
         <thead>
           <tr>
             <th style={{ ...thStyle, minWidth: 90 }}>Category</th>
@@ -1319,6 +1377,8 @@ function ControlCoverageMatrix({ ctrlStates }) {
           )}
         </tbody>
       </table>
+    </div>
+    <StickyHScrollBar targetRef={scrollWrapRef} contentWidth={coverageMinWidth} />
     </div>
   );
 }
