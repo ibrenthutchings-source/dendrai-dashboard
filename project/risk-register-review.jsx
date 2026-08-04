@@ -858,6 +858,14 @@ function StickyHScrollBar({ targetRef, contentWidth }) {
 
 function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, onRemoveFramework, onPurgeExtraFramework, savingRows, savedAt, runId }) {
   const scrollWrapRef = useRef(null);
+  // Per-user, cross-session column order — persisted in the same
+  // auth.users.preferences JSONB blob the appearance settings (accent/
+  // density/colorScheme) already use, via the existing self-service
+  // PUT /auth/users/me/preferences endpoint. No new backend/table needed.
+  const auth = window.useAuth ? window.useAuth() : null;
+  const [localColOrder, setLocalColOrder] = useState(null); // optimistic override for this render, avoids waiting on auth context refresh
+  const [dragFw, setDragFw]         = useState(null);
+  const [dragOverFw, setDragOverFw] = useState(null);
   // Row-level wording edit state
   const [editingRows, setEditingRows] = useState(new Set());
   const [rowDrafts, setRowDrafts]     = useState({});
@@ -990,6 +998,43 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   }
   const fwCols = [..._activeMxFws, ...[...extraFws].sort()];
 
+  // Apply the user's saved drag order, if any: known columns first in their
+  // saved positions, then any columns that weren't part of that snapshot yet
+  // (new frameworks added since) appended in their natural order — so a stale
+  // saved order never hides a column, it just puts unranked ones at the end.
+  const persistedColOrder = auth?.user?.preferences?.framework_matrix_column_order;
+  const activeColOrder = localColOrder || persistedColOrder;
+  const orderedFwCols = activeColOrder?.length
+    ? [...activeColOrder.filter(f => fwCols.includes(f)), ...fwCols.filter(f => !activeColOrder.includes(f))]
+    : fwCols;
+
+  async function persistColumnOrder(nextOrder) {
+    setLocalColOrder(nextOrder);
+    if (!auth?.user) return; // not signed in (or auth context unavailable) — session-local only
+    auth.setUser?.(prev => prev && ({ ...prev, preferences: { ...(prev.preferences || {}), framework_matrix_column_order: nextOrder } }));
+    try {
+      await fetch("/auth/users/me/preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ framework_matrix_column_order: nextOrder }),
+      });
+    } catch (_) {}
+  }
+
+  function handleColDrop(targetFw) {
+    setDragOverFw(null);
+    if (!dragFw || dragFw === targetFw) { setDragFw(null); return; }
+    const next = [...orderedFwCols];
+    const from = next.indexOf(dragFw);
+    const to   = next.indexOf(targetFw);
+    if (from === -1 || to === -1) { setDragFw(null); return; }
+    next.splice(from, 1);
+    next.splice(to, 0, dragFw);
+    setDragFw(null);
+    persistColumnOrder(next);
+  }
+
   // A control tied to a specific (non-Internal) framework only ever belongs to
   // its own column; Internal/unspecified-framework controls have no single
   // "home" column so they remain visible in every column. Shared by sort,
@@ -1103,6 +1148,9 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     MASTER_CONTROLS.push(ctrl);
     CTRL_BY_REF[ref] = ctrl;
     onAddManualControl(fwCreate.key, ref);
+    const rState = riskStates[fwCreate.key] || {};
+    const rCs    = ctrlStates[fwCreate.key] || { autoMapped: [], manual: [] };
+    onSaveRow(fwCreate.key, rState, [...(rCs.autoMapped || []), ...(rCs.manual || []), ref]);
     setFwCreate(null);
     setCreateErr("");
   }
@@ -1170,10 +1218,26 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                   <SortIndicator col="risk" />
                 </span>
               </th>
-              {fwCols.map(fw => (
-                <th key={fw} style={{ ...thStyle, minWidth: 200 }}>
+              {orderedFwCols.map(fw => (
+                <th
+                  key={fw}
+                  draggable
+                  onDragStart={() => setDragFw(fw)}
+                  onDragOver={e => { e.preventDefault(); if (dragOverFw !== fw) setDragOverFw(fw); }}
+                  onDragLeave={() => setDragOverFw(prev => (prev === fw ? null : prev))}
+                  onDrop={e => { e.preventDefault(); handleColDrop(fw); }}
+                  onDragEnd={() => { setDragFw(null); setDragOverFw(null); }}
+                  title="Drag to reorder columns — remembered for your account"
+                  style={{
+                    ...thStyle, minWidth: 200, cursor: "grab",
+                    opacity: dragFw === fw ? 0.4 : 1,
+                    background: dragOverFw === fw && dragFw && dragFw !== fw ? "var(--acc-soft,rgba(37,99,235,0.12))" : thStyle.background,
+                    borderLeft: dragOverFw === fw && dragFw && dragFw !== fw ? "2px solid var(--acc,#2563eb)" : undefined,
+                  }}
+                >
                   <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <span style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }} onClick={() => toggleSort(fw)}>
+                      <span style={{ fontSize: 9, color: "var(--ink-4,#ccc)" }}>⠿</span>
                       <span>{fw}</span>
                       <SortIndicator col={fw} />
                     </span>
@@ -1233,7 +1297,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                   style={{ fontSize: 9, padding: "2px 5px", width: "100%", boxSizing: "border-box" }}
                 />
               </th>
-              {fwCols.map(fw => (
+              {orderedFwCols.map(fw => (
                 <th key={fw} style={{ ...thStyle, padding: "4px 6px", fontWeight: 400, textTransform: "none" }}>
                   <input
                     className="dendrai-input"
@@ -1393,7 +1457,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                   </td>
 
                   {/* Framework columns — same format as Enterprise Risks */}
-                  {fwCols.map(fw => {
+                  {orderedFwCols.map(fw => {
                     // A control tied to a specific (non-Internal) framework belongs only
                     // to its own column — no longer repeated across every framework.
                     // Internal/unspecified-framework controls aren't "specific" to any
@@ -1467,7 +1531,12 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                       if (!isNativeFw && !window.confirm(
                                         `"${ctrl?.name || ref}" has no single framework — it's shown in every column because it's one shared control assignment. Removing it here removes it from ALL frameworks on this row, not just ${fw}. Continue?`
                                       )) return;
-                                      onRemoveControl(key, ref, cs.autoMapped.includes(ref));
+                                      const isAuto = cs.autoMapped.includes(ref);
+                                      onRemoveControl(key, ref, isAuto);
+                                      // onRemoveControl only updates local state — without an explicit
+                                      // save it silently reverts on the next refresh/reload, which is
+                                      // exactly the "deleted framework comes back" bug this fixes.
+                                      onSaveRow(key, state, allRefs.filter(r => r !== ref));
                                     }}
                                     style={{
                                       flexShrink: 0, fontSize: 13, padding: "0 5px", border: "none",
@@ -1529,7 +1598,11 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                               {addable.slice(0, 12).map(c => (
                                 <button
                                   key={c.ref}
-                                  onClick={() => { onAddManualControl(key, c.ref); setFwPicker(null); setCtrlSearch(""); }}
+                                  onClick={() => {
+                                    onAddManualControl(key, c.ref);
+                                    onSaveRow(key, state, [...allRefs, c.ref]);
+                                    setFwPicker(null); setCtrlSearch("");
+                                  }}
                                   style={{
                                     display: "flex", gap: 5, padding: "4px 4px", border: "none",
                                     background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 9, borderRadius: 3,
@@ -2893,6 +2966,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         body: JSON.stringify({ matrix_frameworks: nextMatrix, preset_frameworks: nextPreset }),
       });
     } catch (_) {}
+    // Re-fetch from the DB so the matrix reflects what actually persisted,
+    // not just the optimistic local update — same reasoning as the save
+    // calls added to control add/remove: don't just look removed, confirm it.
+    await handleRefresh();
   }
 
   // Removing an "extra" (not-in-config) framework column has no config to
@@ -2900,7 +2977,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // is still assigned to a risk somewhere on the register. The only way to
   // actually make the column go away is to unassign those controls, so this
   // is a real, explicit, confirmed data change — not a display toggle.
-  function handlePurgeExtraFramework(fw) {
+  async function handlePurgeExtraFramework(fw) {
     const affected = [];
     for (const [key, cs] of Object.entries(allMatrixCtrlStates)) {
       for (const ref of (cs.autoMapped || [])) if (CTRL_BY_REF[ref]?.framework === fw) affected.push({ key, ref, isAuto: true });
@@ -2916,7 +2993,29 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       `be undone from this screen. Continue?`
     );
     if (!ok) return;
-    for (const { key, ref, isAuto } of affected) matrixRemove(key, ref, isAuto);
+
+    // Group by risk so each row is persisted exactly once with its final
+    // control list, rather than firing a save per individual ref removed.
+    // matrixRemove alone only updates local React state — without the
+    // explicit save below it silently reverts on the next refresh, which is
+    // exactly the "removed framework comes back" bug this whole flow fixes.
+    const byKey = {};
+    for (const { key, ref } of affected) (byKey[key] ||= []).push(ref);
+
+    for (const [key, refsToRemove] of Object.entries(byKey)) {
+      const cs = allMatrixCtrlStates[key] || { autoMapped: [], manual: [] };
+      const removeSet = new Set(refsToRemove);
+      const newRefs = [...(cs.autoMapped || []), ...(cs.manual || [])].filter(r => !removeSet.has(r));
+      for (const ref of refsToRemove) matrixRemove(key, ref, (cs.autoMapped || []).includes(ref));
+      if (isDiscKey(key)) {
+        await handleSaveDiscoveryRow(key, discRiskStates[key] || {});
+      } else {
+        await handleSaveRowWording(key, riskStates[key] || {}, newRefs);
+      }
+    }
+    // Re-fetch from the DB so the matrix reflects what actually persisted
+    // across every affected row, not just the optimistic local removals.
+    await handleRefresh();
   }
 
   return (
