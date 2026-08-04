@@ -240,6 +240,75 @@ function ScoreBadge({ score }) {
 
 function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto }) {
   const ctrl = CTRL_BY_REF[ctrlRef];
+  const [editing, setEditing]   = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftDesc, setDraftDesc] = useState("");
+  const [saving, setSaving]     = useState(false);
+  const [err, setErr]           = useState("");
+
+  function startEdit() {
+    setDraftName(ctrl?.name || "");
+    setDraftDesc(ctrl?.description || ctrl?.desc || "");
+    setErr("");
+    setEditing(true);
+  }
+
+  async function saveEdit() {
+    const name = draftName.trim();
+    if (!name) { setErr("Name is required."); return; }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/risk-register/controls/${encodeURIComponent(ctrlRef)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description: draftDesc.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data && data.saved === false) { setErr(data.detail || "Could not save control wording."); setSaving(false); return; }
+      // CTRL_BY_REF/MASTER_CONTROLS entries are shared object references —
+      // mutate in place so every other reader picks up the change on its
+      // next render, same pattern handleCreateControl already relies on.
+      if (ctrl) { ctrl.name = name; ctrl.description = draftDesc.trim(); ctrl.desc = draftDesc.trim(); }
+      setEditing(false);
+    } catch (_) {
+      setErr("Could not save — check your connection.");
+    }
+    setSaving(false);
+  }
+
+  if (editing) {
+    return (
+      <div style={{ display:"flex", flexDirection:"column", gap:4, padding:"6px 8px", borderRadius:4, background:"var(--surface,#fff)", border:"1px solid var(--acc,#2563eb)", fontSize:10, minWidth:220 }}>
+        <span className="mono" style={{ fontWeight:600, color:"var(--ink-2,#555)" }}>{ctrlRef}</span>
+        <input
+          className="dendrai-input"
+          value={draftName}
+          onChange={e => setDraftName(e.target.value)}
+          placeholder="Control name…"
+          style={{ fontSize:10, padding:"3px 6px" }}
+          autoFocus
+        />
+        <textarea
+          className="dendrai-input"
+          value={draftDesc}
+          onChange={e => setDraftDesc(e.target.value)}
+          placeholder="Control description…"
+          rows={2}
+          style={{ fontSize:10, padding:"3px 6px", resize:"vertical", fontFamily:"inherit" }}
+        />
+        {err && <div style={{ fontSize:9, color:"var(--red,#e53)" }}>{err}</div>}
+        <div style={{ display:"flex", gap:4 }}>
+          <button className="btn btn-sm btn-acc" onClick={saveEdit} disabled={saving} style={{ fontSize:9, padding:"2px 9px" }}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button className="btn btn-sm" onClick={() => setEditing(false)} style={{ fontSize:9, padding:"2px 8px" }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display:"flex", alignItems:"center", gap:4, padding:"2px 6px", borderRadius:4, background:"var(--surface-2,#f5f5f5)", border:"1px solid var(--line,#e0e0e0)", fontSize:10 }}>
       <span className="mono" style={{ fontWeight:600, color:"var(--ink-2,#555)" }}>{ctrlRef}</span>
@@ -249,9 +318,14 @@ function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto
       )}
       {isAuto && <span style={{ fontSize:9, color:"var(--ink-3,#888)", fontStyle:"italic" }}>auto</span>}
       <button
+        title="Edit control wording"
+        onClick={startEdit}
+        style={{ marginLeft:2, fontSize:9, padding:"0 3px", borderRadius:3, border:"1px solid var(--line,#e0e0e0)", background:"transparent", color:"var(--ink-3,#888)", cursor:"pointer", lineHeight:"14px" }}
+      >✎</button>
+      <button
         title={generateCode ? "Remove from code generation" : "Include in code generation"}
         onClick={() => onToggleGenerate(ctrlRef)}
-        style={{ marginLeft:2, fontSize:9, padding:"0 3px", borderRadius:3, border:"1px solid var(--line,#e0e0e0)", background: generateCode ? "var(--acc,#2563eb)" : "transparent", color: generateCode ? "#fff" : "var(--ink-3,#888)", cursor:"pointer", lineHeight:"14px" }}
+        style={{ fontSize:9, padding:"0 3px", borderRadius:3, border:"1px solid var(--line,#e0e0e0)", background: generateCode ? "var(--acc,#2563eb)" : "transparent", color: generateCode ? "#fff" : "var(--ink-3,#888)", cursor:"pointer", lineHeight:"14px" }}
       >{generateCode ? "</>" : "</>"}
       </button>
       <button
