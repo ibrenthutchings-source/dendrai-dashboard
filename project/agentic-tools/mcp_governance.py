@@ -2123,14 +2123,23 @@ def _ingest_system_event(
     risk_flags: list[str],
     raw_payload: dict | None,
     source_ip: str | None,
+    created_at: "datetime | None" = None,
 ) -> int | None:
     """Insert a single event into system_telemetry. Returns new row id, or None
     if the insert was skipped as a duplicate (server_name, event_id) — a poll
-    connector re-fetching an overlapping time window is expected to hit this."""
+    connector re-fetching an overlapping time window is expected to hit this.
+
+    created_at defaults to now — every existing caller keeps getting exactly
+    that. Only generate_o2c_p2p_synthetic_log.py passes an explicit
+    backdated value, so a synthetic run can spread realistic-looking history
+    across Control Flow Map's 7/30/90-day window instead of clustering
+    everything at the moment the script ran."""
     if not db.is_available():
         return None
     try:
         import json as _json
+        if created_at is None:
+            created_at = datetime.now(timezone.utc)
         if raw_payload:
             raw_payload = _encrypt_sensitive_details(raw_payload)
         with db.get_conn() as conn:
@@ -2139,8 +2148,8 @@ def _ingest_system_event(
                     """
                     INSERT INTO observability.system_telemetry
                         (server_name, system_type, event_type, event_id, actor,
-                         action, resource, severity, risk_flags, raw_payload, source_ip)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         action, resource, severity, risk_flags, raw_payload, source_ip, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (server_name, event_id) DO NOTHING
                     RETURNING id
                     """,
@@ -2156,6 +2165,7 @@ def _ingest_system_event(
                         risk_flags or [],
                         (_json.dumps(raw_payload) if raw_payload else None),
                         (source_ip or None),
+                        created_at,
                     ),
                 )
                 row = cur.fetchone()
