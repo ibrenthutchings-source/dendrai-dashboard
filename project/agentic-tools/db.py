@@ -998,6 +998,17 @@ CREATE TABLE IF NOT EXISTS controls_library (
     tags         TEXT[]
 );
 
+-- Manual, curator-set link from a Risk & Controls Register control to the
+-- controls_catalog control_id (PaC/CaC/RaC's shared vocabulary — see that
+-- table's own comment) it corresponds to. Deliberately NOT a foreign key:
+-- controls_catalog rows are reseeded/regenerated as Rego modules evolve, so a
+-- hard FK would be brittle; validity is checked at the API layer instead,
+-- same soft-reference convention already used by control_ref/risk_ref
+-- columns elsewhere (risk_control_mappings, cem_event_risk_links). This is
+-- an explicit human-asserted link, not auto-inferred — same "no ungrounded
+-- generation" guardrail as the framework crosswalk columns below.
+ALTER TABLE controls_library ADD COLUMN IF NOT EXISTS pac_control_id VARCHAR(32);
+
 CREATE TABLE IF NOT EXISTS risk_control_mappings (
     id             SERIAL PRIMARY KEY,
     review_id      INT         NOT NULL REFERENCES risk_register_reviews(id) ON DELETE CASCADE,
@@ -7346,18 +7357,19 @@ def get_controls_library() -> list:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT control_ref, framework, name, description, category, domain, tags "
+                    "SELECT control_ref, framework, name, description, category, domain, tags, pac_control_id "
                     "FROM controls_library ORDER BY control_ref"
                 )
                 return [
                     {
-                        "ref":         r[0],
-                        "framework":   r[1] or "",
-                        "name":        r[2],
-                        "description": r[3] or "",
-                        "category":    r[4] or "",
-                        "domain":      r[5] or "",
-                        "tags":        r[6] or [],
+                        "ref":            r[0],
+                        "framework":      r[1] or "",
+                        "name":           r[2],
+                        "description":    r[3] or "",
+                        "category":       r[4] or "",
+                        "domain":         r[5] or "",
+                        "tags":           r[6] or [],
+                        "pac_control_id": r[7],
                     }
                     for r in cur.fetchall()
                 ]
@@ -7375,14 +7387,15 @@ def upsert_control(control: dict) -> bool:
                 cur.execute(
                     """
                     INSERT INTO controls_library
-                        (control_ref, framework, name, description, category, domain)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                        (control_ref, framework, name, description, category, domain, pac_control_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (control_ref) DO UPDATE SET
-                        framework   = COALESCE(EXCLUDED.framework,   controls_library.framework),
-                        name        = EXCLUDED.name,
-                        description = COALESCE(EXCLUDED.description, controls_library.description),
-                        category    = COALESCE(EXCLUDED.category,    controls_library.category),
-                        domain      = COALESCE(EXCLUDED.domain,      controls_library.domain)
+                        framework      = COALESCE(EXCLUDED.framework,   controls_library.framework),
+                        name           = EXCLUDED.name,
+                        description    = COALESCE(EXCLUDED.description, controls_library.description),
+                        category       = COALESCE(EXCLUDED.category,    controls_library.category),
+                        domain         = COALESCE(EXCLUDED.domain,      controls_library.domain),
+                        pac_control_id = COALESCE(EXCLUDED.pac_control_id, controls_library.pac_control_id)
                     """,
                     (
                         ref,
@@ -7391,9 +7404,29 @@ def upsert_control(control: dict) -> bool:
                         control.get("description") or control.get("desc", ""),
                         control.get("category", "Custom"),
                         control.get("domain", "Custom"),
+                        control.get("pac_control_id") or None,
                     ),
                 )
         return True
+    return _run(_do, default=False) or False
+
+
+def set_control_pac_link(control_ref: str, pac_control_id: Optional[str]) -> bool:
+    """Set (or clear, when pac_control_id is None/empty) the controls_library ->
+    controls_catalog link for an existing control. Separate from upsert_control
+    so linking doesn't require re-supplying every other field (which would risk
+    clobbering them) and can explicitly null out an existing link."""
+    ref = (control_ref or "").strip().upper()
+    if not ref:
+        return False
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE controls_library SET pac_control_id = %s WHERE control_ref = %s",
+                    (pac_control_id or None, ref),
+                )
+                return cur.rowcount > 0
     return _run(_do, default=False) or False
 
 

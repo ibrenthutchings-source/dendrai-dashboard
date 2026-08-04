@@ -359,11 +359,16 @@ class ControlCreateRequest(BaseModel):
     category: str = "Custom"
     domain: str = "Custom"
     description: str = ""
+    pac_control_id: Optional[str] = None
 
 
 class MatrixConfigUpdate(BaseModel):
     matrix_frameworks: Optional[List[str]] = None
     preset_frameworks: Optional[List[str]] = None
+
+
+class ControlPacLinkRequest(BaseModel):
+    pac_control_id: Optional[str] = None  # None/empty clears the link
 
 
 @router.get("/controls")
@@ -381,9 +386,13 @@ async def create_control(req: ControlCreateRequest):
     if ref in live_map:
         from fastapi import status
         return {"saved": False, "detail": f"{ref} already exists in the control library"}
+    pac_control_id = (req.pac_control_id or "").strip().upper() or None
+    if pac_control_id and db.is_available() and not db.get_control(pac_control_id):
+        return {"saved": False, "detail": f"PaC control '{pac_control_id}' was not found in the controls catalog"}
     ctrl = {
         "ref": ref, "framework": req.framework, "name": req.name,
         "category": req.category, "domain": req.domain, "description": req.description,
+        "pac_control_id": pac_control_id,
     }
     if db.is_available():
         db.upsert_control(ctrl)
@@ -391,6 +400,23 @@ async def create_control(req: ControlCreateRequest):
     _CONTROL_MAP[ref] = ctrl
     _DEFAULT_CONTROLS.append(ctrl)
     return {"saved": True, "ref": ref, "control": ctrl}
+
+
+@router.put("/controls/{ref}/pac-link")
+async def link_control_to_pac(ref: str, req: ControlPacLinkRequest):
+    """Set or clear an existing control's link to a controls_catalog (PaC) control_id."""
+    ref = ref.strip().upper()
+    live_map = _get_control_map_live()
+    if ref not in live_map:
+        raise HTTPException(status_code=404, detail=f"{ref} not found in the control library")
+    pac_control_id = (req.pac_control_id or "").strip().upper() or None
+    if pac_control_id and db.is_available() and not db.get_control(pac_control_id):
+        return {"saved": False, "detail": f"PaC control '{pac_control_id}' was not found in the controls catalog"}
+    if db.is_available():
+        db.set_control_pac_link(ref, pac_control_id)
+    live_map[ref]["pac_control_id"] = pac_control_id
+    _CONTROL_MAP[ref] = live_map[ref]
+    return {"saved": True, "ref": ref, "pac_control_id": pac_control_id}
 
 
 @router.get("/matrix-config")
