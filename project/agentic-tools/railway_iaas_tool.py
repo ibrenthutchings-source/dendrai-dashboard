@@ -9,8 +9,8 @@ pull_events()/test_connection() contract. Unlike the Postgres CIS adapter
 several services — each poll produces one event per service instance, so
 findings are attributed to the specific service that has them.
 
-Two checks (matching the devops_monitoring/infrastructure_monitoring Rego's
-INFRA-006/INFRA-007 rules):
+Two checks (matching the infrastructure_monitoring Rego's INFRA-006/INFRA-007
+rules):
   - unexpected_public_domain: a service has a public domain that isn't in
     the connector's approved allow-list. A service quietly gaining a public
     domain is exactly the kind of change that should be noticed, not

@@ -2378,12 +2378,13 @@ async def rotate_system_api_key(system_id: int):
 # Configured entirely from the app UI, no env vars — see connector_poller.py
 # for the background dispatch loop that actually polls these.
 
-# Connector types whose base_url points at a public SaaS API (github.com,
-# gitlab.com, ...) rather than a customer's own on-prem/VPN-internal system —
-# only these get the SSRF guard. Oracle Fusion/SAP HANA/etc. connectors are
-# legitimately configured with private/internal addresses, so validating
-# those would break real deployments.
-_SSRF_GUARDED_CONNECTOR_TYPES = {"github_scm", "gitlab_scm", "itsm_jira", "itsm_servicenow"}
+# Connector types whose base_url points at a public SaaS API rather than a
+# customer's own on-prem/VPN-internal system — only these would get the SSRF
+# guard. Oracle Fusion/SAP HANA/etc. connectors are legitimately configured
+# with private/internal addresses, so validating those would break real
+# deployments. Empty today — the public-SaaS connector types that populated
+# this set have been removed; add back here if a future connector type needs it.
+_SSRF_GUARDED_CONNECTOR_TYPES: set[str] = set()
 
 
 def _validate_connector_base_url(connector_type: str, base_url: Optional[str]) -> None:

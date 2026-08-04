@@ -356,12 +356,12 @@ async def lifespan(application: FastAPI):
                 _drift_task = asyncio.create_task(model_health_drift_watch())
                 logger.info("Model Health drift watch task started")
 
-            # DevOps Monitoring: Risk Waiver & Exception Hub automated expiry sweep.
+            # Risk Waiver & Exception Hub automated expiry sweep.
             if db.is_available():
                 _waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
                 logger.info("Risk waiver expiry sweep task started")
 
-            # DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge breach-detection sweep.
+            # ITSM/Jira-ServiceNow SLA Bridge breach-detection sweep.
             if db.is_available():
                 _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
                 logger.info("ITSM SLA breach sweep task started")
