@@ -636,7 +636,7 @@ function OutputPanel({ yaml, onClose, onDownload }) {
 // Framework Matrix view
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, savingRows, savedAt }) {
+function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, onRemoveFramework, savingRows, savedAt }) {
   // Row-level wording edit state
   const [editingRows, setEditingRows] = useState(new Set());
   const [rowDrafts, setRowDrafts]     = useState({});
@@ -801,7 +801,24 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
               </th>
               <th style={{ ...thStyle, minWidth: 200, width: "26%" }}>Enterprise Risks</th>
               {fwCols.map(fw => (
-                <th key={fw} style={{ ...thStyle, minWidth: 200 }}>{fw}</th>
+                <th key={fw} style={{ ...thStyle, minWidth: 200 }}>
+                  <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                    <span>{fw}</span>
+                    {onRemoveFramework && _activeMxFws.includes(fw) && (
+                      <button
+                        title={`Remove ${fw} from the Framework Matrix`}
+                        onClick={() => onRemoveFramework(fw)}
+                        style={{
+                          flexShrink: 0, fontSize: 12, padding: "0 4px", border: "none",
+                          background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer",
+                          lineHeight: "16px", borderRadius: 3, fontWeight: 400, textTransform: "none",
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.color = "var(--red,#e53)"; e.currentTarget.style.background = "rgba(229,85,51,0.08)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = "var(--ink-3,#aaa)"; e.currentTarget.style.background = "transparent"; }}
+                      >×</button>
+                    )}
+                  </span>
+                </th>
               ))}
             </tr>
           </thead>
@@ -2214,6 +2231,23 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const matrixRemove         = (key, ref, isAuto)   => isDiscKey(key) ? discCtrl.remove(key, ref, isAuto)   : intCtrl.remove(key, ref, isAuto);
   const matrixReset          = (key, auto, manual)  => isDiscKey(key) ? discCtrl.reset(key, auto, manual)   : intCtrl.reset(key, auto, manual);
 
+  async function handleRemoveFramework(fw) {
+    if (!window.confirm(`Remove "${fw}" from the Framework Matrix? Controls already tagged to this framework are unaffected — only the matrix column is removed.`)) return;
+    const nextMatrix = matrixCfg.matrix.filter(f => f !== fw);
+    const nextPreset = matrixCfg.preset.filter(f => f !== fw);
+    const next = { matrix: nextMatrix, preset: nextPreset };
+    setMatrixCfg(next);
+    MATRIX_FRAMEWORKS = nextMatrix;
+    PRESET_FRAMEWORKS = nextPreset;
+    try {
+      await fetch("/api/risk-register/matrix-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ matrix_frameworks: nextMatrix, preset_frameworks: nextPreset }),
+      });
+    } catch (_) {}
+  }
+
   return (
     <div className="code-screen" data-screen-label="Risk and Controls Register" style={{ position:"relative" }}>
       {/* Header */}
@@ -2354,6 +2388,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                     onRemoveControl={matrixRemove}
                     onResetCtrl={matrixReset}
                     onSaveRow={handleSaveRowWording}
+                    onRemoveFramework={handleRemoveFramework}
                     savingRows={savingRows}
                     savedAt={savedAt}
                   />
