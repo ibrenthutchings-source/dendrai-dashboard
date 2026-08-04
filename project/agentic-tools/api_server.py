@@ -127,6 +127,7 @@ import oracle_fusion_endpoints
 import sox_endpoints
 import risk_register_endpoints
 import pac_endpoints
+import pac_policy_docs
 import approvals_endpoints
 import evidence_pack_endpoints
 import risk_waiver_sweep
@@ -756,6 +757,12 @@ app.include_router(risk_register_endpoints.router)
 # reach — every /api/pac/* route (hooks, processes, modules, evaluate, the
 # legacy GitHub sync) has been 404ing in production as a result.
 app.include_router(pac_endpoints.router)
+
+# Plain-language policy intake + HITL review of its conversion to Rego. Shares
+# the /pac prefix and the same screen gate; kept in its own module because it
+# is a distinct workflow (document -> draft -> human decision -> module) rather
+# than more CRUD over modules.
+app.include_router(pac_policy_docs.router)
 
 # MCP Governance: telemetry observability + adjudicated governance events.
 if _HAS_MCP_GOVERNANCE:

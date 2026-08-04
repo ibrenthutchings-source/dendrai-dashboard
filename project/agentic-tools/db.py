@@ -1211,6 +1211,70 @@ CREATE TABLE IF NOT EXISTS pac_external_hooks (
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- ── Plain-language policy documents & their HITL conversion review ───────────
+-- The upload side of Policy-as-Code: the prose policy the org actually wrote
+-- (a Word-exported Markdown SOP, a PDF standard, a pasted paragraph) is
+-- persisted here VERBATIM as the immutable source of record, separate from
+-- any Rego derived from it. pac_policy_modules.source_format already records
+-- that a module *was* LLM-converted (sync_github's Markdown->Rego path), but
+-- that path throws the source prose away and writes straight into the live
+-- module — there is no artifact to re-review, re-convert, or show an auditor
+-- next to the rule. These two tables are that artifact.
+--
+-- No generated Rego ever reaches pac_policy_modules on its own: every draft
+-- lands in pac_policy_conversions at status 'pending_review' and only an
+-- explicit human decision (record_pac_conversion_decision) promotes it into a
+-- module version. Same "no ungrounded generation reaches the register"
+-- guardrail as the controls_library framework-crosswalk columns above.
+CREATE TABLE IF NOT EXISTS pac_policy_documents (
+    id          BIGSERIAL    PRIMARY KEY,
+    process     VARCHAR(64)  NOT NULL,
+    title       VARCHAR(256) NOT NULL,
+    filename    VARCHAR(256),
+    source      VARCHAR(16)  NOT NULL DEFAULT 'upload',   -- 'upload' | 'paste'
+    doc_text    TEXT         NOT NULL,                    -- extracted plain text, never rewritten
+    byte_size   INTEGER      NOT NULL DEFAULT 0,          -- of the ORIGINAL upload, not doc_text
+    sha256      CHAR(64),                                 -- of doc_text; powers re-upload detection
+    uploaded_by VARCHAR(128),
+    status      VARCHAR(24)  NOT NULL DEFAULT 'uploaded',
+        -- uploaded | converting | in_review | published | rejected | failed
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pac_policy_docs_process ON pac_policy_documents (process, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pac_policy_docs_status  ON pac_policy_documents (status, created_at DESC);
+
+-- One row per conversion ATTEMPT (re-converting a document adds a row rather
+-- than overwriting), so a rejected draft and the reviewer's reason for
+-- rejecting it stay on record next to the accepted one.
+--   generated_rego — exactly what the model emitted, never edited afterwards
+--   draft_rego     — the reviewer's working copy; what actually gets published
+-- Keeping both is the point of the HITL step: the diff between them IS the
+-- evidence of human oversight, and collapsing them into one column would
+-- erase it.
+CREATE TABLE IF NOT EXISTS pac_policy_conversions (
+    id             BIGSERIAL    PRIMARY KEY,
+    document_id    BIGINT       NOT NULL REFERENCES pac_policy_documents(id) ON DELETE CASCADE,
+    process        VARCHAR(64)  NOT NULL,
+    generated_rego TEXT         NOT NULL,
+    draft_rego     TEXT         NOT NULL,
+    model          VARCHAR(64),
+    syntax_valid   BOOLEAN      NOT NULL DEFAULT FALSE,
+    syntax_errors  JSONB        NOT NULL DEFAULT '[]',
+    control_ids    JSONB        NOT NULL DEFAULT '[]',
+    status         VARCHAR(24)  NOT NULL DEFAULT 'pending_review',
+        -- pending_review | changes_requested | approved | rejected
+    reviewer       VARCHAR(128),
+    reviewer_role  VARCHAR(64),
+    review_notes   TEXT,
+    reviewed_at    TIMESTAMPTZ,
+    published_module_id BIGINT  REFERENCES pac_policy_modules(id) ON DELETE SET NULL,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pac_conversions_doc    ON pac_policy_conversions (document_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pac_conversions_status ON pac_policy_conversions (status, created_at DESC);
+
 -- Scheduled digest notifications (Feature 5) — a deterministic, zero-LLM-cost
 -- "what changed since your last visit" summary, generated lazily on the
 -- frontend's existing approval-inbox poll rather than a blind cron, so an
@@ -8355,6 +8419,304 @@ def get_pac_module_by_id(module_id: int) -> Optional[dict]:
                     "created_at": row[6].isoformat() if row[6] else None,
                 }
     return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plain-language policy documents + HITL conversion review
+# (pac_policy_docs.py — see the pac_policy_documents DDL comment for why the
+# source prose is kept separately from anything derived from it)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# doc_text is deliberately excluded from every LIST query: policy documents run
+# to tens of thousands of characters and the review queue only needs enough to
+# recognise the document. The full text comes back from get_pac_policy_document.
+_DOC_PREVIEW_CHARS = 400
+
+
+def save_pac_policy_document(process: str, title: str, doc_text: str, *,
+                             filename: Optional[str] = None, source: str = "upload",
+                             byte_size: int = 0, sha256: Optional[str] = None,
+                             uploaded_by: Optional[str] = None) -> Optional[int]:
+    """Persist an uploaded/pasted plain-language policy document. Returns the row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pac_policy_documents
+                        (process, title, filename, source, doc_text, byte_size, sha256, uploaded_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (process, title, filename, source, doc_text, byte_size, sha256, uploaded_by),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def find_pac_policy_document_by_hash(process: str, sha256: str) -> Optional[dict]:
+    """Most recent document for this process with identical text. Lets the API
+    warn on a re-upload of the same file instead of silently accumulating
+    duplicates — enforced here rather than by a UNIQUE index because
+    re-uploading on purpose (to re-convert with a newer model) is legitimate."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, title, filename, status, created_at
+                    FROM pac_policy_documents
+                    WHERE process = %s AND sha256 = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (process, sha256),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "title": row[1], "filename": row[2], "status": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                }
+    return _run(_do)
+
+
+def list_pac_policy_documents(process: Optional[str] = None, status: Optional[str] = None,
+                              limit: int = 200) -> list:
+    """Documents newest-first, with a text preview and a rollup of their
+    conversion attempts (so the list can show 'awaiting review' without a
+    second round-trip per row)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                clauses, params = [], []
+                if process:
+                    clauses.append("d.process = %s")
+                    params.append(process)
+                if status:
+                    clauses.append("d.status = %s")
+                    params.append(status)
+                where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                params.append(limit)
+                cur.execute(
+                    f"""
+                    SELECT d.id, d.process, d.title, d.filename, d.source, d.byte_size,
+                           d.sha256, d.uploaded_by, d.status, d.created_at, d.updated_at,
+                           LENGTH(d.doc_text)      AS text_length,
+                           LEFT(d.doc_text, {_DOC_PREVIEW_CHARS}) AS preview,
+                           COUNT(c.id)                                              AS conversion_count,
+                           COUNT(*) FILTER (WHERE c.status = 'pending_review')       AS pending_review_count,
+                           MAX(c.id) FILTER (WHERE c.status = 'pending_review')      AS pending_conversion_id,
+                           MAX(c.id)                                                AS latest_conversion_id
+                    FROM pac_policy_documents d
+                    LEFT JOIN pac_policy_conversions c ON c.document_id = d.id
+                    {where}
+                    GROUP BY d.id
+                    ORDER BY d.created_at DESC
+                    LIMIT %s
+                    """,
+                    tuple(params),
+                )
+                cols = [c[0] for c in cur.description]
+                out = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("created_at", "updated_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    out.append(d)
+                return out
+    return _run(_do) or []
+
+
+def get_pac_policy_document(doc_id: int, include_conversions: bool = True) -> Optional[dict]:
+    """One document with its full text and, by default, every conversion
+    attempt against it (newest first)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, process, title, filename, source, doc_text, byte_size,
+                           sha256, uploaded_by, status, created_at, updated_at
+                    FROM pac_policy_documents WHERE id = %s
+                    """,
+                    (doc_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [c[0] for c in cur.description]
+                doc = dict(zip(cols, row))
+                for k in ("created_at", "updated_at"):
+                    if doc.get(k):
+                        doc[k] = doc[k].isoformat()
+                if include_conversions:
+                    doc["conversions"] = _list_conversions(cur, "WHERE c.document_id = %s", (doc_id,))
+                return doc
+    return _run(_do)
+
+
+def set_pac_policy_document_status(doc_id: int, status: str) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE pac_policy_documents SET status = %s, updated_at = NOW() WHERE id = %s",
+                    (status, doc_id),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do))
+
+
+def delete_pac_policy_document(doc_id: int) -> bool:
+    """Conversions cascade (FK ON DELETE CASCADE); any module already published
+    from one does not — a published policy stays published."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM pac_policy_documents WHERE id = %s", (doc_id,))
+                return cur.rowcount > 0
+    return bool(_run(_do))
+
+
+def _list_conversions(cur, where: str, params: tuple, limit: Optional[int] = None) -> list:
+    """Shared conversion SELECT used by the review queue, the per-document
+    fetch, and the single-conversion getter so all three return the same shape
+    (including the parent document's title/filename, which the queue needs to
+    be usable at all)."""
+    cur.execute(
+        f"""
+        SELECT c.id, c.document_id, c.process, c.generated_rego, c.draft_rego, c.model,
+               c.syntax_valid, c.syntax_errors, c.control_ids, c.status,
+               c.reviewer, c.reviewer_role, c.review_notes, c.reviewed_at,
+               c.published_module_id, c.created_at, c.updated_at,
+               d.title AS document_title, d.filename AS document_filename,
+               d.uploaded_by AS document_uploaded_by
+        FROM pac_policy_conversions c
+        JOIN pac_policy_documents d ON d.id = c.document_id
+        {where}
+        ORDER BY c.created_at DESC
+        {'LIMIT %s' if limit is not None else ''}
+        """,
+        params + ((limit,) if limit is not None else ()),
+    )
+    cols = [c[0] for c in cur.description]
+    out = []
+    for r in cur.fetchall():
+        d = dict(zip(cols, r))
+        for k in ("reviewed_at", "created_at", "updated_at"):
+            if d.get(k):
+                d[k] = d[k].isoformat()
+        out.append(d)
+    return out
+
+
+def save_pac_policy_conversion(document_id: int, process: str, generated_rego: str, *,
+                               draft_rego: Optional[str] = None, model: Optional[str] = None,
+                               syntax_valid: bool = False, syntax_errors: Optional[list] = None,
+                               control_ids: Optional[list] = None) -> Optional[int]:
+    """Record one Markdown->Rego conversion attempt, always at
+    status 'pending_review' — there is deliberately no parameter to create an
+    already-approved conversion, so no code path can bypass the human step."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pac_policy_conversions
+                        (document_id, process, generated_rego, draft_rego, model,
+                         syntax_valid, syntax_errors, control_ids)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (document_id, process, generated_rego,
+                     draft_rego if draft_rego is not None else generated_rego,
+                     model, syntax_valid, Json(syntax_errors or []), Json(control_ids or [])),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_pac_policy_conversion(conversion_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                rows = _list_conversions(cur, "WHERE c.id = %s", (conversion_id,))
+                return rows[0] if rows else None
+    return _run(_do)
+
+
+def list_pac_policy_conversions(process: Optional[str] = None, status: Optional[str] = None,
+                                limit: int = 100) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                clauses, params = [], []
+                if process:
+                    clauses.append("c.process = %s")
+                    params.append(process)
+                if status:
+                    clauses.append("c.status = %s")
+                    params.append(status)
+                where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                return _list_conversions(cur, where, tuple(params), limit=limit)
+    return _run(_do) or []
+
+
+def update_pac_policy_conversion_draft(conversion_id: int, draft_rego: str, *,
+                                       syntax_valid: bool, syntax_errors: list,
+                                       control_ids: list) -> bool:
+    """Save the reviewer's edits to draft_rego. generated_rego is never touched
+    — the gap between the two is the audit trail of what the human changed.
+
+    Only allowed while the conversion is still open: once a decision has been
+    recorded, the draft is frozen (the WHERE clause enforces it rather than
+    trusting the caller, since a silent post-approval edit would mean the
+    reviewed text and the published text diverge)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE pac_policy_conversions
+                    SET draft_rego = %s, syntax_valid = %s, syntax_errors = %s,
+                        control_ids = %s, updated_at = NOW()
+                    WHERE id = %s AND status IN ('pending_review', 'changes_requested')
+                    """,
+                    (draft_rego, syntax_valid, Json(syntax_errors or []),
+                     Json(control_ids or []), conversion_id),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do))
+
+
+def record_pac_conversion_decision(conversion_id: int, status: str, reviewer: str, *,
+                                   reviewer_role: Optional[str] = None,
+                                   review_notes: Optional[str] = None,
+                                   published_module_id: Optional[int] = None) -> bool:
+    """Record the human decision on a conversion. 'changes_requested' leaves it
+    reviewable (reviewed_at stays NULL so it still reads as open work);
+    approve/reject stamp it closed."""
+    closing = status in ("approved", "rejected")
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE pac_policy_conversions
+                    SET status = %s, reviewer = %s, reviewer_role = %s, review_notes = %s,
+                        reviewed_at = {'NOW()' if closing else 'NULL'},
+                        published_module_id = COALESCE(%s, published_module_id),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (status, reviewer, reviewer_role, review_notes, published_module_id, conversion_id),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do))
 
 
 def save_pac_approval(module_id: int, approver: str, role: Optional[str] = None) -> Optional[int]:
