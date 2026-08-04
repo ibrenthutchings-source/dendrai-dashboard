@@ -371,6 +371,11 @@ class ControlPacLinkRequest(BaseModel):
     pac_control_id: Optional[str] = None  # None/empty clears the link
 
 
+class ControlUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
 @router.get("/controls")
 async def get_controls():
     """Return the control library — served from DB when available, defaults otherwise."""
@@ -400,6 +405,41 @@ async def create_control(req: ControlCreateRequest):
     _CONTROL_MAP[ref] = ctrl
     _DEFAULT_CONTROLS.append(ctrl)
     return {"saved": True, "ref": ref, "control": ctrl}
+
+
+@router.put("/controls/{ref}")
+async def update_control(ref: str, req: ControlUpdateRequest):
+    """Update an existing control's wording (name/description) in place.
+
+    Explicitly re-supplies every other field (framework/category/domain/
+    pac_control_id) from the current row before calling db.upsert_control —
+    that function's own per-field defaults (e.g. framework.get(..., "Custom"))
+    are meant for a brand-new control, not "leave unchanged," so skipping
+    this would silently clobber them back to "Custom" on every wording edit.
+    """
+    ref = ref.strip().upper()
+    live_map = _get_control_map_live()
+    existing = live_map.get(ref)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"{ref} not found in the control library")
+    name = (req.name or "").strip()
+    if not name:
+        return {"saved": False, "detail": "Control name is required."}
+    description = req.description if req.description is not None else existing.get("description", "")
+    merged = {
+        "ref": ref, "name": name, "description": description,
+        "framework": existing.get("framework") or "Custom",
+        "category": existing.get("category") or "Custom",
+        "domain": existing.get("domain") or "Custom",
+        "pac_control_id": existing.get("pac_control_id"),
+    }
+    if db.is_available():
+        db.upsert_control(merged)
+    existing["name"] = name
+    existing["description"] = description
+    existing["desc"] = description
+    _CONTROL_MAP[ref] = existing
+    return {"saved": True, "ref": ref, "control": existing}
 
 
 @router.put("/controls/{ref}/pac-link")
