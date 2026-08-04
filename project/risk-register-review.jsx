@@ -883,8 +883,8 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
         </div>
       )}
 
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+      <div style={{ overflowX: "auto", overflowY: "hidden", maxWidth: "100%" }}>
+        <table style={{ width: "100%", minWidth: `${340 + fwCols.length * 200}px`, borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
             <tr>
               <th style={{ ...thStyle, width: 160, minWidth: 140 }}>
@@ -918,9 +918,13 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
           </thead>
           <tbody>
             {[...(risks || [])].sort((a, b) => {
+              // Primary: Core Domain & Risks (Column 0). Secondary: Enterprise Risks
+              // (Column 1's category label), so each domain group is internally ordered too.
               const da = domainNames[a.id || a.risk_ref] || inferDomain(a);
               const db_ = domainNames[b.id || b.risk_ref] || inferDomain(b);
-              return da.localeCompare(db_);
+              const domainCmp = da.localeCompare(db_);
+              if (domainCmp !== 0) return domainCmp;
+              return (a.category || "Risk").localeCompare(b.category || "Risk");
             }).map((r, idx, arr) => {
               // Fallback for legacy rows persisted before predictive_analytics_tool.py
               // assigned stable risk ids — prevents every id-less risk from colliding
@@ -1010,14 +1014,21 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 
                   {/* Framework columns — same format as Enterprise Risks */}
                   {fwCols.map(fw => {
-                    // Show ALL assigned controls in every column so cross-framework assignments
-                    // are always visible. A framework tag badge on each pill indicates origin.
-                    const fwRefs       = allRefs.filter(ref => CTRL_BY_REF[ref]);
+                    // A control tied to a specific (non-Internal) framework belongs only
+                    // to its own column — no longer repeated across every framework.
+                    // Internal/unspecified-framework controls aren't "specific" to any
+                    // framework, so they remain visible in every column as before.
+                    const fwRefs = allRefs.filter(ref => {
+                      const c = CTRL_BY_REF[ref];
+                      if (!c) return false;
+                      return c.framework && !_internalFws.has(c.framework) ? c.framework === fw : true;
+                    });
                     const cellId       = `${key}:${fw}`;
                     const isSavingCell = savingCells.has(cellId);
                     const pickerOpen   = fwPicker?.key === key && fwPicker?.fw === fw;
                     const addable      = MASTER_CONTROLS.filter(c =>
                       !allRefs.includes(c.ref) &&
+                      (!c.framework || _internalFws.has(c.framework) || c.framework === fw) &&
                       (ctrlSearch === "" ||
                         c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
                         c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
@@ -1214,8 +1225,8 @@ function ControlCoverageMatrix({ ctrlStates }) {
   };
 
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+    <div style={{ overflowX: "auto", overflowY: "hidden", maxWidth: "100%" }}>
+      <table style={{ width: "100%", minWidth: `${390 + allFws.length * 80}px`, borderCollapse: "collapse", fontSize: 11 }}>
         <thead>
           <tr>
             <th style={{ ...thStyle, minWidth: 90 }}>Category</th>
