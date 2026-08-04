@@ -247,12 +247,62 @@ function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto
   );
 }
 
+// Known framework -> ref-prefix abbreviations. Frameworks not listed here
+// (custom/newly-discovered ones) fall back to a derived abbreviation.
+const _FRAMEWORK_REF_PREFIXES = {
+  "Internal":        "INT",
+  "SOC 2":           "SOC2",
+  "NIST SP 800-53":  "NIST",
+  "CIS Controls":    "CIS",
+  "ISO/IEC 27001":   "ISO27K",
+  "ISO/IEC 42001":   "ISO42K",
+  "COSO ERM":        "COSO",
+  "NIST AI RMF":     "NISTAI",
+};
+
+function _frameworkRefPrefix(fw) {
+  if (_FRAMEWORK_REF_PREFIXES[fw]) return _FRAMEWORK_REF_PREFIXES[fw];
+  const cleaned = (fw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return cleaned.slice(0, 6) || "CTRL";
+}
+
+// Next available "<PREFIX>-NN" ref for a framework, based on the highest
+// existing suffix number already used by that prefix in the live control library.
+function _nextRefForFramework(fw) {
+  const prefix = _frameworkRefPrefix(fw);
+  const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+  let max = 0;
+  for (const c of MASTER_CONTROLS) {
+    const m = pattern.exec(c.ref || "");
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return `${prefix}-${String(max + 1).padStart(2, "0")}`;
+}
+
 function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual, onRemove, onToggleGenerate, onGetAiRecs, aiRecsLoading }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [newCtrl, setNewCtrl] = useState({ ref: "", name: "", framework: "", desc: "" });
+  const [refIsAuto, setRefIsAuto] = useState(true);
   const [createErr, setCreateErr] = useState("");
+
+  // Frameworks available for a new control — same source list as the Framework
+  // Matrix columns, with "Internal" always offered first as the baseline option.
+  const frameworkOptions = ["Internal", ...MATRIX_FRAMEWORKS.filter(f => f !== "Internal")];
+
+  function openCreateForm() {
+    const fw = newCtrl.framework || frameworkOptions[0];
+    setNewCtrl({ ref: _nextRefForFramework(fw), name: "", framework: fw, desc: "" });
+    setRefIsAuto(true);
+    setCreateOpen(true);
+    setPickerOpen(false);
+    setCreateErr("");
+  }
+
+  function handleFrameworkChange(fw) {
+    setNewCtrl(p => ({ ...p, framework: fw, ref: refIsAuto ? _nextRefForFramework(fw) : p.ref }));
+  }
 
   async function handleCreateControl() {
     const ref = newCtrl.ref.trim().toUpperCase();
@@ -283,6 +333,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
     onAddManual(riskKey, ref);
     setCreateOpen(false);
     setNewCtrl({ ref: "", name: "", framework: "", desc: "" });
+    setRefIsAuto(true);
     setCreateErr("");
   }
 
@@ -315,7 +366,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
           </button>
           <button
             className="btn btn-sm"
-            onClick={() => { setCreateOpen(p => !p); setPickerOpen(false); setCreateErr(""); }}
+            onClick={() => { if (createOpen) { setCreateOpen(false); } else { openCreateForm(); } }}
             style={{ fontSize:9, padding:"2px 7px" }}
             title="Create a brand-new control with a new reference number"
           >
@@ -383,26 +434,30 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
         <div style={{ marginTop:8, padding:10, background:"var(--surface,#fff)", border:"1px solid var(--acc,#2563eb)", borderRadius:6, display:"flex", flexDirection:"column", gap:7 }}>
           <div style={{ fontSize:10, fontWeight:700, color:"var(--ink,#111)" }}>Create new control</div>
           <div style={{ display:"flex", gap:6 }}>
-            <div style={{ flex:"0 0 86px" }}>
+            <div style={{ flex:"0 0 100px" }}>
               <label style={{ fontSize:9, fontWeight:600, color:"var(--ink-2,#555)", display:"block", marginBottom:2 }}>Ref *</label>
               <input
                 className="dendrai-input"
                 placeholder="e.g. AC-06"
                 value={newCtrl.ref}
-                onChange={e => setNewCtrl(p => ({ ...p, ref: e.target.value }))}
+                onChange={e => { setNewCtrl(p => ({ ...p, ref: e.target.value })); setRefIsAuto(false); }}
                 style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box" }}
+                title="Auto-populated from the selected framework's next available number — edit to override"
                 autoFocus
               />
             </div>
             <div style={{ flex:1 }}>
               <label style={{ fontSize:9, fontWeight:600, color:"var(--ink-2,#555)", display:"block", marginBottom:2 }}>Framework</label>
-              <input
+              <select
                 className="dendrai-input"
-                placeholder="e.g. NIST SP 800-53"
                 value={newCtrl.framework}
-                onChange={e => setNewCtrl(p => ({ ...p, framework: e.target.value }))}
-                style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box" }}
-              />
+                onChange={e => handleFrameworkChange(e.target.value)}
+                style={{ fontSize:10, padding:"3px 6px", width:"100%", boxSizing:"border-box", cursor:"pointer" }}
+              >
+                {frameworkOptions.map(fw => (
+                  <option key={fw} value={fw}>{fw}</option>
+                ))}
+              </select>
             </div>
           </div>
           <div>
