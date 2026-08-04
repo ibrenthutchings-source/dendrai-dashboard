@@ -4,7 +4,7 @@ Unit tests for pac_negative_tests.py — the must-fire/must-not-fire corpus
 runner (P0b). Uses hand-built minimal Rego fixtures (not pac_endpoints'
 shipped defaults) so these tests independently verify the runner's pass/fail
 logic itself, separate from test_pac_contracts.py's checks on the real
-devops_monitoring module.
+built-in modules.
 
     pytest test_pac_negative_tests.py -v
 """
@@ -90,17 +90,17 @@ def test_run_corpus_reports_no_corpus_for_unregistered_process():
 
 
 def test_run_corpus_aggregates_pass_fail_counts():
-    result = pnt.run_corpus("devops_monitoring", _MINI_REGO)
-    # _MINI_REGO doesn't implement any of the devops_monitoring corpus's
-    # expected controls, so every must-fire fixture should fail and every
-    # must-not-fire fixture should pass (nothing in _MINI_REGO ever fires
-    # for their inputs either).
+    result = pnt.run_corpus("infrastructure_monitoring", _MINI_REGO)
+    # _MINI_REGO doesn't implement any of the infrastructure_monitoring
+    # corpus's expected controls, so every must-fire fixture should fail and
+    # every must-not-fire fixture should pass (nothing in _MINI_REGO ever
+    # fires for their inputs either).
     assert result["ok"] is False
-    assert result["total"] == len(pnt.DEVOPS_MONITORING_FIXTURES)
+    assert result["total"] == len(pnt.INFRASTRUCTURE_MONITORING_FIXTURES)
     assert result["passed"] + result["failed"] == result["total"]
 
 
 def test_run_all_corpora_covers_every_requested_process():
-    result = pnt.run_all_corpora({"devops_monitoring": _MINI_REGO, "itgc": _MINI_REGO})
-    assert set(result.keys()) == {"devops_monitoring", "itgc"}
+    result = pnt.run_all_corpora({"infrastructure_monitoring": _MINI_REGO, "itgc": _MINI_REGO})
+    assert set(result.keys()) == {"infrastructure_monitoring", "itgc"}
     assert result["itgc"]["ok"] is None  # no corpus registered for itgc yet

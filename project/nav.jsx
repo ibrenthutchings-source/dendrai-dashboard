@@ -2,8 +2,8 @@
    Left navigation rail — menu only, routes the main canvas.
    Six sections, mirroring the actual workflow this platform
    automates: Risk Assessment -> Automation -> Tracking ->
-   DevOps Monitoring -> Board -> Setup. See help.jsx for the same
-   framing rendered as a clickable overview (HelpScreen).
+   Infrastructure Monitoring -> Board -> Setup. See help.jsx for
+   the same framing rendered as a clickable overview (HelpScreen).
    ============================================================ */
 
 const NAV_SECTIONS = [
@@ -42,9 +42,8 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    label: "DevOps Monitoring",
+    label: "Infrastructure Monitoring",
     items: [
-      { id: "devopsmonitoring", icon: "shield", l: "Branch Integrity & Evidence" },
       { id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring" },
     ],
   },
@@ -88,7 +87,7 @@ function findNavLocation(activeScreen, activeGovTab) {
 // The five risk-to-audit workflow stages (Setup is configuration, not a
 // workflow stage — see help.jsx). Kept as an explicit list rather than
 // derived so a future Setup rename can't silently light up a stepper cell.
-const WORKFLOW_STAGE_LABELS = ["Risk Assessment", "Automation", "Tracking", "DevOps Monitoring", "Board"];
+const WORKFLOW_STAGE_LABELS = ["Risk Assessment", "Automation", "Tracking", "Infrastructure Monitoring", "Board"];
 
 // Compact "you are here" strip for the top of the main canvas: the four
 // workflow stages as a clickable stepper, plus a Stage › Screen breadcrumb.

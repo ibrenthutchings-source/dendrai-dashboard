@@ -1,11 +1,11 @@
 /* ============================================================
    Intelligenza Workflow — a clickable overview of the platform's
    actual workflow: Risk Assessment -> Automation -> Tracking ->
-   DevOps Monitoring -> Board -> Setup. Mirrors nav.jsx's six
-   sections exactly (same ids/labels) so this stays a map of the
-   real nav, not a separate narrative that can drift out of sync
-   with it. This is also the default landing screen (see app.jsx's
-   activeScreen initial state).
+   Infrastructure Monitoring -> Board -> Setup. Mirrors nav.jsx's
+   six sections exactly (same ids/labels) so this stays a map of
+   the real nav, not a separate narrative that can drift out of
+   sync with it. This is also the default landing screen (see
+   app.jsx's activeScreen initial state).
    ============================================================ */
 
 const WORKFLOW_STAGES = [
@@ -45,10 +45,9 @@ const WORKFLOW_STAGES = [
     ],
   },
   {
-    id: "devopsmonitoring", label: "DevOps Monitoring", icon: "shield",
-    desc: "SCM branch-protection integrity, pipeline/infrastructure configuration posture, and SARIF/SAST evidence, wired into the same RaC→CaC→PaC and HITL spine as every other category — drift detection, risk waivers, provenance/SBOM attestation, connector-credential hygiene, and ITSM SLA tracking, not a separate bolt-on system.",
+    id: "infrastructuremonitoring", label: "Infrastructure Monitoring", icon: "shield",
+    desc: "IaaS/OS/DB configuration posture, wired into the same RaC→CaC→PaC and HITL spine as every other category — drift detection and connector-credential hygiene, not a separate bolt-on system.",
     items: [
-      { screen: "devopsmonitoring", label: "Branch Integrity & Evidence", desc: "Branch-protection/CODEOWNERS audits, GitHub Actions pipeline security, secret scanning, SARIF findings, drift & time-series log, risk waivers, pipeline provenance attestations, and ITSM ticket SLA tracking in one command center." },
       { screen: "infrastructuremonitoring", label: "Infrastructure Monitoring", desc: "Postgres CIS-style hardening checks and Railway platform/deployment drift for registered infrastructure targets, plus a live view of Intelligenza's own connector-credential rotation hygiene." },
     ],
   },

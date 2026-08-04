@@ -24,15 +24,15 @@ import pac_endpoints
 
 def test_check_process_drift_no_db_reports_default_as_live_and_not_drifted():
     assert not db.is_available()  # documents the precondition this test relies on
-    result = pad.check_process_drift("devops_monitoring")
+    result = pad.check_process_drift("infrastructure_monitoring")
     assert result["live_module_id"] is None
     assert result["drifted"] is False
     assert "built-in default" in result["reason"]
 
 
 def test_check_process_drift_no_db_live_hash_matches_the_actual_default():
-    result = pad.check_process_drift("devops_monitoring")
-    expected_hash = pad._content_hash(pac_endpoints._REGO_DEFAULTS["devops_monitoring"])
+    result = pad.check_process_drift("infrastructure_monitoring")
+    expected_hash = pad._content_hash(pac_endpoints._REGO_DEFAULTS["infrastructure_monitoring"])
     assert result["live_hash"] == expected_hash
 
 
