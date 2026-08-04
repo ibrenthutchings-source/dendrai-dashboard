@@ -205,16 +205,48 @@ def test_check_module_contract_unknown_process_still_checks_roots():
     assert "something" in result["unproducible_roots"]
 
 
-def test_all_five_original_builtin_modules_are_currently_dead_by_root():
-    """Documents the larger finding: every built-in process EXCEPT
-    devops_monitoring references top-level input roots the automated
-    pipeline never constructs (input is always {"event": {...}}). This test
-    isn't asserting a bug should exist forever — it's a tripwire that will
-    fail (loudly, as a welcome surprise) the day someone wires a real
-    producer for one of these processes and forgets to update this test."""
-    for process in ("itgc", "order_to_cash", "procure_to_pay", "receive_to_ship", "record_to_report"):
+def test_remaining_three_original_builtin_modules_are_still_dead_by_root():
+    """Documents the larger finding: itgc/receive_to_ship/record_to_report
+    still reference top-level input roots the automated pipeline never
+    constructs (input is always {"event": {...}}). order_to_cash and
+    procure_to_pay were the same until generate_o2c_p2p_synthetic_log.py's
+    wiring — see test_order_to_cash_and_procure_to_pay_are_no_longer_dead
+    below. This test isn't asserting a bug should exist forever — it's a
+    tripwire that will fail (loudly, as a welcome surprise) the day someone
+    wires a real producer for one of these three and forgets to update it."""
+    for process in ("itgc", "receive_to_ship", "record_to_report"):
         result = pc.check_module_contract(process, pe._REGO_DEFAULTS[process])
         assert result["unproducible_roots"], f"{process} unexpectedly has no unproducible roots"
+
+
+def test_order_to_cash_is_no_longer_dead():
+    """The other side of the tripwire above: order_to_cash now has a real
+    producer (generate_o2c_p2p_synthetic_log.py, routed via
+    mcp_governance._SOURCE_EVENT_TO_PAC_PROCESS, shaped by UBO/pipeline/
+    silver.py's erp_transaction_detail spread) — check_module_contract must
+    report a fully clean contract, matching devops_monitoring's."""
+    result = pc.check_module_contract("order_to_cash", pe._REGO_DEFAULTS["order_to_cash"])
+    assert result["ok"], result
+    assert not result["unproducible_roots"]
+    assert not result["unknown_fields"]
+    assert not result["unroutable_event_types"]
+
+
+def test_procure_to_pay_is_no_longer_dead_by_root_except_one_documented_gap():
+    """Same wiring as order_to_cash for every rule except deny_vendor_event's
+    second clause (input.event.type == "new_vendor_activation") — that one
+    was already flagged in the Rego's own comment as pre-existing,
+    deliberately-deferred debt ("no producer emits it... left as documented
+    ... rather than invented a new EventType speculatively") and is out of
+    scope here. Everything else must be clean: zero unproducible_roots (the
+    nested input.purchase_order.*/input.invoice.*/etc. roots are gone), and
+    the only unknown_fields/invalid_event_types entries are that one
+    pre-existing gap, not a new one this wiring introduced."""
+    result = pc.check_module_contract("procure_to_pay", pe._REGO_DEFAULTS["procure_to_pay"])
+    assert not result["unproducible_roots"]
+    assert result["unknown_fields"] == ["due_diligence_completed"]
+    assert result["invalid_event_types"] == ["new_vendor_activation"]
+    assert not result["unroutable_event_types"]
 
 
 # ── check_observed_fields ────────────────────────────────────────────────────

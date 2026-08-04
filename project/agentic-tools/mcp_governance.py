@@ -395,6 +395,20 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     # no new process needed for this first slice (AI-05/AI-06 coverage).
     ("SYSTEM_TELEMETRY", "AI_ASSESSMENT_OVERDUE"):      "itgc",
     ("SYSTEM_TELEMETRY", "AI_HUMAN_OVERSIGHT_MISSING"): "itgc",
+    # Order-to-Cash — see UBO/models/uro.py's EventType docstring for why
+    # each of these is its own type rather than reusing an existing one.
+    ("SYSTEM_TELEMETRY", "REVENUE_RECOGNITION_EVENT"): "order_to_cash",
+    ("SYSTEM_TELEMETRY", "SALES_ORDER_CREDIT_EVENT"):  "order_to_cash",
+    ("SYSTEM_TELEMETRY", "BILLING_EVENT"):             "order_to_cash",
+    ("SYSTEM_TELEMETRY", "CASH_APPLICATION_EVENT"):    "order_to_cash",
+    ("SYSTEM_TELEMETRY", "CUSTOMER_MASTER_CHANGE"):    "order_to_cash",
+    ("SYSTEM_TELEMETRY", "AR_AGING_EVENT"):            "order_to_cash",
+    # Procure-to-Pay.
+    ("SYSTEM_TELEMETRY", "PURCHASE_ORDER_EVENT"):   "procure_to_pay",
+    ("SYSTEM_TELEMETRY", "INVOICE_MATCH_EVENT"):    "procure_to_pay",
+    ("SYSTEM_TELEMETRY", "VENDOR_MASTER_CHANGE"):   "procure_to_pay",
+    ("SYSTEM_TELEMETRY", "PAYMENT_RUN_EVENT"):      "procure_to_pay",
+    ("SYSTEM_TELEMETRY", "PROCUREMENT_SOD_CONFLICT"): "procure_to_pay",
 }
 
 
@@ -1921,6 +1935,32 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("ai_assessment_overdue")
     if payload.get("ai_human_oversight_missing"):
         flags.add("ai_human_oversight_missing")
+    # Order-to-Cash / Procure-to-Pay: explicit signals set by
+    # generate_o2c_p2p_synthetic_log.py (and, going forward, any real Oracle
+    # Fusion O2C/P2P producer) — same "producer knows exactly which event
+    # it's emitting" pattern as every flag above.
+    if payload.get("revenue_recognition_event"):
+        flags.add("revenue_recognition_event")
+    if payload.get("sales_order_credit_event"):
+        flags.add("sales_order_credit_event")
+    if payload.get("billing_event"):
+        flags.add("billing_event")
+    if payload.get("cash_application_event"):
+        flags.add("cash_application_event")
+    if payload.get("customer_master_change"):
+        flags.add("customer_master_change")
+    if payload.get("ar_aging_event"):
+        flags.add("ar_aging_event")
+    if payload.get("purchase_order_event"):
+        flags.add("purchase_order_event")
+    if payload.get("invoice_match_event"):
+        flags.add("invoice_match_event")
+    if payload.get("vendor_master_change"):
+        flags.add("vendor_master_change")
+    if payload.get("payment_run_event"):
+        flags.add("payment_run_event")
+    if payload.get("procurement_sod_conflict"):
+        flags.add("procurement_sod_conflict")
     return sorted(flags)
 
 

@@ -222,9 +222,228 @@ INFRASTRUCTURE_MONITORING_FIXTURES: list[Fixture] = [
     ),
 ]
 
+# ── order_to_cash / procure_to_pay corpora ──────────────────────────────────
+# Legitimate as of generate_o2c_p2p_synthetic_log.py's wiring — per this
+# module's own docstring, these were withheld until a real producer existed
+# ("Corpora for those processes belong in the same commit that wires a real
+# producer for them, not before"). Mirrors pac_contracts._ERP_TRANSACTION_
+# FIELDS' flat field names exactly. One "fully compliant" baseline per
+# EventType, one must-fire fixture per control_id (breaking exactly the
+# field that control checks), sharing the baseline as the must-not-fire
+# fixture wherever one EventType backs more than one control_id (INVOICE_
+# MATCH_EVENT backs both P2P-P002 and P2P-P004).
+
+_COMPLIANT_REVENUE_EVENT = {
+    "type": "REVENUE_RECOGNITION_EVENT",
+    "txn_type": "revenue_recognition", "txn_performance_obligation_satisfied": True,
+    "txn_amount": 50000, "txn_order_number": "SO-1001",
+    "contract_value": 500000, "contract_reviewed_by_legal": True, "contract_id": "CTR-1",
+    "txn_constrained_estimate_documented": True, "txn_contract_id": "CTR-1",
+}
+_COMPLIANT_SALES_ORDER_EVENT = {
+    "type": "SALES_ORDER_CREDIT_EVENT",
+    "so_status": "booked", "customer_credit_limit": 100000, "so_total": 50000,
+    "so_credit_override_approved_by": "manager1", "so_order_number": "SO-2001",
+}
+_COMPLIANT_BILLING_EVENT = {
+    "type": "BILLING_EVENT",
+    "inv_type": "manual", "inv_approved_by": "mgr1", "inv_amount": 5000,
+    "inv_number": "INV-3001", "inv_billing_date": "2026-01-10",
+    "inv_shipment_date": "2026-01-05", "inv_days_billed_before_shipment": 5,
+}
+_COMPLIANT_CASH_EVENT = {
+    "type": "CASH_APPLICATION_EVENT",
+    "cash_unapplied_days": 5, "cash_receipt_number": "CR-4001", "cash_amount": 20000,
+}
+_COMPLIANT_CUSTOMER_MASTER_EVENT = {
+    "type": "CUSTOMER_MASTER_CHANGE",
+    "field": "bank_account", "dual_approved": True, "customer_name": "Acme Co",
+}
+_COMPLIANT_AR_AGING_EVENT = {
+    "type": "AR_AGING_EVENT",
+    "ar_days_outstanding": 30, "ar_amount": 100000, "ar_customer_name": "Acme",
+    "ar_collection_action_documented": True,
+}
+
+ORDER_TO_CASH_FIXTURES: list[Fixture] = [
+    Fixture(
+        name="revenue_recognized_before_performance_obligation_must_fire",
+        input_event={"event": {**_COMPLIANT_REVENUE_EVENT, "txn_performance_obligation_satisfied": False}},
+        expect="fire", expected_control_id="OTC-P001",
+        rationale="Revenue booked before the performance obligation is satisfied is an ASC 606 violation.",
+    ),
+    Fixture(
+        name="fully_compliant_revenue_event_must_be_silent",
+        input_event={"event": _COMPLIANT_REVENUE_EVENT},
+        expect="silent",
+        rationale="Every revenue-recognition control satisfied — must not fire.",
+    ),
+    Fixture(
+        name="sales_order_over_credit_limit_without_override_must_fire",
+        input_event={"event": {**_COMPLIANT_SALES_ORDER_EVENT, "so_total": 150000,
+                                "so_credit_override_approved_by": None}},
+        expect="fire", expected_control_id="OTC-P002",
+        rationale="Order exceeds the customer's credit limit with no override approval on file.",
+    ),
+    Fixture(
+        name="fully_compliant_sales_order_event_must_be_silent",
+        input_event={"event": _COMPLIANT_SALES_ORDER_EVENT},
+        expect="silent",
+        rationale="Order within credit limit — must not fire.",
+    ),
+    Fixture(
+        name="unapproved_manual_invoice_over_threshold_must_fire",
+        input_event={"event": {**_COMPLIANT_BILLING_EVENT, "inv_approved_by": None, "inv_amount": 15000}},
+        expect="fire", expected_control_id="OTC-P003",
+        rationale="Manual invoice over $10K with no manager approval.",
+    ),
+    Fixture(
+        name="fully_compliant_billing_event_must_be_silent",
+        input_event={"event": _COMPLIANT_BILLING_EVENT},
+        expect="silent",
+        rationale="Invoice approved and within threshold — must not fire.",
+    ),
+    Fixture(
+        name="cash_receipt_unapplied_past_sla_must_fire",
+        input_event={"event": {**_COMPLIANT_CASH_EVENT, "cash_unapplied_days": 45}},
+        expect="fire", expected_control_id="OTC-P004",
+        rationale="Cash receipt unapplied for 45 days breaches the 30-day AR SLA.",
+    ),
+    Fixture(
+        name="fully_compliant_cash_event_must_be_silent",
+        input_event={"event": _COMPLIANT_CASH_EVENT},
+        expect="silent",
+        rationale="Receipt applied within SLA — must not fire.",
+    ),
+    Fixture(
+        name="customer_bank_account_change_without_dual_approval_must_fire",
+        input_event={"event": {**_COMPLIANT_CUSTOMER_MASTER_EVENT, "dual_approved": False}},
+        expect="fire", expected_control_id="OTC-P005",
+        rationale="Bank-account change to customer master data requires dual approval.",
+    ),
+    Fixture(
+        name="fully_compliant_customer_master_event_must_be_silent",
+        input_event={"event": _COMPLIANT_CUSTOMER_MASTER_EVENT},
+        expect="silent",
+        rationale="Dual-approved sensitive-field change — must not fire.",
+    ),
+    Fixture(
+        name="ar_aging_over_90_days_without_collection_action_must_fire",
+        input_event={"event": {**_COMPLIANT_AR_AGING_EVENT, "ar_days_outstanding": 120,
+                                "ar_amount": 75000, "ar_collection_action_documented": False}},
+        expect="fire", expected_control_id="OTC-P006",
+        rationale="Material AR balance over 90 days outstanding with no documented collection action.",
+    ),
+    Fixture(
+        name="fully_compliant_ar_aging_event_must_be_silent",
+        input_event={"event": _COMPLIANT_AR_AGING_EVENT},
+        expect="silent",
+        rationale="AR balance current and documented — must not fire.",
+    ),
+]
+
+_COMPLIANT_PO_EVENT = {
+    "type": "PURCHASE_ORDER_EVENT",
+    "po_total": 30000, "po_vp_approved": True, "po_number": "PO-5001",
+    "po_cfo_approved": True, "po_type": "standard", "po_annual_review_completed": True,
+}
+_COMPLIANT_INVOICE_MATCH_EVENT = {
+    "type": "INVOICE_MATCH_EVENT",
+    "inv_matching_type": "3_way", "inv_amount": 10000, "po_total": 10000,
+    "inv_number": "INV-6001", "goods_receipt_confirmed": True,
+    "inv_duplicate_score": 0.1, "inv_duplicate_override_reason": None,
+}
+_COMPLIANT_VENDOR_MASTER_EVENT = {
+    "type": "VENDOR_MASTER_CHANGE",
+    "field": "bank_account_number", "dual_approved": True, "vendor_name": "Acme Supplies",
+}
+_COMPLIANT_PAYMENT_RUN_EVENT = {
+    "type": "PAYMENT_RUN_EVENT",
+    "pay_batch_total": 50000, "pay_batch_treasury_approved": True, "pay_batch_name": "Batch-7001",
+    "pay_type": "ach", "pay_two_factor_confirmed": True, "pay_id": "PAY-7001", "pay_amount": 50000,
+}
+_COMPLIANT_SOD_EVENT = {
+    "type": "PROCUREMENT_SOD_CONFLICT",
+    "user_oracle_roles": ["AP_INVOICE_ENTRY"], "user_username": "jdoe",
+}
+
+PROCURE_TO_PAY_FIXTURES: list[Fixture] = [
+    Fixture(
+        name="po_over_50k_without_vp_approval_must_fire",
+        input_event={"event": {**_COMPLIANT_PO_EVENT, "po_total": 68000, "po_vp_approved": False}},
+        expect="fire", expected_control_id="P2P-P001",
+        rationale="PO over the $50K VP-approval threshold with no VP sign-off.",
+    ),
+    Fixture(
+        name="fully_compliant_po_event_must_be_silent",
+        input_event={"event": _COMPLIANT_PO_EVENT},
+        expect="silent",
+        rationale="PO within threshold and approved — must not fire.",
+    ),
+    Fixture(
+        name="three_way_match_variance_over_tolerance_must_fire",
+        input_event={"event": {**_COMPLIANT_INVOICE_MATCH_EVENT, "inv_amount": 15000, "po_total": 10000}},
+        expect="fire", expected_control_id="P2P-P002",
+        rationale="50% invoice/PO variance is far outside the 5% three-way-match tolerance.",
+    ),
+    Fixture(
+        name="duplicate_invoice_without_override_must_fire",
+        input_event={"event": {**_COMPLIANT_INVOICE_MATCH_EVENT, "inv_duplicate_score": 0.95,
+                                "inv_duplicate_override_reason": None}},
+        expect="fire", expected_control_id="P2P-P004",
+        rationale="High duplicate-detection score with no documented override reason.",
+    ),
+    Fixture(
+        name="fully_compliant_invoice_match_event_must_be_silent",
+        input_event={"event": _COMPLIANT_INVOICE_MATCH_EVENT},
+        expect="silent",
+        rationale="Matched, receipted, and not a duplicate — must not fire for either P2P-P002 or P2P-P004.",
+    ),
+    Fixture(
+        name="vendor_bank_account_change_without_dual_approval_must_fire",
+        input_event={"event": {**_COMPLIANT_VENDOR_MASTER_EVENT, "dual_approved": False}},
+        expect="fire", expected_control_id="P2P-P003",
+        rationale="Vendor bank-detail change requires dual approval.",
+    ),
+    Fixture(
+        name="fully_compliant_vendor_master_event_must_be_silent",
+        input_event={"event": _COMPLIANT_VENDOR_MASTER_EVENT},
+        expect="silent",
+        rationale="Dual-approved sensitive-field change — must not fire.",
+    ),
+    Fixture(
+        name="payment_batch_over_100k_without_treasury_approval_must_fire",
+        input_event={"event": {**_COMPLIANT_PAYMENT_RUN_EVENT, "pay_batch_total": 150000,
+                                "pay_batch_treasury_approved": False}},
+        expect="fire", expected_control_id="P2P-P005",
+        rationale="Payment batch over the $100K Treasury-approval threshold with no sign-off.",
+    ),
+    Fixture(
+        name="fully_compliant_payment_run_event_must_be_silent",
+        input_event={"event": _COMPLIANT_PAYMENT_RUN_EVENT},
+        expect="silent",
+        rationale="Batch within threshold, wire two-factor confirmed — must not fire.",
+    ),
+    Fixture(
+        name="invoice_entry_and_payment_approval_role_conflict_must_fire",
+        input_event={"event": {**_COMPLIANT_SOD_EVENT,
+                                "user_oracle_roles": ["AP_INVOICE_ENTRY", "AP_PAYMENT_APPROVAL"]}},
+        expect="fire", expected_control_id="P2P-P006",
+        rationale="One user holding both AP Invoice Entry and Payment Approval is a classic P2P SoD conflict.",
+    ),
+    Fixture(
+        name="fully_compliant_sod_event_must_be_silent",
+        input_event={"event": _COMPLIANT_SOD_EVENT},
+        expect="silent",
+        rationale="Single, non-conflicting role — must not fire.",
+    ),
+]
+
 CORPORA: dict[str, list[Fixture]] = {
     "devops_monitoring": DEVOPS_MONITORING_FIXTURES,
     "infrastructure_monitoring": INFRASTRUCTURE_MONITORING_FIXTURES,
+    "order_to_cash": ORDER_TO_CASH_FIXTURES,
+    "procure_to_pay": PROCURE_TO_PAY_FIXTURES,
 }
 
 
