@@ -654,14 +654,15 @@ def pac_run_negative_tests(process: str, rego_content: str = "") -> str:
     (observability.pac_test_runs) and updates each exercised control's
     last_verified_at/last_test_passed.
 
-    Only devops_monitoring has a registered fixture corpus today — every
-    other built-in process currently fails the contract check (no real
-    producer wires their input fields yet), which is itself the finding.
+    Only processes with a real producer wired have a registered fixture
+    corpus today (infrastructure_monitoring, order_to_cash, procure_to_pay)
+    — the remaining built-in processes currently fail the contract check (no
+    real producer wires their input fields yet), which is itself the finding.
 
     Blocked when MCP_READ_ONLY=true (writes a test-run row).
 
     Args:
-        process:      Process to test — e.g. 'devops_monitoring', 'itgc'
+        process:      Process to test — e.g. 'infrastructure_monitoring', 'itgc'
         rego_content: Optional — test this Rego instead of whatever is
                       currently saved (or the built-in default) for the process
     """

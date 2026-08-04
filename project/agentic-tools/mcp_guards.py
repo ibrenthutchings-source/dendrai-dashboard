@@ -248,9 +248,9 @@ def cap_output(data: str, max_bytes: int = _DEFAULT_OUTPUT_CAP) -> str:
 
 
 # ── SSRF guard for user-supplied external URLs ─────────────────────────────────
-# Nothing else in this module covers SSRF today — added for DevOps Monitoring's
-# repo registration (base_url) and evidence webhook use cases, where the URL
-# comes from a user-editable form/config rather than a hardcoded API host.
+# Nothing else in this module covers SSRF today — for connector registration
+# (base_url) use cases where the URL comes from a user-editable form/config
+# rather than a hardcoded API host.
 # Mirrors api_server.py's _PRIVATE_HOST_RE blocklist (used there for the
 # rss-proxy) but resolves the hostname and checks the actual IP range rather
 # than pattern-matching the literal host string, which also blocks DNS
