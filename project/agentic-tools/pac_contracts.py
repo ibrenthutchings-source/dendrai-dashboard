@@ -89,19 +89,6 @@ except ImportError:  # pragma: no cover — UBO always present in the real image
 # ── The five fields every event carries, from _evaluate_pac_policy ────────────
 BASE_EVENT_FIELDS = frozenset({"type", "resource", "resource_type", "action", "outcome"})
 
-# Fields the SCM branch-protection audit contributes, via
-# scm_connectors.normalize_github_compliance / normalize_gitlab_compliance.
-_SCM_COMPLIANCE_FIELDS = frozenset({
-    "enforce_admins",
-    "required_approving_review_count",
-    "dismiss_stale_reviews",
-    "required_status_checks",
-    "has_required_sast_check",
-    "has_required_test_check",
-    "codeowners_present",
-    "codeowners_covers_workflows",
-})
-
 # Fields _conform_system_telemetry always sets.
 _SYSTEM_TELEMETRY_FIELDS = frozenset({
     "risk_flags", "flag_count", "severity", "server_name", "system_type",
@@ -113,15 +100,6 @@ _SYSTEM_TELEMETRY_FIELDS = frozenset({
 _GIT_FIELDS = frozenset({
     "ref", "forced", "cvss_score", "secret_type", "commits_count", "is_admin",
     "secret_finding_count", "secret_rule_ids",
-})
-
-# Fields pipeline_security_connectors.normalize_pipeline_compliance()
-# contributes, spread via _conform_github's "compliance" dict (GITHUB
-# on-demand path) or _conform_system_telemetry's "pipeline_compliance" dict
-# (SYSTEM_TELEMETRY scheduled-poll path — github_scm_tool.py's second event).
-_PIPELINE_SECURITY_FIELDS = frozenset({
-    "total_workflows", "workflows_without_permissions", "has_write_all_permissions",
-    "has_risky_pull_request_target", "unpinned_action_count", "unpinned_actions",
 })
 
 _MCP_FIELDS = frozenset({
@@ -249,16 +227,6 @@ _ERP_TRANSACTION_FIELDS = frozenset({
 #                 its source systems emit, which is most of the enum).
 
 PROCESS_CONTRACTS: dict[str, dict] = {
-    "devops_monitoring": {
-        "allowed_fields": _SCM_COMPLIANCE_FIELDS | _SYSTEM_TELEMETRY_FIELDS | _GIT_FIELDS | _PIPELINE_SECURITY_FIELDS,
-        "allowed_event_types": {
-            "BRANCH_PROTECTION_BYPASSED",
-            "CODE_REVIEW_BYPASSED",
-            "SAST_FINDING",
-            "SLA_BREACH",
-            "PIPELINE_MISCONFIGURATION",
-        },
-    },
     "itgc": {
         "allowed_fields": _GIT_FIELDS | _SYSTEM_TELEMETRY_FIELDS | _MCP_FIELDS | _SAILPOINT_FIELDS | _AI_GOVERNANCE_FIELDS,
         "allowed_event_types": None,

@@ -129,10 +129,7 @@ import risk_register_endpoints
 import pac_endpoints
 import approvals_endpoints
 import evidence_pack_endpoints
-import scm_audit_endpoints
-import evidence_endpoints
 import risk_waiver_sweep
-import itsm_endpoints
 import vendor_risk_endpoints
 import ai_governance_endpoints
 import infrastructure_monitoring_endpoints
@@ -161,7 +158,6 @@ from predictive_analytics_mcp_server import mcp as _predictive_mcp
 from risk_as_code_mcp_server import mcp as _rac_mcp
 from pac_mcp_server import mcp as _pac_mcp
 from cac_mcp_server import mcp as _cac_mcp
-from devops_monitoring_mcp_server import mcp as _devops_monitoring_mcp
 from infrastructure_monitoring_mcp_server import mcp as _infrastructure_monitoring_mcp
 
 try:
@@ -224,7 +220,6 @@ async def _run_cycle_for_all_tenants(cycle_fn, label: str) -> None:
         db.bind_tenant_pool(tenant.id, tenant.db_dsn)
         db.bind_tenant_connector_key(secrets.connector_encryption_key)
         auth_endpoints.bind_tenant_secret(tenant.id, secrets.auth_jwt_secret)
-        evidence_endpoints.bind_tenant_secret(secrets.evidence_signing_key)
         try:
             await cycle_fn()
         except Exception:
@@ -233,7 +228,6 @@ async def _run_cycle_for_all_tenants(cycle_fn, label: str) -> None:
             db.unbind_tenant()
             db.unbind_tenant_connector_key()
             auth_endpoints.unbind_tenant_secret()
-            evidence_endpoints.unbind_tenant_secret()
 
 
 async def _multi_tenant_loop(cycle_fn, tick_s: float, label: str) -> None:
@@ -580,7 +574,6 @@ class _TenantResolutionMiddleware:
         db.bind_tenant_pool(tenant.id, tenant.db_dsn)
         db.bind_tenant_connector_key(secrets.connector_encryption_key)
         auth_endpoints.bind_tenant_secret(tenant.id, secrets.auth_jwt_secret)
-        evidence_endpoints.bind_tenant_secret(secrets.evidence_signing_key)
         _tenant_api_key.set(secrets.api_key)
         scope.setdefault("state", {})["tenant"] = tenant
         try:
@@ -589,7 +582,6 @@ class _TenantResolutionMiddleware:
             db.unbind_tenant()
             db.unbind_tenant_connector_key()
             auth_endpoints.unbind_tenant_secret()
-            evidence_endpoints.unbind_tenant_secret()
             _tenant_api_key.set(None)
 
 
@@ -784,18 +776,9 @@ app.include_router(evidence_pack_endpoints.router)
 app.include_router(github_endpoints.router)
 logger.info("GitHub webhook router registered at /github/webhook")
 
-# DevOps Monitoring: SCM branch-protection/CODEOWNERS auditor (GitHub + GitLab).
-app.include_router(scm_audit_endpoints.router)
-
-# DevOps Monitoring: SARIF/SAST evidence ingestion, fingerprinting, and signing.
-app.include_router(evidence_endpoints.router)
-
 # Infrastructure Monitoring: Postgres CIS hardening, Railway platform/deployment
 # drift, and connector-credential rotation hygiene.
 app.include_router(infrastructure_monitoring_endpoints.router)
-
-# DevOps Monitoring: ITSM/Jira-ServiceNow SLA Bridge — ticket lifecycle + breach tracking.
-app.include_router(itsm_endpoints.router)
 
 # Continuous Third-Party/Vendor Risk: vendor SOC 2 register CRUD.
 app.include_router(vendor_risk_endpoints.router)
@@ -835,7 +818,6 @@ _mount_mcp("/mcp/risk-as-code",     "Risk-as-Code OSCAL/COSO YAML generation",  
 _mount_mcp("/mcp/policy-as-code",   "Policy-as-Code Rego module management",    _pac_mcp)
 _mount_mcp("/mcp/controls-as-code", "Controls-as-Code generation & evaluation", _cac_mcp)
 _mount_mcp("/mcp/oracle",           "Oracle Fusion ERP data",                   _oracle_mcp)
-_mount_mcp("/mcp/devops-monitoring", "DevOps Monitoring: SCM audits & SARIF evidence", _devops_monitoring_mcp)
 _mount_mcp("/mcp/infrastructure-monitoring", "Infrastructure Monitoring: IaaS/OS/DB continuous audit", _infrastructure_monitoring_mcp)
 
 

@@ -75,7 +75,6 @@ _BUILTIN_PROCESS_IDS = {
     "procure_to_pay",
     "receive_to_ship",
     "record_to_report",
-    "devops_monitoring",
     "infrastructure_monitoring",
     "hire_to_retire",
     "trade_compliance",
@@ -99,7 +98,6 @@ _PROCESS_LABELS = {
     "procure_to_pay":  "Procure to Pay",
     "receive_to_ship": "Receive to Ship",
     "record_to_report": "Record to Report",
-    "devops_monitoring": "DevOps Monitoring",
     "infrastructure_monitoring": "Infrastructure Monitoring",
     "hire_to_retire": "Hire to Retire",
     "trade_compliance": "Trade Compliance",
@@ -119,7 +117,6 @@ _PROCESS_ID_PREFIX = {
     "procure_to_pay":  "P2P",
     "receive_to_ship": "R2S",
     "record_to_report": "R2R",
-    "devops_monitoring": "DEVOPS",
     "infrastructure_monitoring": "INFRA",
     "hire_to_retire": "H2R",
     "trade_compliance": "TC",
@@ -787,7 +784,7 @@ deny_disclosure_event[msg] if {
 
 # ── Financial Risk Pipeline ────────────────────────────────────────────────────
 # Findings ride the generic input.event.* shape (system_telemetry ->
-# mcp_governance._evaluate_pac_policy), same convention as devops_monitoring/
+# mcp_governance._evaluate_pac_policy), same convention as
 # infrastructure_monitoring below — distinct from the input.journal.*/
 # input.account_recon.*/etc. shapes P-R2R-001..007 above use, which are
 # evaluated directly by oracle_fusion_endpoints.py against live GL data.
@@ -861,120 +858,6 @@ deny_treasury[msg] if {
 }
 """,
 
-"devops_monitoring": """\
-# DevOps Monitoring — SCM Integrity + SARIF/SAST Evidence + Pipeline Security
-# Package:  controls.devops.monitoring
-# Process:  DevOps Monitoring
-# Version:  1.1
-# Approved by: CISO, VP Engineering
-# Last Revised: 2026-07-26
-# Description: Branch-protection/CODEOWNERS compliance for GitHub & GitLab
-#   repositories, severity-based SLA triggers for ingested SARIF/SAST
-#   findings, and GitHub Actions workflow-as-code security (token
-#   permissions, unpinned actions, pull_request_target). Evaluated against
-#   the synthesized events scm_audit_endpoints.py, evidence_endpoints.py,
-#   and pipeline_security_connectors.py produce — see their module docstrings.
-
-package controls.devops.monitoring
-
-import future.keywords.in
-import future.keywords.if
-
-# ── DEVOPS-001: Admin Bypass (CRITICAL) ──────────────────────────────────────
-deny_branch_protection[msg] if {
-    input.event.type == "BRANCH_PROTECTION_BYPASSED"
-    input.event.enforce_admins == false
-    msg := sprintf("DEVOPS-001: Branch protection on '%v' does not enforce rules for administrators — admins can bypass required checks (CRITICAL)", [input.event.resource])
-}
-
-# ── DEVOPS-002: Minimum Approving Reviews ────────────────────────────────────
-deny_branch_protection[msg] if {
-    input.event.type == "BRANCH_PROTECTION_BYPASSED"
-    input.event.required_approving_review_count < 1
-    msg := sprintf("DEVOPS-002: Branch '%v' requires zero approving reviews before merge", [input.event.resource])
-}
-
-# ── DEVOPS-003: Stale Review Dismissal ───────────────────────────────────────
-deny_branch_protection[msg] if {
-    input.event.type == "BRANCH_PROTECTION_BYPASSED"
-    input.event.dismiss_stale_reviews == false
-    msg := sprintf("DEVOPS-003: Branch '%v' does not dismiss stale reviews when new commits are pushed", [input.event.resource])
-}
-
-# ── DEVOPS-004: Required Security/Test Status Checks ─────────────────────────
-deny_branch_protection[msg] if {
-    input.event.type == "BRANCH_PROTECTION_BYPASSED"
-    input.event.has_required_sast_check == false
-    msg := sprintf("DEVOPS-004: Branch '%v' has no required SAST/security status check", [input.event.resource])
-}
-
-deny_branch_protection[msg] if {
-    input.event.type == "BRANCH_PROTECTION_BYPASSED"
-    input.event.has_required_test_check == false
-    msg := sprintf("DEVOPS-004: Branch '%v' has no required unit-test status check", [input.event.resource])
-}
-
-# ── DEVOPS-005/006: CODEOWNERS Coverage ──────────────────────────────────────
-deny_branch_protection[msg] if {
-    input.event.type == "BRANCH_PROTECTION_BYPASSED"
-    not input.event.codeowners_present
-    msg := sprintf("DEVOPS-005: Repository for '%v' has no CODEOWNERS file", [input.event.resource])
-}
-
-deny_branch_protection[msg] if {
-    input.event.type == "BRANCH_PROTECTION_BYPASSED"
-    input.event.codeowners_present == true
-    input.event.codeowners_covers_workflows == false
-    msg := sprintf("DEVOPS-006: CODEOWNERS for '%v' does not cover the CI/workflow definition path", [input.event.resource])
-}
-
-# ── DEVOPS-007/008: SARIF Evidence Severity SLA ──────────────────────────────
-# Critical = 7-day resolution target, High = 30-day (spec thresholds).
-deny_evidence_finding[msg] if {
-    input.event.severity == "CRITICAL"
-    msg := sprintf("DEVOPS-007: CRITICAL SARIF finding '%v' on '%v' — 7-day remediation SLA applies", [input.event.rule_id, input.event.resource])
-}
-
-deny_evidence_finding[msg] if {
-    input.event.severity == "HIGH"
-    msg := sprintf("DEVOPS-008: HIGH SARIF finding '%v' on '%v' — 30-day remediation SLA applies", [input.event.rule_id, input.event.resource])
-}
-
-# ── DEVOPS-009: ITSM Ticket SLA Breach ───────────────────────────────────────
-deny_sla_breach[msg] if {
-    input.event.type == "SLA_BREACH"
-    msg := sprintf("DEVOPS-009: ITSM ticket '%v' (%v) for finding '%v' breached its remediation SLA (due %v)", [input.event.external_ticket_key, input.event.external_system, input.event.finding_hash, input.event.sla_due_at])
-}
-
-# ── DEVOPS-010: Workflow Permissions Least-Privilege ─────────────────────────
-deny_pipeline_security[msg] if {
-    input.event.type == "PIPELINE_MISCONFIGURATION"
-    input.event.has_write_all_permissions == true
-    msg := sprintf("DEVOPS-010: A workflow in '%v' grants write-all GITHUB_TOKEN permissions — scope to only what each job needs", [input.event.resource])
-}
-
-# ── DEVOPS-011: Missing Explicit Permissions Block ───────────────────────────
-deny_pipeline_security[msg] if {
-    input.event.type == "PIPELINE_MISCONFIGURATION"
-    input.event.workflows_without_permissions > 0
-    msg := sprintf("DEVOPS-011: %v workflow(s) in '%v' have no explicit permissions block — token scope depends on a repo/org default that can silently change", [input.event.workflows_without_permissions, input.event.resource])
-}
-
-# ── DEVOPS-012: Unpinned Third-Party Actions ─────────────────────────────────
-deny_pipeline_security[msg] if {
-    input.event.type == "PIPELINE_MISCONFIGURATION"
-    input.event.unpinned_action_count > 0
-    msg := sprintf("DEVOPS-012: %v action reference(s) in '%v' are pinned to a mutable tag/branch rather than a commit SHA — a compromised upstream tag changes what runs with no change on this side", [input.event.unpinned_action_count, input.event.resource])
-}
-
-# ── DEVOPS-013: Risky pull_request_target + Untrusted Checkout (CRITICAL) ────
-deny_pipeline_security[msg] if {
-    input.event.type == "PIPELINE_MISCONFIGURATION"
-    input.event.has_risky_pull_request_target == true
-    msg := sprintf("DEVOPS-013: A workflow in '%v' triggers on pull_request_target and checks out the PR head — a fork PR can execute arbitrary code with write-scoped secrets (CRITICAL)", [input.event.resource])
-}
-""",
-
 "infrastructure_monitoring": """\
 # Infrastructure Monitoring — Continuous IaaS/OS/DB Configuration Audit
 # Package:  controls.infrastructure.monitoring
@@ -987,8 +870,7 @@ deny_pipeline_security[msg] if {
 #   Intelligenza's own connector-credential rotation hygiene
 #   (connector_hygiene.py). Evaluated against
 #   iaas_connectors.normalize_postgres_compliance()'s output, spread
-#   into input.event.* the same way scm_audit_endpoints.py's "compliance"
-#   sub-dict is for the devops_monitoring module.
+#   into input.event.* via a "compliance" sub-dict.
 
 package controls.infrastructure.monitoring
 
@@ -1736,8 +1618,8 @@ async def approve_module(process: str, req: ApproveModuleRequest):
     Also runs the negative-testing gate (schema-contract check + must-fire/
     must-not-fire corpus) against the EXACT version being approved and
     persists the result as audit evidence — but does not (yet) block the
-    approval on failure. Advisory rather than blocking on purpose: today
-    every built-in process except devops_monitoring fails the contract check
+    approval on failure. Advisory rather than blocking on purpose: some
+    built-in processes still fail the contract check
     (see pac_contracts.py's module docstring — no real producer wires their
     input fields yet), so a hard block would make this endpoint unusable for
     5 of 6 processes with no warning. The result is returned in the response
