@@ -793,6 +793,11 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   const [ctrlSearch, setCtrlSearch]   = useState("");
   const [domainNames, setDomainNames] = useState({});
   const [domainsLoading, setDomainsLoading] = useState(false);
+  // Per-cell "+ New" (create a brand-new control, not pick from the library) —
+  // the Detail view's ControlsPanel has this; the matrix cells previously didn't.
+  const [fwCreate, setFwCreate]       = useState(null); // { key, fw }
+  const [newCtrlDraft, setNewCtrlDraft] = useState({ ref: "", name: "", framework: "", desc: "", pacControlId: "" });
+  const [createErr, setCreateErr]     = useState("");
 
   const _INTERNAL_FWS = new Set(["Internal", "Internal Risk Register", ""]);
 
@@ -913,6 +918,44 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
     await onSaveRow(key, state, allRefs);
     setSavingCells(prev => { const next = new Set(prev); next.delete(cellId); return next; });
+  }
+
+  // ── "+ New" (create a brand-new control) per cell ──────────────────────────
+
+  function openCreateForCell(key, fw) {
+    setNewCtrlDraft({ ref: _nextRefForFramework(fw), name: "", framework: fw, desc: "", pacControlId: "" });
+    setCreateErr("");
+    setFwCreate({ key, fw });
+    setFwPicker(null);
+  }
+
+  async function handleCreateForCell() {
+    const ref = newCtrlDraft.ref.trim().toUpperCase();
+    if (!ref) { setCreateErr("Control reference is required."); return; }
+    if (CTRL_BY_REF[ref]) { setCreateErr(`${ref} already exists in the control library.`); return; }
+    if (!/^[A-Za-z]/.test(ref)) { setCreateErr("Reference must start with a letter."); return; }
+    if (!newCtrlDraft.name.trim()) { setCreateErr("Control name is required."); return; }
+    const pacControlId = newCtrlDraft.pacControlId.trim().toUpperCase() || null;
+    const ctrl = {
+      ref, framework: newCtrlDraft.framework || "Custom", name: newCtrlDraft.name.trim(),
+      category: "Custom", domain: "Custom",
+      description: newCtrlDraft.desc.trim(), desc: newCtrlDraft.desc.trim(),
+      pac_control_id: pacControlId,
+    };
+    try {
+      const res = await fetch("/api/risk-register/controls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ctrl),
+      });
+      const data = await res.json().catch(() => null);
+      if (data && data.saved === false) { setCreateErr(data.detail || "Could not create control."); return; }
+    } catch (_) {}
+    MASTER_CONTROLS.push(ctrl);
+    CTRL_BY_REF[ref] = ctrl;
+    onAddManualControl(fwCreate.key, ref);
+    setFwCreate(null);
+    setCreateErr("");
   }
 
   // ── Styles ───────────────────────────────────────────────────────────────
@@ -1080,9 +1123,15 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                     const cellId       = `${key}:${fw}`;
                     const isSavingCell = savingCells.has(cellId);
                     const pickerOpen   = fwPicker?.key === key && fwPicker?.fw === fw;
+                    const createOpen   = fwCreate?.key === key && fwCreate?.fw === fw;
+                    // Deliberately NOT framework-restricted: any not-yet-assigned control
+                    // can be added from any column's picker. The dedup above (fwRefs) makes
+                    // sure a framework-specific control still only ever DISPLAYS in its own
+                    // native column — restricting the picker itself just meant a column
+                    // whose own framework's controls were all already assigned showed
+                    // nothing addable at all, even though plenty of controls existed.
                     const addable      = MASTER_CONTROLS.filter(c =>
                       !allRefs.includes(c.ref) &&
-                      (!c.framework || _internalFws.has(c.framework) || c.framework === fw) &&
                       (ctrlSearch === "" ||
                         c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
                         c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
@@ -1127,8 +1176,20 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                     )}
                                   </div>
                                   <button
-                                    title="Remove control"
-                                    onClick={() => onRemoveControl(key, ref, cs.autoMapped.includes(ref))}
+                                    title={isNativeFw ? "Remove control" : "Shared control — removing it here removes it from every framework column showing it"}
+                                    onClick={() => {
+                                      // This control isn't native to this framework column — it's an
+                                      // Internal/unspecified-framework control shown here only because
+                                      // it has no single "home" column (see fwRefs filter above), so
+                                      // there's really one shared assignment behind every copy shown.
+                                      // Removing it always affects every column — that's unavoidable
+                                      // given the data model — so require an explicit confirmation
+                                      // instead of either silently cascading or being unremovable here.
+                                      if (!isNativeFw && !window.confirm(
+                                        `"${ctrl?.name || ref}" has no single framework — it's shown in every column because it's one shared control assignment. Removing it here removes it from ALL frameworks on this row, not just ${fw}. Continue?`
+                                      )) return;
+                                      onRemoveControl(key, ref, cs.autoMapped.includes(ref));
+                                    }}
                                     style={{
                                       flexShrink: 0, fontSize: 13, padding: "0 5px", border: "none",
                                       background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer",
@@ -1150,13 +1211,22 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                         {/* Actions */}
                         <div style={{ marginTop: 6, display: "flex", gap: 4 }}>
                           <button
-                            onClick={() => { setFwPicker(pickerOpen ? null : { key, fw }); setCtrlSearch(""); }}
+                            onClick={() => { setFwPicker(pickerOpen ? null : { key, fw }); setCtrlSearch(""); setFwCreate(null); }}
                             style={{
                               fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer",
                               border: "1px dashed var(--acc,#2563eb)", background: "transparent",
                               color: "var(--acc,#2563eb)",
                             }}
                           >+ Add</button>
+                          <button
+                            onClick={() => { if (createOpen) { setFwCreate(null); } else { openCreateForCell(key, fw); } }}
+                            title="Create a brand-new control with a new reference number"
+                            style={{
+                              fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer",
+                              border: "1px dashed var(--line,#ccc)", background: "transparent",
+                              color: "var(--ink-2,#555)",
+                            }}
+                          >+ New</button>
                         </div>
 
                         {/* Control picker */}
@@ -1198,6 +1268,75 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                               {addable.length === 0 && (
                                 <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>All controls already assigned</span>
                               )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Create-new-control form */}
+                        {createOpen && (
+                          <div style={{
+                            marginTop: 6, padding: 8, background: "var(--surface,#fff)",
+                            border: "1px solid var(--acc,#2563eb)", borderRadius: 6,
+                            display: "flex", flexDirection: "column", gap: 6,
+                            position: "relative", zIndex: 10,
+                          }}>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <div style={{ flex: "0 0 80px" }}>
+                                <input
+                                  className="dendrai-input"
+                                  placeholder="Ref"
+                                  value={newCtrlDraft.ref}
+                                  onChange={e => setNewCtrlDraft(p => ({ ...p, ref: e.target.value }))}
+                                  style={{ fontSize: 9, padding: "3px 6px", width: "100%", boxSizing: "border-box" }}
+                                  title="Auto-populated from the selected framework's next available number — edit to override"
+                                  autoFocus
+                                />
+                              </div>
+                              <select
+                                className="dendrai-input"
+                                value={newCtrlDraft.framework}
+                                onChange={e => {
+                                  const nfw = e.target.value;
+                                  setNewCtrlDraft(p => ({ ...p, framework: nfw, ref: _nextRefForFramework(nfw) }));
+                                }}
+                                style={{ fontSize: 9, padding: "3px 6px", flex: 1, cursor: "pointer" }}
+                              >
+                                {["Internal", ..._activeMxFws.filter(f => f !== "Internal")].map(f => (
+                                  <option key={f} value={f}>{f}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <input
+                              className="dendrai-input"
+                              placeholder="Control name…"
+                              value={newCtrlDraft.name}
+                              onChange={e => setNewCtrlDraft(p => ({ ...p, name: e.target.value }))}
+                              style={{ fontSize: 9, padding: "3px 6px" }}
+                            />
+                            <select
+                              className="dendrai-input"
+                              value={newCtrlDraft.pacControlId}
+                              onChange={e => setNewCtrlDraft(p => ({ ...p, pacControlId: e.target.value }))}
+                              style={{ fontSize: 9, padding: "3px 6px", cursor: "pointer" }}
+                              title="Optionally link this to a real, policy-enforced control"
+                            >
+                              <option value="">Not linked to a PaC control</option>
+                              {PAC_CATALOG_CONTROLS.map(c => (
+                                <option key={c.control_id} value={c.control_id}>
+                                  {c.control_id} — {c.name}{c.source === "pac_rego" ? " (enforced)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                            {createErr && (
+                              <div style={{ fontSize: 9, color: "var(--red,#e53)" }}>{createErr}</div>
+                            )}
+                            <div style={{ display: "flex", gap: 4 }}>
+                              <button className="btn btn-sm btn-acc" onClick={handleCreateForCell} style={{ fontSize: 9, padding: "2px 10px" }}>
+                                Create &amp; Assign
+                              </button>
+                              <button className="btn btn-sm" onClick={() => { setFwCreate(null); setCreateErr(""); }} style={{ fontSize: 9, padding: "2px 8px" }}>
+                                Cancel
+                              </button>
                             </div>
                           </div>
                         )}
