@@ -856,7 +856,7 @@ function StickyHScrollBar({ targetRef, contentWidth }) {
   );
 }
 
-function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, onRemoveFramework, savingRows, savedAt }) {
+function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, onRemoveFramework, onPurgeExtraFramework, savingRows, savedAt, runId }) {
   const scrollWrapRef = useRef(null);
   // Row-level wording edit state
   const [editingRows, setEditingRows] = useState(new Set());
@@ -872,6 +872,30 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   const [fwCreate, setFwCreate]       = useState(null); // { key, fw }
   const [newCtrlDraft, setNewCtrlDraft] = useState({ ref: "", name: "", framework: "", desc: "", pacControlId: "" });
   const [createErr, setCreateErr]     = useState("");
+
+  // ── Spreadsheet-style sort / collapse / filter ─────────────────────────────
+  const [sortCol, setSortCol]         = useState(null);   // null (default domain grouping) | "domain" | "risk" | a framework name
+  const [sortDir, setSortDir]         = useState("asc");
+  const [collapsedDomains, setCollapsedDomains] = useState(new Set());
+  const [colFilters, setColFilters]   = useState({});      // { domain, risk, [fw]: text }
+
+  function toggleSort(col) {
+    if (sortCol === col) { setSortDir(d => (d === "asc" ? "desc" : "asc")); }
+    else { setSortCol(col); setSortDir("asc"); }
+  }
+
+  function toggleDomainCollapse(domain) {
+    setCollapsedDomains(prev => {
+      const next = new Set(prev);
+      next.has(domain) ? next.delete(domain) : next.add(domain);
+      return next;
+    });
+  }
+
+  function SortIndicator({ col }) {
+    if (sortCol !== col) return <span style={{ fontSize: 8, color: "var(--ink-4,#ccc)" }}>⇅</span>;
+    return <span style={{ fontSize: 9, color: "var(--acc,#2563eb)" }}>{sortDir === "asc" ? "▲" : "▼"}</span>;
+  }
 
   const _INTERNAL_FWS = new Set(["Internal", "Internal Risk Register", ""]);
 
@@ -899,9 +923,18 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 
   useEffect(() => {
     if (!risks?.length) return;
+    // Prefer the persisted domain (risk_scores.assigned_domain, returned by the
+    // risk-fetch endpoints) over recomputing — only fall back to the client-side
+    // keyword guess for risks that have never been categorized. Previously this
+    // recomputed (and re-billed the AI call) on every single screen load because
+    // nothing read the persisted value back — see risk_scores.assigned_domain.
     const baseline = {};
-    for (const r of risks) { baseline[r.id || r.risk_ref] = inferDomain(r); }
+    for (const r of risks) { baseline[r.id || r.risk_ref] = r.assigned_domain || inferDomain(r); }
     setDomainNames(baseline);
+
+    const uncategorized = risks.filter(r => !r.assigned_domain);
+    if (uncategorized.length === 0) return;
+
     (async () => {
       setDomainsLoading(true);
       try {
@@ -909,7 +942,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            risks: risks.map(r => ({
+            risks: uncategorized.map(r => ({
               ref: r.id || r.risk_ref,
               name: r.name || r.current_wording || "",
               category: r.category || "",
@@ -923,7 +956,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
             // Only apply AI domain overrides to enterprise (internal) risks — framework
             // catalog risks keep their category-based domain from inferDomain.
             const enterpriseRefs = new Set(
-              risks.filter(r => !r.source_framework || _INTERNAL_FWS.has(r.source_framework))
+              uncategorized.filter(r => !r.source_framework || _INTERNAL_FWS.has(r.source_framework))
                    .map(r => r.id || r.risk_ref)
             );
             setDomainNames(prev => {
@@ -956,6 +989,48 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw)) extraFws.add(fw);
   }
   const fwCols = [..._activeMxFws, ...[...extraFws].sort()];
+
+  // A control tied to a specific (non-Internal) framework only ever belongs to
+  // its own column; Internal/unspecified-framework controls have no single
+  // "home" column so they remain visible in every column. Shared by sort,
+  // filter, and the per-cell render below so all three stay consistent.
+  function computeFwRefs(allRefs, fw) {
+    return allRefs.filter(ref => {
+      const c = CTRL_BY_REF[ref];
+      if (!c) return false;
+      return c.framework && !_internalFws.has(c.framework) ? c.framework === fw : true;
+    });
+  }
+
+  function rowDomain(r, key) { return domainNames[key] || inferDomain(r); }
+
+  function rowMatchesFilters(r, key, cs) {
+    const domainFilter = (colFilters.domain || "").trim().toLowerCase();
+    if (domainFilter && !rowDomain(r, key).toLowerCase().includes(domainFilter)) return false;
+
+    const riskFilter = (colFilters.risk || "").trim().toLowerCase();
+    if (riskFilter) {
+      const wording = (riskStates[key]?.wording ?? r.current_wording ?? r.name ?? "");
+      const riskText = `${r.category || ""} ${wording}`.toLowerCase();
+      if (!riskText.includes(riskFilter)) return false;
+    }
+
+    const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
+    for (const fw of fwCols) {
+      const f = (colFilters[fw] || "").trim().toLowerCase();
+      if (!f) continue;
+      const fwRefs = computeFwRefs(allRefs, fw);
+      if (f === "none" || f === "empty") {
+        if (fwRefs.length > 0) return false;
+      } else {
+        const text = fwRefs.map(ref => `${ref} ${CTRL_BY_REF[ref]?.name || ""}`).join(" ").toLowerCase();
+        if (!text.includes(f)) return false;
+      }
+    }
+    return true;
+  }
+
+  const anyFilterActive = Object.values(colFilters).some(v => (v || "").trim() !== "");
 
   // ── Wording row helpers ──────────────────────────────────────────────────
 
@@ -1045,30 +1120,63 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     borderBottom: "1px solid var(--line,#eee)", borderRight: "1px solid var(--line,#f0f0f0)",
   };
   const matrixMinWidth = `${340 + fwCols.length * 200}px`;
+  const allDomains = [...new Set((risks || []).map(r => domainNames[r.id || r.risk_ref] || inferDomain(r)))];
 
   return (
     <div>
-      {savedAt && (
-        <div style={{ fontSize: 10, color: "var(--green,#2a7)", padding: "4px 0 10px", display: "flex", alignItems: "center", gap: 4 }}>
-          <span>✓</span> Saved at {savedAt}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={() => setCollapsedDomains(new Set(allDomains))}
+            title="Collapse all domain groups"
+            style={{ fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer", border: "1px solid var(--line,#ddd)", background: "transparent", color: "var(--ink-2,#555)" }}
+          >Collapse all</button>
+          <button
+            onClick={() => setCollapsedDomains(new Set())}
+            title="Expand all domain groups"
+            style={{ fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer", border: "1px solid var(--line,#ddd)", background: "transparent", color: "var(--ink-2,#555)" }}
+          >Expand all</button>
         </div>
-      )}
+        {sortCol && (
+          <span style={{ fontSize: 9, color: "var(--ink-3,#888)" }}>
+            Sorted by <b>{sortCol === "domain" ? "Core Domains & Risks" : sortCol === "risk" ? "Enterprise Risks" : sortCol}</b> ({sortDir === "asc" ? "ascending" : "descending"})
+            {" · "}
+            <button onClick={() => { setSortCol(null); setSortDir("asc"); }} style={{ fontSize:9, padding:0, border:"none", background:"transparent", color:"var(--acc,#2563eb)", cursor:"pointer", textDecoration:"underline" }}>reset sort</button>
+          </span>
+        )}
+        {savedAt && (
+          <div style={{ fontSize: 10, color: "var(--green,#2a7)", display: "flex", alignItems: "center", gap: 4 }}>
+            <span>✓</span> Saved at {savedAt}
+          </div>
+        )}
+      </div>
 
       <div ref={scrollWrapRef} style={{ overflowX: "auto", maxWidth: "100%" }}>
         <table style={{ width: "100%", minWidth: matrixMinWidth, borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
             <tr>
-              <th style={{ ...thStyle, width: 160, minWidth: 140 }}>
-                Core Domains &amp; Risks
+              <th style={{ ...thStyle, width: 160, minWidth: 140, cursor: "pointer" }} onClick={() => toggleSort("domain")}>
+                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span>Core Domains &amp; Risks</span>
+                  <SortIndicator col="domain" />
+                </span>
                 {domainsLoading && (
                   <span style={{ fontSize: 8, fontWeight: 400, color: "var(--ink-3,#aaa)", marginLeft: 5 }}>generating…</span>
                 )}
               </th>
-              <th style={{ ...thStyle, minWidth: 200, width: "26%" }}>Enterprise Risks</th>
+              <th style={{ ...thStyle, minWidth: 200, width: "26%", cursor: "pointer" }} onClick={() => toggleSort("risk")}>
+                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span>Enterprise Risks</span>
+                  <SortIndicator col="risk" />
+                </span>
+              </th>
               {fwCols.map(fw => (
                 <th key={fw} style={{ ...thStyle, minWidth: 200 }}>
                   <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <span>{fw}</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }} onClick={() => toggleSort(fw)}>
+                      <span>{fw}</span>
+                      <SortIndicator col={fw} />
+                    </span>
                     {onRemoveFramework && _activeMxFws.includes(fw) && (
                       <button
                         title={`Remove ${fw} from the Framework Matrix`}
@@ -1082,20 +1190,96 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                         onMouseLeave={e => { e.currentTarget.style.color = "var(--ink-3,#aaa)"; e.currentTarget.style.background = "transparent"; }}
                       >×</button>
                     )}
+                    {onPurgeExtraFramework && !_activeMxFws.includes(fw) && (
+                      // Not in the configured matrix at all — this column only exists
+                      // because a real control tagged with this framework is still
+                      // assigned to a risk (see fwCols/extraFws above). There's no
+                      // "config" to remove it from; removing it here means actually
+                      // unassigning those controls, so it's a distinct, more consequential
+                      // action than onRemoveFramework — handler owns its own confirmation.
+                      <button
+                        title={`"${fw}" isn't in the configured Framework Matrix — it's shown because a control is still assigned to it. Click to unassign and remove this column.`}
+                        onClick={() => onPurgeExtraFramework(fw)}
+                        style={{
+                          flexShrink: 0, fontSize: 12, padding: "0 4px", border: "none",
+                          background: "transparent", color: "var(--ink-3,#aaa)", cursor: "pointer",
+                          lineHeight: "16px", borderRadius: 3, fontWeight: 400, textTransform: "none",
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.color = "var(--red,#e53)"; e.currentTarget.style.background = "rgba(229,85,51,0.08)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = "var(--ink-3,#aaa)"; e.currentTarget.style.background = "transparent"; }}
+                      >×</button>
+                    )}
                   </span>
+                </th>
+              ))}
+            </tr>
+            {/* Filter row — one text input per column, spreadsheet-style */}
+            <tr>
+              <th style={{ ...thStyle, padding: "4px 6px", fontWeight: 400, textTransform: "none" }}>
+                <input
+                  className="dendrai-input"
+                  placeholder="Filter domain…"
+                  value={colFilters.domain || ""}
+                  onChange={e => setColFilters(prev => ({ ...prev, domain: e.target.value }))}
+                  style={{ fontSize: 9, padding: "2px 5px", width: "100%", boxSizing: "border-box" }}
+                />
+              </th>
+              <th style={{ ...thStyle, padding: "4px 6px", fontWeight: 400, textTransform: "none" }}>
+                <input
+                  className="dendrai-input"
+                  placeholder="Filter risks…"
+                  value={colFilters.risk || ""}
+                  onChange={e => setColFilters(prev => ({ ...prev, risk: e.target.value }))}
+                  style={{ fontSize: 9, padding: "2px 5px", width: "100%", boxSizing: "border-box" }}
+                />
+              </th>
+              {fwCols.map(fw => (
+                <th key={fw} style={{ ...thStyle, padding: "4px 6px", fontWeight: 400, textTransform: "none" }}>
+                  <input
+                    className="dendrai-input"
+                    placeholder='Filter controls… ("none" = unassigned)'
+                    value={colFilters[fw] || ""}
+                    onChange={e => setColFilters(prev => ({ ...prev, [fw]: e.target.value }))}
+                    style={{ fontSize: 9, padding: "2px 5px", width: "100%", boxSizing: "border-box" }}
+                  />
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {[...(risks || [])].sort((a, b) => {
-              // Primary: Core Domain & Risks (Column 0). Secondary: Enterprise Risks
-              // (Column 1's category label), so each domain group is internally ordered too.
+            {anyFilterActive && (
+              <tr>
+                <td colSpan={2 + fwCols.length} style={{ padding: "4px 10px", fontSize: 9, color: "var(--ink-3,#888)", background: "var(--surface-2,#f8f9fa)", borderBottom: "1px solid var(--line,#eee)" }}>
+                  Filtered — <button onClick={() => setColFilters({})} style={{ fontSize:9, padding:0, border:"none", background:"transparent", color:"var(--acc,#2563eb)", cursor:"pointer", textDecoration:"underline" }}>clear all filters</button>
+                </td>
+              </tr>
+            )}
+            {[...(risks || [])].filter((r, idx, arr) => {
+              const key = r.id || r.risk_ref || `idx-${idx}`;
+              const cs  = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [] };
+              return rowMatchesFilters(r, key, cs);
+            }).sort((a, b) => {
+              const keyA = a.id || a.risk_ref, keyB = b.id || b.risk_ref;
+              if (sortCol && sortCol !== "domain") {
+                let cmp;
+                if (sortCol === "risk") {
+                  cmp = (a.category || a.name || "").localeCompare(b.category || b.name || "");
+                } else {
+                  const csA = ctrlStates[keyA] || { autoMapped: [], manual: [] };
+                  const csB = ctrlStates[keyB] || { autoMapped: [], manual: [] };
+                  const allA = [...(csA.autoMapped || []), ...(csA.manual || [])];
+                  const allB = [...(csB.autoMapped || []), ...(csB.manual || [])];
+                  cmp = computeFwRefs(allA, sortCol).length - computeFwRefs(allB, sortCol).length;
+                }
+                return sortDir === "asc" ? cmp : -cmp;
+              }
+              // Default / explicit domain sort: primary Core Domain & Risks, secondary
+              // Enterprise Risks, so each domain group is internally ordered too.
               const da = domainNames[a.id || a.risk_ref] || inferDomain(a);
               const db_ = domainNames[b.id || b.risk_ref] || inferDomain(b);
-              const domainCmp = da.localeCompare(db_);
-              if (domainCmp !== 0) return domainCmp;
-              return (a.category || "Risk").localeCompare(b.category || "Risk");
+              let domainCmp = da.localeCompare(db_);
+              if (domainCmp === 0) domainCmp = (a.category || "Risk").localeCompare(b.category || "Risk");
+              return sortDir === "asc" ? domainCmp : -domainCmp;
             }).map((r, idx, arr) => {
               // Fallback for legacy rows persisted before predictive_analytics_tool.py
               // assigned stable risk ids — prevents every id-less risk from colliding
@@ -1110,6 +1294,22 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
               const prevRisk  = idx > 0 ? arr[idx - 1] : null;
               const prevDomain = prevRisk ? (domainNames[prevRisk.id || prevRisk.risk_ref] || inferDomain(prevRisk)) : null;
               const isGroupStart = domain !== prevDomain;
+              // Collapse only makes sense when rows are actually grouped contiguously
+              // by domain — sorting by Enterprise Risks or a framework column breaks
+              // that contiguity, so collapse is disabled (and irrelevant) there.
+              const isGroupedMode = !sortCol || sortCol === "domain";
+              const domainCollapsed = isGroupedMode && collapsedDomains.has(domain);
+              if (isGroupedMode && domainCollapsed && !isGroupStart) return null;
+
+              let groupCount = 1;
+              if (isGroupStart && isGroupedMode) {
+                for (let j = idx + 1; j < arr.length; j++) {
+                  const rj = arr[j];
+                  const kj = rj.id || rj.risk_ref || `idx-${j}`;
+                  if ((domainNames[kj] || inferDomain(rj)) !== domain) break;
+                  groupCount++;
+                }
+              }
 
               return (
                 <tr key={key} style={{ opacity: state.included ? 1 : 0.45, background: isEditing ? "rgba(37,99,235,0.025)" : "transparent" }}>
@@ -1124,8 +1324,17 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                     maxWidth: 160,
                   }}>
                     {isGroupStart ? (
-                      <div style={{ fontWeight: 700, fontSize: 10, color: "var(--acc,#2563eb)", lineHeight: 1.4 }}>
-                        {domain}
+                      <div
+                        onClick={isGroupedMode ? () => toggleDomainCollapse(domain) : undefined}
+                        style={{ display: "flex", alignItems: "center", gap: 4, fontWeight: 700, fontSize: 10, color: "var(--acc,#2563eb)", lineHeight: 1.4, cursor: isGroupedMode ? "pointer" : "default" }}
+                      >
+                        {isGroupedMode && (
+                          <span style={{ fontSize: 8, display: "inline-block", transform: domainCollapsed ? "rotate(-90deg)" : "none", transition: "transform .1s" }}>▾</span>
+                        )}
+                        <span>{domain}</span>
+                        {domainCollapsed && (
+                          <span style={{ fontSize: 9, fontWeight: 400, color: "var(--ink-3,#888)" }}>({groupCount})</span>
+                        )}
                       </div>
                     ) : (
                       <div style={{
@@ -1189,11 +1398,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                     // to its own column — no longer repeated across every framework.
                     // Internal/unspecified-framework controls aren't "specific" to any
                     // framework, so they remain visible in every column as before.
-                    const fwRefs = allRefs.filter(ref => {
-                      const c = CTRL_BY_REF[ref];
-                      if (!c) return false;
-                      return c.framework && !_internalFws.has(c.framework) ? c.framework === fw : true;
-                    });
+                    const fwRefs       = computeFwRefs(allRefs, fw);
                     const cellId       = `${key}:${fw}`;
                     const isSavingCell = savingCells.has(cellId);
                     const pickerOpen   = fwPicker?.key === key && fwPicker?.fw === fw;
@@ -1668,6 +1873,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [discCtrlStates, setDiscCtrlStates] = useState({});
   const [discCollapsed, setDiscCollapsed] = useState({});
   const [discExpandedCtrl, setDiscExpandedCtrl] = useState(new Set());
+  const [discMatrixView, setDiscMatrixView] = useState(true);
 
   // ── Upload Register state ─────────────────────────────────────────────
   const [uploadedRisks, setUploaded]           = useState([]);
@@ -2096,6 +2302,18 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         if (res.ok) { const d = await res.json(); if (d.risks?.length) setRefreshedRisks(d.risks); }
       }
     } catch (_) {}
+    setSavingRows(prev => { const next = new Set(prev); next.delete(riskKey); return next; });
+  }
+
+  // Discovered/external risks aren't persisted per-row the way the internal
+  // register is (no risk_register_reviews row to save into yet) — they're
+  // committed as a whole via "Convert to Code" in the Discovery tab's action
+  // bar. This just satisfies RiskFrameworkMatrix's onSaveRow contract (used
+  // by the per-cell Save button after an inline wording edit) without
+  // inventing a network call that has nothing real to persist to yet.
+  async function handleSaveDiscoveryRow(riskKey, state) {
+    setSavingRows(prev => new Set([...prev, riskKey]));
+    setDiscStates(prev => ({ ...prev, [riskKey]: { ...prev[riskKey], originalWording: state.wording } }));
     setSavingRows(prev => { const next = new Set(prev); next.delete(riskKey); return next; });
   }
 
@@ -2677,6 +2895,30 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     } catch (_) {}
   }
 
+  // Removing an "extra" (not-in-config) framework column has no config to
+  // edit — it only exists because a real control tagged with that framework
+  // is still assigned to a risk somewhere on the register. The only way to
+  // actually make the column go away is to unassign those controls, so this
+  // is a real, explicit, confirmed data change — not a display toggle.
+  function handlePurgeExtraFramework(fw) {
+    const affected = [];
+    for (const [key, cs] of Object.entries(allMatrixCtrlStates)) {
+      for (const ref of (cs.autoMapped || [])) if (CTRL_BY_REF[ref]?.framework === fw) affected.push({ key, ref, isAuto: true });
+      for (const ref of (cs.manual || []))     if (CTRL_BY_REF[ref]?.framework === fw) affected.push({ key, ref, isAuto: false });
+    }
+    if (affected.length === 0) return;
+    const riskCount = new Set(affected.map(a => a.key)).size;
+    const ok = window.confirm(
+      `"${fw}" isn't part of the configured Framework Matrix — it's only shown because ` +
+      `${affected.length} control${affected.length !== 1 ? "s are" : " is"} still assigned to it across ` +
+      `${riskCount} risk${riskCount !== 1 ? "s" : ""}. Removing this column will unassign ` +
+      `${affected.length === 1 ? "that control" : "those controls"} from every risk shown here — this cannot ` +
+      `be undone from this screen. Continue?`
+    );
+    if (!ok) return;
+    for (const { key, ref, isAuto } of affected) matrixRemove(key, ref, isAuto);
+  }
+
   return (
     <div className="code-screen" data-screen-label="Risk and Controls Register" style={{ position:"relative" }}>
       {/* Header */}
@@ -2818,8 +3060,10 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                     onResetCtrl={matrixReset}
                     onSaveRow={handleSaveRowWording}
                     onRemoveFramework={handleRemoveFramework}
+                    onPurgeExtraFramework={handlePurgeExtraFramework}
                     savingRows={savingRows}
                     savedAt={savedAt}
+                    runId={effectiveRunId}
                   />
                 ) : (
                   (() => {
@@ -2945,12 +3189,47 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
             {!searching && discoveredRisks.length > 0 && (
               <>
-                {renderSummaryBanner(discoveredRisks, discRiskStates)}
-                {renderRiskList(
-                  discoveredRisks, discRiskStates, discCtrlStates,
-                  discCollapsed, setDiscCollapsed,
-                  discExpandedCtrl, setDiscExpandedCtrl,
-                  discHandlers, discCtrl, "external"
+                {renderSummaryBanner(discoveredRisks, discRiskStates, discMatrixView)}
+
+                {/* View toggle — same as Internal Register's, scoped to this search's
+                    results. Matrix defaults on so a search immediately produces a real
+                    risk & control matrix for the searched framework(s), not just a list. */}
+                <div style={{ display:"flex", gap:6, marginBottom:12, paddingBottom:10, borderBottom:"1px solid var(--line,#eee)" }}>
+                  {[["matrix","Risk & Control Matrix"],["detail","Detail"]].map(([v, label]) => (
+                    <button
+                      key={v}
+                      onClick={() => setDiscMatrixView(v === "matrix")}
+                      style={{
+                        fontSize:10, padding:"3px 10px", borderRadius:4, cursor:"pointer",
+                        border: (v === "matrix") === discMatrixView ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line,#ddd)",
+                        background: (v === "matrix") === discMatrixView ? "var(--acc,#2563eb)" : "transparent",
+                        color: (v === "matrix") === discMatrixView ? "#fff" : "var(--ink-2,#555)",
+                        fontWeight: (v === "matrix") === discMatrixView ? 600 : 400,
+                      }}
+                    >{label}</button>
+                  ))}
+                </div>
+
+                {discMatrixView ? (
+                  <RiskFrameworkMatrix
+                    risks={discoveredRisks}
+                    riskStates={discRiskStates}
+                    ctrlStates={discCtrlStates}
+                    matrixFrameworks={[...new Set(discoveredRisks.map(r => r.source_framework).filter(Boolean))].sort()}
+                    onWordingChange={discHandlers.wordingChange}
+                    onAddManualControl={discCtrl.addManual}
+                    onRemoveControl={discCtrl.remove}
+                    onResetCtrl={discCtrl.reset}
+                    onSaveRow={handleSaveDiscoveryRow}
+                    savingRows={savingRows}
+                  />
+                ) : (
+                  renderRiskList(
+                    discoveredRisks, discRiskStates, discCtrlStates,
+                    discCollapsed, setDiscCollapsed,
+                    discExpandedCtrl, setDiscExpandedCtrl,
+                    discHandlers, discCtrl, "external"
+                  )
                 )}
               </>
             )}
