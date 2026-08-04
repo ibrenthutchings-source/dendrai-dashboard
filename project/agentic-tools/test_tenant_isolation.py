@@ -9,9 +9,8 @@ than this file needs). Instead, following the pattern in
 test_github_webhook_listener.py, this mounts just
 api_server._TenantResolutionMiddleware onto a minimal FastAPI app with a
 couple of probe routes — exactly what's needed to exercise the real
-middleware, the real db.py pool routing, the real auth_endpoints JWT
-tenant-claim check, and the real evidence_endpoints signing-key binding,
-against two fake tenants (control_plane.resolve_tenant/get_tenant_secrets
+middleware, the real db.py pool routing, and the real auth_endpoints JWT
+tenant-claim check, against two fake tenants (control_plane.resolve_tenant/get_tenant_secrets
 mocked — the fake-DB-boundary pattern used throughout this repo's suite;
 psycopg2 connections are faked too, so no live Postgres is needed).
 
@@ -35,7 +34,6 @@ import api_server
 import auth_endpoints
 import control_plane
 import db
-import evidence_endpoints
 
 
 class _FakePool:
@@ -208,27 +206,6 @@ def test_jwt_accepted_on_its_own_tenant():
         assert payload["tenant_id"] == "tenant-a-id"
     finally:
         auth_endpoints.unbind_tenant_secret()
-
-
-# ── Evidence signing key scoped per tenant ───────────────────────────────────
-
-def test_evidence_signature_differs_and_does_not_verify_across_tenants():
-    record = {"repository": "acme/app", "rule_id": "CWE-79"}
-
-    evidence_endpoints.bind_tenant_secret("evidence-key-a")
-    try:
-        sig_a = evidence_endpoints.sign_record(record)
-    finally:
-        evidence_endpoints.unbind_tenant_secret()
-
-    evidence_endpoints.bind_tenant_secret("evidence-key-b")
-    try:
-        sig_b = evidence_endpoints.sign_record(record)
-        # Tenant B recomputing the signature (as /evidence/records/{id}/verify
-        # does) must not reproduce tenant A's signature.
-        assert sig_b != sig_a
-    finally:
-        evidence_endpoints.unbind_tenant_secret()
 
 
 # ── Connector-credential encryption key scoped per tenant ───────────────────

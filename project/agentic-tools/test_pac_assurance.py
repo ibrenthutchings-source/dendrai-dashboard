@@ -18,25 +18,25 @@ import pac_assurance as pa
 import pac_endpoints as pe
 
 
-def test_evaluate_and_record_devops_monitoring_is_fully_ok():
-    result = pa.evaluate_and_record("devops_monitoring", pe._REGO_DEFAULTS["devops_monitoring"])
+def test_evaluate_and_record_infrastructure_monitoring_is_fully_ok():
+    result = pa.evaluate_and_record("infrastructure_monitoring", pe._REGO_DEFAULTS["infrastructure_monitoring"])
     assert result["ok"] is True
     assert result["contract"]["ok"] is True
     assert result["corpus"]["ok"] is True
-    assert result["corpus"]["total"] == len(pa.pac_negative_tests.DEVOPS_MONITORING_FIXTURES)
+    assert result["corpus"]["total"] == len(pa.pac_negative_tests.INFRASTRUCTURE_MONITORING_FIXTURES)
 
 
 def test_evaluate_and_record_flags_dead_by_construction_module():
     """A module whose event.type literal is wrong (the exact original bug)
     must report ok=False even though nothing crashes."""
-    broken_rego = pe._REGO_DEFAULTS["devops_monitoring"].replace(
-        'input.event.type == "BRANCH_PROTECTION_BYPASSED"',
-        'input.event.type == "branch_protection_rule"',
+    broken_rego = pe._REGO_DEFAULTS["infrastructure_monitoring"].replace(
+        'input.event.type == "INFRASTRUCTURE_FINDING"',
+        'input.event.type == "infrastructure_finding_typo"',
     )
-    result = pa.evaluate_and_record("devops_monitoring", broken_rego)
+    result = pa.evaluate_and_record("infrastructure_monitoring", broken_rego)
     assert result["ok"] is False
     assert result["contract"]["ok"] is False
-    assert "branch_protection_rule" in result["contract"]["invalid_event_types"]
+    assert "infrastructure_finding_typo" in result["contract"]["invalid_event_types"]
 
 
 def test_evaluate_and_record_does_not_raise_without_database():
@@ -44,7 +44,7 @@ def test_evaluate_and_record_does_not_raise_without_database():
     of the guard in evaluate_and_record is that testing a policy must never
     depend on persistence succeeding."""
     assert not db.is_available()  # documents the precondition this test relies on
-    result = pa.evaluate_and_record("devops_monitoring", pe._REGO_DEFAULTS["devops_monitoring"],
+    result = pa.evaluate_and_record("infrastructure_monitoring", pe._REGO_DEFAULTS["infrastructure_monitoring"],
                                      triggered_by="scheduled_sweep")
     assert result["ok"] is True
 

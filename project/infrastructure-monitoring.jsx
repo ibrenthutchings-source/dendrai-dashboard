@@ -3,9 +3,8 @@
    platform/deployment drift + connector-credential rotation hygiene.
 
    Postgres/Railway targets are registered as poll connectors on the Dendrai
-   UBO Configuration screen (connector_type 'postgres_cis'/'railway_iaas')
-   exactly like the DevOps Monitoring screen's GitHub/GitLab repos — this
-   screen doesn't duplicate that form, it shows the Infrastructure Posture
+   UBO Configuration screen (connector_type 'postgres_cis'/'railway_iaas') —
+   this screen doesn't duplicate that form, it shows the Infrastructure Posture
    matrix (INFRA-001..007) and on-demand "run now" actions, plus Connector
    Hygiene (INFRA-008), a live check with no registration of its own — it
    audits Intelligenza's own credential store.

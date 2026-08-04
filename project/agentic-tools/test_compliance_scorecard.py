@@ -24,7 +24,7 @@ def test_get_mapping_returns_none_for_unmapped_control():
 
 
 def test_get_mapping_returns_curated_dict_for_known_control():
-    mapping = fm.get_mapping("DEVOPS-001")
+    mapping = fm.get_mapping("INFRA-001")
     assert mapping is not None
     assert "CC6.1" in mapping["soc2_criteria"]
     assert mapping["coso_component"] == "Control Activities"
@@ -39,16 +39,15 @@ def test_every_mapping_has_all_four_framework_keys():
         assert required_keys <= set(mapping.keys()), f"{control_id} missing keys"
 
 
-def test_devops_and_infra_rego_control_ids_all_have_a_framework_mapping():
-    """Honesty check: every control_id the devops_monitoring/
-    infrastructure_monitoring Rego modules actually define (via
-    extract_control_ids_from_defaults, the same parser that seeds
-    controls_catalog) should have a curated mapping — otherwise the
-    scorecard silently under-reports as new Rego rules are added without a
-    matching crosswalk entry."""
+def test_infra_rego_control_ids_all_have_a_framework_mapping():
+    """Honesty check: every control_id the infrastructure_monitoring Rego
+    module actually defines (via extract_control_ids_from_defaults, the same
+    parser that seeds controls_catalog) should have a curated mapping —
+    otherwise the scorecard silently under-reports as new Rego rules are
+    added without a matching crosswalk entry."""
     controls = pac_endpoints.extract_control_ids_from_defaults()
-    relevant = [c for c in controls if c["process"] in ("devops_monitoring", "infrastructure_monitoring")]
-    assert relevant, "expected at least one DEVOPS-*/INFRA-* control from the Rego defaults"
+    relevant = [c for c in controls if c["process"] == "infrastructure_monitoring"]
+    assert relevant, "expected at least one INFRA-* control from the Rego defaults"
     missing = [c["control_id"] for c in relevant if fm.get_mapping(c["control_id"]) is None]
     assert not missing, f"control_ids with no framework mapping: {missing}"
 

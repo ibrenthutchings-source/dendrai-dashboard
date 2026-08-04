@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
 Unit tests for pac_contracts.py — the PaC negative-testing "schema contract"
-layer (P0a). Pure-function tests plus two honesty checks that keep the
-declared contracts from drifting away from the real producers:
-
-  1. devops_monitoring's shipped Rego must pass its own contract cleanly —
-     a regression guard so a future edit can't reintroduce the exact bug
-     this module was built to catch (a rule keyed on an event.type literal
-     or field the real pipeline never produces).
-  2. The declared devops_monitoring field contract must be a superset of
-     what scm_connectors.normalize_github_compliance/normalize_gitlab_compliance
-     actually emit — so PROCESS_CONTRACTS can't quietly go stale.
+layer (P0a). Pure-function tests plus a regression guard per built-in module:
+its shipped Rego must pass its own contract cleanly, so a future edit can't
+reintroduce the exact bug this module was built to catch (a rule keyed on an
+event.type literal or field the real pipeline never produces).
 
     pytest test_pac_contracts.py -v
 """
@@ -20,7 +14,6 @@ from __future__ import annotations
 import pac_contracts as pc
 import pac_endpoints as pe
 import pac_negative_tests as pnt
-import scm_connectors
 
 
 # ── extract_input_roots ─────────────────────────────────────────────────────
@@ -62,12 +55,11 @@ def test_extract_event_type_literals_both_orders():
 
 # ── check_module_contract: the actual regression guard ─────────────────────
 
-def test_devops_monitoring_rego_passes_its_own_contract():
-    """Locks in the fix for the branch_protection_rule/BRANCH_PROTECTION_BYPASSED
-    bug — if a future edit reintroduces a field or event-type mismatch, this
-    test is the tripwire, not a manual code review."""
-    rego = pe._REGO_DEFAULTS["devops_monitoring"]
-    result = pc.check_module_contract("devops_monitoring", rego)
+def test_infrastructure_monitoring_rego_passes_its_own_contract():
+    """Regression guard: if a future edit reintroduces a field or event-type
+    mismatch, this test is the tripwire, not a manual code review."""
+    rego = pe._REGO_DEFAULTS["infrastructure_monitoring"]
+    result = pc.check_module_contract("infrastructure_monitoring", rego)
     assert result["ok"], result["findings"]
     assert result["unproducible_roots"] == []
     assert result["unknown_fields"] == []
@@ -76,7 +68,7 @@ def test_devops_monitoring_rego_passes_its_own_contract():
 
 
 def test_hire_to_retire_rego_passes_its_own_contract():
-    """Same tripwire as test_devops_monitoring_rego_passes_its_own_contract,
+    """Same tripwire as test_infrastructure_monitoring_rego_passes_its_own_contract,
     for the Hire-to-Retire module added alongside oracle_hcm_tool.py."""
     rego = pe._REGO_DEFAULTS["hire_to_retire"]
     result = pc.check_module_contract("hire_to_retire", rego)
@@ -123,7 +115,7 @@ def test_procure_to_pay_vendor_risk_rules_pass_their_contract():
     re-litigated here. This locks in the P-VEN-001/002 additions: no unknown
     fields for the vendor_risk_detail-derived fields, and the
     VENDOR_MASTER_CHANGE typo fix (was the lowercase "vendor_master_change",
-    the same dead-rule bug shape as the original devops_monitoring bug)."""
+    the same dead-rule bug shape pac_contracts.py exists to catch)."""
     rego = pe._REGO_DEFAULTS["procure_to_pay"]
     result = pc.check_module_contract("procure_to_pay", rego)
     assert "vendor_name" not in result["unknown_fields"]
@@ -153,16 +145,16 @@ def test_check_module_contract_catches_the_original_bug_shape():
     """Reproduces the exact defect this module exists to catch, as a
     standalone fixture independent of whatever pac_endpoints.py ships today."""
     rego = '''
-    package controls.devops.monitoring
-    deny_branch_protection[msg] if {
-        input.event.type == "branch_protection_rule"
-        input.event.enforce_admins == false
+    package controls.infrastructure.monitoring
+    deny_x[msg] if {
+        input.event.type == "infrastructure_finding"
+        input.event.ssl_enabled == false
         msg := "dead rule"
     }
     '''
-    result = pc.check_module_contract("devops_monitoring", rego)
+    result = pc.check_module_contract("infrastructure_monitoring", rego)
     assert not result["ok"]
-    assert "branch_protection_rule" in result["invalid_event_types"]
+    assert "infrastructure_finding" in result["invalid_event_types"]
 
 
 def test_check_module_contract_flags_unproducible_root():
@@ -177,23 +169,23 @@ def test_check_module_contract_flags_unproducible_root():
 
 def test_check_module_contract_flags_unknown_field_within_event_root():
     rego = '''
-    package controls.devops.monitoring
+    package controls.infrastructure.monitoring
     deny_x[msg] if { input.event.some_field_that_does_not_exist == true; msg := "x" }
     '''
-    result = pc.check_module_contract("devops_monitoring", rego)
+    result = pc.check_module_contract("infrastructure_monitoring", rego)
     assert not result["ok"]
     assert "some_field_that_does_not_exist" in result["unknown_fields"]
 
 
 def test_check_module_contract_flags_unroutable_event_type():
     # SOD_VIOLATION is a real EventType (SAP source), but it never routes to
-    # devops_monitoring — only devops_monitoring has a declared event-type
-    # allowlist today, so the fixture targets that process.
+    # infrastructure_monitoring — infrastructure_monitoring has a declared
+    # event-type allowlist, so the fixture targets that process.
     rego = '''
-    package controls.devops.monitoring
+    package controls.infrastructure.monitoring
     deny_x[msg] if { input.event.type == "SOD_VIOLATION"; msg := "x" }
     '''
-    result = pc.check_module_contract("devops_monitoring", rego)
+    result = pc.check_module_contract("infrastructure_monitoring", rego)
     assert not result["ok"]
     assert "SOD_VIOLATION" in result["unroutable_event_types"]
 
@@ -224,7 +216,7 @@ def test_order_to_cash_is_no_longer_dead():
     producer (generate_o2c_p2p_synthetic_log.py, routed via
     mcp_governance._SOURCE_EVENT_TO_PAC_PROCESS, shaped by UBO/pipeline/
     silver.py's erp_transaction_detail spread) — check_module_contract must
-    report a fully clean contract, matching devops_monitoring's."""
+    report a fully clean contract, matching infrastructure_monitoring's."""
     result = pc.check_module_contract("order_to_cash", pe._REGO_DEFAULTS["order_to_cash"])
     assert result["ok"], result
     assert not result["unproducible_roots"]
@@ -252,13 +244,13 @@ def test_procure_to_pay_is_no_longer_dead_by_root_except_one_documented_gap():
 # ── check_observed_fields ────────────────────────────────────────────────────
 
 def test_check_observed_fields_flags_undeclared():
-    result = pc.check_observed_fields("devops_monitoring", {"resource", "a_brand_new_field"})
+    result = pc.check_observed_fields("infrastructure_monitoring", {"resource", "a_brand_new_field"})
     assert not result["ok"]
     assert "a_brand_new_field" in result["undeclared"]
 
 
 def test_check_observed_fields_clean_for_known_fields():
-    result = pc.check_observed_fields("devops_monitoring", {"enforce_admins", "codeowners_present"})
+    result = pc.check_observed_fields("infrastructure_monitoring", {"ssl_enabled", "password_encryption"})
     assert result["ok"]
     assert result["undeclared"] == []
 
@@ -304,7 +296,7 @@ def test_parse_opa_bindings_flattens_multiple_members_of_one_set():
     assert {f["control_id"] for f in fired} == {"DEVOPS-001", "DEVOPS-002"}
 
 
-def test_devops_monitoring_negative_corpus_passes_real_opa_when_available():
+def test_infrastructure_monitoring_negative_corpus_passes_real_opa_when_available():
     """When a real OPA binary is on PATH (OPA_BINARY env var or `opa` on
     PATH — always true in the Docker image, per project/Dockerfile), run the
     full must-fire/must-not-fire corpus through the AUTHORITATIVE engine,
@@ -314,26 +306,6 @@ def test_devops_monitoring_negative_corpus_passes_real_opa_when_available():
     defect — see pac_endpoints._find_opa_binary."""
     if not pe._find_opa_binary():
         return  # no OPA on this machine — nothing to prove here, not a failure
-    result = pnt.run_corpus("devops_monitoring", pe._REGO_DEFAULTS["devops_monitoring"])
+    result = pnt.run_corpus("infrastructure_monitoring", pe._REGO_DEFAULTS["infrastructure_monitoring"])
     assert result["ok"], [r for r in result["results"] if not r["passed"]]
     assert all(r["engine"] == "opa eval (authoritative)" for r in result["results"])
-
-
-def test_scm_compliance_contract_matches_real_normalizer_output():
-    """PROCESS_CONTRACTS['devops_monitoring']'s field set must be a superset
-    of what the real normalizers emit — otherwise the contract itself is the
-    thing that's out of date, and would start reporting false positives on
-    every real compliance field."""
-    protection = {
-        "enforce_admins": {"enabled": True},
-        "required_pull_request_reviews": {"required_approving_review_count": 2, "dismiss_stale_reviews": True},
-        "required_status_checks": {"contexts": ["ci/codeql", "ci/unit-tests"]},
-    }
-    github_keys = set(scm_connectors.normalize_github_compliance(protection, "* @team\n").keys())
-    gitlab_keys = set(scm_connectors.normalize_gitlab_compliance(
-        {"code_owner_approval_required": True}, [], "* @team\n"
-    ).keys())
-
-    declared = pc.PROCESS_CONTRACTS["devops_monitoring"]["allowed_fields"]
-    assert github_keys <= declared, github_keys - declared
-    assert gitlab_keys <= declared, gitlab_keys - declared
