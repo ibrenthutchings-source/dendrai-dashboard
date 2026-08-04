@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles-modules.css">
+</head>
+<body>
+<div class="app">
+  <div style="height:56px;background:#eee">topbar</div>
+  <div class="app-body">
+    <div style="background:#ddd">sidebar</div>
+    <div class="main">
+      <div class="main-tabs">tabs</div>
+      <div class="panel active">
+        <div class="code-screen" data-screen-label="test" style="position:relative">
+          <div class="panel-head"><div class="panel-title">Header</div></div>
+          <div style="flex:1;min-width:0;overflow-y:auto;overflow-x:auto" id="tabcontent">
+            <div>
+              <div style="display:flex;gap:6px;margin-bottom:12px">
+                <button>Framework Matrix</button><button>Detail</button>
+              </div>
+              <div id="rfm-wrapper" style="overflow-x:auto;overflow-y:hidden;max-width:100%">
+                <table id="thetable" style="width:100%;min-width:1940px;border-collapse:collapse;font-size:11px">
+                  <thead><tr>
+                    <th style="min-width:140px">Core Domains</th>
+                    <th style="min-width:200px">Enterprise Risks</th>
+                    <th style="min-width:200px">ISO 27001</th>
+                    <th style="min-width:200px">ISO 42001</th>
+                    <th style="min-width:200px">SOC 2</th>
+                    <th style="min-width:200px">NIST SP 800-53</th>
+                    <th style="min-width:200px">CIS Controls</th>
+                    <th style="min-width:200px">COSO ERM</th>
+                    <th style="min-width:200px">NIST AI RMF</th>
+                  </tr></thead>
+                  <tbody><tr>
+                    <td>d1</td><td>r1</td><td>c1</td><td>c2</td><td>c3</td><td>c4</td><td>c5</td><td>c6</td><td>c7</td>
+                  </tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
