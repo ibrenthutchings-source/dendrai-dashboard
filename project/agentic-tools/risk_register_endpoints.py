@@ -365,6 +365,7 @@ class ControlCreateRequest(BaseModel):
 class MatrixConfigUpdate(BaseModel):
     matrix_frameworks: Optional[List[str]] = None
     preset_frameworks: Optional[List[str]] = None
+    hidden_frameworks: Optional[List[str]] = None
 
 
 class ControlPacLinkRequest(BaseModel):
@@ -464,12 +465,19 @@ async def get_matrix_config():
     """Return MATRIX_FRAMEWORKS and PRESET_FRAMEWORKS (from DB or defaults)."""
     matrix  = db.get_app_config("matrix_frameworks",  _DEFAULT_MATRIX_FRAMEWORKS)  if db.is_available() else _DEFAULT_MATRIX_FRAMEWORKS
     preset  = db.get_app_config("preset_frameworks",  _DEFAULT_PRESET_FRAMEWORKS)   if db.is_available() else _DEFAULT_PRESET_FRAMEWORKS
-    return {"matrix_frameworks": matrix, "preset_frameworks": preset}
+    hidden  = db.get_app_config("hidden_frameworks",  [])                          if db.is_available() else []
+    return {"matrix_frameworks": matrix, "preset_frameworks": preset, "hidden_frameworks": hidden}
 
 
 @router.put("/matrix-config")
 async def update_matrix_config(req: MatrixConfigUpdate):
-    """Persist updated MATRIX_FRAMEWORKS or PRESET_FRAMEWORKS to DB."""
+    """Persist updated MATRIX_FRAMEWORKS, PRESET_FRAMEWORKS, or HIDDEN_FRAMEWORKS to DB.
+
+    hidden_frameworks tracks columns the user explicitly removed even though
+    controls are still tagged with that framework — without this, the matrix's
+    "extra column" auto-detection (driven purely by live control assignments)
+    would recompute and re-show the column on the very next refresh.
+    """
     saved = {}
     if req.matrix_frameworks is not None:
         if db.is_available():
@@ -479,6 +487,10 @@ async def update_matrix_config(req: MatrixConfigUpdate):
         if db.is_available():
             db.set_app_config("preset_frameworks", req.preset_frameworks)
         saved["preset_frameworks"] = req.preset_frameworks
+    if req.hidden_frameworks is not None:
+        if db.is_available():
+            db.set_app_config("hidden_frameworks", req.hidden_frameworks)
+        saved["hidden_frameworks"] = req.hidden_frameworks
     return {"saved": True, **saved}
 
 

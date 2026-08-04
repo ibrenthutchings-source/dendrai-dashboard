@@ -377,9 +377,17 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
   const [refIsAuto, setRefIsAuto] = useState(true);
   const [createErr, setCreateErr] = useState("");
 
-  // Frameworks available for a new control — same source list as the Framework
-  // Matrix columns, with "Internal" always offered first as the baseline option.
-  const frameworkOptions = ["Internal", ...MATRIX_FRAMEWORKS.filter(f => f !== "Internal")];
+  // Frameworks available for a new control — "Internal" first, then every
+  // framework currently pinned to the Matrix, in the preset list, or already
+  // used by a control in the library. Pulling from all three (not just
+  // MATRIX_FRAMEWORKS) means this dropdown stays populated even when the
+  // user has removed every pinned Matrix column — those two concepts
+  // (which columns are pinned vs. which frameworks controls can target)
+  // are related but shouldn't collapse into each other.
+  const _knownFws = new Set(MASTER_CONTROLS.map(c => c.framework).filter(Boolean));
+  const frameworkOptions = ["Internal", ...new Set(
+    [...MATRIX_FRAMEWORKS, ...PRESET_FRAMEWORKS, ..._knownFws].filter(f => f && f !== "Internal")
+  )];
 
   function openCreateForm() {
     const fw = newCtrl.framework || frameworkOptions[0];
@@ -856,7 +864,7 @@ function StickyHScrollBar({ targetRef, contentWidth }) {
   );
 }
 
-function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, onRemoveFramework, onPurgeExtraFramework, savingRows, savedAt, runId }) {
+function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, hiddenFrameworks, onWordingChange, onAddManualControl, onRemoveControl, onResetCtrl, onSaveRow, onRemoveFramework, onPurgeExtraFramework, savingRows, savedAt, runId }) {
   const scrollWrapRef = useRef(null);
   // Per-user, cross-session column order — persisted in the same
   // auth.users.preferences JSONB blob the appearance settings (accent/
@@ -985,16 +993,21 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   // from discovered risks or assigned controls alphabetically after them.
   const _activeMxFws = matrixFrameworks || MATRIX_FRAMEWORKS;
   const _internalFws = new Set(["Internal", "Internal Risk Register"]);
+  // Frameworks the user explicitly removed via the × button — controls tagged
+  // to them are left in place, so without this the "extra column" detection
+  // below (driven purely by live control/risk assignments) would recompute
+  // and re-show the column on the very next render or refresh.
+  const _hiddenFws = new Set(hiddenFrameworks || []);
   const extraFws = new Set();
   for (const cs of Object.values(ctrlStates)) {
     for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
       const fw = CTRL_BY_REF[ref]?.framework;
-      if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw)) extraFws.add(fw);
+      if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw) && !_hiddenFws.has(fw)) extraFws.add(fw);
     }
   }
   for (const r of (risks || [])) {
     const fw = r.source_framework;
-    if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw)) extraFws.add(fw);
+    if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw) && !_hiddenFws.has(fw)) extraFws.add(fw);
   }
   const fwCols = [..._activeMxFws, ...[...extraFws].sort()];
 
@@ -1933,7 +1946,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [aiRecsLoading, setAiRecsLoading] = useState(null);
   const [savedAt, setSavedAt]           = useState(null); // timestamp of last DB save
   // matrixCfg: loaded from DB; falls back to module-level defaults while in-flight
-  const [matrixCfg, setMatrixCfg] = useState({ matrix: _DEFAULT_MATRIX_FRAMEWORKS, preset: _DEFAULT_PRESET_FRAMEWORKS });
+  const [matrixCfg, setMatrixCfg] = useState({ matrix: _DEFAULT_MATRIX_FRAMEWORKS, preset: _DEFAULT_PRESET_FRAMEWORKS, hidden: [] });
   // controlsKey: incremented after DB load to force re-renders that read MASTER_CONTROLS
   const [controlsKey, setControlsKey] = useState(0);
 
@@ -1987,10 +2000,11 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     })();
     (async () => {
       const cfg = await _loadMatrixConfigFromApi();
-      if (cfg?.matrix_frameworks?.length || cfg?.preset_frameworks?.length) {
+      if (cfg?.matrix_frameworks?.length || cfg?.preset_frameworks?.length || cfg?.hidden_frameworks?.length) {
         const next = {
           matrix: cfg.matrix_frameworks || _DEFAULT_MATRIX_FRAMEWORKS,
           preset: cfg.preset_frameworks  || _DEFAULT_PRESET_FRAMEWORKS,
+          hidden: cfg.hidden_frameworks  || [],
         };
         setMatrixCfg(next);
         // Keep module-level aliases in sync so utility functions stay consistent
@@ -2951,54 +2965,27 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const matrixRemove         = (key, ref, isAuto)   => isDiscKey(key) ? discCtrl.remove(key, ref, isAuto)   : intCtrl.remove(key, ref, isAuto);
   const matrixReset          = (key, auto, manual)  => isDiscKey(key) ? discCtrl.reset(key, auto, manual)   : intCtrl.reset(key, auto, manual);
 
-  async function handleRemoveFramework(fw) {
-    if (!window.confirm(`Remove "${fw}" from the Framework Matrix? Controls already tagged to this framework are unaffected — only the matrix column is removed.`)) return;
-    const nextMatrix = matrixCfg.matrix.filter(f => f !== fw);
-    const nextPreset = matrixCfg.preset.filter(f => f !== fw);
-    const next = { matrix: nextMatrix, preset: nextPreset };
-    setMatrixCfg(next);
-    MATRIX_FRAMEWORKS = nextMatrix;
-    PRESET_FRAMEWORKS = nextPreset;
-    try {
-      await fetch("/api/risk-register/matrix-config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ matrix_frameworks: nextMatrix, preset_frameworks: nextPreset }),
-      });
-    } catch (_) {}
-    // Re-fetch from the DB so the matrix reflects what actually persisted,
-    // not just the optimistic local update — same reasoning as the save
-    // calls added to control add/remove: don't just look removed, confirm it.
-    await handleRefresh();
-  }
-
-  // Removing an "extra" (not-in-config) framework column has no config to
-  // edit — it only exists because a real control tagged with that framework
-  // is still assigned to a risk somewhere on the register. The only way to
-  // actually make the column go away is to unassign those controls, so this
-  // is a real, explicit, confirmed data change — not a display toggle.
-  async function handlePurgeExtraFramework(fw) {
+  // Find every risk-row → control-ref relationship for controls tagged to fw
+  // (both auto-mapped and manually-added), across the internal register and
+  // discovery results.
+  function _findFrameworkControlRefs(fw) {
     const affected = [];
     for (const [key, cs] of Object.entries(allMatrixCtrlStates)) {
       for (const ref of (cs.autoMapped || [])) if (CTRL_BY_REF[ref]?.framework === fw) affected.push({ key, ref, isAuto: true });
       for (const ref of (cs.manual || []))     if (CTRL_BY_REF[ref]?.framework === fw) affected.push({ key, ref, isAuto: false });
     }
-    if (affected.length === 0) return;
-    const riskCount = new Set(affected.map(a => a.key)).size;
-    const ok = window.confirm(
-      `"${fw}" isn't part of the configured Framework Matrix — it's only shown because ` +
-      `${affected.length} control${affected.length !== 1 ? "s are" : " is"} still assigned to it across ` +
-      `${riskCount} risk${riskCount !== 1 ? "s" : ""}. Removing this column will unassign ` +
-      `${affected.length === 1 ? "that control" : "those controls"} from every risk shown here — this cannot ` +
-      `be undone from this screen. Continue?`
-    );
-    if (!ok) return;
+    return affected;
+  }
 
-    // Group by risk so each row is persisted exactly once with its final
-    // control list, rather than firing a save per individual ref removed.
-    // matrixRemove alone only updates local React state — without the
-    // explicit save below it silently reverts on the next refresh, which is
-    // exactly the "removed framework comes back" bug this whole flow fixes.
+  // Unassign every control tagged to fw from every risk it's mapped to.
+  // Control *definitions* stay in controls_library (they aren't deleted) —
+  // only the risk↔control relationship is removed. Grouped by risk so each
+  // row is persisted exactly once with its final control list, rather than
+  // firing a save per individual ref removed. matrixRemove alone only
+  // updates local React state — without the explicit save below it silently
+  // reverts on the next refresh, which is exactly the "removed framework
+  // comes back" bug this whole flow fixes.
+  async function _unassignFrameworkControls(affected) {
     const byKey = {};
     for (const { key, ref } of affected) (byKey[key] ||= []).push(ref);
 
@@ -3013,6 +3000,79 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         await handleSaveRowWording(key, riskStates[key] || {}, newRefs);
       }
     }
+  }
+
+  // Persist fw as hidden so the matrix's "extra column" auto-detection
+  // (driven purely by live control/risk assignments) can't recompute and
+  // re-show the column on the next render or refresh.
+  async function _hideFramework(fw) {
+    const nextHidden = [...new Set([...(matrixCfg.hidden || []), fw])];
+    setMatrixCfg(prev => ({ ...prev, hidden: nextHidden }));
+    try {
+      await fetch("/api/risk-register/matrix-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden_frameworks: nextHidden }),
+      });
+    } catch (_) {}
+  }
+
+  async function handleRemoveFramework(fw) {
+    const affected = _findFrameworkControlRefs(fw);
+    const riskCount = new Set(affected.map(a => a.key)).size;
+    const msg = affected.length
+      ? `Remove "${fw}" from the Framework Matrix? This will also unassign ` +
+        `${affected.length} control${affected.length !== 1 ? "s" : ""} tagged to it from ` +
+        `${riskCount} risk${riskCount !== 1 ? "s" : ""} — the control${affected.length !== 1 ? "s" : ""} ` +
+        `will stay in the controls library, just no longer linked to those risks. This cannot be undone from this screen.`
+      : `Remove "${fw}" from the Framework Matrix?`;
+    if (!window.confirm(msg)) return;
+
+    const nextMatrix = matrixCfg.matrix.filter(f => f !== fw);
+    const nextPreset = matrixCfg.preset.filter(f => f !== fw);
+    const nextHidden = [...new Set([...(matrixCfg.hidden || []), fw])];
+    const next = { matrix: nextMatrix, preset: nextPreset, hidden: nextHidden };
+    setMatrixCfg(next);
+    MATRIX_FRAMEWORKS = nextMatrix;
+    PRESET_FRAMEWORKS = nextPreset;
+    try {
+      await fetch("/api/risk-register/matrix-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ matrix_frameworks: nextMatrix, preset_frameworks: nextPreset, hidden_frameworks: nextHidden }),
+      });
+    } catch (_) {}
+
+    if (affected.length) await _unassignFrameworkControls(affected);
+
+    // Re-fetch from the DB so the matrix reflects what actually persisted,
+    // not just the optimistic local update — same reasoning as the save
+    // calls added to control add/remove: don't just look removed, confirm it.
+    await handleRefresh();
+  }
+
+  // Removing an "extra" (not-in-config) framework column has no config to
+  // edit — it only exists because a real control tagged with that framework
+  // is still assigned to a risk somewhere on the register. The only way to
+  // actually make the column go away is to unassign those controls, so this
+  // is a real, explicit, confirmed data change — not a display toggle.
+  async function handlePurgeExtraFramework(fw) {
+    const affected = _findFrameworkControlRefs(fw);
+    if (affected.length === 0) return;
+    const riskCount = new Set(affected.map(a => a.key)).size;
+    const ok = window.confirm(
+      `"${fw}" isn't part of the configured Framework Matrix — it's only shown because ` +
+      `${affected.length} control${affected.length !== 1 ? "s are" : " is"} still assigned to it across ` +
+      `${riskCount} risk${riskCount !== 1 ? "s" : ""}. Removing this column will unassign ` +
+      `${affected.length === 1 ? "that control" : "those controls"} from every risk shown here — the control` +
+      `${affected.length !== 1 ? "s" : ""} will stay in the controls library, just no longer linked to those risks. ` +
+      `This cannot be undone from this screen. Continue?`
+    );
+    if (!ok) return;
+
+    await _unassignFrameworkControls(affected);
+    await _hideFramework(fw);
+
     // Re-fetch from the DB so the matrix reflects what actually persisted
     // across every affected row, not just the optimistic local removals.
     await handleRefresh();
@@ -3153,6 +3213,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                     riskStates={allMatrixRiskStates}
                     ctrlStates={allMatrixCtrlStates}
                     matrixFrameworks={matrixCfg.matrix}
+                    hiddenFrameworks={matrixCfg.hidden}
                     onWordingChange={matrixWordingChange}
                     onAddManualControl={matrixAddManual}
                     onRemoveControl={matrixRemove}
