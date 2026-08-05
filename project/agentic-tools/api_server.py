@@ -1039,6 +1039,10 @@ def health():
         "version": "2.1.0",
         "ai_enabled": claude_client.is_available(),
         "ai_model": claude_client.MODEL if claude_client.is_available() else None,
+        # True once claude_client._create_message has actually had to retry a
+        # call against FALLBACK_MODEL — the cheap public signal that
+        # DENDRAI_CLAUDE_MODEL is stale. Full detail: GET /auth/admin/model-config.
+        "ai_model_fallback_active": claude_client.get_model_status()["fallback_active"],
     }
 
 

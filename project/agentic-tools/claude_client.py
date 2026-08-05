@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,24 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_SDK = False
 
-# Default to Haiku (fastest/cheapest); escalate to Sonnet or Opus per call as needed.
+# Configured default; escalate to Sonnet or Opus per call as needed via `model=`.
 MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-sonnet-4-6")
+
+# Retried against once, and only once, if MODEL comes back 404 NotFoundError
+# (Anthropic's signal for a retired/unrecognized model id) — see _create_message.
+# Deliberately a different snapshot than MODEL's own default so a stale
+# DENDRAI_CLAUDE_MODEL degrades to "slower to update" rather than "every
+# AI-augmented endpoint breaks at once." Override independently in case this
+# one is eventually retired too.
+FALLBACK_MODEL = os.environ.get("DENDRAI_CLAUDE_FALLBACK_MODEL", "claude-sonnet-4-5")
 
 _client: Optional["anthropic.Anthropic"] = None
 _checked = False
+
+# Visibility for GET /admin/model-config — set the moment a retired-model
+# fallback actually fires, so the config screen can surface it rather than
+# this only showing up as a line in the server log.
+_fallback_state: dict = {"active": False, "from_model": None, "at": None, "count": 0}
 
 # Optional token-cost accounting — wired to the existing token_cost_tool + db.
 try:
@@ -76,6 +90,20 @@ def is_available() -> bool:
     return get_client() is not None
 
 
+def get_model_status() -> dict:
+    """Snapshot for GET /admin/model-config: what's configured, and whether the
+    retired-model fallback has actually fired since this process started."""
+    return {
+        "configured_model": MODEL,
+        "fallback_model": FALLBACK_MODEL,
+        "client_available": is_available(),
+        "fallback_active": _fallback_state["active"],
+        "fallback_from_model": _fallback_state["from_model"],
+        "fallback_last_at": _fallback_state["at"],
+        "fallback_trigger_count": _fallback_state["count"],
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +111,38 @@ def is_available() -> bool:
 def _system_blocks(system: str) -> list:
     """Cache the (stable) system prompt prefix so repeated calls read the cache."""
     return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
+def _create_message(client: "anthropic.Anthropic", **kwargs) -> Any:
+    """client.messages.create wrapper that fails soft on a retired model.
+
+    Anthropic signals a retired/unrecognized model id with a 404
+    NotFoundError — a distinct, identifiable error class, unlike auth or
+    billing failures (which must propagate immediately; retrying those wastes
+    a paid call for nothing). On that specific error, log loudly and retry
+    once against FALLBACK_MODEL, so a stale DENDRAI_CLAUDE_MODEL degrades to
+    "one log line and a slightly different model" instead of every
+    AI-augmented endpoint in the app erroring simultaneously until someone
+    notices and edits the environment.
+    """
+    model = kwargs.get("model")
+    try:
+        return client.messages.create(**kwargs)
+    except anthropic.NotFoundError:
+        if model == FALLBACK_MODEL:
+            raise  # the fallback itself is retired too — nothing left to try
+        logger.error(
+            "Model '%s' was rejected as not found (likely retired by Anthropic) — "
+            "retrying this call against fallback model '%s'. Update "
+            "DENDRAI_CLAUDE_MODEL to a current snapshot.",
+            model, FALLBACK_MODEL,
+        )
+        _fallback_state["active"] = True
+        _fallback_state["from_model"] = model
+        _fallback_state["at"] = time.time()
+        _fallback_state["count"] += 1
+        kwargs["model"] = FALLBACK_MODEL
+        return client.messages.create(**kwargs)
 
 
 def _thinking_kwargs(model: str, effort: str) -> dict:
@@ -182,16 +242,22 @@ def record_usage(in_tok: int, out_tok: int, cache_read: int, cache_write: int,
 
 
 def _record_cost(message: Any, label: str, model: str, caller: Optional[dict] = None) -> None:
-    """Extracts usage from an SDK message object, then defers to record_usage()."""
+    """Extracts usage from an SDK message object, then defers to record_usage().
+
+    Prefers message.model (what the API actually served) over the requested
+    `model` — the two diverge when _create_message silently retried against
+    FALLBACK_MODEL, and cost/token accounting should reflect what really ran.
+    """
     usage = getattr(message, "usage", None)
     if not usage:
         return
+    actual_model = getattr(message, "model", None) or model
     record_usage(
         getattr(usage, "input_tokens", 0) or 0,
         getattr(usage, "output_tokens", 0) or 0,
         getattr(usage, "cache_read_input_tokens", 0) or 0,
         getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        label, model, caller,
+        label, actual_model, caller,
     )
 
 
@@ -235,7 +301,7 @@ def complete_json(
         oc = dict(kwargs["output_config"])
         oc.update(extra)
         kwargs["output_config"] = oc
-        return client.messages.create(**kwargs)
+        return _create_message(client, **kwargs)
 
     message = None
     if schema is not None:
@@ -253,7 +319,7 @@ def complete_json(
             "role": "user",
             "content": user + "\n\nRespond with a single valid JSON object only. No prose, no code fences.",
         }]
-        message = client.messages.create(**guided)
+        message = _create_message(client, **guided)
 
     _record_cost(message, label, model, caller)
     return _extract_json(_text_of(message))
@@ -274,7 +340,8 @@ def complete_text(
     if client is None:
         raise RuntimeError("Claude client unavailable (set ANTHROPIC_API_KEY)")
     model = model or MODEL
-    message = client.messages.create(
+    message = _create_message(
+        client,
         model=model,
         max_tokens=max_tokens,
         **_thinking_kwargs(model, effort),
@@ -326,7 +393,8 @@ def run_tool_loop(
 
     while iterations < max_iterations:
         iterations += 1
-        message = client.messages.create(
+        message = _create_message(
+            client,
             model=model,
             max_tokens=max_tokens,
             **_thinking_kwargs(model, effort),
@@ -435,7 +503,8 @@ def run_tool_loop_streaming(
     while iterations < max_iterations:
         iterations += 1
         try:
-            message = client.messages.create(
+            message = _create_message(
+                client,
                 model=model,
                 max_tokens=max_tokens,
                 **_thinking_kwargs(model, effort),

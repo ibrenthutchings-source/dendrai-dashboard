@@ -19,13 +19,13 @@ Routes:
 
 import io
 import logging
-import os
 from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
+import claude_client
 import db
 from pac_endpoints import _controls_to_rego
 from auth_endpoints import require_screen_permission
@@ -504,25 +504,17 @@ async def recommend_controls(req: ControlRecommendRequest):
     auto_refs = _auto_map_controls(req.risk_wording, req.risk_category or "")
     auto_controls = [live_map[r] for r in auto_refs if r in live_map]
 
-    # Attempt AI-augmented recommendations if ANTHROPIC_API_KEY is set
+    # Attempt AI-augmented recommendations if the shared Claude client is configured
     ai_summary = None
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key:
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
+        if claude_client.is_available():
             system_text = _build_controls_system()
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=256,
-                system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": f"Risk: {req.risk_wording}\nCategory: {req.risk_category or 'Unknown'}"}],
+            user_text = f"Risk: {req.risk_wording}\nCategory: {req.risk_category or 'Unknown'}"
+            ai_refs = claude_client.complete_json(
+                system_text, user_text,
+                label="risk-register:recommend-controls", effort="low", max_tokens=256,
             )
-            import json, re
-            raw = msg.content[0].text.strip()
-            match = re.search(r'\[.*?\]', raw, re.DOTALL)
-            if match:
-                ai_refs = json.loads(match.group())
+            if isinstance(ai_refs, list):
                 ai_controls = [live_map[r] for r in ai_refs if r in live_map]
                 if ai_controls:
                     ai_summary = f"Recommended by Claude based on risk wording analysis"
@@ -546,24 +538,14 @@ async def recommend_controls(req: ControlRecommendRequest):
 async def _generate_framework_risks_ai(framework: str) -> List[Dict[str, Any]]:
     """Call Claude to generate a realistic risk catalog for an arbitrary framework name."""
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
+        if not claude_client.is_available():
             return []
-        import anthropic
-        import json
-        import re
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=[{"type": "text", "text": _FRAMEWORK_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": f'Framework: "{framework}"'}],
+        risks = claude_client.complete_json(
+            _FRAMEWORK_SYSTEM, f'Framework: "{framework}"',
+            label="risk-register:framework-catalog", effort="low", max_tokens=1024,
         )
-        raw = msg.content[0].text.strip()
-        match = re.search(r'\[.*?\]', raw, re.DOTALL)
-        if not match:
+        if not isinstance(risks, list):
             return []
-        risks = json.loads(match.group())
         return [
             {
                 "id": r.get("id", f"{framework[:6].upper().replace(' ','-')}-{i+1:02d}"),
@@ -651,28 +633,19 @@ async def score_framework_risks(req: ScoreFrameworkRisksRequest):
 
     scores: Dict[str, Dict[str, Any]] = {}
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     ai_ok = False
-    if api_key:
+    if claude_client.is_available():
         try:
-            import anthropic
-            import json
-            import re
-            client = anthropic.Anthropic(api_key=api_key)
             risk_list = "\n".join(
                 f'{i+1}. id="{r["id"]}" | {r.get("source_framework", "")} — {r.get("name", "")} [{r.get("category", "")}]'
                 for i, r in enumerate(req.risks)
             )
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1024,
-                system=[{"type": "text", "text": _SCORE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": f"Score these risks:\n{risk_list}"}],
+            items = claude_client.complete_json(
+                _SCORE_SYSTEM, f"Score these risks:\n{risk_list}",
+                label="risk-register:score-framework-risks", effort="low", max_tokens=1024,
             )
-            raw = msg.content[0].text.strip()
-            match = re.search(r'\[.*?\]', raw, re.DOTALL)
-            if match:
-                for item in json.loads(match.group()):
+            if isinstance(items, list):
+                for item in items:
                     rid = item.get("id")
                     sc  = item.get("score")
                     rag = str(item.get("rag", "")).lower()
@@ -876,26 +849,17 @@ async def categorize_domains(req: CategorizeDomainRequest):
     }
 
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key and req.risks:
-            import anthropic
-            import json
-            import re
-            client = anthropic.Anthropic(api_key=api_key)
+        if claude_client.is_available() and req.risks:
             risk_lines = "\n".join(
                 f'{r.get("ref", "")}: {r.get("name", "")} (category: {r.get("category", "")})'
                 for r in req.risks
             )
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1024,
-                system=[{"type": "text", "text": _DOMAIN_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": f"Risks:\n{risk_lines}"}],
+            result = claude_client.complete_json(
+                _DOMAIN_SYSTEM, f"Risks:\n{risk_lines}",
+                label="risk-register:categorize-domains", effort="low", max_tokens=1024,
             )
-            raw = msg.content[0].text.strip()
-            match = re.search(r'\{.*?\}', raw, re.DOTALL)
-            if match:
-                domains.update(json.loads(match.group()))
+            if isinstance(result, dict):
+                domains.update(result)
     except Exception as exc:
         logger.warning("AI domain categorization failed, using keyword fallback: %s", exc)
 
