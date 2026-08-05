@@ -298,7 +298,7 @@ async def lifespan(application: FastAPI):
                 logger.warning("MCP session manager init failed for %s: %s", inst_name, exc)
 
         _gov_task = _connector_task = _drift_task = None
-        _waiver_sweep_task = _itsm_sla_sweep_task = _pac_negative_sweep_task = None
+        _pac_negative_sweep_task = None
         _connector_hygiene_sweep_task = _vendor_risk_sweep_task = _ai_governance_sweep_task = None
         _identity_graph_sync_task = None
         _reconnect_task = None
@@ -323,8 +323,6 @@ async def lifespan(application: FastAPI):
                     lambda: asyncio.to_thread(_check_model_health_drift_once),
                     _MODEL_HEALTH_CHECK_INTERVAL_S, "Model Health drift watch",
                 )),
-                asyncio.create_task(_multi_tenant_loop(risk_waiver_sweep.sweep_once, risk_waiver_sweep._TICK_S, "Risk waiver expiry sweep")),
-                asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
                 asyncio.create_task(_multi_tenant_loop(pac_negative_sweep.sweep_once, pac_negative_sweep._TICK_S, "PaC negative-testing sweep")),
                 asyncio.create_task(_multi_tenant_loop(connector_hygiene_sweep.sweep_once, connector_hygiene_sweep._TICK_S, "Connector credential hygiene sweep")),
                 asyncio.create_task(_multi_tenant_loop(vendor_risk_sweep.sweep_once, vendor_risk_sweep._TICK_S, "Vendor risk SOC 2 expiry sweep")),
@@ -356,16 +354,6 @@ async def lifespan(application: FastAPI):
             if db.is_available():
                 _drift_task = asyncio.create_task(model_health_drift_watch())
                 logger.info("Model Health drift watch task started")
-
-            # Risk Waiver & Exception Hub automated expiry sweep.
-            if db.is_available():
-                _waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
-                logger.info("Risk waiver expiry sweep task started")
-
-            # ITSM/Jira-ServiceNow SLA Bridge breach-detection sweep.
-            if db.is_available():
-                _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
-                logger.info("ITSM SLA breach sweep task started")
 
             # Policy-as-Code negative-testing periodic full evaluation (P1).
             if db.is_available():
@@ -418,12 +406,6 @@ async def lifespan(application: FastAPI):
                         if _drift_task is None:
                             asyncio.create_task(model_health_drift_watch())
                             logger.info("Model Health drift watch started after DB reconnect")
-                        if _waiver_sweep_task is None:
-                            asyncio.create_task(risk_waiver_sweep.start_sweep())
-                            logger.info("Risk waiver expiry sweep started after DB reconnect")
-                        if _itsm_sla_sweep_task is None:
-                            asyncio.create_task(itsm_sla_sweep.start_sweep())
-                            logger.info("ITSM SLA breach sweep started after DB reconnect")
                         if _pac_negative_sweep_task is None:
                             asyncio.create_task(pac_negative_sweep.start_sweep())
                             logger.info("PaC negative-testing sweep started after DB reconnect")
@@ -447,8 +429,8 @@ async def lifespan(application: FastAPI):
         finally:
             if _reconnect_task is not None:
                 _reconnect_task.cancel()
-            for _bg_task in (_gov_task, _connector_task, _drift_task, _waiver_sweep_task,
-                             _itsm_sla_sweep_task, _pac_negative_sweep_task, _connector_hygiene_sweep_task,
+            for _bg_task in (_gov_task, _connector_task, _drift_task,
+                             _pac_negative_sweep_task, _connector_hygiene_sweep_task,
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
@@ -507,13 +489,19 @@ def _seed_ticker_cik() -> None:
 
 def _seed_controls_catalog() -> None:
     """Idempotently register both control vocabularies into controls_catalog:
-    the 34 IDs embedded in PAC's Rego deny rules (source='pac_rego') and the
-    28 business-level controls used by RaC's manual Review UI (source='manual').
+    the IDs embedded in PAC's Rego deny rules (source='pac_rego') and the
+    business-level controls used by RaC's manual Review UI (source='manual').
+
+    Also reconciles away pac_rego rows for a process that no longer exists in
+    _REGO_DEFAULTS (e.g. a retired built-in process like DevOps Monitoring) —
+    upsert alone never deletes, so without this a removed process's old
+    control IDs stay in the catalog forever as phantom entries.
     """
     if not db.is_available():
         return
     count = 0
-    for ctrl in pac_endpoints.extract_control_ids_from_defaults():
+    pac_defaults = pac_endpoints.extract_control_ids_from_defaults()
+    for ctrl in pac_defaults:
         db.upsert_catalog_control(
             ctrl["control_id"], ctrl["name"],
             process=ctrl.get("process"), source="pac_rego",
@@ -523,6 +511,11 @@ def _seed_controls_catalog() -> None:
         db.upsert_catalog_control(ctrl["ref"], ctrl["name"], source="manual")
         count += 1
     logger.info("Seeded %d controls into controls_catalog", count)
+
+    valid_processes = list(pac_endpoints._REGO_DEFAULTS.keys())
+    removed = db.delete_stale_catalog_controls(valid_processes)
+    if removed:
+        logger.info("Removed %d stale controls_catalog rows for retired processes", removed)
 
 
 # ── Tenant resolution (multi-tenancy) ────────────────────────────────────────

@@ -7863,6 +7863,43 @@ def upsert_catalog_control(control_id: str, name: str, description: Optional[str
         return False
 
 
+def delete_stale_catalog_controls(valid_processes: list[str]) -> int:
+    """Remove pac_rego-sourced controls_catalog rows for a process that no
+    longer exists in _REGO_DEFAULTS — the counterpart _seed_controls_catalog
+    never had, since upsert_catalog_control only inserts/updates and never
+    deletes. Without this, removing a whole built-in process (as happened
+    when DevOps Monitoring was retired) leaves its old DEVOPS-*/etc. rows in
+    the catalog forever, showing up as phantom entries in any process- or
+    control-driven view (framework crosswalk, compliance scorecard, domain
+    roll-ups).
+
+    Scoped to whole missing PROCESSES, not individual missing control_ids —
+    an admin-edited/saved custom Rego module for a still-valid process can
+    legitimately differ from _REGO_DEFAULTS's built-in text (extract_control_
+    ids_from_defaults only scans the built-in defaults, not saved custom
+    versions), so diffing at the control_id level would risk deleting rows
+    for rules that still exist in a live, edited module. source='manual'
+    rows (RaC's business controls) are never touched — they aren't process-
+    seeded from Rego at all.
+    """
+    if not valid_processes:
+        return 0  # refuse to wipe every pac_rego row on an empty/misconfigured call
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM controls_catalog
+                    WHERE source = 'pac_rego' AND process != ALL(%s)
+                    """,
+                    (list(valid_processes),),
+                )
+                n = cur.rowcount
+            conn.commit()
+        return n
+    return _run(_do, default=0) or 0
+
+
 def list_controls(process: Optional[str] = None, source: Optional[str] = None) -> list:
     def _do():
         with _conn() as conn:
