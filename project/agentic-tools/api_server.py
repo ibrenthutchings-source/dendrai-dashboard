@@ -127,6 +127,7 @@ import oracle_fusion_endpoints
 import sox_endpoints
 import risk_register_endpoints
 import pac_endpoints
+import pol_domain_mappings
 import pac_policy_docs
 import approvals_endpoints
 import evidence_pack_endpoints
@@ -2976,6 +2977,74 @@ def get_command_center(
         "hourly": hourly,
         "pac_processes": pac_processes,
         "model_health_drift": model_health_drift,
+    }
+
+
+@app.get("/observability/domain-summary")
+def get_domain_summary(
+    days: int = 30,
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """
+    Adjudicated events grouped by Core Domain (Identity & Access Management,
+    Cyber Security & Data Protection, ...) over the trailing `days` days —
+    the data source for Continuous Monitoring's domain-grouped views.
+
+    Scoped to events that actually carry a policy_violations entry:
+    pol_domain_mappings resolves a domain from the violation's rule_id/
+    control_id, and a CLEAR event with nothing to complain about carries no
+    such signal — there is no other link from a raw adjudication row to a
+    Core Domain today (that's Blocker 1: controls_library.pac_control_id is
+    0% populated, and risk_scores.assigned_domain only 15%). So this answers
+    "where are violations concentrating," not "where is all activity" — the
+    latter needs that link built first. `unresolved_violations` counts rows
+    that DID carry a violation but whose rule_id/control_id isn't in either
+    mapping table yet (an honest gap, not folded into any domain's total).
+    """
+    if not db.is_available():
+        return {"domains": [], "unresolved_violations": 0, "total_violations": 0,
+                "window_days": days, "note": "Database not configured"}
+
+    events = db.get_recent_adjudications_for_domain_summary(days)
+    ctrl_to_process = {c["control_id"]: c["process"] for c in db.list_controls() if c.get("process")}
+
+    by_domain: Dict[str, Dict[str, Any]] = {}
+    unresolved = 0
+    total_violations = 0
+
+    for ev in events:
+        violations = ev["policy_violations"]
+        if not violations:
+            continue
+        total_violations += 1
+        domain = pol_domain_mappings.domain_for_violations(violations, ctrl_to_process)
+        if domain is None:
+            unresolved += 1
+            continue
+        bucket = by_domain.setdefault(domain, {
+            "domain": domain, "total": 0, "escalated": 0, "monitor": 0, "clear": 0, "daily": {},
+        })
+        bucket["total"] += 1
+        verdict_key = {"ESCALATE": "escalated", "MONITOR": "monitor", "CLEAR": "clear"}.get(ev["final_verdict"])
+        if verdict_key:
+            bucket[verdict_key] += 1
+        day_key = ev["adjudicated_at"].date().isoformat() if ev["adjudicated_at"] else "unknown"
+        day = bucket["daily"].setdefault(day_key, {"date": day_key, "total": 0, "escalated": 0})
+        day["total"] += 1
+        if ev["final_verdict"] == "ESCALATE":
+            day["escalated"] += 1
+
+    domains_out = []
+    for bucket in by_domain.values():
+        bucket["daily"] = sorted(bucket["daily"].values(), key=lambda d: d["date"])
+        domains_out.append(bucket)
+    domains_out.sort(key=lambda d: d["total"], reverse=True)
+
+    return {
+        "domains": domains_out,
+        "unresolved_violations": unresolved,
+        "total_violations": total_violations,
+        "window_days": days,
     }
 
 
