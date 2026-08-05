@@ -1,7 +1,7 @@
 """
 test_multi_tenant_sweeps.py — api_server._run_cycle_for_all_tenants(), the
-Phase 5b mechanism that makes the 9 background pollers/sweeps
-(mcp_governance, connector_poller, risk_waiver_sweep, ...) iterate every
+Phase 5b mechanism that makes the background pollers/sweeps
+(mcp_governance, connector_poller, vendor_risk_sweep, ...) iterate every
 active tenant instead of assuming one global database.
 
 Each sweep module's own sweep_once()/_process_batch()/etc. is completely

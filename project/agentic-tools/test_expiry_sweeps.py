@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """
-Integration tests for the four periodic expiry-sweep "listeners" —
-vendor_risk_sweep.py, ai_governance_sweep.py, risk_waiver_sweep.py, and
-itsm_sla_sweep.py. Zero prior test coverage existed for vendor_risk_sweep.py
-or ai_governance_sweep.py at all; risk_waiver_sweep.py and itsm_sla_sweep.py
-were only touched incidentally (SLA-hour/status helpers) by
-test_itsm_bridge.py, never their actual sweep_once() re-escalation logic.
+Integration tests for the periodic expiry-sweep "listeners" —
+vendor_risk_sweep.py and ai_governance_sweep.py. Zero prior test coverage
+existed for either at all.
 
-All four modules share one shape, by design (each docstring says so
-explicitly — "mirrors risk_waiver_sweep.py's shape exactly"):
+Both modules share one shape, by design (each docstring says so explicitly):
 
     db.expire_overdue_X()  ->  list of newly-lapsed rows
         for each row:  mcp_governance._detect_system_flags (pure)
                      -> mcp_governance._ingest_system_event (DB write)
 
 This is the "catch" (a control-reliance basis lapsed — a SOC 2 report
-expired, an AI assessment went overdue, a risk waiver's grace period ended,
-an ITSM ticket blew its SLA) and the "report" (re-ingest as a fresh,
-adjudicatable system_telemetry event, so the finding reappears in
+expired, an AI assessment went overdue) and the "report" (re-ingest as a
+fresh, adjudicatable system_telemetry event, so the finding reappears in
 Continuous Monitoring / the HITL inbox as failing again, not silently).
 
 Only the DB write boundary (mcp_governance._ingest_system_event) is mocked;
@@ -36,8 +31,6 @@ import db
 import mcp_governance
 import vendor_risk_sweep
 import ai_governance_sweep
-import risk_waiver_sweep
-import itsm_sla_sweep
 
 
 def _recorder(monkeypatch):
@@ -132,69 +125,3 @@ def test_ai_governance_sweep_re_ingests_each_expired_assessment(monkeypatch):
     assert calls[0]["event_type"] == "ai_assessment_overdue"
     assert "ai_assessment_overdue" in calls[0]["flags"]
     assert calls[0]["raw_payload"]["ai_governance_detail"]["vendor"] == "Acme AI Inc"
-
-
-# ── risk_waiver_sweep.py — waiver expiry re-opens the finding as failing ────
-
-def test_risk_waiver_sweep_no_expired_waivers_is_a_no_op(monkeypatch):
-    monkeypatch.setattr(db, "expire_overdue_waivers", lambda: [])
-    calls = _recorder(monkeypatch)
-    assert asyncio.run(risk_waiver_sweep.sweep_once()) == 0
-    assert calls == []
-
-
-def test_risk_waiver_sweep_reescalates_each_expired_waiver_as_sast_finding(monkeypatch):
-    monkeypatch.setattr(db, "expire_overdue_waivers", lambda: [
-        {"id": 42, "vulnerability_hash": "abc123def456", "reason": "compensating control in place",
-         "compensating_control": "WAF rule blocking the exploit path",
-         "approved_by": "jane.doe@acme.com", "expires_at": "2026-07-01"},
-    ])
-    calls = _recorder(monkeypatch)
-
-    n = asyncio.run(risk_waiver_sweep.sweep_once())
-
-    assert n == 1
-    assert calls[0]["event_type"] == "sast_finding"
-    assert calls[0]["severity"] == "HIGH"
-    assert calls[0]["resource"] == "abc123def456"
-    assert "sast_finding" in calls[0]["flags"]
-    assert calls[0]["raw_payload"]["waiver_id"] == 42
-    assert "re-opened as failing" in calls[0]["raw_payload"]["note"]
-
-
-# ── itsm_sla_sweep.py — ITSM ticket SLA breach re-opens the finding ────────
-
-def test_itsm_sla_sweep_no_breaches_is_a_no_op(monkeypatch):
-    monkeypatch.setattr(db, "expire_overdue_sla", lambda: [])
-    calls = _recorder(monkeypatch)
-    assert asyncio.run(itsm_sla_sweep.sweep_once()) == 0
-    assert calls == []
-
-
-def test_itsm_sla_sweep_reescalates_each_breached_ticket(monkeypatch):
-    monkeypatch.setattr(db, "expire_overdue_sla", lambda: [
-        {"id": 9, "external_system": "jira", "external_ticket_key": "SEC-4471",
-         "finding_hash": "fedcba987654", "severity": "CRITICAL", "sla_due_at": "2026-07-20"},
-    ])
-    calls = _recorder(monkeypatch)
-
-    n = asyncio.run(itsm_sla_sweep.sweep_once())
-
-    assert n == 1
-    assert calls[0]["event_type"] == "sla_breach"
-    assert calls[0]["severity"] == "CRITICAL"  # propagates the ticket's own severity, not a fixed default
-    assert calls[0]["resource"] == "fedcba987654"
-    assert "sla_breach" in calls[0]["flags"]
-    assert calls[0]["raw_payload"]["external_ticket_key"] == "SEC-4471"
-
-
-def test_itsm_sla_sweep_defaults_severity_to_high_when_ticket_has_none(monkeypatch):
-    """itsm_sla_sweep.py: `ticket.get("severity") or "HIGH"` — a ticket record
-    with no severity recorded must not silently become an INFO-level event."""
-    monkeypatch.setattr(db, "expire_overdue_sla", lambda: [
-        {"id": 10, "external_system": "servicenow", "external_ticket_key": "INC0012345",
-         "finding_hash": "aaa111", "severity": None, "sla_due_at": "2026-07-20"},
-    ])
-    calls = _recorder(monkeypatch)
-    asyncio.run(itsm_sla_sweep.sweep_once())
-    assert calls[0]["severity"] == "HIGH"

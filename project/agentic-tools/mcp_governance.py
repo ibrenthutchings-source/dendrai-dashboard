@@ -1872,14 +1872,6 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("policy_violation")
     if payload.get("infrastructure_finding"):
         flags.add("infrastructure_finding")
-    # Risk Waiver / ITSM SLA re-escalation: explicit signals set by
-    # risk_waiver_sweep.py/itsm_sla_sweep.py when a waiver expires or a
-    # ticket breaches its SLA — the finding needs to flow back through
-    # adjudication exactly like its original ingestion did.
-    if payload.get("sast_finding"):
-        flags.add("sast_finding")
-    if payload.get("sla_breach"):
-        flags.add("sla_breach")
     # Financial Risk Pipeline: explicit signals set by predictive_analytics_tool.py's
     # compute_je_velocity_anomaly/compute_liquidity_shift/compute_inventory_sales_divergence.
     if payload.get("je_velocity_anomaly"):
