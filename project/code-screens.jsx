@@ -797,6 +797,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
       // otherwise a brand-new process only shows up after a page reload.
       await refreshProcesses();
       await loadModule(activeProcess);
+      await refreshPendingCount();
     } catch (e) {
       setGhSyncResult({ error: e.message || "Network error" });
     } finally {
@@ -872,7 +873,19 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
   const [deciding,    setDeciding]    = useState(false);
   const [revMsg,      setRevMsg]      = useState(null);
 
-  const pendingReviewCount = docs.reduce((n, d) => n + Number(d.pending_review_count || 0), 0);
+  // Fetched independently of the document list so the tab badge is right on
+  // first paint — deriving it from `docs` meant you only learned there was
+  // review work waiting after opening the very tab the badge exists to send
+  // you to. Counted across all processes on purpose: the queue is a worklist,
+  // not a property of whichever process tab happens to be selected.
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+  const refreshPendingCount = useCallback(() => {
+    return fetch("/api/pac/conversions?status=pending_review", { headers: _codeAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setPendingReviewCount(d?.count || 0))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshPendingCount(); }, [refreshPendingCount]);
 
   const loadDocs = useCallback((process) => {
     setDocsLoading(true); setDocsErr(null);
@@ -976,6 +989,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
       setPdGuidance("");
       await loadDocs(activeProcess);
       await loadDocDetail(docId);
+      await refreshPendingCount();
       setPdMsg({
         kind: d.syntax_valid ? "ok" : "warn",
         msg: d.syntax_valid
@@ -1043,6 +1057,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
       setRevNotes("");
       await loadDocs(activeProcess);
       await loadDocDetail(selDocId);
+      await refreshPendingCount();
       if (d.published_module_id) {
         // The approved Rego IS the live module now — pull it into the editor
         // so the next screen the reviewer sees isn't stale.
@@ -1804,6 +1819,16 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
                     {ghSyncResult.newly_registered?.length > 0 && (
                       <div style={{ color: "var(--acc-ink)" }}>
                         + {ghSyncResult.newly_registered.length} new process tab{ghSyncResult.newly_registered.length === 1 ? "" : "s"} added: {ghSyncResult.newly_registered.join(", ")}
+                      </div>
+                    )}
+                    {ghSyncResult.queued_for_review?.length > 0 && (
+                      <div style={{ color:"var(--acc-ink)", fontWeight:600, marginTop:4 }}>
+                        ↳ {ghSyncResult.queued_for_review.length} file{ghSyncResult.queued_for_review.length === 1 ? "" : "s"} that
+                        {" "}failed conversion {ghSyncResult.queued_for_review.length === 1 ? "was" : "were"} saved to the
+                        {" "}<button className="btn btn-sm" style={{ fontSize:9.5, padding:"1px 6px", marginLeft:2 }}
+                          onClick={() => setMainTab("policydocs")}>
+                          Plain-Language Policies
+                        </button> queue — the source text and the rejected draft are both there to repair.
                       </div>
                     )}
                     {ghSyncResult.skipped?.length > 0 && (
