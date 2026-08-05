@@ -1872,10 +1872,26 @@ def _strip_code_fence(text: str) -> str:
     leading disclaimer/preamble sentence before the fence (a common deviation
     even under "output only the code" instructions) made the old anchored
     ^...$ regex fail to match at all, silently falling through to validating
-    the prose+fence text as-is instead of the actual Rego inside it."""
+    the prose+fence text as-is instead of the actual Rego inside it.
+
+    Two further cases this has to survive, both seen in real syncs:
+
+      * SEVERAL fenced blocks — long control-catalog documents get answered as
+        one block per control family. Taking only the first (what the old
+        non-greedy single match did) silently discarded most of the module.
+      * An UNCLOSED fence, which is what a max_tokens truncation looks like.
+        Returning the raw text then left the literal "```rego" line in the
+        Rego, so the failure reported as a bogus syntax error instead of the
+        truncation it actually was.
+    """
     t = text.strip()
-    m = re.search(r'```(?:rego)?\s*\n(.*?)\n```', t, re.DOTALL)
-    return m.group(1).strip() if m else t
+    blocks = re.findall(r'```(?:rego)?\s*\n(.*?)\n```', t, re.DOTALL)
+    if blocks:
+        return "\n\n".join(b.strip() for b in blocks).strip()
+    m = re.search(r'```(?:rego)?\s*\n(.*)$', t, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return t
 
 
 def _validate_rego_syntax(rego_content: str) -> tuple[bool, list[str]]:
@@ -1952,10 +1968,79 @@ def _convert_markdown_to_rego(process: str, source_path: str, text_content: str)
         f"{example}"
     )
     user = f"Source file: {source_path}\nProcess: {process}\n\n---\n\n{text_content}"
-    return claude_client.complete_text(
+
+    # Budget notes — this call kept failing in production for exactly this
+    # reason. Adaptive thinking spends the SAME max_tokens as the answer, so
+    # at effort="high" a large control catalog (ISO 27001's 93 controls, an
+    # EU AI Act crosswalk) could burn the old 16k budget on reasoning and
+    # return either a body cut off mid-rule or no text at all. Both surfaced
+    # downstream as meaningless syntax complaints ("Unbalanced braces",
+    # "Missing 'package' declaration") that blamed the Rego rather than the
+    # truncation. Bigger budget, and if it still truncates, retry once at
+    # lower effort — that shifts budget from thinking to output, which is the
+    # right trade for a mechanical translation task.
+    text, stop_reason = claude_client.complete_text_meta(
         system, user,
-        label="pac_markdown_to_rego", effort="high", max_tokens=16000,
+        label="pac_markdown_to_rego", effort="high", max_tokens=32000,
     )
+    if stop_reason == "max_tokens":
+        logger.warning(
+            "pac_markdown_to_rego truncated at high effort for %s (%d chars returned) — retrying at low effort",
+            source_path, len(text),
+        )
+        text, stop_reason = claude_client.complete_text_meta(
+            system, user,
+            label="pac_markdown_to_rego_retry", effort="low", max_tokens=32000,
+        )
+
+    if stop_reason == "max_tokens":
+        raise ValueError(
+            f"the policy document is too large to convert in one pass — the model hit its output "
+            f"limit after {len(text):,} characters. Split '{source_path}' into smaller per-topic "
+            f"policies (one control family per file) and sync again."
+        )
+    if not text.strip():
+        raise ValueError(
+            "the model returned no text — this usually means the whole token budget went to "
+            f"reasoning about an oversized document. Split '{source_path}' into smaller files."
+        )
+    return text
+
+
+_PACKAGE_LINE_RE = re.compile(r'^\s*package\s+[\w.]+\s*$', re.MULTILINE)
+_IMPORT_LINE_RE  = re.compile(r'^\s*import\s+[\w.]+\s*$', re.MULTILINE)
+
+
+def _combine_rego_sections(process: str, sections: List[str]) -> str:
+    """Merge several files' Rego into ONE valid module.
+
+    A Rego module may declare `package` exactly once, as its first statement.
+    Concatenating N per-file sections verbatim (what this used to do) produced
+    N package declarations, so any process backed by more than one file was
+    saved as a module `opa check` rejects outright — silently, because the
+    combined result was never validated, only the individual pieces were.
+
+    So: hoist one package line and the union of the imports to the top, and
+    strip both from each section. Section comment headers are kept — the
+    provenance of each block is the reason they're there.
+    """
+    if len(sections) == 1 and _PACKAGE_LINE_RE.search(sections[0]):
+        return sections[0]
+
+    imports: List[str] = []
+    bodies: List[str] = []
+    for section in sections:
+        for imp in _IMPORT_LINE_RE.findall(section):
+            stripped = imp.strip()
+            if stripped not in imports:
+                imports.append(stripped)
+        body = _IMPORT_LINE_RE.sub("", _PACKAGE_LINE_RE.sub("", section))
+        bodies.append(re.sub(r'\n{3,}', "\n\n", body).strip())
+
+    head = [f"package controls.oracle_fusion.{process}", ""]
+    if imports:
+        head += imports + [""]
+    return "\n".join(head) + "\n" + "\n\n".join(b for b in bodies if b) + "\n"
 
 
 @router.post("/hooks/github/sync")
@@ -2135,7 +2220,16 @@ async def _sync_github_repo(
                     "pac_markdown_to_rego validation failed for %s (%d chars): %s | preview: %r",
                     f["path"], len(converted), "; ".join(errors), converted[:400],
                 )
-                return "error", f"converted Rego failed validation: {'; '.join(errors)}"
+                # Include what the model actually returned. Without it, a
+                # response that was prose rather than Rego reported only
+                # "Missing 'package' declaration" — technically true and
+                # completely unactionable, since it describes the symptom
+                # rather than the fact that no conversion was attempted.
+                preview = " ".join(rego.split())[:180]
+                return "error", (
+                    f"converted Rego failed validation: {'; '.join(errors)}"
+                    + (f" | model returned: \"{preview}…\"" if preview else " | model returned nothing")
+                )
             return "ok", rego
 
         to_convert: List[tuple[str, Dict[str, str]]] = []
@@ -2172,7 +2266,7 @@ async def _sync_github_repo(
                 skipped.append({"name": ", ".join(f["path"] for f in files), "reason": "no file in this process produced valid Rego"})
                 continue
 
-            combined = "\n\n".join(sections)
+            combined = _combine_rego_sections(process, sections)
             module_name = f"controls.oracle_fusion.{process}"
             source_format = "llm_converted" if converted_any else "rego"
             module_id = db.save_pac_module(process, module_name, combined, "1.0", source_format=source_format)

@@ -336,6 +336,34 @@ def complete_text(
     caller: Optional[dict] = None,
 ) -> str:
     """Run a single free-form completion and return the response text."""
+    return complete_text_meta(
+        system, user, label=label, effort=effort, max_tokens=max_tokens,
+        model=model, caller=caller,
+    )[0]
+
+
+def complete_text_meta(
+    system: str,
+    user: str,
+    *,
+    label: str = "text",
+    effort: str = "high",
+    max_tokens: int = 8000,
+    model: Optional[str] = None,
+    caller: Optional[dict] = None,
+) -> tuple[str, str]:
+    """complete_text, but also returning the response's stop_reason.
+
+    Callers that parse the completion as structured text (Rego, YAML, code)
+    need to distinguish "the model produced this" from "the model was cut off
+    mid-sentence". Adaptive thinking spends the SAME max_tokens budget as the
+    visible answer, so a large input can consume the whole budget on reasoning
+    and return a truncated body — or no text at all. complete_text swallowed
+    that, and the truncation then resurfaced downstream as a nonsense parse
+    error ("Unbalanced braces") that pointed at the wrong problem entirely.
+
+    Returns (text, stop_reason). stop_reason == "max_tokens" means truncated.
+    """
     client = get_client()
     if client is None:
         raise RuntimeError("Claude client unavailable (set ANTHROPIC_API_KEY)")
@@ -349,7 +377,7 @@ def complete_text(
         messages=[{"role": "user", "content": user}],
     )
     _record_cost(message, label, model, caller)
-    return _text_of(message)
+    return _text_of(message), (getattr(message, "stop_reason", None) or "")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
