@@ -130,11 +130,9 @@ import pac_endpoints
 import pac_policy_docs
 import approvals_endpoints
 import evidence_pack_endpoints
-import risk_waiver_sweep
 import vendor_risk_endpoints
 import ai_governance_endpoints
 import infrastructure_monitoring_endpoints
-import itsm_sla_sweep
 import pac_negative_sweep
 import connector_hygiene_sweep
 import vendor_risk_sweep
