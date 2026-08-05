@@ -122,12 +122,21 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
       },
-      // Policy-as-Code / Controls-as-Code (pac_endpoints.py). The backend
-      // registers this router with prefix="/api" itself, so the path is
-      // already /api/pac/... on both sides — direct passthrough, no rewrite.
+      // Policy-as-Code / Controls-as-Code (pac_endpoints.py + pac_policy_docs.py).
+      // The rewrite is REQUIRED and its absence is not a no-op: pac_endpoints
+      // declares prefix="/pac" and api_server.py registers it with no extra
+      // prefix, because production nginx's `location /api/ { proxy_pass
+      // http://127.0.0.1:8001/; }` already strips "/api/" (the trailing slash
+      // on proxy_pass is what does it). This entry used to pass the path
+      // through verbatim on the now-stale assumption that the backend served
+      // /api/pac/... itself — it doesn't, so every /api/pac/* call 404'd in
+      // dev while working fine in production. The visible symptom was an
+      // empty Rego Editor: loadModule() treats a non-ok response as "no data"
+      // and leaves its initial "" in place.
       '/api/pac': {
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/pac/, '/pac'),
       },
     },
   },
@@ -167,9 +176,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/risks-as-code/, '/risks-as-code'),
       },
+      // Same rewrite as the dev block above — see the comment there for why
+      // it is required rather than cosmetic.
       '/api/pac': {
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/pac/, '/pac'),
       },
       '/auth/': {
         target: 'http://127.0.0.1:8001',
