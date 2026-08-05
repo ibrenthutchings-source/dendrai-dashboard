@@ -7307,27 +7307,47 @@ def save_cem_event_risk_links(run_id: int, events: list) -> int:
 # Domain persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
-def bulk_save_risk_domains(run_id: int, domain_map: dict) -> int:
-    """Persist domain assignments (risk_ref → domain) to risk_scores.assigned_domain.
+def bulk_save_risk_domains(run_id: int, risks: list) -> int:
+    """Persist domain assignments to risk_scores.assigned_domain.
 
-    domain_map: {risk_ref: domain_name, ...}
-    Returns number of rows updated.
+    risks: [{"ref": risk_ref_or_none, "name": risk_name, "domain": domain_name}, ...]
+
+    Matches by risk_ref when the row has one; falls back to risk_name for
+    rows where risk_ref is NULL in the database. A plain `risk_ref = %s`
+    match alone silently updates zero rows for NULL-ref risks — SQL's `=`
+    never matches NULL, no error raised — which is exactly what made this
+    function a no-op for every quant/baseline risk (risk_scores rows with no
+    risk_ref assigned, ~2/3 of all risks in practice) despite the caller
+    believing persistence succeeded. `ref` is trusted only when non-empty;
+    an empty string is treated the same as None (the frontend's `r.id ||
+    r.risk_ref` fallback can hand back a synthetic id that isn't a real
+    risk_ref column value at all, so name-matching for anything not
+    confirmed to be a real ref is the safer default).
     """
-    if not domain_map:
+    if not risks:
         return 0
 
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 updated = 0
-                for risk_ref, domain in domain_map.items():
+                for r in risks:
+                    ref = r.get("ref") or None
+                    name = r.get("name") or ""
+                    domain = r.get("domain")
+                    if not domain:
+                        continue
                     cur.execute(
                         """
                         UPDATE risk_scores
                         SET assigned_domain = %s
-                        WHERE run_id = %s AND risk_ref = %s
+                        WHERE run_id = %s
+                          AND (
+                            (risk_ref IS NOT NULL AND risk_ref = %s)
+                            OR (risk_ref IS NULL AND risk_name = %s)
+                          )
                         """,
-                        (domain, run_id, risk_ref),
+                        (domain, run_id, ref, name),
                     )
                     updated += cur.rowcount
                 return updated

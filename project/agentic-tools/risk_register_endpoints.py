@@ -863,10 +863,18 @@ async def categorize_domains(req: CategorizeDomainRequest):
     except Exception as exc:
         logger.warning("AI domain categorization failed, using keyword fallback: %s", exc)
 
-    # Persist domain assignments back to risk_scores when a run_id is available
+    # Persist domain assignments back to risk_scores when a run_id is available.
+    # Carries `name` alongside each ref so bulk_save_risk_domains can match
+    # risk_scores rows with a NULL risk_ref (quant/baseline risks) by name —
+    # a bare {ref: domain} dict loses that fallback path entirely.
     if req.run_id and db.is_available():
         try:
-            db.bulk_save_risk_domains(req.run_id, domains)
+            persist_rows = [
+                {"ref": r.get("ref") or None, "name": r.get("name", ""), "domain": domains.get(r.get("ref", ""))}
+                for r in req.risks
+                if domains.get(r.get("ref", ""))
+            ]
+            db.bulk_save_risk_domains(req.run_id, persist_rows)
         except Exception as exc:
             logger.warning("Domain persistence failed (non-fatal): %s", exc)
 
