@@ -3048,6 +3048,55 @@ def get_domain_summary(
     }
 
 
+@app.get("/observability/events")
+def get_observability_events(
+    days: int = 30,
+    limit: int = 5000,
+    current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
+):
+    """
+    One row per adjudicated event over the trailing `days` days, each with
+    its real adjudicated_at timestamp and resolved Core Domain (when
+    resolvable — see domain resolution note below) — the flat, per-event
+    feed Continuous Monitoring's Playback/Motion views (scrub, speed, replay,
+    arrival animation, recency trail) need and /observability/domain-summary
+    and /pac/control-flow-map deliberately don't provide, since both
+    pre-aggregate into a static summary/graph rather than exposing individual
+    events with real timestamps.
+
+    domain is resolved the same way get_domain_summary does (pol_domain_
+    mappings, via each event's policy_violations) and carries the same
+    honest-gap behavior: null when the event's rule_id/control_id isn't
+    mapped yet, or when the event has no policy_violations to key off at all
+    (a CLEAR event, most of the time) — never a guess. A frontend grouping by
+    domain should treat a null domain as its own explicit "unclassified"
+    bucket, not silently drop the event.
+    """
+    if not db.is_available():
+        return {"events": [], "window_days": days, "note": "Database not configured"}
+
+    raw = db.get_recent_adjudications_for_domain_summary(days=days, limit=limit)
+    ctrl_to_process = {c["control_id"]: c["process"] for c in db.list_controls() if c.get("process")}
+
+    events = [
+        {
+            "id": ev["id"],
+            "adjudicated_at": ev["adjudicated_at"].isoformat() if ev["adjudicated_at"] else None,
+            "verdict": ev["final_verdict"],
+            "risk_tier": ev["risk_tier"],
+            "source_system": ev["source_system"],
+            "target_tool": ev["target_tool"],
+            "server_name": ev["server_name"],
+            "requires_human_review": ev["requires_human_review"],
+            "policy_violations": ev["policy_violations"],
+            "domain": pol_domain_mappings.domain_for_violations(ev["policy_violations"], ctrl_to_process),
+        }
+        for ev in raw
+    ]
+
+    return {"events": events, "count": len(events), "window_days": days}
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
