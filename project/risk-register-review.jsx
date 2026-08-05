@@ -59,16 +59,34 @@ let PRESET_FRAMEWORKS  = _DEFAULT_PRESET_FRAMEWORKS;
 let MATRIX_FRAMEWORKS  = _DEFAULT_MATRIX_FRAMEWORKS;
 
 async function _loadControlsFromApi() {
+  // Every failure branch here used to be silent: a non-ok response or a
+  // thrown fetch left MASTER_CONTROLS on its ~30-entry hardcoded fallback
+  // with no visible sign anything was wrong — every control from every
+  // imported register (the whole point of this fetch) would simply be
+  // missing from every picker in the app, and there would be nothing to look
+  // at to find out why. Logging each branch turns "the dropdown is
+  // inexplicably missing controls" into something the browser console
+  // answers directly.
   try {
     const res = await fetch("/api/risk-register/controls");
-    if (!res.ok) return;
+    if (!res.ok) {
+      console.warn(`[risk-register] GET /controls failed (HTTP ${res.status}) — ` +
+        `showing the built-in ~30-control fallback only; imported registers' controls will not appear.`);
+      return;
+    }
     const data = await res.json();
     const controls = data.controls || [];
-    if (!controls.length) return;
+    if (!controls.length) {
+      console.warn("[risk-register] GET /controls returned zero controls — showing the built-in fallback.");
+      return;
+    }
     MASTER_CONTROLS.length = 0;
     for (const c of controls) MASTER_CONTROLS.push(c);
     CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
-  } catch (_) {}
+  } catch (e) {
+    console.warn("[risk-register] Could not load the control library from the server — " +
+      "showing the built-in fallback only:", e);
+  }
 }
 
 // MASTER_CONTROLS is mutated in place (length=0 + push above), so this window
