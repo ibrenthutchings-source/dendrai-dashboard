@@ -10,6 +10,17 @@ import { RiskSankey }   from "./risk-sankey.jsx";
 // Reference data — seeded from hardcoded defaults, overwritten from DB on mount
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Safety valve for the "pick an existing control" pickers (ControlsPanel and
+// RiskFrameworkMatrix both use it) — NOT a UX limit. Both containers already
+// scroll, so this only exists to cap DOM node count if the library ever
+// grows pathologically large; it must stay far above any realistic control
+// count. A too-small cap here silently hides whole frameworks: with the
+// library sorted alphabetically by ref, every control whose ref sorts past
+// the cap (previously 12-20) never rendered in the un-searched picker at
+// all — which is exactly what happened to a later-imported framework like
+// "SOX 404" once the library grew past ~35 entries.
+const _CONTROL_PICKER_CAP = 250;
+
 let MASTER_CONTROLS = [
   { ref:"FC-01", framework:"Internal",       name:"Revenue Recognition Controls",     category:"Financial",      domain:"Finance",    desc:"Controls over revenue recognition timing to prevent misstatement" },
   { ref:"FC-02", framework:"Internal",       name:"Financial Close Reconciliation",    category:"Financial",      domain:"Finance",    desc:"Period-end reconciliation procedures for material accounts" },
@@ -531,7 +542,17 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
             autoFocus
           />
           <div style={{ overflowY:"auto", display:"flex", flexDirection:"column", gap:2 }}>
-            {filteredLibrary.slice(0,20).map(c => (
+            {/* The library is sorted alphabetically by ref, and this list was
+                capped at the first 20 regardless of search — with 40+ default
+                refs (AC-*, AI-*, CM-*, FC-*, HR-*, OP-*, RM-*, SC-*, VM-*) all
+                sorting before anything starting with a later letter, EVERY
+                control from a framework like "SOX 404" (or anything else
+                imported later) fell past the cutoff and was invisible in the
+                unsearched, just-opened picker — not filtered out, just never
+                rendered. _CONTROL_PICKER_CAP is a safety valve against a
+                pathological library size, not a UX limit; the container
+                already scrolls, so raising it costs nothing.  */}
+            {filteredLibrary.slice(0, _CONTROL_PICKER_CAP).map(c => (
               <button
                 key={c.ref}
                 style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 6px", borderRadius:4, border:"none", background:"transparent", cursor:"pointer", textAlign:"left", fontSize:10 }}
@@ -545,6 +566,11 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
               </button>
             ))}
             {filteredLibrary.length === 0 && <div style={{ fontSize:10, color:"var(--ink-3,#888)", padding:4 }}>No matches</div>}
+            {filteredLibrary.length > _CONTROL_PICKER_CAP && (
+              <div style={{ fontSize:9, color:"var(--ink-3,#888)", padding:"2px 4px", fontStyle:"italic" }}>
+                Showing {_CONTROL_PICKER_CAP} of {filteredLibrary.length} — type to narrow the search
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1028,6 +1054,20 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw) && !_hiddenFws.has(fw)) extraFws.add(fw);
   }
   const fwCols = [..._activeMxFws, ...[...extraFws].sort()];
+
+  // Frameworks offered when creating a brand-new control from a matrix cell.
+  // fwCols alone (pinned columns + columns auto-detected from what's
+  // currently visible) still misses a framework that has real, saved
+  // controls in the library but happens not to be pinned AND not to be
+  // detected as an "extra" column in the CURRENT view — e.g. Enterprise
+  // Risks with no assigned control yet from that framework. Union in every
+  // framework MASTER_CONTROLS already knows about (same source ControlsPanel's
+  // "new control" dropdown already uses) so a real framework is never
+  // unselectable here just because nothing on screen right now points to it.
+  const _knownCtrlFws = new Set(MASTER_CONTROLS.map(c => c.framework).filter(Boolean));
+  const newCtrlFwOptions = ["Internal", ...new Set(
+    [...fwCols, ..._knownCtrlFws].filter(f => f && !_internalFws.has(f))
+  )];
 
   // Apply the user's saved drag order, if any: known columns first in their
   // saved positions, then any columns that weren't part of that snapshot yet
@@ -1626,7 +1666,12 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                               autoFocus
                             />
                             <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 }}>
-                              {addable.slice(0, 12).map(c => (
+                              {/* Same fix as ControlsPanel's picker above: this used
+                                  to cap at 12 regardless of search, alphabetically —
+                                  so any framework sorting past the ~35th control ref
+                                  (everything "SOX*" included) was invisible until you
+                                  typed a search term. See _CONTROL_PICKER_CAP. */}
+                              {addable.slice(0, _CONTROL_PICKER_CAP).map(c => (
                                 <button
                                   key={c.ref}
                                   onClick={() => {
@@ -1650,6 +1695,11 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                               ))}
                               {addable.length === 0 && (
                                 <span style={{ fontSize: 9, color: "var(--ink-3,#888)", padding: "3px 4px" }}>All controls already assigned</span>
+                              )}
+                              {addable.length > _CONTROL_PICKER_CAP && (
+                                <span style={{ fontSize: 8.5, color: "var(--ink-3,#888)", padding: "2px 4px", fontStyle: "italic" }}>
+                                  Showing {_CONTROL_PICKER_CAP} of {addable.length} — type to narrow the search
+                                </span>
                               )}
                             </div>
                           </div>
@@ -1684,7 +1734,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                 }}
                                 style={{ fontSize: 9, padding: "3px 6px", flex: 1, cursor: "pointer" }}
                               >
-                                {["Internal", ..._activeMxFws.filter(f => f !== "Internal")].map(f => (
+                                {newCtrlFwOptions.map(f => (
                                   <option key={f} value={f}>{f}</option>
                                 ))}
                               </select>
@@ -2471,6 +2521,32 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setSavingRows(prev => new Set([...prev, riskKey]));
     setDiscStates(prev => ({ ...prev, [riskKey]: { ...prev[riskKey], originalWording: state.wording } }));
     setSavingRows(prev => { const next = new Set(prev); next.delete(riskKey); return next; });
+  }
+
+  // RiskFrameworkMatrix renders internal (pipeline-run) and external/
+  // discovered (uploaded register / framework catalog) risks side by side in
+  // one table, but only ever had ONE onSaveRow prop, wired unconditionally to
+  // handleSaveRowWording — which is internal-only. Every control add/remove
+  // on an EXTERNAL row (e.g. an uploaded SOX 404 risk) still funnelled
+  // through it, and its cleanup line
+  //     setRiskStates(prev => ({ ...prev, [riskKey]: { ...prev[riskKey], originalWording: state.wording } }))
+  // wrote into riskStates (the INTERNAL bucket) keyed by the external risk's
+  // ref. Since prev[riskKey] didn't exist there, the spread produced an
+  // entry containing ONLY originalWording — missing `included` and
+  // `wording` entirely. On the next render, allMatrixRiskStates
+  // ({ ...discRiskStates, ...riskStates }) spreads riskStates LAST, so that
+  // corrupted entry silently shadowed the real (correct) one from
+  // discRiskStates. The row then rendered with state.included === undefined
+  // — which the opacity check reads as excluded, so the whole row grayed
+  // out — and state.wording undefined too, leaving the row's own text gone
+  // and nothing left to edit. This router sends external rows to the
+  // already-correct handleSaveDiscoveryRow instead, so riskStates is never
+  // touched by anything but genuinely internal rows.
+  function matrixSaveRow(riskKey, state, ctrlRefs) {
+    const isExternalRow = discoveredRisks.some(r => (r.id || r.risk_ref) === riskKey);
+    return isExternalRow
+      ? handleSaveDiscoveryRow(riskKey, state)
+      : handleSaveRowWording(riskKey, state, ctrlRefs);
   }
 
   // ── Save All — upsert every risk/control/framework to DB + generate Risk-as-Code ──
@@ -3313,7 +3389,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                     onAddManualControl={matrixAddManual}
                     onRemoveControl={matrixRemove}
                     onResetCtrl={matrixReset}
-                    onSaveRow={handleSaveRowWording}
+                    onSaveRow={matrixSaveRow}
                     onRemoveFramework={handleRemoveFramework}
                     onPurgeExtraFramework={handlePurgeExtraFramework}
                     savingRows={savingRows}

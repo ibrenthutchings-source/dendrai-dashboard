@@ -138,6 +138,36 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/pac/, '/pac'),
       },
+      // Same gap as /api/pac above, found the same way: api_server.py
+      // registers these directly on `app` with no "/api" prefix (production
+      // nginx's /api/ catch-all strips it before forwarding, so only dev was
+      // ever broken). Confirmed against the real OpenAPI schema — /config,
+      // /digests, and /history are real routes with zero dev-proxy entry, so
+      // every /api/config, /api/digests, /api/history call 404'd. /digests
+      // is what surfaced this: the digest-notification poll in app.jsx
+      // (pollDigests) hit /api/digests/check-due every 30s and 404'd every time.
+      '/api/config': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/config/, '/config'),
+      },
+      '/api/digests': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/digests/, '/digests'),
+      },
+      '/api/history': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/history/, '/history'),
+      },
+      // evidence_pack_endpoints.router declares prefix="/evidence-pack" —
+      // same gap, different router.
+      '/api/evidence-pack': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/evidence-pack/, '/evidence-pack'),
+      },
     },
   },
   // vite preview (port 4173) needs its own proxy block — server.proxy is dev-only
@@ -182,6 +212,26 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/pac/, '/pac'),
+      },
+      '/api/config': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/config/, '/config'),
+      },
+      '/api/digests': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/digests/, '/digests'),
+      },
+      '/api/history': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/history/, '/history'),
+      },
+      '/api/evidence-pack': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/evidence-pack/, '/evidence-pack'),
       },
       '/auth/': {
         target: 'http://127.0.0.1:8001',
