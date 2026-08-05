@@ -842,16 +842,26 @@ async def categorize_domains(req: CategorizeDomainRequest):
             return "Market & Economic Risk"
         return category or "Enterprise Risk"
 
+    # Dict key: ref when present, else name. A risk with neither a real
+    # risk_ref nor a name has nothing to categorize or persist by, so it's
+    # skipped entirely — but a missing *ref* alone (quant/baseline risks,
+    # ~2/3 of risk_scores rows have no risk_ref at all) must still get
+    # categorized. Previously this comprehension's `if r.get("ref")` guard
+    # silently dropped every such risk before keyword/AI categorization even
+    # ran, not just at persistence.
+    def _key(r: dict) -> str:
+        return r.get("ref") or r.get("name", "")
+
     domains = {
-        r.get("ref", ""): _keyword_domain(r.get("name", ""), r.get("category", ""))
+        _key(r): _keyword_domain(r.get("name", ""), r.get("category", ""))
         for r in req.risks
-        if r.get("ref")
+        if _key(r)
     }
 
     try:
         if claude_client.is_available() and req.risks:
             risk_lines = "\n".join(
-                f'{r.get("ref", "")}: {r.get("name", "")} (category: {r.get("category", "")})'
+                f'{_key(r)}: {r.get("name", "")} (category: {r.get("category", "")})'
                 for r in req.risks
             )
             result = claude_client.complete_json(
@@ -870,9 +880,9 @@ async def categorize_domains(req: CategorizeDomainRequest):
     if req.run_id and db.is_available():
         try:
             persist_rows = [
-                {"ref": r.get("ref") or None, "name": r.get("name", ""), "domain": domains.get(r.get("ref", ""))}
+                {"ref": r.get("ref") or None, "name": r.get("name", ""), "domain": domains.get(_key(r))}
                 for r in req.risks
-                if domains.get(r.get("ref", ""))
+                if domains.get(_key(r))
             ]
             db.bulk_save_risk_domains(req.run_id, persist_rows)
         except Exception as exc:

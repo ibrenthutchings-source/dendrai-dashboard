@@ -612,11 +612,21 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
 
   const dirty = rego !== origRego;
 
+  // A failed load used to be swallowed entirely: non-ok -> null -> early
+  // return, leaving the editor showing its initial "". So a 404 (e.g. the dev
+  // proxy forwarding /api/pac/* to a path the backend doesn't serve) and a
+  // process that genuinely has no module looked identical — an empty box with
+  // no explanation. Surface the failure instead.
   const loadModule = useCallback((process) => {
     return fetch(`/api/pac/modules/${process}`, { headers: _codeAuthHeaders() })
-      .then(r => r.ok ? r.json() : null)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(
+        r.status === 404
+          ? "404 — the API did not recognise /api/pac/modules. If you're running `npm run dev`, restart it so the updated proxy config loads."
+          : `HTTP ${r.status}`
+      )))
       .then(data => {
         if (!data) return;
+        setSaveMsg(null);
         setRego(data.rego_content || "");
         setOrigRego(data.rego_content || "");
         setModMeta({
@@ -628,7 +638,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
           rule_coverage:  data.rule_coverage || null,
         });
       })
-      .catch(() => {});
+      .catch(e => setSaveMsg({ kind: "err", msg: `Could not load this module — ${e.message}` }));
   }, []);
 
   // Load module when process changes
