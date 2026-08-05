@@ -8173,32 +8173,44 @@ def get_control_flow_map(days: int = 30) -> dict:
     return _build_control_flow_map(event_rows, control_meta_by_id)
 
 
-def get_recent_adjudications_for_domain_summary(days: int = 30) -> list:
+def get_recent_adjudications_for_domain_summary(days: int = 30, limit: int = 5000) -> list:
     """
-    Raw per-event rows for the Continuous Monitoring domain roll-up
-    (pol_domain_mappings.domain_for_violations resolves each row's domain —
+    Raw per-event rows for Continuous Monitoring — both the domain roll-up
+    (pol_domain_mappings.domain_for_violations resolves each row's domain,
     deliberately NOT done here; db.py stays free of app-layer/policy-mapping
     imports, same separation get_control_flow_map keeps by returning raw rows
-    for _build_control_flow_map to interpret).
+    for _build_control_flow_map to interpret) and the per-event Playback/
+    Motion views (GET /observability/events), which need the extra identity/
+    context columns the domain roll-up itself ignores.
 
-    Returns [{"adjudicated_at", "final_verdict", "policy_violations"}, ...].
-    Includes the raw timestamp (get_control_flow_map's query omits it, since
-    that endpoint aggregates into a static graph, not a time series).
+    Returns [{"id", "adjudicated_at", "final_verdict", "risk_tier",
+    "source_system", "target_tool", "server_name", "requires_human_review",
+    "policy_violations"}, ...], oldest first (the natural order for
+    time-axis playback; a summary consumer that doesn't care about order can
+    ignore it). `limit` guards against an unbounded response on a `days`
+    window far larger than this platform's actual event volume today (a
+    few hundred/month) — raise it if that volume genuinely grows.
     """
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT adjudicated_at, final_verdict, policy_violations
+                    SELECT id, adjudicated_at, final_verdict, risk_tier, source_system,
+                           target_tool, server_name, requires_human_review, policy_violations
                     FROM observability.adjudicated_tool_calls
                     WHERE adjudicated_at > NOW() - (%s || ' days')::interval
                     ORDER BY adjudicated_at
+                    LIMIT %s
                     """,
-                    (days,),
+                    (days, limit),
                 )
                 return [
-                    {"adjudicated_at": r[0], "final_verdict": r[1], "policy_violations": r[2] or []}
+                    {
+                        "id": r[0], "adjudicated_at": r[1], "final_verdict": r[2], "risk_tier": r[3],
+                        "source_system": r[4], "target_tool": r[5], "server_name": r[6],
+                        "requires_human_review": r[7], "policy_violations": r[8] or [],
+                    }
                     for r in cur.fetchall()
                 ]
     return _run(_do) or []
