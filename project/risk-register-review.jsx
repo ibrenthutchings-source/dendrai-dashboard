@@ -1970,6 +1970,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [uploadLoading, setUploadLoading]      = useState(false);
   const [uploadErr, setUploadErr]              = useState(null);
   const [uploadedControls, setUploadedControls] = useState([]);
+  const [catalogSaved, setCatalogSaved]        = useState(null);
   const [pasteMode, setPasteMode]              = useState(false);
   const [pasteText, setPasteText]              = useState("");
   const [uploadFilename, setUploadFilename]    = useState(null);
@@ -2189,14 +2190,11 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // CTRL_BY_REF, so a register's own refs (SOX-IT-01, ...) would be dropped on
   // the floor and silently replaced by keyword guesses.
   function _mergeRegisterControls(controls) {
-    let added = 0;
     (controls || []).forEach(c => {
       if (!c?.ref || CTRL_BY_REF[c.ref]) return;
       MASTER_CONTROLS.push(c);
       CTRL_BY_REF[c.ref] = c;
-      added++;
     });
-    return added;
   }
 
   function _loadRisks(found, label, controls) {
@@ -2457,55 +2455,6 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setSavingRows(prev => { const next = new Set(prev); next.delete(riskKey); return next; });
   }
 
-  async function handleSaveAllWording() {
-    const modified = Object.entries(riskStates).filter(([, s]) => s.wording !== s.originalWording);
-    if (!modified.length) return;
-    setSavingRows(new Set(modified.map(([k]) => k)));
-    try {
-      await fetch("/api/risk-register/reviews", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          run_id: effectiveRunId || null,
-          review_type: "internal",
-          framework: "Internal Risk Register",
-          risk_states: modified.map(([key, s]) => ({
-            risk_ref: key,
-            original_wording: s.originalWording || s.wording,
-            current_wording: s.wording,
-            included: s.included !== false,
-            reason_for_change: s.reason || null,
-            controls_assigned: [],
-          })),
-        }),
-      });
-      if (effectiveRunId) {
-        await fetch("/api/risk-register/apply-wording", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            run_id: effectiveRunId,
-            risks: modified.map(([key, s]) => ({ risk_ref: key, current_wording: s.wording })),
-          }),
-        });
-      }
-      setRiskStates(prev => {
-        const next = { ...prev };
-        for (const [key, s] of modified) next[key] = { ...next[key], originalWording: s.wording };
-        return next;
-      });
-      setSavedAt(new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }));
-      const url = effectiveRunId
-        ? `/api/risk-register/risks/${effectiveRunId}`
-        : ticker ? `/api/risk-register/risks/latest/${encodeURIComponent(ticker)}` : null;
-      if (url) {
-        const res = await fetch(url);
-        if (res.ok) { const d = await res.json(); if (d.risks?.length) setRefreshedRisks(d.risks); }
-      }
-    } catch (_) {}
-    setSavingRows(new Set());
-  }
-
   // ── Save All — upsert every risk/control/framework to DB + generate Risk-as-Code ──
 
   async function handleSaveAll() {
@@ -2692,6 +2641,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setValidationMsg(null);
     setConverting(true);
     setConvertErr(null);
+    setCatalogSaved(null);
 
     const payload = buildConvertPayload(sourceRisks, states, ctrl, !isInternal);
 
@@ -2749,6 +2699,8 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           }),
         });
         if (catRes.ok) {
+          const catData = await catRes.json().catch(() => ({}));
+          setCatalogSaved(catData.catalogs || []);
           // Re-read the catalogs so the framework tab shows the newly saved
           // register immediately, without needing a reload.
           const listRes = await fetch("/api/risk-register/framework-catalogs");
@@ -2963,6 +2915,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   function renderActionBar(sourceRisks, states, tab) {
     if (!sourceRisks?.length) return null;
     const isInternal = tab === "internal";
+    const isUploadTab = tab === "upload";
     const missing = validateStates(states);
     const total = sourceRisks.length;
     const excluded = Object.values(states).filter(s => !s.included).length;
@@ -3001,6 +2954,18 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         {isInternal && savedAt && !convertErr && (
           <div style={{ fontSize:10, color:"var(--green,#2a7)", display:"flex", alignItems:"center", gap:3 }}>
             <span>✓</span> Saved to register at {savedAt}
+          </div>
+        )}
+
+        {/* The upload tab had NO success feedback of any kind: you clicked
+            Convert, YAML appeared, and whether the register had actually been
+            filed anywhere was invisible. Report exactly which frameworks were
+            written and how many risks each now holds — that is the thing
+            you'd otherwise have to query the database to find out. */}
+        {isUploadTab && catalogSaved && !convertErr && (
+          <div style={{ fontSize:10, color:"var(--green,#2a7)", display:"flex", alignItems:"center", gap:3 }}>
+            <span>✓</span> Saved to register:{" "}
+            {catalogSaved.map(c => `${c.framework} (${c.total} risk${c.total === 1 ? "" : "s"})`).join(", ")}
           </div>
         )}
 

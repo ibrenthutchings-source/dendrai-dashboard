@@ -697,7 +697,36 @@ async def save_uploaded_catalog(req: SaveCatalogRequest):
         _DEFAULT_CONTROLS.append(ctrl)
         controls_saved += 1
 
-    return {"saved": True, "catalogs": saved, "controls_saved": controls_saved}
+    # Importing a register into a framework is an unambiguous statement that
+    # you want to work with it — so un-hide it and put it on the matrix.
+    #
+    # Without this, importing into a framework that was previously removed
+    # from the matrix succeeds completely and changes nothing you can see:
+    # the risks land in the catalog, the controls land in the library, the
+    # save reports success, and the Framework Matrix still omits the column
+    # because hidden_frameworks deliberately suppresses re-detection. That is
+    # indistinguishable from the import having failed.
+    revealed: List[str] = []
+    if db.is_available():
+        hidden = list(db.get_app_config("hidden_frameworks", []) or [])
+        matrix = list(db.get_app_config("matrix_frameworks", _DEFAULT_MATRIX_FRAMEWORKS) or [])
+        changed = False
+        for fw_name in groups:
+            if fw_name in hidden:
+                hidden.remove(fw_name)
+                changed = True
+                revealed.append(fw_name)
+            if fw_name not in matrix:
+                matrix.append(fw_name)
+                changed = True
+                if fw_name not in revealed:
+                    revealed.append(fw_name)
+        if changed:
+            db.set_app_config("hidden_frameworks", hidden)
+            db.set_app_config("matrix_frameworks", matrix)
+
+    return {"saved": True, "catalogs": saved, "controls_saved": controls_saved,
+            "revealed_on_matrix": revealed}
 
 
 @router.post("/score-framework-risks")
@@ -1369,7 +1398,6 @@ def _normalize_register(df) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]
             "source_framework": fw,
             # Only fall back to keyword inference when the register didn't say.
             "auto_controls": register_ctrl_refs or _auto_map_controls(name, category),
-            "register_controls": register_ctrl_refs,
         })
 
     return risks, list(controls.values())

@@ -190,7 +190,28 @@ function App() {
   const [autoCodeYaml, setAutoCodeYaml] = useState(null);
 
   // ---- Tabs ----
-  const [activeScreen, setActiveScreen] = useState("help"); // default landing screen is the Intelligenza Workflow guide; config|pipeline|register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
+  // Default landing screen is the Intelligenza Workflow guide; config|pipeline|
+  // register|controls|flow|maps|notifs|scope|riskcode|policycode|gov
+  //
+  // Restored from localStorage so a refresh keeps you where you were. It used
+  // to reset to "help" unconditionally, which made refreshing to check whether
+  // something had actually saved genuinely misleading: you'd land back on the
+  // workflow guide, navigate somewhere, and be unsure what you were looking
+  // at. Validated against the nav so a stale or renamed id can't leave the
+  // app rendering an empty shell.
+  const [activeScreen, setActiveScreen] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("dendrai.activeScreen");
+      const valid = (window.NAV_SECTIONS || [])
+        .flatMap(s => (s.items || []).map(i => i.id));
+      return saved && (valid.length === 0 || valid.includes(saved)) ? saved : "help";
+    } catch {
+      return "help";   // private mode / storage disabled
+    }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("dendrai.activeScreen", activeScreen); } catch {}
+  }, [activeScreen]);
 
   // Session-only screen-visit tally, for the anticipatory help nudge (see
   // HelpNudge below) — watches activeScreen directly rather than instrumenting
