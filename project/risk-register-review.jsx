@@ -1969,6 +1969,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [uploadExpandedCtrl, setUploadExpandedCtrl] = useState(new Set());
   const [uploadLoading, setUploadLoading]      = useState(false);
   const [uploadErr, setUploadErr]              = useState(null);
+  const [uploadedControls, setUploadedControls] = useState([]);
   const [pasteMode, setPasteMode]              = useState(false);
   const [pasteText, setPasteText]              = useState("");
   const [uploadFilename, setUploadFilename]    = useState(null);
@@ -2200,6 +2201,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
   function _loadRisks(found, label, controls) {
     _mergeRegisterControls(controls);
+    setUploadedControls(controls || []);
     setUploaded(found);
     setUploadStates(initRiskStates(found));
     setUploadCtrlStates(initControlStates(found));
@@ -2667,9 +2669,19 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     const sourceRisks = isUpload ? uploadedRisks : isExternal ? discoveredRisks : (effectiveRisks || []);
     const states      = isUpload ? uploadRiskStates : isExternal ? discRiskStates : riskStates;
     const ctrl        = isUpload ? uploadCtrlStates : isExternal ? discCtrlStates : ctrlStates;
+    // For an upload, the framework is whatever the REGISTER says (its
+    // Framework column — "SOX 404"), not the file it arrived in. Labelling
+    // the review session "SOX-matrix.xlsx" or "pasted (14 rows)" filed the
+    // whole import under a name nothing else in the app knows about, so it
+    // was unfindable afterwards. Falls back to the filename only when the
+    // register declared no framework at all.
+    const uploadFw = isUpload
+      ? (sourceRisks.find(r => r.source_framework && r.source_framework !== "Uploaded Register")
+          ?.source_framework || uploadFilename || "Uploaded Register")
+      : null;
     const framework   = isInternal
       ? "Internal Risk Register"
-      : isUpload ? (uploadFilename || "Uploaded Register")
+      : isUpload ? uploadFw
       : (selectedFws[0] || fwSearch || "External");
 
     const missing = validateStates(states);
@@ -2712,6 +2724,55 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       }
     } catch (err) {
       setConvertErr(`Review session not saved: ${err.message || "network error"}`);
+    }
+
+    // 1b. Persist an uploaded/pasted register into the framework catalogs.
+    //     Framework-search already did this for discovered risks; the upload
+    //     path never did, so an imported register was reviewed and converted
+    //     and then simply wasn't there afterwards — nothing had written it
+    //     anywhere the Risk Register screen reads from.
+    if (isUpload) {
+      try {
+        const catRes = await fetch("/api/risk-register/save-catalog", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            risks: payload.filter(r => r.included !== false).map(r => ({
+              ...r,
+              // Reviewer edits are the wording that should persist.
+              name: r.current_wording || r.name,
+            })),
+            default_framework: uploadFw,
+            // Persist the register's own controls too, or their refs resolve
+            // to nothing after a page refresh and drop off every risk.
+            controls: uploadedControls,
+          }),
+        });
+        if (catRes.ok) {
+          // Re-read the catalogs so the framework tab shows the newly saved
+          // register immediately, without needing a reload.
+          const listRes = await fetch("/api/risk-register/framework-catalogs");
+          if (listRes.ok) {
+            const d = await listRes.json();
+            const allRisks = (d.catalogs || []).flatMap(cat =>
+              (cat.risks || []).map(r => ({
+                ...r,
+                source_framework: r.source_framework || cat.framework,
+              }))
+            );
+            if (allRisks.length) {
+              setDiscovered(allRisks);
+              setDiscStates(initRiskStates(allRisks));
+              setDiscCtrlStates(initControlStates(allRisks));
+            }
+          }
+        } else {
+          const e = await catRes.json().catch(() => ({}));
+          setConvertErr(`Register not added to the framework catalog: ${e.detail || `HTTP ${catRes.status}`}`);
+        }
+      } catch (err) {
+        setConvertErr(`Register not added to the framework catalog: ${err.message || "network error"}`);
+      }
     }
 
     // 2. For internal runs with a known run: write wording back to risk_scores,

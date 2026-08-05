@@ -277,3 +277,174 @@ def test_missing_column_error_lists_what_was_actually_found():
     with pytest.raises(HTTPException) as exc:
         rr._normalize_register(rr._parse_pasted_table(pd, "framework,owner\nSOX,Alice"))
     assert "framework" in exc.value.detail and "owner" in exc.value.detail
+
+
+# ── Real exports have junk above the header ─────────────────────────────────
+# A SOX matrix exported from Excel almost always carries a title banner, often
+# a "prepared by" line and a blank spacer, before the actual header row.
+# pandas takes row 0 regardless, so the import failed complaining about a
+# missing column — on a file whose header was simply two rows further down.
+
+BANNER_CSV = (
+    "FY2026 SOX Control Matrix - CONFIDENTIAL,,,\n"
+    ",,,\n"
+    "Framework,Domain / Process,Risk ID & Description,Control ID & Description\n"
+    "SOX 404,Access,SOX-IT-01: Unauthorized access permits edits.,SOX-IT-01: Manager approval required.\n"
+)
+
+
+def test_header_is_found_beneath_a_title_banner_and_spacer():
+    risks, controls = rr._normalize_register(rr._parse_tabular(pd, BANNER_CSV.encode(), "csv"))
+    assert len(risks) == 1
+    assert risks[0]["id"] == "SOX-IT-01"
+    assert [c["ref"] for c in controls] == ["SOX-IT-01"]
+
+
+def test_ragged_rows_do_not_abort_the_parse():
+    """A one-cell title above a four-column table made pandas size the frame
+    from line 1 and raise 'Expected 1 fields in line 3, saw 4'."""
+    text = ("FY2026 SOX Control Matrix\n\n"
+            "Framework\tDomain / Process\tRisk ID & Description\tControl ID & Description\n"
+            "SOX 404\tAccess\tSOX-IT-01: Unauthorized access.\tSOX-IT-01: Approval required.\n")
+    risks, _ = rr._normalize_register(rr._parse_pasted_table(pd, text))
+    assert risks[0]["id"] == "SOX-IT-01"
+
+
+def test_multiple_preamble_lines_are_skipped():
+    text = "SOX Matrix\nPrepared by: Finance\n\nRisk ID\tRisk Name\tCategory\nR-1\tFraud\tFinance"
+    risks, _ = rr._normalize_register(rr._parse_pasted_table(pd, text))
+    assert risks[0]["id"] == "R-1"
+
+
+def test_a_header_on_row_zero_is_still_used():
+    """Header detection must not 'find' a better header further down in an
+    ordinary file — that would silently drop the first data rows."""
+    risks, _ = rr._normalize_register(rr._parse_pasted_table(
+        pd, "Risk ID,Risk Name,Category,Score,RAG\nR-001,Supplier fraud,Financial,8.2,Red"))
+    assert len(risks) == 1
+    assert risks[0]["score"] == 8.2
+
+
+def test_trailing_empty_columns_are_dropped():
+    """Excel exports pad rows out with empty columns."""
+    df = rr._parse_tabular(pd, b"Risk ID,Risk Name,,\nR-1,Data breach,,\n", "csv")
+    assert list(df.columns) == ["Risk ID", "Risk Name"]
+
+
+def test_a_row_of_long_sentences_is_not_taken_for_a_header():
+    """Data rows score lower than headers because headers are short labels."""
+    header = ["Risk ID", "Risk Name", "Category"]
+    data = ["SOX-IT-01", "A very long risk statement " * 4, "Access to Programs and Data"]
+    assert rr._looks_like_header(header) > rr._looks_like_header(data)
+
+
+def test_a_single_cell_banner_never_scores_as_a_header():
+    assert rr._looks_like_header(["FY2026 SOX Control Matrix"]) == 0
+    assert rr._looks_like_header(["", "", ""]) == 0
+
+
+# ── Uploaded registers must survive leaving the screen ──────────────────────
+# An imported register was reviewed, saved as a review session, converted to
+# code — and then wasn't there. Nothing on the upload path ever wrote to
+# framework_risk_catalogs, which is what the Risk Register screen reads. A SOX
+# 404 matrix imported fine and left no SOX 404 behind.
+
+@pytest.fixture()
+def catalog_api(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    store, controls_db = {}, {}
+    monkeypatch.setattr(rr.db, "is_available", lambda: True)
+    monkeypatch.setattr(rr.db, "save_framework_catalog",
+                        lambda name, risks: store.__setitem__(name, risks))
+    monkeypatch.setattr(rr.db, "list_framework_catalogs",
+                        lambda: [{"framework": k, "risks": v, "fetched_at": None} for k, v in store.items()])
+    monkeypatch.setattr(rr.db, "upsert_control", lambda c: controls_db.__setitem__(c["ref"], c))
+
+    app = FastAPI()
+    app.include_router(rr.router)
+    for d in (rr.router.dependencies or []):
+        app.dependency_overrides[d.dependency] = lambda: {"role": "admin"}
+    return TestClient(app), store, controls_db
+
+
+SOX_RISKS = [
+    {"id": "SOX-IT-01", "name": "Unauthorized access", "source_framework": "SOX 404"},
+    {"id": "R-IT-04", "name": "Untested code", "source_framework": "SOX 404"},
+]
+
+
+def test_uploaded_register_is_written_to_the_framework_catalog(catalog_api):
+    client, store, _ = catalog_api
+    r = client.post("/risk-register/save-catalog", json={"risks": SOX_RISKS})
+    assert r.status_code == 200
+    assert "SOX 404" in store
+    assert [x["id"] for x in store["SOX 404"]] == ["SOX-IT-01", "R-IT-04"]
+
+
+def test_risks_are_grouped_by_their_own_framework_not_the_filename(catalog_api):
+    """Filing the import under the file's name ('SOX-matrix.xlsx') put it
+    under a label nothing else in the app knows about."""
+    client, store, _ = catalog_api
+    client.post("/risk-register/save-catalog", json={
+        "risks": SOX_RISKS + [{"id": "N-1", "name": "Other", "source_framework": "NIST CSF"}],
+        "default_framework": "SOX-matrix.xlsx",
+    })
+    assert set(store) == {"SOX 404", "NIST CSF"}
+    assert "SOX-matrix.xlsx" not in store
+
+
+def test_rows_with_no_framework_fall_back_to_the_supplied_default(catalog_api):
+    client, store, _ = catalog_api
+    client.post("/risk-register/save-catalog", json={
+        "risks": [{"id": "X-1", "name": "Unlabelled", "source_framework": ""}],
+        "default_framework": "My Register",
+    })
+    assert [x["id"] for x in store["My Register"]] == ["X-1"]
+
+
+def test_a_second_upload_extends_the_catalog_rather_than_replacing_it(catalog_api):
+    """save_framework_catalog overwrites risks_json wholesale, so importing a
+    second batch would otherwise delete the first."""
+    client, store, _ = catalog_api
+    client.post("/risk-register/save-catalog", json={"risks": SOX_RISKS})
+    client.post("/risk-register/save-catalog", json={
+        "risks": [{"id": "SOX-BP-01", "name": "Costing error", "source_framework": "SOX 404"}]})
+    assert [x["id"] for x in store["SOX 404"]] == ["SOX-IT-01", "R-IT-04", "SOX-BP-01"]
+
+
+def test_re_uploading_the_same_id_updates_it_in_place(catalog_api):
+    client, store, _ = catalog_api
+    client.post("/risk-register/save-catalog", json={"risks": SOX_RISKS})
+    client.post("/risk-register/save-catalog", json={
+        "risks": [{"id": "SOX-IT-01", "name": "Reworded risk", "source_framework": "SOX 404"}]})
+    assert len(store["SOX 404"]) == 2
+    assert next(x for x in store["SOX 404"] if x["id"] == "SOX-IT-01")["name"] == "Reworded risk"
+
+
+def test_register_controls_are_persisted_to_the_control_library(catalog_api):
+    """The review screen resolves control refs against the DB library on load;
+    unpersisted refs vanish from every risk on the next page refresh."""
+    client, _, controls_db = catalog_api
+    r = client.post("/risk-register/save-catalog", json={
+        "risks": SOX_RISKS,
+        "controls": [{"ref": "SOX-IT-01", "framework": "SOX 404",
+                      "name": "Manager approval", "description": "Approval required."}],
+    })
+    assert r.json()["controls_saved"] == 1
+    assert controls_db["SOX-IT-01"]["description"] == "Approval required."
+
+
+def test_saved_catalog_is_returned_by_the_endpoint_the_ui_reads(catalog_api):
+    client, _, _ = catalog_api
+    client.post("/risk-register/save-catalog", json={"risks": SOX_RISKS})
+    catalogs = client.get("/risk-register/framework-catalogs").json()["catalogs"]
+    assert [(c["framework"], len(c["risks"])) for c in catalogs] == [("SOX 404", 2)]
+
+
+def test_saving_nothing_is_a_no_op_not_an_error(catalog_api):
+    client, store, _ = catalog_api
+    r = client.post("/risk-register/save-catalog", json={"risks": []})
+    assert r.status_code == 200 and r.json()["saved"] is False
+    assert store == {}

@@ -622,6 +622,84 @@ async def get_framework_catalogs():
     return {"catalogs": db.list_framework_catalogs()}
 
 
+class SaveCatalogRequest(BaseModel):
+    risks: List[Dict[str, Any]]
+    # Fallback bucket for rows whose own source_framework is blank. Never used
+    # to override a framework the register itself declared.
+    default_framework: Optional[str] = None
+    # Controls the register named itself. Persisted alongside, because the
+    # review screen resolves control refs against the DB control library on
+    # load — without this the register's own SOX-IT-* refs survive only until
+    # the page is refreshed, then silently disappear from every risk.
+    controls: List[Dict[str, Any]] = []
+
+
+@router.post("/save-catalog")
+async def save_uploaded_catalog(req: SaveCatalogRequest):
+    """Persist reviewed risks into framework_risk_catalogs, grouped by each
+    risk's own source_framework.
+
+    Framework-search already did this for discovered risks (see
+    search_frameworks), but the upload/paste path never did — so a register
+    imported from a file was reviewed, saved as a review session, converted to
+    code, and then vanished: nothing had written it anywhere the Risk Register
+    screen reads from. Uploading a SOX 404 matrix and finding no SOX 404
+    afterwards was the visible symptom.
+
+    Grouping by the risk's OWN framework (rather than one label for the whole
+    upload) is what makes a mixed register import correctly, and is why the
+    filename is not used as the framework name.
+    """
+    if not req.risks:
+        return {"saved": False, "catalogs": [], "note": "No risks to save"}
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured — catalog not saved")
+
+    fallback = (req.default_framework or "Uploaded Register").strip() or "Uploaded Register"
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for r in req.risks:
+        fw = str(r.get("source_framework") or "").strip() or fallback
+        groups.setdefault(fw, []).append(r)
+
+    saved: List[Dict[str, Any]] = []
+    for fw_name, fw_risks in groups.items():
+        # Merge with anything already stored under this framework so a second
+        # upload extends the catalog instead of silently replacing it
+        # (save_framework_catalog overwrites risks_json wholesale).
+        existing = next(
+            (c["risks"] for c in db.list_framework_catalogs() if c["framework"] == fw_name),
+            [],
+        )
+        by_id = {str(r.get("id")): r for r in existing if r.get("id")}
+        for r in fw_risks:
+            by_id[str(r.get("id"))] = r
+        merged = list(by_id.values())
+        db.save_framework_catalog(fw_name, merged)
+        saved.append({"framework": fw_name, "count": len(fw_risks), "total": len(merged)})
+
+    controls_saved = 0
+    live_map = _get_control_map_live()
+    for c in req.controls or []:
+        ref = str(c.get("ref") or "").strip().upper()
+        if not ref or ref in live_map:
+            continue
+        ctrl = {
+            "ref": ref,
+            "framework": c.get("framework") or fallback,
+            "name": c.get("name") or ref,
+            "category": c.get("category") or "Uploaded",
+            "domain": c.get("domain") or "Uploaded",
+            "description": c.get("description") or c.get("desc") or "",
+            "pac_control_id": None,
+        }
+        db.upsert_control(ctrl)
+        _CONTROL_MAP[ref] = ctrl
+        _DEFAULT_CONTROLS.append(ctrl)
+        controls_saved += 1
+
+    return {"saved": True, "catalogs": saved, "controls_saved": controls_saved}
+
+
 @router.post("/score-framework-risks")
 async def score_framework_risks(req: ScoreFrameworkRisksRequest):
     """
@@ -957,6 +1035,73 @@ async def get_risks_for_run(run_id: int):
     return {"risks": risks, "count": len(risks)}
 
 
+# Words that appear in real register headers. Used only to SCORE candidate
+# header rows, never to require a particular spelling.
+_HEADER_HINTS = (
+    "risk", "control", "framework", "domain", "process", "category", "id", "ref",
+    "description", "statement", "score", "rag", "rating", "owner", "name", "type",
+    "status", "impact", "likelihood", "assertion", "test", "evidence", "objective",
+    "frequency", "mitigation", "activity",
+)
+
+# How far down to look for the header. Beyond this it's not a banner, it's a
+# differently-shaped document.
+_HEADER_SCAN_ROWS = 15
+
+
+def _looks_like_header(cells: List[str]) -> int:
+    """Score a row on how much it resembles a header row.
+
+    Real registers are exported with a title banner, a blank spacer, sometimes
+    a "prepared by" line, and only then the actual headers — pandas takes row 0
+    regardless, so the whole file failed to import with a message about a
+    missing column. Rather than asking users to clean their spreadsheet, find
+    the header.
+    """
+    filled = [c for c in cells if c]
+    if len(filled) < 2:
+        return 0                      # a title banner is one cell across
+    hint_hits = sum(1 for c in filled if any(h in _norm_header(c) for h in _HEADER_HINTS))
+    # Headers are short labels; a row of sentences is data, not a header.
+    long_cells = sum(1 for c in filled if len(c) > 60)
+    return len(filled) + 3 * hint_hits - 2 * long_cells
+
+
+def _read_delimited(pd, text: str, sep: str):
+    """Read delimited text that may have RAGGED rows.
+
+    A title banner is one field wide while the table below is many, and pandas
+    sizes the frame from the first line — so it aborts with
+    "Expected 1 fields in line 3, saw 4" before the header can even be found.
+    Declaring the widest row up front makes short rows pad with NaN instead;
+    the extra columns are dropped by _promote_header. Splitting naively to
+    measure width can only over-count (a quoted separator), which is harmless.
+    """
+    width = max((len(ln.split(sep)) for ln in text.splitlines() if ln.strip()), default=1)
+    return pd.read_csv(
+        io.StringIO(text), sep=sep, header=None, names=range(width),
+        dtype=str, skip_blank_lines=False, engine="python",
+    )
+
+
+def _promote_header(pd, raw):
+    """Given a header-less frame, find the header row, promote it, and drop
+    everything above it plus any empty rows/columns left behind."""
+    best_idx, best_score = 0, -1
+    for i in range(min(_HEADER_SCAN_ROWS, len(raw))):
+        cells = ["" if pd.isna(v) else str(v).strip() for v in raw.iloc[i].tolist()]
+        score = _looks_like_header(cells)
+        if score > best_score:
+            best_idx, best_score = i, score
+
+    df = raw.iloc[best_idx + 1:].copy()
+    df.columns = ["" if pd.isna(v) else str(v).strip() for v in raw.iloc[best_idx].tolist()]
+    # Excel exports pad with trailing empty columns, and merged title cells
+    # leave whole columns blank.
+    df = df.loc[:, [bool(c) and not c.lower().startswith("unnamed") for c in df.columns]]
+    return df.dropna(how="all").reset_index(drop=True)
+
+
 def _parse_tabular(pd, content: bytes, suffix: str):
     """Read an uploaded register into a DataFrame.
 
@@ -970,7 +1115,9 @@ def _parse_tabular(pd, content: bytes, suffix: str):
     """
     if suffix in ("xlsx", "xls"):
         try:
-            return pd.read_excel(io.BytesIO(content), engine="openpyxl")
+            # header=None so the real header row can be located below any
+            # title banner — see _promote_header.
+            raw = pd.read_excel(io.BytesIO(content), engine="openpyxl", header=None)
         except ImportError:
             raise HTTPException(
                 status_code=503,
@@ -978,7 +1125,9 @@ def _parse_tabular(pd, content: bytes, suffix: str):
                        "Install it on the server (pip install openpyxl), or re-save this file "
                        "as .csv and upload that instead.",
             )
-    return pd.read_csv(io.StringIO(content.decode("utf-8-sig")))
+    else:
+        raw = _read_delimited(pd, content.decode("utf-8-sig"), ",")
+    return _promote_header(pd, raw)
 
 
 def _parse_pasted_table(pd, text: str):
@@ -993,9 +1142,12 @@ def _parse_pasted_table(pd, text: str):
     text = (text or "").strip("\n\r")
     if not text.strip():
         raise HTTPException(status_code=422, detail="Nothing pasted — paste the register's rows, including the header row.")
-    header = text.splitlines()[0]
-    sep = "\t" if "\t" in header else ","
-    df = pd.read_csv(io.StringIO(text), sep=sep)
+    # Sniff on the whole paste, not just line 1: a selection that included a
+    # title banner would otherwise be judged by a line that has no separator
+    # in it at all, and the entire table would parse as a single column.
+    sep = "\t" if "\t" in text else ","
+    raw = _read_delimited(pd, text, sep)
+    df = _promote_header(pd, raw)
     if df.empty:
         raise HTTPException(
             status_code=422,
