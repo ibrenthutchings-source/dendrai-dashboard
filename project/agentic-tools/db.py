@@ -7464,6 +7464,41 @@ def get_controls_library() -> list:
     return _run(_do) or []
 
 
+def get_control_by_ref(control_ref: str) -> Optional[dict]:
+    """Single-row lookup for one Risk & Control register entry.
+
+    Split out of get_controls_library() because every edit to ONE control
+    (rename, description tweak, PaC link) only ever needed to check that row's
+    existence and read its current values — but the only lookup available was
+    the full-table SELECT, so every such edit paid for fetching every OTHER
+    row in the library too. That cost scales with the library's size, and the
+    library only grows (each register import adds its own controls), so a
+    save that felt fine at 40 rows keeps getting slower as more registers are
+    imported. A WHERE control_ref = %s lookup costs the same one round trip
+    regardless of table size.
+    """
+    ref = (control_ref or "").strip().upper()
+    if not ref:
+        return None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT control_ref, framework, name, description, category, domain, tags, pac_control_id "
+                    "FROM controls_library WHERE control_ref = %s",
+                    (ref,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "ref": row[0], "framework": row[1] or "", "name": row[2],
+                    "description": row[3] or "", "category": row[4] or "",
+                    "domain": row[5] or "", "tags": row[6] or [], "pac_control_id": row[7],
+                }
+    return _run(_do)
+
+
 def upsert_control(control: dict) -> bool:
     """Insert or update a single control in the controls_library. Returns True on success."""
     ref = (control.get("ref") or control.get("control_ref", "")).strip().upper()

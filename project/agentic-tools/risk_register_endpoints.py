@@ -389,9 +389,12 @@ async def get_controls():
 async def create_control(req: ControlCreateRequest):
     """Add a new control to the library and persist it to DB."""
     ref = req.ref.strip().upper()
-    live_map = _get_control_map_live()
-    if ref in live_map:
-        from fastapi import status
+    # A single-row existence check, not the whole-table fetch _get_control_map_live()
+    # would do — that map is sized to the entire register (every uploaded
+    # framework's controls included) and only the answer to "does REF exist"
+    # was ever needed here.
+    existing = db.get_control_by_ref(ref) if db.is_available() else _CONTROL_MAP.get(ref)
+    if existing is not None:
         return {"saved": False, "detail": f"{ref} already exists in the control library"}
     pac_control_id = (req.pac_control_id or "").strip().upper() or None
     if pac_control_id and db.is_available() and not db.get_control(pac_control_id):
@@ -418,10 +421,15 @@ async def update_control(ref: str, req: ControlUpdateRequest):
     that function's own per-field defaults (e.g. framework.get(..., "Custom"))
     are meant for a brand-new control, not "leave unchanged," so skipping
     this would silently clobber them back to "Custom" on every wording edit.
+
+    Looks the row up directly by ref rather than through
+    _get_control_map_live() (which fetches the WHOLE library to answer a
+    single-row question) — a save that touches one control shouldn't pay for
+    reading every other one, and that cost only grows as more registers are
+    imported.
     """
     ref = ref.strip().upper()
-    live_map = _get_control_map_live()
-    existing = live_map.get(ref)
+    existing = db.get_control_by_ref(ref) if db.is_available() else _CONTROL_MAP.get(ref)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"{ref} not found in the control library")
     name = (req.name or "").strip()
@@ -446,18 +454,22 @@ async def update_control(ref: str, req: ControlUpdateRequest):
 
 @router.put("/controls/{ref}/pac-link")
 async def link_control_to_pac(ref: str, req: ControlPacLinkRequest):
-    """Set or clear an existing control's link to a controls_catalog (PaC) control_id."""
+    """Set or clear an existing control's link to a controls_catalog (PaC) control_id.
+
+    Single-row lookup, same reasoning as update_control above — this only
+    ever needed to confirm ref exists, not fetch the whole library to do it.
+    """
     ref = ref.strip().upper()
-    live_map = _get_control_map_live()
-    if ref not in live_map:
+    existing = db.get_control_by_ref(ref) if db.is_available() else _CONTROL_MAP.get(ref)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"{ref} not found in the control library")
     pac_control_id = (req.pac_control_id or "").strip().upper() or None
     if pac_control_id and db.is_available() and not db.get_control(pac_control_id):
         return {"saved": False, "detail": f"PaC control '{pac_control_id}' was not found in the controls catalog"}
     if db.is_available():
         db.set_control_pac_link(ref, pac_control_id)
-    live_map[ref]["pac_control_id"] = pac_control_id
-    _CONTROL_MAP[ref] = live_map[ref]
+    existing["pac_control_id"] = pac_control_id
+    _CONTROL_MAP[ref] = existing
     return {"saved": True, "ref": ref, "pac_control_id": pac_control_id}
 
 
@@ -1447,6 +1459,15 @@ async def convert_to_code(req: ConvertToCodeRequest):
     included = [r for r in req.risks if r.get("included", True)]
     excluded = [r for r in req.risks if not r.get("included", True)]
 
+    # Fetched ONCE, outside both loops below. This used to be called inside
+    # the per-control inner loop — a full controls_library SELECT for every
+    # control on every included risk, so a register of 20 risks with 2
+    # controls each cost ~40 round trips to look up a name, instead of the 1
+    # this needs. Over a remote DB connection each of those round trips is
+    # tens of milliseconds on its own; multiplied across a real register the
+    # difference is seconds of the request just re-reading the same table.
+    control_map = _get_control_map_live() if req.include_controls else {}
+
     lines = [
         "# Risk Register Review — Risk-as-Code Output",
         f"# Generated: {now}  ·  {len(included)} risks included  ·  {len(excluded)} excluded",
@@ -1486,7 +1507,7 @@ async def convert_to_code(req: ConvertToCodeRequest):
                 lines.append("    controls:")
                 for ctrl in controls:
                     ctrl_ref = ctrl if isinstance(ctrl, str) else ctrl.get("ref", "")
-                    ctrl_info = _get_control_map_live().get(ctrl_ref)
+                    ctrl_info = control_map.get(ctrl_ref)
                     lines.append(f"      - ref: {ctrl_ref}")
                     if ctrl_info:
                         lines.append(f'        name: "{ctrl_info["name"]}"')
