@@ -8153,6 +8153,37 @@ def get_control_flow_map(days: int = 30) -> dict:
     return _build_control_flow_map(event_rows, control_meta_by_id)
 
 
+def get_recent_adjudications_for_domain_summary(days: int = 30) -> list:
+    """
+    Raw per-event rows for the Continuous Monitoring domain roll-up
+    (pol_domain_mappings.domain_for_violations resolves each row's domain —
+    deliberately NOT done here; db.py stays free of app-layer/policy-mapping
+    imports, same separation get_control_flow_map keeps by returning raw rows
+    for _build_control_flow_map to interpret).
+
+    Returns [{"adjudicated_at", "final_verdict", "policy_violations"}, ...].
+    Includes the raw timestamp (get_control_flow_map's query omits it, since
+    that endpoint aggregates into a static graph, not a time series).
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT adjudicated_at, final_verdict, policy_violations
+                    FROM observability.adjudicated_tool_calls
+                    WHERE adjudicated_at > NOW() - (%s || ' days')::interval
+                    ORDER BY adjudicated_at
+                    """,
+                    (days,),
+                )
+                return [
+                    {"adjudicated_at": r[0], "final_verdict": r[1], "policy_violations": r[2] or []}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DORA-style change-management metrics (SOC 2 CC8.1 operational evidence)
 # ─────────────────────────────────────────────────────────────────────────────
