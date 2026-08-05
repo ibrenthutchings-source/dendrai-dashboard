@@ -19,6 +19,7 @@ Routes:
 
 import io
 import logging
+import re
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -956,6 +957,53 @@ async def get_risks_for_run(run_id: int):
     return {"risks": risks, "count": len(risks)}
 
 
+def _parse_tabular(pd, content: bytes, suffix: str):
+    """Read an uploaded register into a DataFrame.
+
+    Split out so the missing-Excel-engine case gets its own message. pandas
+    raises ImportError from INSIDE read_excel when openpyxl isn't installed,
+    which the caller's generic handler turned into
+    "Could not parse file: `Import openpyxl` failed. Use pip or conda to
+    install the openpyxl package." — a server-side dependency problem
+    reported to an end user as though their spreadsheet were malformed. It
+    isn't a 400 at all: the file is fine, the server is missing a package.
+    """
+    if suffix in ("xlsx", "xls"):
+        try:
+            return pd.read_excel(io.BytesIO(content), engine="openpyxl")
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="The server cannot read Excel files — the openpyxl package is missing. "
+                       "Install it on the server (pip install openpyxl), or re-save this file "
+                       "as .csv and upload that instead.",
+            )
+    return pd.read_csv(io.StringIO(content.decode("utf-8-sig")))
+
+
+def _parse_pasted_table(pd, text: str):
+    """Read a register pasted straight out of Excel/Sheets.
+
+    A spreadsheet copy-paste is tab-separated; a paste out of a CSV file or a
+    hand-typed list is comma-separated. Sniffing the header line rather than
+    asking the user which they have is the whole point — they pasted, they
+    shouldn't have to know. Tabs win when both are present, because a
+    comma inside a risk description is far more likely than a stray tab.
+    """
+    text = (text or "").strip("\n\r")
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="Nothing pasted — paste the register's rows, including the header row.")
+    header = text.splitlines()[0]
+    sep = "\t" if "\t" in header else ","
+    df = pd.read_csv(io.StringIO(text), sep=sep)
+    if df.empty:
+        raise HTTPException(
+            status_code=422,
+            detail="Parsed the header but found no data rows — include at least one risk beneath the header line.",
+        )
+    return df
+
+
 @router.post("/upload")
 async def upload_risk_register(file: UploadFile = File(...)):
     """Parse an uploaded Excel (.xlsx/.xls) or CSV risk register and return normalized risks for review.
@@ -980,43 +1028,129 @@ async def upload_risk_register(file: UploadFile = File(...)):
 
     content = await file.read()
     try:
-        if suffix in ("xlsx", "xls"):
-            df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
-        else:
-            df = pd.read_csv(io.StringIO(content.decode("utf-8-sig")))
+        df = _parse_tabular(pd, content, suffix)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
-    # Normalise column names for flexible header matching
-    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+    risks, controls = _normalize_register(df)
+    return {"risks": risks, "count": len(risks), "controls": controls,
+            "filename": file.filename or "upload"}
 
-    def _col(*candidates):
-        for c in candidates:
-            if c in df.columns:
+
+def _norm_header(c: Any) -> str:
+    """'Risk ID & Description' -> 'risk_id_description'.
+
+    Collapses every run of non-alphanumerics, not just spaces. The old
+    space-only version left '&', '/', '(' and ')' embedded in the key, so real
+    register headers ('Domain / Process', 'Control ID & Description') matched
+    nothing and the upload failed with "Could not find a name column" — on a
+    file that was perfectly well-formed.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", str(c).strip().lower()).strip("_")
+
+
+# A leading identifier on a combined cell: "SOX-IT-01: Unauthorized access...".
+# Requires at least one separator group, so an ordinary sentence opening
+# ("Risk: something happened") is not mistaken for an ID.
+_ID_PREFIX_RE = re.compile(
+    r"^\s*([A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+){1,4})\s*[:–—]\s*(.+)$",
+    re.DOTALL,
+)
+
+
+def _split_id_prefix(text: str) -> tuple[Optional[str], str]:
+    """('SOX-IT-01: text') -> ('SOX-IT-01', 'text'); ('plain text') -> (None, 'plain text').
+
+    Registers very commonly carry the reference and the wording in one cell.
+    Keeping them fused makes the ID unusable as a key and puts it inside every
+    risk statement; splitting recovers both.
+    """
+    m = _ID_PREFIX_RE.match(text or "")
+    if not m:
+        return None, (text or "").strip()
+    return m.group(1).strip(), m.group(2).strip()
+
+
+def _match_col(cols: List[str], exact: List[str], patterns: List[tuple], exclude: tuple = ()) -> Optional[str]:
+    """Exact header match first, then a token-containment fallback.
+
+    Exact-only matching is what made a realistic register unimportable: a
+    column called 'Risk ID & Description' is unmistakably the risk column to a
+    human and matched nothing at all before.
+    """
+    for c in exact:
+        if c in cols:
+            return c
+    for tokens in patterns:
+        for c in cols:
+            if c in exclude:
+                continue
+            if all(t in c for t in tokens):
                 return c
-        return None
+    return None
 
-    id_col    = _col("id", "risk_id", "risk_ref", "ref", "risk_no", "no")
-    name_col  = _col("name", "risk_name", "risk_statement", "description", "risk", "title")
-    cat_col   = _col("category", "risk_category", "type", "domain", "risk_type")
-    score_col = _col("score", "risk_score", "total_score", "residual_score")
-    rag_col   = _col("rag", "status", "rating", "rag_status", "color")
-    fw_col    = _col("framework", "source_framework", "source", "standard")
+
+def _normalize_register(df) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Map a register DataFrame onto our risk shape.
+
+    Returns (risks, controls) — controls being any the register itself
+    supplied, which are a far better mapping than keyword guessing since the
+    author already stated which control addresses which risk.
+
+    Shared by the file upload and the paste endpoint so both accept exactly
+    the same column spellings — a paste that worked as a file but not as text
+    (or vice versa) would be an unexplainable difference to a user who just
+    moved the same data between two boxes.
+
+    Score and RAG are optional throughout. Plenty of real registers (SOX
+    control matrices especially) carry no rating at all, and the review screen
+    already renders both as absent rather than zero.
+    """
+    df.columns = [_norm_header(c) for c in df.columns]
+    cols = list(df.columns)
+
+    score_col = _match_col(cols, ["score", "risk_score", "total_score", "residual_score",
+                                  "inherent_score", "impact"], [("score",)])
+    rag_col   = _match_col(cols, ["rag", "status", "rating", "rag_status", "color"],
+                           [("rag",), ("rating",)])
+    fw_col    = _match_col(cols, ["framework", "source_framework", "source", "standard"],
+                           [("framework",), ("standard",)])
+    ctrl_col  = _match_col(cols, ["control", "control_id", "control_ref", "control_description"],
+                           [("control",)])
+    # Reserved columns can't double as the risk text, or 'Control ID &
+    # Description' would happily answer to "something containing 'description'".
+    reserved  = tuple(c for c in (score_col, rag_col, fw_col, ctrl_col) if c)
+
+    id_col    = _match_col(cols, ["id", "risk_id", "risk_ref", "ref", "risk_no", "no"],
+                           [("risk", "id"), ("risk", "ref")], exclude=reserved)
+    name_col  = _match_col(
+        cols,
+        ["name", "risk_name", "risk_statement", "description", "risk", "title"],
+        [("risk", "description"), ("risk", "statement"), ("risk", "name"),
+         ("description",), ("statement",), ("risk",)],
+        exclude=reserved,
+    )
+    cat_col   = _match_col(cols, ["category", "risk_category", "type", "domain", "risk_type",
+                                  "process", "domain_process"],
+                           [("domain",), ("process",), ("category",)],
+                           exclude=reserved + tuple(c for c in (id_col, name_col) if c))
 
     if not name_col:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Could not find a name column. Expected one of: "
-                "Name, Risk Name, Risk Statement, Description, Risk."
+                "Could not find a risk description column. Expected a header like: "
+                "Name, Risk Name, Risk Statement, Description, Risk, or "
+                "'Risk ID & Description'. Found: "
+                + (", ".join(cols) or "(no columns)")
             ),
         )
 
     risks: List[Dict[str, Any]] = []
+    controls: Dict[str, Dict[str, Any]] = {}
     for i, row in df.iterrows():
-        name = str(row[name_col]).strip() if name_col else ""
-        if not name or name.lower() in ("nan", "none", ""):
-            continue
 
         def _safe(col):
             if col is None:
@@ -1027,16 +1161,52 @@ async def upload_risk_register(file: UploadFile = File(...)):
             s = str(v).strip()
             return None if s.lower() in ("nan", "none", "") else s
 
-        risk_id  = _safe(id_col) or f"UPL-{i + 1:03d}"
+        raw_name = _safe(name_col) or ""
+        if not raw_name:
+            continue
+
+        # When the reference lives inside the description cell (very common),
+        # recover it — but a dedicated ID column always wins.
+        embedded_id, name = _split_id_prefix(raw_name)
+        if not name:
+            continue
+
+        fw       = _safe(fw_col) or "Uploaded Register"
+        # A combined 'Risk ID & Description' column answers to BOTH matchers, so
+        # only trust a *separate* id column — otherwise the whole sentence
+        # becomes the id and the embedded reference is thrown away.
+        dedicated_id = _safe(id_col) if id_col and id_col != name_col else None
+        risk_id  = dedicated_id or embedded_id or f"UPL-{i + 1:03d}"
         category = _safe(cat_col) or "General"
         rag      = _safe(rag_col)
-        fw       = _safe(fw_col) or "Uploaded Register"
         score: Optional[float] = None
         if score_col:
             try:
                 score = float(row[score_col])
             except (ValueError, TypeError):
                 pass
+
+        # A control the register named itself beats anything keyword matching
+        # would infer — the author already asserted this pairing.
+        register_ctrl_refs: List[str] = []
+        raw_ctrl = _safe(ctrl_col)
+        if raw_ctrl:
+            ctrl_ref, ctrl_desc = _split_id_prefix(raw_ctrl)
+            ctrl_ref = ctrl_ref or f"{risk_id}-C"
+            register_ctrl_refs.append(ctrl_ref)
+            controls.setdefault(ctrl_ref, {
+                "ref": ctrl_ref,
+                "framework": fw,
+                # The library shows `name` in chips and `description` in the
+                # detail panel; a control statement is one sentence of prose,
+                # so lead with a trimmed version and keep the full text.
+                "name": (ctrl_desc[:120].rsplit(" ", 1)[0] + "…") if len(ctrl_desc) > 120 else ctrl_desc,
+                "description": ctrl_desc,
+                "desc": ctrl_desc,
+                "category": category,
+                "domain": category,
+                "pac_control_id": None,
+            })
 
         risks.append({
             "id": risk_id,
@@ -1045,10 +1215,46 @@ async def upload_risk_register(file: UploadFile = File(...)):
             "score": score,
             "rag": rag,
             "source_framework": fw,
-            "auto_controls": _auto_map_controls(name, category),
+            # Only fall back to keyword inference when the register didn't say.
+            "auto_controls": register_ctrl_refs or _auto_map_controls(name, category),
+            "register_controls": register_ctrl_refs,
         })
 
-    return {"risks": risks, "count": len(risks), "filename": file.filename or "upload"}
+    return risks, list(controls.values())
+
+
+class PasteRegisterRequest(BaseModel):
+    text: str
+
+
+@router.post("/paste")
+async def paste_risk_register(req: PasteRegisterRequest):
+    """Parse a register pasted as text (copied straight out of Excel, Sheets,
+    or a CSV) and return normalized risks for review — same output shape as
+    /upload, so the review screen doesn't care which route the data came in by.
+
+    Exists because the file path has more ways to fail than the data does: an
+    .xlsx needs a server-side Excel engine, and a register that lives in an
+    email or a wiki table has no file at all. Pasting needs neither.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        raise HTTPException(status_code=503, detail="pandas not installed — run: pip install pandas")
+
+    try:
+        df = _parse_pasted_table(pd, req.text)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read the pasted table: {exc}. Paste the header row plus the data rows, "
+                   f"copied directly from your spreadsheet.",
+        )
+
+    risks, controls = _normalize_register(df)
+    return {"risks": risks, "count": len(risks), "controls": controls, "filename": "pasted"}
 
 
 @router.post("/convert-to-code")

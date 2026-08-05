@@ -1969,6 +1969,8 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [uploadExpandedCtrl, setUploadExpandedCtrl] = useState(new Set());
   const [uploadLoading, setUploadLoading]      = useState(false);
   const [uploadErr, setUploadErr]              = useState(null);
+  const [pasteMode, setPasteMode]              = useState(false);
+  const [pasteText, setPasteText]              = useState("");
   const [uploadFilename, setUploadFilename]    = useState(null);
 
   // ── Matrix / Detail / Graph view ─────────────────────────────────────────
@@ -2175,7 +2177,35 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setAiRecsLoading(null);
   }
 
-  // ── File upload ────────────────────────────────────────────────────────────
+  // ── File upload / paste ────────────────────────────────────────────────────
+  // Two ways in, one landing place. Pasting exists because the file route has
+  // more ways to fail than the data does — an .xlsx needs a server-side Excel
+  // engine, and a register living in an email or a wiki table has no file at
+  // all — so `_loadRisks` is shared and the review screen can't tell them apart.
+
+  // Controls the register named itself must be registered in the library
+  // BEFORE initControlStates runs — it filters auto_controls through
+  // CTRL_BY_REF, so a register's own refs (SOX-IT-01, ...) would be dropped on
+  // the floor and silently replaced by keyword guesses.
+  function _mergeRegisterControls(controls) {
+    let added = 0;
+    (controls || []).forEach(c => {
+      if (!c?.ref || CTRL_BY_REF[c.ref]) return;
+      MASTER_CONTROLS.push(c);
+      CTRL_BY_REF[c.ref] = c;
+      added++;
+    });
+    return added;
+  }
+
+  function _loadRisks(found, label, controls) {
+    _mergeRegisterControls(controls);
+    setUploaded(found);
+    setUploadStates(initRiskStates(found));
+    setUploadCtrlStates(initControlStates(found));
+    setUploadCollapsed({});
+    setUploadFilename(label);
+  }
 
   async function handleFileUpload(file) {
     if (!file) return;
@@ -2190,14 +2220,35 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         throw new Error(e.detail || `HTTP ${res.status}`);
       }
       const data = await res.json();
-      const found = data.risks || [];
-      setUploaded(found);
-      setUploadStates(initRiskStates(found));
-      setUploadCtrlStates(initControlStates(found));
-      setUploadCollapsed({});
-      setUploadFilename(file.name);
+      _loadRisks(data.risks || [], file.name, data.controls);
     } catch (err) {
       setUploadErr(err.message || "Upload failed");
+    }
+    setUploadLoading(false);
+  }
+
+  async function handlePasteRegister() {
+    if (!pasteText.trim()) { setUploadErr("Paste your register's rows first, including the header row."); return; }
+    setUploadLoading(true);
+    setUploadErr(null);
+    try {
+      const res = await fetch("/api/risk-register/paste", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pasteText }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const found = data.risks || [];
+      if (!found.length) throw new Error("No risks found — check that a name/description column is present.");
+      _loadRisks(found, `pasted (${found.length} row${found.length === 1 ? "" : "s"})`, data.controls);
+      setPasteText("");
+      setPasteMode(false);
+    } catch (err) {
+      setUploadErr(err.message || "Paste failed");
     }
     setUploadLoading(false);
   }
@@ -3427,7 +3478,8 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                   <span style={{ color:"var(--acc,#2563eb)", textDecoration:"underline" }}>browse</span>
                 </span>
                 <span style={{ fontSize:10, color:"var(--ink-3,#888)" }}>
-                  Supports .xlsx, .xls, .csv · Columns: ID, Name, Category, Score, RAG, Framework
+                  .xlsx, .xls, .csv · Needs a risk description column; ID, Category, Framework,
+                  Control, Score and RAG are all optional
                 </span>
                 <input
                   id="risk-upload-input"
@@ -3438,7 +3490,68 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                 />
               </label>
 
-              {uploadLoading && (
+              {/* Paste path — copy rows straight out of Excel/Sheets. Needs no
+                  file and no server-side Excel engine, so it also works when
+                  the .xlsx route can't. */}
+              <div style={{ marginTop:10, textAlign:"center" }}>
+                <button
+                  onClick={() => { setPasteMode(v => !v); setUploadErr(null); }}
+                  style={{
+                    fontSize:11, padding:"4px 10px", borderRadius:6, cursor:"pointer",
+                    border:"1px solid var(--line,#ddd)", background:"transparent",
+                    color:"var(--ink-2,#555)",
+                  }}
+                >
+                  {pasteMode ? "✕ Cancel paste" : "⌘ or paste rows instead"}
+                </button>
+              </div>
+
+              {pasteMode && (
+                <div style={{ marginTop:10, display:"flex", flexDirection:"column", gap:6 }}>
+                  <textarea
+                    value={pasteText}
+                    onChange={e => setPasteText(e.target.value)}
+                    onPaste={e => {
+                      // Excel/Sheets put a tab-separated table on the clipboard;
+                      // let it land as-is — the server sniffs tab vs comma.
+                      const t = e.clipboardData?.getData("text/plain");
+                      if (t && !pasteText.trim()) { e.preventDefault(); setPasteText(t); }
+                    }}
+                    spellCheck={false}
+                    placeholder={"Paste rows copied from Excel or Google Sheets, including the header row.\n\nRisk ID\tRisk Name\tCategory\tScore\tRAG\nR-001\tSupplier fraud\tFinancial\t8.2\tRed\n\nComma-separated works too."}
+                    style={{
+                      width:"100%", minHeight:130, resize:"vertical", padding:"8px 10px",
+                      fontSize:11, lineHeight:1.6, fontFamily:"var(--mono, monospace)",
+                      borderRadius:6, border:"1px solid var(--line,#ddd)",
+                      background:"var(--surface, #fff)", color:"var(--ink,#111)",
+                    }}
+                  />
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <button
+                      onClick={handlePasteRegister}
+                      disabled={uploadLoading || !pasteText.trim()}
+                      style={{
+                        fontSize:11, padding:"5px 12px", borderRadius:6,
+                        cursor: uploadLoading || !pasteText.trim() ? "not-allowed" : "pointer",
+                        border:"1px solid var(--acc,#2563eb)",
+                        background: uploadLoading || !pasteText.trim() ? "transparent" : "var(--acc,#2563eb)",
+                        color: uploadLoading || !pasteText.trim() ? "var(--ink-3,#888)" : "#fff",
+                        opacity: uploadLoading || !pasteText.trim() ? 0.6 : 1,
+                      }}
+                    >
+                      {uploadLoading ? "Parsing…" : "Import pasted rows"}
+                    </button>
+                    {pasteText.trim() && (
+                      <span style={{ fontSize:10, color:"var(--ink-3,#888)" }}>
+                        {pasteText.trim().split("\n").length - 1} data row
+                        {pasteText.trim().split("\n").length - 1 === 1 ? "" : "s"} detected
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {uploadLoading && !pasteMode && (
                 <div style={{ marginTop:10, fontSize:11, color:"var(--ink-3,#888)", textAlign:"center" }}>
                   Parsing file…
                 </div>
@@ -3462,7 +3575,8 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
 
             {!uploadLoading && uploadedRisks.length === 0 && (
               <Empty style={{ padding:32 }}>
-                Upload an Excel or CSV file above to import risks into the review and convert-to-code workflow.
+                Upload an Excel or CSV file above — or paste rows straight from your spreadsheet — to import
+                risks into the review and convert-to-code workflow.
               </Empty>
             )}
             {!uploadLoading && uploadedRisks.length > 0 && (
