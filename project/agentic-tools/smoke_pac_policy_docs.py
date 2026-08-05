@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-End-to-end smoke test for the plain-language policy → Policy-as-Code flow.
+End-to-end smoke test for the plain-language policy -> Policy-as-Code flow.
 
 Everything in test_pac_policy_docs.py mocks the database and the model, so it
 proves the LOGIC but not that the thing works. This script proves the thing
 works: it drives the real HTTP API against a real Postgres, exercising the
-parts unit tests structurally cannot — column types and lengths, the JSONB
+parts unit tests structurally cannot -- column types and lengths, the JSONB
 round-trip, the FK cascade, the session-cookie auth gate, and the actual
 Claude call.
 
@@ -16,7 +16,7 @@ Run it against a locally running api_server.py:
 Options:
     --base-url URL     API root (default http://127.0.0.1:8001)
                        Point at http://localhost:5173 to test THROUGH the vite
-                       dev proxy — which is what the browser actually uses, and
+                       dev proxy -- which is what the browser actually uses, and
                        where the /api/pac rewrite bug lived. Pass --api-prefix
                        /api/pac in that case.
     --api-prefix P     Path prefix for PaC routes (default /pac)
@@ -28,7 +28,7 @@ Options:
                        UI so you can eyeball the review screen).
 
 Exit code is 0 only if every step passed. Nothing here is destructive beyond
-the document it creates and the module version it publishes — both are noted
+the document it creates and the module version it publishes -- both are noted
 at the end so you can undo them.
 """
 
@@ -41,7 +41,7 @@ import uuid
 try:
     import requests
 except ImportError:
-    sys.exit("requests is required — pip install requests")
+    sys.exit("requests is required -- pip install requests")
 
 
 # A deliberately small, unambiguous policy. Small so conversion is fast and
@@ -57,7 +57,7 @@ Payments above 250,000 USD require a second approver who is not the payment
 originator.
 """
 
-# What we publish. Kept syntactically valid on purpose — the approve step is
+# What we publish. Kept syntactically valid on purpose -- the approve step is
 # supposed to REFUSE anything that isn't, and we test that separately below.
 GOOD_REGO = """\
 package controls.oracle_fusion.{process}
@@ -95,7 +95,7 @@ class Smoke:
         self.module_id: int | None = None
         self.version: str | None = None
 
-    # ── reporting ──────────────────────────────────────────────────────────
+    # -- reporting ----------------------------------------------------------
     def ok(self, msg: str):
         self.passed += 1
         print(f"  \033[32mPASS\033[0m  {msg}")
@@ -116,7 +116,7 @@ class Smoke:
         (self.ok if cond else self.bad)(msg, *([] if cond else [detail]))
         return cond
 
-    # ── steps ──────────────────────────────────────────────────────────────
+    # -- steps --------------------------------------------------------------
     def login(self, username: str, password: str) -> bool:
         self.step("1. Authenticate")
         try:
@@ -137,11 +137,11 @@ class Smoke:
         r = self.s.get(self.url("/processes"), timeout=20)
         if r.status_code == 404:
             return self.check(False, f"GET {self.prefix}/processes",
-                              f"404 — the API does not serve routes at '{self.prefix}'. "
+                              f"404 -- the API does not serve routes at '{self.prefix}'. "
                               f"Against the vite dev server pass --api-prefix /api/pac.")
         if r.status_code == 403:
             return self.check(False, f"GET {self.prefix}/processes",
-                              "403 — this account lacks read access to the 'policycode' screen.")
+                              "403 -- this account lacks read access to the 'policycode' screen.")
         if not self.check(r.status_code == 200, f"GET {self.prefix}/processes", f"HTTP {r.status_code}: {r.text[:200]}"):
             return False
         ids = [p["id"] for p in r.json().get("processes", [])]
@@ -150,7 +150,7 @@ class Smoke:
 
     def create_document(self) -> bool:
         self.step("3. Store a plain-language policy (verbatim)")
-        title = f"Smoke test — SoD {uuid.uuid4().hex[:8]}"
+        title = f"Smoke test -- SoD {uuid.uuid4().hex[:8]}"
         r = self.s.post(self.url("/policy-docs"), timeout=30, json={
             "process": self.process, "title": title,
             "text": POLICY_TEXT, "uploaded_by": "smoke-test",
@@ -175,7 +175,7 @@ class Smoke:
         if skip:
             print("  \033[33mSKIP\033[0m  --skip-convert: injecting a draft directly instead of calling Claude")
             # Still needs a conversion row to review, so make one the same way
-            # the API does — via a real convert call is impossible without a
+            # the API does -- via a real convert call is impossible without a
             # key, so we fail loudly if the endpoint is the only way in.
             r = self.s.post(self.url(f"/policy-docs/{self.doc_id}/convert"), json={}, timeout=300)
             if r.status_code == 502:
@@ -197,10 +197,10 @@ class Smoke:
         if body.get("syntax_valid"):
             self.ok(f"model produced valid Rego with control IDs {body.get('control_ids')}")
         else:
-            # Not a failure of the flow — storing an invalid draft for repair
+            # Not a failure of the flow -- storing an invalid draft for repair
             # is the designed behaviour, and the next step overwrites it anyway.
             print(f"  \033[33mNOTE\033[0m  model output failed validation "
-                  f"({'; '.join(body.get('syntax_errors') or [])}) — stored for repair, as designed")
+                  f"({'; '.join(body.get('syntax_errors') or [])}) -- stored for repair, as designed")
         return self.check(bool(self.conv_id), "conversion was assigned an id")
 
     def module_unchanged_by_conversion(self, before: dict) -> bool:
@@ -212,7 +212,7 @@ class Smoke:
         after = r.json()
         return self.check(after.get("id") == before.get("id"),
                           "live module is untouched after conversion",
-                          f"module id changed {before.get('id')} -> {after.get('id')} — a draft reached production")
+                          f"module id changed {before.get('id')} -> {after.get('id')} -- a draft reached production")
 
     def in_review_queue(self) -> bool:
         self.step("6. Draft appears in the review queue")
@@ -241,7 +241,7 @@ class Smoke:
         r = self.s.post(self.url(f"/conversions/{self.conv_id}/decision"), timeout=30,
                         json={"decision": "approve", "reviewer": "smoke-test"})
         return self.check(r.status_code == 422, "approve refused with 422",
-                          f"got HTTP {r.status_code} — invalid Rego was publishable!")
+                          f"got HTTP {r.status_code} -- invalid Rego was publishable!")
 
     def edit_and_publish(self) -> bool:
         self.step("8. Reviewer edits the draft, then approves")
@@ -325,16 +325,16 @@ def main() -> int:
         print("\ninterrupted")
         return 130
 
-    print(f"\n{'─' * 60}")
+    print(f"\n{'-' * 60}")
     if s.failed:
         print(f"\033[31m{len(s.failed)} FAILED\033[0m, {s.passed} passed")
         for f in s.failed:
-            print(f"  · {f}")
+            print(f"  * {f}")
         return 1
     print(f"\033[32mAll {s.passed} checks passed.\033[0m")
     if s.module_id:
         print(f"  Published module #{s.module_id} (v{s.version}) for '{s.process}'.")
-        print(f"  That is a real new version — roll it back in the Rego Editor if unwanted.")
+        print(f"  That is a real new version -- roll it back in the Rego Editor if unwanted.")
     return 0
 
 
