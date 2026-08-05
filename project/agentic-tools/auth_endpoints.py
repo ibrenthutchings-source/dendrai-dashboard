@@ -53,6 +53,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 
 import httpx
+
+import claude_client
 from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
@@ -620,6 +622,18 @@ def set_my_preferences(prefs: Dict[str, Any] = Body(...), current_user: dict = D
 # here re-derives identity from the session (require_admin), never trusts a
 # role claim from the request body, and blocks an admin from locking
 # themselves out (self-demotion / self-deactivation).
+
+@router.get("/admin/model-config", summary="Claude model configuration & fallback status (admin)")
+def admin_model_config(current_user: dict = Depends(require_admin)):
+    """
+    Which Claude model is actually configured, whether a client can be built
+    at all, and whether the retired-model fallback (claude_client._create_message)
+    has fired since this process started — the visibility gap that made a
+    deprecated DENDRAI_CLAUDE_MODEL silently break every AI-augmented endpoint
+    at once, discoverable only in server logs.
+    """
+    return claude_client.get_model_status()
+
 
 @router.get("/admin/users", summary="List all accounts (admin)")
 def admin_list_users(current_user: dict = Depends(require_admin)):
