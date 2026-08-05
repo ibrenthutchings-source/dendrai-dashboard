@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import io
 import zipfile
-from typing import Optional
 
 import pytest
 from fastapi import FastAPI
