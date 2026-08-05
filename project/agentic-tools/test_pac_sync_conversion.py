@@ -160,3 +160,97 @@ def test_combined_output_passes_the_syntax_validator():
     b = "package controls.oracle_fusion.itgc\n\nimport future.keywords.if\n\ndeny_b[msg] if {\n    input.b\n    msg := sprintf(\"ITGC-02: b\", [])\n}"
     ok, errors = pe._validate_rego_syntax(pe._combine_rego_sections("itgc", [a, b]))
     assert ok, errors
+
+
+# ── Failed conversions land in the HITL review queue ────────────────────────
+# Sync used to report a failure and discard both the prose and the draft, so a
+# repo whose files all failed left nothing behind to fix — the real ISO 27001 /
+# EU AI Act repo that prompted this produced five skips and zero artifacts.
+
+def _db(monkeypatch, *, existing_doc=None, conversions=()):
+    """Stub the DB layer, recording what would have been written."""
+    calls: dict = {"docs": [], "conversions": [], "statuses": []}
+    monkeypatch.setattr(pe.db, "is_available", lambda: True)
+    monkeypatch.setattr(pe.db, "find_pac_policy_document_by_hash", lambda p, h: existing_doc)
+    monkeypatch.setattr(pe.db, "save_pac_policy_document",
+                        lambda process, title, text, **k: calls["docs"].append((process, title, text, k)) or 7)
+    monkeypatch.setattr(pe.db, "get_pac_policy_document",
+                        lambda doc_id, **k: {"id": doc_id, "conversions": list(conversions)})
+    monkeypatch.setattr(pe.db, "save_pac_policy_conversion",
+                        lambda doc_id, process, rego, **k: calls["conversions"].append((doc_id, rego, k)) or 99)
+    monkeypatch.setattr(pe.db, "set_pac_policy_document_status",
+                        lambda doc_id, s: calls["statuses"].append(s) or True)
+    return calls
+
+
+def test_failed_conversion_stores_the_prose_and_the_rejected_draft(monkeypatch):
+    calls = _db(monkeypatch)
+    out = pe._queue_failed_conversion(
+        "itgc", "policies/iso-27001-controls.md", "The org shall review access quarterly.",
+        "deny_a[msg] if {", ["Unbalanced braces"],
+    )
+    assert out == {"document_id": 7, "conversion_id": 99}
+
+    process, title, text, kw = calls["docs"][0]
+    assert text == "The org shall review access quarterly."   # prose kept verbatim
+    assert kw["filename"] == "policies/iso-27001-controls.md"  # full path for provenance
+    assert kw["source"] == "github"
+    assert title == "iso-27001-controls.md"
+
+    doc_id, rego, kw = calls["conversions"][0]
+    assert rego == "deny_a[msg] if {"        # the rejected draft, kept for repair
+    assert kw["syntax_valid"] is False
+    assert kw["syntax_errors"] == ["Unbalanced braces"]
+    assert calls["statuses"] == ["in_review"]
+
+
+def test_requeueing_an_unchanged_file_reuses_its_document(monkeypatch):
+    """Re-syncing an unchanged repo must not accumulate a new document per run."""
+    calls = _db(monkeypatch, existing_doc={"id": 3, "title": "x", "status": "in_review"})
+    out = pe._queue_failed_conversion("itgc", "a.md", "same text", "bad rego", ["e"])
+    assert out["document_id"] == 3
+    assert calls["docs"] == []               # no second document created
+
+
+def test_requeueing_does_not_stack_duplicate_drafts_on_an_open_review(monkeypatch):
+    """If a draft is already waiting for a decision, re-syncing points at it
+    rather than burying the reviewer in identical copies."""
+    calls = _db(monkeypatch,
+                existing_doc={"id": 3, "title": "x", "status": "in_review"},
+                conversions=[{"id": 42, "status": "pending_review"}])
+    out = pe._queue_failed_conversion("itgc", "a.md", "same text", "bad rego", ["e"])
+    assert out == {"document_id": 3, "conversion_id": 42}
+    assert calls["conversions"] == []        # nothing new written
+
+
+def test_a_resolved_document_can_be_requeued_after_a_later_failure(monkeypatch):
+    """A closed (approved/rejected) conversion must not block a fresh attempt —
+    otherwise a document fixed once could never be re-reported."""
+    calls = _db(monkeypatch,
+                existing_doc={"id": 3, "title": "x", "status": "published"},
+                conversions=[{"id": 42, "status": "approved"}])
+    out = pe._queue_failed_conversion("itgc", "a.md", "same text", "bad rego", ["e"])
+    assert out["conversion_id"] == 99
+    assert len(calls["conversions"]) == 1
+
+
+def test_queueing_is_skipped_entirely_without_a_database(monkeypatch):
+    monkeypatch.setattr(pe.db, "is_available", lambda: False)
+    assert pe._queue_failed_conversion("itgc", "a.md", "text", "draft", ["e"]) is None
+
+
+def test_a_queueing_failure_never_breaks_the_sync(monkeypatch):
+    """The file is already reported as skipped; a bookkeeping error on top of
+    that must not turn the whole sync into a 500."""
+    monkeypatch.setattr(pe.db, "is_available", lambda: True)
+    monkeypatch.setattr(pe.db, "find_pac_policy_document_by_hash",
+                        lambda p, h: (_ for _ in ()).throw(RuntimeError("db down")))
+    assert pe._queue_failed_conversion("itgc", "a.md", "text", "draft", ["e"]) is None
+
+
+# ── extract_control_ids_from_rego (shared by both paths) ────────────────────
+
+def test_control_ids_shared_helper_matches_the_review_path():
+    import pac_policy_docs as ppd
+    rego = 'msg := sprintf("P2P-01: a", [])\nmsg := sprintf("P2P-02: b", [])\nmsg := sprintf("P2P-01: c", [])'
+    assert pe.extract_control_ids_from_rego(rego) == ["P2P-01", "P2P-02"] == ppd._control_ids(rego)

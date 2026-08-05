@@ -1231,7 +1231,7 @@ CREATE TABLE IF NOT EXISTS pac_policy_documents (
     process     VARCHAR(64)  NOT NULL,
     title       VARCHAR(256) NOT NULL,
     filename    VARCHAR(256),
-    source      VARCHAR(16)  NOT NULL DEFAULT 'upload',   -- 'upload' | 'paste'
+    source      VARCHAR(16)  NOT NULL DEFAULT 'upload',   -- 'upload' | 'paste' | 'github'
     doc_text    TEXT         NOT NULL,                    -- extracted plain text, never rewritten
     byte_size   INTEGER      NOT NULL DEFAULT 0,          -- of the ORIGINAL upload, not doc_text
     sha256      CHAR(64),                                 -- of doc_text; powers re-upload detection

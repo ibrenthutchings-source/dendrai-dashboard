@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -2007,6 +2008,75 @@ def _convert_markdown_to_rego(process: str, source_path: str, text_content: str)
     return text
 
 
+def extract_control_ids_from_rego(rego: str) -> List[str]:
+    """Control IDs a module contributes to the shared catalog vocabulary, in
+    source order, deduped. Lives here rather than in pac_policy_docs.py so
+    both the HITL review path and the sync path report the same thing — this
+    is the number a reviewer checks for a clash or a missing prefix."""
+    seen: List[str] = []
+    for m in re.finditer(r'msg\s*:=\s*sprintf\("([A-Z0-9][A-Z0-9_-]*):', rego or ""):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def _queue_failed_conversion(process: str, source_path: str, source_text: str,
+                             draft_rego: str, errors: list) -> Optional[Dict[str, int]]:
+    """File a failed sync conversion in the HITL review queue.
+
+    Sync used to report the failure and throw both the prose and the draft
+    away, so a repo of framework documents that all failed left nothing behind
+    to look at or fix — which is exactly what happened with a real
+    ISO 27001 / EU AI Act policy repo. Storing the source document plus the
+    rejected draft turns that dead end into repairable work: the reviewer
+    edits the draft against the prose and approves it, same as an upload.
+
+    Idempotent across re-syncs. Re-running sync on an unchanged repo must not
+    pile up a fresh document and draft every time, so an identical source text
+    (matched by content hash) reuses its document, and a draft is only added
+    when nothing is already open for review on it.
+    """
+    if not db.is_available():
+        return None
+    try:
+        digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        existing = db.find_pac_policy_document_by_hash(process, digest)
+        doc_id = existing["id"] if existing else db.save_pac_policy_document(
+            process,
+            source_path.rsplit("/", 1)[-1] or source_path,
+            source_text,
+            filename=source_path,
+            source="github",
+            byte_size=len(source_text.encode("utf-8")),
+            sha256=digest,
+            uploaded_by="github-sync",
+        )
+        if not doc_id:
+            return None
+
+        doc = db.get_pac_policy_document(doc_id) or {}
+        for c in doc.get("conversions", []):
+            if c.get("status") in ("pending_review", "changes_requested"):
+                return {"document_id": doc_id, "conversion_id": c["id"]}
+
+        conversion_id = db.save_pac_policy_conversion(
+            doc_id, process, draft_rego,
+            model=getattr(claude_client, "MODEL", None),
+            syntax_valid=False,
+            syntax_errors=errors,
+            control_ids=extract_control_ids_from_rego(draft_rego),
+        )
+        if not conversion_id:
+            return None
+        db.set_pac_policy_document_status(doc_id, "in_review")
+        return {"document_id": doc_id, "conversion_id": conversion_id}
+    except Exception as exc:
+        # Never let queueing break the sync itself — the file is already
+        # reported as skipped either way.
+        logger.warning("could not queue %s for review: %s", source_path, exc)
+        return None
+
+
 _PACKAGE_LINE_RE = re.compile(r'^\s*package\s+[\w.]+\s*$', re.MULTILINE)
 _IMPORT_LINE_RE  = re.compile(r'^\s*import\s+[\w.]+\s*$', re.MULTILINE)
 
@@ -2202,13 +2272,21 @@ async def _sync_github_repo(
         # finishes server-side. Running the conversions concurrently bounds
         # the added time to roughly the slowest single file instead of the
         # sum of all of them.
-        async def _convert_one(process: str, f: Dict[str, str]) -> tuple[str, str]:
+        async def _convert_one(process: str, f: Dict[str, str]) -> tuple[str, str, str, list]:
+            """-> (kind, payload, draft_rego, errors).
+
+            draft_rego/errors are carried out of here even on failure so the
+            caller can file the attempt in the HITL review queue instead of
+            dropping it. A near-miss draft plus the prose it came from is
+            repairable by a human in a minute; a discarded one costs the whole
+            conversion over again.
+            """
             try:
                 converted = await asyncio.to_thread(
                     _convert_markdown_to_rego, process, f["path"], f["content"]
                 )
             except Exception as exc:
-                return "error", f"Markdown→Rego conversion failed: {exc}"
+                return "error", f"Markdown→Rego conversion failed: {exc}", "", [str(exc)]
             rego = _strip_code_fence(converted)
             ok, errors = _validate_rego_syntax(rego)
             if not ok:
@@ -2229,8 +2307,8 @@ async def _sync_github_repo(
                 return "error", (
                     f"converted Rego failed validation: {'; '.join(errors)}"
                     + (f" | model returned: \"{preview}…\"" if preview else " | model returned nothing")
-                )
-            return "ok", rego
+                ), rego, errors
+            return "ok", rego, rego, []
 
         to_convert: List[tuple[str, Dict[str, str]]] = []
         for process, files in by_process.items():
@@ -2243,11 +2321,12 @@ async def _sync_github_repo(
             await asyncio.gather(*[_convert_one(process, f) for process, f in to_convert])
             if to_convert else []
         )
-        converted_map: Dict[str, tuple[str, str]] = {
+        converted_map: Dict[str, tuple[str, str, str, list]] = {
             f["path"]: result for (process, f), result in zip(to_convert, conversion_results)
         }
 
         imported: List[Dict[str, Any]] = []
+        queued_for_review: List[Dict[str, Any]] = []
         for process, files in by_process.items():
             sections: List[str] = []
             converted_any = False
@@ -2255,9 +2334,20 @@ async def _sync_github_repo(
                 if _looks_like_rego(f["content"]):
                     sections.append(f"# ─── {f['path']} ───\n\n{f['content']}")
                     continue
-                kind, payload = converted_map[f["path"]]
+                kind, payload, draft, errors = converted_map[f["path"]]
                 if kind == "error":
-                    skipped.append({"name": f["path"], "reason": payload})
+                    # Failed conversions are no longer a dead end: park the
+                    # source prose and the rejected draft in the review queue
+                    # so a human can repair them (see _queue_failed_conversion).
+                    queued = _queue_failed_conversion(process, f["path"], f["content"], draft, errors)
+                    if queued:
+                        queued_for_review.append({
+                            "process": process, "file": f["path"], **queued,
+                        })
+                    skipped.append({
+                        "name": f["path"],
+                        "reason": payload + (" — saved to the review queue for manual repair" if queued else ""),
+                    })
                     continue
                 sections.append(f"# ─── {f['path']} (converted from Markdown by Claude) ───\n\n{payload}")
                 converted_any = True
@@ -2286,6 +2376,7 @@ async def _sync_github_repo(
         "files_found": len(blobs),
         "imported": imported,
         "skipped": skipped,
+        "queued_for_review": queued_for_review,
         "newly_registered": sorted(newly_registered),
     }
 

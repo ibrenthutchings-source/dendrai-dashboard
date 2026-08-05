@@ -170,12 +170,13 @@ def _analyze(rego: str) -> Dict[str, Any]:
 def _control_ids(rego: str) -> List[str]:
     """Control IDs the draft would contribute to the shared catalog vocabulary.
     Surfaced during review because an ID clash or a missing prefix is exactly
-    the kind of thing a generated module gets wrong and a human can spot."""
-    seen: List[str] = []
-    for m in re.finditer(r'msg\s*:=\s*sprintf\("([A-Z0-9][A-Z0-9_-]*):', rego or ""):
-        if m.group(1) not in seen:
-            seen.append(m.group(1))
-    return seen
+    the kind of thing a generated module gets wrong and a human can spot.
+
+    Delegates to pac_endpoints so a draft queued by the GitHub sync and one
+    created by an upload are described identically — two copies of this regex
+    would drift, and the drift would show up as a review queue whose control
+    IDs disagree with the module's depending on where the draft came from."""
+    return pac_endpoints.extract_control_ids_from_rego(rego)
 
 
 def _next_version(process: str) -> str:
