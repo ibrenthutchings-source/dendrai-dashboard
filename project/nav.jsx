@@ -8,16 +8,22 @@
 
 const NAV_SECTIONS = [
   {
-    label: "Risk Assessment",
+    label: "Risk Intelligence",
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
-      { id: "pipeline",  icon: "flow",  l: "Risk Radar" },
-      { id: "posturetrend", icon: "trend", l: "Posture Trend" },
+      { id: "help",       icon: "compass", l: "Intelligenza Workflow" },
+      { id: "pipeline",  icon: "flow",  l: "Assess Risk" },
+      { id: "posturetrend", icon: "trend", l: "Risk Posture" },
+      { id: "sox",        icon: "grid",    l: "SOX Scoping"},
+    ],
+  },
+   {
+    label: "Scenario Intelligence",
+    items: [
       { id: "scenarios",  icon: "alert",  l: "Grey Swan Scenarios" },
       { id: "scenarioanalysis", icon: "compass", l: "Scenario Sandbox" },
-      { id: "sox",        icon: "grid",    l: "SOX Control Pulse"},
-    ],
+      ],
   },
   {
     label: "Automation",
@@ -25,28 +31,29 @@ const NAV_SECTIONS = [
       { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
       { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
+      { id: "aiinventory", icon: "list", l: "AI System Ledger" },
     ],
   },
   {
-    label: "Tracking",
+    label: "Monitoring Intelligence",
     items: [
+      { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse" },
+      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "aiinventory", icon: "list", l: "AI System Ledger" },
-      { id: "scope",    icon: "grid",      l: "Scope Builder" },
+      { id: "scope",    icon: "grid",      l: "Audit Plan" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
-      { id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
-      { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse" },
-      { id: "ubogov",   icon: "shield",    l: "Control Tower" },
-      { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
+      //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
+      { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },
+     
     ],
   },
-  {
-    label: "Infrastructure Monitoring",
-    items: [
-      { id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring" },
-    ],
-  },
+  //{
+  //  label: "Infrastructure Monitoring",
+  //  items: [
+  //    { id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring" },
+  //  ],
+  //},
   {
     label: "Board",
     items: [
@@ -65,7 +72,6 @@ const NAV_SECTIONS = [
       { id: "tokenusage", icon: "table",  l: "Usage Meter" },
       { id: "modelhealth", icon: "trend", l: "Model Vitals" },
       { id: "userconfig", icon: "user",   l: "Team & Access", adminOnly: true },
-      { id: "help",       icon: "compass", l: "Intelligenza Workflow" },
     ],
   }
 ];
