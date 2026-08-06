@@ -1240,20 +1240,25 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     graph.edges.forEach(e => g.setEdge(e.source, e.target, { value: e.value }));
     dagre.layout(g);
 
+    // ViewBox is the graph's own natural bounding box — no floor against the
+    // container. Flooring either dimension independently (an earlier version
+    // floored H at 300, then at clientHeight to match W's clientWidth floor)
+    // fights whichever axis ISN'T floored: the default "meet"
+    // preserveAspectRatio scales uniformly to the more constraining axis, so
+    // whichever dimension has slack gets letterboxed empty instead of filling
+    // the pane — first vertically, then (once that axis got a floor)
+    // horizontally instead. preserveAspectRatio "none" below stretches the
+    // natural graph bounds to exactly 100%/100% of the box on both axes
+    // unconditionally, so there's no aspect ratio left to mismatch and
+    // nothing left to letterbox.
     const gw = g.graph().width || 800;
     const gh = g.graph().height || 300;
-    const W = Math.max(hostRef.current.clientWidth, gw + 40);
-    // Floor H at the host's own rendered height (mirroring W's clientWidth
-    // floor above), not a fixed 300 — otherwise a graph shorter than the box
-    // sets a viewBox whose aspect ratio is wider/flatter than the box's, and
-    // since the <svg> is styled width:100%/height:100% with the default
-    // "meet" preserveAspectRatio, it scales to fit width and letterboxes the
-    // rest of the box empty instead of filling it.
-    const H = Math.max(hostRef.current.clientHeight, gh + 40);
+    const W = gw + 40;
+    const H = gh + 40;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
-    svg.attr("viewBox", `0 0 ${W} ${H}`);
+    svg.attr("viewBox", `0 0 ${W} ${H}`).attr("preserveAspectRatio", "none");
     svg.append("rect").attr("width", W).attr("height", H).attr("fill", theme.bg);
 
     const maxVal = Math.max(1, ...graph.edges.map(e => e.value));
