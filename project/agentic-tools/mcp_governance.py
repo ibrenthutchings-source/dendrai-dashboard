@@ -76,6 +76,7 @@ import db  # project/agentic-tools/db.py — psycopg2 thread pool
 import claude_client  # optional 4th-opinion reviewer for conflicted/low-confidence UROs
 import pac_endpoints  # real Rego/OPA evaluation — see _evaluate_pac_policy below
 import mcp_guards  # SSRF guard for user-supplied connector base_urls
+import pol_domain_mappings  # POL-*/PaC control_id -> Core Domain, for the Adjudications tab's domain filter
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -560,6 +561,15 @@ def _write_adjudication(
     telemetry_id        = source_id if origin == "mcp" else None
     system_telemetry_id  = source_id if origin == "system" else None
     source_system_label  = "MCP_PROXY" if origin == "mcp" else "SYSTEM_TELEMETRY"
+    # case_id/process_step: only present when the producer explicitly set
+    # them (today, generate_o2c_p2p_synthetic_log.py's linked lifecycles) —
+    # uro.raw_payload.content is the full system_telemetry row for a
+    # "system"-origin event, whose own raw_payload column is the original
+    # event payload the producer sent (see _ingest_system_event). No case
+    # concept exists for "mcp"-origin tool calls, so both stay None there.
+    _origin_payload = uro.raw_payload.content.get("raw_payload") or {} if origin == "system" else {}
+    case_id      = _origin_payload.get("case_id")
+    process_step = _origin_payload.get("process_step")
     try:
         with db.get_conn() as conn:
             with conn.cursor() as cur:
@@ -573,11 +583,11 @@ def _write_adjudication(
                         final_verdict, ai_final_verdict, ensemble_confidence,
                         requires_human_review, conflict_flags,
                         policy_violations, adjudicator_reasoning,
-                        council_votes
+                        council_votes, case_id, process_step
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s::jsonb
+                        %s::jsonb, %s, %s
                     )
                     """,
                     (
@@ -604,6 +614,8 @@ def _write_adjudication(
                         list(uro.silver_policy_violations) + pac_violations,
                         (adj.conflict_reasoning[:1000] if adj and adj.conflict_reasoning else None),
                         council_votes,
+                        case_id,
+                        process_step,
                     ),
                 )
                 # Stamp source row as processed (correct table per origin)
@@ -787,6 +799,9 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                             (limit,),
                         )
                     cols = [d[0] for d in cur.description]
+                    # Same resolution api_server.py's /observability/events uses —
+                    # computed once per call, not per row, since it hits db.list_controls().
+                    ctrl_to_process = {c["control_id"]: c["process"] for c in db.list_controls() if c.get("process")}
                     rows = []
                     for row in cur.fetchall():
                         d = dict(zip(cols, row))
@@ -800,6 +815,7 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                             d["ensemble_confidence"] = float(d["ensemble_confidence"])
                         if d.get("council_votes") is None:
                             d["council_votes"] = []
+                        d["domain"] = pol_domain_mappings.domain_for_violations(d.get("policy_violations"), ctrl_to_process)
                         rows.append(d)
                     return rows
         except Exception as exc:

@@ -272,9 +272,17 @@ def test_generate_spreads_timestamps_within_the_requested_window():
 
 
 def test_generate_violation_rate_is_approximately_respected():
+    """--violation-rate governs the fraction of CASES/standalone events that
+    breach a rule, not the fraction of individual records — a real case
+    breaches at exactly one step, not every step at once, so the raw
+    per-record HIGH-severity fraction is necessarily lower than the flag's
+    value for any multi-step case."""
     records = gen.generate(count=2000, violation_rate=0.15, days=30, seed=11)
-    violating = sum(1 for r in records if r["severity"] == "HIGH")
-    rate = violating / len(records)
+    by_case: dict[str, list[dict]] = {}
+    for r in records:
+        by_case.setdefault(r["payload"]["case_id"], []).append(r)
+    violating_cases = sum(1 for recs in by_case.values() if any(r["severity"] == "HIGH" for r in recs))
+    rate = violating_cases / len(by_case)
     assert 0.10 <= rate <= 0.20
 
 

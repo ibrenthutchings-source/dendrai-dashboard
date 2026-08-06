@@ -549,7 +549,7 @@ function AnalyticsPane({ rawRows, adjudicated, onSelect, onMoveUp, onMoveDown, c
 
 const UBO_PANE_DEFAULT_ORDER = ["humanReview", "analytics"];
 
-function UBOGovPanel({ initialTab } = {}) {
+function UBOGovPanel({ initialTab, initialFilter } = {}) {
   const LiveBadge = window.LiveBadge;
   const [adjudicated,  setAdjudicated]  = useState([]);
   const [humanReview,  setHumanReview]  = useState([]);
@@ -560,7 +560,14 @@ function UBOGovPanel({ initialTab } = {}) {
   const [suppressions, setSuppressions] = useState([]);
   const [loading,      setLoading]      = useState(true);
   const [triggering,   setTriggering]   = useState(false);
-  const [filter,       setFilter]       = useState("all");
+  const [filter,       setFilter]       = useState(initialFilter?.tier || initialFilter?.source || "all");
+  // Verdict and domain are independent filter dimensions from the legacy
+  // tier/source/review `filter` above (AND'd together, not OR'd) — added so
+  // Continuous Monitoring's charts can deep-link into exactly the slice a
+  // click represents (e.g. "Identity & Access Management" + "ESCALATE",
+  // or source-system-dimensioned charts' "GITHUB" + "ESCALATE").
+  const [verdictFilter, setVerdictFilter] = useState(initialFilter?.verdict || "all");
+  const [domainFilter,  setDomainFilter]  = useState(initialFilter?.domain || "all");
   const [expanded,     setExpanded]     = useState(new Set());
   const [lastRefresh,  setLastRefresh]  = useState(null);
   const [fetchErr,       setFetchErr]       = useState(null);
@@ -741,6 +748,8 @@ function UBOGovPanel({ initialTab } = {}) {
   );
 
   const filtered = adjudicated.filter(r => {
+    if (verdictFilter !== "all" && (r.final_verdict || "INSUFFICIENT_DATA") !== verdictFilter) return false;
+    if (domainFilter !== "all" && (r.domain || "Unclassified") !== domainFilter) return false;
     if (filter === "all")    return true;
     if (filter === "review") return r.requires_human_review;
     if (filter === "GITHUB" || filter === "MCP_PROXY" || filter === "SYSTEM_TELEMETRY") return (r.source_system || "MCP_PROXY") === filter;
@@ -862,6 +871,21 @@ function UBOGovPanel({ initialTab } = {}) {
                 {f.l}{f.id === "review" && counts.review > 0 ? ` (${counts.review})` : ""}
               </button>
             ))}
+          </div>
+        )}
+        {tab === "adjudications" && (verdictFilter !== "all" || domainFilter !== "all") && (
+          <div className="cem-toolbar" style={{alignItems:"center",gap:8}}>
+            <span style={{fontSize:10,color:"var(--ink-3)",textTransform:"uppercase",letterSpacing:"0.05em"}}>Deep-link filter:</span>
+            {verdictFilter !== "all" && (
+              <button className="cem-filter active" onClick={() => setVerdictFilter("all")}>
+                {verdictFilter} ✕
+              </button>
+            )}
+            {domainFilter !== "all" && (
+              <button className="cem-filter active" onClick={() => setDomainFilter("all")}>
+                {domainFilter} ✕
+              </button>
+            )}
           </div>
         )}
       </div>

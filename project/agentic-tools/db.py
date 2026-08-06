@@ -1639,6 +1639,20 @@ ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS human_
 ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS run_id INT REFERENCES risk_loop_runs(id);
 CREATE INDEX IF NOT EXISTS idx_adj_run ON observability.adjudicated_tool_calls (run_id) WHERE run_id IS NOT NULL;
 
+-- case_id/process_step enable a REAL directly-follows graph — "activity A
+-- immediately preceded activity B within the same tracked transaction" —
+-- as opposed to the categorical Domain/Tier/Verdict/Rule breakdown every
+-- adjudication already supports regardless of whether it's part of any
+-- multi-step transaction. Both are NULL for the overwhelming majority of
+-- rows (an ad-hoc MCP tool call has no "case" concept at all); populated
+-- today only by generate_o2c_p2p_synthetic_log.py's linked O2C/P2P
+-- lifecycles, via _write_adjudication reading them out of the event's
+-- raw_payload. No FK — case_id is a soft business key (e.g. a PO number),
+-- same soft-reference convention as risk_ref/control_ref elsewhere.
+ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS case_id      VARCHAR(64);
+ALTER TABLE observability.adjudicated_tool_calls ADD COLUMN IF NOT EXISTS process_step VARCHAR(64);
+CREATE INDEX IF NOT EXISTS idx_adj_case ON observability.adjudicated_tool_calls (case_id, adjudicated_at) WHERE case_id IS NOT NULL;
+
 DROP VIEW IF EXISTS observability.tool_latency_summary;
 CREATE OR REPLACE VIEW observability.tool_latency_summary AS
 SELECT
@@ -8220,11 +8234,15 @@ def get_recent_adjudications_for_domain_summary(days: int = 30, limit: int = 500
 
     Returns [{"id", "adjudicated_at", "final_verdict", "risk_tier",
     "source_system", "target_tool", "server_name", "requires_human_review",
-    "policy_violations"}, ...], oldest first (the natural order for
-    time-axis playback; a summary consumer that doesn't care about order can
-    ignore it). `limit` guards against an unbounded response on a `days`
-    window far larger than this platform's actual event volume today (a
-    few hundred/month) — raise it if that volume genuinely grows.
+    "policy_violations", "case_id", "process_step"}, ...], oldest first (the
+    natural order for time-axis playback; a summary consumer that doesn't
+    care about order can ignore it). case_id/process_step are NULL for the
+    overwhelming majority of rows — see their column comment in this file's
+    migration block — and exist so a real (not categorical) directly-follows
+    graph can be built for the rows that do have them. `limit` guards
+    against an unbounded response on a `days` window far larger than this
+    platform's actual event volume today (a few hundred/month) — raise it
+    if that volume genuinely grows.
     """
     def _do():
         with _conn() as conn:
@@ -8232,7 +8250,8 @@ def get_recent_adjudications_for_domain_summary(days: int = 30, limit: int = 500
                 cur.execute(
                     """
                     SELECT id, adjudicated_at, final_verdict, risk_tier, source_system,
-                           target_tool, server_name, requires_human_review, policy_violations
+                           target_tool, server_name, requires_human_review, policy_violations,
+                           case_id, process_step
                     FROM observability.adjudicated_tool_calls
                     WHERE adjudicated_at > NOW() - (%s || ' days')::interval
                     ORDER BY adjudicated_at
@@ -8245,6 +8264,7 @@ def get_recent_adjudications_for_domain_summary(days: int = 30, limit: int = 500
                         "id": r[0], "adjudicated_at": r[1], "final_verdict": r[2], "risk_tier": r[3],
                         "source_system": r[4], "target_tool": r[5], "server_name": r[6],
                         "requires_human_review": r[7], "policy_violations": r[8] or [],
+                        "case_id": r[9], "process_step": r[10],
                     }
                     for r in cur.fetchall()
                 ]

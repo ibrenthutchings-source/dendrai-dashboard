@@ -168,17 +168,46 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
   const lastH = history[history.length - 1];
   const splitQ = lastH.q;
   const data = [
-    ...history.map(d => ({ q: d.q, v: d.v, base: null, lo: null, hiMinusLo: null })),
+    ...history.map(d => ({ q: d.q, v: d.v, base: null, lo: null, hiMinusLo: null, btPred: null })),
     ...forecast.map(d => ({
       q: d.q,
       v: null,
       base: d.base ?? null,
       lo: d.lo ?? null,
       hiMinusLo: (d.hi != null && d.lo != null) ? d.hi - d.lo : null,
+      btPred: null,
     })),
   ];
   // Seed forecast start at last history value so lines and band connect cleanly
   data[history.length - 1] = { ...data[history.length - 1], base: lastH.v, lo: lastH.v, hiMinusLo: 0 };
+
+  // Backtest overlay: chartMetrics is the walk-forward backtest result
+  // (backtesting.js's walkForwardBacktest) computed on this exact history —
+  // it already carries `predicted`, the model's out-of-sample prediction for
+  // each of the last `periods` quarters, made using only data available
+  // BEFORE that quarter (never the actual for that quarter itself). Until
+  // now only the aggregate RMSE/MAPE/R² numbers derived from it were shown;
+  // the quarter-by-quarter predictions were computed and then thrown away.
+  // Plotting them against the real `v` for the same quarters is what actually
+  // answers "how did the forecast perform" — a single MAPE number tells you
+  // the average miss, not whether it was consistently early/late or
+  // right on a specific quarter.
+  const btPeriods = chartMetrics?.predicted?.length || 0;
+  if (btPeriods > 0 && btPeriods <= history.length) {
+    const startIdx = history.length - btPeriods;
+    for (let i = 0; i < btPeriods; i++) {
+      data[startIdx + i] = { ...data[startIdx + i], btPred: chartMetrics.predicted[i] };
+    }
+    // Anchor the backtest line to the real value one quarter before its
+    // first prediction, same reasoning as the history->forecast anchor
+    // above — otherwise the dotted segment starts mid-air with a visible gap.
+    // Flagged so the tooltip doesn't call this connector point a "prediction"
+    // — it's just the actual value, repeated so the line has somewhere to
+    // start from.
+    if (startIdx > 0) {
+      data[startIdx - 1] = { ...data[startIdx - 1], btPred: data[startIdx - 1].v, btIsAnchor: true };
+    }
+  }
 
   const yAxisW = (unit === "%" && dp >= 2) ? 54 : (unit === "$M") ? (dp >= 2 ? 62 : 50) : 44;
 
@@ -192,6 +221,11 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
     const val = isFc ? pt.base : pt.v;
     const hi = (isFc && pt.lo != null && pt.hiMinusLo != null) ? pt.lo + pt.hiMinusLo : null;
     if (val == null) return null;
+    // Real backtest prediction for this quarter (not the connector point) —
+    // shown alongside the actual so a single hover answers "what did the
+    // model say this quarter would be, and how far off was it."
+    const hasBt = !isFc && pt.btPred != null && !pt.btIsAnchor;
+    const btErrPct = hasBt && pt.v ? ((pt.btPred - pt.v) / pt.v) * 100 : null;
     return (
       <div style={{
         background: 'var(--bg)', border: '1px solid var(--line-strong)', borderRadius: 6,
@@ -202,6 +236,16 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
         <div style={{ color: isFc ? color : 'var(--ink)', fontWeight: 600, fontSize: 13 }}>{fmtV(val)}</div>
         {isFc && pt.lo != null && hi != null && (
           <div style={{ color: 'var(--ink-3)', fontSize: 9 }}>{fmtV(pt.lo)} – {fmtV(hi)}</div>
+        )}
+        {hasBt && (
+          <div style={{ color: 'var(--ink-3)', fontSize: 9, marginTop: 3, paddingTop: 3, borderTop: '1px solid var(--line)' }}>
+            Model predicted <span style={{ color: 'var(--ink-2)' }}>{fmtV(pt.btPred)}</span>
+            {btErrPct != null && (
+              <span style={{ color: Math.abs(btErrPct) < 5 ? 'var(--green-ink)' : Math.abs(btErrPct) < 15 ? 'var(--amber-ink)' : 'var(--red-ink)' }}>
+                {' '}({btErrPct >= 0 ? '+' : ''}{btErrPct.toFixed(1)}%)
+              </span>
+            )}
+          </div>
         )}
       </div>
     );
@@ -247,6 +291,17 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
             activeDot={{ r: 5, fill: color, strokeWidth: 0 }}
             connectNulls={false} legendType="none" />
 
+          {/* Backtest overlay — dotted, neutral color (not the series color)
+              so it reads as a diagnostic annotation over the actual line
+              rather than a third competing data series. Only the last
+              `periods` history quarters have a value here — everywhere else
+              it's null, so this draws nothing outside that window. */}
+          <Line type="monotone" dataKey="btPred" stroke="var(--ink-3)" strokeWidth={1.5}
+            strokeDasharray="1 3" opacity={0.9}
+            dot={{ r: 2.5, fill: 'var(--bg)', stroke: 'var(--ink-3)', strokeWidth: 1.4 }}
+            activeDot={{ r: 4, fill: 'var(--ink-3)', strokeWidth: 0 }}
+            connectNulls={false} legendType="none" />
+
           {/* History / forecast divider */}
           <ReferenceLine x={splitQ} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
             label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }} />
@@ -258,6 +313,24 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
           )}
         </ComposedChart>
       </ResponsiveContainer>
+
+      {btPeriods > 0 && (
+        <div className="mono" style={{
+          fontSize: 9, color: 'var(--ink-3)', padding: '4px 2px 0',
+          display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ display: 'inline-block', width: 14, borderBottom: `2px solid ${color}` }} /> Actual
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ display: 'inline-block', width: 14, borderBottom: `2px dashed ${color}` }} /> Forecast
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ display: 'inline-block', width: 14, borderBottom: '2px dotted var(--ink-3)' }} />
+            Backtest — the model's prediction for each of the last {btPeriods}Q, made before that quarter's actual was known
+          </span>
+        </div>
+      )}
 
       {chartMetrics && (
         <div className="mono" style={{

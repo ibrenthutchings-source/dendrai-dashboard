@@ -340,9 +340,11 @@ function App() {
   // always clears both, and only navigateToScreen (used by Continuous
   // Monitoring's click-throughs) sets them.
   const [cemInitialTab, setCemInitialTab] = useState(null);
+  const [cemInitialFilter, setCemInitialFilter] = useState(null);
   const [pacInitialProcess, setPacInitialProcess] = useState(null);
   const navigateToScreen = useCallback((screen, opts = {}) => {
     if (opts.cemTab) setCemInitialTab(opts.cemTab);
+    if (opts.cemFilter) setCemInitialFilter(opts.cemFilter);
     if (opts.pacProcess) setPacInitialProcess(opts.pacProcess);
     if (screen === "ubogov") setUnreadCEM(0);
     setActiveScreen(screen);
@@ -2009,6 +2011,7 @@ function App() {
             if (govTab) setActiveGovTab(govTab);
             if (screen === "controls") setUnreadCEM(0);
             setCemInitialTab(null);
+            setCemInitialFilter(null);
             setPacInitialProcess(null);
           }}
           counts={{
@@ -2030,6 +2033,7 @@ function App() {
             if (govTab) setActiveGovTab(govTab);
             if (screen === "controls") setUnreadCEM(0);
             setCemInitialTab(null);
+            setCemInitialFilter(null);
             setPacInitialProcess(null);
           }} />
         <NextActionRail
@@ -2283,7 +2287,7 @@ function App() {
           {activeScreen === "ubogov" && (
           <ScreenAccessGate screenId="ubogov">
           <div className="panel active">
-            <UBOGovPanel initialTab={cemInitialTab} />
+            <UBOGovPanel initialTab={cemInitialTab} initialFilter={cemInitialFilter} />
           </div>
           </ScreenAccessGate>
           )}
