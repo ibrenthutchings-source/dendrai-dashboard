@@ -14,12 +14,13 @@ mcp_governance.start_polling() loop picks them up and adjudicates them for
 real: real Bronze/Silver/Gold/Council/PaC, real policy_violations, real
 adjudicated_tool_calls rows.
 
-Two of the eleven transaction kinds are generated as LINKED CASES rather than
-independent records: Procure-to-Pay (Purchase Order -> Invoice -> Payment)
-and Order-to-Cash (Sales Order -> Billing -> Cash Application), each sharing
-one case_id across its steps with realistic increasing timestamps. That
-case_id/process_step pair (see mcp_governance._write_adjudication and its
-adjudicated_tool_calls.case_id/process_step columns) is what makes a REAL
+Three of the fourteen transaction kinds are generated as LINKED CASES rather
+than independent records: Procure-to-Pay (Purchase Order -> Invoice ->
+Payment), Order-to-Cash (Sales Order -> Billing -> Cash Application), and
+Inventory Cycle (Goods Received -> Putaway Confirmed -> Goods Shipped), each
+sharing one case_id across its steps with realistic increasing timestamps.
+That case_id/process_step pair (see mcp_governance._write_adjudication and
+its adjudicated_tool_calls.case_id/process_step columns) is what makes a REAL
 directly-follows graph possible — "step A immediately preceded step B within
 the same transaction" — as opposed to the categorical Domain/Tier/Verdict/
 Rule breakdown every adjudication already supports regardless of case
@@ -236,6 +237,46 @@ def _sod_violating(rng, rid):
     return {"user_oracle_roles": conflict, "user_username": rng.choice(_ACTORS)}
 
 
+# ── Inventory Cycle builders (Receive -> Putaway -> Ship) ───────────────────
+
+def _goods_receipt_clean(rng, rid):
+    qty_ordered = rng.randint(50, 2000)
+    return {"grn_po_number": _rid("PO", rng), "grn_qty_ordered": qty_ordered,
+            "grn_qty_received": qty_ordered, "grn_quality_inspection_passed": True,
+            "grn_received_by": rng.choice(_ACTORS)}
+
+
+def _goods_receipt_violating(rng, rid):
+    qty_ordered = rng.randint(50, 2000)
+    return {"grn_po_number": _rid("PO", rng), "grn_qty_ordered": qty_ordered,
+            "grn_qty_received": qty_ordered + rng.randint(int(qty_ordered * 0.25), qty_ordered),
+            "grn_quality_inspection_passed": False, "grn_received_by": rng.choice(_ACTORS)}
+
+
+def _putaway_clean(rng, rid):
+    return {"putaway_location": f"WH-{rng.randint(1,6)}-{rng.randint(10,99)}",
+            "putaway_qty": rng.randint(50, 2000), "putaway_variance_pct": 0.0,
+            "putaway_cycle_count_matched": True}
+
+
+def _putaway_violating(rng, rid):
+    return {"putaway_location": f"WH-{rng.randint(1,6)}-{rng.randint(10,99)}",
+            "putaway_qty": rng.randint(50, 2000), "putaway_variance_pct": round(rng.uniform(8.0, 30.0), 1),
+            "putaway_cycle_count_matched": False}
+
+
+def _shipment_clean(rng, rid):
+    return {"shipment_so_number": _rid("SO", rng), "shipment_qty": rng.randint(10, 1800),
+            "shipment_carrier": rng.choice(["FedEx Freight", "UPS", "DHL Supply Chain", "XPO Logistics"]),
+            "shipment_matches_sales_order": True}
+
+
+def _shipment_violating(rng, rid):
+    return {"shipment_so_number": None, "shipment_qty": rng.randint(10, 1800),
+            "shipment_carrier": rng.choice(["FedEx Freight", "UPS", "DHL Supply Chain", "XPO Logistics"]),
+            "shipment_matches_sales_order": False}
+
+
 REVENUE_KIND        = TxnKind("revenue", "REVENUE_RECOGNITION_EVENT", "revenue_recognition_event", "SO", _revenue_clean, _revenue_violating)
 SALES_ORDER_KIND     = TxnKind("sales_order", "SALES_ORDER_CREDIT_EVENT", "sales_order_credit_event", "SO", _sales_order_clean, _sales_order_violating)
 BILLING_KIND         = TxnKind("billing", "BILLING_EVENT", "billing_event", "INV", _billing_clean, _billing_violating)
@@ -247,6 +288,9 @@ INVOICE_KIND         = TxnKind("invoice", "INVOICE_MATCH_EVENT", "invoice_match_
 VENDOR_MASTER_KIND   = TxnKind("vendor_master", "VENDOR_MASTER_CHANGE", "vendor_master_change", "VEND", _vendor_master_clean, _vendor_master_violating)
 PAYMENT_KIND         = TxnKind("payment", "PAYMENT_RUN_EVENT", "payment_run_event", "PAY", _payment_clean, _payment_violating)
 SOD_KIND             = TxnKind("sod", "PROCUREMENT_SOD_CONFLICT", "procurement_sod_conflict", "USR", _sod_clean, _sod_violating)
+GOODS_RECEIPT_KIND   = TxnKind("goods_receipt", "GOODS_RECEIPT_EVENT", "goods_receipt_event", "GRN", _goods_receipt_clean, _goods_receipt_violating)
+PUTAWAY_KIND         = TxnKind("putaway", "INVENTORY_PUTAWAY_EVENT", "inventory_putaway_event", "PUT", _putaway_clean, _putaway_violating)
+SHIPMENT_KIND        = TxnKind("shipment", "GOODS_SHIPMENT_EVENT", "goods_shipment_event", "SHP", _shipment_clean, _shipment_violating)
 
 # Standalone kinds: not naturally a multi-step lifecycle, so each instance is
 # its own one-step case — still tagged with a case_id/process_step (every
@@ -273,12 +317,17 @@ _O2C_CASE = [
     (BILLING_KIND, "Invoice Billed", (1, 5)),
     (CASH_KIND, "Cash Applied", (5, 30)),
 ]
+_INVENTORY_CASE = [
+    (GOODS_RECEIPT_KIND, "Goods Received", (0, 0)),
+    (PUTAWAY_KIND, "Putaway Confirmed", (0, 2)),
+    (SHIPMENT_KIND, "Goods Shipped", (2, 21)),
+]
 
 # Weighting: cases (3 records) count more toward --count than standalone
 # events (1 record) per "unit" drawn, so mix the two pools by drawing case
 # vs. standalone with a probability tuned so the OUTPUT record count roughly
 # matches the requested --count regardless of the mix.
-_CASE_TEMPLATES = [("procure_to_pay", _P2P_CASE), ("order_to_cash", _O2C_CASE)]
+_CASE_TEMPLATES = [("procure_to_pay", _P2P_CASE), ("order_to_cash", _O2C_CASE), ("inventory_cycle", _INVENTORY_CASE)]
 
 
 def _build_step_record(kind: TxnKind, detail: dict, case_id: str, process_step: str,
@@ -293,7 +342,8 @@ def _build_step_record(kind: TxnKind, detail: dict, case_id: str, process_step: 
         "actor": actor,
         "action": f"{kind.name}_{'violation' if violating else 'clean'}",
         "resource": detail.get("po_number") or detail.get("so_order_number") or detail.get("inv_number")
-                    or detail.get("pay_id") or detail.get("cash_receipt_number") or case_id,
+                    or detail.get("pay_id") or detail.get("cash_receipt_number")
+                    or detail.get("grn_po_number") or detail.get("shipment_so_number") or case_id,
         "severity": "HIGH" if violating else "INFO",
         "payload": payload,
         "created_at": when,

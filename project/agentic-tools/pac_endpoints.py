@@ -1492,7 +1492,7 @@ async def get_controls_coverage():
     if not db.is_available():
         return {"total": 0, "policy_enforced": 0, "manual_only": 0, "by_process": [], "controls": []}
 
-    controls = db.list_controls()
+    controls = await asyncio.to_thread(db.list_controls)
     by_process: Dict[str, Dict[str, int]] = {}
     policy_enforced = 0
     for c in controls:

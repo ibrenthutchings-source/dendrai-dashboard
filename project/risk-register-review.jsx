@@ -2066,8 +2066,9 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // On mount: load controls library and matrix config from DB/API
   useEffect(() => {
     (async () => {
-      await _loadControlsFromApi();
-      await _loadPacCatalogFromApi();
+      // Independent of each other (different tables, different module-level
+      // targets) — was two sequential round trips for no reason.
+      await Promise.all([_loadControlsFromApi(), _loadPacCatalogFromApi()]);
       setControlsKey(k => k + 1);
     })();
     (async () => {

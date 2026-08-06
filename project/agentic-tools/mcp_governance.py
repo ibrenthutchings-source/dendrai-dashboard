@@ -400,6 +400,11 @@ _SOURCE_EVENT_TO_PAC_PROCESS = {
     ("SYSTEM_TELEMETRY", "VENDOR_MASTER_CHANGE"):   "procure_to_pay",
     ("SYSTEM_TELEMETRY", "PAYMENT_RUN_EVENT"):      "procure_to_pay",
     ("SYSTEM_TELEMETRY", "PROCUREMENT_SOD_CONFLICT"): "procure_to_pay",
+    # Inventory Cycle (Receive -> Putaway -> Ship) — reuses procure_to_pay,
+    # see UBO/models/uro.py's EventType docstring for why no new process.
+    ("SYSTEM_TELEMETRY", "GOODS_RECEIPT_EVENT"):     "procure_to_pay",
+    ("SYSTEM_TELEMETRY", "INVENTORY_PUTAWAY_EVENT"): "procure_to_pay",
+    ("SYSTEM_TELEMETRY", "GOODS_SHIPMENT_EVENT"):    "procure_to_pay",
 }
 
 
@@ -1955,6 +1960,15 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("payment_run_event")
     if payload.get("procurement_sod_conflict"):
         flags.add("procurement_sod_conflict")
+    # Inventory Cycle: explicit signals set by generate_o2c_p2p_synthetic_log.py's
+    # third linked case (Receive -> Putaway -> Ship), same producer-driven
+    # pattern as every flag above.
+    if payload.get("goods_receipt_event"):
+        flags.add("goods_receipt_event")
+    if payload.get("inventory_putaway_event"):
+        flags.add("inventory_putaway_event")
+    if payload.get("goods_shipment_event"):
+        flags.add("goods_shipment_event")
     return sorted(flags)
 
 

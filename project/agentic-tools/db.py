@@ -7385,6 +7385,22 @@ def get_app_config(key: str, default=None):
     return result if result is not None else default
 
 
+def get_app_configs(keys: list) -> dict:
+    """Batched get_app_config: one round trip for several keys instead of one
+    per key. Callers that need multiple config values (e.g. matrix/preset/
+    hidden frameworks together) used to pay for N sequential DB round trips
+    where one query answers all of them. Missing keys are simply absent from
+    the returned dict — callers apply their own per-key default."""
+    if not keys:
+        return {}
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value_json FROM app_config WHERE key = ANY(%s)", (list(keys),))
+                return {row[0]: row[1] for row in cur.fetchall()}
+    return _run(_do) or {}
+
+
 def set_app_config(key: str, value) -> bool:
     """Upsert a JSON config value. Returns True on success."""
     def _do():
