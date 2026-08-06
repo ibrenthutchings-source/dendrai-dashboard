@@ -7,8 +7,7 @@
 
    Data comes from GET /api/mcp/observability/command-center.
    ============================================================ */
-import { ControlFlowMap } from "./control-flow-map.jsx";
-import { ContinuousMonitoringDomainViz } from "./continuous-monitoring-viz.jsx";
+import { ContinuousMonitoringDomainViz, ContinuousMonitoringSourceSystemViz } from "./continuous-monitoring-viz.jsx";
 
 function _cmBase() {
   return (window.MCP_API_BASE || "/api/mcp") + "/observability";
@@ -189,6 +188,27 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
               onClick={() => goTo("modelhealth")} />
           </div>
 
+          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+            {[["domain", "By Core Domain & Risk"], ["legacy", "Adjudication Flow"]].map(([v, label]) => (
+              <button key={v} type="button" onClick={() => setEvidenceView(v)}
+                style={{
+                  fontSize: 11, padding: "5px 12px", borderRadius: 5, cursor: "pointer",
+                  border: v === evidenceView ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line,#ddd)",
+                  background: v === evidenceView ? "var(--acc,#2563eb)" : "transparent",
+                  color: v === evidenceView ? "#fff" : "var(--ink-2,#555)",
+                  fontWeight: v === evidenceView ? 600 : 400,
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {evidenceView === "domain"
+            ? <ContinuousMonitoringDomainViz onNavigate={goTo} />
+            : <ContinuousMonitoringSourceSystemViz onNavigate={goTo} />}
+
+          <div style={{ height: 28 }} />
+
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
             <div style={{ flex: 2, minWidth: 380 }}>
               <CMLiveFeedTable
@@ -271,25 +291,6 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
               )}
             </div>
           </div>
-
-          <div style={{ height: 28 }} />
-
-          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            {[["domain", "By Core Domain & Risk"], ["legacy", "Adjudication Flow"]].map(([v, label]) => (
-              <button key={v} type="button" onClick={() => setEvidenceView(v)}
-                style={{
-                  fontSize: 11, padding: "5px 12px", borderRadius: 5, cursor: "pointer",
-                  border: v === evidenceView ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line,#ddd)",
-                  background: v === evidenceView ? "var(--acc,#2563eb)" : "transparent",
-                  color: v === evidenceView ? "#fff" : "var(--ink-2,#555)",
-                  fontWeight: v === evidenceView ? 600 : 400,
-                }}>
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {evidenceView === "domain" ? <ContinuousMonitoringDomainViz /> : <ControlFlowMap />}
         </>
       )}
     </div>

@@ -14,10 +14,24 @@ mcp_governance.start_polling() loop picks them up and adjudicates them for
 real: real Bronze/Silver/Gold/Council/PaC, real policy_violations, real
 adjudicated_tool_calls rows.
 
-A --violation-rate fraction of each transaction kind is deliberately built
-to breach exactly the one rule that kind's baseline otherwise satisfies —
-same clean/violating shape as pac_negative_tests.py's corpus fixtures for
-these two processes, just randomized and volumed up.
+Two of the eleven transaction kinds are generated as LINKED CASES rather than
+independent records: Procure-to-Pay (Purchase Order -> Invoice -> Payment)
+and Order-to-Cash (Sales Order -> Billing -> Cash Application), each sharing
+one case_id across its steps with realistic increasing timestamps. That
+case_id/process_step pair (see mcp_governance._write_adjudication and its
+adjudicated_tool_calls.case_id/process_step columns) is what makes a REAL
+directly-follows graph possible — "step A immediately preceded step B within
+the same transaction" — as opposed to the categorical Domain/Tier/Verdict/
+Rule breakdown every adjudication already supports regardless of case
+membership. The other five kinds (revenue, customer/vendor master changes,
+AR aging, SoD conflicts) aren't naturally multi-step lifecycles, so each
+stays a one-step case of its own — no less real, just nothing to sequence.
+
+A --violation-rate fraction of each case is deliberately built to breach
+exactly one rule at exactly one step (never every step at once — that's not
+how a real control failure looks) — same clean/violating shape as
+pac_negative_tests.py's corpus fixtures for these two processes, just
+randomized and volumed up.
 
 Writes to whatever DATABASE_URL is active. Use --dry-run first.
 
@@ -31,7 +45,7 @@ import logging
 import random
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -67,6 +81,14 @@ class TxnKind:
 
 def _rid(prefix: str, rng: random.Random) -> str:
     return f"{prefix}-{rng.randint(1000, 9999)}"
+
+
+def _case_id(rng: random.Random) -> str:
+    # Derived from the seeded rng (not uuid.uuid4(), which isn't
+    # seed-reproducible) — everything else generated for a given --seed is
+    # reproducible, and case_id living inside each record's compared payload
+    # is no exception.
+    return f"{rng.getrandbits(40):010x}"
 
 
 # ── Order-to-Cash builders ───────────────────────────────────────────────────
@@ -214,48 +236,134 @@ def _sod_violating(rng, rid):
     return {"user_oracle_roles": conflict, "user_username": rng.choice(_ACTORS)}
 
 
-TXN_KINDS: list[TxnKind] = [
-    TxnKind("revenue", "REVENUE_RECOGNITION_EVENT", "revenue_recognition_event", "SO", _revenue_clean, _revenue_violating),
-    TxnKind("sales_order", "SALES_ORDER_CREDIT_EVENT", "sales_order_credit_event", "SO", _sales_order_clean, _sales_order_violating),
-    TxnKind("billing", "BILLING_EVENT", "billing_event", "INV", _billing_clean, _billing_violating),
-    TxnKind("cash", "CASH_APPLICATION_EVENT", "cash_application_event", "CR", _cash_clean, _cash_violating),
-    TxnKind("customer_master", "CUSTOMER_MASTER_CHANGE", "customer_master_change", "CUST", _customer_master_clean, _customer_master_violating),
-    TxnKind("ar_aging", "AR_AGING_EVENT", "ar_aging_event", "AR", _ar_aging_clean, _ar_aging_violating),
-    TxnKind("purchase_order", "PURCHASE_ORDER_EVENT", "purchase_order_event", "PO", _po_clean, _po_violating),
-    TxnKind("invoice", "INVOICE_MATCH_EVENT", "invoice_match_event", "INV", _invoice_clean, _invoice_violating),
-    TxnKind("vendor_master", "VENDOR_MASTER_CHANGE", "vendor_master_change", "VEND", _vendor_master_clean, _vendor_master_violating),
-    TxnKind("payment", "PAYMENT_RUN_EVENT", "payment_run_event", "PAY", _payment_clean, _payment_violating),
-    TxnKind("sod", "PROCUREMENT_SOD_CONFLICT", "procurement_sod_conflict", "USR", _sod_clean, _sod_violating),
+REVENUE_KIND        = TxnKind("revenue", "REVENUE_RECOGNITION_EVENT", "revenue_recognition_event", "SO", _revenue_clean, _revenue_violating)
+SALES_ORDER_KIND     = TxnKind("sales_order", "SALES_ORDER_CREDIT_EVENT", "sales_order_credit_event", "SO", _sales_order_clean, _sales_order_violating)
+BILLING_KIND         = TxnKind("billing", "BILLING_EVENT", "billing_event", "INV", _billing_clean, _billing_violating)
+CASH_KIND            = TxnKind("cash", "CASH_APPLICATION_EVENT", "cash_application_event", "CR", _cash_clean, _cash_violating)
+CUSTOMER_MASTER_KIND = TxnKind("customer_master", "CUSTOMER_MASTER_CHANGE", "customer_master_change", "CUST", _customer_master_clean, _customer_master_violating)
+AR_AGING_KIND        = TxnKind("ar_aging", "AR_AGING_EVENT", "ar_aging_event", "AR", _ar_aging_clean, _ar_aging_violating)
+PURCHASE_ORDER_KIND  = TxnKind("purchase_order", "PURCHASE_ORDER_EVENT", "purchase_order_event", "PO", _po_clean, _po_violating)
+INVOICE_KIND         = TxnKind("invoice", "INVOICE_MATCH_EVENT", "invoice_match_event", "INV", _invoice_clean, _invoice_violating)
+VENDOR_MASTER_KIND   = TxnKind("vendor_master", "VENDOR_MASTER_CHANGE", "vendor_master_change", "VEND", _vendor_master_clean, _vendor_master_violating)
+PAYMENT_KIND         = TxnKind("payment", "PAYMENT_RUN_EVENT", "payment_run_event", "PAY", _payment_clean, _payment_violating)
+SOD_KIND             = TxnKind("sod", "PROCUREMENT_SOD_CONFLICT", "procurement_sod_conflict", "USR", _sod_clean, _sod_violating)
+
+# Standalone kinds: not naturally a multi-step lifecycle, so each instance is
+# its own one-step case — still tagged with a case_id/process_step (every
+# adjudication gets one), just nothing to sequence it against.
+_STANDALONE = [
+    (REVENUE_KIND, "Revenue Recognized"),
+    (CUSTOMER_MASTER_KIND, "Customer Master Change"),
+    (AR_AGING_KIND, "AR Aging Review"),
+    (VENDOR_MASTER_KIND, "Vendor Master Change"),
+    (SOD_KIND, "SoD Check"),
 ]
 
+# Linked cases: (kind, process_step label, (min_days, max_days) gap from the
+# PREVIOUS step — the first step's gap is ignored). Real lifecycles don't
+# take the same 2 seconds a script would default to, so each step lands
+# realistically days after the one before it.
+_P2P_CASE = [
+    (PURCHASE_ORDER_KIND, "Purchase Order Created", (0, 0)),
+    (INVOICE_KIND, "Invoice Matched", (2, 10)),
+    (PAYMENT_KIND, "Payment Released", (3, 14)),
+]
+_O2C_CASE = [
+    (SALES_ORDER_KIND, "Sales Order Booked", (0, 0)),
+    (BILLING_KIND, "Invoice Billed", (1, 5)),
+    (CASH_KIND, "Cash Applied", (5, 30)),
+]
 
-def _build_record(kind: TxnKind, rng: random.Random, violating: bool, when: datetime) -> dict:
-    rid = _rid(kind.resource_prefix, rng)
-    detail = kind.build_violating(rng, rid) if violating else kind.build_clean(rng, rid)
-    payload = {kind.flag: True, "erp_transaction_detail": detail}
+# Weighting: cases (3 records) count more toward --count than standalone
+# events (1 record) per "unit" drawn, so mix the two pools by drawing case
+# vs. standalone with a probability tuned so the OUTPUT record count roughly
+# matches the requested --count regardless of the mix.
+_CASE_TEMPLATES = [("procure_to_pay", _P2P_CASE), ("order_to_cash", _O2C_CASE)]
+
+
+def _build_step_record(kind: TxnKind, detail: dict, case_id: str, process_step: str,
+                        violating: bool, actor: str, when: datetime) -> dict:
+    payload = {kind.flag: True, "erp_transaction_detail": detail,
+               "case_id": case_id, "process_step": process_step}
     return {
         "server_name": _SERVER_NAME,
         "system_type": _SYSTEM_TYPE,
         "event_type": kind.event_type,
         "event_id": str(uuid.uuid4()),
-        "actor": rng.choice(_ACTORS),
+        "actor": actor,
         "action": f"{kind.name}_{'violation' if violating else 'clean'}",
-        "resource": rid,
+        "resource": detail.get("po_number") or detail.get("so_order_number") or detail.get("inv_number")
+                    or detail.get("pay_id") or detail.get("cash_receipt_number") or case_id,
         "severity": "HIGH" if violating else "INFO",
         "payload": payload,
         "created_at": when,
     }
 
 
+def _build_case(steps: list[tuple[TxnKind, str, tuple[float, float]]], rng: random.Random,
+                 case_violates: bool, base_when: datetime, now: datetime) -> list[dict]:
+    case_id = _case_id(rng)
+    actor = rng.choice(_ACTORS)
+    violate_idx = rng.randrange(len(steps)) if case_violates else -1
+    when = base_when
+    records: list[dict] = []
+    prior_amount: float | None = None
+
+    for i, (kind, process_step, gap_days) in enumerate(steps):
+        if i > 0:
+            # Clamp to `now` — a later step's realistic gap (up to 30 days
+            # for O2C's cash-application step) can otherwise push it into
+            # the future when the case started close to `now` or the
+            # --days window is smaller than the lifecycle's own length.
+            # Clamping (never un-clamping) keeps timestamps non-decreasing.
+            when = min(when + timedelta(days=rng.uniform(*gap_days)), now)
+        rid = _rid(kind.resource_prefix, rng)
+        violating = i == violate_idx
+        detail = kind.build_violating(rng, rid) if violating else kind.build_clean(rng, rid)
+        # Keep the amount coherent across a CLEAN step following a prior
+        # step — a real invoice matches its PO, a real cash receipt matches
+        # its invoice. Skip this for the deliberately-violating step, whose
+        # builder already constructed a specific, meaningful mismatch that
+        # an amount override would just erase.
+        if not violating and prior_amount is not None:
+            for amount_field in ("po_total", "inv_amount", "cash_amount"):
+                if amount_field in detail:
+                    detail[amount_field] = prior_amount
+        for amount_field in ("po_total", "so_total", "inv_amount", "cash_amount", "pay_amount"):
+            if amount_field in detail:
+                prior_amount = detail[amount_field]
+        records.append(_build_step_record(kind, detail, case_id, process_step, violating, actor, when))
+    return records
+
+
+def _build_standalone(kind: TxnKind, process_step: str, rng: random.Random,
+                       violating: bool, when: datetime) -> dict:
+    case_id = _case_id(rng)
+    rid = _rid(kind.resource_prefix, rng)
+    detail = kind.build_violating(rng, rid) if violating else kind.build_clean(rng, rid)
+    return _build_step_record(kind, detail, case_id, process_step, violating, rng.choice(_ACTORS), when)
+
+
 def generate(count: int, violation_rate: float, days: int, seed: int | None = None) -> list[dict]:
     rng = random.Random(seed)
     now = datetime.now(timezone.utc)
-    records = []
-    for _ in range(count):
-        kind = rng.choice(TXN_KINDS)
-        violating = rng.random() < violation_rate
-        when = now - timedelta(seconds=rng.randint(0, max(days, 1) * 86400))
-        records.append(_build_record(kind, rng, violating, when))
+    records: list[dict] = []
+
+    while len(records) < count:
+        # Draw a case template about 2/5 of the time (cases produce 3
+        # records each, so this keeps the case:standalone record ratio
+        # realistic rather than letting 3-record cases dominate the log).
+        base_when = now - timedelta(seconds=rng.randint(0, max(days, 1) * 86400))
+        if rng.random() < 0.4:
+            _, steps = rng.choice(_CASE_TEMPLATES)
+            case_violates = rng.random() < violation_rate
+            records.extend(_build_case(steps, rng, case_violates, base_when, now))
+        else:
+            kind, process_step = rng.choice(_STANDALONE)
+            violating = rng.random() < violation_rate
+            records.append(_build_standalone(kind, process_step, rng, violating, base_when))
+
+    records = records[:count] if len(records) > count else records
     records.sort(key=lambda r: r["created_at"])
     return records
 
@@ -285,9 +393,9 @@ def push(records: list[dict]) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--count", type=int, default=200, help="Total records to generate (split across 11 transaction kinds)")
-    parser.add_argument("--violation-rate", type=float, default=0.15, help="Fraction of records deliberately built to breach a rule")
-    parser.add_argument("--days", type=int, default=30, help="Spread timestamps over this many days back from now")
+    parser.add_argument("--count", type=int, default=200, help="Total records to generate (cases contribute 3 each, standalone events 1)")
+    parser.add_argument("--violation-rate", type=float, default=0.15, help="Fraction of cases/standalone events deliberately built to breach a rule (at exactly one step for a case)")
+    parser.add_argument("--days", type=int, default=30, help="Spread each case/event's start over this many days back from now")
     parser.add_argument("--seed", type=int, default=None, help="Random seed, for reproducible runs")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be generated; don't touch the database")
     args = parser.parse_args()
@@ -296,11 +404,13 @@ def main() -> int:
 
     if args.dry_run:
         for r in records[:20]:
-            print(f"{r['created_at'].isoformat()}  {r['event_type']:<28}  {r['action']:<28}  {r['resource']}")
+            p = r["payload"]
+            print(f"{r['created_at'].isoformat()}  {p['case_id']}  {p['process_step']:<24}  {r['event_type']:<28}  {r['resource']}")
         if len(records) > 20:
             print(f"... and {len(records) - 20} more")
         n_violating = sum(1 for r in records if r["severity"] == "HIGH")
-        print(f"\n{len(records)} records generated, {n_violating} violating ({n_violating/len(records):.0%}). "
+        n_cases = len({r["payload"]["case_id"] for r in records})
+        print(f"\n{len(records)} records generated across {n_cases} cases, {n_violating} violating ({n_violating/len(records):.0%}). "
               f"Re-run without --dry-run to insert.")
         return 0
 

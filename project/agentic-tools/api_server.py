@@ -3071,6 +3071,14 @@ def get_observability_events(
     (a CLEAR event, most of the time) — never a guess. A frontend grouping by
     domain should treat a null domain as its own explicit "unclassified"
     bucket, not silently drop the event.
+
+    case_id/process_step are null for almost every row — an ad-hoc MCP tool
+    call has no "case" concept — and are populated today only by
+    generate_o2c_p2p_synthetic_log.py's linked O2C/P2P lifecycles. They
+    exist so a consumer can build a REAL directly-follows graph ("step A
+    immediately preceded step B within the same tracked transaction") for
+    rows that have them, as opposed to the categorical Domain/Tier/Verdict/
+    Rule breakdown every row supports regardless of case membership.
     """
     if not db.is_available():
         return {"events": [], "window_days": days, "note": "Database not configured"}
@@ -3090,6 +3098,8 @@ def get_observability_events(
             "requires_human_review": ev["requires_human_review"],
             "policy_violations": ev["policy_violations"],
             "domain": pol_domain_mappings.domain_for_violations(ev["policy_violations"], ctrl_to_process),
+            "case_id": ev.get("case_id"),
+            "process_step": ev.get("process_step"),
         }
         for ev in raw
     ]
