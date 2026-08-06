@@ -55,7 +55,7 @@ const NAV_SECTIONS = [
   //  ],
   //},
   {
-    label: "Board",
+    label: "Board Intelligence",
     items: [
       { id: "gov", govTab: "overview",  icon: "compass", l: "Boardroom Pulse" },
       { id: "gov", govTab: "board",     icon: "user",    l: "Board & Audit Committee" },
