@@ -148,6 +148,19 @@ class EventType(str, Enum):
     PAYMENT_RUN_EVENT           = "PAYMENT_RUN_EVENT"
     PROCUREMENT_SOD_CONFLICT    = "PROCUREMENT_SOD_CONFLICT"
 
+    # ── Inventory Cycle: Receive → Putaway → Ship (Oracle Fusion Inventory /
+    # Warehouse Management transactions) ───────────────────────────────────
+    # Reuses procure_to_pay rather than a new process — goods receipt and
+    # putaway are warehouse-side continuations of the same PO lifecycle P2P
+    # already tracks (goods_receipt_confirmed is already a procure_to_pay
+    # Rego field, set by the Invoice Matched step above), and shipment is the
+    # point that lifecycle hands off toward O2C's billing step. Third linked
+    # case alongside Order-to-Cash / Procure-to-Pay above, same case_id/
+    # process_step wiring (generate_o2c_p2p_synthetic_log.py).
+    GOODS_RECEIPT_EVENT         = "GOODS_RECEIPT_EVENT"
+    INVENTORY_PUTAWAY_EVENT     = "INVENTORY_PUTAWAY_EVENT"
+    GOODS_SHIPMENT_EVENT        = "GOODS_SHIPMENT_EVENT"
+
 
 class RiskDomain(str, Enum):
     """Four enterprise risk categories from the Multi-Domain Continuous Risk

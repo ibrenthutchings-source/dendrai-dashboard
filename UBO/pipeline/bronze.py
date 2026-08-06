@@ -471,6 +471,11 @@ class SystemTelemetryBronzeHandler(BronzeLayerBase):
         "vendor_master_change":       EventType.VENDOR_MASTER_CHANGE,
         "payment_run_event":          EventType.PAYMENT_RUN_EVENT,
         "procurement_sod_conflict":   EventType.PROCUREMENT_SOD_CONFLICT,
+        # Inventory Cycle: generate_o2c_p2p_synthetic_log.py's third linked
+        # case (Receive -> Putaway -> Ship).
+        "goods_receipt_event":       EventType.GOODS_RECEIPT_EVENT,
+        "inventory_putaway_event":   EventType.INVENTORY_PUTAWAY_EVENT,
+        "goods_shipment_event":      EventType.GOODS_SHIPMENT_EVENT,
     }
 
     # Multi-Domain Risk Pipeline classification for the Financial-domain flags

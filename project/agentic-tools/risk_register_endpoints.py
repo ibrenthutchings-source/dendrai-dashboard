@@ -17,6 +17,7 @@ Routes:
     POST /risk-register/convert-to-code        Convert reviewed risks to YAML
 """
 
+import asyncio
 import io
 import logging
 import re
@@ -380,8 +381,15 @@ class ControlUpdateRequest(BaseModel):
 
 @router.get("/controls")
 async def get_controls():
-    """Return the control library — served from DB when available, defaults otherwise."""
-    controls = _get_controls_live()
+    """Return the control library — served from DB when available, defaults otherwise.
+
+    Offloaded to a worker thread: psycopg2 is a blocking driver, and this
+    process runs a single uvicorn worker — a synchronous DB call made
+    directly inside an `async def` handler stalls the whole event loop for
+    its round-trip time, serializing every other in-flight request (including
+    the Risk Register screen's own other mount-time fetches) behind it.
+    """
+    controls = await asyncio.to_thread(_get_controls_live)
     return {"controls": controls, "count": len(controls)}
 
 
@@ -475,11 +483,20 @@ async def link_control_to_pac(ref: str, req: ControlPacLinkRequest):
 
 @router.get("/matrix-config")
 async def get_matrix_config():
-    """Return MATRIX_FRAMEWORKS and PRESET_FRAMEWORKS (from DB or defaults)."""
-    matrix  = db.get_app_config("matrix_frameworks",  _DEFAULT_MATRIX_FRAMEWORKS)  if db.is_available() else _DEFAULT_MATRIX_FRAMEWORKS
-    preset  = db.get_app_config("preset_frameworks",  _DEFAULT_PRESET_FRAMEWORKS)   if db.is_available() else _DEFAULT_PRESET_FRAMEWORKS
-    hidden  = db.get_app_config("hidden_frameworks",  [])                          if db.is_available() else []
-    return {"matrix_frameworks": matrix, "preset_frameworks": preset, "hidden_frameworks": hidden}
+    """Return MATRIX_FRAMEWORKS and PRESET_FRAMEWORKS (from DB or defaults).
+
+    Was 3 sequential get_app_config calls (one DB round trip each); now a
+    single batched query plus one threadpool hop so it doesn't block the
+    event loop.
+    """
+    if not db.is_available():
+        return {"matrix_frameworks": _DEFAULT_MATRIX_FRAMEWORKS, "preset_frameworks": _DEFAULT_PRESET_FRAMEWORKS, "hidden_frameworks": []}
+    cfg = await asyncio.to_thread(db.get_app_configs, ["matrix_frameworks", "preset_frameworks", "hidden_frameworks"])
+    return {
+        "matrix_frameworks": cfg.get("matrix_frameworks", _DEFAULT_MATRIX_FRAMEWORKS),
+        "preset_frameworks": cfg.get("preset_frameworks", _DEFAULT_PRESET_FRAMEWORKS),
+        "hidden_frameworks": cfg.get("hidden_frameworks", []),
+    }
 
 
 @router.put("/matrix-config")
@@ -631,7 +648,7 @@ async def search_frameworks(req: FrameworkSearchRequest):
 @router.get("/framework-catalogs")
 async def get_framework_catalogs():
     """Return all framework risk catalogs previously saved to the database."""
-    return {"catalogs": db.list_framework_catalogs()}
+    return {"catalogs": await asyncio.to_thread(db.list_framework_catalogs)}
 
 
 class SaveCatalogRequest(BaseModel):
@@ -819,7 +836,7 @@ async def score_framework_risks(req: ScoreFrameworkRisksRequest):
 @router.get("/reviews")
 async def list_reviews(run_id: Optional[int] = None):
     """List recent review sessions."""
-    return {"reviews": db.list_risk_register_reviews(run_id=run_id)}
+    return {"reviews": await asyncio.to_thread(db.list_risk_register_reviews, run_id=run_id)}
 
 
 @router.post("/reviews")
@@ -843,7 +860,7 @@ async def create_review(req: ReviewCreateRequest):
 @router.get("/reviews/{review_id}")
 async def get_review(review_id: int):
     """Return a review session with all its risk states."""
-    states = db.get_review_risk_states(review_id)
+    states = await asyncio.to_thread(db.get_review_risk_states, review_id)
     return {"review_id": review_id, "risk_states": states}
 
 
@@ -1060,7 +1077,7 @@ async def get_latest_risks(ticker: str):
     """Return risks from the most recent run for a ticker, with latest review wording applied."""
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not connected")
-    result = db.get_latest_risks_for_ticker(ticker)
+    result = await asyncio.to_thread(db.get_latest_risks_for_ticker, ticker)
     return {
         "risks": result["risks"],
         "count": len(result["risks"]),
@@ -1072,7 +1089,7 @@ async def get_latest_risks(ticker: str):
 @router.get("/risks/{run_id}")
 async def get_risks_for_run(run_id: int):
     """Return current risk_scores for a run, with narrative wording applied."""
-    risks = db.get_risk_scores_for_run(run_id)
+    risks = await asyncio.to_thread(db.get_risk_scores_for_run, run_id)
     return {"risks": risks, "count": len(risks)}
 
 

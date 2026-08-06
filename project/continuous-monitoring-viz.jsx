@@ -1243,7 +1243,13 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     const gw = g.graph().width || 800;
     const gh = g.graph().height || 300;
     const W = Math.max(hostRef.current.clientWidth, gw + 40);
-    const H = Math.max(300, gh + 40);
+    // Floor H at the host's own rendered height (mirroring W's clientWidth
+    // floor above), not a fixed 300 — otherwise a graph shorter than the box
+    // sets a viewBox whose aspect ratio is wider/flatter than the box's, and
+    // since the <svg> is styled width:100%/height:100% with the default
+    // "meet" preserveAspectRatio, it scales to fit width and letterboxes the
+    // rest of the box empty instead of filling it.
+    const H = Math.max(hostRef.current.clientHeight, gh + 40);
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
@@ -1328,12 +1334,12 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
       theme={theme}
       kicker="Continuous evidence · Case Flow Graph (real DFG)"
       sub={graph
-        ? `${graph.caseCount} tracked transaction${graph.caseCount !== 1 ? "s" : ""} in the last ${days} days — real step-to-step sequences, not a categorical breakdown. Populated today by the O2C/P2P synthetic generator; a real ERP connector emitting case_id/process_step would appear here the same way.`
+        ? `${graph.caseCount} tracked transaction${graph.caseCount !== 1 ? "s" : ""} in the last ${days} days — real step-to-step sequences, not a categorical breakdown. Populated today by the O2C/P2P/Inventory Cycle synthetic generator; a real ERP connector emitting case_id/process_step would appear here the same way.`
         : `Real transaction lifecycles over the last ${days} days, traced step by step — needs events carrying a case_id (see generate_o2c_p2p_synthetic_log.py).`}
       error={error && !hasData ? error : null}
       empty={!loading && !hasData && !error ? `No case-tracked transactions in the last ${days} days yet — run generate_o2c_p2p_synthetic_log.py to populate this view, or wait for a real case-tracked producer.` : null}
       loading={loading && !hasData}
-      height={520}
+      height={640}
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto" }}>
