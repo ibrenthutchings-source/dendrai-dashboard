@@ -7,9 +7,132 @@
    ============================================================ */
 import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ReferenceLine, ResponsiveContainer,
+  Tooltip, ReferenceLine, ResponsiveContainer, Brush,
   PieChart, Pie, Cell,
 } from 'recharts';
+
+// Only worth showing zoom controls once there's actually something to zoom
+// into — a 5-point chart (e.g. the risk-score forecast: 1 history + 4
+// forecast quarters) just adds clutter.
+const ZOOM_MIN_POINTS = 9;
+
+// Shared zoom/pan state for both ForecastChart and MultiSeriesForecastChart —
+// both render a Recharts <Brush>, which natively windows its parent chart's
+// visible domain to [startIndex, endIndex], so this hook only needs to own
+// that pair of indices; Recharts does the actual re-rendering of the visible
+// range.
+//
+// Coordinated across every chart on the page: wrap them in <ChartZoomProvider>
+// (Pipeline does, around the whole stage list) and zooming any one of them
+// moves them all together. The shared state is a [startFrac, endFrac] window
+// in [0,1] rather than raw indices — different KPIs can have different
+// history lengths (real EDGAR-derived revenue/margin vs. the synthetic 8Q
+// series for eps/opMargin/ebitda/netIncome/fcf), so a shared index pair would
+// point at a different quarter in each chart. A fraction of the timeline
+// means "zoom to the most recent third" reads the same on every chart
+// regardless of how many points it actually has. Charts rendered without a
+// provider (or a future standalone caller) fall back to local-only state.
+const ChartZoomContext = React.createContext(null);
+
+function ChartZoomProvider({ children }) {
+  const [frac, setFrac] = React.useState(null); // null = full extent
+  const zoomed = !!frac;
+  const minSpan = 0.08;
+
+  function zoomIn() {
+    const [s, e] = frac || [0, 1];
+    const shrink = (e - s) * 0.2;
+    const ns = Math.min(s + shrink, e - minSpan);
+    const ne = Math.max(e - shrink, ns + minSpan);
+    setFrac([Math.max(0, ns), Math.min(1, ne)]);
+  }
+  function zoomOut() {
+    const [s, e] = frac || [0, 1];
+    const grow = (e - s) * 0.25;
+    const ns = s - grow, ne = e + grow;
+    setFrac(ns <= 0 && ne >= 1 ? null : [Math.max(0, ns), Math.min(1, ne)]);
+  }
+  function reset() { setFrac(null); }
+
+  const value = React.useMemo(() => ({ frac, zoomed, zoomIn, zoomOut, reset, setFrac }), [frac]);
+  return React.createElement(ChartZoomContext.Provider, { value }, children);
+}
+
+function _fracToIndices(frac, fullEnd) {
+  if (!frac || fullEnd <= 0) return [0, fullEnd];
+  const s = Math.round(frac[0] * fullEnd);
+  const e = Math.round(frac[1] * fullEnd);
+  return [Math.max(0, Math.min(s, fullEnd - 1)), Math.max(Math.min(s, fullEnd - 1) + 1, Math.min(e, fullEnd))];
+}
+
+function useChartZoom(dataLength) {
+  const ctx = React.useContext(ChartZoomContext);
+  const fullEnd = Math.max(0, dataLength - 1);
+
+  // `range` stays null (full extent) until the user first zooms — locally
+  // for the no-provider fallback — so a re-render with new data (e.g. a
+  // fresh pipeline run) doesn't get stuck showing a stale window past the
+  // new data's length.
+  const [range, setRange] = React.useState(null);
+  const inBounds = range && range[0] >= 0 && range[1] <= fullEnd && range[0] < range[1];
+  const minSpan = Math.min(2, fullEnd);
+
+  if (ctx) {
+    const [startIndex, endIndex] = _fracToIndices(ctx.frac, fullEnd);
+    return {
+      startIndex, endIndex, zoomed: ctx.zoomed,
+      zoomIn: ctx.zoomIn, zoomOut: ctx.zoomOut, reset: ctx.reset,
+      onBrushChange(r) {
+        if (r?.startIndex == null || r?.endIndex == null || fullEnd <= 0) return;
+        ctx.setFrac([r.startIndex / fullEnd, r.endIndex / fullEnd]);
+      },
+    };
+  }
+
+  const [startIndex, endIndex] = inBounds ? range : [0, fullEnd];
+  const zoomed = startIndex > 0 || endIndex < fullEnd;
+
+  function zoomIn() {
+    const span = endIndex - startIndex;
+    const shrink = Math.max(1, Math.round(span * 0.2));
+    const s = Math.min(startIndex + shrink, endIndex - minSpan);
+    const e = Math.max(endIndex - shrink, s + minSpan);
+    setRange([Math.max(0, s), Math.min(fullEnd, e)]);
+  }
+  function zoomOut() {
+    const span = endIndex - startIndex;
+    const grow = Math.max(1, Math.round(span * 0.25));
+    setRange([Math.max(0, startIndex - grow), Math.min(fullEnd, endIndex + grow)]);
+  }
+  function reset() { setRange(null); }
+  function onBrushChange(r) {
+    if (r?.startIndex == null || r?.endIndex == null) return;
+    setRange([r.startIndex, r.endIndex]);
+  }
+
+  return { startIndex, endIndex, zoomed, zoomIn, zoomOut, reset, onBrushChange };
+}
+
+function ZoomControls({ zoom, color }) {
+  return (
+    <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', alignItems: 'center', marginBottom: 2 }}>
+      {zoom.zoomed && (
+        <button type="button" onClick={zoom.reset} className="mono"
+          style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink-3)', cursor: 'pointer' }}>
+          Reset zoom
+        </button>
+      )}
+      <button type="button" onClick={zoom.zoomOut} title="Zoom out"
+        style={{ width: 20, height: 20, lineHeight: '18px', textAlign: 'center', fontSize: 13, padding: 0, borderRadius: 4, border: '1px solid var(--line)', background: 'var(--surface)', color: color, cursor: 'pointer' }}>
+        −
+      </button>
+      <button type="button" onClick={zoom.zoomIn} title="Zoom in"
+        style={{ width: 20, height: 20, lineHeight: '18px', textAlign: 'center', fontSize: 13, padding: 0, borderRadius: 4, border: '1px solid var(--line)', background: 'var(--surface)', color: color, cursor: 'pointer' }}>
+        +
+      </button>
+    </div>
+  );
+}
 
 // ---------- HEATMAP ----------
 function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
@@ -149,6 +272,11 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
 // Props unchanged from the old SVG version so all callers work without edits.
 // Extra optional props: referenceValue / referenceLabel draw a horizontal threshold line.
 function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", decimals, chartMetrics, referenceValue, referenceLabel }) {
+  // Called unconditionally, ahead of the early return below, per the Rules
+  // of Hooks — dataLength safely degrades to 0 when history/forecast are
+  // still empty on first render.
+  const dataLength = (history?.length || 0) + (forecast?.length || 0);
+  const zoom = useChartZoom(dataLength);
   if (!history?.length || !forecast?.length) return null;
 
   // Always at least 2 decimal places on the y-axis and hover tooltip —
@@ -251,8 +379,11 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
     );
   }
 
+  const showZoom = dataLength >= ZOOM_MIN_POINTS;
+
   return (
     <>
+      {showZoom && <ZoomControls zoom={zoom} color={color} />}
       <ResponsiveContainer width="100%" height={220}>
         <ComposedChart data={data} syncId="pipeline-kpi" margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
@@ -311,6 +442,17 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
             <ReferenceLine y={referenceValue} stroke="var(--red)" strokeDasharray="4 3" strokeWidth={1} opacity={0.65}
               label={{ value: referenceLabel ?? 'Target', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--red-ink)' }} />
           )}
+
+          {/* Zoom/pan: drag either handle to window the chart to a range of
+              quarters, or use the +/− buttons above. Recharts windows the
+              main chart's own domain to [startIndex, endIndex] automatically —
+              `data` above always stays the full series regardless of zoom. */}
+          {showZoom && (
+            <Brush dataKey="q" height={20} travellerWidth={8}
+              startIndex={zoom.startIndex} endIndex={zoom.endIndex} onChange={zoom.onBrushChange}
+              stroke={color} fill="var(--surface-2, var(--surface))"
+              tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} />
+          )}
         </ComposedChart>
       </ResponsiveContainer>
 
@@ -352,8 +494,10 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
 // ---------- MULTI-SERIES FORECAST CHART (Recharts) ----------
 // series: [{name, color, history:[{q,v}], forecast:[{q,base,lo,hi}]}]
 function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
+  const first = series?.[0];
+  const dataLength = (first?.history?.length || 0) + (first?.forecast?.length || 0);
+  const zoom = useChartZoom(dataLength);
   if (!series?.length) return null;
-  const first = series[0];
   if (!first?.history?.length || !first?.forecast?.length) return null;
 
   const dp      = decimals ?? (unit === "$M" ? 0 : 1);
@@ -416,8 +560,11 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
     );
   }
 
+  const showZoom = dataLength >= ZOOM_MIN_POINTS;
+
   return (
     <div>
+      {showZoom && <ZoomControls zoom={zoom} color={first.color} />}
       <ResponsiveContainer width="100%" height={200}>
         <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
@@ -455,6 +602,13 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
                 connectNulls={false} legendType="none" />
             </React.Fragment>
           ))}
+
+          {showZoom && (
+            <Brush dataKey="q" height={20} travellerWidth={8}
+              startIndex={zoom.startIndex} endIndex={zoom.endIndex} onChange={zoom.onBrushChange}
+              stroke={first.color} fill="var(--surface-2, var(--surface))"
+              tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }} />
+          )}
         </ComposedChart>
       </ResponsiveContainer>
 
@@ -1144,4 +1298,4 @@ function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reduction
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
-Object.assign(window, { Heatmap, ForecastChart, MultiSeriesForecastChart, MScoreGauge, ZScoreGauge, RiskFlowSankey, truncate });
+Object.assign(window, { Heatmap, ForecastChart, MultiSeriesForecastChart, MScoreGauge, ZScoreGauge, RiskFlowSankey, truncate, ChartZoomProvider });

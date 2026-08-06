@@ -72,7 +72,15 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     maps: output.s4?.maps || [],
     onOpenMain: onOpenMainFlow,
   };
+  // Coordinates zoom across every KPI time-series chart rendered anywhere in
+  // this tree — the always-visible Forecasts panel (ForecastChartsInline)
+  // and S1Body's detailed per-metric charts both live under this same
+  // Pipeline root, so one provider here covers both. Falls back to a plain
+  // Fragment (each chart keeps its own independent zoom) if charts.jsx
+  // hasn't loaded for some reason.
+  const ZoomProvider = window.ChartZoomProvider || React.Fragment;
   return (
+    <ZoomProvider>
     <div className="pipeline">
       {STAGES.map((s, i) => {
         const status = stageState[s.id] || "idle";
@@ -218,6 +226,7 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
         );
       })}
     </div>
+    </ZoomProvider>
   );
 }
 
@@ -423,7 +432,7 @@ function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
               app-wide state, so picking a peer here also overlays it on the
               margin chart, the M-Score/Z-Score gauges, and S1Body's detail view. */}
           {picker}
-          <FCWithMetrics history={rev.history.slice(-16)} forecast={rev.forecast} unit="$M" color="var(--acc)" peers={_peerSeriesListFor(peerCompareList, 'revenue')}/>
+          <FCWithMetrics history={rev.history} forecast={rev.forecast} unit="$M" color="var(--acc)" peers={_peerSeriesListFor(peerCompareList, 'revenue')}/>
         </div>
       )}
       {mg?.history?.length > 0 && (
@@ -436,7 +445,7 @@ function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
               </div>
             )}
           </div>
-          <FCWithMetrics history={mg.history.slice(-16)} forecast={mg.forecast} unit="%" color="var(--violet)" peers={_peerSeriesListFor(peerCompareList, 'margin')}/>
+          <FCWithMetrics history={mg.history} forecast={mg.forecast} unit="%" color="var(--violet)" peers={_peerSeriesListFor(peerCompareList, 'margin')}/>
         </div>
       )}
       {livefacts && (
@@ -1381,7 +1390,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
               Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
               Persistent EPS compression raises financial-reporting and liquidity risk scores.
             </div>
-            <FCWithMetrics history={forecasts.eps.history.slice(-16)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)" peers={peerSeries('eps')}/>
+            <FCWithMetrics history={forecasts.eps.history} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)" peers={peerSeries('eps')}/>
           </div>
         );
       })()}
@@ -1397,7 +1406,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               EBIT ÷ Revenue. Forecast: {lastF?.toFixed(2)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
             </div>
-            <FCWithMetrics history={forecasts.opMargin.history.slice(-16)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838" peers={peerSeries('opMargin')}/>
+            <FCWithMetrics history={forecasts.opMargin.history} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838" peers={peerSeries('opMargin')}/>
           </div>
         );
       })()}
@@ -1413,7 +1422,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
             </div>
-            <FCWithMetrics history={forecasts.ebitda.history.slice(-16)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)" peers={peerSeries('ebitda')}/>
+            <FCWithMetrics history={forecasts.ebitda.history} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)" peers={peerSeries('ebitda')}/>
           </div>
         );
       })()}
@@ -1427,7 +1436,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
             </div>
-            <ComparableChart history={forecasts.netIncome.history.slice(-16)} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)" peers={peerSeries('netIncome')}/>
+            <ComparableChart history={forecasts.netIncome.history} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)" peers={peerSeries('netIncome')}/>
           </div>
         );
       })()}
@@ -1441,7 +1450,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
               CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
             </div>
-            <ComparableChart history={forecasts.fcf.history.slice(-16)} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52" peers={peerSeries('fcf')}/>
+            <ComparableChart history={forecasts.fcf.history} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52" peers={peerSeries('fcf')}/>
           </div>
         );
       })()}
