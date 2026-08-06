@@ -18,6 +18,20 @@ const GATE_TYPE_LABEL = {
   devops_scm_exception: "DevOps Monitoring · SCM Exception",
 };
 
+// UBO Governance Brain's ConflictFlag enum (UBO/models/risk_intelligence.py) —
+// WHY the Council escalated, distinct from risk_flags (WHAT the Bronze-layer
+// detection rules noticed in the raw event) and from policy_violations
+// (WHICH specific PaC/Silver rule fired). All three answer a different half
+// of "what caused this" and none was shown here before.
+const CONFLICT_FLAG_LABEL = {
+  AGENT_DIVERGENCE:        "Agents disagreed past threshold",
+  LOW_CONFIDENCE:          "Low ensemble confidence",
+  MISSING_EVALUATIONS:     "One or more agents returned no evaluation",
+  ANOMALOUS_RISK_DELTA:    "Anomalous risk-score swing",
+  POLICY_VIOLATION:        "Policy-as-Code deny rule fired",
+  LLM_ESCALATION_OVERRIDE: "LLM 4th-opinion override",
+};
+
 const ADJUSTMENT_FIELD_LABEL = {
   rag: "RAG", score: "Score", velocity: "Velocity", ce: "Control Effectiveness",
   name: "Name", category: "Category",
@@ -208,6 +222,12 @@ function TelemetryReviewItem({ item, onDecide }) {
             {item.risk_score != null && <> · risk score <b style={{ color: "var(--red-ink)" }}>{item.risk_score.toFixed(3)}</b></>}
             {item.adjudicated_at && <> · {new Date(item.adjudicated_at).toLocaleString()}</>}
           </div>
+          {(item.policy_violations || []).length > 0 && (
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 4, fontWeight: 600 }}>
+              ⚠ {item.policy_violations.length} Policy-as-Code violation{item.policy_violations.length !== 1 ? "s" : ""}
+              {item.domain ? ` · ${item.domain}` : ""}
+            </div>
+          )}
         </div>
         <button className="btn btn-sm" onClick={() => setExpanded(e => !e)}>
           {expanded ? "Collapse" : "Review"}
@@ -216,10 +236,52 @@ function TelemetryReviewItem({ item, onDecide }) {
 
       {expanded && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+          {(item.conflict_flags || []).length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 4 }}>WHAT CAUSED THE ESCALATION</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {item.conflict_flags.map(f => (
+                  <span key={f} className="mono" style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, background: "var(--red-soft)", border: "1px solid var(--red-ink)", color: "var(--red-ink)" }}>
+                    {CONFLICT_FLAG_LABEL[f] || f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {(item.policy_violations || []).length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 4 }}>
+                POLICY-AS-CODE VIOLATED{item.domain ? ` · ${item.domain}` : ""}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {item.policy_violations.map((v, i) => (
+                  <span key={i} className="mono" style={{ fontSize: 10.5, padding: "3px 8px", borderRadius: 4, background: "var(--surface-2, var(--surface))", border: "1px solid var(--red-ink)", color: "var(--ink)" }}>
+                    {v}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           {item.adjudicator_reasoning && (
             <div style={{ marginBottom: 10 }}>
               <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 4 }}>ADJUDICATOR REASONING</div>
               <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.55, fontFamily: "'Geist Mono',monospace" }}>{item.adjudicator_reasoning}</div>
+            </div>
+          )}
+          {(item.council_votes || []).length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 4 }}>AGENT-BY-AGENT VOTES</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {item.council_votes.map((v, i) => (
+                  <div key={i} style={{ fontSize: 11, padding: "6px 8px", borderRadius: 4, background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)" }}>
+                    <div className="mono" style={{ fontSize: 10, color: "var(--ink-2)", fontWeight: 600 }}>
+                      {v.agent_name} — <span style={{ color: v.verdict === "ESCALATE" ? "var(--red-ink)" : "var(--ink-2)" }}>{v.verdict}</span>
+                      {v.confidence != null && <span style={{ color: "var(--ink-4)", fontWeight: 400 }}> ({(v.confidence * 100).toFixed(0)}% confidence)</span>}
+                    </div>
+                    {v.reasoning && <div style={{ color: "var(--ink-3)", marginTop: 2 }}>{v.reasoning}</div>}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {(item.risk_flags || []).length > 0 && (
