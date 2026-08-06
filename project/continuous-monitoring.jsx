@@ -8,6 +8,7 @@
    Data comes from GET /api/mcp/observability/command-center.
    ============================================================ */
 import { ControlFlowMap } from "./control-flow-map.jsx";
+import { ContinuousMonitoringDomainViz } from "./continuous-monitoring-viz.jsx";
 
 function _cmBase() {
   return (window.MCP_API_BASE || "/api/mcp") + "/observability";
@@ -106,6 +107,7 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
   const [error, setError] = React.useState(null);
   const [lastRefresh, setLastRefresh] = React.useState(null);
   const [isPaused, setIsPaused] = React.useState(false);
+  const [evidenceView, setEvidenceView] = React.useState("domain");
 
   const load = React.useCallback(() => {
     return fetch(`${_cmBase()}/command-center`, { credentials: "include" })
@@ -272,7 +274,22 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
 
           <div style={{ height: 28 }} />
 
-          <ControlFlowMap />
+          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+            {[["domain", "By Core Domain & Risk"], ["legacy", "Adjudication Flow"]].map(([v, label]) => (
+              <button key={v} type="button" onClick={() => setEvidenceView(v)}
+                style={{
+                  fontSize: 11, padding: "5px 12px", borderRadius: 5, cursor: "pointer",
+                  border: v === evidenceView ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line,#ddd)",
+                  background: v === evidenceView ? "var(--acc,#2563eb)" : "transparent",
+                  color: v === evidenceView ? "#fff" : "var(--ink-2,#555)",
+                  fontWeight: v === evidenceView ? 600 : 400,
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {evidenceView === "domain" ? <ContinuousMonitoringDomainViz /> : <ControlFlowMap />}
         </>
       )}
     </div>
