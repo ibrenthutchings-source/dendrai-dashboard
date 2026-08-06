@@ -14,6 +14,7 @@ const NAV_SECTIONS = [
       // right-hand Live Register rail on the Pipeline screen (post-run).
       { id: "help",       icon: "compass", l: "Intelligenza Workflow" },
       { id: "pipeline",  icon: "flow",  l: "Assess Risk" },
+       { id: "aiinventory", icon: "list", l: "AI System Ledger" },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping"},
       { id: "scope",    icon: "grid",      l: "Audit Plan" },
@@ -27,12 +28,11 @@ const NAV_SECTIONS = [
       ],
   },
   {
-    label: "Automation",
+    label: "Automation Intelligence",
     items: [
       { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
       { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
-      { id: "aiinventory", icon: "list", l: "AI System Ledger" },
     ],
   },
   {
