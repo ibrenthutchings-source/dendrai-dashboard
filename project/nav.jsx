@@ -16,6 +16,7 @@ const NAV_SECTIONS = [
       { id: "pipeline",  icon: "flow",  l: "Assess Risk" },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping"},
+      { id: "scope",    icon: "grid",      l: "Audit Plan" },
     ],
   },
    {
@@ -41,7 +42,6 @@ const NAV_SECTIONS = [
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "scope",    icon: "grid",      l: "Audit Plan" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },
