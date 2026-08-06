@@ -1602,6 +1602,21 @@ window.RISK_ENGINE = (function () {
     return Object.values(byEnd).sort((a, b) => a.end > b.end ? 1 : -1);
   }
 
+  // Collapse rows that landed on the same calendar-quarter label back to one
+  // per label, keeping the last (most complete/most recently filed) value at
+  // that label's original chronological position. Needed because
+  // edgarDateToQLabel buckets by calendar month, not by the company's actual
+  // fiscal quarter — a 52/53-week fiscal year (or a synthesized Q4 landing
+  // right at a quarter boundary) can produce two distinct `end` dates that
+  // both round to e.g. "Q4-25". Left alone, that duplicate label ends up as
+  // a React list `key` (chart x-axis, momentum table) and triggers a
+  // duplicate-key warning plus a collapsed/misrendered row.
+  function _dedupeByQ(arr) {
+    const byLabel = new Map();
+    arr.forEach(x => byLabel.set(x.q, x));
+    return Array.from(byLabel.values());
+  }
+
   function buildForecasts(ratios, ticker, industry, fin) {
     const { lastY, lastQ, fcLabels, defaultLatestQ } = _quarterBoundaries();
 
@@ -1614,6 +1629,7 @@ window.RISK_ENGINE = (function () {
           const label = edgarDateToQLabel(q.end) || q.fp;
           histQuarters.push({ q: label, v: +(q.val / 1e6).toFixed(0) });
         });
+      histQuarters.splice(0, histQuarters.length, ..._dedupeByQ(histQuarters));
     }
     // If EDGAR gave fewer than 4 quarters, clear partials and synthesise a full 8-quarter series
     if (histQuarters.length < 4) {
@@ -1653,6 +1669,7 @@ window.RISK_ENGINE = (function () {
           if (gm != null && gm > 0 && gm < 100)
             histMargins.push({ q: edgarDateToQLabel(c.end) || c.end.slice(0, 7), v: +gm.toFixed(1) });
         });
+      histMargins.splice(0, histMargins.length, ..._dedupeByQ(histMargins));
     }
     // Fallback: use GrossProfit series directly if COGS-based matching gave < 4 quarters
     if (histMargins.length < 4 && fin?.grossProfit?.series && fin?.revenue?.series) {
@@ -1670,6 +1687,7 @@ window.RISK_ENGINE = (function () {
           if (gm != null && gm > 0 && gm < 100)
             histMargins.push({ q: edgarDateToQLabel(p.end) || p.end.slice(0, 7), v: +gm.toFixed(1) });
         });
+      histMargins.splice(0, histMargins.length, ..._dedupeByQ(histMargins));
     }
     if (histMargins.length < 4) {
       // Clear any partial EDGAR entries to avoid a mixed EDGAR+synthetic series
