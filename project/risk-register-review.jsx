@@ -2542,9 +2542,13 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // and nothing left to edit. This router sends external rows to the
   // already-correct handleSaveDiscoveryRow instead, so riskStates is never
   // touched by anything but genuinely internal rows.
+  // Same "is this risk external" question isDiscKey (defined further below,
+  // but a hoisted function declaration so the forward reference is safe —
+  // this is only ever CALLED after the whole render body, isDiscKey
+  // included, has run) answers for the control-mutation dispatchers. One
+  // check, reused, rather than two independent definitions that could drift.
   function matrixSaveRow(riskKey, state, ctrlRefs) {
-    const isExternalRow = discoveredRisks.some(r => (r.id || r.risk_ref) === riskKey);
-    return isExternalRow
+    return isDiscKey(riskKey)
       ? handleSaveDiscoveryRow(riskKey, state)
       : handleSaveRowWording(riskKey, state, ctrlRefs);
   }
@@ -3130,7 +3134,30 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const unratedCount         = allMatrixRisks.filter(r => r.score == null).length;
   const allMatrixRiskStates  = { ...discRiskStates,  ...riskStates  };
   const allMatrixCtrlStates  = { ...discCtrlStates,  ...ctrlStates  };
-  const isDiscKey = key => discRiskStates[key] !== undefined && riskStates[key] === undefined;
+  // Whether `key` belongs to a discovered/external risk (an uploaded register
+  // or framework catalog entry) rather than an internal pipeline risk.
+  //
+  // This used to be inferred from which state bucket already had an entry
+  // for the key (discRiskStates[key] !== undefined && riskStates[key] ===
+  // undefined) — a heuristic that breaks the instant ANYTHING writes into
+  // riskStates[key] for an external risk, which is exactly what happened
+  // before matrixSaveRow (below) existed: the old shared save handler
+  // unconditionally created a riskStates[externalKey] entry, which flipped
+  // this check to "internal" PERMANENTLY for that risk. From then on,
+  // matrixAddManual/matrixRemove/matrixReset silently wrote into (or read
+  // from) ctrlStates instead of discCtrlStates — and since intCtrl.remove/
+  // intCtrl.reset both return their input completely unchanged when
+  // ctrlStates has no existing entry for the key, a "remove" on a row in
+  // that state was a straight no-op: nothing changed anywhere, so the
+  // matrix kept showing the control as still assigned. That's the exact
+  // shape of "I added and removed controls for SOX 404 but the matrix
+  // doesn't reflect the changes."
+  //
+  // Deriving this from discoveredRisks itself instead is stable and order-
+  // independent: it's the actual source of truth for "is this risk
+  // external," not a side effect of whichever state bucket happened to be
+  // written to first.
+  const isDiscKey = key => discoveredRisks.some(r => (r.id || r.risk_ref) === key);
   const matrixWordingChange  = (key, val)           => isDiscKey(key) ? discHandlers.wordingChange(key, val) : intHandlers.wordingChange(key, val);
   const matrixAddManual      = (key, ref)           => isDiscKey(key) ? discCtrl.addManual(key, ref)        : intCtrl.addManual(key, ref);
   const matrixRemove         = (key, ref, isAuto)   => isDiscKey(key) ? discCtrl.remove(key, ref, isAuto)   : intCtrl.remove(key, ref, isAuto);
