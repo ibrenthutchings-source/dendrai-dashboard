@@ -665,6 +665,17 @@ export function DomainSankey({ theme, days, data, loading, error }) {
 
 export function DomainHeatGrid({ theme, days, data, loading, error }) {
   const [hover, setHover] = useState(null);
+  const hostRef = useRef(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    if (!hostRef.current) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setSize({ w: width, h: height });
+    });
+    ro.observe(hostRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   const grid = useMemo(() => {
     if (!data?.domains?.length) return null;
@@ -684,7 +695,17 @@ export function DomainHeatGrid({ theme, days, data, loading, error }) {
   }, [data, days]);
 
   const hasData = !!grid;
-  const cellW = 20, cellH = 26, labelW = 190;
+  const labelW = 190;
+  const TOP = 20, BOTTOM = 34, SIDE_PAD = 20;
+  // Stretch cells to actually fill the frame instead of sitting fixed-size
+  // in a corner — width fills the panel's real measured width; height fills
+  // whatever room the panel's own height (set below) leaves for rows.
+  const dayCount = grid ? grid.dayKeys.length : 1;
+  const rowCount = grid ? grid.rows.length : 1;
+  const availW = Math.max(0, size.w - labelW - SIDE_PAD);
+  const availH = Math.max(0, size.h - TOP - BOTTOM);
+  const cellW = grid && size.w ? Math.min(64, Math.max(18, availW / dayCount)) : 20;
+  const cellH = grid && size.h ? Math.min(48, Math.max(24, availH / rowCount)) : 26;
   const gridW = grid ? grid.dayKeys.length * cellW : 0;
   const gridH = grid ? grid.rows.length * cellH : 0;
   const showEveryNth = days <= 14 ? 1 : days <= 30 ? 5 : 10;
@@ -697,13 +718,13 @@ export function DomainHeatGrid({ theme, days, data, loading, error }) {
       error={error && !hasData ? error : null}
       empty={!loading && !hasData && !error ? `No domain-resolved events in the last ${days} days yet.` : null}
       loading={loading && !hasData}
-      height={Math.max(340, gridH + 90)}
+      height={Math.max(440, rowCount * 34 + 90)}
     >
       {hasData && (
-        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: "16px 16px 12px" }}>
-          <svg width={labelW + gridW + 20} height={gridH + 30} style={{ display: "block" }}>
+        <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto", padding: "16px 16px 12px" }}>
+          <svg width={Math.max(size.w - SIDE_PAD, labelW + gridW)} height={gridH + TOP + BOTTOM} style={{ display: "block" }}>
             {grid.rows.map((row, ri) => (
-              <g key={row.domain} transform={`translate(0, ${ri * cellH + 20})`}>
+              <g key={row.domain} transform={`translate(0, ${ri * cellH + TOP})`}>
                 <rect x={0} y={0} width={labelW - 10} height={cellH - 3} rx={3} fill={theme["surface-2"]} />
                 <circle cx={9} cy={(cellH - 3) / 2} r={3.5} fill={domainColor(row.domain)} />
                 <text x={18} y={(cellH - 3) / 2 + 3.5} fontSize={10.5} fontWeight={600} fill={theme.ink} fontFamily="system-ui, sans-serif">
@@ -733,7 +754,7 @@ export function DomainHeatGrid({ theme, days, data, loading, error }) {
             ))}
             {grid.dayKeys.map((k, ci) => (
               ci % showEveryNth === 0 && (
-                <text key={k} x={labelW + ci * cellW + (cellW - 2) / 2} y={gridH + 32}
+                <text key={k} x={labelW + ci * cellW + (cellW - 2) / 2} y={gridH + TOP + 14}
                   fontSize={9} fill={theme["ink-3"]} textAnchor="middle" fontFamily="monospace">
                   {_fmtDay(k)}
                 </text>
