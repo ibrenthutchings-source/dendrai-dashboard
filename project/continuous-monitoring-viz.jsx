@@ -1240,25 +1240,14 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     graph.edges.forEach(e => g.setEdge(e.source, e.target, { value: e.value }));
     dagre.layout(g);
 
-    // ViewBox is the graph's own natural bounding box — no floor against the
-    // container. Flooring either dimension independently (an earlier version
-    // floored H at 300, then at clientHeight to match W's clientWidth floor)
-    // fights whichever axis ISN'T floored: the default "meet"
-    // preserveAspectRatio scales uniformly to the more constraining axis, so
-    // whichever dimension has slack gets letterboxed empty instead of filling
-    // the pane — first vertically, then (once that axis got a floor)
-    // horizontally instead. preserveAspectRatio "none" below stretches the
-    // natural graph bounds to exactly 100%/100% of the box on both axes
-    // unconditionally, so there's no aspect ratio left to mismatch and
-    // nothing left to letterbox.
     const gw = g.graph().width || 800;
     const gh = g.graph().height || 300;
-    const W = gw + 40;
-    const H = gh + 40;
+    const W = Math.max(hostRef.current.clientWidth, gw + 40);
+    const H = Math.max(300, gh + 40);
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
-    svg.attr("viewBox", `0 0 ${W} ${H}`).attr("preserveAspectRatio", "none");
+    svg.attr("viewBox", `0 0 ${W} ${H}`);
     svg.append("rect").attr("width", W).attr("height", H).attr("fill", theme.bg);
 
     const maxVal = Math.max(1, ...graph.edges.map(e => e.value));
@@ -1344,7 +1333,7 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
       error={error && !hasData ? error : null}
       empty={!loading && !hasData && !error ? `No case-tracked transactions in the last ${days} days yet — run generate_o2c_p2p_synthetic_log.py to populate this view, or wait for a real case-tracked producer.` : null}
       loading={loading && !hasData}
-      height={640}
+      height={520}
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto" }}>
