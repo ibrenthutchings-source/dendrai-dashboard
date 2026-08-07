@@ -2,6 +2,24 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import AutoImport from 'unplugin-auto-import/vite'
 
+// Per-host User-Agent overrides — mirrors api_server.py's _rss_user_agent()
+// for the production path. SEC.gov requires a declared company + contact UA
+// (fair-access policy) or it serves an HTML block page instead of the feed;
+// federalregister.gov (EPA Climate Enforcement) is the opposite — its bot
+// protection blocks non-browser UAs, including the identified one, redirecting
+// to an "unblock.federalregister.gov" HTML challenge page with a 200 status
+// that looks like success until the RSS parser chokes on it.
+const RSS_BROWSER_UA_HOSTS = ['federalregister.gov'];
+function rssUserAgent(feedUrl) {
+  try {
+    const host = new URL(feedUrl).hostname;
+    if (RSS_BROWSER_UA_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
+      return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    }
+  } catch {}
+  return 'Dendrai Intelligenza research@dendrai.ai';
+}
+
 // Server-side RSS proxy — fetches feed XML from the origin server, bypassing
 // browser CORS restrictions and rss2json.com's per-feed 422 failures.
 const rssProxyPlugin = {
@@ -15,10 +33,7 @@ const rssProxyPlugin = {
       try {
         const upstream = await fetch(feedUrl, {
           headers: {
-            // SEC.gov requires a company + contact UA (fair-access policy) or it
-            // serves an HTML block page instead of the feed — see api_server.py's
-            // rss_proxy() for the matching production-path header.
-            'User-Agent': 'Dendrai Intelligenza research@dendrai.ai',
+            'User-Agent': rssUserAgent(feedUrl),
             'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
           },
           signal: AbortSignal.timeout(10000),

@@ -545,7 +545,17 @@ export function EventReplayChart({ theme, days, dim, rawEvents, loading, error, 
 
           {tip && (
             <div style={{
-              position: "fixed", left: tip.x + 16, top: tip.y - 10,
+              position: "fixed",
+              // Flip to the cursor's left once there isn't room for the
+              // 300px-wide box on the right (events near the chart's right
+              // edge otherwise popped the tooltip half off-screen).
+              // translateX(-100%) anchors by the box's own right edge rather
+              // than assuming the exact rendered width, so it still lands
+              // flush against the cursor even when the content is narrower
+              // than the 300px cap.
+              left: tip.x > window.innerWidth - 320 ? tip.x - 16 : tip.x + 16,
+              transform: tip.x > window.innerWidth - 320 ? "translateX(-100%)" : "none",
+              top: tip.y - 10,
               background: theme.surface, border: `1px solid ${dim.color(tip.event._group)}`,
               borderLeft: `3px solid ${VERDICT_COLOR[tip.event.verdict] || theme["ink-3"]}`,
               borderRadius: 7, padding: "9px 13px", maxWidth: 300, zIndex: 9999, pointerEvents: "none",
@@ -750,7 +760,13 @@ export function DimensionSankey({ theme, days, dim, rawEvents, loading, error, o
       )}
       {tooltip && (
         <div style={{
-          position: "fixed", left: tooltip.x + 16, top: tooltip.y - 10,
+          position: "fixed",
+          // Same right-edge flip as EventReplayChart's tooltip — anchors by
+          // the box's own right edge via translateX so it doesn't overflow
+          // the viewport for nodes/edges near the chart's right side.
+          left: tooltip.x > window.innerWidth - 280 ? tooltip.x - 16 : tooltip.x + 16,
+          transform: tooltip.x > window.innerWidth - 280 ? "translateX(-100%)" : "none",
+          top: tooltip.y - 10,
           background: theme.surface, border: `1px solid ${tooltip.isLink ? theme["line-strong"] : tooltip.color}`,
           borderRadius: 7, padding: "9px 13px", maxWidth: 260, zIndex: 9999, pointerEvents: "none",
           boxShadow: "0 6px 32px oklch(0% 0 0 / .4)", fontFamily: "system-ui, sans-serif",
@@ -886,7 +902,10 @@ export function DimensionHeatGrid({ theme, days, dim, rawEvents, loading, error,
       )}
       {hover && (
         <div style={{
-          position: "fixed", left: hover.x + 14, top: hover.y - 10,
+          position: "fixed",
+          left: hover.x > window.innerWidth - 240 ? hover.x - 14 : hover.x + 14,
+          transform: hover.x > window.innerWidth - 240 ? "translateX(-100%)" : "none",
+          top: hover.y - 10,
           background: theme.surface, border: `1px solid ${dim.color(hover.key)}`,
           borderRadius: 7, padding: "8px 12px", zIndex: 9999, pointerEvents: "none",
           boxShadow: "0 6px 32px oklch(0% 0 0 / .4)", fontFamily: "system-ui, sans-serif",
@@ -1122,7 +1141,13 @@ export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error
       )}
       {tooltip && (
         <div style={{
-          position: "fixed", left: tooltip.x + 16, top: tooltip.y - 10,
+          position: "fixed",
+          // Same right-edge flip as EventReplayChart's tooltip — anchors by
+          // the box's own right edge via translateX so it doesn't overflow
+          // the viewport for nodes/edges near the chart's right side.
+          left: tooltip.x > window.innerWidth - 280 ? tooltip.x - 16 : tooltip.x + 16,
+          transform: tooltip.x > window.innerWidth - 280 ? "translateX(-100%)" : "none",
+          top: tooltip.y - 10,
           background: theme.surface, border: `1px solid ${tooltip.isLink ? theme["line-strong"] : tooltip.color}`,
           borderRadius: 7, padding: "9px 13px", maxWidth: 260, zIndex: 9999, pointerEvents: "none",
           boxShadow: "0 6px 32px oklch(0% 0 0 / .4)", fontFamily: "system-ui, sans-serif",
@@ -1342,7 +1367,13 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
       )}
       {tooltip && (
         <div style={{
-          position: "fixed", left: tooltip.x + 16, top: tooltip.y - 10,
+          position: "fixed",
+          // Same right-edge flip as EventReplayChart's tooltip — anchors by
+          // the box's own right edge via translateX so it doesn't overflow
+          // the viewport for nodes/edges near the chart's right side.
+          left: tooltip.x > window.innerWidth - 280 ? tooltip.x - 16 : tooltip.x + 16,
+          transform: tooltip.x > window.innerWidth - 280 ? "translateX(-100%)" : "none",
+          top: tooltip.y - 10,
           background: theme.surface, border: `1px solid ${tooltip.isLink ? theme["line-strong"] : tooltip.color}`,
           borderRadius: 7, padding: "9px 13px", maxWidth: 260, zIndex: 9999, pointerEvents: "none",
           boxShadow: "0 6px 32px oklch(0% 0 0 / .4)", fontFamily: "system-ui, sans-serif",

@@ -1116,6 +1116,23 @@ def get_rss_feeds():
     return {"feeds": RSS_INGEST_FEEDS}
 
 
+# Per-host User-Agent overrides for feed sources with UA-based bot protection
+# that runs the opposite direction of SEC.gov's fair-access policy (see
+# rss_proxy() below) — federalregister.gov blocks non-browser UAs rather than
+# requiring one.
+_RSS_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+_RSS_IDENTIFIED_UA = "Dendrai Intelligenza research@dendrai.ai"
+_RSS_BROWSER_UA_HOSTS = ("federalregister.gov",)
+
+
+def _rss_user_agent(url: str) -> str:
+    from urllib.parse import urlparse as _up
+    host = _up(url).hostname or ""
+    if any(host == h or host.endswith("." + h) for h in _RSS_BROWSER_UA_HOSTS):
+        return _RSS_BROWSER_UA
+    return _RSS_IDENTIFIED_UA
+
+
 def _validate_rss_host(url: str) -> None:
     """Raise 400 if the URL's host resolves to a private/loopback address."""
     from urllib.parse import urlparse as _up
@@ -1144,10 +1161,19 @@ def rss_proxy(url: str = Query(..., description="RSS feed URL to fetch server-si
     # whose body is actually an HTML block page ("Undeclared Automated Tool"),
     # not the requested feed. This format satisfies SEC while remaining a
     # normal identifiable UA for every other feed source.
-    _headers = {"User-Agent": "Dendrai Intelligenza research@dendrai.ai"}
+    #
+    # federalregister.gov (the EPA Climate Enforcement feed's source) is the
+    # opposite case: its bot-protection redirects any non-browser-looking UA —
+    # including the identified UA above — to unblock.federalregister.gov's
+    # "Request Access" HTML challenge page, with a 200 status that looks like
+    # success right up until the parser chokes on HTML instead of RSS. A
+    # standard browser UA sails through untouched. Recomputed per redirect
+    # hop (not just once up front) in case a chain crosses onto a host with
+    # a different requirement.
     current_url = url
     try:
         for _ in range(6):  # max 5 redirects
+            _headers = {"User-Agent": _rss_user_agent(current_url)}
             resp = requests.get(current_url, headers=_headers, timeout=10, allow_redirects=False)
             if resp.status_code not in (301, 302, 303, 307, 308):
                 break
