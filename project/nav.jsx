@@ -33,7 +33,7 @@ const NAV_SECTIONS = [
     items: [
       { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
-      { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
+      //{ id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
     ],
   },
   {

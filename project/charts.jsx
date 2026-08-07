@@ -352,7 +352,70 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
   // still empty on first render.
   const dataLength = (history?.length || 0) + (forecast?.length || 0);
   const zoom = useChartZoom(dataLength);
-  if (!history?.length || !forecast?.length) return null;
+
+  // Build a unified data array. The last history point is also the forecast
+  // anchor so the two lines connect without a gap.
+  //
+  // Memoized (not rebuilt inline every render) because <Brush> below treats
+  // a new `data` array identity as "the series changed" and re-syncs its
+  // internal window — including firing onChange even when the actual
+  // numbers are identical. onChange feeds ctx.setFrac (shared zoom state),
+  // whose update re-renders this component, which used to rebuild `data`
+  // as a fresh array again, which Brush saw as another change... an
+  // infinite loop that only shows up once something ELSE first triggers a
+  // second render (e.g. confirming a HITL gate elsewhere on the page,
+  // which re-renders every chart under the shared ChartZoomProvider) — it
+  // never appears on the very first paint, since nothing has re-rendered
+  // yet to trip it. React eventually throws "Maximum update depth
+  // exceeded" once the loop runs away.
+  const data = React.useMemo(() => {
+    if (!history?.length || !forecast?.length) return null;
+    const lastH = history[history.length - 1];
+    const built = [
+      ...history.map(d => ({ q: d.q, v: d.v, base: null, lo: null, hiMinusLo: null, btPred: null })),
+      ...forecast.map(d => ({
+        q: d.q,
+        v: null,
+        base: d.base ?? null,
+        lo: d.lo ?? null,
+        hiMinusLo: (d.hi != null && d.lo != null) ? d.hi - d.lo : null,
+        btPred: null,
+      })),
+    ];
+    // Seed forecast start at last history value so lines and band connect cleanly
+    built[history.length - 1] = { ...built[history.length - 1], base: lastH.v, lo: lastH.v, hiMinusLo: 0 };
+
+    // Backtest overlay: chartMetrics is the walk-forward backtest result
+    // (backtesting.js's walkForwardBacktest) computed on this exact history —
+    // it already carries `predicted`, the model's out-of-sample prediction for
+    // each of the last `periods` quarters, made using only data available
+    // BEFORE that quarter (never the actual for that quarter itself). Until
+    // now only the aggregate RMSE/MAPE/R² numbers derived from it were shown;
+    // the quarter-by-quarter predictions were computed and then thrown away.
+    // Plotting them against the real `v` for the same quarters is what actually
+    // answers "how did the forecast perform" — a single MAPE number tells you
+    // the average miss, not whether it was consistently early/late or
+    // right on a specific quarter.
+    const btPeriods = chartMetrics?.predicted?.length || 0;
+    if (btPeriods > 0 && btPeriods <= history.length) {
+      const startIdx = history.length - btPeriods;
+      for (let i = 0; i < btPeriods; i++) {
+        built[startIdx + i] = { ...built[startIdx + i], btPred: chartMetrics.predicted[i] };
+      }
+      // Anchor the backtest line to the real value one quarter before its
+      // first prediction, same reasoning as the history->forecast anchor
+      // above — otherwise the dotted segment starts mid-air with a visible gap.
+      // Flagged so the tooltip doesn't call this connector point a "prediction"
+      // — it's just the actual value, repeated so the line has somewhere to
+      // start from.
+      if (startIdx > 0) {
+        built[startIdx - 1] = { ...built[startIdx - 1], btPred: built[startIdx - 1].v, btIsAnchor: true };
+      }
+    }
+    return built;
+  }, [history, forecast, chartMetrics]);
+
+  if (!data) return null;
 
   // Always at least 2 decimal places on the y-axis and hover tooltip —
   // $M charts used to default to 0dp, which hid meaningful sub-$1M movement.
@@ -366,51 +429,9 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
     return v.toFixed(dp); // "score" and custom units
   };
 
-  // Build a unified data array. The last history point is also the forecast
-  // anchor so the two lines connect without a gap.
   const lastH = history[history.length - 1];
   const splitQ = lastH.q;
-  const data = [
-    ...history.map(d => ({ q: d.q, v: d.v, base: null, lo: null, hiMinusLo: null, btPred: null })),
-    ...forecast.map(d => ({
-      q: d.q,
-      v: null,
-      base: d.base ?? null,
-      lo: d.lo ?? null,
-      hiMinusLo: (d.hi != null && d.lo != null) ? d.hi - d.lo : null,
-      btPred: null,
-    })),
-  ];
-  // Seed forecast start at last history value so lines and band connect cleanly
-  data[history.length - 1] = { ...data[history.length - 1], base: lastH.v, lo: lastH.v, hiMinusLo: 0 };
-
-  // Backtest overlay: chartMetrics is the walk-forward backtest result
-  // (backtesting.js's walkForwardBacktest) computed on this exact history —
-  // it already carries `predicted`, the model's out-of-sample prediction for
-  // each of the last `periods` quarters, made using only data available
-  // BEFORE that quarter (never the actual for that quarter itself). Until
-  // now only the aggregate RMSE/MAPE/R² numbers derived from it were shown;
-  // the quarter-by-quarter predictions were computed and then thrown away.
-  // Plotting them against the real `v` for the same quarters is what actually
-  // answers "how did the forecast perform" — a single MAPE number tells you
-  // the average miss, not whether it was consistently early/late or
-  // right on a specific quarter.
   const btPeriods = chartMetrics?.predicted?.length || 0;
-  if (btPeriods > 0 && btPeriods <= history.length) {
-    const startIdx = history.length - btPeriods;
-    for (let i = 0; i < btPeriods; i++) {
-      data[startIdx + i] = { ...data[startIdx + i], btPred: chartMetrics.predicted[i] };
-    }
-    // Anchor the backtest line to the real value one quarter before its
-    // first prediction, same reasoning as the history->forecast anchor
-    // above — otherwise the dotted segment starts mid-air with a visible gap.
-    // Flagged so the tooltip doesn't call this connector point a "prediction"
-    // — it's just the actual value, repeated so the line has somewhere to
-    // start from.
-    if (startIdx > 0) {
-      data[startIdx - 1] = { ...data[startIdx - 1], btPred: data[startIdx - 1].v, btIsAnchor: true };
-    }
-  }
 
   const yAxisW = (unit === "%" && dp >= 2) ? 54 : (unit === "$M") ? (dp >= 2 ? 62 : 50) : 44;
 
@@ -455,6 +476,14 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
   }
 
   const showZoom = dataLength >= ZOOM_MIN_POINTS;
+
+  // The Brush windows the chart's x-domain down to [startIndex, endIndex] —
+  // Recharts can't resolve a categorical ReferenceLine's x={splitQ} against a
+  // domain that has scrolled/zoomed past that quarter, and silently emits a
+  // NaN coordinate (`<line x1="NaN">`) instead of hiding it. Only render the
+  // divider once its quarter is actually inside the visible window.
+  const splitIndex = history.length - 1;
+  const splitVisible = zoom.startIndex <= splitIndex && splitIndex <= zoom.endIndex;
 
   return (
     <>
@@ -509,8 +538,10 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
             connectNulls={false} legendType="none" />
 
           {/* History / forecast divider */}
-          <ReferenceLine x={splitQ} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
-            label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }} />
+          {splitVisible && (
+            <ReferenceLine x={splitQ} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
+              label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }} />
+          )}
 
           {/* Optional horizontal threshold / target line */}
           {referenceValue != null && (
@@ -572,12 +603,26 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
   const first = series?.[0];
   const dataLength = (first?.history?.length || 0) + (first?.forecast?.length || 0);
   const zoom = useChartZoom(dataLength);
+
+  // Same stale-array hazard as ForecastChart above, compounded here: the
+  // `series` prop itself is a brand-new array/objects literal built fresh
+  // by ComparableChart on every render (peers spread into it), so a plain
+  // useMemo keyed on `series` would never hit its cache. Instead we key off
+  // the actual history/forecast array REFERENCES nested inside it (stable
+  // as long as the underlying data hasn't changed) via a ref-compared
+  // signature, so <Brush> only ever sees a new `data` array when a series
+  // was actually added/removed/changed — not on every unrelated re-render.
+  const _dataCacheRef = React.useRef({ sig: [], data: null });
+  const _sig = [];
+  (series || []).forEach(s => { _sig.push(s.name, s.history, s.forecast); });
+  const _sigMatches = _sig.length === _dataCacheRef.current.sig.length
+    && _sig.every((v, i) => v === _dataCacheRef.current.sig[i]);
+
   if (!series?.length) return null;
   if (!first?.history?.length || !first?.forecast?.length) return null;
 
   const dp      = decimals ?? (unit === "$M" ? 0 : 1);
   const histLen = first.history.length;
-  const allPeriods = [...first.history, ...first.forecast];
 
   const fmtV = v => {
     if (!Number.isFinite(v)) return '—';
@@ -586,21 +631,28 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
     return `${v.toFixed(dp)}%`;
   };
 
-  // Build a unified data array. Each period has keys `{name}_h` (history) and
-  // `{name}_f` (forecast) for every series so Recharts can render N×2 lines.
-  const data = allPeriods.map((period, i) => {
-    const isFc = i >= histLen;
-    const row = { q: period.q, isFc };
-    series.forEach(s => {
-      row[`${s.name}_h`] = !isFc ? (s.history[i]?.v ?? null) : null;
-      row[`${s.name}_f`] = isFc  ? (s.forecast[i - histLen]?.base ?? null) : null;
+  let data;
+  if (_sigMatches) {
+    data = _dataCacheRef.current.data;
+  } else {
+    const allPeriods = [...first.history, ...first.forecast];
+    // Build a unified data array. Each period has keys `{name}_h` (history)
+    // and `{name}_f` (forecast) for every series so Recharts can render N×2 lines.
+    data = allPeriods.map((period, i) => {
+      const isFc = i >= histLen;
+      const row = { q: period.q, isFc };
+      series.forEach(s => {
+        row[`${s.name}_h`] = !isFc ? (s.history[i]?.v ?? null) : null;
+        row[`${s.name}_f`] = isFc  ? (s.forecast[i - histLen]?.base ?? null) : null;
+      });
+      return row;
     });
-    return row;
-  });
-  // Anchor forecast start at last history value so lines connect
-  series.forEach(s => {
-    data[histLen - 1][`${s.name}_f`] = s.history[histLen - 1]?.v ?? null;
-  });
+    // Anchor forecast start at last history value so lines connect
+    series.forEach(s => {
+      data[histLen - 1][`${s.name}_f`] = s.history[histLen - 1]?.v ?? null;
+    });
+    _dataCacheRef.current = { sig: _sig, data };
+  }
 
   const splitQ  = first.history[histLen - 1]?.q;
   const yAxisW  = unit === "$M" ? 52 : 48;
@@ -637,6 +689,13 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
 
   const showZoom = dataLength >= ZOOM_MIN_POINTS;
 
+  // See ForecastChart's identical guard above — a categorical ReferenceLine
+  // whose x quarter has scrolled outside the Brush-windowed domain resolves
+  // to NaN instead of being hidden, so gate it on the split quarter still
+  // being inside [startIndex, endIndex].
+  const splitIndex = histLen - 1;
+  const splitVisible = zoom.startIndex <= splitIndex && splitIndex <= zoom.endIndex;
+
   return (
     <div>
       {showZoom && <ZoomControls zoom={zoom} color={first.color} />}
@@ -660,8 +719,10 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
           <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'var(--line-strong)', strokeWidth: 1, strokeDasharray: '2 2' }} />
 
           {/* History / forecast divider */}
-          <ReferenceLine x={splitQ} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
-            label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }} />
+          {splitVisible && (
+            <ReferenceLine x={splitQ} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
+              label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }} />
+          )}
 
           {/* One solid history line + one dashed forecast line per series */}
           {series.map(s => (
