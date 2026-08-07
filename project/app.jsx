@@ -1578,14 +1578,31 @@ function App() {
       // risk_scores stays frozen at the initial pre-adjustment snapshot from
       // the MCP call above, and anything reading it directly (Posture Trend's
       // RAG counts) shows the wrong distribution once Stage 2 has actually
-      // moved scores. Fire-and-forget: non-blocking, same pattern as the
-      // peer-benchmarks call elsewhere in this function.
+      // moved scores. Non-blocking (fire-and-forget from the caller's
+      // perspective), but retried once and logged on final failure — a
+      // silently-swallowed failure here used to leave a run's persisted
+      // risk_scores stuck at the initial industry-template placeholder
+      // forever, with nothing to show it happened: two runs seconds apart
+      // could end up on opposite sides of that coin flip, showing wildly
+      // different avg score/RAG/risk counts in Posture Trend for no visible
+      // reason.
       if (runIdRef.current) {
-        fetch(`/api/mcp/risk-scores/${runIdRef.current}/sync`, {
+        const _syncRunId = runIdRef.current;
+        const _postSync = () => fetch(`/api/mcp/risk-scores/${_syncRunId}/sync`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ risks: adjustedRisks }),
-        }).catch(() => {});
+        });
+        _postSync()
+          .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); })
+          .catch(() => _postSync().then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          }))
+          .catch(err => console.warn(
+            `[risk-scores/sync] Failed to sync signal-adjusted risk scores for run ${_syncRunId} — ` +
+            `Posture Trend and any other direct reader of risk_scores will show this run's ` +
+            `pre-adjustment (initial industry-template) snapshot instead:`, err
+          ));
       }
     }
 

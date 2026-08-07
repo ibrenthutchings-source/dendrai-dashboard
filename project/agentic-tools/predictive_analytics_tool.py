@@ -1377,6 +1377,27 @@ def detect_industry(sic: str) -> str:
     return "Generic"
 
 
+# Non-canonical industry labels — e.g. EDGAR SIC sub-classifications like
+# "Analog Semiconductors", or a caller-supplied free-text override — that
+# should route to an existing template instead of silently degrading to the
+# generic 8-risk fallback. Targets must be real INDUSTRY_TEMPLATES keys.
+# risk-engine.js has its own client-side INDUSTRY_ALIASES for a *different*
+# canonical industry-name set (its own risk-narrative templates); this is
+# NOT a shared source of truth with that one and the two lists have already
+# diverged (e.g. "Retail" targets "Retail & Consumer" in both, but "Energy /
+# Utilities" targets "Energy & Utilities" here vs "Energy & Resources"
+# there — only the target that actually exists in INDUSTRY_TEMPLATES below
+# was ported).
+_INDUSTRY_ALIASES: dict[str, str] = {
+    "Analog Semiconductors":   "Semiconductors",
+    "Digital Semiconductors":  "Semiconductors",
+    "Semiconductor Equipment": "Semiconductors",
+    "Memory Semiconductors":   "Semiconductors",
+    "Energy / Utilities":      "Energy & Utilities",
+    "Retail":                  "Retail & Consumer",
+}
+
+
 def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
     """
     Compute industry-templated risk scores.
@@ -1384,6 +1405,7 @@ def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
     Returns dict with overall summary and per-risk details including score,
     RAG status (Red ≥7.0, Amber ≥5.0, Green <5.0), velocity, and control env.
     """
+    industry = _INDUSTRY_ALIASES.get(industry, industry)
     template = INDUSTRY_TEMPLATES.get(industry, INDUSTRY_TEMPLATES["Generic"])
     risks = []
 
