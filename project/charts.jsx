@@ -268,6 +268,81 @@ function Heatmap({ risks, activeQ = "Now", onSelect, selectedId }) {
   );
 }
 
+// ---------- SEVERITY MATRIX (5×5 discrete heat matrix) ----------
+// Same props/contract as Heatmap above (drop-in alternative view over the
+// same risk data) — the classic audit heat-matrix instead of a continuous
+// bubble plot: cells shade by the register's own RAG thresholds
+// (ragFromScore: ≥15 red, 9–14 amber, <9 green) and risks bucket into
+// whichever cell their rounded impact/likelihood lands in, clustering as
+// stacked dots when more than one risk shares a cell.
+const _SEV_ROWS = [5, 4, 3, 2, 1]; // impact, top(5) -> bottom(1)
+const _SEV_COLS = [1, 2, 3, 4, 5]; // likelihood, left(1) -> right(5)
+const _SEV_CELL_CAP = 6; // dots shown before a cell switches to a count badge
+
+function SeverityMatrix({ risks, activeQ = "Now", onSelect, selectedId }) {
+  if (!risks?.length) return null;
+
+  // Same Now->Q4 interpolation Heatmap uses above, so the two views agree on
+  // where a risk sits at any given quarter — just a different visual
+  // encoding of identical underlying projection math.
+  const qIdx = { "Now": -1, "Q1": 0, "Q2": 1, "Q3": 2, "Q4": 3 }[activeQ] ?? -1;
+  const t = qIdx === -1 ? 0 : (qIdx + 1) / 4;
+
+  const points = risks.map(r => {
+    const qs = projectQuarters(r);
+    const nowImp = clamp(r.impact || likelihoodFromCE(r.ce), 1, 5);
+    const nowLik = clamp(r.likelihood || likelihoodFromCE(r.ce), 1, 5);
+    const q4Imp = clamp(nowImp + (r.velocity || 0) * 0.15, 1, 5);
+    const q4Lik = clamp(nowLik + (r.velocity || 0) * 0.10, 1, 5);
+    const curImp = nowImp + (q4Imp - nowImp) * t;
+    const curLik = nowLik + (q4Lik - nowLik) * t;
+    const curSc = qIdx === -1 ? r.score : qs[qIdx];
+    return {
+      r, score: curSc, rag: ragFromScore(curSc),
+      impact: clamp(Math.round(curImp), 1, 5),
+      likelihood: clamp(Math.round(curLik), 1, 5),
+    };
+  });
+
+  const byCell = {};
+  points.forEach(p => {
+    const key = p.impact + "-" + p.likelihood;
+    (byCell[key] = byCell[key] || []).push(p);
+  });
+
+  return (
+    <div className="sevmatrix">
+      <div className="sevmatrix-ylabel">Impact</div>
+      <div className="sevmatrix-yticks">
+        {_SEV_ROWS.map(v => <span key={v}>{v}</span>)}
+      </div>
+      <div className="sevmatrix-grid">
+        {_SEV_ROWS.map(impact => _SEV_COLS.map(lik => {
+          const cellPoints = byCell[impact + "-" + lik] || [];
+          const zoneRag = ragFromScore(impact * lik);
+          return (
+            <div key={impact + "-" + lik} className={`sevmatrix-cell z-${zoneRag}`}>
+              {cellPoints.slice(0, _SEV_CELL_CAP).map(p => (
+                <span key={p.r.id}
+                  className={"sevmatrix-dot rag-" + p.rag + (selectedId === p.r.id ? " sel" : "")}
+                  title={`${p.r.name} — ${fmt2(p.score)}`}
+                  onClick={() => onSelect && onSelect(p.r.id)}/>
+              ))}
+              {cellPoints.length > _SEV_CELL_CAP && (
+                <span className="sevmatrix-count">{cellPoints.length}</span>
+              )}
+            </div>
+          );
+        }))}
+      </div>
+      <div className="sevmatrix-xticks">
+        {_SEV_COLS.map(v => <span key={v}>{v}</span>)}
+      </div>
+      <div className="sevmatrix-xlabel">Likelihood</div>
+    </div>
+  );
+}
+
 // ---------- LINE + FORECAST CHART (Recharts) ----------
 // Props unchanged from the old SVG version so all callers work without edits.
 // Extra optional props: referenceValue / referenceLabel draw a horizontal threshold line.
@@ -1298,4 +1373,4 @@ function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reduction
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
-Object.assign(window, { Heatmap, ForecastChart, MultiSeriesForecastChart, MScoreGauge, ZScoreGauge, RiskFlowSankey, truncate, ChartZoomProvider });
+Object.assign(window, { Heatmap, SeverityMatrix, ForecastChart, MultiSeriesForecastChart, MScoreGauge, ZScoreGauge, RiskFlowSankey, truncate, ChartZoomProvider });

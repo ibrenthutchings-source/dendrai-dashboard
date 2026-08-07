@@ -697,6 +697,58 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
 .heat-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 10.5px; color: var(--ink-3); }
 .heat-legend .lg { display: flex; align-items: center; gap: 5px; }
 
+/* severity matrix — 5x5 discrete heat matrix (alternative to the Heatmap bubble plot) */
+.sevmatrix {
+  display: grid;
+  grid-template-columns: 14px 16px 1fr;
+  grid-template-rows: 1fr 16px 14px;
+  column-gap: 6px; row-gap: 4px;
+}
+.sevmatrix-ylabel {
+  grid-column: 1; grid-row: 1; align-self: center; text-align: center;
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  font-family: "Geist Mono", monospace; font-size: 9px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-4);
+}
+.sevmatrix-yticks {
+  grid-column: 2; grid-row: 1; display: flex; flex-direction: column;
+  justify-content: space-between; padding: 2px 0;
+}
+.sevmatrix-yticks span { font-family: "Geist Mono", monospace; font-size: 9.5px; color: var(--ink-3); text-align: right; }
+.sevmatrix-grid {
+  grid-column: 3; grid-row: 1; aspect-ratio: 1;
+  display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(5, 1fr); gap: 3px;
+}
+.sevmatrix-xticks { grid-column: 3; grid-row: 2; display: flex; justify-content: space-between; padding: 0 2px; }
+.sevmatrix-xticks span { font-family: "Geist Mono", monospace; font-size: 9.5px; color: var(--ink-3); }
+.sevmatrix-xlabel {
+  grid-column: 3; grid-row: 3; text-align: center;
+  font-family: "Geist Mono", monospace; font-size: 9px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-4);
+}
+.sevmatrix-cell {
+  position: relative; border-radius: 5px; display: flex; flex-wrap: wrap;
+  align-items: center; justify-content: center; align-content: center; gap: 2px; padding: 3px;
+  transition: filter .12s ease;
+}
+.sevmatrix-cell:hover { filter: brightness(1.06); }
+.sevmatrix-cell.z-R { background: color-mix(in oklch, var(--red) 30%, var(--surface-2)); }
+.sevmatrix-cell.z-A { background: color-mix(in oklch, var(--amber) 26%, var(--surface-2)); }
+.sevmatrix-cell.z-G { background: color-mix(in oklch, var(--green) 22%, var(--surface-2)); }
+.sevmatrix-dot {
+  width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--surface);
+  box-shadow: 0 1px 2px oklch(0% 0 0 / 0.2); cursor: pointer; transition: transform .12s ease;
+}
+.sevmatrix-dot:hover { transform: scale(1.4); }
+.sevmatrix-dot.sel { transform: scale(1.45); box-shadow: 0 0 0 2px var(--ink); }
+.sevmatrix-dot.rag-R { background: var(--red); }
+.sevmatrix-dot.rag-A { background: var(--amber); }
+.sevmatrix-dot.rag-G { background: var(--green); }
+.sevmatrix-count {
+  position: absolute; top: 2px; right: 3px;
+  font-family: "Geist Mono", monospace; font-size: 8px; font-weight: 700; color: var(--ink-3);
+}
+
 /* map cards */
 .map-card {
   background: var(--surface);

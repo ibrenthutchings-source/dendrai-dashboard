@@ -136,13 +136,25 @@ function RiskTable({ risks, selectedId, onSelect }) {
 }
 
 // ---------- HEATMAP ----------
+// Two lenses on the same risk data: Severity Matrix (the classic 5×5 audit
+// heat-matrix — leads, since it's the form most audiences already read
+// fluently and it scales cleanly as the register grows) and Risk Plane (the
+// original continuous bubble plot, kept for watching a handful of risks
+// drift quarter over quarter).
 function HeatmapTab({ risks, activeQ, setActiveQ, selectedId, onSelect }) {
+  const [view, setView] = React.useState("matrix");
   if (!risks?.length) return <Empty>Heatmap populates after Stage 2.</Empty>;
   return (
     <>
       <SectionLabel>Impact × Likelihood</SectionLabel>
       <div style={{fontSize: 11, color: "var(--ink-3)", marginBottom: 10}}>
-        Click any bubble for velocity detail. Dashed circles show projected Q4 position.
+        {view === "matrix"
+          ? "Click any risk for velocity detail. Cells shade by score threshold."
+          : "Click any bubble for velocity detail. Dashed circles show projected Q4 position."}
+      </div>
+      <div className="qsel" style={{marginBottom: 6}}>
+        <button className={"qbtn" + (view === "matrix" ? " active" : "")} onClick={() => setView("matrix")}>Severity Matrix</button>
+        <button className={"qbtn" + (view === "plane" ? " active" : "")} onClick={() => setView("plane")}>Risk Plane</button>
       </div>
       <div className="qsel">
         {["Now", "Q1", "Q2", "Q3", "Q4"].map(q => (
@@ -150,12 +162,14 @@ function HeatmapTab({ risks, activeQ, setActiveQ, selectedId, onSelect }) {
         ))}
       </div>
       <div className="heat-wrap">
-        <Heatmap risks={risks} activeQ={activeQ} selectedId={selectedId} onSelect={onSelect}/>
+        {view === "matrix"
+          ? <SeverityMatrix risks={risks} activeQ={activeQ} selectedId={selectedId} onSelect={onSelect}/>
+          : <Heatmap risks={risks} activeQ={activeQ} selectedId={selectedId} onSelect={onSelect}/>}
       </div>
       <div className="heat-legend">
-        <span className="lg"><span className="rag-dot R"/> High (≥7.5)</span>
-        <span className="lg"><span className="rag-dot A"/> Medium</span>
-        <span className="lg"><span className="rag-dot G"/> Low</span>
+        <span className="lg"><span className="rag-dot R"/> High (≥15)</span>
+        <span className="lg"><span className="rag-dot A"/> Medium (9–14)</span>
+        <span className="lg"><span className="rag-dot G"/> Low (&lt;9)</span>
       </div>
       {selectedId && (() => {
         const r = risks.find(x => x.id === selectedId);
