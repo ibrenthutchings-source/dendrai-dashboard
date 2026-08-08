@@ -96,6 +96,57 @@ function App() {
     }
   }, [tweaks.accent, tweaks.density, tweaks.colorScheme, tweaks.dark]);
 
+  // ---- Background-prefetch lazy screen chunks ----
+  // Every screen reachable through nav.jsx/the workflow stepper other than
+  // the ones eagerly bundled in src/main.jsx is code-split (React.lazy, see
+  // src/lazy-screen.js) — the first navigation to any of them pays for a
+  // fresh network fetch + parse of its chunk before it can render. That's
+  // the "lag on first open" this warms away. Dynamic import() is idempotent
+  // and cached per specifier by the browser/Vite, so calling it here ahead
+  // of time just primes that cache; the same lazyGlobal() call the actual
+  // screen navigation triggers later resolves instantly from it. Fires once
+  // after first paint via requestIdleCallback, one chunk per idle slot, so
+  // it never competes with the landing screen's own data fetches or with
+  // interaction responsiveness — falls back to a short setTimeout chain on
+  // browsers without requestIdleCallback (Safari).
+  useEffect(() => {
+    const loaders = [
+      () => import('./config-screen.jsx'),
+      () => import('./ubo-config.jsx'),
+      () => import('./user-config.jsx'),
+      () => import('./token-usage.jsx'),
+      () => import('./model-health.jsx'),
+      () => import('./continuous-monitoring.jsx'),
+      () => import('./infrastructure-monitoring.jsx'),
+      () => import('./ai-inventory.jsx'),
+      () => import('./flow.jsx'),
+      () => import('./audit-scope.jsx'),
+      () => import('./approval-inbox.jsx'),
+      () => import('./code-screens.jsx'), // backs both RiskAsCode and PolicyAsCode
+      () => import('./scenarios.jsx'),
+      () => import('./scenario-analysis.jsx'),
+      () => Promise.all([import('./sox-scope.jsx'), import('./sox-hitl.jsx')]),
+      () => import('./governance.jsx'),
+      () => import('./posture-trend.jsx'),
+      () => import('./help.jsx'),
+    ];
+    let cancelled = false;
+    let i = 0;
+    const schedule = window.requestIdleCallback
+      ? (fn) => window.requestIdleCallback(fn, { timeout: 2000 })
+      : (fn) => setTimeout(fn, 300);
+    function prefetchNext() {
+      if (cancelled || i >= loaders.length) return;
+      const loader = loaders[i++];
+      // A failed prefetch (offline, flaky connection) just means the real
+      // navigation fetches it fresh later — never surface this to the user.
+      loader().catch(() => {});
+      schedule(prefetchNext);
+    }
+    schedule(prefetchNext);
+    return () => { cancelled = true; };
+  }, []);
+
   // ---- Sidebar config ----
   const [cfg, setCfg] = useState({
     ticker: "ON",
