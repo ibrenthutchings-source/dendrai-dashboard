@@ -34,10 +34,40 @@ const ZOOM_MIN_POINTS = 9;
 // provider (or a future standalone caller) fall back to local-only state.
 const ChartZoomContext = React.createContext(null);
 
+// Persisted across sessions — fraction-of-timeline (not raw indices) is
+// exactly what makes this safe to restore regardless of which ticker's
+// charts render into the provider next time: "zoomed to the most recent
+// third" means the same thing whether that run's history is 8 quarters or
+// 40.
+const ZOOM_STORAGE_KEY = "dendrai.chartZoom";
+
+function _loadStoredZoomFrac() {
+  try {
+    const raw = localStorage.getItem(ZOOM_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length === 2 &&
+        Number.isFinite(parsed[0]) && Number.isFinite(parsed[1]) &&
+        parsed[0] >= 0 && parsed[1] <= 1 && parsed[0] < parsed[1]) {
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
 function ChartZoomProvider({ children }) {
-  const [frac, setFrac] = React.useState(null); // null = full extent
+  const [frac, setFrac] = React.useState(_loadStoredZoomFrac); // null = full extent
   const zoomed = !!frac;
   const minSpan = 0.08;
+
+  // Write-through on every change so a reload — or an entirely new session
+  // days later — reopens the Risk Assessment charts at the same window.
+  React.useEffect(() => {
+    try {
+      if (frac) localStorage.setItem(ZOOM_STORAGE_KEY, JSON.stringify(frac));
+      else localStorage.removeItem(ZOOM_STORAGE_KEY);
+    } catch {}
+  }, [frac]);
 
   function zoomIn() {
     const [s, e] = frac || [0, 1];
