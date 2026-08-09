@@ -43,6 +43,7 @@ const NAV_SECTIONS = [
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
+      { id: "riskquant", icon: "trend",    l: "Risk Quantification" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },

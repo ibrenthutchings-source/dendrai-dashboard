@@ -19,6 +19,7 @@ const UserConfigScreenLazy = lazyGlobal(() => import('./user-config.jsx'), 'User
 const TokenUsageScreenLazy = lazyGlobal(() => import('./token-usage.jsx'), 'TokenUsageScreen');
 const ModelHealthScreenLazy = lazyGlobal(() => import('./model-health.jsx'), 'ModelHealthScreen');
 const ContinuousMonitoringScreenLazy = lazyGlobal(() => import('./continuous-monitoring.jsx'), 'ContinuousMonitoringScreen');
+const RiskQuantificationScreenLazy = lazyGlobal(() => import('./fair-quantification.jsx'), 'RiskQuantificationScreen');
 const InfrastructureMonitoringScreenLazy = lazyGlobal(() => import('./infrastructure-monitoring.jsx'), 'InfrastructureMonitoringScreen');
 const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
@@ -2186,6 +2187,15 @@ function App() {
           <ScreenAccessGate screenId="continuousmonitoring">
             <div className="panel active">
               <ContinuousMonitoringScreenLazy onNavigate={navigateToScreen} />
+            </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Risk Quantification (FAIR Monte Carlo loss modeling) ---- */}
+          {activeScreen === "riskquant" && (
+          <ScreenAccessGate screenId="riskquant">
+            <div className="panel active">
+              <RiskQuantificationScreenLazy onNavigate={navigateToScreen} />
             </div>
           </ScreenAccessGate>
           )}

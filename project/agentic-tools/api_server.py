@@ -134,6 +134,8 @@ import evidence_pack_endpoints
 import vendor_risk_endpoints
 import ai_governance_endpoints
 import infrastructure_monitoring_endpoints
+import fair_endpoints
+import process_mining_endpoints
 import pac_negative_sweep
 import connector_hygiene_sweep
 import vendor_risk_sweep
@@ -159,6 +161,8 @@ from risk_as_code_mcp_server import mcp as _rac_mcp
 from pac_mcp_server import mcp as _pac_mcp
 from cac_mcp_server import mcp as _cac_mcp
 from infrastructure_monitoring_mcp_server import mcp as _infrastructure_monitoring_mcp
+from fair_mcp_server import mcp as _fair_mcp
+from process_mining_mcp_server import mcp as _process_mining_mcp
 
 try:
     from oracle_fusion_mcp_server import mcp as _oracle_mcp
@@ -779,6 +783,14 @@ logger.info("GitHub webhook router registered at /github/webhook")
 # drift, and connector-credential rotation hygiene.
 app.include_router(infrastructure_monitoring_endpoints.router)
 
+# Risk Quantification: FAIR Monte Carlo loss modeling over adjudicated events,
+# SOX processes, risk register entries, and CEM events.
+app.include_router(fair_endpoints.router)
+
+# Process Mining: variant analysis, conformance checking, cycle-time/bottleneck
+# stats, and rework detection over case-tracked adjudications.
+app.include_router(process_mining_endpoints.router)
+
 # Continuous Third-Party/Vendor Risk: vendor SOC 2 register CRUD.
 app.include_router(vendor_risk_endpoints.router)
 
@@ -818,6 +830,8 @@ _mount_mcp("/mcp/policy-as-code",   "Policy-as-Code Rego module management",    
 _mount_mcp("/mcp/controls-as-code", "Controls-as-Code generation & evaluation", _cac_mcp)
 _mount_mcp("/mcp/oracle",           "Oracle Fusion ERP data",                   _oracle_mcp)
 _mount_mcp("/mcp/infrastructure-monitoring", "Infrastructure Monitoring: IaaS/OS/DB continuous audit", _infrastructure_monitoring_mcp)
+_mount_mcp("/mcp/fair",             "Risk Quantification: FAIR Monte Carlo loss modeling",      _fair_mcp)
+_mount_mcp("/mcp/process-mining",   "Process Mining: variant/conformance/cycle-time analysis",  _process_mining_mcp)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────

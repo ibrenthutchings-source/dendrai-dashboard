@@ -1307,6 +1307,46 @@ CREATE TABLE IF NOT EXISTS model_health_baseline_resets (
     reset_by   VARCHAR(128),
     reason     TEXT
 );
+
+-- FAIR-style (Factor Analysis of Information Risk) loss quantification runs.
+-- Turns an adjudicated verdict, a SOX process, or a risk register entry into
+-- a dollar distribution instead of the ordinal P1/P2/P3 or 5x5 RAG score
+-- those carry natively — see fair_tool.py for the Monte Carlo engine (Poisson
+-- threat-event frequency x PERT loss magnitude, same discipline
+-- allocateRiskDollarExposure() in risk-engine.js already established:
+-- never invent a magnitude, always cite where it came from).
+-- resource_type/resource_ref together identify what was quantified —
+-- deliberately not a typed FK, since the three resource kinds
+-- (cem_events.id is int, sox process id is a slug, risk_scores.risk_ref is a
+-- slug, controls_catalog.control_id is a string) share no single key space.
+-- One row per run (never overwritten) so ALE trend over time is answerable
+-- without a separate history table, same pattern as risk_loop_runs.
+CREATE TABLE IF NOT EXISTS fair_quantifications (
+    id                SERIAL       PRIMARY KEY,
+    resource_type     VARCHAR(32)  NOT NULL,   -- cem_event | sox_process | risk | control
+    resource_ref      VARCHAR(128) NOT NULL,
+    company_id        INT          REFERENCES companies(id),
+    run_id            INT          REFERENCES risk_loop_runs(id),
+    control_id        VARCHAR(64),
+    process           VARCHAR(64),
+    tef_mean          NUMERIC      NOT NULL,   -- threat event frequency, events/year
+    tef_source        VARCHAR(16)  NOT NULL,   -- empirical (adjudication history) | manual
+    loss_min          NUMERIC,
+    loss_likely       NUMERIC,
+    loss_max          NUMERIC,
+    magnitude_source  VARCHAR(24)  NOT NULL,   -- sox_exposure | risk_dollar_exposure | cem_severity_default | manual
+    simulations       INT          NOT NULL,
+    ale               NUMERIC      NOT NULL,   -- annualized loss expectancy ($M), mean of the simulated distribution
+    p10               NUMERIC,
+    p50               NUMERIC,
+    p90               NUMERIC,
+    p95               NUMERIC,
+    exceedance_curve  JSONB,                   -- [{"probability":, "loss":}, ...] for the loss-exceedance chart
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by        VARCHAR(128)
+);
+CREATE INDEX IF NOT EXISTS idx_fair_quant_resource ON fair_quantifications (resource_type, resource_ref, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fair_quant_control   ON fair_quantifications (control_id, created_at DESC) WHERE control_id IS NOT NULL;
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -1487,6 +1527,22 @@ ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(32) N
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_incident_id INT REFERENCES model_health_drift_incidents(id);
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_triggered_at TIMESTAMPTZ;
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_summary      JSONB;
+
+-- cem_events.exposure / cem_event_templates.exposure is VARCHAR(64) and
+-- always was — it holds "$12-18M" and "Regulatory" and "Material
+-- misstatement" side by side, so it can never be summed or sorted, only
+-- displayed. That column is kept as-is (the qualitative label a preparer
+-- wrote, or the template default) and a real NUMERIC sits next to it,
+-- populated by fair_tool.py's Monte Carlo engine (see fair_quantifications
+-- above) when a CEM event has been run through Risk Quantification.
+-- exposure_source distinguishes a FAIR-computed figure from a hand-typed
+-- override, same provenance convention sox_scoping_tool.py's
+-- estimated_exposure/exposure_source already established. NULL until
+-- someone actually quantifies that event/template — never a guess.
+ALTER TABLE cem_events ADD COLUMN IF NOT EXISTS exposure_amount_m NUMERIC;
+ALTER TABLE cem_events ADD COLUMN IF NOT EXISTS exposure_source   VARCHAR(16);
+ALTER TABLE cem_event_templates ADD COLUMN IF NOT EXISTS exposure_amount_m NUMERIC;
+ALTER TABLE cem_event_templates ADD COLUMN IF NOT EXISTS exposure_source   VARCHAR(16);
 """
 
 # observability.system_telemetry had no uniqueness on (server_name, event_id),
@@ -4553,6 +4609,8 @@ def save_cem_events(run_id: int, events: list) -> None:
                 e.get("exposure"),
                 e.get("category"),
                 e.get("rc") or e.get("rootCause") or e.get("root_cause_narrative"),
+                e.get("exposureAmountM") if e.get("exposureAmountM") is not None else e.get("exposure_amount_m"),
+                e.get("exposureSource") or e.get("exposure_source"),
             )
             for e in events
         ]
@@ -4563,7 +4621,8 @@ def save_cem_events(run_id: int, events: list) -> None:
                     """
                     INSERT INTO cem_events
                         (run_id, control, area, risk_label, severity,
-                         exposure, category, root_cause_narrative)
+                         exposure, category, root_cause_narrative,
+                         exposure_amount_m, exposure_source)
                     VALUES %s
                     """,
                     rows,
@@ -7625,12 +7684,17 @@ def seed_cem_event_templates(templates: list) -> int:
 
 
 def get_cem_event_templates(active_only: bool = True) -> list:
-    """Return CEM event templates, ordered by sort_order."""
+    """Return CEM event templates, ordered by sort_order. exposure_amount_m/
+    exposure_source are the FAIR-quantified companions to the qualitative
+    `exposure` label — see the cem_event_templates migration block and
+    fair_tool.py — null until someone runs Risk Quantification against this
+    template's control/area."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 q = (
-                    "SELECT id, control, area, risk_label, severity, exposure, category, rc_narrative "
+                    "SELECT id, control, area, risk_label, severity, exposure, category, rc_narrative, "
+                    "exposure_amount_m, exposure_source "
                     "FROM cem_event_templates"
                 )
                 if active_only:
@@ -7647,6 +7711,8 @@ def get_cem_event_templates(active_only: bool = True) -> list:
                         "exposure": r[5],
                         "category": r[6],
                         "rc":       r[7],
+                        "exposure_amount_m": float(r[8]) if r[8] is not None else None,
+                        "exposure_source":   r[9],
                     }
                     for r in cur.fetchall()
                 ]
@@ -7687,6 +7753,157 @@ def upsert_cem_event_template(template: dict) -> Optional[int]:
                 row = cur.fetchone()
                 return row[0] if row else None
     return _run(_do)
+
+
+def update_cem_event_template_exposure(template_id: int, exposure_amount_m: float, exposure_source: str) -> bool:
+    """Write a fair_tool.py quantification result back onto a CEM event
+    template (see cem_event_templates.exposure_amount_m). Does not touch the
+    qualitative `exposure` label column — that stays whatever the preparer
+    typed."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE cem_event_templates SET exposure_amount_m = %s, exposure_source = %s, "
+                    "updated_at = NOW() WHERE id = %s",
+                    (exposure_amount_m, exposure_source, template_id),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do, default=False))
+
+
+def update_cem_event_exposure(cem_event_id: int, exposure_amount_m: float, exposure_source: str) -> bool:
+    """Same as update_cem_event_template_exposure but for a real, run-scoped
+    cem_events row (an actual 8-K-derived or Loop-Report event, not a
+    template)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE cem_events SET exposure_amount_m = %s, exposure_source = %s WHERE id = %s",
+                    (exposure_amount_m, exposure_source, cem_event_id),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do, default=False))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FAIR (Factor Analysis of Information Risk) quantification runs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_fair_quantification(q: dict) -> Optional[int]:
+    """Persist one fair_tool.py Monte Carlo run. See the fair_quantifications
+    migration block for column meaning. Never overwrites a prior run for the
+    same resource — each call is a new row, same write-once convention as
+    risk_loop_runs, so ALE-over-time is answerable without a separate
+    history table."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO fair_quantifications
+                        (resource_type, resource_ref, company_id, run_id, control_id, process,
+                         tef_mean, tef_source, loss_min, loss_likely, loss_max, magnitude_source,
+                         simulations, ale, p10, p50, p90, p95, exceedance_curve, created_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id
+                    """,
+                    (
+                        q["resource_type"], str(q["resource_ref"]), q.get("company_id"), q.get("run_id"),
+                        q.get("control_id"), q.get("process"),
+                        q["tef_mean"], q["tef_source"],
+                        q.get("loss_min"), q.get("loss_likely"), q.get("loss_max"), q["magnitude_source"],
+                        q["simulations"], q["ale"], q.get("p10"), q.get("p50"), q.get("p90"), q.get("p95"),
+                        Json(q.get("exceedance_curve")) if q.get("exceedance_curve") is not None else None,
+                        q.get("created_by"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def _row_to_fair_quant(r) -> dict:
+    return {
+        "id": r[0], "resource_type": r[1], "resource_ref": r[2], "company_id": r[3], "run_id": r[4],
+        "control_id": r[5], "process": r[6],
+        "tef_mean": float(r[7]) if r[7] is not None else None, "tef_source": r[8],
+        "loss_min": float(r[9]) if r[9] is not None else None,
+        "loss_likely": float(r[10]) if r[10] is not None else None,
+        "loss_max": float(r[11]) if r[11] is not None else None,
+        "magnitude_source": r[12], "simulations": r[13],
+        "ale": float(r[14]) if r[14] is not None else None,
+        "p10": float(r[15]) if r[15] is not None else None, "p50": float(r[16]) if r[16] is not None else None,
+        "p90": float(r[17]) if r[17] is not None else None, "p95": float(r[18]) if r[18] is not None else None,
+        "exceedance_curve": r[19], "created_at": r[20].isoformat() if r[20] else None, "created_by": r[21],
+    }
+
+
+_FAIR_QUANT_COLUMNS = (
+    "id, resource_type, resource_ref, company_id, run_id, control_id, process, "
+    "tef_mean, tef_source, loss_min, loss_likely, loss_max, magnitude_source, "
+    "simulations, ale, p10, p50, p90, p95, exceedance_curve, created_at, created_by"
+)
+
+
+def get_latest_fair_quantification(resource_type: str, resource_ref) -> Optional[dict]:
+    """Most recent FAIR run for one resource (a CEM event, a SOX process, a
+    risk, or a control) — what a detail panel shows without re-running the
+    simulation."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_FAIR_QUANT_COLUMNS} FROM fair_quantifications "
+                    "WHERE resource_type = %s AND resource_ref = %s "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (resource_type, str(resource_ref)),
+                )
+                row = cur.fetchone()
+                return _row_to_fair_quant(row) if row else None
+    return _run(_do)
+
+
+def list_fair_quantifications(resource_type: Optional[str] = None, days: int = 365, limit: int = 500) -> list:
+    """Every FAIR run in the trailing window, most recent first — the feed
+    behind the ALE-by-control summary and Risk Quantification's history
+    view."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                q = f"SELECT {_FAIR_QUANT_COLUMNS} FROM fair_quantifications WHERE created_at > NOW() - (%s || ' days')::interval"
+                params: list = [days]
+                if resource_type:
+                    q += " AND resource_type = %s"
+                    params.append(resource_type)
+                q += " ORDER BY created_at DESC LIMIT %s"
+                params.append(limit)
+                cur.execute(q, tuple(params))
+                return [_row_to_fair_quant(r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_fair_ale_summary(days: int = 365) -> list:
+    """Latest ALE per (resource_type, resource_ref), highest first — 'what's
+    the most expensive open risk right now' for the Risk Quantification
+    dashboard. Uses DISTINCT ON to keep only the newest run per resource
+    within the window, so a resource quantified twice isn't double-counted."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT DISTINCT ON (resource_type, resource_ref) {_FAIR_QUANT_COLUMNS}
+                    FROM fair_quantifications
+                    WHERE created_at > NOW() - (%s || ' days')::interval
+                    ORDER BY resource_type, resource_ref, created_at DESC
+                    """,
+                    (days,),
+                )
+                rows = [_row_to_fair_quant(r) for r in cur.fetchall()]
+                rows.sort(key=lambda r: r["ale"] or 0, reverse=True)
+                return rows
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
