@@ -1405,6 +1405,227 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   6-8. Process Mining — Variants, Conformance, Cycle Time. The Case Flow
+   Graph above is a directly-follows GRAPH (topology: which step follows
+   which, and how often). These three answer what the graph alone can't:
+   which path is actually "normal" and how often reality deviates from it
+   (Variants), exactly how a deviating case differs from its documented
+   process template (Conformance), and where time actually accumulates
+   (Cycle Time). Server-computed by process_mining_tool.py via
+   GET /process-mining/* (see that module's docstring) rather than
+   re-aggregated client-side like the four dimension-based charts above —
+   variant/conformance/cycle-time logic is genuinely stateful reasoning
+   (template matching, order comparison), not a simple group-by.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function useProcessList() {
+  const [processes, setProcesses] = useState([]);
+  useEffect(() => {
+    window.MCP.pmListProcesses().then(d => setProcesses(d.processes || [])).catch(() => {});
+  }, []);
+  return processes;
+}
+
+function ProcessFilterSelect({ value, onChange, processes }) {
+  return (
+    <select value={value || ""} onChange={e => onChange(e.target.value || null)}
+      style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink)" }}>
+      <option value="">All processes</option>
+      {processes.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+    </select>
+  );
+}
+
+function _pmFmtHours(h) {
+  if (h == null) return "—";
+  if (h < 24) return `${h.toFixed(1)}h`;
+  return `${(h / 24).toFixed(1)}d`;
+}
+
+function _pmUsePmFetch(fetcher, days, process) {
+  const [state, setState] = useState({ data: null, loading: true, error: null });
+  useEffect(() => {
+    setState(s => ({ ...s, loading: true }));
+    fetcher(days, process)
+      .then(d => setState({ data: d, loading: false, error: d.note || null }))
+      .catch(e => setState({ data: null, loading: false, error: e.message || String(e) }));
+  }, [days, process]);
+  return state;
+}
+
+export function ProcessVariantsView({ theme, days }) {
+  const processes = useProcessList();
+  const [process, setProcess] = useState(null);
+  const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmVariants(d, p), days, process);
+  const variants = data?.variants || [];
+  const hasData = variants.length > 0;
+
+  return (
+    <VizFrame theme={theme} height={520}
+      kicker="Process mining · Variants — every path actually taken"
+      sub="Distinct step sequences observed over the trailing window, most frequent first. The top row is the happy path; a green tag means it also matches the documented process template exactly — the two can diverge when the 'normal' path has quietly drifted."
+      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      error={error} empty={!loading && !hasData ? "No case-tracked transactions in this window yet — see generate_o2c_p2p_synthetic_log.py." : null}
+      loading={loading && !hasData}>
+      {hasData && (
+        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 12 }}>
+          {variants.map((v, i) => (
+            <div key={v.variant} style={{
+              display: "flex", alignItems: "center", gap: 12, padding: "9px 10px", marginBottom: 6,
+              borderRadius: 6, border: `1px solid ${theme.line}`,
+              background: v.is_happy_path ? theme["surface-2"] : theme.surface,
+            }}>
+              <div style={{ width: 22, textAlign: "center", fontSize: 10, fontWeight: 700, color: theme["ink-3"] }}>#{i + 1}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 11.5, color: theme.ink, fontWeight: v.is_happy_path ? 700 : 500,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  {v.steps.join("  →  ")}
+                </div>
+                <div style={{ fontSize: 10, color: theme["ink-4"], marginTop: 2 }}>
+                  {v.process_label || "Untemplated"}
+                  {v.is_happy_path && <span style={{ color: theme.acc, fontWeight: 600 }}> · happy path</span>}
+                  {v.process && (v.is_canonical
+                    ? <span style={{ color: theme["green-ink"] }}> · matches template</span>
+                    : <span style={{ color: theme["amber-ink"] }}> · deviates from template</span>)}
+                </div>
+              </div>
+              <div style={{ textAlign: "right", minWidth: 66 }}>
+                <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: theme.ink }}>{v.case_count}</div>
+                <div style={{ fontSize: 9.5, color: theme["ink-4"] }}>{(v.pct_of_cases * 100).toFixed(0)}% of cases</div>
+              </div>
+              <div style={{ textAlign: "right", minWidth: 60 }}>
+                <div className="mono" style={{ fontSize: 11, color: v.violation_rate > 0 ? theme["red-ink"] : theme["ink-3"] }}>
+                  {(v.violation_rate * 100).toFixed(0)}%
+                </div>
+                <div style={{ fontSize: 9.5, color: theme["ink-4"] }}>violation rate</div>
+              </div>
+              <div style={{ textAlign: "right", minWidth: 56 }}>
+                <div className="mono" style={{ fontSize: 11, color: theme["ink-2"] }}>{_pmFmtHours(v.avg_duration_hours)}</div>
+                <div style={{ fontSize: 9.5, color: theme["ink-4"] }}>avg duration</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </VizFrame>
+  );
+}
+
+const _PM_DEVIATION_LABELS = {
+  missing_step: "Missing step", extra_step: "Extra step",
+  repeated_step: "Repeated step (rework)", out_of_order: "Out of order",
+};
+
+export function ProcessConformanceView({ theme, days }) {
+  const processes = useProcessList();
+  const [process, setProcess] = useState(null);
+  const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmConformance(d, p), days, process);
+  const hasData = !!data && data.scored_cases > 0;
+  const rate = data?.conformance_rate;
+
+  return (
+    <VizFrame theme={theme} height={520}
+      kicker="Process mining · Conformance — does reality match the documented process?"
+      sub="Every case whose steps matched a known process template (Procure to Pay, Order to Cash, Receive to Ship), scored against that template's exact order. A case with no matching template (most standalone events) is excluded here, not silently counted as conforming."
+      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      error={error} empty={!loading && !hasData ? "No template-matched cases in this window yet." : null}
+      loading={loading && !hasData}>
+      {hasData && (
+        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
+            <div style={{ minWidth: 140, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+              <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>Conformance rate</div>
+              <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: rate >= 0.9 ? theme["green-ink"] : rate >= 0.6 ? theme["amber-ink"] : theme["red-ink"] }}>
+                {rate == null ? "—" : `${(rate * 100).toFixed(0)}%`}
+              </div>
+              <div style={{ fontSize: 10, color: theme["ink-3"] }}>{data.conforming_cases} / {data.scored_cases} cases</div>
+            </div>
+            {Object.entries(data.deviation_breakdown).map(([k, v]) => (
+              <div key={k} style={{ minWidth: 110, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme.surface }}>
+                <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>{_PM_DEVIATION_LABELS[k]}</div>
+                <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: v > 0 ? theme["amber-ink"] : theme["ink-2"] }}>{v}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 10, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+            Deviating cases ({data.deviating_cases.length})
+          </div>
+          {!data.deviating_cases.length ? (
+            <div style={{ fontSize: 12, color: theme["green-ink"] }}>Every scored case matched its process template exactly.</div>
+          ) : data.deviating_cases.map(c => (
+            <div key={c.case_id} style={{ padding: "8px 10px", marginBottom: 5, borderRadius: 6, border: `1px solid ${theme.line}`, background: theme.surface }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: theme.ink }}>{c.case_id}</span>
+                <span style={{ fontSize: 10, color: theme["ink-4"] }}>{c.process_label}</span>
+              </div>
+              <div style={{ fontSize: 10.5, color: theme["ink-3"], marginTop: 3 }}>
+                {c.missing_steps.length > 0 && <span style={{ marginRight: 10, color: theme["amber-ink"] }}>Missing: {c.missing_steps.join(", ")}</span>}
+                {c.extra_steps.length > 0 && <span style={{ marginRight: 10, color: theme["amber-ink"] }}>Extra: {c.extra_steps.join(", ")}</span>}
+                {c.repeated_steps.length > 0 && <span style={{ marginRight: 10, color: theme["red-ink"] }}>Rework: {c.repeated_steps.join(", ")}</span>}
+                {c.out_of_order && <span style={{ color: theme["red-ink"] }}>Out of order</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </VizFrame>
+  );
+}
+
+export function ProcessCycleTimeView({ theme, days }) {
+  const processes = useProcessList();
+  const [process, setProcess] = useState(null);
+  const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmCycleTimes(d, p), days, process);
+  const edges = data?.edges || [];
+  const hasData = edges.length > 0;
+  const maxHours = Math.max(1, ...edges.map(e => e.avg_hours));
+
+  return (
+    <VizFrame theme={theme} height={520}
+      kicker="Process mining · Cycle Time — where time actually accumulates"
+      sub="Mean/median/p90 duration for every step-to-step transition, slowest first — the bottleneck, as opposed to the Case Flow Graph's edge width, which shows volume, not speed."
+      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      error={error} empty={!loading && !hasData ? "No case-tracked transitions in this window yet." : null}
+      loading={loading && !hasData}>
+      {hasData && (
+        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
+          {data.case_duration && (
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
+              {[["mean_hours", "Mean case duration"], ["median_hours", "Median"], ["p90_hours", "P90"]].map(([k, label]) => (
+                <div key={k} style={{ minWidth: 120, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+                  <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+                  <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: theme.ink }}>{_pmFmtHours(data.case_duration[k])}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {edges.map((e, i) => (
+            <div key={`${e.source}|${e.target}`} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                <span style={{ color: theme.ink }}>
+                  {e.source} <span style={{ color: theme["ink-4"] }}>→</span> {e.target}
+                  {i === 0 && <span style={{ marginLeft: 8, fontSize: 9.5, color: theme["red-ink"], fontWeight: 700, textTransform: "uppercase" }}>Bottleneck</span>}
+                </span>
+                <span className="mono" style={{ color: theme["ink-2"] }}>{_pmFmtHours(e.avg_hours)} avg · {e.count} case{e.count !== 1 ? "s" : ""}</span>
+              </div>
+              <div style={{ height: 7, borderRadius: 4, background: theme["surface-2"], overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", width: `${Math.max(2, (e.avg_hours / maxHours) * 100)}%`,
+                  background: i === 0 ? theme["red-ink"] : theme.acc, borderRadius: 4,
+                }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </VizFrame>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    Tabbed container — owns theme, the shared day-range, and one data
    fetch for whichever dimension is active, so switching chart tabs is
    instant (no re-fetch, no blank flash) and "90 days" doesn't reset when
@@ -1417,6 +1638,9 @@ const CHART_TABS = [
   { id: "heatgrid", label: "Heat Grid" },
   { id: "dfg", label: "Flow Graph (DFG)" },
   { id: "caseflow", label: "Case Flow (real DFG)" },
+  { id: "variants", label: "Variants" },
+  { id: "conformance", label: "Conformance" },
+  { id: "cycletime", label: "Cycle Time" },
 ];
 
 function ContinuousMonitoringGroupedViz({ dim, onNavigate }) {
@@ -1455,6 +1679,9 @@ function ContinuousMonitoringGroupedViz({ dim, onNavigate }) {
       {tab === "heatgrid" && <DimensionHeatGrid theme={theme} days={days} dim={dim} rawEvents={rawEvents} loading={loading} error={error} onNavigate={onNavigate} />}
       {tab === "dfg" && <DimensionFlowGraph theme={theme} days={days} dim={dim} rawEvents={rawEvents} loading={loading} error={error} onNavigate={onNavigate} />}
       {tab === "caseflow" && <CaseFlowGraph theme={theme} days={days} rawEvents={rawEvents} loading={loading} error={error} />}
+      {tab === "variants" && <ProcessVariantsView theme={theme} days={days} />}
+      {tab === "conformance" && <ProcessConformanceView theme={theme} days={days} />}
+      {tab === "cycletime" && <ProcessCycleTimeView theme={theme} days={days} />}
     </div>
   );
 }

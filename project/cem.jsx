@@ -153,6 +153,34 @@ function CEMStat({ l, v, color }) {
 
 function CEMEvent({ ev, expanded, onToggle, onAckNotif }) {
   const tiers = TIERS.filter(t => t.sevs.includes(ev.severity));
+  const [fair, setFair] = React.useState(null);
+  const [fairBusy, setFairBusy] = React.useState(false);
+  const [fairError, setFairError] = React.useState(null);
+
+  // A live CEM event (from an 8-K filing, before the pipeline run that
+  // created it has been saved) has no cem_events.id yet, so this is always
+  // a persist:false preview — see fair_endpoints.QuantifyRequest.persist.
+  // Once the run is saved, the same event carries a real DB id and Risk
+  // Quantification's own screen can re-run this quantification persisted.
+  async function runQuantify(e) {
+    e.stopPropagation();
+    if (fairBusy) return;
+    setFairBusy(true); setFairError(null);
+    try {
+      const result = await window.MCP.fairQuantify({
+        resource_type: "cem_event",
+        resource_ref: String(ev.id),
+        cem_severity: ev.severity,
+        persist: false,
+      });
+      setFair(result);
+    } catch (err) {
+      setFairError(err.message || String(err));
+    } finally {
+      setFairBusy(false);
+    }
+  }
+
   return (
     <div className={`cem-event ${ev.severity}`}>
       <div className="cem-head" onClick={onToggle}>
@@ -173,6 +201,24 @@ function CEMEvent({ ev, expanded, onToggle, onAckNotif }) {
             <CEMMeta l="Category" v={ev.category}/>
             <CEMMeta l="Risk"     v={ev.risk}/>
             <CEMMeta l="Exposure" v={ev.exposure}/>
+            <div className="mi">
+              <div className="ml">Modeled exposure (FAIR)</div>
+              <div className="mv">
+                {fair ? (
+                  <span className="mono" style={{ fontWeight: 700 }}>
+                    ${fair.ale.toFixed(2)}M ALE
+                    <span style={{ fontWeight: 400, color: "var(--ink-4)", marginLeft: 6 }}>
+                      (P90 ${fair.p90.toFixed(2)}M · {fair.magnitude_source})
+                    </span>
+                  </span>
+                ) : (
+                  <button type="button" className="btn btn-sm" onClick={runQuantify} disabled={fairBusy}>
+                    {fairBusy ? "Quantifying…" : "Quantify"}
+                  </button>
+                )}
+                {fairError && <div className="mono" style={{ fontSize: 10, color: "var(--red-ink)", marginTop: 3 }}>{fairError}</div>}
+              </div>
+            </div>
           </div>
 
           <div className="cem-section-lbl">Root cause analysis</div>

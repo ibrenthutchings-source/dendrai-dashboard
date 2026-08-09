@@ -1913,6 +1913,38 @@ window.RISK_ENGINE = (function () {
     return risks;
   }
 
+  // ── FAIR override application (post-hoc, optional) ──────────────────────
+  // buildMAPs()'s reduction_pct is a template constant — a reasonable
+  // industry-pattern default per risk type, same status as every other
+  // TEMPLATES-sourced field. Once a MAP has a real FAIR control-ROI run
+  // (fair_tool.control_roi's ale_reduction_pct — see project/agentic-tools/
+  // fair_endpoints.py POST /fair/control-roi, run from the Risk
+  // Quantification screen), that real, computed number should win over the
+  // template guess.
+  //
+  // Deliberately a separate, optional, PURE post-processing step rather
+  // than an async FAIR fetch threaded into buildMAPs/buildProfile:
+  // buildProfile's entire pipeline is synchronous by design (it runs
+  // against already-fetched financial data in one pass), and a FAIR run is
+  // a deliberate, on-demand action a reviewer takes, not something that
+  // should block or silently re-run a MAP's construction. Call this after
+  // buildProfile() once you have FAIR data, same as allocateRiskDollarExposure
+  // is applied as a second pass over buildScenarios' output today.
+  //
+  // fairByRisk: { [linked_risk_id]: { reduction_pct } } — look these up via
+  // MCP.fairAleSummary()/MCP.fairControlRoi() (resource_type "risk",
+  // resource_ref matching a MAP's linked_risk) and pass in whatever's been
+  // computed so far; a risk with no entry keeps its template default
+  // untouched, and the function no-ops entirely when nothing was found.
+  function applyFairOverridesToMaps(maps, fairByRisk) {
+    if (!fairByRisk || !Object.keys(fairByRisk).length) return maps;
+    return maps.map(m => {
+      const o = fairByRisk[m.linked_risk];
+      if (!o || o.reduction_pct == null) return m;
+      return { ...m, reduction_pct: o.reduction_pct, reduction_pct_source: 'fair' };
+    });
+  }
+
   function buildProfile(ticker, fin, sic, industryHint) {
     const industryLabel = industryHint || sic2industry(sic) || 'Generic';
     const industry = normalizeIndustry(industryLabel);
@@ -1948,6 +1980,6 @@ window.RISK_ENGINE = (function () {
 
   return { buildProfile, buildLoop, computeRatios, sic2industry, normalizeIndustry, quarterBoundaries: _quarterBoundaries,
            buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator,
-           buildGreySwan, buildScenarios, allocateRiskDollarExposure };
+           buildGreySwan, buildScenarios, allocateRiskDollarExposure, applyFairOverridesToMaps };
 
 })();

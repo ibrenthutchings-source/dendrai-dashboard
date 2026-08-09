@@ -670,6 +670,90 @@ window.MCP = (function () {
     return _get('/rss/feeds/status');
   }
 
+  // ── Risk Quantification (FAIR) — fair_endpoints.py ────────────────────────────
+
+  /**
+   * Run a FAIR Monte Carlo loss quantification and (by default) persist it.
+   * See fair_endpoints.QuantifyRequest for the full field list — only
+   * resource_type/resource_ref are required; everything else lets the
+   * caller either supply a number directly (sox_estimated_exposure,
+   * risk_dollar_exposure_m — the frontend already has these) or leave it
+   * to the backend to resolve from real data (control_id -> empirical fire
+   * history; company_id -> SOX process lookup).
+   */
+  async function fairQuantify(req) {
+    return _post('/fair/quantify', req);
+  }
+
+  /** Highest-ALE resources right now — the Risk Quantification screen's headline table. */
+  async function fairAleSummary(days = 365) {
+    return _get(`/fair/ale-summary?days=${days}`);
+  }
+
+  /** History of FAIR runs, optionally filtered to one resource_type. */
+  async function fairQuantifications(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.resourceType) params.set('resource_type', opts.resourceType);
+    if (opts.days) params.set('days', opts.days);
+    if (opts.limit) params.set('limit', opts.limit);
+    return _get(`/fair/quantifications?${params.toString()}`);
+  }
+
+  /** Most recent FAIR run for one resource, or { quantification: null } if never run. */
+  async function fairLatestQuantification(resourceType, resourceRef) {
+    return _get(`/fair/quantifications/latest?resource_type=${encodeURIComponent(resourceType)}&resource_ref=${encodeURIComponent(resourceRef)}`);
+  }
+
+  /** Risk-adjusted ROI of a control: two ALE figures (before/after) + its annual cost. */
+  async function fairControlRoi(aleBefore, aleAfter, annualControlCost, controlId = null) {
+    return _post('/fair/control-roi', {
+      ale_before: aleBefore, ale_after: aleAfter,
+      annual_control_cost: annualControlCost, control_id: controlId,
+    });
+  }
+
+  /** The CEM-severity default (min, most-likely, max) $M PERT bands. */
+  async function fairSeverityBands() {
+    return _get('/fair/severity-bands');
+  }
+
+  // ── Process Mining — process_mining_endpoints.py ──────────────────────────────
+
+  /** The known process templates (id, label, canonical step order). */
+  async function pmListProcesses() {
+    return _get('/process-mining/processes');
+  }
+
+  /** Headline tiles: case counts, conformance/rework rate, bottleneck per process. */
+  async function pmSummary(days = 30) {
+    return _get(`/process-mining/summary?days=${days}`);
+  }
+
+  /** Distinct step sequences observed, most frequent first. */
+  async function pmVariants(days = 30, process = null) {
+    return _get(`/process-mining/variants?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Conformance rate + deviating cases against the matched process template. */
+  async function pmConformance(days = 30, process = null) {
+    return _get(`/process-mining/conformance?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Per-edge duration stats + overall case duration + bottleneck. */
+  async function pmCycleTimes(days = 30, process = null) {
+    return _get(`/process-mining/cycle-times?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Cases that revisited an already-completed step. */
+  async function pmRework(days = 30, process = null) {
+    return _get(`/process-mining/rework?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Per-case detail: steps, duration, variant, conformance verdict. */
+  async function pmCases(days = 30, process = null, limit = 200) {
+    return _get(`/process-mining/cases?days=${days}&limit=${limit}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -714,5 +798,20 @@ window.MCP = (function () {
     // Compliance RSS ingest
     ingestRssFeeds,
     fetchRssFeedStatus,
+    // Risk Quantification (FAIR)
+    fairQuantify,
+    fairAleSummary,
+    fairQuantifications,
+    fairLatestQuantification,
+    fairControlRoi,
+    fairSeverityBands,
+    // Process Mining
+    pmListProcesses,
+    pmSummary,
+    pmVariants,
+    pmConformance,
+    pmCycleTimes,
+    pmRework,
+    pmCases,
   };
 })();
