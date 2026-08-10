@@ -41,6 +41,19 @@ const ChartZoomContext = React.createContext(null);
 // 40.
 const ZOOM_STORAGE_KEY = "dendrai.chartZoom";
 
+// `?? null` (nullish coalescing) only replaces null/undefined — a literal
+// NaN (e.g. a 0/0 in an upstream margin/growth-rate calculation) sails
+// straight through it unchanged, unlike null/undefined which Recharts skips
+// cleanly as a gap (connectNulls={false}). Recharts doesn't treat NaN as a
+// gap — it tries to compute a real pixel coordinate from it and emits
+// invalid SVG attributes (<rect x="NaN">, <line x1="NaN">) wherever that
+// value ends up in the plotted path. Every numeric field built from
+// external forecast/history/backtest data for a Recharts `data` array
+// should go through this, not a bare `?? null`.
+function _finiteOrNull(v) {
+  return Number.isFinite(v) ? v : null;
+}
+
 function _loadStoredZoomFrac() {
   try {
     const raw = localStorage.getItem(ZOOM_STORAGE_KEY);
@@ -89,7 +102,14 @@ function ChartZoomProvider({ children }) {
 }
 
 function _fracToIndices(frac, fullEnd) {
-  if (!frac || fullEnd <= 0) return [0, fullEnd];
+  // Number.isFinite, not just `!frac` — a NaN-poisoned frac (see
+  // onBrushChange below) is still a truthy 2-element array, and
+  // Math.round(NaN * fullEnd) is NaN, which Recharts' <Brush> renders as
+  // <rect x="NaN">. Read-side sanitizer: even a frac that got poisoned
+  // before onBrushChange's guard existed (e.g. one already sitting in a
+  // browser's localStorage) self-heals to the full extent instead of
+  // permanently wedging every chart under this ChartZoomProvider.
+  if (!frac || fullEnd <= 0 || !Number.isFinite(frac[0]) || !Number.isFinite(frac[1])) return [0, fullEnd];
   const s = Math.round(frac[0] * fullEnd);
   const e = Math.round(frac[1] * fullEnd);
   return [Math.max(0, Math.min(s, fullEnd - 1)), Math.max(Math.min(s, fullEnd - 1) + 1, Math.min(e, fullEnd))];
@@ -113,7 +133,16 @@ function useChartZoom(dataLength) {
       startIndex, endIndex, zoomed: ctx.zoomed,
       zoomIn: ctx.zoomIn, zoomOut: ctx.zoomOut, reset: ctx.reset,
       onBrushChange(r) {
-        if (r?.startIndex == null || r?.endIndex == null || fullEnd <= 0) return;
+        // Number.isFinite, not `== null` — Recharts' <Brush> occasionally
+        // fires onChange with NaN indices during a container-measurement
+        // race (its own internal width/scale glitch, not application data),
+        // and `NaN == null` is false, so a `== null` check lets it straight
+        // through. Once written to ctx.setFrac, that NaN poisons the SHARED
+        // fraction every chart under this provider reads on its next
+        // render — the actual mechanism behind the NaN <rect> warning and,
+        // once enough charts re-render off the poisoned value in a tight
+        // cascade, "Maximum update depth exceeded".
+        if (!Number.isFinite(r?.startIndex) || !Number.isFinite(r?.endIndex) || fullEnd <= 0) return;
         ctx.setFrac([r.startIndex / fullEnd, r.endIndex / fullEnd]);
       },
     };
@@ -136,11 +165,39 @@ function useChartZoom(dataLength) {
   }
   function reset() { setRange(null); }
   function onBrushChange(r) {
-    if (r?.startIndex == null || r?.endIndex == null) return;
+    // Number.isFinite, not `== null` — same NaN-from-Recharts hazard as the
+    // ctx branch's onBrushChange above (see its comment). `inBounds`'s
+    // numeric comparisons happen to reject a NaN range on the following
+    // render anyway (any comparison against NaN is false), but validating
+    // here means this function's own contract doesn't depend on a reader
+    // tracing that through — and it never sets state to a NaN range at all.
+    if (!Number.isFinite(r?.startIndex) || !Number.isFinite(r?.endIndex)) return;
     setRange([r.startIndex, r.endIndex]);
   }
 
   return { startIndex, endIndex, zoomed, zoomIn, zoomOut, reset, onBrushChange };
+}
+
+// Recharts' <ResponsiveContainer> measures its width via a ResizeObserver,
+// whose first callback always fires AFTER the initial render — so a chart
+// that mounts fresh (e.g. opening a Stage accordion, which conditionally
+// mounts its body rather than just hiding it — see Stage's `{isOpen && ...}`
+// in pipeline.jsx) renders its very first frame against an unmeasured
+// (effectively zero) width. <Brush> computes its traveller pixel positions
+// from that width and produces transient NaN coordinates — a real Recharts
+// limitation, not anything wrong with the startIndex/endIndex/data values
+// we hand it (confirmed by instrumenting exactly those and finding them
+// always finite when this fires). It self-corrects the moment
+// ResizeObserver's real measurement arrives, but React still logs the
+// invalid-attribute warning for that one frame, and enough charts doing
+// this under the shared ChartZoomProvider at once can compound into more
+// than a console warning. Deferring <Brush> by one tick past first paint —
+// after the browser has already laid out a real width for
+// ResponsiveContainer to measure — is the standard mitigation.
+function useMountedAfterPaint() {
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => { setMounted(true); }, []);
+  return mounted;
 }
 
 function ZoomControls({ zoom, color }) {
@@ -382,6 +439,7 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
   // still empty on first render.
   const dataLength = (history?.length || 0) + (forecast?.length || 0);
   const zoom = useChartZoom(dataLength);
+  const mounted = useMountedAfterPaint();
 
   // Build a unified data array. The last history point is also the forecast
   // anchor so the two lines connect without a gap.
@@ -402,18 +460,18 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
     if (!history?.length || !forecast?.length) return null;
     const lastH = history[history.length - 1];
     const built = [
-      ...history.map(d => ({ q: d.q, v: d.v, base: null, lo: null, hiMinusLo: null, btPred: null })),
+      ...history.map(d => ({ q: d.q, v: _finiteOrNull(d.v), base: null, lo: null, hiMinusLo: null, btPred: null })),
       ...forecast.map(d => ({
         q: d.q,
         v: null,
-        base: d.base ?? null,
-        lo: d.lo ?? null,
-        hiMinusLo: (d.hi != null && d.lo != null) ? d.hi - d.lo : null,
+        base: _finiteOrNull(d.base),
+        lo: _finiteOrNull(d.lo),
+        hiMinusLo: _finiteOrNull(Number.isFinite(d.hi) && Number.isFinite(d.lo) ? d.hi - d.lo : null),
         btPred: null,
       })),
     ];
     // Seed forecast start at last history value so lines and band connect cleanly
-    built[history.length - 1] = { ...built[history.length - 1], base: lastH.v, lo: lastH.v, hiMinusLo: 0 };
+    built[history.length - 1] = { ...built[history.length - 1], base: _finiteOrNull(lastH.v), lo: _finiteOrNull(lastH.v), hiMinusLo: 0 };
 
     // Backtest overlay: chartMetrics is the walk-forward backtest result
     // (backtesting.js's walkForwardBacktest) computed on this exact history —
@@ -430,7 +488,7 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
     if (btPeriods > 0 && btPeriods <= history.length) {
       const startIdx = history.length - btPeriods;
       for (let i = 0; i < btPeriods; i++) {
-        built[startIdx + i] = { ...built[startIdx + i], btPred: chartMetrics.predicted[i] };
+        built[startIdx + i] = { ...built[startIdx + i], btPred: _finiteOrNull(chartMetrics.predicted[i]) };
       }
       // Anchor the backtest line to the real value one quarter before its
       // first prediction, same reasoning as the history->forecast anchor
@@ -519,7 +577,23 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
     <>
       {showZoom && <ZoomControls zoom={zoom} color={color} />}
       <ResponsiveContainer width="100%" height={220}>
-        <ComposedChart data={data} syncId="pipeline-kpi" margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+        {/* No syncId here on purpose. Recharts' own syncId cross-chart brush
+            sync applies an incoming {startIndex, endIndex} to every synced
+            chart unconditionally, with no bounds check against that chart's
+            own data length (see recharts' useBrushSyncEventsListener). This
+            screen renders several ForecastCharts side by side with genuinely
+            different lengths (real EDGAR history vs. the synthetic 8Q
+            fallback series), so one chart's broadcast lands out of bounds on
+            another, which re-broadcasts its own (different) index back, and
+            so on — a real cross-chart oscillation, not a false-positive
+            identity issue, and it still reproduces the "Maximum update
+            depth exceeded" crash in CartesianAxis's RenderedTicksReporter
+            after upgrading recharts past the fix for that component's own
+            unguarded dispatch. Cross-chart zoom sync is already handled
+            correctly by ChartZoomProvider above (fraction-based, so it
+            means the same thing across charts of different lengths) —
+            syncId was redundant with it, not additive. */}
+        <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
           <XAxis
             dataKey="q"
@@ -582,8 +656,13 @@ function ForecastChart({ history, forecast, unit = "$M", color = "var(--acc)", d
           {/* Zoom/pan: drag either handle to window the chart to a range of
               quarters, or use the +/− buttons above. Recharts windows the
               main chart's own domain to [startIndex, endIndex] automatically —
-              `data` above always stays the full series regardless of zoom. */}
-          {showZoom && (
+              `data` above always stays the full series regardless of zoom.
+              Gated on `mounted` (see useMountedAfterPaint) — rendering Brush
+              one tick after first paint, once ResponsiveContainer has a real
+              measured width, avoids the transient NaN traveller coordinates
+              it produces against an unmeasured container on the very first
+              frame a Stage accordion opens. */}
+          {showZoom && mounted && (
             <Brush dataKey="q" height={20} travellerWidth={8}
               startIndex={zoom.startIndex} endIndex={zoom.endIndex} onChange={zoom.onBrushChange}
               stroke={color} fill="var(--surface-2, var(--surface))"
@@ -633,6 +712,7 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
   const first = series?.[0];
   const dataLength = (first?.history?.length || 0) + (first?.forecast?.length || 0);
   const zoom = useChartZoom(dataLength);
+  const mounted = useMountedAfterPaint();
 
   // Same stale-array hazard as ForecastChart above, compounded here: the
   // `series` prop itself is a brand-new array/objects literal built fresh
@@ -672,14 +752,14 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
       const isFc = i >= histLen;
       const row = { q: period.q, isFc };
       series.forEach(s => {
-        row[`${s.name}_h`] = !isFc ? (s.history[i]?.v ?? null) : null;
-        row[`${s.name}_f`] = isFc  ? (s.forecast[i - histLen]?.base ?? null) : null;
+        row[`${s.name}_h`] = !isFc ? _finiteOrNull(s.history[i]?.v) : null;
+        row[`${s.name}_f`] = isFc  ? _finiteOrNull(s.forecast[i - histLen]?.base) : null;
       });
       return row;
     });
     // Anchor forecast start at last history value so lines connect
     series.forEach(s => {
-      data[histLen - 1][`${s.name}_f`] = s.history[histLen - 1]?.v ?? null;
+      data[histLen - 1][`${s.name}_f`] = _finiteOrNull(s.history[histLen - 1]?.v);
     });
     _dataCacheRef.current = { sig: _sig, data };
   }
@@ -769,7 +849,9 @@ function MultiSeriesForecastChart({ series, unit = "$M", decimals }) {
             </React.Fragment>
           ))}
 
-          {showZoom && (
+          {/* See useMountedAfterPaint's comment on ForecastChart's identical
+              gate — same ResponsiveContainer/Brush first-paint hazard. */}
+          {showZoom && mounted && (
             <Brush dataKey="q" height={20} travellerWidth={8}
               startIndex={zoom.startIndex} endIndex={zoom.endIndex} onChange={zoom.onBrushChange}
               stroke={first.color} fill="var(--surface-2, var(--surface))"

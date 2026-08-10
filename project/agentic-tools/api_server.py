@@ -3154,6 +3154,6 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8001)
     args = parser.parse_args()
-    print(f"Dendrai MCP API  →  http://{args.host}:{args.port}")
-    print(f"  Docs           →  http://{args.host}:{args.port}/docs")
+    print(f"Dendrai MCP API  -> http://{args.host}:{args.port}")
+    print(f"  Docs           -> http://{args.host}:{args.port}/docs")
     uvicorn.run(app, host=args.host, port=args.port)
