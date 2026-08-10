@@ -45,6 +45,7 @@ import postgres_cis_tool
 import railway_iaas_tool
 import sailpoint_tool
 import sap_hana_tool
+import synthetic_transaction_tool
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ _ADAPTERS = {
     "railway_iaas":    railway_iaas_tool,
     "aws_iaas":        aws_iaas_tool,
     "ot_heartbeat":    ot_heartbeat_tool,
+    "synthetic_transaction": synthetic_transaction_tool,
 }
 
 
@@ -126,6 +128,13 @@ async def _poll_one(connector_id: int) -> None:
                 server_name, full["connector_type"], event.get("event_type") or "poll_event",
                 event.get("event_id"), event.get("actor"), event.get("action"), event.get("resource"),
                 event.get("severity") or "INFO", flags, event.get("raw_payload"), None,
+                # Optional: lets an adapter preserve the event's real occurred-at
+                # time (e.g. a backdated synthetic case step, or a real system's
+                # own event timestamp from `since`-windowed history) instead of
+                # every polled event landing at ingestion time regardless of
+                # when it actually happened. None (the default) is unchanged
+                # behavior for every adapter that doesn't set this key.
+                created_at=event.get("created_at"),
             )
             if row_id is not None:
                 ingested += 1

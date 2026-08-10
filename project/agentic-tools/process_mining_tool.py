@@ -59,6 +59,50 @@ PROCESS_TEMPLATES: dict[str, dict[str, Any]] = {
         "label": "Receive to Ship",
         "steps": ["Goods Received", "Putaway Confirmed", "Goods Shipped"],
     },
+    # The eight below mirror synthetic_transaction_tool.py's own ProcessDef
+    # step labels (its poll-connector simulator for systems this deployment
+    # has no live credentials for — Oracle Fusion HCM, SailPoint, SAP HANA,
+    # Dynamics, ServiceNow) — same "keep step naming in sync with the real
+    # producer" discipline as the three above. None of these have a written
+    # PaC Rego package yet (see pac_endpoints.py's process list), so unlike
+    # the three above they won't deep-link into Policy-as-Code — they're
+    # still fully case-graphable and analyzable here regardless.
+    "hire_to_retire": {
+        "label": "Hire to Retire",
+        "steps": ["Requisition Approved", "Offer Accepted", "Onboarding Completed",
+                  "Pay Rate Change", "Termination Processed"],
+    },
+    "iam": {
+        "label": "Identity & Access Management",
+        "steps": ["Access Requested", "Access Approved", "Access Provisioned",
+                  "Access Certified", "Access Revoked"],
+    },
+    "record_to_report": {
+        "label": "Record to Report",
+        "steps": ["Journal Entry Posted", "Account Reconciled", "Period Closed",
+                  "Financial Statement Published"],
+    },
+    "fixed_assets": {
+        "label": "Fixed Assets",
+        "steps": ["Asset Acquired", "Asset Capitalized", "Depreciation Posted", "Asset Disposed"],
+    },
+    "vendor_management": {
+        "label": "Vendor Management",
+        "steps": ["Vendor Onboarded", "Vendor Risk Assessed", "Vendor Contract Renewed", "Vendor Offboarded"],
+    },
+    "payroll": {
+        "label": "Payroll",
+        "steps": ["Time Entry Submitted", "Time Approved", "Payroll Calculated", "Payroll Disbursed"],
+    },
+    "inventory_master": {
+        "label": "Inventory Master",
+        "steps": ["Item Master Created", "Standard Cost Updated", "Item Master Deactivated"],
+    },
+    "customer_master_file": {
+        "label": "Customer Master File",
+        "steps": ["Customer Record Created", "Customer Record Updated",
+                  "Customer Record Merged", "Customer Record Deactivated"],
+    },
 }
 
 _UNKNOWN_STEP = "Unknown step"

@@ -717,6 +717,16 @@ window.MCP = (function () {
     return _get('/fair/severity-bands');
   }
 
+  /**
+   * Real, pickable values for every FAIR resource type — CEM events,
+   * CEM event templates, SOX processes, and controls — so the Risk
+   * Quantification screen's "Resource reference" field can be a dropdown of
+   * actual data instead of a raw id/ref the user has to already know.
+   */
+  async function fairLookups() {
+    return _get('/fair/lookups');
+  }
+
   // ── Process Mining — process_mining_endpoints.py ──────────────────────────────
 
   /** The known process templates (id, label, canonical step order). */
@@ -805,6 +815,7 @@ window.MCP = (function () {
     fairLatestQuantification,
     fairControlRoi,
     fairSeverityBands,
+    fairLookups,
     // Process Mining
     pmListProcesses,
     pmSummary,
