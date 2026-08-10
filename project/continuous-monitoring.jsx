@@ -107,6 +107,15 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
   const [lastRefresh, setLastRefresh] = React.useState(null);
   const [isPaused, setIsPaused] = React.useState(false);
   const [evidenceView, setEvidenceView] = React.useState("domain");
+  // Total ALE tile below is Continuous Watch's only entry point into Risk
+  // Quantification (that screen is otherwise reachable solely via the
+  // sidebar) — fetched once here, separately from the 5s command-center
+  // poll above, since FAIR quantifications change on human/DAG cadence, not
+  // in near-real-time like adjudication counts.
+  const [totalAle, setTotalAle] = React.useState(null);
+  React.useEffect(() => {
+    window.MCP.fairAleSummary(365).then(d => setTotalAle(d.total_ale ?? 0)).catch(() => {});
+  }, []);
 
   const load = React.useCallback(() => {
     return fetch(`${_cmBase()}/command-center`, { credentials: "include" })
@@ -186,6 +195,10 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
             <CMTile label="Model Health drift" value={data?.model_health_drift ? "Drift" : "Stable"}
               tone={data?.model_health_drift ? "bad" : "good"} sub="Ratio + FRED regime PSI"
               onClick={() => goTo("modelhealth")} />
+            <CMTile label="Total ALE at risk"
+              value={totalAle == null ? "…" : totalAle >= 1000 ? `$${(totalAle / 1000).toFixed(1)}B` : `$${totalAle.toFixed(1)}M`}
+              tone={totalAle > 0 ? "warn" : "good"} sub="FAIR Monte Carlo, trailing 365d — quantify a new event, process, risk, or control"
+              onClick={() => goTo("riskquant")} />
           </div>
 
           <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
