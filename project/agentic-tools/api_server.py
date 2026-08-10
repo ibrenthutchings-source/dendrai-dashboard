@@ -272,6 +272,7 @@ async def lifespan(application: FastAPI):
             _seed_cem_templates()
             _seed_ticker_cik()
             _seed_controls_catalog()
+            _seed_synthetic_connectors()
             db.seed_builtin_pac_processes()
             db.seed_framework_mappings()
             logger.info("Static reference data seeded")
@@ -519,6 +520,51 @@ def _seed_controls_catalog() -> None:
     removed = db.delete_stale_catalog_controls(valid_processes)
     if removed:
         logger.info("Removed %d stale controls_catalog rows for retired processes", removed)
+
+
+# Default poll connectors for synthetic_transaction_tool.py's simulator — one
+# per (system, process) pair, all sharing connector_type "synthetic_transaction"
+# and differentiated only by extra_config.process. 300s so Continuous Watch
+# visibly gains new activity every few minutes rather than every 30 (the
+# default poll_interval_s real connectors use).
+_SYNTHETIC_CONNECTORS_DEFAULT = [
+    ("Oracle Fusion — Hire to Retire",            "hire_to_retire",       "Oracle Fusion"),
+    ("SailPoint — Identity & Access Management",  "iam",                  "SailPoint"),
+    ("SAP HANA — Order to Cash",                  "order_to_cash",        "SAP HANA"),
+    ("SAP HANA — Procure to Pay",                 "procure_to_pay",       "SAP HANA"),
+    ("SAP HANA — Record to Report",               "record_to_report",     "SAP HANA"),
+    ("SAP HANA — Fixed Assets",                   "fixed_assets",         "SAP HANA"),
+    ("SAP HANA — Vendor Management",              "vendor_management",    "SAP HANA"),
+    ("SAP HANA — Payroll",                        "payroll",              "SAP HANA"),
+    ("Dynamics 365 — Receive to Ship",            "receive_to_ship",      "Dynamics 365"),
+    ("Dynamics 365 — Inventory Master",           "inventory_master",     "Dynamics 365"),
+    ("ServiceNow — Customer Master File",         "customer_master_file", "ServiceNow"),
+]
+
+
+def _seed_synthetic_connectors() -> None:
+    if not db.is_available():
+        return
+    rows = [
+        {
+            "connector_type": "synthetic_transaction", "display_name": display_name,
+            "auth_type": "none", "poll_interval_s": 300,
+            "extra_config": {"process": process, "system_label": system_label},
+        }
+        for display_name, process, system_label in _SYNTHETIC_CONNECTORS_DEFAULT
+    ]
+    try:
+        seeded = db.seed_synthetic_connectors(rows)
+    except db.EncryptionKeyMissing as exc:
+        # Reference-data seeding must never crash startup — see every other
+        # _seed_* helper's db.is_available() guard for the same principle.
+        # Unlike those, this one can additionally fail on a missing
+        # CONNECTOR_ENCRYPTION_KEY (create_poll_connector encrypts even an
+        # empty synthetic credentials dict), so it needs its own guard.
+        logger.warning("Synthetic connector seeding skipped: %s", exc)
+        return
+    if seeded:
+        logger.info("Seeded %d synthetic transaction simulator connector(s)", seeded)
 
 
 # ── Tenant resolution (multi-tenancy) ────────────────────────────────────────
@@ -1079,6 +1125,13 @@ def upsert_cem_template(template: dict):
         raise HTTPException(status_code=503, detail="Database not connected — set DATABASE_URL")
     row_id = db.upsert_cem_event_template(template)
     return {"saved": row_id is not None, "id": row_id}
+
+
+@app.get("/cem-events")
+def get_cem_events(limit: int = 200):
+    """Recently-logged CEM incidents (real cem_events rows, not templates) —
+    backs the Risk Quantification screen's "CEM Event" resource picker."""
+    return {"events": db.list_recent_cem_events(limit) if db.is_available() else []}
 
 
 # ── Company / ticker lookup ───────────────────────────────────────────────────

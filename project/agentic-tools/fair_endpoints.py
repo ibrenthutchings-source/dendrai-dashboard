@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 import db
 import fair_tool
+import process_mining_tool as pm
 from auth_endpoints import get_current_user, require_screen_permission
 
 logger = logging.getLogger("ubo.fair")
@@ -51,6 +52,8 @@ class QuantifyRequest(BaseModel):
     resource_ref: str           # id/slug within that resource's own table (cem_events.id, a SOX
                                  # process_id, a risk_ref, a control_id — stringified either way)
     company_id: Optional[int] = None
+    ticker: Optional[str] = None        # alternative to company_id — resolved server-side, since the
+                                         # frontend form only ever has a ticker on hand, never the internal id
     run_id: Optional[int] = None
     control_id: Optional[str] = None    # whose fire history feeds TEF, when different from resource_ref
     process: Optional[str] = None       # PaC process id, for cross-navigation from the result
@@ -83,6 +86,30 @@ async def severity_bands():
     return {"bands": fair_tool.CEM_SEVERITY_BANDS}
 
 
+@router.get("/lookups")
+async def lookups():
+    """Everything the Risk Quantification screen's "Resource reference"
+    picker needs to render real dropdowns instead of asking the user to
+    type a raw DB id/ref from memory — one call instead of reaching into
+    three other screens' own routers (which would 403 for a user who has
+    riskquant access but not, say, continuousmonitoring — process-mining's
+    router is gated on that, not this one)."""
+    if not db.is_available():
+        return {"cem_events": [], "cem_event_templates": [], "sox_processes": [], "controls": []}
+    cem_events, cem_event_templates, controls = await asyncio.gather(
+        asyncio.to_thread(db.list_recent_cem_events, 200),
+        asyncio.to_thread(db.get_cem_event_templates),
+        asyncio.to_thread(db.list_controls),
+    )
+    sox_processes = [{"id": pid, "label": tmpl["label"]} for pid, tmpl in pm.PROCESS_TEMPLATES.items()]
+    return {
+        "cem_events": cem_events,
+        "cem_event_templates": cem_event_templates,
+        "sox_processes": sox_processes,
+        "controls": controls,
+    }
+
+
 @router.post("/quantify")
 async def quantify(req: QuantifyRequest, current_user: dict = Depends(get_current_user)):
     if req.resource_type not in _VALID_RESOURCE_TYPES:
@@ -93,9 +120,13 @@ async def quantify(req: QuantifyRequest, current_user: dict = Depends(get_curren
         stats = await asyncio.to_thread(db.get_control_fire_stats, req.control_id, req.window_days)
         fire_count_window = stats["fire_count_window"]
 
+    company_id = req.company_id
+    if company_id is None and req.ticker and db.is_available():
+        company_id = await asyncio.to_thread(db.get_company_id_by_ticker, req.ticker.strip().upper())
+
     sox_exposure = req.sox_estimated_exposure
-    if req.resource_type == "sox_process" and sox_exposure is None and req.company_id and db.is_available():
-        details = await asyncio.to_thread(db.get_sox_process_details, req.company_id)
+    if req.resource_type == "sox_process" and sox_exposure is None and company_id and db.is_available():
+        details = await asyncio.to_thread(db.get_sox_process_details, company_id)
         sox_exposure = (details.get(req.resource_ref) or {}).get("estimated_exposure")
 
     manual_magnitude = None
@@ -117,7 +148,7 @@ async def quantify(req: QuantifyRequest, current_user: dict = Depends(get_curren
     if req.persist and db.is_available():
         quant_id = await asyncio.to_thread(db.save_fair_quantification, {
             "resource_type": req.resource_type, "resource_ref": req.resource_ref,
-            "company_id": req.company_id, "run_id": req.run_id,
+            "company_id": company_id, "run_id": req.run_id,
             "control_id": req.control_id, "process": req.process,
             **result,
             "created_by": current_user.get("username"),

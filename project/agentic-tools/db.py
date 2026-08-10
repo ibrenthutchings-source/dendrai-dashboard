@@ -4630,6 +4630,40 @@ def save_cem_events(run_id: int, events: list) -> None:
     _run(_do)
 
 
+def list_recent_cem_events(limit: int = 200) -> list:
+    """Recently-logged CEM incidents across every run, newest first — backs
+    the Risk Quantification screen's "CEM Event" resource picker so a user
+    can pick a real, already-adjudicated incident by name instead of having
+    to know its raw cem_events.id. Joins risk_loop_runs for the ticker each
+    event belongs to, since cem_events itself has no company/ticker column."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ce.id, ce.run_id, r.ticker, ce.control, ce.area, ce.risk_label,
+                           ce.severity, ce.exposure, ce.exposure_amount_m, ce.exposure_source,
+                           ce.category, ce.created_at
+                    FROM cem_events ce
+                    JOIN risk_loop_runs r ON r.id = ce.run_id
+                    ORDER BY ce.created_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                return [
+                    {
+                        "id": r[0], "run_id": r[1], "ticker": r[2], "control": r[3],
+                        "area": r[4], "risk_label": r[5], "severity": r[6], "exposure": r[7],
+                        "exposure_amount_m": float(r[8]) if r[8] is not None else None,
+                        "exposure_source": r[9], "category": r[10],
+                        "created_at": r[11].isoformat() if r[11] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do, default=[])
+
+
 def save_loop_log(run_id: int, entries: list) -> None:
     if not entries:
         return
@@ -9571,6 +9605,34 @@ def create_poll_connector(connector_type: str, display_name: str, base_url: Opti
                 row = cur.fetchone()
                 return row[0] if row else None
     return _run(_do)
+
+
+def seed_synthetic_connectors(connectors: list) -> int:
+    """Idempotently create default poll connectors — skips any whose
+    (connector_type, display_name) pair already exists. `connectors[i]`:
+    {connector_type, display_name, extra_config, poll_interval_s}. There's no
+    DB constraint backing the dedup (poll_connectors has no natural unique
+    key), so this is a plain existing-rows check, same tolerance
+    seed_cem_event_templates' ON CONFLICT gives itself via a real constraint —
+    here it's just done in Python instead. Used at startup to register the
+    eleven synthetic-transaction simulator connectors (see
+    synthetic_transaction_tool.py) without re-creating them on every restart."""
+    if not connectors:
+        return 0
+    existing = {(c["connector_type"], c["display_name"]) for c in (list_poll_connectors() or [])}
+    created = 0
+    for c in connectors:
+        if (c["connector_type"], c["display_name"]) in existing:
+            continue
+        new_id = create_poll_connector(
+            connector_type=c["connector_type"], display_name=c["display_name"],
+            base_url=c.get("base_url"), auth_type=c.get("auth_type", "none"),
+            credentials=c.get("credentials", {}), extra_config=c.get("extra_config"),
+            poll_interval_s=c.get("poll_interval_s", 1800), created_by="system:seed",
+        )
+        if new_id is not None:
+            created += 1
+    return created
 
 
 def list_poll_connectors(include_credentials: bool = False) -> list:
