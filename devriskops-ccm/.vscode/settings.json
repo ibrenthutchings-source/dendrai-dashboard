@@ -1,0 +1,17 @@
+{
+  "mcp.servers": {
+    "devriskops-ccm": {
+      "command": "python",
+      "args": ["${workspaceFolder}/mcp_server.py"],
+      "env": {
+        "CCM_BACKEND_API_URL": "http://localhost:8000",
+        "CCM_API_KEY": "dev-local-insecure-key-change-me",
+        "DATABASE_URL": "postgresql://ccm_user:ccm_password@localhost:5432/devriskops_ccm",
+        "CCM_PSI_BASELINE_DAYS": "30",
+        "CCM_PSI_TARGET_DAYS": "7"
+      }
+    }
+  },
+  "python.analysis.extraPaths": ["${workspaceFolder}"],
+  "python.testing.pytestEnabled": false
+}
