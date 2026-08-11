@@ -70,6 +70,16 @@ window.MCP = (function () {
     }
   }
 
+  /** Deployment environment name + whether this is the Development environment (Exception Management's nav gating). */
+  async function fetchEnvironment() {
+    try {
+      const r = await _get('/health');
+      return { environment: r.environment || 'production', isDev: !!r.environment_is_dev };
+    } catch {
+      return { environment: 'unknown', isDev: false };
+    }
+  }
+
   // ── Full analysis ───────────────────────────────────────────────────────────
 
   /**
@@ -727,6 +737,38 @@ window.MCP = (function () {
     return _get('/fair/lookups');
   }
 
+  // ── Exception Management — exceptions_endpoints.py (Development environment only) ──
+
+  /** Events awaiting triage, highest uncertainty first. 404s outside the Development environment. */
+  async function exceptionsPending(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set('limit', opts.limit);
+    if (opts.minUncertainty) params.set('min_uncertainty', opts.minUncertainty);
+    return _get(`/exceptions/pending?${params.toString()}`);
+  }
+
+  /** Record an auditor's resolution for one pending exception. */
+  async function submitExceptionTriage(eventId, resolutionLabel, justificationNotes) {
+    return _post(`/exceptions/${eventId}/triage`, {
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
+  /** Headline counts: pending, resolution mix, pending-by-system. */
+  async function exceptionsSummary() {
+    return _get('/exceptions/summary');
+  }
+
+  /** Resolved triage decisions, most recent first — Model Analytics tab. */
+  async function exceptionsHistory(limit = 200) {
+    return _get(`/exceptions/history?limit=${limit}`);
+  }
+
+  /** Live PSI per system_source x {anomaly_score, uncertainty_score} — Feature Drift tab. */
+  async function exceptionsDriftSummary() {
+    return _get('/exceptions/drift-summary');
+  }
+
   // ── Process Mining — process_mining_endpoints.py ──────────────────────────────
 
   /** The known process templates (id, label, canonical step order). */
@@ -816,6 +858,13 @@ window.MCP = (function () {
     fairControlRoi,
     fairSeverityBands,
     fairLookups,
+    // Exception Management
+    exceptionsPending,
+    submitExceptionTriage,
+    exceptionsSummary,
+    exceptionsHistory,
+    exceptionsDriftSummary,
+    fetchEnvironment,
     // Process Mining
     pmListProcesses,
     pmSummary,

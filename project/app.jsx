@@ -20,6 +20,7 @@ const TokenUsageScreenLazy = lazyGlobal(() => import('./token-usage.jsx'), 'Toke
 const ModelHealthScreenLazy = lazyGlobal(() => import('./model-health.jsx'), 'ModelHealthScreen');
 const ContinuousMonitoringScreenLazy = lazyGlobal(() => import('./continuous-monitoring.jsx'), 'ContinuousMonitoringScreen');
 const RiskQuantificationScreenLazy = lazyGlobal(() => import('./fair-quantification.jsx'), 'RiskQuantificationScreen');
+const ExceptionsScreenLazy = lazyGlobal(() => import('./exceptions.jsx'), 'ExceptionsScreen');
 const InfrastructureMonitoringScreenLazy = lazyGlobal(() => import('./infrastructure-monitoring.jsx'), 'InfrastructureMonitoringScreen');
 const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
@@ -679,6 +680,15 @@ function App() {
 
   const auth = window.useAuth ? window.useAuth() : null;
   const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
+
+  // Development-environment gate for dev-only nav items (currently just
+  // Exception Management) — see deploy_env.py. Backend independently 404s
+  // the underlying endpoints outside Development, so this is purely a nav
+  // visibility concern, not the enforcement boundary.
+  const [isDevEnv, setIsDevEnv] = React.useState(false);
+  React.useEffect(() => {
+    window.MCP.fetchEnvironment().then(e => setIsDevEnv(e.isDev)).catch(() => {});
+  }, []);
 
   // ---- Appearance persistence (accent/density/colorScheme, per-user via
   // auth.users.preferences — follows the account across browsers/machines,
@@ -2075,6 +2085,7 @@ function App() {
           activeGovTab={activeGovTab}
           isAdmin={auth?.user?.role === "admin"}
           screenPerms={auth?.user?.screen_permissions}
+          isDevEnv={isDevEnv}
           onNavigate={(screen, govTab) => {
             setActiveScreen(screen);
             if (govTab) setActiveGovTab(govTab);
@@ -2196,6 +2207,15 @@ function App() {
           <ScreenAccessGate screenId="riskquant">
             <div className="panel active">
               <RiskQuantificationScreenLazy onNavigate={navigateToScreen} />
+            </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Exception Management (Continuous Control Monitoring triage — Development environment only) ---- */}
+          {activeScreen === "exceptions" && isDevEnv && (
+          <ScreenAccessGate screenId="exceptions">
+            <div className="panel active">
+              <ExceptionsScreenLazy onNavigate={navigateToScreen} />
             </div>
           </ScreenAccessGate>
           )}
