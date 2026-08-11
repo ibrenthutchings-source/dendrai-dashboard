@@ -74,17 +74,27 @@ const BASE_FW_ORDER  = ["Internal", "ISO/IEC 42001", "SOC 2", "ISO/IEC 27001", "
 const BASE_DOM_ORDER = ["Finance", "IT", "Operational", "HR", "Legal", "Technology"];
 const FALLBACK_COLOR = "#64748b";
 
-function buildGraphData() {
+// allowedFrameworks: when set (the Framework Matrix's own visible column
+// set — matrixCfg.matrix plus any organically-detected extras, see
+// risk-register-review.jsx), only controls tagged to one of those
+// frameworks are included, so the Sankey never shows a control/framework
+// that isn't actually on the Framework Matrix tab. null/undefined = no
+// filter (matches this function's original always-show-everything behavior).
+function buildGraphData(allowedFrameworks) {
+  const filteredControls = allowedFrameworks
+    ? CONTROLS.filter(c => allowedFrameworks.includes(c.fw))
+    : CONTROLS;
+
   // Derive fw/dom order dynamically so custom controls' frameworks appear
-  const fwOrder  = [...BASE_FW_ORDER];
-  const domOrder = [...BASE_DOM_ORDER];
-  CONTROLS.forEach(c => {
+  const fwOrder  = allowedFrameworks ? BASE_FW_ORDER.filter(f => allowedFrameworks.includes(f)) : [...BASE_FW_ORDER];
+  const domOrder = BASE_DOM_ORDER.filter(d => filteredControls.some(c => c.dom === d));
+  filteredControls.forEach(c => {
     if (!fwOrder.includes(c.fw))   fwOrder.push(c.fw);
     if (!domOrder.includes(c.dom)) domOrder.push(c.dom);
   });
 
   const nodes = [
-    ...CONTROLS.map(c => ({
+    ...filteredControls.map(c => ({
       id: `ctrl:${c.ref}`, label: c.ref, fullName: c.name,
       type: "control", color: DOMAIN_COLOR[c.dom] || FALLBACK_COLOR,
       fw: c.fw, dom: c.dom, cat: c.cat,
@@ -97,12 +107,12 @@ function buildGraphData() {
     })),
   ];
 
-  const ctrlFwLinks = CONTROLS.map(c => ({
+  const ctrlFwLinks = filteredControls.map(c => ({
     source: `ctrl:${c.ref}`, target: `fw:${c.fw}`, value: 1,
   }));
 
   const fwDomAgg = {};
-  CONTROLS.forEach(c => {
+  filteredControls.forEach(c => {
     const key = `fw:${c.fw}|||dom:${c.dom}`;
     fwDomAgg[key] = (fwDomAgg[key] || 0) + 1;
   });
@@ -209,7 +219,7 @@ function ColHeader({ label, x, y }) {
 
 // ─── Main component ────────────────────────────────────────────────────────────
 
-export function RiskSankey() {
+export function RiskSankey({ allowedFrameworks } = {}) {
   const svgRef  = useRef(null);
   const [tooltip, setTooltip]  = useState(null);
   const [colHdrs, setColHdrs]  = useState([]);   // column header positions resolved after layout
@@ -269,7 +279,7 @@ export function RiskSankey() {
       .nodeSort(null)
       .extent([[PAD.left, PAD.top], [W - PAD.right, H - PAD.bottom]]);
 
-    const _fresh = buildGraphData();
+    const _fresh = buildGraphData(allowedFrameworks);
     const graphData = {
       nodes: _fresh.nodes.map(d => ({ ...d })),
       links: _fresh.links.map(d => ({ ...d })),
@@ -503,7 +513,7 @@ export function RiskSankey() {
       if (pinId) { pinId = null; clearHighlight(); }
     });
 
-  }, [controlsRev]);
+  }, [controlsRev, allowedFrameworks]);
 
   return (
     <div style={{

@@ -120,7 +120,13 @@ function safeId(s) { return (s || "").replace(/[^a-zA-Z0-9]/g, "_"); }
 
 // ─── Build graph ──────────────────────────────────────────────────────────────
 
-function buildGraph(risks, dbEdges, ctrlStates) {
+// allowedFrameworks: when set (the Framework Matrix's own visible column
+// set — matrixCfg.matrix plus any organically-detected extras, see
+// risk-register-review.jsx), only controls tagged to one of those
+// frameworks become nodes/edges here, so the Risk Graph never shows a
+// control that isn't actually on the Framework Matrix tab. null/undefined =
+// no filter (original always-show-everything behavior).
+function buildGraph(risks, dbEdges, ctrlStates, allowedFrameworks) {
   const allRisks = (risks || [])
     .filter(r => r.id || r.risk_ref)
     .map(r => ({
@@ -180,8 +186,12 @@ function buildGraph(risks, dbEdges, ctrlStates) {
     }
   });
 
-  // Control nodes
-  MASTER_CONTROLS.forEach(c => {
+  // Control nodes — only controls on an allowed framework, when filtering
+  const controlsInScope = allowedFrameworks
+    ? MASTER_CONTROLS.filter(c => allowedFrameworks.includes(c.fw))
+    : MASTER_CONTROLS;
+  const refsInScope = new Set(controlsInScope.map(c => c.ref));
+  controlsInScope.forEach(c => {
     addNode({ id: `ctrl::${c.ref}`, type: "control", label: c.name, ref: c.ref, category: c.cat, fw: c.fw, domain: c.domain });
   });
 
@@ -192,7 +202,7 @@ function buildGraph(risks, dbEdges, ctrlStates) {
     const refs = cs
       ? [...new Set([...(cs.autoMapped || []), ...(cs.manual || [])])]
       : autoMapControls(r.name || r.current_wording || "", r.category);
-    refs.forEach(ref => {
+    refs.filter(ref => refsInScope.has(ref)).forEach(ref => {
       addLink({ id: `c:${ref}:${rid}`, source: `ctrl::${ref}`, target: rid, type: "control" });
     });
   });
@@ -325,7 +335,7 @@ function FwPalette() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function RiskGraphViz({ risks, ticker, runId, ctrlStates }) {
+export function RiskGraphViz({ risks, ticker, runId, ctrlStates, allowedFrameworks }) {
   const svgRef       = useRef(null);
   const simRef       = useRef(null);
   const zoomRef      = useRef(null);
@@ -432,7 +442,7 @@ export function RiskGraphViz({ risks, ticker, runId, ctrlStates }) {
     svg.append("rect").attr("width", "100%").attr("height", "100%").attr("fill", "url(#dotgrid)");
 
     // ── Build & filter graph ──────────────────────────────────────────────────
-    const { nodes, links } = buildGraph(risks, relEdges, ctrlStates);
+    const { nodes, links } = buildGraph(risks, relEdges, ctrlStates, allowedFrameworks);
 
     const filteredLinks = links.filter(l =>
       (l.type !== "membership"   || showMember)    &&
@@ -668,7 +678,7 @@ export function RiskGraphViz({ risks, ticker, runId, ctrlStates }) {
     });
 
     return () => sim.stop();
-  }, [risks, showMember, showCross, showCtrl, showRelations, controlsRev, relEdges, ctrlStates]);
+  }, [risks, showMember, showCross, showCtrl, showRelations, controlsRev, relEdges, ctrlStates, allowedFrameworks]);
 
   // ── Toggle button style ───────────────────────────────────────────────────
   const togStyle = (on, color) => ({
