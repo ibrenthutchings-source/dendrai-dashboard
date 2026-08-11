@@ -49,6 +49,8 @@ const WORKFLOW_STAGES = [
       { screen: "notifs", label: "Notifications", desc: "Scheduled posture digests plus the graduated stakeholder alert cascade driven by control-event severity." },
       { screen: "continuousmonitoring", label: "Continuous Watch", desc: "Always-on command center — 8-K and control events stream in and trigger the tiered stakeholder cascade the moment they fire." },
       { screen: "controls", label: "Controls Monitor", desc: "Live control-health board — flags failing and degrading controls in real time instead of at period-end testing." },
+      { screen: "riskquant", label: "Risk Quantification", desc: "FAIR-style Monte Carlo loss modeling — turns a CEM event, SOX process, risk, or control into a dollar-denominated annualized loss distribution instead of an ordinal severity label." },
+      { screen: "exceptions", label: "Exception Management", devOnly: true, desc: "Continuous Control Monitoring triage — connector events scored for anomaly/uncertainty land here for a human auditor to resolve. Development environment only." },
       { screen: "rrreview", label: "Risk & Control Ledger", desc: "The living risk register with its control mappings — Save All generates reviewed Risk-as-Code and Controls-as-Code together, with the relationship between them embedded in both artifacts." },
       { screen: "ubogov", label: "Telemetry Detail", desc: "Ultimate-beneficial-ownership oversight — surfaces hidden ownership and control chains behind the entity." },
     ],
@@ -66,9 +68,17 @@ const WORKFLOW_STAGES = [
   },
 ];
 
-function HelpScreen({ onNavigate }) {
+// devOnly items (currently just Exception Management) are hidden outside the
+// Development environment — same isDevEnv gate as nav.jsx's devOnly handling,
+// applied here too since this screen mirrors NAV_SECTIONS (see file header).
+function _visibleItems(stage, isDevEnv) {
+  return stage.items.filter(it => !it.devOnly || isDevEnv);
+}
+
+function HelpScreen({ onNavigate, isDevEnv = false }) {
   const [activeStage, setActiveStage] = useState("risk");
   const stage = WORKFLOW_STAGES.find(s => s.id === activeStage);
+  const stageItems = stage ? _visibleItems(stage, isDevEnv) : [];
 
   return (
     <>
@@ -96,7 +106,7 @@ function HelpScreen({ onNavigate }) {
                 <Icon name={s.icon} size={13}/>
                 <span style={{ fontSize: 12.5, fontWeight: 600, color: activeStage === s.id ? "var(--acc-ink)" : "var(--ink)" }}>{s.label}</span>
               </div>
-              <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{s.items.length} screen{s.items.length === 1 ? "" : "s"}</div>
+              <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{_visibleItems(s, isDevEnv).length} screen{_visibleItems(s, isDevEnv).length === 1 ? "" : "s"}</div>
             </button>
             {i < WORKFLOW_STAGES.length - 1 && (
               <div style={{ display: "flex", alignItems: "center", color: "var(--ink-4)", flex: "0 0 auto" }}>
@@ -112,7 +122,7 @@ function HelpScreen({ onNavigate }) {
           <h3>{stage.label}</h3>
           <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 12 }}>{stage.desc}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
-            {stage.items.map(it => (
+            {stageItems.map(it => (
               <button
                 key={it.screen + (it.govTab || "")}
                 type="button"

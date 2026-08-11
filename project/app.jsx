@@ -2489,7 +2489,7 @@ function App() {
           {/* ---- Help ---- */}
           {activeScreen === "help" && (
           <div className="panel active">
-            <HelpScreenLazy onNavigate={(screen, govTab) => { setActiveScreen(screen); if (govTab) setActiveGovTab(govTab); }} />
+            <HelpScreenLazy isDevEnv={isDevEnv} onNavigate={(screen, govTab) => { setActiveScreen(screen); if (govTab) setActiveGovTab(govTab); }} />
           </div>
           )}
 
