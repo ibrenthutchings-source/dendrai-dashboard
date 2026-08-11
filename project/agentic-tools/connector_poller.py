@@ -34,8 +34,10 @@ from datetime import datetime, timedelta, timezone
 
 import db
 import denied_party_screening_tool
+import deploy_env
 import dynamics365_tool
 import aws_iaas_tool
+import exception_tool
 import mcp_governance
 import netsuite_tool
 import oracle_fusion_tool
@@ -68,6 +70,27 @@ _ADAPTERS = {
     "ot_heartbeat":    ot_heartbeat_tool,
     "synthetic_transaction": synthetic_transaction_tool,
 }
+
+
+def _score_exception_event(connector: dict, event: dict) -> None:
+    """Best-effort: scores one connector event for Exception Management
+    (exception_tool.score_event) and persists it (db.insert_exception_event).
+    Development environment only — see deploy_env.py; every other
+    environment's ingestion path never calls this. Runs inside the same
+    per-event try/except as the primary mcp_governance ingestion, so a
+    failure here can't affect that ingestion or take down the poll loop."""
+    extra_config = connector.get("extra_config") or {}
+    system_source = extra_config.get("system_label") or connector["connector_type"]
+    process = extra_config.get("process")
+    control_id = event.get("resource") or event.get("event_id") or "unknown"
+    scored = exception_tool.score_event(
+        event.get("event_type") or "", event.get("severity") or "INFO", event.get("raw_payload") or {},
+    )
+    event_ts = event.get("created_at") or datetime.now(timezone.utc)
+    db.insert_exception_event(
+        control_id, system_source, process, event_ts, scored["features"], scored["model_version"],
+        scored["anomaly_score"], scored["uncertainty_score"], scored["requires_human_review"],
+    )
 
 
 def _is_due(connector: dict) -> bool:
@@ -138,6 +161,8 @@ async def _poll_one(connector_id: int) -> None:
             )
             if row_id is not None:
                 ingested += 1
+            if deploy_env.IS_DEVELOPMENT:
+                await asyncio.to_thread(_score_exception_event, full, event)
         except Exception as exc:
             logger.warning("Connector %s: failed to ingest one event: %s", connector_id, exc)
 

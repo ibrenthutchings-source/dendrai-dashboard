@@ -135,6 +135,8 @@ import vendor_risk_endpoints
 import ai_governance_endpoints
 import infrastructure_monitoring_endpoints
 import fair_endpoints
+import deploy_env
+import exceptions_endpoints
 import process_mining_endpoints
 import pac_negative_sweep
 import connector_hygiene_sweep
@@ -832,6 +834,7 @@ app.include_router(infrastructure_monitoring_endpoints.router)
 # Risk Quantification: FAIR Monte Carlo loss modeling over adjudicated events,
 # SOX processes, risk register entries, and CEM events.
 app.include_router(fair_endpoints.router)
+app.include_router(exceptions_endpoints.router)
 
 # Process Mining: variant analysis, conformance checking, cycle-time/bottleneck
 # stats, and rework detection over case-tracked adjudications.
@@ -1095,6 +1098,8 @@ def health():
         # call against FALLBACK_MODEL — the cheap public signal that
         # DENDRAI_CLAUDE_MODEL is stale. Full detail: GET /auth/admin/model-config.
         "ai_model_fallback_active": claude_client.get_model_status()["fallback_active"],
+        "environment": deploy_env.ENVIRONMENT_NAME,
+        "environment_is_dev": deploy_env.IS_DEVELOPMENT,
     }
 
 
@@ -2859,6 +2864,10 @@ async def model_health_drift_watch() -> None:
             alerted = await asyncio.to_thread(_check_model_health_drift_once)
             if alerted:
                 logger.info("Model Health drift watch: %d new alert(s)", len(alerted))
+            if deploy_env.IS_DEVELOPMENT:
+                exc_alerted = await asyncio.to_thread(exceptions_endpoints.check_exception_drift_once)
+                if exc_alerted:
+                    logger.info("Exception Management drift watch: %d new alert(s)", len(exc_alerted))
         except asyncio.CancelledError:
             logger.info("Model Health drift watch stopped")
             break

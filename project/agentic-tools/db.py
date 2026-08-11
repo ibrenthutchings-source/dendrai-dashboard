@@ -1347,6 +1347,52 @@ CREATE TABLE IF NOT EXISTS fair_quantifications (
 );
 CREATE INDEX IF NOT EXISTS idx_fair_quant_resource ON fair_quantifications (resource_type, resource_ref, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fair_quant_control   ON fair_quantifications (control_id, created_at DESC) WHERE control_id IS NOT NULL;
+
+-- Exception Management (Continuous Control Monitoring triage) — Development
+-- environment only (see deploy_env.py / exceptions_endpoints.py). Ported
+-- from devriskops-ccm/schema.sql (a standalone Streamlit+FastAPI+Airflow
+-- service that was never wired into this app) into this app's own tables,
+-- BIGSERIAL ids instead of devriskops-ccm's UUID/pgcrypto to match this
+-- schema's existing convention (no new extension dependency).
+CREATE TABLE IF NOT EXISTS exception_control_events (
+    id                      BIGSERIAL     PRIMARY KEY,
+    control_id              VARCHAR(128)  NOT NULL,
+    system_source           VARCHAR(64)   NOT NULL,
+    process                 VARCHAR(64),
+    event_timestamp         TIMESTAMPTZ   NOT NULL,
+    point_in_time_features  JSONB         NOT NULL DEFAULT '{}',
+    created_at              TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_exc_events_control   ON exception_control_events (control_id);
+CREATE INDEX IF NOT EXISTS idx_exc_events_timestamp ON exception_control_events (event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_exc_events_source    ON exception_control_events (system_source);
+
+CREATE TABLE IF NOT EXISTS exception_model_inferences (
+    id                      BIGSERIAL    PRIMARY KEY,
+    event_id                BIGINT       NOT NULL REFERENCES exception_control_events(id) ON DELETE CASCADE,
+    model_version           VARCHAR(64)  NOT NULL,
+    anomaly_score           NUMERIC(5,4) NOT NULL CHECK (anomaly_score BETWEEN 0 AND 1),
+    uncertainty_score       NUMERIC(5,4) NOT NULL CHECK (uncertainty_score BETWEEN 0 AND 1),
+    requires_human_review   BOOLEAN      NOT NULL DEFAULT FALSE,
+    scored_at               TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_exc_inferences_event ON exception_model_inferences (event_id);
+CREATE INDEX IF NOT EXISTS idx_exc_inferences_pending
+    ON exception_model_inferences (uncertainty_score DESC) WHERE requires_human_review = TRUE;
+
+CREATE TABLE IF NOT EXISTS exception_auditor_triage (
+    id                      BIGSERIAL    PRIMARY KEY,
+    event_id                BIGINT       NOT NULL UNIQUE REFERENCES exception_control_events(id) ON DELETE CASCADE,
+    auditor                 VARCHAR(128) NOT NULL,
+    resolution_label        VARCHAR(32)  NOT NULL,
+    justification_notes     TEXT,
+    reviewed_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_exc_justification_required CHECK (
+        resolution_label NOT IN ('TRUE_CONTROL_FAILURE', 'APPROVED_CARVE_OUT')
+        OR (justification_notes IS NOT NULL AND length(btrim(justification_notes)) > 0)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_exc_triage_reviewed ON exception_auditor_triage (reviewed_at DESC);
 """
 
 # Idempotent column migrations. CREATE TABLE IF NOT EXISTS never adds columns to a
@@ -9481,6 +9527,225 @@ def get_baseline_resets() -> dict:
                 cur.execute("SELECT metric_key, reset_at FROM model_health_baseline_resets")
                 return {r[0]: r[1].isoformat() for r in cur.fetchall()}
     return _run(_do) or {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Exception Management (Continuous Control Monitoring triage) — dev-only,
+# see deploy_env.py / exceptions_endpoints.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VALID_TRIAGE_LABELS = {
+    "TRUE_CONTROL_FAILURE", "BENIGN_OPERATIONAL_NOISE", "APPROVED_CARVE_OUT", "DATA_PIPELINE_ERROR",
+}
+_TRIAGE_NOTES_REQUIRED_LABELS = {"TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"}
+
+
+def insert_exception_event(control_id: str, system_source: str, process: Optional[str],
+                            event_timestamp, features: dict, model_version: str,
+                            anomaly_score: float, uncertainty_score: float,
+                            requires_human_review: bool) -> Optional[int]:
+    """One exception_control_events row + its exception_model_inferences row,
+    in a single connection — connector_poller.py's per-event scoring hook
+    calls this for every polled event once deploy_env.IS_DEVELOPMENT."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO exception_control_events
+                        (control_id, system_source, process, event_timestamp, point_in_time_features)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (control_id[:128], system_source[:64], (process[:64] if process else None),
+                     event_timestamp, Json(features or {})),
+                )
+                event_id = cur.fetchone()[0]
+                cur.execute(
+                    """
+                    INSERT INTO exception_model_inferences
+                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (event_id, model_version[:64], anomaly_score, uncertainty_score, requires_human_review),
+                )
+                return event_id
+    return _run(_do)
+
+
+def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> list:
+    """Latest inference per event, for events flagged for review with no
+    triage decision yet — highest uncertainty (most ambiguous, most
+    valuable-to-label) first. Same predicate as devriskops-ccm's
+    GET /api/v1/triage/pending."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
+                           ce.point_in_time_features,
+                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.scored_at
+                    FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
+                      AND mi.uncertainty_score >= %s
+                    ORDER BY mi.uncertainty_score DESC, ce.event_timestamp DESC
+                    LIMIT %s
+                    """,
+                    (min_uncertainty, limit),
+                )
+                out = []
+                for r in cur.fetchall():
+                    out.append({
+                        "event_id": r[0], "control_id": r[1], "system_source": r[2], "process": r[3],
+                        "event_timestamp": r[4].isoformat() if r[4] else None,
+                        "point_in_time_features": r[5] or {},
+                        "inference_id": r[6], "model_version": r[7],
+                        "anomaly_score": float(r[8]), "uncertainty_score": float(r[9]),
+                        "scored_at": r[10].isoformat() if r[10] else None,
+                    })
+                return out
+    return _run(_do) or []
+
+
+def submit_exception_triage(event_id: int, auditor: str, resolution_label: str,
+                             justification_notes: Optional[str]) -> Optional[dict]:
+    """Records (or revises, via upsert on the UNIQUE event_id) an auditor's
+    resolution. Returns None if event_id doesn't exist or resolution_label
+    is invalid/missing required notes — caller (exceptions_endpoints.py)
+    turns that into the appropriate HTTP error."""
+    if resolution_label not in _VALID_TRIAGE_LABELS:
+        return None
+    if resolution_label in _TRIAGE_NOTES_REQUIRED_LABELS and not (justification_notes or "").strip():
+        return None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM exception_control_events WHERE id = %s", (event_id,))
+                if not cur.fetchone():
+                    return None
+                cur.execute(
+                    """
+                    INSERT INTO exception_auditor_triage (event_id, auditor, resolution_label, justification_notes)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (event_id) DO UPDATE SET
+                        auditor = EXCLUDED.auditor, resolution_label = EXCLUDED.resolution_label,
+                        justification_notes = EXCLUDED.justification_notes, reviewed_at = NOW()
+                    RETURNING id, event_id, resolution_label, reviewed_at
+                    """,
+                    (event_id, auditor[:128], resolution_label, (justification_notes or None)),
+                )
+                row = cur.fetchone()
+                return {"triage_id": row[0], "event_id": row[1], "resolution_label": row[2],
+                        "reviewed_at": row[3].isoformat() if row[3] else None}
+    return _run(_do)
+
+
+def get_exception_summary() -> dict:
+    """Headline counts for the Triage Queue + Model Analytics tabs."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM exception_control_events ce
+                    JOIN exception_model_inferences mi ON mi.event_id = ce.id
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
+                    """
+                )
+                pending = cur.fetchone()[0]
+                cur.execute("SELECT resolution_label, COUNT(*) FROM exception_auditor_triage GROUP BY resolution_label")
+                by_label = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute(
+                    """
+                    SELECT ce.system_source, COUNT(*) FROM exception_control_events ce
+                    JOIN exception_model_inferences mi ON mi.event_id = ce.id
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
+                    GROUP BY ce.system_source
+                    """
+                )
+                by_system = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute("SELECT COUNT(*) FROM exception_control_events")
+                total_events = cur.fetchone()[0]
+                return {
+                    "pending_count": pending, "total_events": total_events,
+                    "resolution_mix": by_label, "pending_by_system": by_system,
+                }
+    return _run(_do) or {"pending_count": 0, "total_events": 0, "resolution_mix": {}, "pending_by_system": {}}
+
+
+def list_exception_triage_history(limit: int = 200) -> list:
+    """Resolved triage decisions, most recent first — Model Analytics tab's
+    review-volume/resolution-mix trend."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT tri.id, tri.event_id, ce.control_id, ce.system_source, ce.process,
+                           tri.auditor, tri.resolution_label, tri.justification_notes, tri.reviewed_at,
+                           mi.anomaly_score, mi.uncertainty_score
+                    FROM exception_auditor_triage tri
+                    JOIN exception_control_events ce ON ce.id = tri.event_id
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m WHERE m.event_id = ce.id
+                        ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    ORDER BY tri.reviewed_at DESC LIMIT %s
+                    """,
+                    (limit,),
+                )
+                out = []
+                for r in cur.fetchall():
+                    out.append({
+                        "triage_id": r[0], "event_id": r[1], "control_id": r[2], "system_source": r[3],
+                        "process": r[4], "auditor": r[5], "resolution_label": r[6],
+                        "justification_notes": r[7], "reviewed_at": r[8].isoformat() if r[8] else None,
+                        "anomaly_score": float(r[9]), "uncertainty_score": float(r[10]),
+                    })
+                return out
+    return _run(_do) or []
+
+
+def get_exception_score_history(system_source: str, metric: str, limit: int = 500) -> list:
+    """Chronological anomaly_score or uncertainty_score series for one
+    system_source, oldest first — the input to feature-drift PSI
+    (drift_tool.compute_psi via exceptions_endpoints.compute_exception_drift),
+    split into baseline/current windows by the caller exactly like
+    drift_tool.compute_ai_acceptance_drift already does for AI-acceptance
+    events. `metric` must be "anomaly_score" or "uncertainty_score" — the
+    caller validates this before it ever reaches the interpolated column name."""
+    col = "anomaly_score" if metric == "anomaly_score" else "uncertainty_score"
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT mi.{col} FROM exception_model_inferences mi
+                    JOIN exception_control_events ce ON ce.id = mi.event_id
+                    WHERE ce.system_source = %s
+                    ORDER BY mi.scored_at ASC LIMIT %s
+                    """,
+                    (system_source, limit),
+                )
+                return [float(r[0]) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def list_exception_system_sources() -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT system_source FROM exception_control_events ORDER BY 1")
+                return [r[0] for r in cur.fetchall()]
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
