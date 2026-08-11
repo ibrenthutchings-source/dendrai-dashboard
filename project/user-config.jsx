@@ -91,7 +91,7 @@ function GeneratedPasswordReveal({ username, password, onClose }) {
     }).catch(() => {});
   }
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{ width: 440 }}>
         <div className="modal-head">
           <div>
@@ -169,7 +169,7 @@ function AddUserModal({ open, onClose, onCreated, roles = [] }) {
   }
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{ width: 480 }}>
         <div className="modal-head">
           <div className="modal-title">Add User</div>
@@ -275,7 +275,7 @@ function EditUserModal({ open, user, onClose, onSaved, onPasswordSet }) {
   }
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{ width: 480 }}>
         <div className="modal-head">
           <div>
@@ -940,7 +940,7 @@ function RolesTab() {
       </div>
 
       {addOpen && (
-        <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) setAddOpen(false); }}>
+        <div className="modal open">
           <div className="modal-box" style={{ width: 400 }}>
             <div className="modal-head">
               <div className="modal-title">Add Role</div>

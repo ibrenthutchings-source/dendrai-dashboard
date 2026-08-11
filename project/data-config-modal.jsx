@@ -72,7 +72,7 @@ function DataConfigModal({ open, onClose, dataConfig, setDataConfig, cfg, onFetc
   }
 
   return (
-    <div className="modal open" onClick={e => { if (e.target.classList.contains('modal')) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box dc-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <div>

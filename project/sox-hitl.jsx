@@ -140,7 +140,7 @@ function AdjustMaterialityModal({ open, scope, ticker, onClose, onSubmit }) {
   }
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{width: 520}}>
         <div className="modal-head">
           <div className="modal-title">Adjust Materiality Basis</div>
@@ -282,7 +282,7 @@ function AdjustAccountModal({ open, acc, ticker, onClose, onSubmit }) {
   }
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{width: 520}}>
         <div className="modal-head">
           <div>
@@ -498,7 +498,7 @@ function AdjustProcessModal({ open, proc, ticker, onClose, onSubmit }) {
   }
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{width: 520}}>
         <div className="modal-head">
           <div>

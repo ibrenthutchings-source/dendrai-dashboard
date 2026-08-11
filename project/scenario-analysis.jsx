@@ -647,7 +647,7 @@ function AddAuditFromEventModal({ event, risks, onClose, onSubmit }) {
   const valid = title.trim().length >= 5;
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{ width: 560 }}>
         <div className="modal-head">
           <div>

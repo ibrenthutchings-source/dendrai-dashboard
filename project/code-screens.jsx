@@ -2200,7 +2200,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
 
       {/* Approver modal */}
       {showApprove && (
-        <div className="pac-modal-overlay" onClick={() => { setShowApprove(false); setAppErr(null); }}>
+        <div className="pac-modal-overlay">
           <div className="pac-modal" onClick={e => e.stopPropagation()}>
             <h4>Sign Off — {proc.label}</h4>
             <div className="pac-modal-row">

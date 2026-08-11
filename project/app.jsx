@@ -3092,8 +3092,7 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
           </button>
           {userMenuOpen && (
             <>
-              <div onClick={() => setUserMenuOpen(false)}
-                style={{ position: "fixed", inset: 0, zIndex: 49 }} />
+              <div style={{ position: "fixed", inset: 0, zIndex: 49 }} />
               <div style={{
                 position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 50,
                 background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
