@@ -5,6 +5,7 @@
    ============================================================ */
 import { RiskGraphViz } from "./risk-graph-viz.jsx";
 import { RiskSankey }   from "./risk-sankey.jsx";
+import { DEFAULT_CONTROLS, fetchControlsFromApi } from "./controls-reference.jsx";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reference data — seeded from hardcoded defaults, overwritten from DB on mount
@@ -21,43 +22,12 @@ import { RiskSankey }   from "./risk-sankey.jsx";
 // "SOX 404" once the library grew past ~35 entries.
 const _CONTROL_PICKER_CAP = 250;
 
-let MASTER_CONTROLS = [
-  { ref:"FC-01", framework:"Internal",       name:"Revenue Recognition Controls",     category:"Financial",      domain:"Finance",    desc:"Controls over revenue recognition timing to prevent misstatement" },
-  { ref:"FC-02", framework:"Internal",       name:"Financial Close Reconciliation",    category:"Financial",      domain:"Finance",    desc:"Period-end reconciliation procedures for material accounts" },
-  { ref:"FC-03", framework:"SOC 2",          name:"Segregation of Financial Duties",   category:"Financial",      domain:"Finance",    desc:"Segregation of duties for payment and approval workflows" },
-  { ref:"FC-04", framework:"Internal",       name:"Fraud Risk Assessment",             category:"Financial",      domain:"Finance",    desc:"Annual fraud risk assessment aligned to Beneish M-Score indicators" },
-  { ref:"AC-01", framework:"Internal",       name:"Access Control Policy",             category:"Access Control", domain:"IT",         desc:"Documented access control policy reviewed annually" },
-  { ref:"AC-02", framework:"NIST SP 800-53", name:"Account Management",                category:"Access Control", domain:"IT",         desc:"Lifecycle management of user accounts including provisioning" },
-  { ref:"AC-03", framework:"NIST SP 800-53", name:"Access Enforcement",                category:"Access Control", domain:"IT",         desc:"Enforce approved authorisations for logical access" },
-  { ref:"AC-04", framework:"CIS Controls",   name:"Privileged Access Management",      category:"Access Control", domain:"IT",         desc:"Inventory and control of privileged accounts with MFA enforcement" },
-  { ref:"AC-05", framework:"SOC 2",          name:"Logical Access Review",             category:"Access Control", domain:"IT",         desc:"Quarterly review of logical access rights for in-scope systems" },
-  { ref:"SC-01", framework:"ISO/IEC 27001",  name:"Information Security Policy",       category:"Security",       domain:"IT",         desc:"Board-approved information security policy with annual review cycle" },
-  { ref:"SC-02", framework:"CIS Controls",   name:"Data Protection & Encryption",      category:"Security",       domain:"IT",         desc:"Encryption of data at rest and in transit for sensitive information" },
-  { ref:"SC-03", framework:"NIST SP 800-53", name:"Incident Response Plan",            category:"Security",       domain:"IT",         desc:"Documented and tested incident response procedures" },
-  { ref:"SC-04", framework:"ISO/IEC 27001",  name:"Vulnerability Management",          category:"Security",       domain:"IT",         desc:"Regular vulnerability scanning and patch management program" },
-  { ref:"SC-05", framework:"SOC 2",          name:"Change Management Controls",        category:"Security",       domain:"IT",         desc:"Formal change management process for production systems" },
-  { ref:"RM-01", framework:"Internal",       name:"Risk Assessment Process",           category:"Risk Mgmt",      domain:"Operational",desc:"Documented enterprise risk identification and assessment process" },
-  { ref:"RM-02", framework:"ISO/IEC 27001",  name:"Risk Treatment Plan",               category:"Risk Mgmt",      domain:"Operational",desc:"Documented risk treatment decisions with assigned owners and deadlines" },
-  { ref:"RM-03", framework:"Internal",       name:"Risk Appetite Framework",           category:"Risk Mgmt",      domain:"Operational",desc:"Board-approved risk appetite statement with quantitative thresholds" },
-  { ref:"RM-04", framework:"COSO ERM",       name:"Emerging Risk Monitoring",          category:"Risk Mgmt",      domain:"Operational",desc:"Quarterly horizon-scanning process for emerging and macro risks" },
-  { ref:"OP-01", framework:"Internal",       name:"Business Continuity Plan",          category:"Operational",    domain:"Operational",desc:"Tested business continuity and disaster recovery procedures" },
-  { ref:"OP-02", framework:"ISO/IEC 27001",  name:"Supplier Risk Management",          category:"Operational",    domain:"Operational",desc:"Third-party risk assessment and ongoing monitoring program" },
-  { ref:"OP-03", framework:"Internal",       name:"Key Person Dependencies",           category:"Operational",    domain:"HR",         desc:"Identification and mitigation of key person dependency risks" },
-  { ref:"CM-01", framework:"SOC 2",          name:"Compliance Monitoring Program",     category:"Compliance",     domain:"Legal",      desc:"Ongoing monitoring of regulatory requirements and compliance status" },
-  { ref:"CM-02", framework:"Internal",       name:"Regulatory Change Management",      category:"Compliance",     domain:"Legal",      desc:"Process for tracking and responding to regulatory changes" },
-  { ref:"CM-03", framework:"SOC 2",          name:"Privacy Controls",                  category:"Compliance",     domain:"Legal",      desc:"Data privacy controls aligned to applicable regulations (GDPR, CCPA)" },
-  { ref:"VM-01", framework:"CIS Controls",   name:"Vendor Security Assessment",        category:"Vendor",         domain:"Operational",desc:"Security assessments for critical and high-risk vendors" },
-  { ref:"VM-02", framework:"Internal",       name:"Supply Chain Resilience",           category:"Vendor",         domain:"Operational",desc:"Supplier diversification and concentration risk monitoring" },
-  { ref:"HR-01", framework:"Internal",       name:"Security Awareness Training",       category:"HR",             domain:"HR",         desc:"Annual mandatory security awareness training for all employees" },
-  { ref:"HR-02", framework:"Internal",       name:"Background Screening",              category:"HR",             domain:"HR",         desc:"Pre-employment background screening for sensitive roles" },
-  // ISO/IEC 42001 AI management system controls
-  { ref:"AI-01", framework:"ISO/IEC 42001", name:"AI System Impact Assessment",        category:"AI Governance",  domain:"Technology", desc:"Structured assessment of AI system impacts on people, processes, and society" },
-  { ref:"AI-02", framework:"ISO/IEC 42001", name:"AI Lifecycle Management",            category:"AI Governance",  domain:"Technology", desc:"Governance controls across the full AI system development and deployment lifecycle" },
-  { ref:"AI-03", framework:"ISO/IEC 42001", name:"AI Training Data Governance",        category:"AI Governance",  domain:"Technology", desc:"Controls ensuring training data quality, provenance, and bias mitigation" },
-  { ref:"AI-04", framework:"ISO/IEC 42001", name:"AI Transparency & Explainability",   category:"AI Governance",  domain:"Technology", desc:"Mechanisms to explain AI outputs and decisions to relevant stakeholders" },
-  { ref:"AI-05", framework:"ISO/IEC 42001", name:"Third-Party AI Tool Assessment",     category:"AI Governance",  domain:"Technology", desc:"Due diligence and ongoing monitoring for externally-sourced AI services" },
-  { ref:"AI-06", framework:"ISO/IEC 42001", name:"Human Oversight of AI Systems",      category:"AI Governance",  domain:"Technology", desc:"Defined human review points and override mechanisms for AI-assisted decisions" },
-];
+// Seed data + fetch logic now live in controls-reference.jsx (shared with
+// risk-graph-viz.jsx and risk-sankey.jsx, which used to each hardcode their
+// own independent copy of this same ~34-control list) — see that module's
+// header for why. MASTER_CONTROLS itself is still mutated in place below
+// (length=0 + push) once the DB load resolves, exactly as before.
+let MASTER_CONTROLS = [...DEFAULT_CONTROLS];
 let CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
 
 // Defaults used while the DB load is in flight (and as fallback when DB is unavailable)
@@ -96,34 +66,11 @@ function computeMatrixFrameworks(activeMxFws, hiddenFws, ctrlStates, risks) {
 }
 
 async function _loadControlsFromApi() {
-  // Every failure branch here used to be silent: a non-ok response or a
-  // thrown fetch left MASTER_CONTROLS on its ~30-entry hardcoded fallback
-  // with no visible sign anything was wrong — every control from every
-  // imported register (the whole point of this fetch) would simply be
-  // missing from every picker in the app, and there would be nothing to look
-  // at to find out why. Logging each branch turns "the dropdown is
-  // inexplicably missing controls" into something the browser console
-  // answers directly.
-  try {
-    const res = await fetch("/api/risk-register/controls");
-    if (!res.ok) {
-      console.warn(`[risk-register] GET /controls failed (HTTP ${res.status}) — ` +
-        `showing the built-in ~30-control fallback only; imported registers' controls will not appear.`);
-      return;
-    }
-    const data = await res.json();
-    const controls = data.controls || [];
-    if (!controls.length) {
-      console.warn("[risk-register] GET /controls returned zero controls — showing the built-in fallback.");
-      return;
-    }
-    MASTER_CONTROLS.length = 0;
-    for (const c of controls) MASTER_CONTROLS.push(c);
-    CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
-  } catch (e) {
-    console.warn("[risk-register] Could not load the control library from the server — " +
-      "showing the built-in fallback only:", e);
-  }
+  const controls = await fetchControlsFromApi();
+  if (!controls) return;
+  MASTER_CONTROLS.length = 0;
+  for (const c of controls) MASTER_CONTROLS.push(c);
+  CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
 }
 
 // MASTER_CONTROLS is mutated in place (length=0 + push above), so this window

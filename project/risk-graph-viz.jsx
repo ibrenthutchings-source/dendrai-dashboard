@@ -1,44 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
+import { DEFAULT_CONTROLS, fetchControlsFromApi } from "./controls-reference.jsx";
 
 // ─── Reference data — seeded from defaults, overwritten from DB on mount ─────
+// Seed data + fetch logic now live in controls-reference.jsx (shared with
+// risk-register-review.jsx and risk-sankey.jsx, which used to each hardcode
+// their own independent copy of this same ~34-control list) — mapped here
+// to this file's own fw/cat/domain field naming so nothing downstream in
+// this file had to change.
 
-let MASTER_CONTROLS = [
-  { ref:"FC-01", fw:"Internal",       name:"Revenue Recognition Controls",    cat:"Financial",     domain:"Finance" },
-  { ref:"FC-02", fw:"Internal",       name:"Financial Close Reconciliation",   cat:"Financial",     domain:"Finance" },
-  { ref:"FC-03", fw:"SOC 2",          name:"Segregation of Financial Duties",  cat:"Financial",     domain:"Finance" },
-  { ref:"FC-04", fw:"Internal",       name:"Fraud Risk Assessment",            cat:"Financial",     domain:"Finance" },
-  { ref:"AC-01", fw:"Internal",       name:"Access Control Policy",            cat:"Access Control",domain:"IT" },
-  { ref:"AC-02", fw:"NIST SP 800-53", name:"Account Management",               cat:"Access Control",domain:"IT" },
-  { ref:"AC-03", fw:"NIST SP 800-53", name:"Access Enforcement",               cat:"Access Control",domain:"IT" },
-  { ref:"AC-04", fw:"CIS Controls",   name:"Privileged Access Management",     cat:"Access Control",domain:"IT" },
-  { ref:"AC-05", fw:"SOC 2",          name:"Logical Access Review",            cat:"Access Control",domain:"IT" },
-  { ref:"SC-01", fw:"ISO/IEC 27001",  name:"Information Security Policy",      cat:"Security",      domain:"IT" },
-  { ref:"SC-02", fw:"CIS Controls",   name:"Data Protection & Encryption",     cat:"Security",      domain:"IT" },
-  { ref:"SC-03", fw:"NIST SP 800-53", name:"Incident Response Plan",           cat:"Security",      domain:"IT" },
-  { ref:"SC-04", fw:"ISO/IEC 27001",  name:"Vulnerability Management",         cat:"Security",      domain:"IT" },
-  { ref:"SC-05", fw:"SOC 2",          name:"Change Management Controls",       cat:"Security",      domain:"IT" },
-  { ref:"RM-01", fw:"Internal",       name:"Risk Assessment Process",          cat:"Risk Mgmt",     domain:"Operational" },
-  { ref:"RM-02", fw:"ISO/IEC 27001",  name:"Risk Treatment Plan",              cat:"Risk Mgmt",     domain:"Operational" },
-  { ref:"RM-03", fw:"Internal",       name:"Risk Appetite Framework",          cat:"Risk Mgmt",     domain:"Operational" },
-  { ref:"RM-04", fw:"COSO ERM",       name:"Emerging Risk Monitoring",         cat:"Risk Mgmt",     domain:"Operational" },
-  { ref:"OP-01", fw:"Internal",       name:"Business Continuity Plan",         cat:"Operational",   domain:"Operational" },
-  { ref:"OP-02", fw:"ISO/IEC 27001",  name:"Supplier Risk Management",         cat:"Operational",   domain:"Operational" },
-  { ref:"OP-03", fw:"Internal",       name:"Key Person Dependencies",          cat:"Operational",   domain:"HR" },
-  { ref:"CM-01", fw:"SOC 2",          name:"Compliance Monitoring Program",    cat:"Compliance",    domain:"Legal" },
-  { ref:"CM-02", fw:"Internal",       name:"Regulatory Change Management",     cat:"Compliance",    domain:"Legal" },
-  { ref:"CM-03", fw:"SOC 2",          name:"Privacy Controls",                 cat:"Compliance",    domain:"Legal" },
-  { ref:"VM-01", fw:"CIS Controls",   name:"Vendor Security Assessment",       cat:"Vendor",        domain:"Operational" },
-  { ref:"VM-02", fw:"Internal",       name:"Supply Chain Resilience",          cat:"Vendor",        domain:"Operational" },
-  { ref:"HR-01", fw:"Internal",       name:"Security Awareness Training",      cat:"HR",            domain:"HR" },
-  { ref:"HR-02", fw:"Internal",       name:"Background Screening",             cat:"HR",            domain:"HR" },
-  { ref:"AI-01", fw:"ISO/IEC 42001",  name:"AI System Impact Assessment",      cat:"AI Governance", domain:"Technology" },
-  { ref:"AI-02", fw:"ISO/IEC 42001",  name:"AI Lifecycle Management",          cat:"AI Governance", domain:"Technology" },
-  { ref:"AI-03", fw:"ISO/IEC 42001",  name:"AI Training Data Governance",      cat:"AI Governance", domain:"Technology" },
-  { ref:"AI-04", fw:"ISO/IEC 42001",  name:"AI Transparency & Explainability", cat:"AI Governance", domain:"Technology" },
-  { ref:"AI-05", fw:"ISO/IEC 42001",  name:"Third-Party AI Tool Assessment",   cat:"AI Governance", domain:"Technology" },
-  { ref:"AI-06", fw:"ISO/IEC 42001",  name:"Human Oversight of AI Systems",    cat:"AI Governance", domain:"Technology" },
-];
+let MASTER_CONTROLS = DEFAULT_CONTROLS.map(c => (
+  { ref: c.ref, fw: c.framework, name: c.name, cat: c.category, domain: c.domain }
+));
 
 const AUTO_MAP_RULES = [
   { kws:["revenue","recognition","accounting","financial","margin","fraud","restat"],        refs:["FC-01","FC-02","FC-03","FC-04"] },
@@ -350,18 +323,13 @@ export function RiskGraphViz({ risks, ticker, runId, ctrlStates, allowedFramewor
   // Load controls from DB on mount; rebuild graph once they arrive
   useEffect(() => {
     (async () => {
-      try {
-        const res = await fetch("/api/risk-register/controls");
-        if (!res.ok) return;
-        const data = await res.json();
-        const controls = data.controls || [];
-        if (!controls.length) return;
-        MASTER_CONTROLS.length = 0;
-        for (const c of controls) {
-          MASTER_CONTROLS.push({ ref: c.ref, fw: c.framework || "", name: c.name, cat: c.category || "", domain: c.domain || "" });
-        }
-        setControlsRev(r => r + 1);
-      } catch (_) {}
+      const controls = await fetchControlsFromApi();
+      if (!controls) return;
+      MASTER_CONTROLS.length = 0;
+      for (const c of controls) {
+        MASTER_CONTROLS.push({ ref: c.ref, fw: c.framework || "", name: c.name, cat: c.category || "", domain: c.domain || "" });
+      }
+      setControlsRev(r => r + 1);
     })();
   }, []);
 

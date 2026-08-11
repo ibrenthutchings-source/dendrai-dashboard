@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { sankey, sankeyLinkHorizontal } from "d3-sankey";
 import * as d3 from "d3";
+import { DEFAULT_CONTROLS, fetchControlsFromApi } from "./controls-reference.jsx";
 
 // ─── Colors ────────────────────────────────────────────────────────────────────
 
@@ -23,56 +24,25 @@ const FW_COLOR = {
   "COSO ERM":       "#f97316",
 };
 
-// ─── Controls (sorted by framework, then domain within framework — minimizes link crossings) ──
-// Mutable so the component can append DB-loaded custom controls after mount.
-
-let CONTROLS = [
-  // Internal (12)
-  { ref:"FC-01", fw:"Internal", name:"Revenue Recognition Controls",     cat:"Financial",      dom:"Finance"     },
-  { ref:"FC-02", fw:"Internal", name:"Financial Close Reconciliation",   cat:"Financial",      dom:"Finance"     },
-  { ref:"FC-04", fw:"Internal", name:"Fraud Risk Assessment",            cat:"Financial",      dom:"Finance"     },
-  { ref:"AC-01", fw:"Internal", name:"Access Control Policy",            cat:"Access Control", dom:"IT"          },
-  { ref:"OP-01", fw:"Internal", name:"Business Continuity Plan",         cat:"Operational",    dom:"Operational" },
-  { ref:"RM-01", fw:"Internal", name:"Risk Assessment Process",          cat:"Risk Mgmt",      dom:"Operational" },
-  { ref:"RM-03", fw:"Internal", name:"Risk Appetite Framework",          cat:"Risk Mgmt",      dom:"Operational" },
-  { ref:"VM-02", fw:"Internal", name:"Supply Chain Resilience",          cat:"Vendor",         dom:"Operational" },
-  { ref:"HR-01", fw:"Internal", name:"Security Awareness Training",      cat:"HR",             dom:"HR"          },
-  { ref:"HR-02", fw:"Internal", name:"Background Screening",             cat:"HR",             dom:"HR"          },
-  { ref:"OP-03", fw:"Internal", name:"Key Person Dependencies",          cat:"Operational",    dom:"HR"          },
-  { ref:"CM-02", fw:"Internal", name:"Regulatory Change Management",     cat:"Compliance",     dom:"Legal"       },
-  // ISO/IEC 42001 (6)
-  { ref:"AI-01", fw:"ISO/IEC 42001", name:"AI System Impact Assessment",      cat:"AI Governance", dom:"Technology" },
-  { ref:"AI-02", fw:"ISO/IEC 42001", name:"AI Lifecycle Management",          cat:"AI Governance", dom:"Technology" },
-  { ref:"AI-03", fw:"ISO/IEC 42001", name:"AI Training Data Governance",      cat:"AI Governance", dom:"Technology" },
-  { ref:"AI-04", fw:"ISO/IEC 42001", name:"AI Transparency & Explainability", cat:"AI Governance", dom:"Technology" },
-  { ref:"AI-05", fw:"ISO/IEC 42001", name:"Third-Party AI Tool Assessment",   cat:"AI Governance", dom:"Technology" },
-  { ref:"AI-06", fw:"ISO/IEC 42001", name:"Human Oversight of AI Systems",    cat:"AI Governance", dom:"Technology" },
-  // SOC 2 (5)
-  { ref:"FC-03", fw:"SOC 2", name:"Segregation of Financial Duties", cat:"Financial",      dom:"Finance" },
-  { ref:"AC-05", fw:"SOC 2", name:"Logical Access Review",           cat:"Access Control", dom:"IT"      },
-  { ref:"SC-05", fw:"SOC 2", name:"Change Management Controls",      cat:"Security",       dom:"IT"      },
-  { ref:"CM-01", fw:"SOC 2", name:"Compliance Monitoring Program",   cat:"Compliance",     dom:"Legal"   },
-  { ref:"CM-03", fw:"SOC 2", name:"Privacy Controls",                cat:"Compliance",     dom:"Legal"   },
-  // ISO/IEC 27001 (4)
-  { ref:"SC-01", fw:"ISO/IEC 27001", name:"Information Security Policy", cat:"Security",       dom:"IT"          },
-  { ref:"SC-04", fw:"ISO/IEC 27001", name:"Vulnerability Management",    cat:"Security",       dom:"IT"          },
-  { ref:"RM-02", fw:"ISO/IEC 27001", name:"Risk Treatment Plan",         cat:"Risk Mgmt",      dom:"Operational" },
-  { ref:"OP-02", fw:"ISO/IEC 27001", name:"Supplier Risk Management",    cat:"Operational",    dom:"Operational" },
-  // NIST SP 800-53 (3)
-  { ref:"AC-02", fw:"NIST SP 800-53", name:"Account Management",     cat:"Access Control", dom:"IT" },
-  { ref:"AC-03", fw:"NIST SP 800-53", name:"Access Enforcement",     cat:"Access Control", dom:"IT" },
-  { ref:"SC-03", fw:"NIST SP 800-53", name:"Incident Response Plan", cat:"Security",       dom:"IT" },
-  // CIS Controls (3)
-  { ref:"AC-04", fw:"CIS Controls", name:"Privileged Access Management", cat:"Access Control", dom:"IT"          },
-  { ref:"SC-02", fw:"CIS Controls", name:"Data Protection & Encryption", cat:"Security",       dom:"IT"          },
-  { ref:"VM-01", fw:"CIS Controls", name:"Vendor Security Assessment",   cat:"Vendor",         dom:"Operational" },
-  // COSO ERM (1)
-  { ref:"RM-04", fw:"COSO ERM", name:"Emerging Risk Monitoring", cat:"Risk Mgmt", dom:"Operational" },
-];
-
 const BASE_FW_ORDER  = ["Internal", "ISO/IEC 42001", "SOC 2", "ISO/IEC 27001", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
 const BASE_DOM_ORDER = ["Finance", "IT", "Operational", "HR", "Legal", "Technology"];
 const FALLBACK_COLOR = "#64748b";
+
+// ─── Controls (sorted by framework, then domain within framework — minimizes
+// link crossings). Seed data now lives in controls-reference.jsx (shared
+// with risk-register-review.jsx and risk-graph-viz.jsx, which used to each
+// hardcode their own independent copy of this same ~34-control list) —
+// mapped here to this file's own fw/cat/dom field naming, then sorted by
+// (BASE_FW_ORDER, BASE_DOM_ORDER) to reproduce the original hand-ordered
+// array's crossing-minimizing grouping. Mutable so the component can append
+// DB-loaded custom controls after mount, same as before. ──────────────────
+
+let CONTROLS = DEFAULT_CONTROLS
+  .map(c => ({ ref: c.ref, fw: c.framework, name: c.name, cat: c.category, dom: c.domain }))
+  .sort((a, b) => {
+    const fwDiff = BASE_FW_ORDER.indexOf(a.fw) - BASE_FW_ORDER.indexOf(b.fw);
+    return fwDiff !== 0 ? fwDiff : BASE_DOM_ORDER.indexOf(a.dom) - BASE_DOM_ORDER.indexOf(b.dom);
+  });
 
 // allowedFrameworks: when set (the Framework Matrix's own visible column
 // set — matrixCfg.matrix plus any organically-detected extras, see
@@ -228,25 +198,22 @@ export function RiskSankey({ allowedFrameworks } = {}) {
   // Append any DB-persisted controls not already in the hardcoded list
   useEffect(() => {
     (async () => {
-      try {
-        const res = await fetch("/api/risk-register/controls");
-        if (!res.ok) return;
-        const data = await res.json();
-        const existing = new Set(CONTROLS.map(c => c.ref));
-        let added = 0;
-        for (const c of (data.controls || [])) {
-          if (existing.has(c.ref)) continue;
-          CONTROLS.push({
-            ref: c.ref,
-            fw:  c.framework || "Custom",
-            name: c.name || c.ref,
-            cat: c.category || "Custom",
-            dom: c.domain   || "Custom",
-          });
-          added++;
-        }
-        if (added > 0) setControlsRev(r => r + 1);
-      } catch (_) {}
+      const controls = await fetchControlsFromApi();
+      if (!controls) return;
+      const existing = new Set(CONTROLS.map(c => c.ref));
+      let added = 0;
+      for (const c of controls) {
+        if (existing.has(c.ref)) continue;
+        CONTROLS.push({
+          ref: c.ref,
+          fw:  c.framework || "Custom",
+          name: c.name || c.ref,
+          cat: c.category || "Custom",
+          dom: c.domain   || "Custom",
+        });
+        added++;
+      }
+      if (added > 0) setControlsRev(r => r + 1);
     })();
   }, []);
 
