@@ -42,7 +42,7 @@ function ReportModal({ open, onClose, payload }) {
   }
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{width: 920}}>
         <div className="modal-head">
           <div>
@@ -670,7 +670,7 @@ function OverrideModal({ open, gateNum, onClose, onConfirm }) {
   useEffect(() => { if (open) setReason(""); }, [open]);
   if (!open) return null;
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box sm">
         <div className="modal-head">
           <div className="modal-title">Override Gate {gateNum} · Add Rationale</div>

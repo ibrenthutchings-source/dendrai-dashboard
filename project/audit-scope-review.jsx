@@ -465,7 +465,7 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
   } : null;
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{width: 640}}>
         <div className="modal-head">
           <div>

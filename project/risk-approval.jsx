@@ -395,7 +395,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
   } : null;
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{width: 640}}>
         <div className="modal-head">
           <div>

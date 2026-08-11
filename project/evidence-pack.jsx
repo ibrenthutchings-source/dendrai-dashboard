@@ -54,7 +54,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
   const d = state.data;
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
+    <div className="modal open">
       <div className="modal-box" style={{ width: 920 }}>
         <div className="modal-head">
           <div>
