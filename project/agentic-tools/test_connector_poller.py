@@ -155,7 +155,7 @@ def test_poll_one_ingests_pulled_events_and_records_ok(monkeypatch):
 
     ingested = []
     def _fake_ingest(server_name, system_type, event_type, event_id, actor, action,
-                      resource, severity, flags, raw_payload, source_ip):
+                      resource, severity, flags, raw_payload, source_ip, created_at=None):
         ingested.append({
             "server_name": server_name, "system_type": system_type, "event_type": event_type,
             "event_id": event_id, "resource": resource, "severity": severity, "flags": flags,

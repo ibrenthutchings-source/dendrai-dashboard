@@ -44,6 +44,7 @@ const NAV_SECTIONS = [
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "riskquant", icon: "trend",    l: "Risk Quantification" },
+      { id: "exceptions", icon: "alert",   l: "Exception Management", devOnly: true },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },
@@ -160,7 +161,7 @@ function NavIcon({ name, size = 14 }) {
   return <Icon name={name} size={size}/>;
 }
 
-function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null }) {
+function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null, isDevEnv = false }) {
   // Sections start collapsed except the one holding the active screen, so
   // the "you are here" highlight is always visible without hunting for it.
   const [collapsed, setCollapsed] = React.useState(() => {
@@ -186,6 +187,7 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
   // else regardless of the screen-permission matrix. Otherwise a missing
   // entry in screenPerms means "allowed" — see auth.screen_permissions.
   function isVisible(item) {
+    if (item.devOnly && !isDevEnv) return false;
     if (item.adminOnly) return isAdmin;
     if (isAdmin || !screenPerms) return true;
     const p = screenPerms[item.id];
