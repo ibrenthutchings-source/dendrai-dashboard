@@ -17,6 +17,7 @@ const NAV_SECTIONS = [
       { id: "pipeline",  icon: "flow",  l: "Assess Risk" },
        { id: "aiinventory", icon: "list", l: "AI System Ledger" },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
+      { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping"},
       { id: "scope",    icon: "grid",      l: "Audit Plan" },
     ],
@@ -45,8 +46,6 @@ const NAV_SECTIONS = [
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "riskquant", icon: "trend",    l: "Risk Quantification" },
       { id: "exceptions", icon: "alert",   l: "Exception Management", devOnly: true },
-      { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
-      //{ id: "maps",     icon: "check",     l: "MAPs", countKey: "maps" },
       { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },
      
     ],
