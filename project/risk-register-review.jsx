@@ -69,6 +69,32 @@ const _DEFAULT_MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "ISO/IEC 42001", "SOC 2", "
 let PRESET_FRAMEWORKS  = _DEFAULT_PRESET_FRAMEWORKS;
 let MATRIX_FRAMEWORKS  = _DEFAULT_MATRIX_FRAMEWORKS;
 
+// The full set of frameworks actually "on the Framework Matrix" tab — the
+// pinned matrixCfg.matrix columns, plus any extra framework that's
+// organically in use by an assigned control or a discovered risk's source
+// framework and hasn't been explicitly hidden via the × button. Mirrors
+// RiskFrameworkMatrix's own fwCols computation (same inputs, same logic) so
+// the Risk Graph, Control Sankey, and Controls tabs — which don't render the
+// matrix but need to know its exact column set — filter to precisely what a
+// user sees if they switch to the Framework Matrix tab, not a
+// separately-drifting notion of "the matrix frameworks."
+function computeMatrixFrameworks(activeMxFws, hiddenFws, ctrlStates, risks) {
+  const internalFws = new Set(["Internal", "Internal Risk Register"]);
+  const hidden = new Set(hiddenFws || []);
+  const extraFws = new Set();
+  for (const cs of Object.values(ctrlStates || {})) {
+    for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
+      const fw = CTRL_BY_REF[ref]?.framework;
+      if (fw && !internalFws.has(fw) && !activeMxFws.includes(fw) && !hidden.has(fw)) extraFws.add(fw);
+    }
+  }
+  for (const r of (risks || [])) {
+    const fw = r.source_framework;
+    if (fw && !internalFws.has(fw) && !activeMxFws.includes(fw) && !hidden.has(fw)) extraFws.add(fw);
+  }
+  return [...activeMxFws, ...[...extraFws].sort()];
+}
+
 async function _loadControlsFromApi() {
   // Every failure branch here used to be silent: a non-ok response or a
   // thrown fetch left MASTER_CONTROLS on its ~30-entry hardcoded fallback
@@ -1793,7 +1819,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 // Rows = controls, Columns = frameworks, cell = ✓ when control belongs to that fw
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ControlCoverageMatrix({ ctrlStates }) {
+function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
   const [, bump] = useState(0);
   const [linkSaving, setLinkSaving] = useState(null); // ref currently being saved
   const scrollWrapRef = useRef(null);
@@ -1817,8 +1843,16 @@ function ControlCoverageMatrix({ ctrlStates }) {
   }
 
   // Derive the full set of frameworks and controls at render time so we pick up
-  // any DB-loaded controls that were appended to MASTER_CONTROLS.
-  const allFws = [...new Set(MASTER_CONTROLS.map(c => c.framework || "Internal"))].sort((a, b) => {
+  // any DB-loaded controls that were appended to MASTER_CONTROLS. When
+  // allowedFrameworks is set (the Framework Matrix's own visible column set —
+  // see risk-register-review.jsx's view-toggle block), only controls tagged
+  // to one of those frameworks are shown, so this tab never lists a
+  // control/framework that isn't actually on the Framework Matrix tab.
+  const controlsInScope = allowedFrameworks
+    ? MASTER_CONTROLS.filter(c => allowedFrameworks.includes(c.framework || "Internal"))
+    : MASTER_CONTROLS;
+
+  const allFws = [...new Set(controlsInScope.map(c => c.framework || "Internal"))].sort((a, b) => {
     // Pin "Internal" first
     if (a === "Internal") return -1;
     if (b === "Internal") return 1;
@@ -1833,7 +1867,7 @@ function ControlCoverageMatrix({ ctrlStates }) {
 
   // Group controls by category for visual separation
   const byCategory = {};
-  for (const c of MASTER_CONTROLS) {
+  for (const c of controlsInScope) {
     const cat = c.category || "Other";
     if (!byCategory[cat]) byCategory[cat] = [];
     byCategory[cat].push(c);
@@ -3135,6 +3169,15 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const unratedCount         = allMatrixRisks.filter(r => r.score == null).length;
   const allMatrixRiskStates  = { ...discRiskStates,  ...riskStates  };
   const allMatrixCtrlStates  = { ...discCtrlStates,  ...ctrlStates  };
+
+  // The exact framework set the Framework Matrix tab renders as columns —
+  // the Risk Graph, Control Sankey, and Controls tabs filter to this same
+  // set (see computeMatrixFrameworks above) so a control/framework never
+  // appears in one view but not the other.
+  const matrixFwCols = useMemo(
+    () => computeMatrixFrameworks(matrixCfg.matrix, matrixCfg.hidden, allMatrixCtrlStates, allMatrixRisks),
+    [matrixCfg.matrix, matrixCfg.hidden, allMatrixCtrlStates, allMatrixRisks]
+  );
   // Whether `key` belongs to a discovered/external risk (an uploaded register
   // or framework catalog entry) rather than an internal pipeline risk.
   //
@@ -3401,11 +3444,11 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
                 </div>
 
                 {sankeyView ? (
-                  <RiskSankey />
+                  <RiskSankey allowedFrameworks={matrixFwCols} />
                 ) : graphView ? (
-                  <RiskGraphViz risks={allMatrixRisks} ticker={ticker} runId={runId} ctrlStates={ctrlStates} />
+                  <RiskGraphViz risks={allMatrixRisks} ticker={ticker} runId={runId} ctrlStates={ctrlStates} allowedFrameworks={matrixFwCols} />
                 ) : ctrlMatrixView ? (
-                  <ControlCoverageMatrix ctrlStates={allMatrixCtrlStates} />
+                  <ControlCoverageMatrix ctrlStates={allMatrixCtrlStates} allowedFrameworks={matrixFwCols} />
                 ) : matrixView ? (
                   <RiskFrameworkMatrix
                     risks={allMatrixRisks}
