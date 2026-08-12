@@ -62,7 +62,14 @@ function computeMatrixFrameworks(activeMxFws, hiddenFws, ctrlStates, risks) {
     const fw = r.source_framework;
     if (fw && !internalFws.has(fw) && !activeMxFws.includes(fw) && !hidden.has(fw)) extraFws.add(fw);
   }
-  return [...activeMxFws, ...[...extraFws].sort()];
+  // "Internal" is deliberately never an auto-detected extra COLUMN on the
+  // Framework Matrix itself (it's the base/native case, not a real external
+  // framework worth pinning) — but Internal-framework controls are very much
+  // still usable/visible ON the matrix (assignable to any risk cell), so
+  // callers filtering the Risk Graph/Sankey/Controls tabs to "what's on the
+  // Framework Matrix" must not drop them. Only exclude the returned set from
+  // becoming a rendered column, not from this filter.
+  return [...activeMxFws, "Internal", ...[...extraFws].sort()];
 }
 
 async function _loadControlsFromApi() {
