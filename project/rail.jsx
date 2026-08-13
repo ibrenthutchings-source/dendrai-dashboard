@@ -778,6 +778,7 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
 
       {aiBrief ? (
         <>
+          <AiReviewBanner review={aiBrief._review} />
           <div className="persona-card">
             <div className="kicker" style={{marginBottom: 6, color: "var(--acc-ink)"}}>Headline · AI-generated</div>
             <div className="persona-headline">{aiBrief.headline}</div>

@@ -1527,12 +1527,13 @@ BEGIN
     END IF;
 END $$;
 
--- Sampling-based human review for the two fully-automated, ungated narrative
--- endpoints (persona_brief, audit_report) — MODEL_CARD.md "Recommended Next
--- Steps" #4. A subset of generations is flagged sampled_for_review at save
--- time (see ai_endpoints.py); reviewers work the queue via
--- GET/POST /ai/review-queue. Applies only to the two ungated kinds — every
--- other AI endpoint already has a human gate before its output takes effect.
+-- Mandatory human review for the two fully-automated narrative endpoints
+-- (persona_brief, audit_report) — MODEL_CARD.md known limitation #3. Every
+-- generation is flagged sampled_for_review at save time (see ai_endpoints.py;
+-- column name kept from when this was a 20% spot-check sample, now always
+-- True); reviewers work the queue via GET/POST /ai/review-queue. Applies only
+-- to the two ungated kinds — every other AI endpoint already has a human gate
+-- before its output takes effect.
 ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS sampled_for_review BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS review_status      VARCHAR(16);
 ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS reviewed_by        BIGINT;
@@ -4866,16 +4867,23 @@ def save_ai_analysis(
 
 def get_cached_ai_analysis(kind: str, run_id: Optional[int], subject_ref: Optional[str], input_hash: str) -> Optional[dict]:
     """Look up a prior AI generation with identical inputs (see save_ai_analysis's
-    input_hash param). Returns the cached content dict, or None on a cache miss —
-    callers should fall through to a fresh model call on None, not treat it as
-    an error. run_id may be None (e.g. mock/offline mode); subject_ref scopes
-    the lookup to e.g. a specific persona so different personas never collide."""
+    input_hash param). Returns {"id", "content", "review_status", "reviewed_by_name",
+    "reviewed_at"}, or None on a cache miss — callers should fall through to a
+    fresh model call on None, not treat it as an error. run_id may be None (e.g.
+    mock/offline mode); subject_ref scopes the lookup to e.g. a specific persona
+    so different personas never collide.
+
+    Returns the review fields alongside content (not content alone) so a caller
+    re-opening a cached persona brief / audit report sees its ACTUAL current
+    review status — reviewed or still pending — rather than the frontend having
+    no way to tell a stale cache hit apart from a fresh, unreviewed generation."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT content FROM ai_analyses
+                    SELECT id, content, review_status, reviewed_by_name, reviewed_at
+                    FROM ai_analyses
                     WHERE kind = %s AND input_hash = %s
                       AND run_id IS NOT DISTINCT FROM %s
                       AND subject_ref IS NOT DISTINCT FROM %s
@@ -4884,13 +4892,19 @@ def get_cached_ai_analysis(kind: str, run_id: Optional[int], subject_ref: Option
                     (kind, input_hash, run_id, subject_ref),
                 )
                 row = cur.fetchone()
-                return row[0] if row else None
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "content": row[1], "review_status": row[2],
+                    "reviewed_by_name": row[3],
+                    "reviewed_at": row[4].isoformat() if row[4] else None,
+                }
     return _run(_do)
 
 
 def list_ai_review_queue(status: Optional[str] = "pending", limit: int = 50) -> list:
-    """Sampled ungated-narrative generations awaiting (or having received)
-    human spot-check review, newest first."""
+    """Every ungated-narrative generation (persona_brief/audit_report) awaiting
+    (or having received) human review, newest first — not a sample."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -4917,7 +4931,7 @@ def list_ai_review_queue(status: Optional[str] = "pending", limit: int = 50) -> 
 
 def mark_ai_analysis_reviewed(analysis_id: int, reviewer_id: int, reviewer_name: str,
                                note: Optional[str] = None) -> bool:
-    """Record that a human spot-checked a sampled ungated-narrative generation."""
+    """Record that a human reviewed an ungated-narrative generation."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:

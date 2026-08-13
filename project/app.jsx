@@ -323,23 +323,27 @@ function App() {
   const [cemExpanded, setCemExpanded] = useState(new Set());
   const [notifLog, setNotifLog] = useState([]);
   const [unreadCEM, setUnreadCEM] = useState(0);
-  // Approval Inbox badge — combines gate items routed to this user with the
-  // broadcast UBO™ telemetry human-review queue (visible to everyone, first
-  // reviewer resolves it for all). Polls independently of which screen is
-  // open, unlike Control Tower's own 5s poll which only runs while that
-  // screen is mounted — this is the point of a nav badge.
+  // Approval Inbox badge — combines gate items routed to this user, the
+  // broadcast UBO™ telemetry human-review queue, and the AI narrative
+  // review queue (persona_brief/audit_report awaiting their pre-delivery
+  // check — MODEL_CARD.md known limitation #3), all visible to everyone,
+  // first reviewer resolves each for all. Polls independently of which
+  // screen is open, unlike Control Tower's own 5s poll which only runs
+  // while that screen is mounted — this is the point of a nav badge.
   const [approvalInboxCount, setApprovalInboxCount] = useState(0);
   useEffect(() => {
     let cancelled = false;
     async function pollApprovals() {
       try {
-        const [gateRes, telRes] = await Promise.all([
+        const [gateRes, telRes, aiRes] = await Promise.all([
           fetch("/approvals/inbox", { credentials: "include" }),
           fetch(`${window.MCP_API_BASE || "/api/mcp"}/observability/telemetry/human-review`, { credentials: "include" }),
+          fetch(`${window.MCP_API_BASE || "/api/mcp"}/ai/review-queue`, { credentials: "include" }),
         ]);
         const gateCount = gateRes.ok ? ((await gateRes.json()).items || []).length : 0;
         const telCount  = telRes.ok  ? ((await telRes.json()).count ?? 0) : 0;
-        if (!cancelled) setApprovalInboxCount(gateCount + telCount);
+        const aiCount   = aiRes.ok   ? ((await aiRes.json()).count ?? 0) : 0;
+        if (!cancelled) setApprovalInboxCount(gateCount + telCount + aiCount);
       } catch { /* best-effort — badge just stays at its last known value */ }
     }
     pollApprovals();
