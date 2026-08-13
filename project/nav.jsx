@@ -16,6 +16,13 @@ const NAV_SECTIONS = [
       { id: "help",       icon: "compass", l: "Intelligenza Workflow" },
       { id: "pipeline",  icon: "flow",  l: "Assess Risk" },
        { id: "aiinventory", icon: "list", l: "AI System Ledger" },
+      // id deliberately matches ai_governance_endpoints.py's _SCREEN_ID: the
+      // admin permission matrix is built from these nav ids
+      // (user-config.jsx::getPermissionSections), while ScreenAccessGate and
+      // the backend's require_screen_permission both read "ai_governance".
+      // Any other id here would let an admin toggle a permission that neither
+      // the gate nor the API actually enforces.
+      { id: "ai_governance", icon: "shield", l: "AI Governance" },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping"},

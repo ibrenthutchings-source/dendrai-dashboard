@@ -1,0 +1,563 @@
+/* ============================================================
+   AI Governance — the auditor-maintained AI system register
+   (observability.ai_system_registry) plus the behavioural audit
+   that tests each register entry against evidence.
+
+   The register answers "is human oversight DEFINED for this system"
+   (AI-06) and "has its assessment EXPIRED" (AI-05) — both attestations
+   a human ticks. The behavioural audit answers the question an
+   attestation cannot: does that oversight actually WORK, and do the
+   system's decisions show disparate impact (AI-09)?
+
+   A system can be attested as fully governed here and still fail both,
+   which is the entire reason this screen shows them side by side:
+   the Attested column and the Evidence column are allowed to disagree,
+   and when they do, that disagreement is the finding.
+
+   Backed by ai_governance_endpoints.py:
+     GET  /ai-governance                       register list
+     PUT  /ai-governance                       upsert a system
+     POST /ai-governance/behavioral-audit      deterministic analyzers
+     POST /ai-governance/behavioral-audit/narrative   gated LLM summary
+   ============================================================ */
+
+function _aiGovBase() {
+  return window.MCP_API_BASE || "/api/mcp";
+}
+
+// INSUFFICIENT_DATA deliberately does NOT reuse the CLEAR styling. "We could
+// not evidence this control" and "this control passed" are different audit
+// outcomes, and rendering them alike is exactly how an untested control gets
+// mistaken for a working one.
+const _VERDICT_META = {
+  ESCALATE:          { label: "Escalate",          bg: "var(--red-soft)",   fg: "var(--red-ink)",   tone: "bad"  },
+  MONITOR:           { label: "Monitor",           bg: "var(--amber-soft)", fg: "var(--amber-ink)", tone: "warn" },
+  CLEAR:             { label: "Clear",             bg: "var(--green-soft)", fg: "var(--green-ink)", tone: "good" },
+  INSUFFICIENT_DATA: { label: "Not evidenced",     bg: "var(--surface-2)",  fg: "var(--ink-3)",     tone: "neutral" },
+};
+
+const _VERDICT_ORDER = ["ESCALATE", "MONITOR", "INSUFFICIENT_DATA", "CLEAR"];
+
+const _SAMPLE_CSV = `event_type,decision,seconds_to_decide,subject_group,outcome
+human_review,approved,0.4,,
+human_review,approved,0.6,,
+human_review,approved,0.3,,
+human_review,rejected,45,,
+ai_decision,,,Region A,adverse
+ai_decision,,,Region A,favourable
+ai_decision,,,Region B,favourable`;
+
+function VerdictPill({ verdict, size = "sm" }) {
+  const meta = _VERDICT_META[verdict] || _VERDICT_META.INSUFFICIENT_DATA;
+  return (
+    <span style={{
+      fontSize: size === "lg" ? 12 : 9.5, fontWeight: 700, padding: size === "lg" ? "4px 12px" : "1px 7px",
+      borderRadius: 999, background: meta.bg, color: meta.fg, whiteSpace: "nowrap",
+    }}>
+      {meta.label}
+    </span>
+  );
+}
+
+function GovTile({ label, value, sub, tone = "neutral" }) {
+  const toneColor = {
+    neutral: "var(--ink)", good: "var(--green-ink)",
+    warn: "var(--amber-ink)", bad: "var(--red-ink)",
+  }[tone] || "var(--ink)";
+  return (
+    <div style={{
+      flex: "1 1 160px", minWidth: 160, border: "1px solid var(--line)", borderRadius: 8,
+      padding: "12px 14px", background: "var(--surface)",
+    }}>
+      <div style={{ fontSize: 10, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+        {label}
+      </div>
+      <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: toneColor, marginTop: 4 }}>
+        {value}
+      </div>
+      {sub && <div style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+/* ── CSV parsing ───────────────────────────────────────────────────────────
+   An auditor's evidence arrives as an export, not as hand-typed records, so
+   paste/upload is the primary input. Header-driven rather than positional so
+   a column order change in the source system does not silently misread every
+   row into the wrong field. */
+function _parseEventsCsv(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return { events: [], errors: ["File is empty."] };
+
+  const header = lines[0].split(",").map(h => h.trim().toLowerCase());
+  if (!header.includes("event_type")) {
+    return { events: [], errors: ['Missing required "event_type" column in the header row.'] };
+  }
+
+  const events = [];
+  const errors = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(",").map(c => c.trim());
+    const row = {};
+    header.forEach((h, idx) => { if (cells[idx] !== undefined && cells[idx] !== "") row[h] = cells[idx]; });
+    if (!row.event_type) { errors.push(`Row ${i + 1}: no event_type — skipped.`); continue; }
+
+    if (row.seconds_to_decide !== undefined) {
+      const n = Number(row.seconds_to_decide);
+      if (Number.isNaN(n)) {
+        errors.push(`Row ${i + 1}: seconds_to_decide "${row.seconds_to_decide}" is not a number — dropped that field.`);
+        delete row.seconds_to_decide;
+      } else {
+        row.seconds_to_decide = n;
+      }
+    }
+    events.push(row);
+  }
+  return { events, errors };
+}
+
+function EvidenceTable({ evidence }) {
+  const entries = Object.entries(evidence || {}).filter(([k]) => k !== "by_group");
+  const byGroup = evidence?.by_group;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+        <tbody>
+          {entries.map(([k, v]) => (
+            <tr key={k} style={{ borderBottom: "1px solid var(--line)" }}>
+              <td style={{ padding: "4px 8px", color: "var(--ink-4)", width: "45%", verticalAlign: "top" }}>{k}</td>
+              <td className="mono" style={{ padding: "4px 8px", color: "var(--ink-2)", wordBreak: "break-word" }}>
+                {typeof v === "object" ? JSON.stringify(v) : String(v)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {byGroup && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 10, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, marginBottom: 4 }}>
+            Selection rate by group
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+            <thead>
+              <tr style={{ color: "var(--ink-4)", fontSize: 9.5, textTransform: "uppercase" }}>
+                <th style={{ textAlign: "left", padding: "3px 8px" }}>Group</th>
+                <th style={{ textAlign: "right", padding: "3px 8px" }}>Decisions</th>
+                <th style={{ textAlign: "right", padding: "3px 8px" }}>Favourable</th>
+                <th style={{ textAlign: "right", padding: "3px 8px" }}>Rate</th>
+                <th style={{ textAlign: "left", padding: "3px 8px" }}>Assessed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(byGroup).map(([g, s]) => (
+                <tr key={g} style={{ borderBottom: "1px solid var(--line)", opacity: s.assessed ? 1 : 0.55 }}>
+                  <td style={{ padding: "3px 8px" }}>{g}</td>
+                  <td className="mono" style={{ padding: "3px 8px", textAlign: "right" }}>{s.decisions}</td>
+                  <td className="mono" style={{ padding: "3px 8px", textAlign: "right" }}>{s.favourable}</td>
+                  <td className="mono" style={{ padding: "3px 8px", textAlign: "right" }}>{(s.selection_rate * 100).toFixed(1)}%</td>
+                  <td style={{ padding: "3px 8px", fontSize: 10, color: s.assessed ? "var(--green-ink)" : "var(--ink-4)" }}>
+                    {s.assessed ? "yes" : "below minimum"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvaluationCard({ evaluation }) {
+  const [open, setOpen] = React.useState(false);
+  const meta = _VERDICT_META[evaluation.verdict] || _VERDICT_META.INSUFFICIENT_DATA;
+  return (
+    <div style={{
+      border: "1px solid var(--line)", borderLeft: `3px solid ${meta.fg}`,
+      borderRadius: 6, padding: "12px 14px", background: "var(--surface)", marginBottom: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <VerdictPill verdict={evaluation.verdict} />
+        <span style={{ fontWeight: 600, fontSize: 12.5 }}>{evaluation.agent_name}</span>
+        {evaluation.evidence?.control_ref && (
+          <span className="mono" style={{ fontSize: 10, color: "var(--ink-4)" }}>
+            {evaluation.evidence.control_ref}
+          </span>
+        )}
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--ink-4)" }} className="mono">
+          confidence {(evaluation.confidence * 100).toFixed(0)}%
+        </span>
+      </div>
+
+      <p style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 8, lineHeight: 1.55 }}>
+        {evaluation.reasoning}
+      </p>
+
+      <button className="btn btn-sm" style={{ fontSize: 10, padding: "2px 8px", marginTop: 8 }}
+        onClick={() => setOpen(o => !o)}>
+        {open ? "Hide evidence" : "Show evidence"}
+      </button>
+      {open && <EvidenceTable evidence={evaluation.evidence} />}
+    </div>
+  );
+}
+
+function BehavioralAuditPanel({ system, onClose, onAudited }) {
+  const [csvText, setCsvText] = React.useState("");
+  const [parseErrors, setParseErrors] = React.useState([]);
+  const [running, setRunning] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [report, setReport] = React.useState(null);
+  const [narrative, setNarrative] = React.useState(null);
+  const [narrating, setNarrating] = React.useState(false);
+
+  const parsed = React.useMemo(() => (csvText.trim() ? _parseEventsCsv(csvText) : { events: [], errors: [] }), [csvText]);
+
+  function handleFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setCsvText(String(reader.result || ""));
+    reader.readAsText(file);
+  }
+
+  async function runAudit() {
+    setError(null); setReport(null); setNarrative(null);
+    const { events, errors } = _parseEventsCsv(csvText);
+    setParseErrors(errors);
+    if (!events.length) { setError("No usable events found in the input."); return; }
+
+    setRunning(true);
+    try {
+      const res = await fetch(`${_aiGovBase()}/ai-governance/behavioral-audit`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ system_name: system.system_name, events }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `Audit failed (${res.status})`);
+      setReport(body);
+      onAudited && onAudited(system.system_name, body);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function generateNarrative() {
+    setNarrating(true);
+    try {
+      const res = await fetch(`${_aiGovBase()}/ai-governance/behavioral-audit/narrative`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ system_name: system.system_name, report }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `Narrative failed (${res.status})`);
+      setNarrative(body);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setNarrating(false);
+    }
+  }
+
+  // Worst-first. An auditor reads the top of this list and stops; burying an
+  // ESCALATE under a CLEAR because of analyzer registration order would be a
+  // presentation bug with audit consequences.
+  const ordered = report
+    ? [...report.evaluations].sort((a, b) => _VERDICT_ORDER.indexOf(a.verdict) - _VERDICT_ORDER.indexOf(b.verdict))
+    : [];
+
+  const attestedButFailing = report
+    && system.human_oversight_defined
+    && ordered.some(e => e.evidence?.control_ref === "AI-06" && e.verdict === "ESCALATE");
+
+  return (
+    <div style={{
+      border: "1px solid var(--line)", borderRadius: 8, padding: 16,
+      background: "var(--surface)", marginBottom: 20,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>Behavioural audit — {system.system_name}</div>
+        <button className="btn btn-sm" style={{ marginLeft: "auto", fontSize: 10.5 }} onClick={onClose}>Close</button>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--ink-4)", marginBottom: 14 }}>
+        Upload this system&apos;s own review and decision logs. The analysis is deterministic —
+        the same file always produces the same verdict, so a finding here can be re-run and
+        reproduced by anyone reviewing it.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+        <input type="file" accept=".csv,text/csv" onChange={handleFile} style={{ fontSize: 11 }} />
+        <button className="btn btn-sm" style={{ fontSize: 10.5 }} onClick={() => setCsvText(_SAMPLE_CSV)}>
+          Load sample
+        </button>
+        {csvText && (
+          <button className="btn btn-sm" style={{ fontSize: 10.5 }} onClick={() => { setCsvText(""); setReport(null); setNarrative(null); }}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      <textarea
+        className="code-input mono"
+        style={{ width: "100%", height: 120, fontSize: 11 }}
+        placeholder="Paste CSV here, or use the file picker above."
+        value={csvText}
+        onChange={e => setCsvText(e.target.value)}
+        spellCheck={false}
+      />
+
+      <details style={{ marginTop: 6 }}>
+        <summary style={{ fontSize: 10.5, color: "var(--ink-4)", cursor: "pointer" }}>
+          Expected columns
+        </summary>
+        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6, lineHeight: 1.6 }}>
+          One row per event, with an <code>event_type</code> column. Other columns are read by
+          name, so extra columns are ignored rather than misread.
+          <ul style={{ marginTop: 6, paddingLeft: 18 }}>
+            <li>
+              <code>human_review</code> — needs <code>decision</code>
+              (<code>approved</code>/<code>rejected</code>) and <code>seconds_to_decide</code>.
+              Without the timing column, oversight cannot be evidenced at all: approval rate on
+              its own cannot tell a careful reviewer who agrees apart from one who is not reading.
+            </li>
+            <li>
+              <code>ai_decision</code> — needs <code>subject_group</code> and <code>outcome</code>
+              (<code>favourable</code>/<code>adverse</code>).
+            </li>
+          </ul>
+        </div>
+      </details>
+
+      {csvText.trim() && (
+        <div style={{ fontSize: 10.5, color: "var(--ink-4)", marginTop: 6 }}>
+          {parsed.events.length} event(s) parsed
+          {parsed.errors.length > 0 && ` · ${parsed.errors.length} row issue(s)`}
+        </div>
+      )}
+
+      <button className="btn btn-acc" style={{ marginTop: 12, fontSize: 12 }}
+        disabled={running || !parsed.events.length} onClick={runAudit}>
+        {running ? "Running…" : "Run behavioural audit"}
+      </button>
+
+      {parseErrors.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 10.5, color: "var(--amber-ink)" }}>
+          {parseErrors.slice(0, 5).map((e, i) => <div key={i}>{e}</div>)}
+          {parseErrors.length > 5 && <div>…and {parseErrors.length - 5} more.</div>}
+        </div>
+      )}
+
+      {error && (
+        <div className="mono" style={{ marginTop: 10, fontSize: 11, color: "var(--red-ink)" }}>{error}</div>
+      )}
+
+      {report && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+            border: "1px solid var(--line)", borderRadius: 6, background: "var(--surface-2)", marginBottom: 14,
+          }}>
+            <VerdictPill verdict={report.overall_verdict} size="lg" />
+            <div style={{ fontSize: 11.5, color: "var(--ink-2)" }}>
+              {report.events_examined} events examined · {report.evaluations.length} checks
+              {report.requires_human_review && " · requires human review"}
+            </div>
+          </div>
+
+          {attestedButFailing && (
+            <div style={{
+              padding: "10px 14px", borderRadius: 6, marginBottom: 14,
+              border: "1px solid var(--red-ink)", background: "var(--red-soft)", color: "var(--red-ink)",
+              fontSize: 11.5, lineHeight: 1.5,
+            }}>
+              <strong>Attestation contradicted by evidence.</strong> This system is recorded on the
+              register as having human oversight defined (AI-06), but its own review logs show that
+              oversight is not functioning as a control. The register entry should not be relied on
+              until this is resolved.
+            </div>
+          )}
+
+          {ordered.map((ev, i) => <EvaluationCard key={i} evaluation={ev} />)}
+
+          <div style={{ marginTop: 12 }}>
+            <button className="btn btn-sm" style={{ fontSize: 11 }} disabled={narrating} onClick={generateNarrative}>
+              {narrating ? "Generating…" : "Generate audit-committee summary"}
+            </button>
+            <span style={{ fontSize: 10, color: "var(--ink-4)", marginLeft: 8 }}>
+              Optional AI narrative over the findings above. Every generation goes to the AI
+              Narrative Review queue before it can be relied on.
+            </span>
+          </div>
+
+          {narrative && (
+            <div style={{
+              marginTop: 12, border: "1px solid var(--line)", borderRadius: 6,
+              padding: "12px 14px", background: "var(--surface-2)",
+            }}>
+              {narrative._review && narrative._review.status !== "reviewed" && (
+                <div style={{
+                  fontSize: 10, fontWeight: 700, color: "var(--amber-ink)",
+                  background: "var(--amber-soft)", display: "inline-block",
+                  padding: "2px 8px", borderRadius: 999, marginBottom: 8,
+                }}>
+                  Pending Review
+                </div>
+              )}
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{narrative.headline}</div>
+              <p style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 6, lineHeight: 1.55 }}>{narrative.summary}</p>
+              {narrative.control_reliance_impact && (
+                <p style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 8, lineHeight: 1.55 }}>
+                  <strong>Control reliance: </strong>{narrative.control_reliance_impact}
+                </p>
+              )}
+              {Array.isArray(narrative.recommended_actions) && narrative.recommended_actions.length > 0 && (
+                <ul style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 8, paddingLeft: 18, lineHeight: 1.6 }}>
+                  {narrative.recommended_actions.map((a, i) => <li key={i}>{a}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AiGovernanceScreen() {
+  const [systems, setSystems] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [auditing, setAuditing] = React.useState(null);
+  const [lastVerdicts, setLastVerdicts] = React.useState({});
+
+  const load = React.useCallback(() => {
+    return fetch(`${_aiGovBase()}/ai-governance`, { credentials: "include" })
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load AI system register (${res.status})`);
+        return res.json();
+      })
+      .then(d => { setSystems(d.systems || []); setError(null); })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const rows = systems || [];
+  const expired = rows.filter(r => r.status === "EXPIRED").length;
+  const oversightGaps = rows.filter(r => r.requires_human_oversight && !r.human_oversight_defined).length;
+  const contradicted = Object.values(lastVerdicts).filter(v => v === "ESCALATE").length;
+
+  return (
+    <div className="scope-screen" data-screen-label="AI Governance">
+      <div className="panel-head">
+        <div className="kicker">Audit &amp; Compliance · AI Governance</div>
+        <div className="panel-title mt-8">AI Governance</div>
+        <div className="panel-sub">
+          The register of AI systems this company operates, and the evidence behind each one.
+          The register records what was <em>attested</em> — that a human review step exists, that
+          an assessment is current. The behavioural audit tests those attestations against the
+          system&apos;s own logs. Where the two disagree, the disagreement is the finding.
+        </div>
+      </div>
+
+      {error && (
+        <div className="mono" style={{ fontSize: 11, color: "var(--red-ink)", marginBottom: 12 }}>{error}</div>
+      )}
+
+      {loading && !systems ? <Empty>Loading…</Empty> : (
+        <>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+            <GovTile label="Systems registered" value={rows.length} sub="Manual attestation register" />
+            <GovTile label="Oversight gaps" value={oversightGaps} tone={oversightGaps > 0 ? "bad" : "good"}
+              sub={oversightGaps > 0 ? "Required but not defined (AI-06)" : "All required oversight defined"} />
+            <GovTile label="Expired assessments" value={expired} tone={expired > 0 ? "warn" : "good"}
+              sub={expired > 0 ? "Control reliance basis lapsed (AI-05)" : "All assessments current"} />
+            <GovTile label="Contradicted by evidence" value={contradicted} tone={contradicted > 0 ? "bad" : "neutral"}
+              sub="Attested as governed, failed its audit" />
+          </div>
+
+          {auditing && (
+            <BehavioralAuditPanel
+              system={auditing}
+              onClose={() => setAuditing(null)}
+              onAudited={(name, report) => setLastVerdicts(v => ({ ...v, [name]: report.overall_verdict }))}
+            />
+          )}
+
+          {!rows.length ? (
+            <Empty icon="🗂️">
+              No AI systems registered yet. The register is a manual attestation — there is no
+              connector that can discover shadow AI usage for you.
+            </Empty>
+          ) : (
+            <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
+              <div style={{
+                display: "grid", gridTemplateColumns: "1.6fr 1fr 0.8fr 1fr 1fr 1fr 0.9fr",
+                gap: 10, padding: "6px 12px", fontSize: 10, color: "var(--ink-4)",
+                letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600,
+                borderBottom: "1px solid var(--line)",
+              }}>
+                <div>System</div><div>Vendor</div><div>Tier</div><div>Owner</div>
+                <div>Attested oversight</div><div>Evidence</div><div />
+              </div>
+
+              {rows.map(row => {
+                const gap = row.requires_human_oversight && !row.human_oversight_defined;
+                const verdict = lastVerdicts[row.system_name];
+                return (
+                  <div key={row.id} style={{
+                    display: "grid", gridTemplateColumns: "1.6fr 1fr 0.8fr 1fr 1fr 1fr 0.9fr",
+                    alignItems: "center", gap: 10, padding: "9px 12px",
+                    borderBottom: "1px solid var(--line)", fontSize: 12,
+                  }}>
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{row.system_name}</div>
+                      {row.status === "EXPIRED" && (
+                        <div style={{ fontSize: 9.5, color: "var(--amber-ink)", marginTop: 1 }}>
+                          Assessment expired {row.assessment_expires_at}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{row.vendor || "—"}</div>
+                    <div style={{ fontSize: 11 }}>{row.risk_tier}</div>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{row.business_owner || "Unassigned"}</div>
+                    <div style={{ fontSize: 10.5, color: gap ? "var(--red-ink)" : "var(--ink-3)" }}>
+                      {!row.requires_human_oversight
+                        ? "Not required"
+                        : gap ? "Required, not defined" : "Defined"}
+                    </div>
+                    <div>
+                      {verdict
+                        ? <VerdictPill verdict={verdict} />
+                        : <span style={{ fontSize: 10, color: "var(--ink-4)" }}>Not audited</span>}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <button className="btn btn-sm" style={{ fontSize: 10.5 }}
+                        onClick={() => setAuditing(row)}>
+                        Audit
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <p style={{ fontSize: 10, color: "var(--ink-4)", marginTop: 10 }}>
+            An audit verdict shown here reflects the batch most recently uploaded in this session.
+            Every non-clear result is also ingested as a governed event, so it appears in
+            Continuous Watch and the Approval Inbox on the same path as any other finding.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { AiGovernanceScreen });
