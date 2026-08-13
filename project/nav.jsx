@@ -22,7 +22,10 @@ const NAV_SECTIONS = [
       // the backend's require_screen_permission both read "ai_governance".
       // Any other id here would let an admin toggle a permission that neither
       // the gate nor the API actually enforces.
-      { id: "ai_governance", icon: "shield", l: "AI Governance" },
+      // trueDevOnly (not devOnly): visible in the real Development
+      // environment only — unlike Exception Management's devOnly, this is
+      // NOT enabled by the EXCEPTION_MGMT_LOCAL_DEV override in sandbox/uat.
+      { id: "ai_governance", icon: "shield", l: "AI Governance", trueDevOnly: true },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping"},
@@ -167,7 +170,7 @@ function NavIcon({ name, size = 14 }) {
   return <Icon name={name} size={size}/>;
 }
 
-function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null, isDevEnv = false }) {
+function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin = false, screenPerms = null, isDevEnv = false, isTrueDevEnv = false }) {
   // Sections start collapsed except the one holding the active screen, so
   // the "you are here" highlight is always visible without hunting for it.
   const [collapsed, setCollapsed] = React.useState(() => {
@@ -194,6 +197,7 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
   // entry in screenPerms means "allowed" — see auth.screen_permissions.
   function isVisible(item) {
     if (item.devOnly && !isDevEnv) return false;
+    if (item.trueDevOnly && !isTrueDevEnv) return false;
     if (item.adminOnly) return isAdmin;
     if (isAdmin || !screenPerms) return true;
     const p = screenPerms[item.id];

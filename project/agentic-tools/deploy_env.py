@@ -20,11 +20,17 @@ database they know is safe opts in explicitly with EXCEPTION_MGMT_LOCAL_DEV=true
 Single source of truth for anything gated to the Development environment
 only — currently just Exception Management (exceptions_endpoints.py,
 connector_poller.py's scoring hook, nav.jsx's devOnly items via /health).
+
+IS_DEVELOPMENT is opt-in-able per environment via EXCEPTION_MGMT_LOCAL_DEV,
+so it is NOT a reliable "this is really the Development environment" check.
+AI Governance's nav gating needs exactly that stricter check (Development
+only, no override), so it uses IS_TRUE_DEVELOPMENT instead of IS_DEVELOPMENT.
 """
 import os
 
 ENVIRONMENT_NAME = os.environ.get("RAILWAY_ENVIRONMENT_NAME", "").strip().lower()
+IS_TRUE_DEVELOPMENT = ENVIRONMENT_NAME == "development"
 IS_DEVELOPMENT = (
-    ENVIRONMENT_NAME == "development"
+    IS_TRUE_DEVELOPMENT
     or os.environ.get("EXCEPTION_MGMT_LOCAL_DEV", "").strip().lower() == "true"
 )

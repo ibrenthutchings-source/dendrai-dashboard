@@ -70,13 +70,15 @@ window.MCP = (function () {
     }
   }
 
-  /** Deployment environment name + whether this is the Development environment (Exception Management's nav gating). */
+  /** Deployment environment name + dev-gating flags: isDev covers Exception Management's
+   *  nav gating (Development, or sandbox/uat opted in via EXCEPTION_MGMT_LOCAL_DEV); isTrueDev
+   *  is the stricter "actually the Development environment" check AI Governance's nav gating uses. */
   async function fetchEnvironment() {
     try {
       const r = await _get('/health');
-      return { environment: r.environment || 'production', isDev: !!r.environment_is_dev };
+      return { environment: r.environment || 'production', isDev: !!r.environment_is_dev, isTrueDev: !!r.ai_governance_enabled };
     } catch {
-      return { environment: 'unknown', isDev: false };
+      return { environment: 'unknown', isDev: false, isTrueDev: false };
     }
   }
 

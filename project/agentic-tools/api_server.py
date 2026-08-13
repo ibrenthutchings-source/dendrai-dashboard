@@ -1100,6 +1100,7 @@ def health():
         "ai_model_fallback_active": claude_client.get_model_status()["fallback_active"],
         "environment": deploy_env.ENVIRONMENT_NAME,
         "environment_is_dev": deploy_env.IS_DEVELOPMENT,
+        "ai_governance_enabled": deploy_env.IS_TRUE_DEVELOPMENT,
     }
 
 
