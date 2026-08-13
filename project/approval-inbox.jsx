@@ -320,25 +320,97 @@ function TelemetryReviewItem({ item, onDecide }) {
   );
 }
 
+const AI_NARRATIVE_KIND_LABEL = {
+  persona_brief: "Persona Brief",
+  audit_report: "Audit Report",
+};
+
+// AI narrative review — persona_brief/audit_report are the two AI endpoints
+// that reach a user/board with no gate before delivery (MODEL_CARD.md known
+// limitation #3); every generation now lands here for review instead of the
+// old 20%-sample after-the-fact spot-check. See ai_endpoints.py's
+// GET/POST /ai/review-queue.
+function AiNarrativeReviewItem({ item, onDecide }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [note, setNote] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+
+  async function submit() {
+    setBusy(true); setErr(null);
+    try {
+      await onDecide(item.id, note.trim() || null);
+    } catch (e) {
+      setErr(e.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, padding: "14px 16px", marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 4 }}>
+            AI NARRATIVE · {AI_NARRATIVE_KIND_LABEL[item.kind] || item.kind}{item.ticker ? ` · ${item.ticker}` : ""}
+          </div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>
+            {item.subject_ref ? `${item.subject_ref} brief` : "Audit report"}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>
+            {item.model && <>{item.model} · </>}
+            generated {item.created_at ? new Date(item.created_at).toLocaleString() : "—"}
+          </div>
+          {item.summary && (
+            <div style={{ fontSize: 11.5, color: "var(--ink-2)", marginTop: 6, lineHeight: 1.5 }}>{item.summary}</div>
+          )}
+        </div>
+        <button className="btn btn-sm" onClick={() => setExpanded(e => !e)}>
+          {expanded ? "Collapse" : "Review"}
+        </button>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 6 }}>
+            Open the {item.kind === "audit_report" ? "Loop Report" : "Persona"} tab on the source run to read the full generated text before clearing this.
+          </div>
+          <textarea className="fi-ta" value={note} onChange={e => setNote(e.target.value)}
+            placeholder="Review notes (optional)…" style={{ minHeight: 50, width: "100%", boxSizing: "border-box" }} />
+          {err && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 8 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button className="btn btn-sm btn-primary" disabled={busy} onClick={submit}>
+              {busy ? <><span className="spin" /> Submitting…</> : "Mark Reviewed"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApprovalInboxScreen() {
   const [items, setItems] = React.useState([]);
   const [telemetryItems, setTelemetryItems] = React.useState([]);
+  const [aiReviewItems, setAiReviewItems] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
 
   const reload = React.useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [gateRes, telRes] = await Promise.all([
+      const [gateRes, telRes, aiRes] = await Promise.all([
         fetch("/approvals/inbox", { credentials: "include" }),
         fetch(`${window.MCP_API_BASE || "/api/mcp"}/observability/telemetry/human-review`, { credentials: "include" }),
+        fetch(`${window.MCP_API_BASE || "/api/mcp"}/ai/review-queue`, { credentials: "include" }),
       ]);
       if (!gateRes.ok) throw new Error(await gateRes.text());
       const gateData = await gateRes.json();
       setItems(gateData.items || []);
-      // Telemetry review is best-effort — a DB-unavailable or UBO-disabled
-      // backend shouldn't take down the Gate-item half of this screen.
+      // Telemetry review and AI narrative review are both best-effort — a
+      // DB-unavailable backend shouldn't take down the Gate-item half of
+      // this screen.
       setTelemetryItems(telRes.ok ? (await telRes.json()).rows || [] : []);
+      setAiReviewItems(aiRes.ok ? (await aiRes.json()).items || [] : []);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -371,7 +443,17 @@ function ApprovalInboxScreen() {
     setTelemetryItems(prev => prev.filter(i => i.id !== rowId));
   }
 
-  const totalCount = items.length + telemetryItems.length;
+  async function handleDecideAiReview(analysisId, note) {
+    const res = await fetch(`${window.MCP_API_BASE || "/api/mcp"}/ai/review-queue/${analysisId}/review`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    setAiReviewItems(prev => prev.filter(i => i.id !== analysisId));
+  }
+
+  const totalCount = items.length + telemetryItems.length + aiReviewItems.length;
 
   return (
     <div className="scope-screen" data-screen-label="Approval Inbox">
@@ -381,8 +463,9 @@ function ApprovalInboxScreen() {
           <div className="panel-title mt-8">Approval Inbox</div>
           <div className="panel-sub">
             Gate adjustments from Enterprise Risk and SOX Risk Assessment awaiting your review as manager, plus
-            UBO™ Governance Brain telemetry flagged for human review. Gate items are routed to you specifically;
-            telemetry review items are broadcast to every user — whoever reviews one first resolves it for everyone.
+            UBO™ Governance Brain telemetry flagged for human review, plus every AI-generated persona brief and
+            audit report awaiting its pre-delivery check. Gate items are routed to you specifically; telemetry
+            and AI narrative reviews are broadcast to every user — whoever reviews one first resolves it for everyone.
           </div>
         </div>
         <button className="btn btn-sm" onClick={reload} disabled={loading}>
@@ -410,12 +493,22 @@ function ApprovalInboxScreen() {
           )}
           {items.length > 0 && (
             <>
-              {telemetryItems.length > 0 && (
+              {(telemetryItems.length > 0 || aiReviewItems.length > 0) && (
                 <div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", margin: "16px 0 8px" }}>
                   GATE ADJUSTMENTS · {items.length} AWAITING YOUR REVIEW
                 </div>
               )}
               {items.map(item => <InboxItem key={item.id} item={item} onDecide={handleDecide} />)}
+            </>
+          )}
+          {aiReviewItems.length > 0 && (
+            <>
+              {(telemetryItems.length > 0 || items.length > 0) && (
+                <div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", margin: "16px 0 8px" }}>
+                  AI NARRATIVE REVIEW · {aiReviewItems.length} AWAITING PRE-DELIVERY CHECK
+                </div>
+              )}
+              {aiReviewItems.map(item => <AiNarrativeReviewItem key={`ai-${item.id}`} item={item} onDecide={handleDecideAiReview} />)}
             </>
           )}
         </div>

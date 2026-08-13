@@ -4,8 +4,8 @@
 
 function ReportModal({ open, onClose, payload }) {
   // Hooks must run unconditionally — declare before the early return.
-  const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null });
-  React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null }); }, [payload?.ts]);
+  const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null, _review: null });
+  React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null, _review: null }); }, [payload?.ts]);
 
   if (!open || !payload) return null;
   const {
@@ -30,14 +30,14 @@ function ReportModal({ open, onClose, payload }) {
         ticker || entity,
         { risks, objectives, maps, loop }, runId || null,
       );
-      setAiReport({ loading: false, error: null, markdown: res?.markdown || "" });
+      setAiReport({ loading: false, error: null, markdown: res?.markdown || "", _review: res?._review || null });
     } catch (e) {
       const raw = e.message || "";
       const isBilling = raw.includes("402") || raw.includes("credit") || raw.includes("Credits");
       const friendly = isBilling
         ? "BILLING: Anthropic API credits exhausted — add credits at console.anthropic.com/settings/billing"
         : raw || "AI unavailable";
-      setAiReport({ loading: false, error: friendly, markdown: null });
+      setAiReport({ loading: false, error: friendly, markdown: null, _review: null });
     }
   }
 
@@ -80,6 +80,7 @@ function ReportModal({ open, onClose, payload }) {
           {aiReport.markdown && (
             <div className="rep-section">
               <h3>AI Narrative Report <span className="mono" style={{fontSize: 10, color: "var(--acc-ink)", fontWeight: 400}}>· Claude-generated</span></h3>
+              <AiReviewBanner review={aiReport._review} />
               <div style={{whiteSpace: "pre-wrap", fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7,
                 background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "14px 16px"}}>
                 {aiReport.markdown}

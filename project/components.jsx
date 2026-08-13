@@ -196,6 +196,32 @@ function fmt$M(n) {
   return `$${n.toFixed(0)}`;
 }
 
+// ---- AI narrative review banner ----
+// persona_brief/audit_report are the two AI endpoints that reach a
+// user/board with no gate before delivery (MODEL_CARD.md known limitation
+// #3) — every generation now carries a `_review` block the API attaches
+// (see ai_endpoints.py) so this banner can show its actual state instead of
+// silently looking identical to a reviewed one. Cleared via Approval Inbox's
+// AI Narrative Review section, not inline here — this is a status readout,
+// not the review action itself.
+function AiReviewBanner({ review }) {
+  if (!review) return null;
+  const reviewed = review.status === "reviewed";
+  return (
+    <div className="mono" style={{
+      fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", padding: "6px 10px", borderRadius: 5,
+      marginBottom: 10, display: "flex", alignItems: "center", gap: 6,
+      background: reviewed ? "var(--green-soft, #ecfdf5)" : "var(--amber-soft, #fffbeb)",
+      color: reviewed ? "var(--green-ink, #047857)" : "var(--amber-ink, #b45309)",
+      border: `1px solid ${reviewed ? "var(--green-ink, #047857)" : "var(--amber-ink, #b45309)"}`,
+    }}>
+      {reviewed
+        ? <>✓ REVIEWED{review.reviewed_by_name ? ` BY ${review.reviewed_by_name.toUpperCase()}` : ""}{review.reviewed_at ? ` · ${new Date(review.reviewed_at).toLocaleDateString()}` : ""}</>
+        : <>⏳ PENDING REVIEW — not yet cleared for distribution · see Approval Inbox</>}
+    </div>
+  );
+}
+
 // ---- Empty state ----
 function Empty({ children, icon = "—" }) {
   return (
@@ -377,7 +403,7 @@ Object.assign(window, {
   scoreColor, scoreColorInk, ragFromScore,
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,
-  Empty, SectionLabel, BBTermHeader,
+  Empty, SectionLabel, BBTermHeader, AiReviewBanner,
   LiveBadge, RefreshBadge,
   ScreenAccessGate, ScreenLoadingFallback,
 });

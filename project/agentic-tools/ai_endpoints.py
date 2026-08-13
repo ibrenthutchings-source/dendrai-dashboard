@@ -16,8 +16,8 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
     POST /ai/persona-brief       #4  role-tailored summary (CAE / CFO / COO)
     POST /ai/audit-report        #4  full markdown audit report
     POST /ai/loop-calibrate      #4b loop calibration recommendations (Gate 3)
-    GET  /ai/review-queue        sampled ungated-narrative generations awaiting human spot-check
-    POST /ai/review-queue/{id}/review  mark a sampled generation as reviewed
+    GET  /ai/review-queue        every persona_brief/audit_report generation awaiting human review
+    POST /ai/review-queue/{id}/review  mark a generation as reviewed
     POST /agent/investigate      #1  tool-use investigation agent
     POST /agent/investigate/council  #1b 3-perspective (financial/cyber/compliance) ensemble + synthesis
     POST /agent/schedule         #5  provision Managed Agent + scheduled deployment
@@ -32,7 +32,6 @@ import hashlib
 import json
 import logging
 import os
-import random
 import re
 from typing import Any, Dict, List, Optional
 
@@ -51,18 +50,26 @@ router = APIRouter()
 _MODEL_STRUCTURED = "claude-sonnet-4-6"
 _MODEL_AGENT = "claude-sonnet-4-6"
 
-# Sampling-based human review for the two fully-automated, ungated narrative
-# endpoints (persona_brief, audit_report) — MODEL_CARD.md "Recommended Next
-# Steps" #4. Every other AI endpoint already has a human gate before its
-# output takes effect; these two reach an executive/the board with none, so
-# a random spot-check sample gets queued for after-the-fact human review
-# instead. Stateless (no per-kind counter query needed) at the cost of exact
-# cadence — over any reasonable volume this converges to ~1-in-5.
-_UNGATED_REVIEW_SAMPLE_RATE = 0.20
-
-
-def _should_sample_for_review() -> bool:
-    return random.random() < _UNGATED_REVIEW_SAMPLE_RATE
+# Mandatory pre-delivery review for the two fully-automated narrative
+# endpoints (persona_brief, audit_report) — MODEL_CARD.md known limitation #3.
+# Every other AI endpoint already has a human gate before its output takes
+# effect (preparer submits, manager reviews via Approval Inbox); these two
+# reach an executive/the board with none. This used to sample ~20% of
+# generations for an after-the-fact spot-check — real detection, but not
+# prevention: four in five reached their recipient with no check at all, and
+# even the sampled fifth was reviewed only after delivery, not before.
+#
+# Every generation is now flagged for review (db.save_ai_analysis's
+# sampled_for_review, kept under its original column name since the schema
+# already shipped with it — see MODEL_CARD.md's Recommended Next Steps #4 for
+# that history), and the API response carries the resulting review_status so
+# the UI can show a "Pending Review" state until a human acts on it via
+# GET/POST /ai/review-queue. This doesn't technically block the requester
+# from reading their own generation — they're the human in the loop for that
+# read — but it does mean nothing downstream can mistake an unreviewed
+# narrative for a cleared one, which the silent-sample version couldn't
+# guarantee.
+_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES = True
 
 # ── Embedding helpers ─────────────────────────────────────────────────────────
 # Used by narrative_analysis to chunk and index EDGAR text so that future calls
@@ -773,7 +780,13 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
     input_hash = hashlib.sha256((_PERSONA_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
     cached = db.get_cached_ai_analysis("persona_brief", req.run_id, persona, input_hash)
     if cached is not None:
-        return cached
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
 
     try:
         result = claude_client.complete_json(
@@ -784,15 +797,15 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
     except Exception as exc:
         raise _ai_exc(exc)
 
-    db.save_ai_analysis(
+    analysis_id = db.save_ai_analysis(
         "persona_brief", result,
         run_id=req.run_id, ticker=req.ticker, subject_ref=persona,
         model=_MODEL_STRUCTURED, effort="medium",
         summary=result.get("headline", "")[:500],
-        sampled_for_review=_should_sample_for_review(),
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
         input_hash=input_hash,
     )
-    return result
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -831,7 +844,13 @@ def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_us
     input_hash = hashlib.sha256((_REPORT_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
     cached = db.get_cached_ai_analysis("audit_report", req.run_id, None, input_hash)
     if cached is not None:
-        return {"ticker": req.ticker, "markdown": cached.get("markdown", "")}
+        return {
+            "ticker": req.ticker, "markdown": cached["content"].get("markdown", ""),
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
 
     try:
         markdown = claude_client.complete_text(
@@ -842,14 +861,17 @@ def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_us
     except Exception as exc:
         raise _ai_exc(exc)
 
-    db.save_ai_analysis(
+    analysis_id = db.save_ai_analysis(
         "audit_report", {"markdown": markdown},
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=f"{len(markdown)} char report",
-        sampled_for_review=_should_sample_for_review(),
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
         input_hash=input_hash,
     )
-    return {"ticker": req.ticker, "markdown": markdown}
+    return {
+        "ticker": req.ticker, "markdown": markdown,
+        "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None},
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -866,8 +888,8 @@ def get_review_queue(
     limit: int = 50,
     current_user: dict = Depends(get_current_user),
 ):
-    """Sampled persona_brief/audit_report generations awaiting (or having
-    received) human spot-check review. status='pending'|'reviewed'|None (all)."""
+    """Every persona_brief/audit_report generation awaiting (or having
+    received) human review — not a sample. status='pending'|'reviewed'|None (all)."""
     if not db.is_available():
         return {"items": [], "count": 0}
     items = db.list_ai_review_queue(status=status, limit=limit)
