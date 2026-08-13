@@ -23,6 +23,7 @@ const RiskQuantificationScreenLazy = lazyGlobal(() => import('./fair-quantificat
 const ExceptionsScreenLazy = lazyGlobal(() => import('./exceptions.jsx'), 'ExceptionsScreen');
 const InfrastructureMonitoringScreenLazy = lazyGlobal(() => import('./infrastructure-monitoring.jsx'), 'InfrastructureMonitoringScreen');
 const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
+const AiGovernanceScreenLazy = lazyGlobal(() => import('./ai-governance.jsx'), 'AiGovernanceScreen');
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
@@ -121,6 +122,7 @@ function App() {
       () => import('./continuous-monitoring.jsx'),
       () => import('./infrastructure-monitoring.jsx'),
       () => import('./ai-inventory.jsx'),
+      () => import('./ai-governance.jsx'),
       () => import('./flow.jsx'),
       () => import('./audit-scope.jsx'),
       () => import('./approval-inbox.jsx'),
@@ -2238,6 +2240,17 @@ function App() {
           <ScreenAccessGate screenId="aiinventory">
             <div className="panel active">
               <AiInventoryScreenLazy onNavigate={navigateToScreen} />
+            </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- AI Governance (register + behavioural audit) ---- */}
+          {/* Screen id, nav id, and _SCREEN_ID in ai_governance_endpoints.py
+              are all "ai_governance" on purpose — see the note in nav.jsx. */}
+          {activeScreen === "ai_governance" && (
+          <ScreenAccessGate screenId="ai_governance">
+            <div className="panel active">
+              <AiGovernanceScreenLazy />
             </div>
           </ScreenAccessGate>
           )}
