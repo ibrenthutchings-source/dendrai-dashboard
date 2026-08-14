@@ -1873,6 +1873,28 @@ _SENSITIVE_RESOURCE_KW  = {"financial", "payroll", "pii", "ssn", "credit", "audi
 _SOD_KW                 = {"sod", "segregation", "conflict", "violation", "dual_control", "incompatible"}
 
 
+def _payload_keyword_hit(payload: dict, keywords: set[str]) -> bool:
+    """True if some payload field signals one of `keywords` — a free-text
+    STRING value containing the keyword (a producer with no fixed schema
+    saying so in words), or a BOOLEAN field whose own NAME contains the
+    keyword and whose value is True (a producer with a fixed schema, e.g.
+    synthetic_transaction_tool.py's IAM steps setting
+    {"sod_conflict_detected": True/False}).
+
+    Deliberately does NOT substring-match against str(payload) wholesale —
+    that would match a boolean field's NAME regardless of its value (every
+    sod_conflict_detected row, true or false, contains the substring "sod"),
+    flagging 100% of that field's occurrences instead of just the ones that
+    are actually True."""
+    for k, v in payload.items():
+        if isinstance(v, bool):
+            if v and any(kw in str(k).lower() for kw in keywords):
+                return True
+        elif isinstance(v, str) and any(kw in v.lower() for kw in keywords):
+            return True
+    return False
+
+
 def _detect_system_flags(event: dict) -> list[str]:
     """Apply generic detection rules to a system telemetry event. Returns risk flag list."""
     flags: set[str] = set()
@@ -1880,13 +1902,12 @@ def _detect_system_flags(event: dict) -> list[str]:
     resource = (event.get("resource") or "").lower()
     severity = (event.get("severity") or "INFO").upper()
     payload  = event.get("payload") or {}
-    payload_str = str(payload).lower()
 
     if action in _PRIVILEGED_ACTIONS or any(k in resource for k in _PRIVILEGED_RESOURCE_KW):
         flags.add("privileged_access")
     if any(k in resource for k in _SENSITIVE_RESOURCE_KW):
         flags.add("sensitive_resource")
-    if (payload.get("sod_violation") or any(k in payload_str for k in _SOD_KW)
+    if (payload.get("sod_violation") or _payload_keyword_hit(payload, _SOD_KW)
             or "sod" in (event.get("event_type") or "").lower()):
         flags.add("sod_violation")
     if severity == "CRITICAL" or payload.get("policy_violation"):
