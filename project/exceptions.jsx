@@ -123,7 +123,28 @@ function TriageForm({ onSubmit, submitting }) {
   );
 }
 
-function TriageQueueRow({ row, onResolved }) {
+// Raw payload values are already human-readable JSON scalars/short strings
+// (see synthetic_transaction_tool.py's SimStep builders and every real
+// connector adapter's pull_events) — same flat key:value chip treatment as
+// ExcFeatureChips, just a second, separate block so "what the model saw"
+// (point_in_time_features) and "what the event actually said" (raw_payload)
+// stay visually distinct instead of merged into one undifferentiated list.
+function ExcPayloadChips({ payload }) {
+  const entries = Object.entries(payload || {});
+  if (!entries.length) return <span style={{ fontSize: 10, color: "var(--ink-4)" }}>No payload captured on this event.</span>;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+      {entries.map(([k, v]) => (
+        <span key={k} className="mono" style={{
+          fontSize: 9.5, padding: "2px 7px", borderRadius: 999, background: "var(--surface-2)",
+          color: "var(--ink-2)", border: "1px solid var(--line)",
+        }}>{k}: {typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}</span>
+      ))}
+    </div>
+  );
+}
+
+function TriageQueueRow({ row, onResolved, onNavigate }) {
   const [expanded, setExpanded] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState(null);
@@ -150,6 +171,7 @@ function TriageQueueRow({ row, onResolved }) {
             {row.control_id} <span style={{ fontWeight: 400, color: "var(--ink-4)" }}>· {row.system_source}{row.process ? ` · ${row.process}` : ""}</span>
           </div>
           <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 2 }}>
+            {row.action ? <span style={{ color: "var(--ink-3)" }}>{row.action}{row.actor ? ` · ${row.actor}` : ""} · </span> : null}
             {row.event_timestamp ? new Date(row.event_timestamp).toLocaleString() : "—"}
           </div>
         </div>
@@ -160,9 +182,22 @@ function TriageQueueRow({ row, onResolved }) {
       </div>
       {expanded && (
         <>
-          <div style={{ marginTop: 10 }}>
-            <ExcFeatureChips features={row.point_in_time_features} />
+          <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+            <div className="kicker" style={{ fontSize: 9.5 }}>What changed</div>
+            {row.system_telemetry_id && onNavigate && (
+              <button type="button" className="btn btn-sm"
+                onClick={() => onNavigate("ubogov", { cemTab: "adjudications", cemFilter: { source: row.system_source } })}>
+                View in Telemetry Detail →
+              </button>
+            )}
           </div>
+          <div style={{ fontSize: 11, color: "var(--ink)", marginTop: 4, marginBottom: 8 }}>
+            {row.event_type ? <span className="mono" style={{ fontSize: 10 }}>{row.event_type}</span> : <span style={{ color: "var(--ink-4)" }}>Event type not captured</span>}
+            {row.actor && <span style={{ color: "var(--ink-3)" }}> — performed by {row.actor}</span>}
+          </div>
+          <ExcPayloadChips payload={row.raw_payload} />
+          <div className="kicker" style={{ fontSize: 9.5, marginTop: 10, marginBottom: 4 }}>Model features at scoring time</div>
+          <ExcFeatureChips features={row.point_in_time_features} />
           {error && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 8 }}>{error}</div>}
           <TriageForm onSubmit={handleSubmit} submitting={submitting} />
         </>
@@ -171,7 +206,7 @@ function TriageQueueRow({ row, onResolved }) {
   );
 }
 
-function TriageQueueTab({ onResolved }) {
+function TriageQueueTab({ onResolved, onNavigate }) {
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
@@ -208,7 +243,7 @@ function TriageQueueTab({ onResolved }) {
         <div className="kicker">{rows.length} awaiting review — highest uncertainty first</div>
         <button className="btn btn-sm" onClick={load}>Refresh</button>
       </div>
-      {rows.map(row => <TriageQueueRow key={row.event_id} row={row} onResolved={handleResolved} />)}
+      {rows.map(row => <TriageQueueRow key={row.event_id} row={row} onResolved={handleResolved} onNavigate={onNavigate} />)}
     </div>
   );
 }
@@ -508,7 +543,7 @@ function ExceptionsScreen({ onNavigate } = {}) {
         ))}
       </div>
 
-      {tab === "triage" && <TriageQueueTab onResolved={bumpSummary} />}
+      {tab === "triage" && <TriageQueueTab onResolved={bumpSummary} onNavigate={onNavigate} />}
       {tab === "analytics" && <ModelAnalyticsTab />}
       {tab === "drift" && <FeatureDriftTab />}
     </div>

@@ -72,13 +72,20 @@ _ADAPTERS = {
 }
 
 
-def _score_exception_event(connector: dict, event: dict) -> None:
+def _score_exception_event(connector: dict, event: dict, system_telemetry_id: "int | None") -> None:
     """Best-effort: scores one connector event for Exception Management
     (exception_tool.score_event) and persists it (db.insert_exception_event).
     Development environment only — see deploy_env.py; every other
     environment's ingestion path never calls this. Runs inside the same
     per-event try/except as the primary mcp_governance ingestion, so a
-    failure here can't affect that ingestion or take down the poll loop."""
+    failure here can't affect that ingestion or take down the poll loop.
+
+    system_telemetry_id is the row _ingest_system_event just wrote (or None
+    if that insert was skipped as a duplicate) — captured here, not looked
+    up later, so a reviewer triaging this exception can jump straight to the
+    exact source telemetry row instead of just knowing which system it came
+    from. actor/action/event_type/raw_payload are carried the same way, for
+    "what actually happened" in the triage card itself."""
     extra_config = connector.get("extra_config") or {}
     system_source = extra_config.get("system_label") or connector["connector_type"]
     process = extra_config.get("process")
@@ -90,6 +97,8 @@ def _score_exception_event(connector: dict, event: dict) -> None:
     db.insert_exception_event(
         control_id, system_source, process, event_ts, scored["features"], scored["model_version"],
         scored["anomaly_score"], scored["uncertainty_score"], scored["requires_human_review"],
+        actor=event.get("actor"), action=event.get("action"), event_type=event.get("event_type"),
+        raw_payload=event.get("raw_payload"), system_telemetry_id=system_telemetry_id,
     )
 
 
@@ -162,7 +171,7 @@ async def _poll_one(connector_id: int) -> None:
             if row_id is not None:
                 ingested += 1
             if deploy_env.IS_DEVELOPMENT:
-                await asyncio.to_thread(_score_exception_event, full, event)
+                await asyncio.to_thread(_score_exception_event, full, event, row_id)
         except Exception as exc:
             logger.warning("Connector %s: failed to ingest one event: %s", connector_id, exc)
 

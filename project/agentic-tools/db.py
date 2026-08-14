@@ -1367,6 +1367,19 @@ CREATE INDEX IF NOT EXISTS idx_exc_events_control   ON exception_control_events 
 CREATE INDEX IF NOT EXISTS idx_exc_events_timestamp ON exception_control_events (event_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_exc_events_source    ON exception_control_events (system_source);
 
+-- What actually happened, captured at scoring time (connector_poller.py's
+-- _score_exception_event has the full polled event in hand right there) so
+-- a reviewer isn't left triaging a bare anomaly score with no idea what
+-- event produced it. system_telemetry_id links back to the exact source
+-- row in observability.system_telemetry — no FK constraint (cross-schema,
+-- and system_telemetry rows are never deleted, but this stays a soft
+-- reference like the rest of this table's system_source/process do).
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS actor               VARCHAR(128);
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS action              VARCHAR(128);
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS event_type          VARCHAR(128);
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS raw_payload         JSONB;
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS system_telemetry_id BIGINT;
+
 CREATE TABLE IF NOT EXISTS exception_model_inferences (
     id                      BIGSERIAL    PRIMARY KEY,
     event_id                BIGINT       NOT NULL REFERENCES exception_control_events(id) ON DELETE CASCADE,
@@ -9557,7 +9570,10 @@ _TRIAGE_NOTES_REQUIRED_LABELS = {"TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"}
 def insert_exception_event(control_id: str, system_source: str, process: Optional[str],
                             event_timestamp, features: dict, model_version: str,
                             anomaly_score: float, uncertainty_score: float,
-                            requires_human_review: bool) -> Optional[int]:
+                            requires_human_review: bool, actor: Optional[str] = None,
+                            action: Optional[str] = None, event_type: Optional[str] = None,
+                            raw_payload: Optional[dict] = None,
+                            system_telemetry_id: Optional[int] = None) -> Optional[int]:
     """One exception_control_events row + its exception_model_inferences row,
     in a single connection — connector_poller.py's per-event scoring hook
     calls this for every polled event once deploy_env.IS_DEVELOPMENT."""
@@ -9567,12 +9583,16 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                 cur.execute(
                     """
                     INSERT INTO exception_control_events
-                        (control_id, system_source, process, event_timestamp, point_in_time_features)
-                    VALUES (%s, %s, %s, %s, %s)
+                        (control_id, system_source, process, event_timestamp, point_in_time_features,
+                         actor, action, event_type, raw_payload, system_telemetry_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (control_id[:128], system_source[:64], (process[:64] if process else None),
-                     event_timestamp, Json(features or {})),
+                     event_timestamp, Json(features or {}),
+                     (actor[:128] if actor else None), (action[:128] if action else None),
+                     (event_type[:128] if event_type else None),
+                     (Json(raw_payload) if raw_payload else None), system_telemetry_id),
                 )
                 event_id = cur.fetchone()[0]
                 cur.execute(
@@ -9598,7 +9618,8 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> l
                 cur.execute(
                     """
                     SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
-                           ce.point_in_time_features,
+                           ce.point_in_time_features, ce.actor, ce.action, ce.event_type,
+                           ce.raw_payload, ce.system_telemetry_id,
                            mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.scored_at
                     FROM exception_control_events ce
                     JOIN LATERAL (
@@ -9619,9 +9640,11 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> l
                         "event_id": r[0], "control_id": r[1], "system_source": r[2], "process": r[3],
                         "event_timestamp": r[4].isoformat() if r[4] else None,
                         "point_in_time_features": r[5] or {},
-                        "inference_id": r[6], "model_version": r[7],
-                        "anomaly_score": float(r[8]), "uncertainty_score": float(r[9]),
-                        "scored_at": r[10].isoformat() if r[10] else None,
+                        "actor": r[6], "action": r[7], "event_type": r[8],
+                        "raw_payload": r[9] or {}, "system_telemetry_id": r[10],
+                        "inference_id": r[11], "model_version": r[12],
+                        "anomaly_score": float(r[13]), "uncertainty_score": float(r[14]),
+                        "scored_at": r[15].isoformat() if r[15] else None,
                     })
                 return out
     return _run(_do) or []
