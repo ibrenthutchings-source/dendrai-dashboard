@@ -517,13 +517,15 @@ function RiskQuantificationScreen({ onNavigate } = {}) {
   return (
     <div className="scope-screen" data-screen-label="Risk Quantification">
       <div className="panel-head">
-        <div className="kicker">Audit & Compliance · FAIR Loss Modeling</div>
-        <div className="panel-title mt-8">Risk Quantification</div>
-        <div className="panel-sub">
-          Threat Event Frequency (real control fire history) x Loss Magnitude (SOX exposure, allocated risk
-          dollar exposure, or a labeled CEM-severity default) via Monte Carlo — a dollar distribution instead
-          of an ordinal severity or a static exposure label. Every figure below shows exactly which real
-          source produced it.
+        <div>
+          <div className="kicker">Audit & Compliance · FAIR Loss Modeling</div>
+          <div className="panel-title mt-8">Risk Quantification</div>
+          <div className="panel-sub">
+            Threat Event Frequency (real control fire history) x Loss Magnitude (SOX exposure, allocated risk
+            dollar exposure, or a labeled CEM-severity default) via Monte Carlo — a dollar distribution instead
+            of an ordinal severity or a static exposure label. Every figure below shows exactly which real
+            source produced it.
+          </div>
         </div>
       </div>
 

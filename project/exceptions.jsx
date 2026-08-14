@@ -478,13 +478,15 @@ function ExceptionsScreen({ onNavigate } = {}) {
   return (
     <div className="scope-screen" data-screen-label="Exception Management">
       <div className="panel-head">
-        <div className="kicker">Development · Continuous Control Monitoring</div>
-        <div className="panel-title mt-8">Exception Management</div>
-        <div className="panel-sub">
-          Connector events — from real systems and the synthetic transaction simulator alike — are scored for
-          anomaly and uncertainty as they arrive. Anything that crosses the review threshold lands here for a human
-          auditor to resolve, as a second, model-scored lens alongside Policy-as-Code's rule-based violations on
-          Continuous Watch.
+        <div>
+          <div className="kicker">Development · Continuous Control Monitoring</div>
+          <div className="panel-title mt-8">Exception Management</div>
+          <div className="panel-sub">
+            Connector events — from real systems and the synthetic transaction simulator alike — are scored for
+            anomaly and uncertainty as they arrive. Anything that crosses the review threshold lands here for a human
+            auditor to resolve, as a second, model-scored lens alongside Policy-as-Code's rule-based violations on
+            Continuous Watch.
+          </div>
         </div>
       </div>
 

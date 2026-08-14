@@ -277,12 +277,14 @@ function AiInventoryScreen({ onNavigate } = {}) {
   return (
     <div className="scope-screen" data-screen-label="AI System Inventory">
       <div className="panel-head">
-        <div className="kicker">Audit &amp; Compliance · AI System Inventory</div>
-        <div className="panel-title mt-8">AI System Inventory</div>
-        <div className="panel-sub">
-          Every system the Dendrai UBO™ Governance Brain watches or polls, in one register — the
-          starting artifact a NIST AI RMF "Map" review or an EU AI Act system inventory both ask for:
-          what exists, what it touches, how risky it is, who owns it.
+        <div>
+          <div className="kicker">Audit &amp; Compliance · AI System Inventory</div>
+          <div className="panel-title mt-8">AI System Inventory</div>
+          <div className="panel-sub">
+            Every system the Dendrai UBO™ Governance Brain watches or polls, in one register — the
+            starting artifact a NIST AI RMF "Map" review or an EU AI Act system inventory both ask for:
+            what exists, what it touches, how risky it is, who owns it.
+          </div>
         </div>
       </div>
 
