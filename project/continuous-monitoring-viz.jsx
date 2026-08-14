@@ -155,14 +155,21 @@ function groupCemFilter(dim, groupValue, extra) {
 function dfgNodeCemFilter(n, dim) {
   if (n.kind === dim.key) return groupCemFilter(dim, n.label);
   if (n.kind === "tier") return { tier: n.label };
-  if (n.kind === "verdict") return { verdict: n.label };
+  // A NOT_REVIEWED verdict node has nothing in Adjudications to jump to —
+  // by definition, it was never adjudicated.
+  if (n.kind === "verdict" && n.label !== "NOT_REVIEWED") return { verdict: n.label };
   return null;
 }
 
 // Verdict/tier severity colors are also kept theme-invariant (saturated
 // enough to read on both a light and dark panel) — only the surrounding
 // chrome (backgrounds, gridlines, text) follows the theme.
-const VERDICT_COLOR = { ESCALATE: "#ef4444", MONITOR: "#3b82f6", CLEAR: "#22c55e", UNKNOWN: "#64748b" };
+// NOT_REVIEWED is a lighter, cooler grey than UNKNOWN — deliberately distinct
+// since the two mean different things: UNKNOWN is missing/malformed verdict
+// data, NOT_REVIEWED is a real, healthy event that was simply never selected
+// for adjudication (see GET /observability/events' docstring). Same idea for
+// TIER_COLOR below — an unreviewed event has no risk_tier either.
+const VERDICT_COLOR = { ESCALATE: "#ef4444", MONITOR: "#3b82f6", CLEAR: "#22c55e", NOT_REVIEWED: "#cbd5e1", UNKNOWN: "#64748b" };
 const TIER_COLOR = { CRITICAL: "#ef4444", HIGH: "#f97316", MEDIUM: "#f59e0b", LOW: "#22c55e", UNKNOWN: "#64748b" };
 
 function _fmtDay(iso) {
@@ -250,9 +257,10 @@ function aggregateByGroup(events, dim, days) {
   events.forEach(e => {
     const key = dim.extract(e);
     let g = byGroup.get(key);
-    if (!g) { g = { key, total: 0, escalated: 0, monitor: 0, clear: 0, daily: new Map() }; byGroup.set(key, g); }
+    if (!g) { g = { key, total: 0, escalated: 0, monitor: 0, clear: 0, not_reviewed: 0, daily: new Map() }; byGroup.set(key, g); }
     g.total++;
-    const vk = e.verdict === "ESCALATE" ? "escalated" : e.verdict === "MONITOR" ? "monitor" : e.verdict === "CLEAR" ? "clear" : null;
+    const vk = e.verdict === "ESCALATE" ? "escalated" : e.verdict === "MONITOR" ? "monitor"
+      : e.verdict === "CLEAR" ? "clear" : e.verdict === "NOT_REVIEWED" ? "not_reviewed" : null;
     if (vk) g[vk]++;
     const dayKey = e.adjudicated_at ? e.adjudicated_at.slice(0, 10) : null;
     if (dayKey) {
@@ -402,9 +410,10 @@ export function EventReplayChart({ theme, days, dim, rawEvents, loading, error, 
 
       let op = reducedMotion ? 0.7 : Math.max(0.12, 1 - age / (days * 0.7));
       if (e.verdict === "CLEAR") op *= 0.6;
+      if (e.verdict === "NOT_REVIEWED") op *= 0.4;
       if (dim2) op *= 0.18;
 
-      let rad = e.verdict === "ESCALATE" ? 3.6 : e.verdict === "MONITOR" ? 2.8 : 2.1;
+      let rad = e.verdict === "ESCALATE" ? 3.6 : e.verdict === "MONITOR" ? 2.8 : e.verdict === "NOT_REVIEWED" ? 1.7 : 2.1;
       if (!reducedMotion && age < days * 0.012) {
         const k = age / (days * 0.012);
         rad *= 0.35 + 0.65 * (1 - Math.pow(1 - k, 3));
@@ -525,9 +534,9 @@ export function EventReplayChart({ theme, days, dim, rawEvents, loading, error, 
     <VizFrame
       theme={theme}
       kicker={`Continuous evidence · ${dim.label} Event Replay`}
-      sub={`Real adjudicated events replayed over the ${days}-day window, grouped by ${dim.label} — click a label to isolate it, click an event to open it in Adjudications, hover for detail.`}
+      sub={`Every observed event replayed over the ${days}-day window, grouped by ${dim.label} — pale dots were never selected for review, colored dots got a real verdict. Click a label to isolate it, click an event to open it in Adjudications, hover for detail.`}
       error={error && !events.length ? error : null}
-      empty={!loading && !events.length && !error ? `No adjudicated events in the last ${days} days yet.` : null}
+      empty={!loading && !events.length && !error ? `No events in the last ${days} days yet.` : null}
       loading={loading && !events.length}
       height={Math.max(360, groups.length * 29 + 60)}
     >
@@ -644,11 +653,12 @@ export function DimensionSankey({ theme, days, dim, rawEvents, loading, error, o
       groupNodeId[g.key] = id;
       nodes.push({ id, label: g.key, type: dim.label, kind: dim.key, color: dim.color(g.key), value: g.total });
     });
-    ["escalated", "monitor", "clear"].forEach(v => {
-      nodes.push({ id: `v:${v}`, label: v.toUpperCase(), type: "verdict", kind: "verdict", color: VERDICT_COLOR[v.toUpperCase()] || VERDICT_COLOR.UNKNOWN });
+    ["escalated", "monitor", "clear", "not_reviewed"].forEach(v => {
+      const label = v === "not_reviewed" ? "NOT REVIEWED" : v.toUpperCase();
+      nodes.push({ id: `v:${v}`, label, type: "verdict", kind: "verdict", color: VERDICT_COLOR[v === "not_reviewed" ? "NOT_REVIEWED" : v.toUpperCase()] || VERDICT_COLOR.UNKNOWN });
     });
     agg.groups.forEach(g => {
-      ["escalated", "monitor", "clear"].forEach(v => {
+      ["escalated", "monitor", "clear", "not_reviewed"].forEach(v => {
         if (g[v] > 0) links.push({ source: groupNodeId[g.key], target: `v:${v}`, value: g[v] });
       });
     });
@@ -723,7 +733,9 @@ export function DimensionSankey({ theme, days, dim, rawEvents, loading, error, o
       .on("mousemove", evt => setTooltip(p => p ? { ...p, x: evt.clientX, y: evt.clientY } : null))
       .on("mouseout", () => { clear(); setTooltip(null); })
       .on("click", (evt, d) => {
-        if (!onNavigate) return;
+        // A NOT REVIEWED node/flow has nothing in Adjudications to jump to —
+        // by definition, it was never adjudicated.
+        if (!onNavigate || d.id === "v:not_reviewed") return;
         const f = d.kind === dim.key ? groupCemFilter(dim, d.label) : d.kind === "verdict" ? { verdict: d.label } : null;
         if (f) onNavigate("ubogov", { cemTab: "adjudications", cemFilter: f });
       });
@@ -736,7 +748,7 @@ export function DimensionSankey({ theme, days, dim, rawEvents, loading, error, o
       .on("mousemove", evt => setTooltip(p => p ? { ...p, x: evt.clientX, y: evt.clientY } : null))
       .on("mouseout", () => { clear(); setTooltip(null); })
       .on("click", (evt, d) => {
-        if (!onNavigate) return;
+        if (!onNavigate || d.target.id === "v:not_reviewed") return;
         // Links only ever run group -> verdict here, so both filters apply.
         onNavigate("ubogov", { cemTab: "adjudications", cemFilter: groupCemFilter(dim, d.source.label, { verdict: d.target.label }) });
       });
@@ -748,7 +760,7 @@ export function DimensionSankey({ theme, days, dim, rawEvents, loading, error, o
     <VizFrame
       theme={theme}
       kicker={`Continuous evidence · ${dim.label} Sankey`}
-      sub={`Every adjudication in the last ${days} days, grouped by ${dim.label}, flowing to its verdict — flow width is the real event count. Click a node or flow to open that slice in Adjudications.`}
+      sub={`Every observed event in the last ${days} days, grouped by ${dim.label}, flowing to its verdict — NOT REVIEWED is real volume that was never selected for adjudication, not a data gap. Flow width is the real event count. Click a node or flow to open that slice in Adjudications.`}
       error={error && !hasData ? error : null}
       empty={!loading && !hasData && !error ? `No adjudicated events in the last ${days} days yet.` : null}
       loading={loading && !hasData}
@@ -849,9 +861,9 @@ export function DimensionHeatGrid({ theme, days, dim, rawEvents, loading, error,
     <VizFrame
       theme={theme}
       kicker={`Continuous evidence · ${dim.label} Heat Grid`}
-      sub={`Event density by ${dim.label} and day over the last ${days} days — color intensity is volume; the red tick marks a day with at least one escalation. Click a row to open it in Adjudications.`}
+      sub={`Total event density by ${dim.label} and day over the last ${days} days, reviewed and unreviewed alike — color intensity is volume; the red tick marks a day with at least one escalation. Click a row to open it in Adjudications.`}
       error={error && !hasData ? error : null}
-      empty={!loading && !hasData && !error ? `No adjudicated events in the last ${days} days yet.` : null}
+      empty={!loading && !hasData && !error ? `No events in the last ${days} days yet.` : null}
       loading={loading && !hasData}
       height={Math.max(440, rowCount * 34 + 90)}
     >
@@ -956,10 +968,17 @@ function buildDfgGraph(events, dim) {
     edgeCount.set(k, (edgeCount.get(k) || 0) + 1);
   }
 
+  // A NOT_REVIEWED event was never checked against any rule at all — it
+  // stops at the verdict node, same as CLEAR, rather than piling into
+  // "Unmapped rule" alongside events that genuinely escalated/monitored
+  // with no rule mapped. Without this, NOT_REVIEWED's much larger volume
+  // would swamp "Unmapped rule" and crowd out the real signal it exists for.
+  function _needsRuleLabel(verdict) { return verdict !== "CLEAR" && verdict !== "NOT_REVIEWED"; }
+
   // First pass: find the top rule labels so long tails collapse to "Other".
   events.forEach(e => {
     const rule = primaryRuleLabel(e.policy_violations);
-    const label = rule || (e.verdict === "CLEAR" ? null : "Unmapped rule");
+    const label = rule || (_needsRuleLabel(e.verdict) ? "Unmapped rule" : null);
     if (label) ruleTotals.set(label, (ruleTotals.get(label) || 0) + 1);
   });
   const topRules = new Set(
@@ -970,7 +989,7 @@ function buildDfgGraph(events, dim) {
     const group = dim.extract(e);
     const tier = e.risk_tier || "UNKNOWN";
     const verdict = e.verdict || "UNKNOWN";
-    const rawRule = primaryRuleLabel(e.policy_violations) || (verdict === "CLEAR" ? null : "Unmapped rule");
+    const rawRule = primaryRuleLabel(e.policy_violations) || (_needsRuleLabel(verdict) ? "Unmapped rule" : null);
     const rule = rawRule && !topRules.has(rawRule) ? "Other" : rawRule;
 
     const gId = node(`${dim.key}:${group}`, group, dim.key);
@@ -1128,9 +1147,9 @@ export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error
     <VizFrame
       theme={theme}
       kicker={`Continuous evidence · ${dim.label} Flow Graph (DFG)`}
-      sub={`Directly-follows graph of the last ${days} days: ${dim.label} → Risk Tier → Verdict → Rule, edge width and moving particles both reflect real observed transition counts. Click a ${dim.label.toLowerCase()}/tier/verdict node or edge to open that slice in Adjudications.`}
+      sub={`Directly-follows graph of the last ${days} days: ${dim.label} → Risk Tier → Verdict → Rule, covering every observed event, not just reviewed ones — a NOT_REVIEWED verdict node is real volume never selected for adjudication. Edge width and moving particles both reflect real observed transition counts. Click a ${dim.label.toLowerCase()}/tier/verdict node or edge to open that slice in Adjudications.`}
       error={error && !hasData ? error : null}
-      empty={!loading && !hasData && !error ? `No adjudicated events in the last ${days} days yet.` : null}
+      empty={!loading && !hasData && !error ? `No events in the last ${days} days yet.` : null}
       loading={loading && !hasData}
       height={620}
     >

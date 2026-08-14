@@ -3158,35 +3158,53 @@ def get_observability_events(
     current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
 ):
     """
-    One row per adjudicated event over the trailing `days` days, each with
-    its real adjudicated_at timestamp and resolved Core Domain (when
-    resolvable — see domain resolution note below) — the flat, per-event
-    feed Continuous Monitoring's Playback/Motion views (scrub, speed, replay,
-    arrival animation, recency trail) need and /observability/domain-summary
-    and /pac/control-flow-map deliberately don't provide, since both
-    pre-aggregate into a static summary/graph rather than exposing individual
-    events with real timestamps.
+    One row per event over the trailing `days` days — both adjudicated
+    (reviewed) events and, since only flagged rows ever reach adjudication
+    (mcp_governance._fetch_unprocessed_system's risk_flags filter), every
+    other captured-but-never-reviewed event too. Each row carries its real
+    timestamp and resolved Core Domain (when resolvable — see domain
+    resolution note below) — the flat, per-event feed Continuous Monitoring's
+    Playback/Motion views (scrub, speed, replay, arrival animation, recency
+    trail) need and /observability/domain-summary and /pac/control-flow-map
+    deliberately don't provide, since both pre-aggregate into a static
+    summary/graph rather than exposing individual events with real
+    timestamps.
+
+    An unreviewed row's verdict is the literal string "NOT_REVIEWED", never
+    null and never "CLEAR" — it was never scored, which is a different fact
+    than being scored-and-clear, and a consumer that conflated the two would
+    quietly overstate how much traffic was actually looked at. This is what
+    lets a chart show genuine transaction scale (every row) side by side with
+    the escalated/reviewed subset (only rows with a real verdict), instead of
+    the two numbers always being identical.
 
     domain is resolved the same way get_domain_summary does (pol_domain_
     mappings, via each event's policy_violations) and carries the same
     honest-gap behavior: null when the event's rule_id/control_id isn't
     mapped yet, or when the event has no policy_violations to key off at all
-    (a CLEAR event, most of the time) — never a guess. A frontend grouping by
-    domain should treat a null domain as its own explicit "unclassified"
-    bucket, not silently drop the event.
+    (a CLEAR or NOT_REVIEWED event, most of the time) — never a guess. A
+    frontend grouping by domain should treat a null domain as its own
+    explicit "unclassified" bucket, not silently drop the event.
 
     case_id/process_step are null for almost every row — an ad-hoc MCP tool
     call has no "case" concept — and are populated today only by
-    generate_o2c_p2p_synthetic_log.py's linked O2C/P2P lifecycles. They
-    exist so a consumer can build a REAL directly-follows graph ("step A
-    immediately preceded step B within the same tracked transaction") for
-    rows that have them, as opposed to the categorical Domain/Tier/Verdict/
-    Rule breakdown every row supports regardless of case membership.
+    generate_o2c_p2p_synthetic_log.py's/synthetic_transaction_tool.py's
+    linked O2C/P2P/Inventory Cycle lifecycles. They exist so a consumer can
+    build a REAL directly-follows graph ("step A immediately preceded step B
+    within the same tracked transaction") for rows that have them, as
+    opposed to the categorical Domain/Tier/Verdict/Rule breakdown every
+    adjudicated row supports regardless of case membership. Unreviewed rows
+    carry them too (read straight off raw_payload, set at ingestion —
+    see db.get_recent_unreviewed_system_events), so a case's full lifecycle
+    shows up in the graph even for the steps that were never flagged for
+    review — previously the graph only ever showed whichever steps happened
+    to get flagged, undercounting every process's actual volume.
     """
     if not db.is_available():
         return {"events": [], "window_days": days, "note": "Database not configured"}
 
     raw = db.get_recent_adjudications_for_domain_summary(days=days, limit=limit)
+    unreviewed = db.get_recent_unreviewed_system_events(days=days, limit=limit)
     ctrl_to_process = {c["control_id"]: c["process"] for c in db.list_controls() if c.get("process")}
 
     events = [
@@ -3205,7 +3223,25 @@ def get_observability_events(
             "process_step": ev.get("process_step"),
         }
         for ev in raw
+    ] + [
+        {
+            "id": ev["id"],
+            "adjudicated_at": ev["adjudicated_at"].isoformat() if ev["adjudicated_at"] else None,
+            "verdict": "NOT_REVIEWED",
+            "risk_tier": None,
+            "source_system": ev["source_system"],
+            "target_tool": ev["target_tool"],
+            "server_name": ev["server_name"],
+            "requires_human_review": False,
+            "policy_violations": [],
+            "domain": None,
+            "case_id": ev.get("case_id"),
+            "process_step": ev.get("process_step"),
+        }
+        for ev in unreviewed
     ]
+    events.sort(key=lambda e: e["adjudicated_at"] or "")
+    events = events[-limit:]
 
     return {"events": events, "count": len(events), "window_days": days}
 
