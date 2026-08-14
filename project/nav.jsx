@@ -57,6 +57,7 @@ const NAV_SECTIONS = [
       { id: "riskquant", icon: "trend",    l: "Risk Quantification" },
       { id: "exceptions", icon: "alert",   l: "Exception Management", devOnly: true },
       { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },
+      { id: "modelhealth", icon: "trend", l: "Model Vitals" },
      
     ],
   },
@@ -82,7 +83,6 @@ const NAV_SECTIONS = [
       { id: "config",     icon: "gear",   l: "Mission Control" },
       { id: "uboconfig",  icon: "shield", l: "Dendrai UBO™ Configuration" },
       { id: "tokenusage", icon: "table",  l: "Usage Meter" },
-      { id: "modelhealth", icon: "trend", l: "Model Vitals" },
       { id: "userconfig", icon: "user",   l: "Team & Access", adminOnly: true },
     ],
   }

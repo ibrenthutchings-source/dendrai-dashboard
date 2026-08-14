@@ -8611,6 +8611,62 @@ def get_recent_adjudications_for_domain_summary(days: int = 30, limit: int = 500
     return _run(_do) or []
 
 
+def get_recent_unreviewed_system_events(days: int = 30, limit: int = 5000) -> list:
+    """The system_telemetry rows get_recent_adjudications_for_domain_summary
+    can't see: every row that was never adjudicated (no matching
+    adjudicated_tool_calls.system_telemetry_id) because mcp_governance's
+    poll loop only ever pulls flagged rows (risk_flags IS NOT NULL) into
+    the adjudication pipeline — see _fetch_unprocessed_system. That's the
+    right call for the expensive Bronze/Silver/Gold/Council pipeline, but it
+    means Continuous Monitoring's charts, sourced from adjudicated_tool_calls
+    alone, only ever showed the reviewed slice — never the true transaction
+    volume behind it. This exists so GET /observability/events can union
+    both in and let "how many happened" and "how many got escalated" be
+    honestly different numbers instead of the same one.
+
+    Returns rows shaped to merge into get_recent_adjudications_for_domain_
+    summary's own shape (api_server.py does the merge): final_verdict/
+    risk_tier/requires_human_review/policy_violations are always None/[]
+    here — this row was never scored, not scored-and-clear. case_id/
+    process_step come straight out of raw_payload (set by the producer at
+    ingestion time — see generate_o2c_p2p_synthetic_log.py/
+    synthetic_transaction_tool.py — so they're present here just as often as
+    on an adjudicated row, unlike the other columns above).
+
+    id is offset by 10_000_000_000 to guarantee no collision with
+    adjudicated_tool_calls' own BIGSERIAL ids when both lists are merged and
+    used as a single id-keyed collection client-side."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT st.id, st.created_at, st.system_type, st.resource, st.server_name,
+                           st.raw_payload
+                    FROM observability.system_telemetry st
+                    LEFT JOIN observability.adjudicated_tool_calls atc
+                        ON atc.system_telemetry_id = st.id
+                    WHERE st.created_at > NOW() - (%s || ' days')::interval
+                      AND atc.id IS NULL
+                    ORDER BY st.created_at
+                    LIMIT %s
+                    """,
+                    (days, limit),
+                )
+                out = []
+                for r in cur.fetchall():
+                    payload = r[5] or {}
+                    out.append({
+                        "id": 10_000_000_000 + r[0], "adjudicated_at": r[1],
+                        "final_verdict": None, "risk_tier": None,
+                        "source_system": r[2], "target_tool": r[3], "server_name": r[4],
+                        "requires_human_review": False, "policy_violations": [],
+                        "case_id": payload.get("case_id"), "process_step": payload.get("process_step"),
+                    })
+                return out
+    return _run(_do) or []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DORA-style change-management metrics (SOC 2 CC8.1 operational evidence)
 # ─────────────────────────────────────────────────────────────────────────────
