@@ -456,13 +456,15 @@ function AiGovernanceScreen() {
   return (
     <div className="scope-screen" data-screen-label="AI Governance">
       <div className="panel-head">
-        <div className="kicker">Audit &amp; Compliance · AI Governance</div>
-        <div className="panel-title mt-8">AI Governance</div>
-        <div className="panel-sub">
-          The register of AI systems this company operates, and the evidence behind each one.
-          The register records what was <em>attested</em> — that a human review step exists, that
-          an assessment is current. The behavioural audit tests those attestations against the
-          system&apos;s own logs. Where the two disagree, the disagreement is the finding.
+        <div>
+          <div className="kicker">Audit &amp; Compliance · AI Governance</div>
+          <div className="panel-title mt-8">AI Governance</div>
+          <div className="panel-sub">
+            The register of AI systems this company operates, and the evidence behind each one.
+            The register records what was <em>attested</em> — that a human review step exists, that
+            an assessment is current. The behavioural audit tests those attestations against the
+            system&apos;s own logs. Where the two disagree, the disagreement is the finding.
+          </div>
         </div>
       </div>
 
