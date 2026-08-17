@@ -29,6 +29,7 @@ const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'Audi
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
 const RiskAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RiskAsCodeScreen');
 const PolicyAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'PolicyAsCodeScreen');
+const RegulatoryChangeScreenLazy = lazyGlobal(() => import('./regulatory-change.jsx'), 'RegulatoryChangeScreen');
 const ScenariosPanelLazy = lazyGlobal(() => import('./scenarios.jsx'), 'ScenariosPanel');
 const ScenarioAnalysisScreenLazy = lazyGlobal(() => import('./scenario-analysis.jsx'), 'ScenarioAnalysisScreen');
 const SoxScopePanelLazy = lazyGlobal(() => Promise.all([import('./sox-scope.jsx'), import('./sox-hitl.jsx')]), 'SoxScopePanel');
@@ -2556,6 +2557,15 @@ function App() {
               risks={railRisks}
               appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
               initialProcess={pacInitialProcess} />
+          </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Regulatory Change Management ---- */}
+          {activeScreen === "regchange" && (
+          <ScreenAccessGate screenId="regchange">
+          <div className="panel active">
+            <RegulatoryChangeScreenLazy />
           </div>
           </ScreenAccessGate>
           )}
