@@ -145,6 +145,14 @@ async def _poll_one(connector_id: int) -> None:
         return
 
     server_name = f"{full['connector_type']}:{full['display_name']}"[:128]
+    # Same system_label-over-connector_type preference _score_exception_event
+    # already applies below — without it, system_telemetry.system_type (the
+    # Source System dimension's only signal) collapses every synthetic
+    # connector into one literal "synthetic_transaction" bucket instead of
+    # SAP HANA/SailPoint/Oracle Fusion/Dynamics 365, regardless of which of
+    # the 11 (system, process) pairs actually produced the event.
+    extra_config = full.get("extra_config") or {}
+    system_type = extra_config.get("system_label") or full["connector_type"]
     ingested = 0
     for event in events:
         try:
@@ -157,7 +165,7 @@ async def _poll_one(connector_id: int) -> None:
             })
             row_id = await asyncio.to_thread(
                 mcp_governance._ingest_system_event,
-                server_name, full["connector_type"], event.get("event_type") or "poll_event",
+                server_name, system_type, event.get("event_type") or "poll_event",
                 event.get("event_id"), event.get("actor"), event.get("action"), event.get("resource"),
                 event.get("severity") or "INFO", flags, event.get("raw_payload"), None,
                 # Optional: lets an adapter preserve the event's real occurred-at
