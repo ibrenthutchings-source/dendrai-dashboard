@@ -56,6 +56,34 @@ export const DEFAULT_CONTROLS = [
   { ref:"AI-06", framework:"ISO/IEC 42001", name:"Human Oversight of AI Systems",      category:"AI Governance",  domain:"Technology", desc:"Defined human review points and override mechanisms for AI-assisted decisions" },
 ];
 
+// Framework color/short-label maps — previously two independent copies
+// (risk-graph-viz.jsx's FW_COLOR/FW_SHORT, risk-sankey.jsx's FW_COLOR),
+// already agreeing on color for every framework they both listed but each
+// missing one the other had (risk-graph-viz.jsx had no COSO ERM; neither
+// had every DEFAULT_CONTROLS framework value). One canonical set, covering
+// every framework value that actually appears above, same consolidation
+// rationale as DEFAULT_CONTROLS itself.
+export const FRAMEWORK_COLOR = {
+  "Internal":       "#94a3b8",
+  "SOC 2":          "#a855f7",
+  "NIST SP 800-53": "#3b82f6",
+  "CIS Controls":   "#f59e0b",
+  "ISO/IEC 27001":  "#22c55e",
+  "ISO/IEC 42001":  "#ec4899",
+  "COSO ERM":       "#f97316",
+};
+export const FRAMEWORK_COLOR_FALLBACK = "#64748b";
+
+export const FRAMEWORK_SHORT_LABEL = {
+  "Internal":       "Internal",
+  "SOC 2":          "SOC 2",
+  "NIST SP 800-53": "NIST",
+  "CIS Controls":   "CIS",
+  "ISO/IEC 27001":  "ISO 27001",
+  "ISO/IEC 42001":  "ISO 42001",
+  "COSO ERM":       "COSO ERM",
+};
+
 /**
  * Fetches the live control library from the DB (GET /api/risk-register/controls)
  * and returns it verbatim ({ref, framework, name, category, domain, ...}, same

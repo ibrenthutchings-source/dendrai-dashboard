@@ -39,10 +39,28 @@ router = APIRouter(prefix="/process-mining", tags=["Process Mining"],
                     dependencies=[Depends(require_screen_permission("continuousmonitoring"))])
 
 
-async def _load_cases(days: int) -> dict:
+async def _load_events(days: int) -> list:
+    """Same union GET /observability/events does (api_server.py) — adjudicated
+    rows plus the unreviewed system_telemetry tail, since only flagged rows
+    ever reach adjudication (mcp_governance._fetch_unprocessed_system) and
+    process mining's case_id/process_step live on the raw event regardless of
+    whether it was ever selected for review. Before this, Variants/
+    Conformance/Cycle Time/Rework silently saw only the same ~2.5% slice
+    Continuous Monitoring's charts did until that was fixed — build_cases()
+    only reads case_id/process_step/adjudicated_at, none of which require a
+    real verdict, so the unreviewed rows are exactly as usable here as
+    CaseFlowGraph already treats them."""
     if not db.is_available():
-        return {}
-    events = await asyncio.to_thread(db.get_recent_adjudications_for_domain_summary, days=days, limit=5000)
+        return []
+    adjudicated, unreviewed = await asyncio.gather(
+        asyncio.to_thread(db.get_recent_adjudications_for_domain_summary, days=days, limit=5000),
+        asyncio.to_thread(db.get_recent_unreviewed_system_events, days=days, limit=5000),
+    )
+    return adjudicated + unreviewed
+
+
+async def _load_cases(days: int) -> dict:
+    events = await _load_events(days)
     return pm.build_cases(events)
 
 
@@ -60,7 +78,7 @@ async def list_processes():
 async def summary(days: int = 30):
     if not db.is_available():
         return {"total_cases": 0, "untemplated_cases": 0, "processes": {}, "note": "Database not configured"}
-    events = await asyncio.to_thread(db.get_recent_adjudications_for_domain_summary, days=days, limit=5000)
+    events = await _load_events(days)
     return {**pm.summary(events), "window_days": days}
 
 
