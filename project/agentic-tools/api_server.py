@@ -3246,6 +3246,7 @@ def get_observability_events(
             "requires_human_review": ev["requires_human_review"],
             "policy_violations": ev["policy_violations"],
             "domain": pol_domain_mappings.domain_for_violations(ev["policy_violations"], ctrl_to_process),
+            "sub_domain": pol_domain_mappings.subdomain_for_violations(ev["policy_violations"], ctrl_to_process),
             "case_id": ev.get("case_id"),
             "process_step": ev.get("process_step"),
         }
@@ -3261,7 +3262,13 @@ def get_observability_events(
             "server_name": ev["server_name"],
             "requires_human_review": False,
             "policy_violations": [],
-            "domain": None,
+            # No policy_violations exist for a row that was never adjudicated —
+            # process_step (captured at ingestion regardless of review status)
+            # is the only signal available; see pol_domain_mappings.
+            # domain_for_process_step's docstring for why this used to be a
+            # hardcoded None even though ~95% of all volume is this branch.
+            "domain": pol_domain_mappings.domain_for_process_step(ev.get("process_step")),
+            "sub_domain": None,  # would need a case_id join to a sibling step's payload — not available here
             "case_id": ev.get("case_id"),
             "process_step": ev.get("process_step"),
         }

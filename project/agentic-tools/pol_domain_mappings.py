@@ -34,6 +34,8 @@ framework_mappings.py's own guardrail.
 
 from __future__ import annotations
 
+import re
+
 CORE_DOMAINS = (
     "Identity & Access Management",
     "Financial Reporting & Controls",
@@ -146,6 +148,17 @@ PROCESS_DOMAIN_MAPPINGS: dict[str, str] = {
     "infrastructure_monitoring": "Cyber Security & Data Protection",
     "hire_to_retire": "People & Organisational Risk",
     "trade_compliance": "Regulatory & Compliance",
+    # The remaining process_mining_tool.PROCESS_TEMPLATES ids — synthetic
+    # Watch's NOT_REVIEWED tail (95%+ of all Continuous Monitoring volume;
+    # see domain_for_process_step below) carries a process_step but never a
+    # policy_violation, so it could never resolve a domain through the table
+    # above at all. These fill that gap.
+    "iam": "Identity & Access Management",           # SailPoint simulator — literally IAM
+    "vendor_management": "Third-Party & Vendor Risk", # same domain as procure_to_pay
+    "fixed_assets": "Financial Reporting & Controls", # capitalization/depreciation, R2R-adjacent
+    "inventory_master": "Operational Resilience",     # master-data integrity, same bucket as receive_to_ship
+    "payroll": "People & Organisational Risk",        # same bucket as hire_to_retire
+    "customer_master_file": "Financial Reporting & Controls",  # AR/revenue-recognition-adjacent master data
 }
 
 
@@ -175,7 +188,6 @@ def domain_for_violations(policy_violations: list[str], control_id_to_process: d
     ITGC-CM* ids seen in production, correctly resolves to None rather than
     a fabricated domain).
     """
-    import re
     for v in policy_violations or []:
         m = re.match(r"\[(POL-[A-Z0-9-]+):", v)
         if m:
@@ -189,4 +201,80 @@ def domain_for_violations(policy_violations: list[str], control_id_to_process: d
                 domain = PROCESS_DOMAIN_MAPPINGS.get(process)
                 if domain:
                     return domain
+    return None
+
+
+# ── NOT_REVIEWED events: no policy_violations exist to resolve a domain from
+# (the event was never adjudicated), but process_step is captured at
+# ingestion regardless — see api_server.py's GET /observability/events,
+# which previously hardcoded every NOT_REVIEWED row's domain to None even
+# though ~95% of all Continuous Monitoring volume is NOT_REVIEWED. This is
+# the only signal available for that slice: reverse-map a step label (e.g.
+# "Journal Entry Posted") back to the process template it belongs to via
+# process_mining_tool.PROCESS_TEMPLATES, then PROCESS_DOMAIN_MAPPINGS. ──
+
+def _build_step_to_process() -> dict[str, str]:
+    import process_mining_tool as pm
+    step_to_process: dict[str, str] = {}
+    for process_id, template in pm.PROCESS_TEMPLATES.items():
+        for step in template["steps"]:
+            # First template wins on a collision — none observed today (every
+            # step label across all 11 templates is distinct), but a shared
+            # step name shouldn't raise or silently overwrite an earlier,
+            # equally-valid mapping.
+            step_to_process.setdefault(step, process_id)
+    return step_to_process
+
+
+_STEP_TO_PROCESS: dict[str, str] = _build_step_to_process()
+
+
+def domain_for_process_step(process_step: str | None) -> str | None:
+    """Domain for a NOT_REVIEWED event, using process_step as the only
+    available signal. Returns None (not a guess) when process_step is empty
+    or doesn't match any known template's steps — same honesty discipline
+    domain_for_violations already applies to unmapped rule ids."""
+    if not process_step:
+        return None
+    process_id = _STEP_TO_PROCESS.get(process_step)
+    if not process_id:
+        return None
+    return PROCESS_DOMAIN_MAPPINGS.get(process_id)
+
+
+# ── Identity & Access Management sub-domain — IAM is 86% of all ADJUDICATED
+# volume (see the Continuous Monitoring domain-concentration analysis this
+# was built from), almost entirely driven by one system-agnostic-by-design
+# rule (POL-SYS-001, "any sod_violation tag = CRITICAL, regardless of source
+# system"). Splitting by rule family gives the same events a second, finer
+# grouping — SoD/privilege conflicts, stale-access governance, and repo/
+# branch-access bypass are three different remediation owners flattened
+# into one tile today. Curated, same guardrail as POL_DOMAIN_MAPPINGS itself:
+# a rule with no entry here just has no sub-domain, never a guessed one.
+IAM_SUBDOMAIN_MAPPINGS: dict[str, str] = {
+    "POL-SAP-001":    "SoD & Privilege Conflicts",   # SAP SoD violation
+    "POL-SYS-001":    "SoD & Privilege Conflicts",   # generic SoD violation (the dominant driver)
+    "POL-SP-001":     "SoD & Privilege Conflicts",   # SailPoint privilege escalation, no approval
+    "POL-SP-002":     "Access Governance & Reviews", # SailPoint dormant privileged account
+    "POL-SP-003":     "Access Governance & Reviews", # SailPoint role explosion
+    "POL-SYS-002":    "Access Governance & Reviews", # privileged access, critical severity
+    "POL-GH-002":     "Repo & Branch Access",        # GitHub main branch force push
+    "POL-GH-004":     "Repo & Branch Access",        # GitHub branch protection admin bypass
+    "POL-GL-001":     "Repo & Branch Access",        # GitLab protected branch admin bypass
+    "POL-BB-001":     "Repo & Branch Access",        # Bitbucket branch restriction admin bypass
+}
+
+
+def subdomain_for_violations(policy_violations: list[str], control_id_to_process: dict | None = None) -> str | None:
+    """Finer grouping within Identity & Access Management, using the SAME
+    first-match-wins scan domain_for_violations does. Only meaningful for
+    rows that actually resolve to the IAM domain — a caller should treat
+    None as "no sub-domain" whether that's because the row isn't IAM at all
+    or because it's IAM via a rule not yet in IAM_SUBDOMAIN_MAPPINGS (e.g.
+    the itgc-process catch-all, which is real IT General Controls volume,
+    not identity-specific, and deliberately left unsplit here)."""
+    for v in policy_violations or []:
+        m = re.match(r"\[(POL-[A-Z0-9-]+):", v)
+        if m and IAM_SUBDOMAIN_MAPPINGS.get(m.group(1)):
+            return IAM_SUBDOMAIN_MAPPINGS[m.group(1)]
     return None

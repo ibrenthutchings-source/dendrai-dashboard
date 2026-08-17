@@ -99,3 +99,84 @@ def test_domain_for_violations_bare_control_id_not_in_catalog_stays_none():
     seeded into controls_catalog) must resolve to None, not error or guess."""
     domain = pdm.domain_for_violations(["ITGC-CM004"], control_id_to_process={"OTC-P005": "order_to_cash"})
     assert domain is None
+
+
+# ── domain_for_process_step (NOT_REVIEWED events — no policy_violations exist) ──
+
+def test_domain_for_process_step_resolves_known_step():
+    assert pdm.domain_for_process_step("Journal Entry Posted") == "Financial Reporting & Controls"
+    assert pdm.domain_for_process_step("Access Requested") == "Identity & Access Management"
+    assert pdm.domain_for_process_step("Goods Shipped") == "Operational Resilience"
+
+
+def test_domain_for_process_step_none_for_unknown_step():
+    assert pdm.domain_for_process_step("Some Step Nobody Defined") is None
+
+
+def test_domain_for_process_step_none_for_empty_input():
+    assert pdm.domain_for_process_step(None) is None
+    assert pdm.domain_for_process_step("") is None
+
+
+def test_domain_for_process_step_covers_every_process_template():
+    """Every process_mining_tool.PROCESS_TEMPLATES id must resolve through
+    PROCESS_DOMAIN_MAPPINGS — the same completeness discipline
+    test_every_live_pol_rule_has_a_domain_mapping applies to POL_DOMAIN_MAPPINGS,
+    applied here so a new synthetic process can't silently reintroduce the
+    'NOT_REVIEWED always Unclassified' gap this function closes."""
+    import process_mining_tool as pm
+    for process_id, template in pm.PROCESS_TEMPLATES.items():
+        for step in template["steps"]:
+            assert pdm.domain_for_process_step(step) is not None, (
+                f"step '{step}' (process '{process_id}') has no domain — "
+                f"add '{process_id}' to PROCESS_DOMAIN_MAPPINGS"
+            )
+
+
+# ── subdomain_for_violations (IAM rule-family breakdown) ────────────────────────
+
+def test_subdomain_for_violations_sod_family():
+    domain = pdm.subdomain_for_violations(["[POL-SYS-001:CRITICAL] SoD violation"])
+    assert domain == "SoD & Privilege Conflicts"
+
+
+def test_subdomain_for_violations_access_governance_family():
+    domain = pdm.subdomain_for_violations(["[POL-SP-002:HIGH] dormant privileged account"])
+    assert domain == "Access Governance & Reviews"
+
+
+def test_subdomain_for_violations_repo_branch_family():
+    domain = pdm.subdomain_for_violations(["[POL-GH-002:HIGH] force push to protected branch"])
+    assert domain == "Repo & Branch Access"
+
+
+def test_subdomain_for_violations_none_for_non_iam_rule():
+    domain = pdm.subdomain_for_violations(["[POL-TC-001:CRITICAL] restricted-party match"])
+    assert domain is None
+
+
+def test_subdomain_for_violations_none_for_itgc_catchall():
+    """The itgc bare-control-id catch-all resolves to the IAM domain via
+    PROCESS_DOMAIN_MAPPINGS but is deliberately left unsplit — it's real
+    ITGC volume, not identity-specific, and IAM_SUBDOMAIN_MAPPINGS only
+    covers per-rule bracketed POL-* ids."""
+    domain = pdm.subdomain_for_violations(["ITGC-007"], control_id_to_process={"ITGC-007": "itgc"})
+    assert domain is None
+
+
+def test_subdomain_for_violations_first_match_wins():
+    domain = pdm.subdomain_for_violations([
+        "[POL-TC-001:CRITICAL] unrelated, not in IAM_SUBDOMAIN_MAPPINGS",
+        "[POL-GH-002:HIGH] force push",
+    ])
+    assert domain == "Repo & Branch Access"
+
+
+def test_subdomain_for_violations_every_value_domain_maps_to_iam():
+    """Every rule mapped into IAM_SUBDOMAIN_MAPPINGS must itself resolve to
+    the IAM domain in POL_DOMAIN_MAPPINGS — a sub-domain for a rule that
+    isn't even IAM at the top level would be a contradiction."""
+    for rule_id in pdm.IAM_SUBDOMAIN_MAPPINGS:
+        assert pdm.POL_DOMAIN_MAPPINGS.get(rule_id) == "Identity & Access Management", (
+            f"{rule_id} has an IAM sub-domain but POL_DOMAIN_MAPPINGS doesn't route it to IAM"
+        )
