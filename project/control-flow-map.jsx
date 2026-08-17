@@ -16,21 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sankey, sankeyLinkHorizontal } from "d3-sankey";
 import * as d3 from "d3";
-
-const TIER_COLOR = {
-  CRITICAL: "#ef4444",
-  HIGH:     "#f97316",
-  MEDIUM:   "#f59e0b",
-  LOW:      "#22c55e",
-  UNKNOWN:  "#64748b",
-};
-
-const VERDICT_COLOR = {
-  ESCALATE: "#ef4444",
-  MONITOR:  "#3b82f6",
-  CLEAR:    "#22c55e",
-  UNKNOWN:  "#64748b",
-};
+import { VERDICT_COLOR, TIER_COLOR } from "./observability-colors.jsx";
 
 const SYSTEM_PALETTE = ["#a855f7", "#22d3ee", "#ec4899", "#84cc16", "#f97316", "#3b82f6", "#eab308", "#14b8a6"];
 const CONTROL_MAPPED_COLOR   = "#22d3ee";
