@@ -532,8 +532,13 @@ export function EventReplayChart({ theme, days, dim, rawEvents, loading, error, 
     onNavigate("ubogov", { cemTab: "adjudications", cemFilter: groupCemFilter(dim, best._group, { verdict: best.verdict }) });
   }
 
+  const visibleEvents = useMemo(
+    () => events.filter(e => e.t <= playhead && (!escOnly || e.verdict === "ESCALATE"))
+      .sort((a, b) => b.t - a.t),
+    [events, playhead, escOnly]
+  );
   const escalatedShown = events.filter(e => e.t <= playhead && e.verdict === "ESCALATE").length;
-  const shown = events.filter(e => e.t <= playhead && (!escOnly || e.verdict === "ESCALATE")).length;
+  const shown = visibleEvents.length;
 
   return (
     <VizFrame
