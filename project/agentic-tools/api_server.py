@@ -146,6 +146,7 @@ import ai_governance_sweep
 import identity_graph_sync
 import je_testing_sweep
 import je_testing_endpoints
+import regulatory_change_endpoints
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -861,6 +862,10 @@ app.include_router(process_mining_endpoints.router)
 # after-hours postings, preparer==approver SoD, rare accounts, velocity
 # spikes) over real GL journal entries pulled from active financial connectors.
 app.include_router(je_testing_endpoints.router)
+
+# Regulatory Change Management: horizon-scan regulatory feeds, diff against
+# the last snapshot, and route material changes to a HITL review queue.
+app.include_router(regulatory_change_endpoints.router)
 
 # Continuous Third-Party/Vendor Risk: vendor SOC 2 register CRUD.
 app.include_router(vendor_risk_endpoints.router)

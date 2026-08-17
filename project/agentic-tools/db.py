@@ -1282,6 +1282,48 @@ CREATE TABLE IF NOT EXISTS pac_policy_conversions (
 CREATE INDEX IF NOT EXISTS idx_pac_conversions_doc    ON pac_policy_conversions (document_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pac_conversions_status ON pac_policy_conversions (status, created_at DESC);
 
+-- Regulatory change management (regulatory_change_tool.py / regulatory_change_endpoints.py)
+-- — same immutable-source / reviewable-proposal split as pac_policy_documents/
+-- pac_policy_conversions above, applied to horizon-scanning instead of manual
+-- policy upload: a version is a fetched snapshot of one regulatory source's
+-- text (sha256-deduped, same "don't re-store identical content" reasoning as
+-- pac_policy_documents.sha256's re-upload detection); a proposal is the
+-- reviewable "here's what changed and here's a suggested control edit" draft
+-- a human approves before anything touches controls_library.
+CREATE TABLE IF NOT EXISTS regulatory_change_versions (
+    id            BIGSERIAL    PRIMARY KEY,
+    feed_id       VARCHAR(32)  NOT NULL,      -- rss_ingest_service.FEEDS[i]["id"], e.g. "eu_ai_act"
+    source_url    TEXT         NOT NULL,
+    title         VARCHAR(512),
+    fetched_text  TEXT         NOT NULL,
+    sha256        CHAR(64)     NOT NULL,
+    previous_version_id BIGINT REFERENCES regulatory_change_versions(id),
+    fetched_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_regchange_versions_feed ON regulatory_change_versions (feed_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_regchange_versions_url  ON regulatory_change_versions (source_url, fetched_at DESC);
+
+-- proposed_control_ref is a soft (non-FK) reference into controls_library.control_ref
+-- — same non-enforced-link pattern controls_library.pac_control_id already
+-- uses for its controls_catalog crosswalk, since a regulatory change may
+-- propose editing a control that doesn't exist yet (a genuinely new
+-- requirement with nothing in the register to attach to).
+CREATE TABLE IF NOT EXISTS regulatory_change_proposals (
+    id                  BIGSERIAL    PRIMARY KEY,
+    version_id          BIGINT       NOT NULL REFERENCES regulatory_change_versions(id) ON DELETE CASCADE,
+    diff_summary        TEXT         NOT NULL,
+    proposed_control_ref VARCHAR(32),
+    proposed_edit       JSONB        NOT NULL DEFAULT '{}',  -- {"description": "...", "name": "..."} draft merge onto the control
+    status              VARCHAR(24)  NOT NULL DEFAULT 'pending_review',
+        -- pending_review | approved | rejected
+    reviewer            VARCHAR(128),
+    reviewed_at         TIMESTAMPTZ,
+    review_notes        TEXT,
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_regchange_proposals_version ON regulatory_change_proposals (version_id);
+CREATE INDEX IF NOT EXISTS idx_regchange_proposals_status  ON regulatory_change_proposals (status, created_at DESC);
+
 -- Scheduled digest notifications (Feature 5) — a deterministic, zero-LLM-cost
 -- "what changed since your last visit" summary, generated lazily on the
 -- frontend's existing approval-inbox poll rather than a blind cron, so an
@@ -10076,6 +10118,181 @@ def get_je_testing_summary() -> dict:
                     "top_preparers": top_preparers, "pending_count": pending_count,
                 }
     return _run(_do) or {"total_findings": 0, "findings_by_rule": {}, "top_preparers": [], "pending_count": 0}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regulatory change management (regulatory_change_tool.py / regulatory_change_endpoints.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_latest_regulatory_change_version(feed_id: str, source_url: str) -> Optional[dict]:
+    """Most recent stored snapshot of one (feed_id, source_url) pair, or None
+    if this is the first time it's been fetched — the comparison point for
+    regulatory_change_tool.is_material_change."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, feed_id, source_url, title, fetched_text, sha256, fetched_at
+                    FROM regulatory_change_versions
+                    WHERE feed_id = %s AND source_url = %s
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (feed_id, source_url),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                d["fetched_at"] = d["fetched_at"].isoformat() if d["fetched_at"] else None
+                return d
+    return _run(_do)
+
+
+def save_regulatory_change_version(feed_id: str, source_url: str, title: Optional[str],
+                                    fetched_text: str, sha256: str,
+                                    previous_version_id: Optional[int]) -> Optional[int]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO regulatory_change_versions
+                        (feed_id, source_url, title, fetched_text, sha256, previous_version_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (feed_id[:32], source_url, (title[:512] if title else None), fetched_text, sha256, previous_version_id),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_regulatory_change_versions(feed_id: Optional[str] = None, limit: int = 100) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                q = ("SELECT id, feed_id, source_url, title, sha256, previous_version_id, fetched_at "
+                     "FROM regulatory_change_versions")
+                params: list = []
+                if feed_id:
+                    q += " WHERE feed_id = %s"
+                    params.append(feed_id)
+                q += " ORDER BY fetched_at DESC LIMIT %s"
+                params.append(limit)
+                cur.execute(q, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    d["fetched_at"] = d["fetched_at"].isoformat() if d["fetched_at"] else None
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def save_regulatory_change_proposal(version_id: int, diff_summary: str,
+                                     proposed_control_ref: Optional[str], proposed_edit: dict) -> Optional[int]:
+    """pending_review only — same 'nothing can publish without a decision'
+    discipline as pac_policy_docs.save_pac_policy_conversion; approval is a
+    separate explicit step (record_regulatory_change_proposal_decision)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO regulatory_change_proposals
+                        (version_id, diff_summary, proposed_control_ref, proposed_edit)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (version_id, diff_summary, (proposed_control_ref[:32] if proposed_control_ref else None),
+                     Json(proposed_edit or {})),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_regulatory_change_proposals(status: Optional[str] = None, limit: int = 100) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                q = (
+                    "SELECT p.id, p.version_id, p.diff_summary, p.proposed_control_ref, p.proposed_edit, "
+                    "p.status, p.reviewer, p.reviewed_at, p.review_notes, p.created_at, "
+                    "v.feed_id, v.source_url, v.title, v.fetched_at "
+                    "FROM regulatory_change_proposals p JOIN regulatory_change_versions v ON v.id = p.version_id"
+                )
+                params: list = []
+                if status:
+                    q += " WHERE p.status = %s"
+                    params.append(status)
+                q += " ORDER BY p.created_at DESC LIMIT %s"
+                params.append(limit)
+                cur.execute(q, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for tf in ("reviewed_at", "created_at", "fetched_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_regulatory_change_proposal(proposal_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT p.id, p.version_id, p.diff_summary, p.proposed_control_ref, p.proposed_edit,
+                           p.status, p.reviewer, p.reviewed_at, p.review_notes, p.created_at,
+                           v.feed_id, v.source_url, v.title, v.fetched_text, v.fetched_at
+                    FROM regulatory_change_proposals p JOIN regulatory_change_versions v ON v.id = p.version_id
+                    WHERE p.id = %s
+                    """,
+                    (proposal_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                for tf in ("reviewed_at", "created_at", "fetched_at"):
+                    if d.get(tf) and hasattr(d[tf], "isoformat"):
+                        d[tf] = d[tf].isoformat()
+                return d
+    return _run(_do)
+
+
+def record_regulatory_change_proposal_decision(proposal_id: int, decision: str, reviewer: str,
+                                                review_notes: Optional[str]) -> Optional[dict]:
+    """decision: 'approved' | 'rejected'. Caller (regulatory_change_endpoints.py)
+    applies the proposed_edit to controls_library on 'approved' — this
+    function only records the decision itself, same status-machine split
+    record_pac_conversion_decision uses (decide, then separately publish)."""
+    if decision not in ("approved", "rejected"):
+        return None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE regulatory_change_proposals SET
+                        status = %s, reviewer = %s, reviewed_at = NOW(), review_notes = %s
+                    WHERE id = %s AND status = 'pending_review'
+                    RETURNING id, version_id, status, proposed_control_ref, proposed_edit
+                    """,
+                    (decision, reviewer[:128], review_notes, proposal_id),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description] if cur.description else []
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
