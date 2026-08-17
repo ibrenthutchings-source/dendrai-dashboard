@@ -119,6 +119,60 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
     return events
 
 
+def get_journal_entries(base_url: Optional[str], credentials: dict, extra_config: dict,
+                         since: Optional[datetime] = None, max_items: int = 500) -> dict:
+    """Fetch posted journal entries (transaction type 'Journal') via SuiteQL,
+    joined to their debit line for an amount/account, normalized to the
+    shared journal-entry shape je_testing_tool.py's rule engine consumes:
+    je_id, amount, currency, account, gl_account_desc, description, preparer,
+    approver, posted_at, period_close_date, source_system.
+
+    One row per JE header (the debit line, arbitrarily — a full multi-line
+    JE reconciliation is out of scope for anomaly testing, which only needs
+    a representative amount/account per entry) rather than one row per
+    transactionline, since je_testing_tool.py's rules operate at JE-header
+    granularity same as pac_endpoints.py's record_to_report Rego does."""
+    account_id = (extra_config or {}).get("account_id", "")
+    since_str = (since or datetime.now(timezone.utc)).strftime("%m/%d/%Y")
+    query = (
+        "SELECT t.id AS je_id, t.trandate, t.memo, "
+        "BUILTIN.DF(t.createdby) AS preparer, BUILTIN.DF(t.approvedby) AS approver, "
+        "t.postingperiod, tl.account, BUILTIN.DF(tl.account) AS account_desc, tl.debit "
+        "FROM transaction t JOIN transactionline tl ON tl.transaction = t.id "
+        "WHERE t.type = 'Journal' AND tl.debit > 0 "
+        f"AND t.trandate >= TO_DATE('{since_str}', 'MM/DD/YYYY') "
+        f"ORDER BY t.trandate FETCH FIRST {max_items} ROWS ONLY"
+    )
+    try:
+        data = _suiteql(base_url, account_id, credentials, query)
+    except Exception as exc:
+        return {"error": str(exc), "journal_entries": [], "count": 0}
+    items = data.get("items", [])
+
+    normalized = []
+    for r in items:
+        normalized.append({
+            "je_id":             str(r.get("je_id") or ""),
+            "amount":            float(r.get("debit") or 0),
+            "currency":          "USD",
+            "account":           str(r.get("account") or ""),
+            "gl_account_desc":   str(r.get("account_desc") or ""),
+            "description":       str(r.get("memo") or ""),
+            "preparer":          str(r.get("preparer") or ""),
+            "approver":          (str(r.get("approver")) if r.get("approver") else None),
+            "posted_at":         str(r.get("trandate") or ""),
+            "period_close_date": str(r.get("postingperiod") or "") or None,
+            "source_system":     "NETSUITE",
+        })
+
+    return {
+        "source":          "NetSuite — Journal Entries",
+        "fetched_at":      datetime.now(timezone.utc).isoformat(),
+        "count":           len(normalized),
+        "journal_entries": normalized,
+    }
+
+
 def test_connection(base_url: Optional[str], credentials: dict, extra_config: dict) -> tuple[bool, str]:
     """Verify connectivity/signing with a trivial SuiteQL query."""
     try:

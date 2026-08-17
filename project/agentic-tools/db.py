@@ -9869,6 +9869,134 @@ def list_exception_system_sources() -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Journal Entry Testing (je_testing_sweep.py / je_testing_endpoints.py)
+# ─────────────────────────────────────────────────────────────────────────────
+# Reuses exception_control_events/exception_model_inferences/exception_auditor_triage
+# verbatim (je_testing_sweep._persist_finding writes via insert_exception_event) —
+# discriminated from Exception Management's dev-only ML-uncertainty demo purely by
+# event_type = 'JOURNAL_ENTRY', which only je_testing_sweep.py ever sets. Unlike
+# list_pending_exceptions (hardcoded to the pending/unreviewed slice for that
+# screen's Triage Queue), these read every JE finding regardless of triage state —
+# JE Testing's findings table is a record of what the deterministic rule engine
+# found, not just what still needs a human.
+
+def _je_finding_filters(rule_id, system_source, preparer, only_pending):
+    clauses = ["ce.event_type = 'JOURNAL_ENTRY'"]
+    params: list = []
+    if rule_id:
+        clauses.append("ce.control_id = %s")
+        params.append(rule_id)
+    if system_source:
+        clauses.append("ce.system_source = %s")
+        params.append(system_source)
+    if preparer:
+        clauses.append("ce.actor = %s")
+        params.append(preparer)
+    if only_pending:
+        clauses.append("mi.requires_human_review = TRUE AND tri.id IS NULL")
+    return " AND ".join(clauses), params
+
+
+def list_je_testing_findings(limit: int = 100, offset: int = 0, rule_id: Optional[str] = None,
+                              system_source: Optional[str] = None, preparer: Optional[str] = None,
+                              only_pending: bool = False) -> list:
+    where, params = _je_finding_filters(rule_id, system_source, preparer, only_pending)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
+                           ce.actor, ce.raw_payload, mi.anomaly_score, mi.requires_human_review,
+                           tri.resolution_label, tri.reviewed_at
+                    FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE {where}
+                    ORDER BY ce.event_timestamp DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (*params, limit, offset),
+                )
+                out = []
+                for r in cur.fetchall():
+                    out.append({
+                        "event_id": r[0], "rule_id": r[1], "system_source": r[2], "process": r[3],
+                        "event_timestamp": r[4].isoformat() if r[4] else None, "preparer": r[5],
+                        "finding": r[6] or {}, "anomaly_score": float(r[7]),
+                        "requires_human_review": r[8],
+                        "resolution_label": r[9], "reviewed_at": r[10].isoformat() if r[10] else None,
+                    })
+                return out
+    return _run(_do) or []
+
+
+def count_je_testing_findings(rule_id: Optional[str] = None, system_source: Optional[str] = None,
+                               preparer: Optional[str] = None, only_pending: bool = False) -> int:
+    where, params = _je_finding_filters(rule_id, system_source, preparer, only_pending)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*) FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE {where}
+                    """,
+                    params,
+                )
+                return cur.fetchone()[0]
+    return _run(_do) or 0
+
+
+def get_je_testing_summary() -> dict:
+    """Headline tiles for the JE Testing tab: entries tested (distinct
+    postings scored), findings by rule, and the preparers/accounts most
+    represented among findings."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM exception_control_events WHERE event_type = 'JOURNAL_ENTRY'")
+                total_findings = cur.fetchone()[0]
+                cur.execute(
+                    """
+                    SELECT control_id, COUNT(*) FROM exception_control_events
+                    WHERE event_type = 'JOURNAL_ENTRY' GROUP BY control_id ORDER BY 2 DESC
+                    """
+                )
+                by_rule = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute(
+                    """
+                    SELECT actor, COUNT(*) FROM exception_control_events
+                    WHERE event_type = 'JOURNAL_ENTRY' AND actor IS NOT NULL
+                    GROUP BY actor ORDER BY 2 DESC LIMIT 10
+                    """
+                )
+                top_preparers = [{"preparer": r[0], "count": r[1]} for r in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT ce.id FROM exception_control_events ce
+                    JOIN exception_model_inferences mi ON mi.event_id = ce.id
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE ce.event_type = 'JOURNAL_ENTRY' AND mi.requires_human_review = TRUE AND tri.id IS NULL
+                    """
+                )
+                pending_count = len(cur.fetchall())
+                return {
+                    "total_findings": total_findings, "findings_by_rule": by_rule,
+                    "top_preparers": top_preparers, "pending_count": pending_count,
+                }
+    return _run(_do) or {"total_findings": 0, "findings_by_rule": {}, "top_preparers": [], "pending_count": 0}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Connector credential encryption (Fernet, CONNECTOR_ENCRYPTION_KEY)
 # ─────────────────────────────────────────────────────────────────────────────
 # A stable key is required — unlike auth_endpoints.py's AUTH_JWT_SECRET (which

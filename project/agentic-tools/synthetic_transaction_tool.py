@@ -144,9 +144,19 @@ _IAM = ProcessDef("ACC", [
 ])
 
 # ── SAP HANA — Record to Report ──────────────────────────────────────────────
+# account/description are only used by get_journal_entries() below (je_testing_tool.py's
+# rare_account_combination/unusual_description need real variety to score against) —
+# _build_own_case's other three R2R steps don't read them.
+_JE_ACCOUNTS = ["6100-OPEX", "5000-COGS", "4000-REVENUE", "2100-AP", "1200-AR",
+                "6400-PAYROLL", "3000-EQUITY", "1500-FIXED-ASSETS"]
+_JE_DESCRIPTIONS = ["Vendor invoice accrual", "Monthly payroll accrual", "Inventory revaluation",
+                    "Intercompany allocation", "FX revaluation adjustment", "Bad debt reserve"]
+
 _RECORD_TO_REPORT = ProcessDef("JE", [
     SimStep("Journal Entry Posted", "R2R_JOURNAL_ENTRY_EVENT", (0, 0),
-            lambda rng, rid, v: _detail(rng, rid, v, "preparer", "je_amount", (5000, 2000000))),
+            lambda rng, rid, v: _detail(rng, rid, v, "preparer", "je_amount", (5000, 2000000),
+                                         extra={"account": rng.choice(_JE_ACCOUNTS),
+                                                "description": rng.choice(_JE_DESCRIPTIONS)})),
     SimStep("Account Reconciled", "R2R_RECONCILIATION_EVENT", (3, 20),
             lambda rng, rid, v: _detail(rng, rid, v, "reconciler", extra={"variance_identified": v})),
     SimStep("Period Closed", "R2R_PERIOD_CLOSE_EVENT", (1, 10),
@@ -342,6 +352,55 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
         else:
             events.extend(_build_own_case(pdef, rng, now, process_id))
     return events
+
+
+def get_journal_entries(base_url: Optional[str], credentials: dict, extra_config: dict,
+                         since: Optional[datetime] = None, max_items: int = 200) -> dict:
+    """Fabricates a population of "Journal Entry Posted" events directly
+    (rather than pacing through pull_events()'s 1-3-cases-per-tick, which
+    exists to keep the adjudication feed realistically paced, not to size a
+    testable population) and normalizes them to the shared journal-entry
+    shape je_testing_tool.py's rule engine consumes: je_id, amount, currency,
+    account, gl_account_desc, description, preparer, approver, posted_at,
+    period_close_date, source_system.
+
+    Only meaningful for a connector whose extra_config.process is
+    "record_to_report" — any other simulated process returns an empty
+    population, same as a real connector with nothing to report."""
+    if (extra_config or {}).get("process") != "record_to_report":
+        return {"source": "Synthetic Transaction Simulator", "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "count": 0, "journal_entries": []}
+
+    now = datetime.now(timezone.utc)
+    rng = random.Random()
+    n_cases = min(max_items, 200)
+    normalized = []
+    for _ in range(n_cases):
+        events = _build_own_case(_RECORD_TO_REPORT, rng, now, "record_to_report")
+        je_event = next((e for e in events if e["event_type"] == "R2R_JOURNAL_ENTRY_EVENT"), None)
+        if je_event is None:
+            continue
+        payload = je_event["raw_payload"]
+        normalized.append({
+            "je_id":             payload.get("reference"),
+            "amount":            float(payload.get("je_amount") or 0),
+            "currency":          "USD",
+            "account":           payload.get("account", ""),
+            "gl_account_desc":   "",
+            "description":       payload.get("description", ""),
+            "preparer":          payload.get("preparer", ""),
+            "approver":          payload.get("approver"),
+            "posted_at":         je_event["created_at"],
+            "period_close_date": None,
+            "source_system":     "SYNTHETIC",
+        })
+
+    return {
+        "source":          "Synthetic Transaction Simulator — Journal Entries",
+        "fetched_at":      now.isoformat(),
+        "count":           len(normalized),
+        "journal_entries": normalized,
+    }
 
 
 def test_connection(base_url: Optional[str], credentials: dict, extra_config: dict):
