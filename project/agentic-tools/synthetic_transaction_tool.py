@@ -390,7 +390,13 @@ def get_journal_entries(base_url: Optional[str], credentials: dict, extra_config
             "description":       payload.get("description", ""),
             "preparer":          payload.get("preparer", ""),
             "approver":          payload.get("approver"),
-            "posted_at":         je_event["created_at"],
+            # ISO string, not the raw datetime _event() stores in created_at —
+            # every real connector's get_journal_entries returns a string
+            # timestamp (straight from a JSON API or SQL driver), and
+            # je_testing_sweep._persist_finding round-trips this value through
+            # db.insert_exception_event's Json(raw_payload), which cannot
+            # serialize a bare datetime.
+            "posted_at":         je_event["created_at"].isoformat(),
             "period_close_date": None,
             "source_system":     "SYNTHETIC",
         })

@@ -808,6 +808,32 @@ window.MCP = (function () {
     return _get(`/process-mining/cases?days=${days}&limit=${limit}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
   }
 
+  // ── Journal Entry Testing — je_testing_endpoints.py ───────────────────────────
+
+  /** Headline tiles: entries tested, findings by rule, top preparers. */
+  async function jeTestingSummary() {
+    return _get('/je-testing/summary');
+  }
+
+  /** Findings list, most recent first. opts: ruleId, systemSource, preparer, onlyPending, limit, offset. */
+  async function jeTestingFindings(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.ruleId) params.set('rule_id', opts.ruleId);
+    if (opts.systemSource) params.set('system_source', opts.systemSource);
+    if (opts.preparer) params.set('preparer', opts.preparer);
+    if (opts.onlyPending) params.set('only_pending', 'true');
+    params.set('limit', opts.limit || 100);
+    params.set('offset', opts.offset || 0);
+    return _get(`/je-testing/findings?${params.toString()}`);
+  }
+
+  /** Record an auditor's resolution for one JE finding — same 4-label vocabulary as Exception Management. */
+  async function submitJeTestingDisposition(eventId, resolutionLabel, justificationNotes) {
+    return _post(`/je-testing/findings/${eventId}/disposition`, {
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -875,5 +901,9 @@ window.MCP = (function () {
     pmCycleTimes,
     pmRework,
     pmCases,
+    // Journal Entry Testing
+    jeTestingSummary,
+    jeTestingFindings,
+    submitJeTestingDisposition,
   };
 })();
