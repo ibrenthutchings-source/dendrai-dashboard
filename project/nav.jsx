@@ -53,6 +53,10 @@ const NAV_SECTIONS = [
       // link from help.jsx's workflow map — reachable only if a user found
       // it via Help, never from the persistent nav. Restored.
       { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
+      // Mirrors policycode's intake -> HITL review -> publish shape, applied
+      // to regulatory horizon-scanning instead of manual policy upload — see
+      // regulatory_change_endpoints.py.
+      { id: "regchange",  icon: "alert",   l: "Regulatory Change Management" },
     ],
   },
   {

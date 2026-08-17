@@ -849,6 +849,36 @@ window.MCP = (function () {
     return _post(`/remediation/propose/${eventId}`, {});
   }
 
+  // ── Regulatory Change Management — regulatory_change_endpoints.py ─────────────
+
+  /** Fetch the horizon-scanning feeds, diff against the last snapshot, and
+   * draft proposals for material changes. */
+  async function regChangeScan() {
+    return _post('/regulatory-change/scan', {});
+  }
+
+  /** Recent fetched snapshots, newest first. */
+  async function regChangeVersions(feedId = null) {
+    return _get(`/regulatory-change/versions${feedId ? `?feed_id=${encodeURIComponent(feedId)}` : ''}`);
+  }
+
+  /** Review queue — proposals awaiting a decision (or all, if status omitted). */
+  async function regChangeProposals(status = null) {
+    return _get(`/regulatory-change/proposals${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+  }
+
+  /** One proposal, full diff included. */
+  async function regChangeProposal(id) {
+    return _get(`/regulatory-change/proposals/${id}`);
+  }
+
+  /** approve | reject a proposal — approving applies proposed_edit to controls_library. */
+  async function regChangeDecide(id, decision, reviewNotes) {
+    return _post(`/regulatory-change/proposals/${id}/decision`, {
+      decision, review_notes: reviewNotes || null,
+    });
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -922,5 +952,11 @@ window.MCP = (function () {
     submitJeTestingDisposition,
     // Closed-loop remediation
     proposeRemediation,
+    // Regulatory Change Management
+    regChangeScan,
+    regChangeVersions,
+    regChangeProposals,
+    regChangeProposal,
+    regChangeDecide,
   };
 })();
