@@ -356,6 +356,8 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
     }
   }
 
+  useEscapeToClose(open, onClose);
+
   if (!open || !risk) return null;
 
   const frameworkRisks = window.FW_MOCK_RISKS || {};

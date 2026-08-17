@@ -34,6 +34,29 @@ select.input { appearance: none; cursor: pointer; padding-right: 28px;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 4.5l3 3 3-3' stroke='%23999' fill='none' stroke-linecap='round' stroke-width='1.4'/></svg>");
   background-repeat: no-repeat; background-position: right 8px center; }
 
+/* Same rule as .input, under the name several screens already assumed
+   existed (ai-inventory.jsx, ai-governance.jsx, exceptions.jsx,
+   code-screens.jsx, scenario-analysis.jsx, cem.jsx, model-health.jsx all
+   reference "code-input" as a class) — it had never actually been defined,
+   so every one of those inputs was rendering with bare browser default
+   styling. Aliased to .input's tokens rather than inventing a third visual
+   language alongside .input/.fi-input. */
+.code-input {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--ink);
+  outline: none;
+  transition: border-color .15s, background .15s;
+}
+.code-input:focus { border-color: var(--acc); background: var(--surface); }
+select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 4.5l3 3 3-3' stroke='%23999' fill='none' stroke-linecap='round' stroke-width='1.4'/></svg>");
+  background-repeat: no-repeat; background-position: right 8px center; }
+
 /* signal chips grid */
 .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .sig {

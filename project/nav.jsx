@@ -13,9 +13,14 @@ const NAV_SECTIONS = [
     items: [
       // Risk Register, Risk Flow, and Forecasts now live in the
       // right-hand Live Register rail on the Pipeline screen (post-run).
-      { id: "help",       icon: "compass", l: "Intelligenza Workflow" },
-      { id: "pipeline",  icon: "flow",  l: "Assess Risk" },
-       { id: "aiinventory", icon: "list", l: "AI System Ledger" },
+      // divider groups an 8-item section into scannable clusters without
+      // touching NAV_SECTIONS' own label/collapse structure — see LeftNav's
+      // isVisible/divider rendering below. Always attached to an item with
+      // no visibility gate, so the group heading can't disappear out from
+      // under a hidden first item.
+      { id: "help",       icon: "compass", l: "Intelligenza Workflow", divider: "Overview" },
+      { id: "pipeline",  icon: "flow",  l: "Assess Risk", divider: "Assess" },
+      { id: "aiinventory", icon: "list", l: "AI System Ledger", divider: "Registers" },
       // id deliberately matches ai_governance_endpoints.py's _SCREEN_ID: the
       // admin permission matrix is built from these nav ids
       // (user-config.jsx::getPermissionSections), while ScreenAccessGate and
@@ -28,7 +33,7 @@ const NAV_SECTIONS = [
       { id: "ai_governance", icon: "shield", l: "AI Governance", trueDevOnly: true },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
-      { id: "sox",        icon: "grid",    l: "SOX Scoping"},
+      { id: "sox",        icon: "grid",    l: "SOX Scoping", divider: "Scoping" },
       { id: "scope",    icon: "grid",      l: "Audit Plan" },
     ],
   },
@@ -44,29 +49,30 @@ const NAV_SECTIONS = [
     items: [
       { id: "riskcode",   icon: "doc",     l: "Risk-as-Code Editor" },
       { id: "policycode", icon: "shield",  l: "Policy-as-Code Engine" },
-      //{ id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
+      // Was commented out here with a working route in app.jsx and a live
+      // link from help.jsx's workflow map — reachable only if a user found
+      // it via Help, never from the persistent nav. Restored.
+      { id: "coverage",   icon: "check",   l: "Coverage Gap Analysis" },
     ],
   },
   {
     label: "Monitoring Intelligence",
     items: [
-      { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse" },
+      { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse", divider: "Inbox" },
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
-      { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch" },
+      { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch", divider: "Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "riskquant", icon: "trend",    l: "Risk Quantification" },
       { id: "exceptions", icon: "alert",   l: "Exception Management", devOnly: true },
       { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },
+      // Previously a separate, commented-out NAV_SECTIONS entry — the screen
+      // (infrastructure-monitoring.jsx) was fully built but had no nav path
+      // to it at all. Folded in here rather than restored as its own
+      // section, so fixing "unreachable" doesn't also add a 7th section.
+      { id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring", divider: "Infrastructure" },
+      { id: "riskquant", icon: "trend",    l: "Risk Quantification", divider: "Analytics" },
       { id: "modelhealth", icon: "trend", l: "Model Vitals" },
-     
     ],
   },
-  //{
-  //  label: "Infrastructure Monitoring",
-  //  items: [
-  //    { id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring" },
-  //  ],
-  //},
   {
     label: "Board Intelligence",
     items: [
@@ -238,20 +244,26 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
                   <path d="M2 4l3 3 3-3"/>
                 </svg>
               </button>
-              {!isCollapsed && section.items.filter(isVisible).map(item => {
+              {!isCollapsed && section.items.filter(isVisible).map((item, idx) => {
                 const active = isActive(item);
                 const count = item.countKey ? counts[item.countKey] : 0;
                 const pulse = item.pulseKey ? counts[item.pulseKey] : false;
                 return (
-                  <button
-                    key={item.l}
-                    className={"lnav-item" + (active ? " active" : "")}
-                    onClick={() => onNavigate(item.id, item.govTab)}>
-                    <span className="lnav-item-icon"><NavIcon name={item.icon} size={14}/></span>
-                    <span className="lnav-item-label">{item.l}</span>
-                    {count > 0 && <span className="lnav-count">{count}</span>}
-                    {pulse && <span className="lnav-pulse" />}
-                  </button>
+                  <React.Fragment key={item.l}>
+                    {item.divider && (
+                      <div className="lnav-item-divider" style={{ marginTop: idx === 0 ? 0 : 6 }}>
+                        {item.divider}
+                      </div>
+                    )}
+                    <button
+                      className={"lnav-item" + (active ? " active" : "")}
+                      onClick={() => onNavigate(item.id, item.govTab)}>
+                      <span className="lnav-item-icon"><NavIcon name={item.icon} size={14}/></span>
+                      <span className="lnav-item-label">{item.l}</span>
+                      {count > 0 && <span className="lnav-count">{count}</span>}
+                      {pulse && <span className="lnav-pulse" />}
+                    </button>
+                  </React.Fragment>
                 );
               })}
             </div>

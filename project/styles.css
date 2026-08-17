@@ -300,6 +300,15 @@ a { color: inherit; text-decoration: none; }
   transition: transform .18s ease;
 }
 .lnav-section-label.collapsed .lnav-chevron { transform: rotate(-90deg); }
+/* Sub-grouping WITHIN a section's flat item list — a lighter-weight, non-
+   collapsible cousin of .lnav-section-label, for sections dense enough
+   (8-9 items) that a single unbroken list gets hard to scan. */
+.lnav-item-divider {
+  font-family: "Geist Mono", monospace;
+  font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-4); font-weight: 600;
+  padding: 4px 8px 3px;
+}
 .lnav-item {
   position: relative;
   display: flex; align-items: center; gap: 9px;

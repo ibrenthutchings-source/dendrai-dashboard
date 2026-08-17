@@ -383,6 +383,8 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
     }
   }
 
+  useEscapeToClose(open, onClose);
+
   if (!open || !obj) return null;
 
   const sortedRisks = [...risks].sort((a, b) => b.score - a.score);
@@ -664,6 +666,11 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
                     </button>
                   ))}
                   {addableControls.length === 0 && <span className="mono" style={{fontSize:9.5, color:"var(--ink-3)", padding:4}}>No matches</span>}
+                  {addableControls.length > 20 && (
+                    <span className="mono" style={{fontSize:9, color:"var(--ink-4)", padding:"4px 6px"}}>
+                      +{addableControls.length - 20} more — keep typing to narrow
+                    </span>
+                  )}
                 </div>
               </div>
             )}

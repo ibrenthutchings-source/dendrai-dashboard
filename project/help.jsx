@@ -6,10 +6,8 @@
    (same screen ids, same labels) so this stays a map of the real
    nav, not a separate narrative that can drift out of sync with
    it — Setup is excluded here the same way nav.jsx's WorkflowStrip
-   excludes it (configuration, not a workflow stage), and
-   Infrastructure Monitoring is dropped because NAV_SECTIONS
-   currently has that section commented out. This is also the
-   default landing screen (see app.jsx's activeScreen initial state).
+   excludes it (configuration, not a workflow stage). This is also
+   the default landing screen (see app.jsx's activeScreen initial state).
    ============================================================ */
 
 const WORKFLOW_STAGES = [
@@ -53,6 +51,7 @@ const WORKFLOW_STAGES = [
       { screen: "exceptions", label: "Exception Management", devOnly: true, desc: "Continuous Control Monitoring triage — connector events scored for anomaly/uncertainty land here for a human auditor to resolve. Development environment only." },
       { screen: "rrreview", label: "Risk & Control Ledger", desc: "The living risk register with its control mappings — Save All generates reviewed Risk-as-Code and Controls-as-Code together, with the relationship between them embedded in both artifacts." },
       { screen: "ubogov", label: "Telemetry Detail", desc: "Ultimate-beneficial-ownership oversight — surfaces hidden ownership and control chains behind the entity." },
+      { screen: "infrastructuremonitoring", label: "Infrastructure Monitoring", desc: "Postgres CIS-style hardening checks, Railway platform/deployment drift, and connector credential hygiene in one posture view." },
     ],
   },
   {

@@ -6,6 +6,7 @@ function ReportModal({ open, onClose, payload }) {
   // Hooks must run unconditionally — declare before the early return.
   const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null, _review: null });
   React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null, _review: null }); }, [payload?.ts]);
+  useEscapeToClose(open, onClose);
 
   if (!open || !payload) return null;
   const {
@@ -669,6 +670,7 @@ function PipelineStagesReport({ stageState, stageOutput }) {
 function OverrideModal({ open, gateNum, onClose, onConfirm }) {
   const [reason, setReason] = useState("");
   useEffect(() => { if (open) setReason(""); }, [open]);
+  useEscapeToClose(open, onClose);
   if (!open) return null;
   return (
     <div className="modal open">

@@ -83,6 +83,7 @@ function PasswordModeFields({ mode, setMode, password, setPassword }) {
 
 function GeneratedPasswordReveal({ username, password, onClose }) {
   const [copied, setCopied] = React.useState(false);
+  useEscapeToClose(true, onClose);
   function copy() {
     if (!navigator.clipboard) return;
     navigator.clipboard.writeText(password).then(() => {
@@ -140,6 +141,7 @@ function AddUserModal({ open, onClose, onCreated, roles = [] }) {
       setPwMode("generate"); setPassword(""); setErr(null);
     }
   }, [open]);
+  useEscapeToClose(open, onClose);
 
   if (!open) return null;
 
@@ -236,6 +238,7 @@ function EditUserModal({ open, user, onClose, onSaved, onPasswordSet }) {
       setResetPw(false); setPwMode("generate"); setPassword(""); setErr(null);
     }
   }, [open, user?.id]);
+  useEscapeToClose(open, onClose);
 
   if (!open || !user) return null;
 
@@ -819,6 +822,7 @@ function RolesTab() {
   const [creating, setCreating] = React.useState(false);
   const [createErr, setCreateErr] = React.useState(null);
   const [deleteErr, setDeleteErr] = React.useState(null);
+  useEscapeToClose(addOpen, () => setAddOpen(false));
 
   const loadRoles = React.useCallback(async (selectId) => {
     setLoading(true); setError(null);
