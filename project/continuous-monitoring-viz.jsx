@@ -552,17 +552,51 @@ export function EventReplayChart({ theme, days, dim, rawEvents, loading, error, 
     >
       {events.length > 0 && (
         <>
-          <div ref={hostRef} style={{ position: "absolute", inset: 0, top: 0, bottom: 56 }}>
-            <canvas
-              ref={cvRef}
-              style={{ width: "100%", display: "block", cursor: "crosshair" }}
-              onMouseMove={handleMouseMove}
-              onMouseLeave={() => setTip(null)}
-              onClick={handleClickCanvas}
-            />
+          <div ref={hostRef} style={{ position: "absolute", inset: 0, top: 0, bottom: 56, overflow: tableView ? "auto" : "hidden" }}>
+            {tableView ? (
+              <table className="cm-replay-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <caption style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
+                  {dim.label} Event Replay, table view — {visibleEvents.length} events, most recent first
+                </caption>
+                <thead>
+                  <tr style={{ position: "sticky", top: 0, background: theme.surface, zIndex: 1 }}>
+                    <th scope="col" style={{ textAlign: "left", padding: "6px 14px", borderBottom: `1px solid ${theme.line}`, color: theme["ink-3"], fontWeight: 600 }}>When</th>
+                    <th scope="col" style={{ textAlign: "left", padding: "6px 10px", borderBottom: `1px solid ${theme.line}`, color: theme["ink-3"], fontWeight: 600 }}>{dim.label}</th>
+                    <th scope="col" style={{ textAlign: "left", padding: "6px 10px", borderBottom: `1px solid ${theme.line}`, color: theme["ink-3"], fontWeight: 600 }}>Verdict</th>
+                    <th scope="col" style={{ textAlign: "left", padding: "6px 10px", borderBottom: `1px solid ${theme.line}`, color: theme["ink-3"], fontWeight: 600 }}>Tier</th>
+                    <th scope="col" style={{ textAlign: "left", padding: "6px 14px", borderBottom: `1px solid ${theme.line}`, color: theme["ink-3"], fontWeight: 600 }}>Target</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleEvents.map(e => (
+                    <tr key={e.id}
+                      style={{ cursor: onNavigate ? "pointer" : "default" }}
+                      tabIndex={onNavigate ? 0 : undefined}
+                      onClick={() => onNavigate && onNavigate("ubogov", { cemTab: "adjudications", cemFilter: groupCemFilter(dim, e._group, { verdict: e.verdict }) })}
+                      onKeyDown={ev => { if (onNavigate && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); onNavigate("ubogov", { cemTab: "adjudications", cemFilter: groupCemFilter(dim, e._group, { verdict: e.verdict }) }); } }}>
+                      <td className="mono" style={{ padding: "5px 14px", color: theme["ink-3"], whiteSpace: "nowrap" }}>{e.adjudicated_at ? new Date(e.adjudicated_at).toLocaleString() : "—"}</td>
+                      <td style={{ padding: "5px 10px", color: dim.color(e._group) }}>{e._group}</td>
+                      <td style={{ padding: "5px 10px", fontWeight: 700, color: VERDICT_COLOR[e.verdict] || theme["ink-2"] }}>{e.verdict}</td>
+                      <td style={{ padding: "5px 10px", color: theme["ink-2"] }}>{e.risk_tier || "—"}</td>
+                      <td style={{ padding: "5px 14px", color: theme.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>{e.target_tool || e.server_name || e.source_system || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <canvas
+                ref={cvRef}
+                role="img"
+                aria-label={`${dim.label} Event Replay chart — ${shown} events plotted. Use "View as table" for a screen-reader- and keyboard-accessible version of the same data.`}
+                style={{ width: "100%", display: "block", cursor: "crosshair" }}
+                onMouseMove={handleMouseMove}
+                onMouseLeave={() => setTip(null)}
+                onClick={handleClickCanvas}
+              />
+            )}
           </div>
 
-          {tip && (
+          {!tableView && tip && (
             <div style={{
               position: "fixed",
               // Flip to the cursor's left once there isn't room for the
@@ -632,6 +666,11 @@ export function EventReplayChart({ theme, days, dim, rawEvents, loading, error, 
               style={loop ? { borderColor: theme.acc, color: theme["acc-ink"] } : undefined}>↻ Loop</button>
             <button type="button" className="btn btn-sm" aria-pressed={escOnly} onClick={() => setEscOnly(v => !v)}
               style={escOnly ? { borderColor: VERDICT_COLOR.ESCALATE, color: theme["red-ink"] } : undefined}>Escalations only</button>
+            <button type="button" className="btn btn-sm" aria-pressed={tableView} onClick={() => setTableView(v => !v)}
+              title="Screen-reader- and keyboard-accessible view of the same data"
+              style={tableView ? { borderColor: theme.acc, color: theme["acc-ink"] } : undefined}>
+              {tableView ? "▤ Chart view" : "☰ View as table"}
+            </button>
             <div className="mono" style={{ fontSize: 10.5, color: theme["ink-2"], marginLeft: "auto", whiteSpace: "nowrap" }}>
               -{(days - playhead).toFixed(1)}d · {shown} shown · {escalatedShown} escalated
             </div>
@@ -777,7 +816,12 @@ export function DimensionSankey({ theme, days, dim, rawEvents, loading, error, o
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0 }}>
-          <svg ref={svgRef} style={{ width: "100%", height: "100%", display: "block" }} />
+          {/* This diagram has no keyboard/screen-reader path of its own —
+              the same underlying events are available as a real table via
+              Event Replay's "View as table" toggle, same dim/day window. */}
+          <svg ref={svgRef} role="img"
+            aria-label={`${dim.label} Sankey diagram — ${agg.groups.length} ${dim.label.toLowerCase()} groups flowing to their verdict outcome. See Event Replay's table view for this data in an accessible form.`}
+            style={{ width: "100%", height: "100%", display: "block" }} />
         </div>
       )}
       {tooltip && (
@@ -879,7 +923,9 @@ export function DimensionHeatGrid({ theme, days, dim, rawEvents, loading, error,
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto", padding: "16px 16px 12px" }}>
-          <svg width={Math.max(size.w - SIDE_PAD, labelW + gridW)} height={gridH + TOP + BOTTOM} style={{ display: "block" }}>
+          <svg width={Math.max(size.w - SIDE_PAD, labelW + gridW)} height={gridH + TOP + BOTTOM} style={{ display: "block" }}
+            role="img"
+            aria-label={`${dim.label} Heat Grid — event density for ${grid.rows.length} ${dim.label.toLowerCase()} groups over ${grid.dayKeys.length} days. See Event Replay's table view for this data in an accessible form.`}>
             {grid.rows.map((row, ri) => (
               <g key={row.key} transform={`translate(0, ${ri * cellH + TOP})`}
                 onClick={() => onNavigate && onNavigate("ubogov", { cemTab: "adjudications", cemFilter: groupCemFilter(dim, row.key) })}
@@ -1165,7 +1211,9 @@ export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto" }}>
-          <svg ref={svgRef} style={{ display: "block", width: "100%", height: "100%" }} />
+          <svg ref={svgRef} role="img"
+            aria-label={`${dim.label} directly-follows graph: ${dim.label} to Risk Tier to Verdict to Rule. See Event Replay's table view for this data in an accessible form.`}
+            style={{ display: "block", width: "100%", height: "100%" }} />
         </div>
       )}
       {tooltip && (
@@ -1391,7 +1439,9 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto" }}>
-          <svg ref={svgRef} style={{ display: "block", width: "100%", height: "100%" }} />
+          <svg ref={svgRef} role="img"
+            aria-label={`Case Flow Graph — ${graph.caseCount} tracked transaction${graph.caseCount !== 1 ? "s" : ""} over the last ${days} days, plotted as a step-to-step directly-follows graph.`}
+            style={{ display: "block", width: "100%", height: "100%" }} />
         </div>
       )}
       {tooltip && (
