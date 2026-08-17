@@ -114,6 +114,7 @@ function AdjustMaterialityModal({ open, scope, ticker, onClose, onSubmit }) {
   React.useEffect(() => {
     if (open) { setMaterialityPct(5.0); setPerformancePct(75.0); setRationale(""); setErr(null); }
   }, [open]);
+  useEscapeToClose(open, onClose);
 
   if (!open) return null;
   const valid = rationale.trim().length >= 30;
@@ -257,6 +258,7 @@ function AdjustAccountModal({ open, acc, ticker, onClose, onSubmit }) {
   React.useEffect(() => {
     if (open && acc) { setInScope(acc.in_scope); setPriority(acc.priority || "P2"); setRationale(""); setErr(null); }
   }, [open, acc?.account_id]);
+  useEscapeToClose(open, onClose);
 
   if (!open || !acc) return null;
   const valid = rationale.trim().length >= 30;
@@ -473,6 +475,7 @@ function AdjustProcessModal({ open, proc, ticker, onClose, onSubmit }) {
   React.useEffect(() => {
     if (open && proc) { setLevel(proc.coverage_level || "P2"); setRationale(""); setErr(null); }
   }, [open, proc?.process_id]);
+  useEscapeToClose(open, onClose);
 
   if (!open || !proc) return null;
   const valid = rationale.trim().length >= 30;

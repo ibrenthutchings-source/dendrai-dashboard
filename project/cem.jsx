@@ -598,6 +598,11 @@ const UBO_PANE_DEFAULT_ORDER = ["humanReview", "analytics"];
 function UBOGovPanel({ initialTab, initialFilter } = {}) {
   const LiveBadge = window.LiveBadge;
   const [adjudicated,  setAdjudicated]  = useState([]);
+  // Real total behind the adjudicated page (server-computed, ignores
+  // limit/offset) — lets the Adjudications tab say "showing 100 of 3,204"
+  // instead of implying the fetched page is the whole population.
+  const [adjTotal,     setAdjTotal]     = useState(0);
+  const [loadingMore,  setLoadingMore]  = useState(false);
   const [humanReview,  setHumanReview]  = useState([]);
   const [latency,      setLatency]      = useState([]);
   const [rawRows,      setRawRows]      = useState([]);
@@ -679,6 +684,7 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
         const freshIds = new Set(rows.filter(r => r.id != null && !knownIdsRef.current.has(r.id)).map(r => r.id));
         rows.forEach(r => r.id != null && knownIdsRef.current.add(r.id));
         setAdjudicated(rows);
+        setAdjTotal(d.total ?? rows.length);
         if (freshIds.size > 0) {
           setNewIds(freshIds);
           clearTimeout(highlightTimerRef.current);
@@ -762,6 +768,29 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
     }
   }
 
+  // Pages further into history, appending to the current list. Only makes
+  // sense while live refresh is paused — the next 5s poll re-fetches just
+  // the latest 100 and would otherwise wipe out anything paged in here, so
+  // the "Load more" control (below) only renders while isPaused is true.
+  async function loadMoreAdjudicated() {
+    setLoadingMore(true);
+    try {
+      const base = _uboBase();
+      const params = new URLSearchParams({ limit: "100", offset: String(adjudicated.length) });
+      if (filter !== "all" && !["review", "GITHUB", "MCP_PROXY", "SYSTEM_TELEMETRY"].includes(filter)) {
+        params.set("tier", filter);
+      }
+      const res = await fetch(`${base}/observability/telemetry/adjudicated?${params}`);
+      if (res.ok) {
+        const d = await res.json();
+        setAdjudicated(prev => [...prev, ...(d.rows || [])]);
+        setAdjTotal(d.total ?? adjTotal);
+      }
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   async function submitReview(rowId, humanVerdict, notes) {
     const base = _uboBase();
     const res = await fetch(`${base}/observability/telemetry/adjudicated/${rowId}/review`, {
@@ -807,7 +836,7 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
       <BBTermHeader
         section="DENDRAI UBO™ GOVERNANCE BRAIN"
         title="Telemetry Adjudication Pipeline · MCP + Any-Agent Events"
-        status={`${counts.total} ADJUDICATED  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
+        status={`${adjTotal > counts.total ? `${counts.total} OF ${adjTotal} LOADED` : `${counts.total} ADJUDICATED`}  ·  ${counts.review} NEEDS HUMAN REVIEW  ·  BRONZE → SILVER → GOLD → COUNCIL`}
         actions={
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <LiveBadge lastRefresh={lastRefresh} isPaused={isPaused}
@@ -940,7 +969,10 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
         {tab === "adjudications" && (<>
           <div className="bb-section-sep">
             <span>ADJUDICATION LOG</span>
-            <span>{filtered.length} EVENTS SHOWN</span>
+            <span>
+              {filtered.length !== adjudicated.length ? `${filtered.length} MATCH FILTER · ` : ""}
+              {adjTotal > adjudicated.length ? `${adjudicated.length} OF ${adjTotal} LOADED` : `${adjudicated.length} EVENTS SHOWN`}
+            </span>
           </div>
 
           {loading ? (
@@ -970,6 +1002,17 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
                   onReview={submitReview}
                 />
               ))}
+              {adjTotal > adjudicated.length && (
+                isPaused ? (
+                  <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={loadMoreAdjudicated} disabled={loadingMore}>
+                    {loadingMore ? <><span className="spin" /> Loading…</> : `Load more (${adjTotal - adjudicated.length} remaining)`}
+                  </button>
+                ) : (
+                  <div style={{ fontSize: 10.5, color: "var(--ink-4)", marginTop: 8 }}>
+                    {adjTotal - adjudicated.length} more not shown — pause live refresh to page through them.
+                  </div>
+                )
+              )}
             </div>
           )}
 
@@ -2088,6 +2131,9 @@ function TimelineRow({ row }) {
             background:fc.bg,color:fc.ink,fontFamily:"'Geist Mono',monospace"}}>{f}</span>
         );
       })}
+      {hasFlags && (row.risk_flags||[]).length > 2 && (
+        <span style={{fontSize:8,color:"var(--ink-4)",flexShrink:0}}>+{(row.risk_flags||[]).length-2}</span>
+      )}
       {tierStyle && (
         <span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,flexShrink:0,
           background:tierStyle.bg,color:tierStyle.ink}}>{tier}</span>
@@ -2105,8 +2151,12 @@ function TimelineTab({ adjudicated, loading }) {
   const [timeline,  setTimeline]  = useState([]);
   const [tlLoading, setTlLoading] = useState(false);
 
-  // Unique sessions from adjudicated data, most recent first
-  const sessions = useMemo(() => {
+  // Unique sessions from adjudicated data, most recent first. allSessions is
+  // kept alongside the displayed slice so the header can say "10 of 43"
+  // instead of implying 10 is the total — sessions.length used to BE the
+  // post-slice count, silently understating real volume once there were
+  // more than 10 sessions in the loaded window.
+  const allSessions = useMemo(() => {
     const seen = new Set();
     const out  = [];
     for (const r of adjudicated) {
@@ -2115,8 +2165,9 @@ function TimelineTab({ adjudicated, loading }) {
         out.push(r);
       }
     }
-    return out.slice(0, 10);
+    return out;
   }, [adjudicated]);
+  const sessions = useMemo(() => allSessions.slice(0, 10), [allSessions]);
 
   async function loadTimeline(sid) {
     setSessionId(sid);
@@ -2131,7 +2182,11 @@ function TimelineTab({ adjudicated, loading }) {
   return (<>
     <div className="bb-section-sep">
       <span>SESSION TIMELINE</span>
-      <span>{sessions.length} SESSIONS WITH ADJUDICATIONS</span>
+      <span>
+        {allSessions.length > sessions.length
+          ? `SHOWING ${sessions.length} OF ${allSessions.length} SESSIONS`
+          : `${sessions.length} SESSIONS WITH ADJUDICATIONS`}
+      </span>
     </div>
     <div style={{padding:"0 18px 8px"}}>
       {sessions.length === 0 ? (

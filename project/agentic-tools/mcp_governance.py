@@ -765,7 +765,31 @@ def _fetch_flagged_rows(limit: int) -> list[dict]:
         return []
 
 
-def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
+def _count_adjudicated_rows(tier: str | None) -> int:
+    """Total adjudicated_tool_calls rows (optionally tier-filtered) — the
+    denominator _fetch_adjudicated_rows' LIMIT/OFFSET page is a slice of, so
+    the UI can say "showing 50 of 3,204" instead of implying 50 is
+    everything."""
+    if not db.is_available():
+        return 0
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                if tier:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM observability.adjudicated_tool_calls WHERE risk_tier = %s",
+                        (tier.upper(),),
+                    )
+                else:
+                    cur.execute("SELECT COUNT(*) FROM observability.adjudicated_tool_calls")
+                row = cur.fetchone()
+                return row[0] if row else 0
+    except Exception as exc:
+        logger.warning("_count_adjudicated_rows error: %s", exc)
+        return 0
+
+
+def _fetch_adjudicated_rows(limit: int, tier: str | None, offset: int = 0) -> list[dict]:
     """Read observability.adjudicated_tool_calls for the REST endpoint."""
     if not db.is_available():
         return []
@@ -790,18 +814,18 @@ def _fetch_adjudicated_rows(limit: int, tier: str | None) -> list[dict]:
                             FROM observability.adjudicated_tool_calls
                             WHERE risk_tier = %s
                             ORDER BY adjudicated_at DESC
-                            LIMIT %s
+                            LIMIT %s OFFSET %s
                             """,
-                            (tier.upper(), limit),
+                            (tier.upper(), limit, offset),
                         )
                     else:
                         cur.execute(
                             _BASE_COLS + extra + """
                             FROM observability.adjudicated_tool_calls
                             ORDER BY adjudicated_at DESC
-                            LIMIT %s
+                            LIMIT %s OFFSET %s
                             """,
-                            (limit,),
+                            (limit, offset),
                         )
                     cols = [d[0] for d in cur.description]
                     # Same resolution api_server.py's /observability/events uses —
@@ -1408,10 +1432,14 @@ async def telemetry_flagged(limit: int = 50):
 
 
 @router.get("/telemetry/adjudicated")
-async def telemetry_adjudicated(limit: int = 50, tier: str | None = None):
-    """Adjudicated MCP governance events, optionally filtered by risk tier."""
-    rows = await asyncio.to_thread(_fetch_adjudicated_rows, min(limit, 200), tier)
-    return {"rows": rows, "count": len(rows)}
+async def telemetry_adjudicated(limit: int = 50, tier: str | None = None, offset: int = 0):
+    """Adjudicated MCP governance events, optionally filtered by risk tier.
+    total is the real row count behind this page (same tier filter, no
+    limit/offset) — callers should show "showing len(rows) of total", not
+    treat len(rows) as the whole population."""
+    rows = await asyncio.to_thread(_fetch_adjudicated_rows, min(limit, 200), tier, max(0, offset))
+    total = await asyncio.to_thread(_count_adjudicated_rows, tier)
+    return {"rows": rows, "count": len(rows), "total": total, "offset": max(0, offset)}
 
 
 @router.get("/telemetry/human-review")

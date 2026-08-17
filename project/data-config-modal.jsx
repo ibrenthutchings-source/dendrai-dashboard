@@ -61,8 +61,6 @@ function DataConfigModal({ open, onClose, dataConfig, setDataConfig, cfg, onFetc
     setSeries(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   }
 
-  if (!open) return null;
-
   const allTickers = Object.keys(LIVE.TICKER_CIK).filter(t => t !== (cfg?.ticker || ''));
 
   // Group FRED series by category
@@ -72,18 +70,18 @@ function DataConfigModal({ open, onClose, dataConfig, setDataConfig, cfg, onFetc
   }
 
   return (
-    <div className="modal open">
-      <div className="modal-box dc-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Data Connection</div>
-            <div style={{fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2}}>
-              Configure EDGAR tickers and FRED macro series for live forecasting
-            </div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+    <Modal open={open} onClose={onClose} boxClassName="dc-modal"
+      title="Data Connection"
+      titleSub="Configure EDGAR tickers and FRED macro series for live forecasting"
+      foot={<>
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <div style={{display:'flex', gap: 8}}>
+          <button className="btn" onClick={save}>Save</button>
+          <button className="btn btn-primary" onClick={saveAndFetch}>
+            <Icon name="wifi" size={11}/> Save &amp; Fetch Now
+          </button>
         </div>
-
+      </>}>
         <div className="dc-body">
 
           {/* ── FRED API Key ─────────────────────────── */}
@@ -175,18 +173,7 @@ function DataConfigModal({ open, onClose, dataConfig, setDataConfig, cfg, onFetc
           </div>
 
         </div>
-
-        <div className="modal-foot" style={{justifyContent: 'space-between'}}>
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <div style={{display:'flex', gap: 8}}>
-            <button className="btn" onClick={save}>Save</button>
-            <button className="btn btn-primary" onClick={saveAndFetch}>
-              <Icon name="wifi" size={11}/> Save &amp; Fetch Now
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 

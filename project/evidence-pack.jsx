@@ -37,6 +37,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
       .then(data => setState({ loading: false, error: null, data }))
       .catch(e => setState({ loading: false, error: e.message || "Request failed", data: null }));
   }, [open, runId]);
+  useEscapeToClose(open, onClose);
 
   if (!open) return null;
 

@@ -232,6 +232,77 @@ function Empty({ children, icon = "—" }) {
   );
 }
 
+// ---- Modal: Escape-to-close, focus trap, scroll lock ----
+// Backdrop-click-to-close was deliberately removed platform-wide (accidental
+// data loss on a stray click) — which makes Escape the ONLY keyboard way to
+// dismiss a modal. Before this component, only one of ~15 modal-bearing
+// screens actually wired it. Reuses the existing .modal/.modal-box/
+// .modal-head/.modal-title/.modal-body/.modal-foot classes every hand-built
+// modal already used, so retrofitting a screen onto this is a markup swap,
+// not a restyle.
+function useEscapeToClose(open, onClose) {
+  React.useEffect(() => {
+    if (!open) return;
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+}
+
+function Modal({ open, onClose, title, titleSub, size, boxClassName, children, foot }) {
+  const boxRef = React.useRef(null);
+  useEscapeToClose(open, onClose);
+
+  // Body scroll lock + initial focus, both scoped to this modal's own open
+  // lifetime so nested/sequential modals don't fight over document state.
+  React.useEffect(() => {
+    if (!open) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const prevFocus = document.activeElement;
+    boxRef.current?.focus();
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      if (prevFocus && prevFocus.focus) prevFocus.focus();
+    };
+  }, [open]);
+
+  // Minimal focus trap: Tab past the last focusable element wraps to the
+  // first, Shift+Tab past the first wraps to the last — keeps keyboard focus
+  // inside the modal without needing a full focus-trap library.
+  function onKeyDown(e) {
+    if (e.key !== "Tab" || !boxRef.current) return;
+    const focusable = boxRef.current.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+
+  if (!open) return null;
+  return (
+    <div className="modal open" role="presentation">
+      <div className={"modal-box" + (boxClassName ? " " + boxClassName : "")} style={size === "sm" ? { width: 480 } : undefined}
+        role="dialog" aria-modal="true" aria-label={title || undefined}
+        tabIndex={-1} ref={boxRef} onKeyDown={onKeyDown}>
+        {title && (
+          <div className="modal-head">
+            <div>
+              <div className="modal-title">{title}</div>
+              {titleSub && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2 }}>{titleSub}</div>}
+            </div>
+            <button type="button" className="btn btn-sm" onClick={onClose} aria-label="Close">✕</button>
+          </div>
+        )}
+        <div className="modal-body">{children}</div>
+        {foot && <div className="modal-foot">{foot}</div>}
+      </div>
+    </div>
+  );
+}
+
 // ---- Screen access gate — enforces the per-user Read/Edit matrix configured
 // in Configuration > User Configuration > Screen Access (user-config.jsx /
 // auth.screen_permissions). Admins always bypass it. A screen with no saved
@@ -406,4 +477,5 @@ Object.assign(window, {
   Empty, SectionLabel, BBTermHeader, AiReviewBanner,
   LiveBadge, RefreshBadge,
   ScreenAccessGate, ScreenLoadingFallback,
+  Modal, useEscapeToClose,
 });

@@ -2239,6 +2239,7 @@ function AddAuditModal({ risks, onClose, onSubmit }) {
   const [when, setWhen] = React.useState("Q3 2026");
   const [title, setTitle] = React.useState("");
   const [reduction, setReduction] = React.useState(20);
+  useEscapeToClose(true, onClose);
 
   const selectedRisk = risks.find(r => r.id === riskId);
   const baseScore = selectedRisk?.score ?? 0;

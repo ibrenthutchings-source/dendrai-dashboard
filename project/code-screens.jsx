@@ -2199,30 +2199,28 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
       )}
 
       {/* Approver modal */}
-      {showApprove && (
-        <div className="pac-modal-overlay">
-          <div className="pac-modal" onClick={e => e.stopPropagation()}>
-            <h4>Sign Off — {proc.label}</h4>
-            <div className="pac-modal-row">
-              <label>Approver Name *</label>
-              <input className="code-input" value={appName} placeholder="Jane Smith" autoFocus
-                onChange={e => setAppName(e.target.value)} />
-            </div>
-            <div className="pac-modal-row">
-              <label>Role</label>
-              <input className="code-input" value={appRole} placeholder="IT Audit Manager"
-                onChange={e => setAppRole(e.target.value)} />
-            </div>
-            {appErr && <div className="pac-modal-err">{appErr}</div>}
-            <div className="pac-modal-actions">
-              <button className="btn btn-sm" onClick={() => { setShowApprove(false); setAppErr(null); }}>Cancel</button>
-              <button className="btn btn-sm btn-acc" onClick={handleApprove} disabled={!appName.trim()}>
-                Confirm Sign-Off
-              </button>
-            </div>
+      <Modal open={showApprove} onClose={() => { setShowApprove(false); setAppErr(null); }}
+        size="sm" title={`Sign Off — ${proc.label}`}
+        foot={
+          <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+            <button className="btn btn-sm" onClick={() => { setShowApprove(false); setAppErr(null); }}>Cancel</button>
+            <button className="btn btn-sm btn-acc" onClick={handleApprove} disabled={!appName.trim()}>
+              Confirm Sign-Off
+            </button>
           </div>
+        }>
+        <div className="pac-modal-row">
+          <label>Approver Name *</label>
+          <input className="code-input" value={appName} placeholder="Jane Smith" autoFocus
+            onChange={e => setAppName(e.target.value)} />
         </div>
-      )}
+        <div className="pac-modal-row">
+          <label>Role</label>
+          <input className="code-input" value={appRole} placeholder="IT Audit Manager"
+            onChange={e => setAppRole(e.target.value)} />
+        </div>
+        {appErr && <div className="pac-modal-err">{appErr}</div>}
+      </Modal>
     </div>
   );
 }

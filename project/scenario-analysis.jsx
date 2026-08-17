@@ -640,6 +640,7 @@ function AddAuditFromEventModal({ event, risks, onClose, onSubmit }) {
   const [riskId, setRiskId] = React.useState("");
   const [when, setWhen] = React.useState(_CE_AUDIT_QUARTERS[0]);
   const [reduction, setReduction] = React.useState(20);
+  useEscapeToClose(true, onClose);
 
   const selectedRisk = risks.find(r => r.id === riskId);
   const baseScore = selectedRisk?.score ?? 0;
