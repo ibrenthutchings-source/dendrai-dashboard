@@ -413,6 +413,74 @@ def get_control_issues(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# General Ledger — Journal Entries (Financials Cloud)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_journal_entries(
+    date_from: str = "",
+    date_to: str = "",
+    max_items: int = 500,
+    client: Optional[OracleFusionClient] = None,
+) -> dict:
+    """
+    Fetch posted GL journal entries from Oracle Fusion Financials Cloud
+    (the fscmRestApi `journals` resource — same host/auth as the RMCS control
+    endpoints above, different REST family).
+
+    Normalized to the shared journal-entry shape je_testing_tool.py's rule
+    engine consumes: je_id, amount, currency, account, gl_account_desc,
+    description, preparer, approver, posted_at, period_close_date,
+    source_system. Field names deliberately mirror pac_endpoints.py's
+    record_to_report Rego (`input.journal.*`) so that vocabulary describes a
+    real payload instead of one nothing ever constructs.
+
+    Args:
+        date_from: ISO date string YYYY-MM-DD (empty = no lower bound)
+        date_to:   ISO date string YYYY-MM-DD (empty = today)
+        max_items: pagination cap
+    """
+    c = client or OracleFusionClient()
+
+    params: dict[str, Any] = {}
+    filters: list[str] = []
+    if date_from:
+        filters.append(f"AccountingDate>='{date_from}'")
+    if date_to:
+        filters.append(f"AccountingDate<='{date_to}'")
+    if filters:
+        params["q"] = ";".join(filters)
+
+    try:
+        items = c._get_all(c._fscm_url("journals"), params=params, max_items=max_items)
+    except Exception as exc:
+        return {"error": str(exc), "journal_entries": [], "count": 0}
+
+    normalized = []
+    for j in items:
+        normalized.append({
+            "je_id":              str(j.get("JournalHeaderId", j.get("journalHeaderId", ""))),
+            "amount":             float(j.get("EnteredAmount", j.get("enteredAmount", 0)) or 0),
+            "currency":           j.get("Currency",          j.get("currency", "USD")),
+            "account":            j.get("AccountCombination", j.get("accountCombination", "")),
+            "gl_account_desc":    j.get("AccountDescription", j.get("accountDescription", "")),
+            "description":        j.get("Description",       j.get("description", "")),
+            "preparer":           j.get("CreatedBy",          j.get("createdBy", "")),
+            "approver":           j.get("ApprovedBy",         j.get("approvedBy")) or None,
+            "posted_at":          j.get("AccountingDate",     j.get("accountingDate", "")),
+            "period_close_date":  j.get("PeriodName",         j.get("periodName")) or None,
+            "source_system":      "ORACLE_FUSION",
+        })
+
+    return {
+        "source":         "Oracle Fusion Financials Cloud — GL Journals",
+        "fetched_at":     _now(),
+        "period":         {"from": date_from, "to": date_to or _today()},
+        "count":          len(normalized),
+        "journal_entries": normalized,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # User role assignments (access controls)
 # ─────────────────────────────────────────────────────────────────────────────
 

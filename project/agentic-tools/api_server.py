@@ -143,6 +143,8 @@ import connector_hygiene_sweep
 import vendor_risk_sweep
 import ai_governance_sweep
 import identity_graph_sync
+import je_testing_sweep
+import je_testing_endpoints
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -307,6 +309,7 @@ async def lifespan(application: FastAPI):
         _pac_negative_sweep_task = None
         _connector_hygiene_sweep_task = _vendor_risk_sweep_task = _ai_governance_sweep_task = None
         _identity_graph_sync_task = None
+        _je_testing_sweep_task = None
         _reconnect_task = None
         _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
@@ -334,6 +337,7 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(vendor_risk_sweep.sweep_once, vendor_risk_sweep._TICK_S, "Vendor risk SOC 2 expiry sweep")),
                 asyncio.create_task(_multi_tenant_loop(ai_governance_sweep.sweep_once, ai_governance_sweep._TICK_S, "AI Governance assessment expiry sweep")),
                 asyncio.create_task(_multi_tenant_loop(identity_graph_sync.sweep_once, identity_graph_sync._TICK_S, "Identity graph sync")),
+                asyncio.create_task(_multi_tenant_loop(je_testing_sweep.sweep_once, je_testing_sweep._TICK_S, "JE Testing sweep")),
             ])
             logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
                         len(_multi_tenant_bg_tasks))
@@ -388,6 +392,13 @@ async def lifespan(application: FastAPI):
                 _identity_graph_sync_task = asyncio.create_task(identity_graph_sync.start_sweep())
                 logger.info("Identity graph sync task started")
 
+            # Journal Entry Testing: pulls real GL journal entries from active
+            # financial connectors and scores them with je_testing_tool.py's
+            # deterministic anomaly rules — see je_testing_sweep.py.
+            if db.is_available():
+                _je_testing_sweep_task = asyncio.create_task(je_testing_sweep.start_sweep())
+                logger.info("JE Testing sweep task started")
+
             # Background DB reconnect loop — retries every 30 s if startup DB init failed.
             # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
             # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -427,6 +438,9 @@ async def lifespan(application: FastAPI):
                         if _identity_graph_sync_task is None:
                             asyncio.create_task(identity_graph_sync.start_sweep())
                             logger.info("Identity graph sync started after DB reconnect")
+                        if _je_testing_sweep_task is None:
+                            asyncio.create_task(je_testing_sweep.start_sweep())
+                            logger.info("JE Testing sweep started after DB reconnect")
 
             _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -438,6 +452,7 @@ async def lifespan(application: FastAPI):
             for _bg_task in (_gov_task, _connector_task, _drift_task,
                              _pac_negative_sweep_task, _connector_hygiene_sweep_task,
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
+                             _je_testing_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
@@ -839,6 +854,11 @@ app.include_router(exceptions_endpoints.router)
 # Process Mining: variant analysis, conformance checking, cycle-time/bottleneck
 # stats, and rework detection over case-tracked adjudications.
 app.include_router(process_mining_endpoints.router)
+
+# Journal Entry Testing: deterministic anomaly rules (round-dollar, weekend/
+# after-hours postings, preparer==approver SoD, rare accounts, velocity
+# spikes) over real GL journal entries pulled from active financial connectors.
+app.include_router(je_testing_endpoints.router)
 
 # Continuous Third-Party/Vendor Risk: vendor SOC 2 register CRUD.
 app.include_router(vendor_risk_endpoints.router)
