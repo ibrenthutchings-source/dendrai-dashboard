@@ -1999,7 +1999,11 @@ export function ContinuousMonitoringSourceSystemViz({ onNavigate } = {}) {
   return <ContinuousMonitoringGroupedViz dim={SOURCE_SYSTEM_DIM} onNavigate={onNavigate} />;
 }
 
+export function ContinuousMonitoringIamSubdomainViz({ onNavigate } = {}) {
+  return <ContinuousMonitoringGroupedViz dim={IAM_SUBDOMAIN_DIM} onNavigate={onNavigate} />;
+}
+
 Object.assign(window, {
-  ContinuousMonitoringDomainViz, ContinuousMonitoringSourceSystemViz,
+  ContinuousMonitoringDomainViz, ContinuousMonitoringSourceSystemViz, ContinuousMonitoringIamSubdomainViz,
   EventReplayChart, DimensionSankey, DimensionHeatGrid, DimensionFlowGraph, CaseFlowGraph,
 });
