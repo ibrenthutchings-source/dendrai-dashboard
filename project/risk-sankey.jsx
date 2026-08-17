@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { sankey, sankeyLinkHorizontal } from "d3-sankey";
 import * as d3 from "d3";
-import { DEFAULT_CONTROLS, fetchControlsFromApi } from "./controls-reference.jsx";
+import { DEFAULT_CONTROLS, fetchControlsFromApi, FRAMEWORK_COLOR, FRAMEWORK_COLOR_FALLBACK } from "./controls-reference.jsx";
 
 // ─── Colors ────────────────────────────────────────────────────────────────────
 
@@ -14,19 +14,13 @@ const DOMAIN_COLOR = {
   "Technology":  "#22d3ee",
 };
 
-const FW_COLOR = {
-  "Internal":       "#94a3b8",
-  "ISO/IEC 42001":  "#ec4899",
-  "SOC 2":          "#a855f7",
-  "ISO/IEC 27001":  "#22c55e",
-  "NIST SP 800-53": "#3b82f6",
-  "CIS Controls":   "#f59e0b",
-  "COSO ERM":       "#f97316",
-};
+// Was this file's own local copy of controls-reference.jsx's canonical
+// FRAMEWORK_COLOR — identical values, kept in sync by hand until now.
+const FW_COLOR = FRAMEWORK_COLOR;
 
 const BASE_FW_ORDER  = ["Internal", "ISO/IEC 42001", "SOC 2", "ISO/IEC 27001", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
 const BASE_DOM_ORDER = ["Finance", "IT", "Operational", "HR", "Legal", "Technology"];
-const FALLBACK_COLOR = "#64748b";
+const FALLBACK_COLOR = FRAMEWORK_COLOR_FALLBACK;
 
 // ─── Controls (sorted by framework, then domain within framework — minimizes
 // link crossings). Seed data now lives in controls-reference.jsx (shared

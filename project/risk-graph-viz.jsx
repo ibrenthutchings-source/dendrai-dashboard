@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
-import { DEFAULT_CONTROLS, fetchControlsFromApi } from "./controls-reference.jsx";
+import { DEFAULT_CONTROLS, fetchControlsFromApi, FRAMEWORK_COLOR, FRAMEWORK_SHORT_LABEL } from "./controls-reference.jsx";
 
 // ─── Reference data — seeded from defaults, overwritten from DB on mount ─────
 // Seed data + fetch logic now live in controls-reference.jsx (shared with
@@ -44,23 +44,12 @@ function autoMapControls(name, category) {
 
 const INTERNAL_FWS = new Set(["Internal", "Internal Risk Register", ""]);
 
-const FW_COLOR = {
-  "NIST SP 800-53": "#3b82f6",
-  "ISO/IEC 27001":  "#22c55e",
-  "CIS Controls":   "#f59e0b",
-  "SOC 2":          "#a855f7",
-  "ISO/IEC 42001":  "#ec4899",
-  "Enterprise":     "#94a3b8",
-};
-
-const FW_SHORT = {
-  "NIST SP 800-53": "NIST",
-  "ISO/IEC 27001":  "ISO 27001",
-  "CIS Controls":   "CIS",
-  "SOC 2":          "SOC 2",
-  "ISO/IEC 42001":  "ISO 42001",
-  "Enterprise":     "Enterprise",
-};
+// "Enterprise" isn't one of DEFAULT_CONTROLS' real framework values — it's
+// this file's own fallback bucket for a risk with no framework at all (see
+// its one other use below) — so it's added on top of the shared canonical
+// map (controls-reference.jsx) rather than folded into it.
+const FW_COLOR = { ...FRAMEWORK_COLOR, "Enterprise": "#94a3b8" };
+const FW_SHORT = { ...FRAMEWORK_SHORT_LABEL, "Enterprise": "Enterprise" };
 
 const CAT_COLOR = {
   "Access Control":       "#60a5fa",
