@@ -298,6 +298,11 @@ export function EventReplayChart({ theme, days, dim, rawEvents, loading, error, 
   const [loop, setLoop] = useState(true);
   const [focusGroup, setFocusGroup] = useState(null);
   const [escOnly, setEscOnly] = useState(false);
+  // The canvas below has no accessible fallback at all — no DOM nodes to
+  // inspect, no keyboard path to the hover-to-read interaction. This is the
+  // escape hatch: the exact same event set, as a real, keyboard-navigable,
+  // screen-reader-readable table.
+  const [tableView, setTableView] = useState(false);
   const playheadRef = useRef(days);
   const [playhead, setPlayheadState] = useState(days);
   const rafRef = useRef(null);
