@@ -74,6 +74,42 @@ FEEDS: list[dict] = [
         "companyGated": True,  # enforcement-action feed covering every regulated company —
                                 # without gating, any company's ESG violation shows up in every other company's feed
     },
+    # Four feeds for regulatory_change_tool.py's horizon-scanning path
+    # (regulatory_change_endpoints.py) — not company-gated, since a new EU AI
+    # Act obligation or a DORA/NIS2 supervisory update applies regardless of
+    # which company is the active ticker, same reasoning as bis/cisa/fed above.
+    {
+        "id": "eu_ai_act",
+        "name": "EU AI Act",
+        "url": "https://digital-strategy.ec.europa.eu/en/rss.xml",
+        "domains": ["Regulatory"],
+        "risks": ["R-05"],
+        "weight": 1.3,
+    },
+    {
+        "id": "dora",
+        "name": "EU DORA (Digital Operational Resilience Act)",
+        "url": "https://www.esma.europa.eu/rss.xml",
+        "domains": ["Regulatory", "Cybersecurity"],
+        "risks": ["R-04", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "nis2",
+        "name": "EU NIS2 Directive",
+        "url": "https://www.enisa.europa.eu/media/news-items/news-rss",
+        "domains": ["Cybersecurity", "Regulatory"],
+        "risks": ["R-04", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "state_privacy",
+        "name": "US State Privacy Enforcement",
+        "url": "https://oag.ca.gov/news/rss.xml",
+        "domains": ["Regulatory"],
+        "risks": ["R-05"],
+        "weight": 1.0,
+    },
 ]
 
 FEEDS_BY_ID: dict[str, dict] = {f["id"]: f for f in FEEDS}

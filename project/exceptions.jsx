@@ -148,6 +148,9 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
   const [expanded, setExpanded] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState(null);
+  const [remediation, setRemediation] = React.useState(null);
+  const [remediating, setRemediating] = React.useState(false);
+  const [remediationError, setRemediationError] = React.useState(null);
 
   async function handleSubmit(label, notes) {
     setSubmitting(true);
@@ -159,6 +162,19 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
       setError(e.message || String(e));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handlePropose() {
+    setRemediating(true);
+    setRemediationError(null);
+    try {
+      const { task } = await window.MCP.proposeRemediation(row.event_id);
+      setRemediation(task);
+    } catch (e) {
+      setRemediationError(e.message || String(e));
+    } finally {
+      setRemediating(false);
     }
   }
 
@@ -184,12 +200,20 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
         <>
           <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
             <div className="kicker" style={{ fontSize: 9.5 }}>What changed</div>
-            {row.system_telemetry_id && onNavigate && (
-              <button type="button" className="btn btn-sm"
-                onClick={() => onNavigate("ubogov", { cemTab: "adjudications", cemFilter: { source: row.system_source } })}>
-                View in Telemetry Detail →
-              </button>
-            )}
+            <div style={{ display: "flex", gap: 6 }}>
+              {row.system_telemetry_id && onNavigate && (
+                <button type="button" className="btn btn-sm"
+                  onClick={() => onNavigate("ubogov", { cemTab: "adjudications", cemFilter: { source: row.system_source } })}>
+                  View in Telemetry Detail →
+                </button>
+              )}
+              {!remediation && (
+                <button type="button" className="btn btn-sm" disabled={remediating} onClick={handlePropose}
+                  title="Draft a GitHub issue for this finding and submit it for manager approval">
+                  {remediating ? "Drafting…" : "Propose remediation"}
+                </button>
+              )}
+            </div>
           </div>
           <div style={{ fontSize: 11, color: "var(--ink)", marginTop: 4, marginBottom: 8 }}>
             {row.event_type ? <span className="mono" style={{ fontSize: 10 }}>{row.event_type}</span> : <span style={{ color: "var(--ink-4)" }}>Event type not captured</span>}
@@ -198,6 +222,12 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
           <ExcPayloadChips payload={row.raw_payload} />
           <div className="kicker" style={{ fontSize: 9.5, marginTop: 10, marginBottom: 4 }}>Model features at scoring time</div>
           <ExcFeatureChips features={row.point_in_time_features} />
+          {remediationError && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 8 }}>{remediationError}</div>}
+          {remediation && (
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--acc-ink)", marginTop: 8 }}>
+              Remediation proposed — {remediation.status === "submitted" ? "awaiting manager approval" : `status: ${remediation.status}`} in the Approval Inbox.
+            </div>
+          )}
           {error && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 8 }}>{error}</div>}
           <TriageForm onSubmit={handleSubmit} submitting={submitting} />
         </>

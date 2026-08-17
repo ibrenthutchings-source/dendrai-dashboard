@@ -16,7 +16,94 @@ const GATE_TYPE_LABEL = {
   // branch-protection weakness — same generic approval_tasks workflow, no
   // schema change (gate_type is free-text, per approvals_endpoints.py).
   devops_scm_exception: "DevOps Monitoring · SCM Exception",
+  // Closed-loop remediation (remediation_endpoints.py): the only gate_type
+  // whose approval fires a real external write (github_write_tool.py) —
+  // "Approve" here doesn't just record a decision, it opens the GitHub issue.
+  remediation_github: "Closed-Loop Remediation · GitHub Issue",
 };
+
+const _REMEDIATION_STATUS_LABEL = {
+  submitted: "Awaiting your approval", manager_approved: "Approved — executed", approved: "Approved — executed",
+  rejected: "Rejected — no action taken", pending: "Pending",
+};
+
+function RemediationActivityRow({ task, onRetry, retrying }) {
+  const result = task.execution_result;
+  const failed = result && result.error;
+  const succeeded = result && result.url;
+  return (
+    <div style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 4 }}>
+            {_REMEDIATION_STATUS_LABEL[task.status] || task.status}
+          </div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)" }}>{task.item_label || task.item_ref}</div>
+          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>
+            Proposed by <b style={{ color: "var(--ink-2)" }}>{task.prepared_by_name}</b>
+            {task.reviewed_by_name && <> · reviewed by <b style={{ color: "var(--ink-2)" }}>{task.reviewed_by_name}</b></>}
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          {succeeded && (
+            <a className="mono" href={result.url} target="_blank" rel="noreferrer"
+              style={{ fontSize: 11, color: "var(--green-ink)", fontWeight: 700 }}>
+              Issue #{result.number} opened →
+            </a>
+          )}
+          {failed && (
+            <>
+              <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 6, maxWidth: 260 }}>
+                Execution failed: {result.error}
+              </div>
+              <button className="btn btn-sm" disabled={retrying} onClick={() => onRetry(task.id)}>
+                {retrying ? "Retrying…" : "Retry"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RemediationActivitySection() {
+  const [tasks, setTasks] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [retryingId, setRetryingId] = React.useState(null);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    return fetch("/approvals/remediations", { credentials: "include" })
+      .then(res => res.ok ? res.json() : { tasks: [] })
+      .then(d => setTasks(d.tasks || []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  async function handleRetry(taskId) {
+    setRetryingId(taskId);
+    try {
+      await fetch(`/approvals/remediations/${taskId}/retry`, { method: "POST", credentials: "include" });
+      await load();
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
+  if (loading && !tasks.length) return null;
+  if (!tasks.length) return null;
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", marginBottom: 8 }}>
+        CLOSED-LOOP REMEDIATION · {tasks.length} RECENT
+      </div>
+      {tasks.map(t => <RemediationActivityRow key={t.id} task={t} onRetry={handleRetry} retrying={retryingId === t.id} />)}
+    </div>
+  );
+}
 
 // UBO Governance Brain's ConflictFlag enum (UBO/models/risk_intelligence.py) —
 // WHY the Council escalated, distinct from risk_flags (WHAT the Bronze-layer
@@ -513,6 +600,8 @@ function ApprovalInboxScreen() {
           )}
         </div>
       )}
+
+      <RemediationActivitySection />
     </div>
   );
 }

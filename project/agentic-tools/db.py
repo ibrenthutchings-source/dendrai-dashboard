@@ -633,6 +633,13 @@ CREATE INDEX IF NOT EXISTS idx_approval_tasks_run ON approval_tasks (run_id, gat
 -- than upserting one. Acceptable for now; risk_waivers' own unique-active-hash
 -- index is what actually prevents two simultaneous ACTIVE waivers.
 ALTER TABLE approval_tasks ALTER COLUMN run_id DROP NOT NULL;
+-- remediation_github gate_type (closed-loop remediation — see
+-- remediation_endpoints.py / approvals_endpoints.py's execute-on-approve
+-- branch): the outcome of the actual GitHub write (issue/PR url, or an
+-- error) fired once a manager approves. NULL until execution is attempted;
+-- {"error": "..."} on failure so the Approval Inbox can offer a retry
+-- instead of the task silently vanishing once decided.
+ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS execution_result JSONB;
 
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
@@ -4454,7 +4461,7 @@ def get_approval_task(task_id: int) -> Optional[dict]:
                 cur.execute(
                     """
                     SELECT id, run_id, gate_type, item_ref, item_label, manager_id, status,
-                           disposition, adjustments, rationale, prepared_by_name
+                           disposition, adjustments, rationale, prepared_by_name, execution_result
                     FROM approval_tasks WHERE id = %s
                     """,
                     (task_id,),
@@ -4523,6 +4530,81 @@ def get_approval_tasks_for_run(run_id: int, gate_type: Optional[str] = None) -> 
                     rows.append(d)
                 return rows
     return _run(_do) or []
+
+
+# ── Closed-loop remediation (remediation_github gate_type) ──────────────────
+
+def set_approval_task_execution_result(task_id: int, result: dict) -> None:
+    """Persist the outcome of the actual external write (github_write_tool
+    call) fired once a remediation_github task is approved. `result` is
+    either {"number","url",...} on success or {"error": "..."} on failure —
+    written verbatim, same shape github_write_tool.create_issue returns."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE approval_tasks SET execution_result = %s, updated_at = NOW() WHERE id = %s",
+                    (Json(result), task_id),
+                )
+    _run(_do)
+
+
+def list_remediation_tasks(limit: int = 50) -> list:
+    """Recent remediation_github tasks regardless of status, newest first —
+    unlike get_approval_inbox (which only shows 'submitted', awaiting-review
+    items), this is how the Approval Inbox shows what happened AFTER a
+    decision: the created issue/PR link, or a failure to retry."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, item_ref, item_label, status, adjustments, rationale,
+                           prepared_by_name, prepared_at, manager_name, reviewed_by_name,
+                           reviewed_at, review_comment, execution_result, updated_at
+                    FROM approval_tasks WHERE gate_type = 'remediation_github'
+                    ORDER BY updated_at DESC LIMIT %s
+                    """,
+                    (limit,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("prepared_at", "reviewed_at", "updated_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_exception_event_by_id(event_id: int) -> Optional[dict]:
+    """One exception_control_events row (either Exception Management's dev-only
+    ML-flagged events or JE Testing's deterministic findings — same table,
+    see je_testing_endpoints.py's module docstring) — the source-of-truth a
+    remediation proposal is drafted from."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, control_id, system_source, process, event_timestamp,
+                           actor, action, event_type, raw_payload
+                    FROM exception_control_events WHERE id = %s
+                    """,
+                    (event_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                d = dict(zip(cols, row))
+                if d.get("event_timestamp") and hasattr(d["event_timestamp"], "isoformat"):
+                    d["event_timestamp"] = d["event_timestamp"].isoformat()
+                d["raw_payload"] = d.get("raw_payload") or {}
+                return d
+    return _run(_do)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
