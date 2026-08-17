@@ -157,6 +157,14 @@ DOMAIN_VOCAB: dict[str, list[str]] = {
         "patent", "litigation", "lawsuit", "ip", "intellectual property",
         "injunction", "royalty", "cross-license", "settlement", "verdict",
     ],
+    # eu_ai_act / dora / nis2 / state_privacy feeds above.
+    "Regulatory": [
+        "regulation", "directive", "compliance deadline", "enforcement action",
+        "supervisory", "obligation", "high-risk system", "conformity assessment",
+        "operational resilience", "incident reporting", "third-party risk",
+        "critical entity", "data protection", "privacy law", "consumer protection",
+        "penalty", "fine", "guidance", "technical standard", "implementing act",
+    ],
 }
 
 SEVERITY_WORDS: dict[str, float] = {
