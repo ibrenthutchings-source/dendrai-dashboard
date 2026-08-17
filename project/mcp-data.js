@@ -834,6 +834,21 @@ window.MCP = (function () {
     });
   }
 
+  // ── Closed-loop remediation — remediation_endpoints.py ────────────────────────
+  // /approvals/remediations* go through approvals_endpoints.py's own router,
+  // which the Vite dev proxy forwards directly (see vite.config.js's
+  // '/approvals/' entry) — called via raw fetch in approval-inbox.jsx, same
+  // convention that file already uses for every other /approvals/* call.
+  // remediation_endpoints.py has no such dedicated proxy entry, so it goes
+  // through the same /api/mcp/ catch-all every other session-permission-gated
+  // router here already does (exceptions_endpoints.py, process_mining_endpoints.py).
+
+  /** Draft a GitHub issue for one finding (exception or JE Testing — same
+   * underlying event_id) and submit it for manager approval. */
+  async function proposeRemediation(eventId) {
+    return _post(`/remediation/propose/${eventId}`, {});
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -905,5 +920,7 @@ window.MCP = (function () {
     jeTestingSummary,
     jeTestingFindings,
     submitJeTestingDisposition,
+    // Closed-loop remediation
+    proposeRemediation,
   };
 })();

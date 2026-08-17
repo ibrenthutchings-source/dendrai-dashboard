@@ -9,3 +9,9 @@
 {"ts":"2026-07-24T23:23:05+00:00","tool":"cac_map_to_risks","ticker":"ZZCAC","run_id":"112","limit":"10"}
 {"ts":"2026-07-24T23:23:43+00:00","tool":"cac_map_to_risks","ticker":"ZZCAC","run_id":"112","limit":"10"}
 {"ts":"2026-07-24T23:36:36+00:00","tool":"cac_map_to_risks","ticker":"ZZCAC","run_id":"112","limit":"10"}
+{"ts":"2026-08-17T19:56:00+00:00","tool":"github_write_tool.create_issue","task_id":"194","item_ref":"48","repo":"default"}
+{"ts":"2026-08-17T19:56:00+00:00","tool":"github_write_tool.create_issue.result","task_id":"194","ok":"False","url":"GITHUB_WRITE_TOKEN is not configured"}
+{"ts":"2026-08-17T19:58:49+00:00","tool":"github_write_tool.create_issue","task_id":"195","item_ref":"49","repo":"default"}
+{"ts":"2026-08-17T19:58:49+00:00","tool":"github_write_tool.create_issue.result","task_id":"195","ok":"False","url":"GITHUB_WRITE_TOKEN is not configured"}
+{"ts":"2026-08-17T19:58:50+00:00","tool":"github_write_tool.create_issue","task_id":"195","item_ref":"49","repo":"default"}
+{"ts":"2026-08-17T19:58:50+00:00","tool":"github_write_tool.create_issue.result","task_id":"195","ok":"True","url":"https://github.com/acme/infra/issues/101"}

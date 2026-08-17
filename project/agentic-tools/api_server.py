@@ -130,6 +130,7 @@ import pac_endpoints
 import pol_domain_mappings
 import pac_policy_docs
 import approvals_endpoints
+import remediation_endpoints
 import evidence_pack_endpoints
 import vendor_risk_endpoints
 import ai_governance_endpoints
@@ -834,6 +835,7 @@ logger.info("Auth router registered at /auth")
 
 # Approval workflow: real 2-stage preparer -> manager review for HITL gates.
 app.include_router(approvals_endpoints.router)
+app.include_router(remediation_endpoints.router)
 
 # Audit Evidence Pack: one-shot assembly of everything defensible about a run.
 app.include_router(evidence_pack_endpoints.router)

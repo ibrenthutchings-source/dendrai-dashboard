@@ -19,10 +19,17 @@ Endpoints:
     GET  /approvals/inbox              Items awaiting the current user's review
     GET  /approvals/status/{run_id}    All approval tasks for a run (restores gate UI state)
     GET  /approvals/ai-acceptance-stats  Admin: how often preparers keep vs. override AI suggestions
+    GET  /approvals/remediations           Recent closed-loop remediation tasks (any status)
+    POST /approvals/remediations/{id}/retry  Re-fire a failed remediation's GitHub write
+
+Closed-loop remediation (gate_type='remediation_github', proposed via
+remediation_endpoints.py) is the first gate type whose approval triggers a
+real external write, not just a DB row — see _execute_remediation below.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -30,7 +37,11 @@ from pydantic import BaseModel
 
 import auth_db
 import db
+import github_write_tool
+import mcp_guards
 from auth_endpoints import require_admin, require_screen_permission
+
+logger = logging.getLogger("ubo.approvals")
 
 router = APIRouter(prefix="/approvals", tags=["Approval Workflow"])
 
@@ -146,6 +157,14 @@ def review_item(req: ReviewRequest, current_user: dict = Depends(require_screen_
     if updated.get("status") == "manager_approved" and updated.get("gate_type") == "devops_scm_exception":
         _create_waiver_from_task(updated, _display_name(current_user))
 
+    # Closed-loop remediation: "approve = execute" — the manager's approval
+    # IS the human-in-the-loop gate; nothing further blocks the write. A
+    # rejected proposal fires nothing and the source finding stays open,
+    # same as any other rejected gate item.
+    if updated.get("status") == "manager_approved" and updated.get("gate_type") == "remediation_github":
+        full_task = db.get_approval_task(updated["id"]) or updated
+        _execute_remediation(full_task)
+
     return {"saved": True, "task": updated}
 
 
@@ -174,6 +193,78 @@ def _create_waiver_from_task(task: dict, approved_by: str) -> None:
         approval_task_id=task["id"],
         expires_at=expires_at,
     )
+
+
+def _execute_remediation(task: dict) -> None:
+    """Fire the actual GitHub write for an approved remediation_github task,
+    persist the outcome (github_write_tool.py's own {"number","url",...} or
+    {"error": "..."} shape, verbatim) via db.set_approval_task_execution_result,
+    and — only on success — mark the source exception resolved. A failed
+    write is NOT swallowed: execution_result carries the error so the
+    Approval Inbox can offer /approvals/remediations/{id}/retry instead of
+    the task silently vanishing once decided, and the source exception
+    stays open (submit_exception_triage is only called on success).
+
+    Called from two places: review_item (manager approved a submitted
+    proposal) and remediation_endpoints.propose_remediation (no manager
+    configured -> auto-approved, same immediate-execution reasoning
+    prepare_item already applies to devops_scm_exception's auto-approve path).
+    Never raises — a remediation failure must not break the approval
+    request/response it was triggered from."""
+    adjustments = task.get("adjustments") or {}
+    title = adjustments.get("title") or task.get("item_label") or f"Remediation for {task.get('item_ref')}"
+    body = adjustments.get("body") or task.get("rationale") or ""
+    labels = adjustments.get("labels") or ["dendrai-remediation"]
+    repo = adjustments.get("repo")
+
+    mcp_guards.audit_log("github_write_tool.create_issue", task_id=task.get("id"),
+                          item_ref=task.get("item_ref"), repo=repo or "default")
+    try:
+        result = github_write_tool.create_issue(title, body, repo=repo, labels=labels)
+    except Exception as exc:
+        result = {"error": str(exc)}
+    mcp_guards.audit_log("github_write_tool.create_issue.result", task_id=task.get("id"),
+                          ok=not result.get("error"), url=result.get("url") or result.get("error"))
+
+    db.set_approval_task_execution_result(task["id"], result)
+
+    if not result.get("error"):
+        source_event_id = adjustments.get("source_event_id")
+        if source_event_id is not None:
+            try:
+                db.submit_exception_triage(
+                    int(source_event_id), "system:remediation", "TRUE_CONTROL_FAILURE",
+                    f"Auto-resolved by closed-loop remediation — GitHub issue opened: {result.get('url')}",
+                )
+            except Exception as exc:
+                logger.warning("remediation: could not auto-resolve source event %s: %s", source_event_id, exc)
+
+
+@router.get("/remediations")
+def get_remediations(current_user: dict = Depends(require_screen_permission("approvals"))):
+    """Recent closed-loop remediation tasks, any status — unlike /inbox
+    (only 'submitted', awaiting-review items), this is how the frontend
+    shows what happened after a decision: the created issue link, or a
+    failure to retry."""
+    if not db.is_available():
+        return {"tasks": []}
+    return {"tasks": db.list_remediation_tasks()}
+
+
+@router.post("/remediations/{task_id}/retry")
+def retry_remediation(task_id: int, current_user: dict = Depends(require_screen_permission("approvals", edit=True))):
+    """Re-fire a failed remediation's GitHub write with the same approved
+    content — for a transient failure (rate limit, momentary outage), not a
+    way to re-propose different content (that's a new /remediation/propose call)."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    task = db.get_approval_task(task_id)
+    if not task or task.get("gate_type") != "remediation_github":
+        raise HTTPException(status_code=404, detail=f"No remediation task with id={task_id}")
+    if task.get("status") not in ("approved", "manager_approved"):
+        raise HTTPException(status_code=409, detail=f"Task is not in an approved state (status: {task.get('status')})")
+    _execute_remediation(task)
+    return {"task": db.get_approval_task(task_id)}
 
 
 @router.get("/inbox")
