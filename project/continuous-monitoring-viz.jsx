@@ -1099,11 +1099,75 @@ function dfgNodeColor(n, theme, dim) {
   return theme.acc;
 }
 
+/* ── Shared zoom/pan for SVG directly-follows graphs (DimensionFlowGraph,
+   CaseFlowGraph). Previously both charts set the SVG's viewBox to the
+   graph's own full layout size with no zoom — for a small graph that's
+   fine, but a large one (many domains/tiers/rules, or a busy case-flow
+   window) got scaled down to fit the fixed-height pane no matter how much
+   room the pane actually had, shrinking labels to illegible. This keeps
+   the SVG's rendered box fixed at the host pane's real pixel size and
+   moves/scales the content within it instead — wheel to zoom, drag to
+   pan, starting from a computed "whole graph, centered" transform so nothing
+   opens pre-shrunk. `fitToView` is returned so a toolbar button can reset. ── */
+function attachGraphZoom(svg, contentG, { graphWidth, graphHeight, hostWidth, hostHeight, minScale = 0.15, maxScale = 4 }) {
+  const zoom = d3.zoom()
+    .scaleExtent([minScale, maxScale])
+    .on("zoom", event => contentG.attr("transform", event.transform));
+
+  svg.call(zoom).on("dblclick.zoom", null); // double-click reserved for future node focus, not zoom-step
+
+  function fitToView(animate = true) {
+    const w = Math.max(1, graphWidth), h = Math.max(1, graphHeight);
+    const scale = Math.min(maxScale, Math.max(minScale, Math.min(hostWidth / w, hostHeight / h) * 0.94));
+    const tx = (hostWidth - w * scale) / 2;
+    const ty = (hostHeight - h * scale) / 2;
+    const t = d3.zoomIdentity.translate(tx, ty).scale(scale);
+    (animate ? svg.transition().duration(320) : svg).call(zoom.transform, t);
+  }
+
+  function step(factor) {
+    svg.transition().duration(180).call(zoom.scaleBy, factor);
+  }
+
+  fitToView(false);
+  return { zoom, fitToView, zoomIn: () => step(1.4), zoomOut: () => step(1 / 1.4) };
+}
+
+// Small on-pane control cluster — zoom in/out/fit plus an "Expand" toggle
+// that grows the VizFrame pane itself (see height state in each chart
+// below) rather than just the SVG content, for graphs too busy to read
+// comfortably even at a good zoom level inside the default pane height.
+function GraphZoomToolbar({ theme, onZoomIn, onZoomOut, onFit, expanded, onToggleExpand }) {
+  const btnStyle = {
+    width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center",
+    border: `1px solid ${theme.line}`, borderRadius: 5, background: theme.surface, color: theme["ink-2"],
+    cursor: "pointer", fontSize: 13, fontWeight: 600, lineHeight: 1, padding: 0,
+  };
+  return (
+    <div style={{
+      position: "absolute", top: 10, right: 10, zIndex: 5, display: "flex", gap: 4,
+      background: theme["surface-2"], border: `1px solid ${theme.line}`, borderRadius: 7, padding: 4,
+      boxShadow: "0 2px 10px oklch(0% 0 0 / .18)",
+    }}>
+      <button type="button" title="Zoom in" onClick={onZoomIn} style={btnStyle}>+</button>
+      <button type="button" title="Zoom out" onClick={onZoomOut} style={btnStyle}>−</button>
+      <button type="button" title="Fit to view" onClick={onFit} style={{ ...btnStyle, fontSize: 10 }}>⤢</button>
+      <button type="button" title={expanded ? "Collapse pane" : "Expand pane"} onClick={onToggleExpand}
+        style={{ ...btnStyle, fontSize: 10, color: expanded ? theme.acc : theme["ink-2"] }}>
+        {expanded ? "⤓" : "⤒"}
+      </button>
+    </div>
+  );
+}
+
 export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error, onNavigate }) {
   const hostRef = useRef(null);
   const svgRef = useRef(null);
   const rafRef = useRef(null);
+  const zoomApiRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
+  const [expanded, setExpanded] = useState(false);
+  const paneHeight = expanded ? 900 : 620;
 
   const events = useMemo(() => rawEvents.map(e => ({ ...e })), [rawEvents]);
   const graph = useMemo(() => (events.length ? buildDfgGraph(events, dim) : null), [events, dim]);
@@ -1126,20 +1190,27 @@ export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error
     graph.edges.forEach(e => g.setEdge(e.source, e.target, { value: e.value }));
     dagre.layout(g);
 
-    const gw = g.graph().width || 800;
-    const gh = g.graph().height || 400;
-    const W = Math.max(hostRef.current.clientWidth, gw + 40);
-    const H = Math.max(360, gh + 40);
+    // Graph's own natural size — no longer clamped to at-least-the-host-
+    // width, since zoom/pan (not viewBox scale-to-fit) now reconciles graph
+    // size against pane size; see attachGraphZoom.
+    const W = (g.graph().width || 800) + 40;
+    const H = (g.graph().height || 400) + 40;
+    const hostW = hostRef.current.clientWidth;
+    const hostH = hostRef.current.clientHeight;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
-    svg.attr("viewBox", `0 0 ${W} ${H}`);
-    svg.append("rect").attr("width", W).attr("height", H).attr("fill", theme.bg);
+    svg.attr("viewBox", null).attr("width", "100%").attr("height", "100%");
+    // Background sits outside the zoom-content layer so it always fills the
+    // pane at any zoom/pan position, rather than only covering the graph's
+    // own bounds and leaving a gap when zoomed out past the content.
+    svg.append("rect").attr("width", "100%").attr("height", "100%").attr("fill", theme.bg);
+    const contentG = svg.append("g").attr("class", "zoom-content");
 
     const maxVal = Math.max(1, ...graph.edges.map(e => e.value));
     const lineGen = d3.line().x(d => d.x + 20).y(d => d.y + 20).curve(d3.curveBasis);
 
-    const edgeG = svg.append("g");
+    const edgeG = contentG.append("g");
     const edgeSel = edgeG.selectAll("path").data(g.edges().map(e => ({ ...g.edge(e), _e: e }))).join("path")
       .attr("d", d => lineGen(d.points))
       .attr("fill", "none")
@@ -1164,7 +1235,7 @@ export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error
         if (Object.keys(f).length) onNavigate("ubogov", { cemTab: "adjudications", cemFilter: f });
       });
 
-    const nodeG = svg.append("g");
+    const nodeG = contentG.append("g");
     const nodeSel = nodeG.selectAll("g").data(g.nodes().map(id => g.node(id))).join("g")
       .attr("transform", d => `translate(${d.x - d.width / 2 + 20}, ${d.y - d.height / 2 + 20})`)
       .attr("cursor", "pointer");
@@ -1205,7 +1276,7 @@ export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error
           particleSpecs.push({ path: this, len, phase: i / n, color: dfgNodeColor(g.node(d._e.v), theme, dim) });
         }
       });
-      const particleG = svg.append("g");
+      const particleG = contentG.append("g");
       const particles = particleG.selectAll("circle").data(particleSpecs).join("circle")
         .attr("r", 2.4).attr("fill", p => p.color).attr("fill-opacity", 0.9);
 
@@ -1221,24 +1292,42 @@ export function DimensionFlowGraph({ theme, days, dim, rawEvents, loading, error
       rafRef.current = requestAnimationFrame(tick);
     }
 
+    zoomApiRef.current = attachGraphZoom(svg, contentG, { graphWidth: W, graphHeight: H, hostWidth: hostW, hostHeight: hostH });
+
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [graph, hasData, theme, dim, onNavigate]);
+  }, [graph, hasData, theme, dim, onNavigate, expanded]);
+
+  // Re-fit (not a full rebuild) on window resize — the pane's own size can
+  // change without `expanded` changing, e.g. the browser window resizing.
+  useEffect(() => {
+    function onResize() {
+      if (!zoomApiRef.current || !hostRef.current) return;
+      zoomApiRef.current.fitToView(false);
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   return (
     <VizFrame
       theme={theme}
       kicker={`Continuous evidence · ${dim.label} Flow Graph (DFG)`}
-      sub={`Directly-follows graph of the last ${days} days: ${dim.label} → Risk Tier → Verdict → Rule, covering every observed event, not just reviewed ones — a NOT_REVIEWED verdict node is real volume never selected for adjudication. Edge width and moving particles both reflect real observed transition counts. Click a ${dim.label.toLowerCase()}/tier/verdict node or edge to open that slice in Adjudications.`}
+      sub={`Directly-follows graph of the last ${days} days: ${dim.label} → Risk Tier → Verdict → Rule, covering every observed event, not just reviewed ones — a NOT_REVIEWED verdict node is real volume never selected for adjudication. Edge width and moving particles both reflect real observed transition counts. Scroll to zoom, drag to pan. Click a ${dim.label.toLowerCase()}/tier/verdict node or edge to open that slice in Adjudications.`}
       error={error && !hasData ? error : null}
       empty={!loading && !hasData && !error ? `No events in the last ${days} days yet.` : null}
       loading={loading && !hasData}
-      height={620}
+      height={paneHeight}
     >
       {hasData && (
-        <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto" }}>
+        <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
           <svg ref={svgRef} role="img"
             aria-label={`${dim.label} directly-follows graph: ${dim.label} to Risk Tier to Verdict to Rule. See Event Replay's table view for this data in an accessible form.`}
-            style={{ display: "block", width: "100%", height: "100%" }} />
+            style={{ display: "block", width: "100%", height: "100%", cursor: "grab" }} />
+          <GraphZoomToolbar theme={theme}
+            onZoomIn={() => zoomApiRef.current?.zoomIn()}
+            onZoomOut={() => zoomApiRef.current?.zoomOut()}
+            onFit={() => zoomApiRef.current?.fitToView(true)}
+            expanded={expanded} onToggleExpand={() => setExpanded(e => !e)} />
         </div>
       )}
       {tooltip && (
@@ -1345,7 +1434,10 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
   const hostRef = useRef(null);
   const svgRef = useRef(null);
   const rafRef = useRef(null);
+  const zoomApiRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
+  const [expanded, setExpanded] = useState(false);
+  const paneHeight = expanded ? 900 : 520;
 
   const graph = useMemo(() => buildCaseDfgGraph(rawEvents), [rawEvents]);
   const hasData = !!graph && graph.nodes.length > 0;
@@ -1367,20 +1459,23 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     graph.edges.forEach(e => g.setEdge(e.source, e.target, { value: e.value }));
     dagre.layout(g);
 
-    const gw = g.graph().width || 800;
-    const gh = g.graph().height || 300;
-    const W = Math.max(hostRef.current.clientWidth, gw + 40);
-    const H = Math.max(300, gh + 40);
+    // Graph's own natural size — zoom/pan (not viewBox scale-to-fit)
+    // reconciles it against the pane; see attachGraphZoom.
+    const W = (g.graph().width || 800) + 40;
+    const H = (g.graph().height || 300) + 40;
+    const hostW = hostRef.current.clientWidth;
+    const hostH = hostRef.current.clientHeight;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
-    svg.attr("viewBox", `0 0 ${W} ${H}`);
-    svg.append("rect").attr("width", W).attr("height", H).attr("fill", theme.bg);
+    svg.attr("viewBox", null).attr("width", "100%").attr("height", "100%");
+    svg.append("rect").attr("width", "100%").attr("height", "100%").attr("fill", theme.bg);
+    const contentG = svg.append("g").attr("class", "zoom-content");
 
     const maxVal = Math.max(1, ...graph.edges.map(e => e.value));
     const lineGen = d3.line().x(d => d.x + 20).y(d => d.y + 20).curve(d3.curveBasis);
 
-    const edgeG = svg.append("g");
+    const edgeG = contentG.append("g");
     const edgeSel = edgeG.selectAll("path").data(g.edges().map(e => ({ ...g.edge(e), _e: e }))).join("path")
       .attr("d", d => lineGen(d.points))
       .attr("fill", "none")
@@ -1399,7 +1494,7 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
       .on("mousemove", evt => setTooltip(p => p ? { ...p, x: evt.clientX, y: evt.clientY } : null))
       .on("mouseout", () => { edgeSel.attr("stroke-opacity", 0.3); setTooltip(null); });
 
-    const nodeG = svg.append("g");
+    const nodeG = contentG.append("g");
     const nodeSel = nodeG.selectAll("g").data(g.nodes().map(id => g.node(id))).join("g")
       .attr("transform", d => `translate(${d.x - d.width / 2 + 20}, ${d.y - d.height / 2 + 20})`);
     nodeSel.append("rect")
@@ -1432,7 +1527,7 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
           particleSpecs.push({ path: this, len, phase: i / n, color: stepColor(g.node(d._e.v).label, theme) });
         }
       });
-      const particleG = svg.append("g");
+      const particleG = contentG.append("g");
       const particles = particleG.selectAll("circle").data(particleSpecs).join("circle")
         .attr("r", 2.6).attr("fill", p => p.color).attr("fill-opacity", 0.9);
       const SPEED = 0.00022;
@@ -1447,26 +1542,43 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
       rafRef.current = requestAnimationFrame(tick);
     }
 
+    zoomApiRef.current = attachGraphZoom(svg, contentG, { graphWidth: W, graphHeight: H, hostWidth: hostW, hostHeight: hostH });
+
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [graph, hasData, theme]);
+  }, [graph, hasData, theme, expanded]);
+
+  // Re-fit (not a full rebuild) on window resize.
+  useEffect(() => {
+    function onResize() {
+      if (!zoomApiRef.current || !hostRef.current) return;
+      zoomApiRef.current.fitToView(false);
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   return (
     <VizFrame
       theme={theme}
       kicker="Continuous evidence · Case Flow Graph (real DFG)"
       sub={graph
-        ? `${graph.caseCount} tracked transaction${graph.caseCount !== 1 ? "s" : ""} in the last ${days} days — real step-to-step sequences, not a categorical breakdown. Populated today by the O2C/P2P/Inventory Cycle synthetic generator; a real ERP connector emitting case_id/process_step would appear here the same way.`
+        ? `${graph.caseCount} tracked transaction${graph.caseCount !== 1 ? "s" : ""} in the last ${days} days — real step-to-step sequences, not a categorical breakdown. Populated today by the O2C/P2P/Inventory Cycle synthetic generator; a real ERP connector emitting case_id/process_step would appear here the same way. Scroll to zoom, drag to pan.`
         : `Real transaction lifecycles over the last ${days} days, traced step by step — needs events carrying a case_id (see generate_o2c_p2p_synthetic_log.py).`}
       error={error && !hasData ? error : null}
       empty={!loading && !hasData && !error ? `No case-tracked transactions in the last ${days} days yet — run generate_o2c_p2p_synthetic_log.py to populate this view, or wait for a real case-tracked producer.` : null}
       loading={loading && !hasData}
-      height={520}
+      height={paneHeight}
     >
       {hasData && (
-        <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "auto" }}>
+        <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
           <svg ref={svgRef} role="img"
             aria-label={`Case Flow Graph — ${graph.caseCount} tracked transaction${graph.caseCount !== 1 ? "s" : ""} over the last ${days} days, plotted as a step-to-step directly-follows graph.`}
-            style={{ display: "block", width: "100%", height: "100%" }} />
+            style={{ display: "block", width: "100%", height: "100%", cursor: "grab" }} />
+          <GraphZoomToolbar theme={theme}
+            onZoomIn={() => zoomApiRef.current?.zoomIn()}
+            onZoomOut={() => zoomApiRef.current?.zoomOut()}
+            onFit={() => zoomApiRef.current?.fitToView(true)}
+            expanded={expanded} onToggleExpand={() => setExpanded(e => !e)} />
         </div>
       )}
       {tooltip && (
