@@ -1699,6 +1699,205 @@ export function ProcessCycleTimeView({ theme, days }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   Journal Entry Testing — je_testing_tool.py's deterministic anomaly rules
+   (round-dollar, weekend/after-hours, preparer==approver SoD, threshold-
+   unapproved, rare account, unusual description, velocity spike) over real
+   GL journal entries. Unlike the other tabs above, this isn't a chart of
+   adjudicated events — it's a findings list + disposition workflow, same
+   shape as exceptions.jsx's Triage Queue, reading the SAME underlying
+   exception_control_events table (discriminated by event_type =
+   'JOURNAL_ENTRY') but through je_testing_endpoints.py's own ungated
+   endpoints rather than Exception Management's dev-only router.
+   ════════════════════════════════════════════════════════════════════════ */
+
+const _JE_RESOLUTION_LABELS = [
+  { value: "TRUE_CONTROL_FAILURE", label: "True Control Failure" },
+  { value: "BENIGN_OPERATIONAL_NOISE", label: "Benign Operational Noise" },
+  { value: "APPROVED_CARVE_OUT", label: "Approved Carve-Out" },
+  { value: "DATA_PIPELINE_ERROR", label: "Data Pipeline Error" },
+];
+const _JE_NOTES_REQUIRED = new Set(["TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"]);
+
+function JeSeverityBadge({ severity, theme }) {
+  const color = severity === "CRITICAL" || severity === "HIGH" ? theme["red-ink"]
+    : severity === "MEDIUM" ? theme["amber-ink"] : theme["ink-3"];
+  return (
+    <span className="mono" style={{
+      fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+      background: theme["surface-2"], color, border: `1px solid ${color}`,
+    }}>{severity}</span>
+  );
+}
+
+function JeFindingRow({ row, theme, onDisposed }) {
+  const [expanded, setExpanded] = useState(false);
+  const [label, setLabel] = useState(null);
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const f = row.finding || {};
+  const needsNotes = label && _JE_NOTES_REQUIRED.has(label);
+  const canSubmit = label && (!needsNotes || notes.trim().length > 0) && !submitting;
+  const disposed = !!row.resolution_label;
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await window.MCP.submitJeTestingDisposition(row.event_id, label, notes);
+      onDisposed(row.event_id);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div style={{ border: `1px solid ${theme.line}`, borderRadius: 6, padding: "9px 11px", marginBottom: 6, background: theme.surface }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, cursor: "pointer" }}
+        onClick={() => setExpanded(e => !e)}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: theme.ink }}>
+            {row.rule_id} <span style={{ fontWeight: 400, color: theme["ink-4"] }}>· {row.system_source}</span>
+          </div>
+          <div style={{ fontSize: 10, color: theme["ink-3"], marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {f.detail || "—"}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {disposed
+            ? <span className="mono" style={{ fontSize: 9.5, color: theme["ink-4"] }}>{row.resolution_label}</span>
+            : <JeSeverityBadge severity={f.severity} theme={theme} />}
+          {f.amount != null && (
+            <span className="mono" style={{ fontSize: 10, color: theme["ink-3"] }}>${Number(f.amount).toLocaleString()}</span>
+          )}
+        </div>
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${theme.line}` }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10.5, color: theme["ink-2"], marginBottom: 8 }}>
+            <span>Preparer: <strong>{row.preparer || "—"}</strong></span>
+            <span>Approver: <strong>{f.approver || "—"}</strong></span>
+            <span>Account: <strong>{f.account || "—"}</strong></span>
+            <span>Posted: <strong>{row.event_timestamp ? new Date(row.event_timestamp).toLocaleString() : "—"}</strong></span>
+          </div>
+          {!disposed ? (
+            <>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                {_JE_RESOLUTION_LABELS.map(l => (
+                  <button key={l.value} type="button" onClick={() => setLabel(l.value)}
+                    style={{
+                      fontSize: 10.5, padding: "5px 10px", borderRadius: 5, cursor: "pointer",
+                      border: l.value === label ? `1px solid ${theme.acc}` : `1px solid ${theme.line}`,
+                      background: l.value === label ? theme.acc : "transparent",
+                      color: l.value === label ? "#fff" : theme["ink-2"],
+                      fontWeight: l.value === label ? 600 : 400,
+                    }}>
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+              {needsNotes && (
+                <textarea rows={2} placeholder="Justification notes (required for this resolution)…"
+                  value={notes} onChange={e => setNotes(e.target.value)}
+                  style={{
+                    width: "100%", fontSize: 11, marginBottom: 8, resize: "vertical", boxSizing: "border-box",
+                    background: theme.surface, color: theme.ink, border: `1px solid ${theme.line}`, borderRadius: 4, padding: 6,
+                  }} />
+              )}
+              {error && <div className="mono" style={{ fontSize: 10.5, color: theme["red-ink"], marginBottom: 8 }}>{error}</div>}
+              <button className="btn btn-acc btn-sm" disabled={!canSubmit} onClick={handleSubmit}>
+                {submitting ? "Submitting…" : "Resolve finding"}
+              </button>
+            </>
+          ) : (
+            <div style={{ fontSize: 10.5, color: theme["ink-4"] }}>
+              Resolved {row.reviewed_at ? new Date(row.reviewed_at).toLocaleString() : ""}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function JETestingView({ theme }) {
+  const [summary, setSummary] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [ruleFilter, setRuleFilter] = useState("");
+  const [onlyPending, setOnlyPending] = useState(true);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    return Promise.all([
+      window.MCP.jeTestingSummary(),
+      window.MCP.jeTestingFindings({ ruleId: ruleFilter || null, onlyPending, limit: 100 }),
+    ]).then(([s, f]) => { setSummary(s); setRows(f.rows || []); setError(null); })
+      .catch(e => setError(e.message || String(e)))
+      .finally(() => setLoading(false));
+  }, [ruleFilter, onlyPending]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function handleDisposed(eventId) {
+    setRows(rs => rs.filter(r => r.event_id !== eventId));
+  }
+
+  const hasData = rows.length > 0;
+  const ruleOptions = Object.keys(summary?.findings_by_rule || {});
+
+  return (
+    <VizFrame theme={theme} height={620}
+      kicker="Journal Entry Testing — deterministic anomaly rules over real GL data"
+      sub="je_testing_tool.py's rule engine (round-dollar, weekend/after-hours, preparer==approver SoD, threshold-unapproved, rare account, unusual description, velocity spike) run against journal entries pulled from every active financial connector — not a chart of adjudicated events like the other tabs, but the same real-data discipline: each row is a rule that actually fired against a real posting."
+      controls={
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={ruleFilter} onChange={e => setRuleFilter(e.target.value)}
+            style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: `1px solid ${theme.line}`, background: theme.surface, color: theme.ink }}>
+            <option value="">All rules</option>
+            {ruleOptions.map(r => <option key={r} value={r}>{r} ({summary.findings_by_rule[r]})</option>)}
+          </select>
+          <label style={{ fontSize: 10.5, color: theme["ink-3"], display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+            <input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} />
+            Pending only
+          </label>
+        </div>
+      }
+      error={error}
+      empty={!loading && !hasData ? "No JE findings match this filter right now — either nothing has fired yet, or everything's been resolved." : null}
+      loading={loading && !hasData}>
+      {(summary || hasData) && (
+        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
+          {summary && (
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
+              <div style={{ minWidth: 130, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+                <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>Total findings</div>
+                <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: theme.ink }}>{summary.total_findings}</div>
+              </div>
+              <div style={{ minWidth: 130, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+                <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>Awaiting review</div>
+                <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: summary.pending_count > 0 ? theme["red-ink"] : theme.ink }}>{summary.pending_count}</div>
+              </div>
+              {summary.top_preparers && summary.top_preparers[0] && (
+                <div style={{ minWidth: 170, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme.surface }}>
+                  <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>Top flagged preparer</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: theme.ink, marginTop: 2 }}>{summary.top_preparers[0].preparer}</div>
+                  <div style={{ fontSize: 9.5, color: theme["ink-4"] }}>{summary.top_preparers[0].count} finding(s)</div>
+                </div>
+              )}
+            </div>
+          )}
+          {hasData && rows.map(row => <JeFindingRow key={row.event_id} row={row} theme={theme} onDisposed={handleDisposed} />)}
+        </div>
+      )}
+    </VizFrame>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    Tabbed container — owns theme, the shared day-range, and one data
    fetch for whichever dimension is active, so switching chart tabs is
    instant (no re-fetch, no blank flash) and "90 days" doesn't reset when
@@ -1714,6 +1913,7 @@ const CHART_TABS = [
   { id: "variants", label: "Variants" },
   { id: "conformance", label: "Conformance" },
   { id: "cycletime", label: "Cycle Time" },
+  { id: "jetesting", label: "JE Testing" },
 ];
 
 function ContinuousMonitoringGroupedViz({ dim, onNavigate }) {
@@ -1755,6 +1955,7 @@ function ContinuousMonitoringGroupedViz({ dim, onNavigate }) {
       {tab === "variants" && <ProcessVariantsView theme={theme} days={days} />}
       {tab === "conformance" && <ProcessConformanceView theme={theme} days={days} />}
       {tab === "cycletime" && <ProcessCycleTimeView theme={theme} days={days} />}
+      {tab === "jetesting" && <JETestingView theme={theme} />}
     </div>
   );
 }
