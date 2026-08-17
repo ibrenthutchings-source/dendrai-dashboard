@@ -137,16 +137,47 @@ const SOURCE_SYSTEM_DIM = {
   color: sourceSystemColor,
 };
 
+// ── Dimension: Identity & Access Management sub-domain — IAM is 86% of all
+// ADJUDICATED domain-classified volume (see pol_domain_mappings.
+// IAM_SUBDOMAIN_MAPPINGS's module comment), almost entirely one system-
+// agnostic-by-design rule. A second, finer grouping within that one Core
+// Domain tile: SoD/privilege conflicts, stale-access governance, and repo/
+// branch-access bypass are three different remediation owners today
+// flattened into one count. Non-IAM events land in a single honest "Other
+// Domains" bucket rather than disappearing — this view answers "what's
+// inside IAM," not "replace the Core Domain view." ──
+const IAM_SUBDOMAIN_ORDER = [
+  "SoD & Privilege Conflicts",
+  "Access Governance & Reviews",
+  "Repo & Branch Access",
+  "IAM — Other",
+  "Other Domains",
+];
+const IAM_SUBDOMAIN_COLOR_MAP = Object.fromEntries(IAM_SUBDOMAIN_ORDER.map((d, i) => [d, CATEGORICAL_PALETTE[i % CATEGORICAL_PALETTE.length]]));
+const IAM_SUBDOMAIN_DIM = {
+  key: "sub_domain",
+  label: "IAM Sub-Domain",
+  noun: "IAM sub-domain",
+  extract: e => e.domain === "Identity & Access Management" ? (e.sub_domain || "IAM — Other") : "Other Domains",
+  order: IAM_SUBDOMAIN_ORDER,
+  color: v => IAM_SUBDOMAIN_COLOR_MAP[v] || "#64748b",
+};
+
 // Click-through: cem.jsx's Adjudications tab (UBOGovPanel) accepts an
 // `initialFilter` of { domain, source, tier, verdict } (see cem.jsx). Only
-// "domain" and "source" map to a dimension's group value — "source" reuses
-// the tab's pre-existing source_system filter, "domain" is the new one
-// added alongside it — so a click anywhere in these charts can deep-link
-// into exactly the slice it represents.
-function groupFilterKey(dim) { return dim.key === "domain" ? "domain" : "source"; }
+// "domain" and "source_system" map to a real Adjudications-tab filter column
+// — sub_domain (IAM_SUBDOMAIN_DIM) has no corresponding column there, so it
+// resolves to no group-specific filter rather than silently reusing another
+// dimension's key (the previous `: "source"` fallback was only ever correct
+// because SOURCE_SYSTEM_DIM was the only non-domain dimension in existence).
+function groupFilterKey(dim) {
+  if (dim.key === "domain") return "domain";
+  if (dim.key === "source_system") return "source";
+  return null;
+}
 function groupCemFilter(dim, groupValue, extra) {
-  const f = {};
-  if (groupValue) f[groupFilterKey(dim)] = groupValue;
+  const key = groupFilterKey(dim);
+  const f = key && groupValue ? { [key]: groupValue } : {};
   return { ...f, ...extra };
 }
 // Same idea for a Flow Graph node of any kind (group/tier/verdict/rule) —
