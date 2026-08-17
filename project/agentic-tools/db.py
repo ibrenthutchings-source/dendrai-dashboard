@@ -8526,7 +8526,17 @@ def _build_control_flow_map(event_rows: list, control_meta_by_id: dict) -> dict:
 def get_control_flow_map(days: int = 30) -> dict:
     """
     Real event flow -> control -> framework, mined from
-    observability.adjudicated_tool_calls over the last `days` days. See
+    observability.adjudicated_tool_calls over the last `days` days, UNIONed
+    with the unreviewed system_telemetry tail (same reasoning as
+    get_recent_unreviewed_system_events: only flagged rows ever reach
+    adjudication, so adjudicated_tool_calls alone was undercounting real
+    traffic by the same ~97% Continuous Monitoring's charts and Process
+    Mining were both found and fixed to include). An unreviewed row has no
+    risk_tier/verdict/fired-control — it terminates at a synthetic
+    "NOT_REVIEWED" verdict node, same convention GET /observability/events
+    and continuous-monitoring-viz.jsx's DimensionFlowGraph already use, so
+    a reviewer can see real system_telemetry volume behind each source
+    system without it being mistaken for a real verdict. See
     _build_control_flow_map for the graph-building logic.
     """
     def _events():
@@ -8539,7 +8549,24 @@ def get_control_flow_map(days: int = 30) -> dict:
                     (days,),
                 )
                 return cur.fetchall()
-    event_rows = _run(_events) or []
+    event_rows = list(_run(_events) or [])
+
+    def _unreviewed():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT st.system_type
+                    FROM observability.system_telemetry st
+                    LEFT JOIN observability.adjudicated_tool_calls atc
+                        ON atc.system_telemetry_id = st.id
+                    WHERE st.created_at > NOW() - (%s || ' days')::interval
+                      AND atc.id IS NULL
+                    """,
+                    (days,),
+                )
+                return cur.fetchall()
+    event_rows.extend((system_type, None, "NOT_REVIEWED", []) for (system_type,) in (_run(_unreviewed) or []))
 
     control_ids = sorted({c for row in event_rows for c in (row[3] or [])})
     control_meta_by_id: dict = {}

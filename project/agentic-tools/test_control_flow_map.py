@@ -166,9 +166,11 @@ class _FakeConnCtx:
 
 def test_get_control_flow_map_passes_days_window_and_only_queries_controls_that_fired(monkeypatch):
     recorder = []
-    # First _conn() call -> events query; second -> controls_catalog lookup.
+    # _conn() calls, in order: adjudicated events, unreviewed system_telemetry
+    # tail, controls_catalog lookup (only reached because a control fired).
     results = [
         [("SAP", "HIGH", "ESCALATE", ["VM-DENY-001"])],
+        [],
         [("VM-DENY-001", "Vendor bank change", ["CC6.1"], [], [], "Control Activities")],
     ]
     monkeypatch.setattr(db, "is_available", lambda: True)
@@ -178,21 +180,46 @@ def test_get_control_flow_map_passes_days_window_and_only_queries_controls_that_
 
     events_call = recorder[0]
     assert events_call[1] == (7,)
-    controls_call = recorder[1]
+    unreviewed_call = recorder[1]
+    assert unreviewed_call[1] == (7,)
+    controls_call = recorder[2]
     assert controls_call[1] == (["VM-DENY-001"],)
     assert any(n["id"] == "ctrl:VM-DENY-001" and n.get("soc2_criteria") == ["CC6.1"] for n in result["nodes"])
 
 
 def test_get_control_flow_map_skips_controls_query_when_nothing_fired(monkeypatch):
     recorder = []
-    results = [[("GITHUB", "LOW", "CLEAR", [])]]
+    results = [[("GITHUB", "LOW", "CLEAR", [])], []]
     monkeypatch.setattr(db, "is_available", lambda: True)
     monkeypatch.setattr(db, "_conn", lambda: _FakeConnCtx(recorder, results))
 
     result = db.get_control_flow_map(days=30)
 
-    assert len(recorder) == 1  # only the events query ran, no wasted round trip
+    assert len(recorder) == 2  # events + unreviewed tail ran, no wasted controls round trip
     assert result["nodes"]
+
+
+def test_get_control_flow_map_includes_unreviewed_events_as_not_reviewed_verdict(monkeypatch):
+    """The fix this test guards: previously get_control_flow_map only ever
+    saw adjudicated_tool_calls rows, which are exclusively the flagged
+    subset mcp_governance's poll loop selects for review — every other
+    captured event was invisible here, same undercount already found and
+    fixed in Continuous Monitoring's charts and Process Mining."""
+    recorder = []
+    results = [
+        [],                     # no adjudicated events in window
+        [("SAILPOINT",), ("SAILPOINT",), ("SAP",)],  # 3 unreviewed system_telemetry rows
+    ]
+    monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(db, "_conn", lambda: _FakeConnCtx(recorder, results))
+
+    result = db.get_control_flow_map(days=30)
+
+    assert len(recorder) == 2  # no controls query — nothing fired, nothing to look up
+    verdict_node = next(n for n in result["nodes"] if n["id"] == "verdict:NOT_REVIEWED")
+    assert verdict_node["type"] == "verdict"
+    sailpoint_link = next(l for l in result["links"] if l["source"] == "sys:SAILPOINT" and l["target"].startswith("tier:"))
+    assert sailpoint_link["value"] == 2
 
 
 # ── endpoint ──────────────────────────────────────────────────────────────────

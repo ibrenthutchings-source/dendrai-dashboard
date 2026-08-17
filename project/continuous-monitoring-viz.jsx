@@ -39,6 +39,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sankey, sankeyLinkHorizontal } from "d3-sankey";
 import * as d3 from "d3";
 import dagre from "dagre";
+import { VERDICT_COLOR, TIER_COLOR } from "./observability-colors.jsx";
 
 function _obsBase() {
   return (window.MCP_API_BASE || "/api/mcp") + "/observability";
@@ -161,16 +162,9 @@ function dfgNodeCemFilter(n, dim) {
   return null;
 }
 
-// Verdict/tier severity colors are also kept theme-invariant (saturated
-// enough to read on both a light and dark panel) — only the surrounding
-// chrome (backgrounds, gridlines, text) follows the theme.
-// NOT_REVIEWED is a lighter, cooler grey than UNKNOWN — deliberately distinct
-// since the two mean different things: UNKNOWN is missing/malformed verdict
-// data, NOT_REVIEWED is a real, healthy event that was simply never selected
-// for adjudication (see GET /observability/events' docstring). Same idea for
-// TIER_COLOR below — an unreviewed event has no risk_tier either.
-const VERDICT_COLOR = { ESCALATE: "#ef4444", MONITOR: "#3b82f6", CLEAR: "#22c55e", NOT_REVIEWED: "#cbd5e1", UNKNOWN: "#64748b" };
-const TIER_COLOR = { CRITICAL: "#ef4444", HIGH: "#f97316", MEDIUM: "#f59e0b", LOW: "#22c55e", UNKNOWN: "#64748b" };
+// VERDICT_COLOR/TIER_COLOR now live in observability-colors.jsx — shared
+// with control-flow-map.jsx, which had its own independent (and already
+// drifted) copy of both. See that file for the NOT_REVIEWED rationale.
 
 function _fmtDay(iso) {
   return new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", day: "numeric" });
