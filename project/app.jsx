@@ -693,12 +693,8 @@ function App() {
   // the underlying endpoints outside Development, so this is purely a nav
   // visibility concern, not the enforcement boundary.
   const [isDevEnv, setIsDevEnv] = React.useState(false);
-  // Stricter than isDevEnv above: true only in the real Development
-  // environment, not sandbox/uat opted in via EXCEPTION_MGMT_LOCAL_DEV.
-  // Gates AI Governance's nav item — see deploy_env.py's IS_TRUE_DEVELOPMENT.
-  const [isTrueDevEnv, setIsTrueDevEnv] = React.useState(false);
   React.useEffect(() => {
-    window.MCP.fetchEnvironment().then(e => { setIsDevEnv(e.isDev); setIsTrueDevEnv(e.isTrueDev); }).catch(() => {});
+    window.MCP.fetchEnvironment().then(e => setIsDevEnv(e.isDev)).catch(() => {});
   }, []);
 
   // ---- Appearance persistence (accent/density/colorScheme, per-user via
@@ -2097,7 +2093,6 @@ function App() {
           isAdmin={auth?.user?.role === "admin"}
           screenPerms={auth?.user?.screen_permissions}
           isDevEnv={isDevEnv}
-          isTrueDevEnv={isTrueDevEnv}
           onNavigate={(screen, govTab) => {
             setActiveScreen(screen);
             if (govTab) setActiveGovTab(govTab);
@@ -2253,9 +2248,10 @@ function App() {
           {/* ---- AI Governance (register + behavioural audit) ---- */}
           {/* Screen id, nav id, and _SCREEN_ID in ai_governance_endpoints.py
               are all "ai_governance" on purpose — see the note in nav.jsx.
-              isTrueDevEnv-gated here too, not just in the nav, so a direct
-              screen navigation can't bypass the Development-only visibility. */}
-          {activeScreen === "ai_governance" && isTrueDevEnv && (
+              No longer Development-only — ScreenAccessGate + the backend's
+              require_screen_permission are the real access boundary, same
+              as every other non-dev-only screen. */}
+          {activeScreen === "ai_governance" && (
           <ScreenAccessGate screenId="ai_governance">
             <div className="panel active">
               <AiGovernanceScreenLazy />

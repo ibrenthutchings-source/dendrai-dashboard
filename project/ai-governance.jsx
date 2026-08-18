@@ -428,12 +428,140 @@ function BehavioralAuditPanel({ system, onClose, onAudited }) {
   );
 }
 
+const _RISK_TIERS = ["LOW", "MEDIUM", "HIGH"];
+
+// Keyed by system_name (observability.ai_system_registry's own upsert key —
+// see db.upsert_ai_system's ON CONFLICT (system_name)), so editing an
+// existing row and changing its name would silently create a SECOND row
+// rather than rename the first. Simplest safe behavior: lock the name field
+// once editing, same reasoning approval_tasks' item_ref is never mutable
+// once a task exists.
+function AiSystemForm({ initial, onCancel, onSaved }) {
+  const isEdit = !!initial?.id;
+  const [form, setForm] = React.useState({
+    system_name: initial?.system_name || "",
+    vendor: initial?.vendor || "",
+    business_owner: initial?.business_owner || "",
+    risk_tier: initial?.risk_tier || "MEDIUM",
+    requires_human_oversight: initial?.requires_human_oversight || false,
+    human_oversight_defined: initial?.human_oversight_defined || false,
+    last_assessment_date: initial?.last_assessment_date ? initial.last_assessment_date.slice(0, 10) : "",
+    assessment_expires_at: initial?.assessment_expires_at ? initial.assessment_expires_at.slice(0, 10) : "",
+  });
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  function set(field, value) { setForm(f => ({ ...f, [field]: value })); }
+
+  async function handleSave() {
+    if (!form.system_name.trim()) { setError("System name is required."); return; }
+    setSaving(true); setError(null);
+    try {
+      const res = await fetch(`${_aiGovBase()}/ai-governance`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_name: form.system_name.trim(),
+          vendor: form.vendor.trim() || null,
+          business_owner: form.business_owner.trim() || null,
+          risk_tier: form.risk_tier,
+          requires_human_oversight: form.requires_human_oversight,
+          human_oversight_defined: form.human_oversight_defined,
+          last_assessment_date: form.last_assessment_date || null,
+          assessment_expires_at: form.assessment_expires_at || null,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `Save failed (${res.status})`);
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputStyle = {
+    width: "100%", fontSize: 12, padding: "6px 8px",
+    border: "1px solid var(--line)", borderRadius: 5, background: "var(--surface)", color: "var(--ink)",
+  };
+  const labelStyle = { fontSize: 10, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, marginBottom: 4, display: "block" };
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 16, background: "var(--surface)", marginBottom: 20 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>
+        {isEdit ? `Edit — ${initial.system_name}` : "Register a new AI system"}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div>
+          <label style={labelStyle}>System name{!isEdit && " *"}</label>
+          <input style={inputStyle} value={form.system_name} disabled={isEdit}
+            onChange={e => set("system_name", e.target.value)} placeholder="e.g. Vendor Risk Scoring Model" />
+        </div>
+        <div>
+          <label style={labelStyle}>Vendor</label>
+          <input style={inputStyle} value={form.vendor} onChange={e => set("vendor", e.target.value)} placeholder="e.g. Internal, OpenAI, Acme AI" />
+        </div>
+        <div>
+          <label style={labelStyle}>Business owner</label>
+          <input style={inputStyle} value={form.business_owner} onChange={e => set("business_owner", e.target.value)} placeholder="e.g. Jane Lee, Procurement" />
+        </div>
+        <div>
+          <label style={labelStyle}>Risk tier</label>
+          <select style={inputStyle} value={form.risk_tier} onChange={e => set("risk_tier", e.target.value)}>
+            {_RISK_TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Last assessment date</label>
+          <input type="date" style={inputStyle} value={form.last_assessment_date} onChange={e => set("last_assessment_date", e.target.value)} />
+        </div>
+        <div>
+          <label style={labelStyle}>Assessment expires</label>
+          <input type="date" style={inputStyle} value={form.assessment_expires_at} onChange={e => set("assessment_expires_at", e.target.value)} />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.requires_human_oversight}
+            onChange={e => set("requires_human_oversight", e.target.checked)} />
+          Requires human oversight (AI-06)
+        </label>
+        <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.human_oversight_defined}
+            onChange={e => set("human_oversight_defined", e.target.checked)} />
+          Human oversight defined
+        </label>
+      </div>
+      {form.requires_human_oversight && !form.human_oversight_defined && (
+        <div style={{ fontSize: 10.5, color: "var(--amber-ink)", marginTop: 6 }}>
+          Saving with oversight required but not defined raises an AI-06 finding immediately — this is
+          the intended attestation gap detection, not an error.
+        </div>
+      )}
+
+      {error && <div className="mono" style={{ fontSize: 11, color: "var(--red-ink)", marginTop: 10 }}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <button className="btn btn-sm" disabled={saving} onClick={handleSave}>
+          {saving ? "Saving…" : isEdit ? "Save changes" : "Register system"}
+        </button>
+        <button className="btn btn-sm btn-ghost" disabled={saving} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function AiGovernanceScreen() {
   const [systems, setSystems] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const [auditing, setAuditing] = React.useState(null);
   const [lastVerdicts, setLastVerdicts] = React.useState({});
+  // null = form hidden; {} = registering a new system; {...row} = editing one.
+  const [formSystem, setFormSystem] = React.useState(null);
 
   const load = React.useCallback(() => {
     return fetch(`${_aiGovBase()}/ai-governance`, { credentials: "include" })
@@ -466,6 +594,9 @@ function AiGovernanceScreen() {
             system&apos;s own logs. Where the two disagree, the disagreement is the finding.
           </div>
         </div>
+        {!formSystem && (
+          <button className="btn btn-sm" onClick={() => setFormSystem({})}>+ Add system</button>
+        )}
       </div>
 
       {error && (
@@ -484,6 +615,14 @@ function AiGovernanceScreen() {
               sub="Attested as governed, failed its audit" />
           </div>
 
+          {formSystem && (
+            <AiSystemForm
+              initial={formSystem}
+              onCancel={() => setFormSystem(null)}
+              onSaved={() => { setFormSystem(null); load(); }}
+            />
+          )}
+
           {auditing && (
             <BehavioralAuditPanel
               system={auditing}
@@ -495,7 +634,8 @@ function AiGovernanceScreen() {
           {!rows.length ? (
             <Empty icon="🗂️">
               No AI systems registered yet. The register is a manual attestation — there is no
-              connector that can discover shadow AI usage for you.
+              connector that can discover shadow AI usage for you. Use &quot;+ Add system&quot; above
+              to record the first one.
             </Empty>
           ) : (
             <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
@@ -539,7 +679,11 @@ function AiGovernanceScreen() {
                         ? <VerdictPill verdict={verdict} />
                         : <span style={{ fontSize: 10, color: "var(--ink-4)" }}>Not audited</span>}
                     </div>
-                    <div style={{ textAlign: "right" }}>
+                    <div style={{ textAlign: "right", display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button className="btn btn-sm" style={{ fontSize: 10.5 }}
+                        onClick={() => setFormSystem(row)}>
+                        Edit
+                      </button>
                       <button className="btn btn-sm" style={{ fontSize: 10.5 }}
                         onClick={() => setAuditing(row)}>
                         Audit
