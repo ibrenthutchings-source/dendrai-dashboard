@@ -834,8 +834,15 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
   );
 }
 
+// Truncation length for the inline status glance — full text is always
+// available via the expand toggle (and the native title= tooltip) below,
+// this only controls what fits on the collapsed one-line row.
+const _CONN_MSG_GLANCE_LEN = 40;
+
 function ConnectorRow({ conn, onEdit, onDelete, onToggle, onTest, testState }) {
   const typeInfo = CONNECTOR_TYPES.find(t => t.id === conn.connector_type);
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const age = conn.last_poll_at
     ? (() => {
         const ms = Date.now() - new Date(conn.last_poll_at).getTime();
@@ -846,57 +853,98 @@ function ConnectorRow({ conn, onEdit, onDelete, onToggle, onTest, testState }) {
       })()
     : "never polled";
 
+  // Same message either way — a failed Test click's result takes priority
+  // over the last scheduled poll's error, but both are the SAME underlying
+  // problem (an unreachable/misconfigured connector), so they share one
+  // expand/copy affordance rather than two different truncation behaviors.
+  const errorMessage = testState?.result && !testState.result.ok
+    ? testState.result.message
+    : (!testState?.result && conn.last_poll_status === "error" ? conn.last_poll_error : null);
+  const isTruncated = (errorMessage || "").length > _CONN_MSG_GLANCE_LEN;
+
+  async function copyError() {
+    try {
+      await navigator.clipboard.writeText(errorMessage || "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard API unavailable — no-op, the text is still selectable */ }
+  }
+
   return (
-    <div style={{
-      display: "grid", gridTemplateColumns: "20px 1fr 130px 130px 150px",
-      alignItems: "start", gap: 10, padding: "10px 12px",
-      borderBottom: "1px solid var(--line)", fontSize: 12, opacity: conn.active ? 1 : 0.55,
-    }}>
-      <div style={{ paddingTop: 2 }}><StatusDot active={conn.active} /></div>
-      <div>
-        <div style={{ fontWeight: 600 }}>{conn.display_name}</div>
-        <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 1 }}>
-          <span style={{ fontFamily: "var(--mono, monospace)", background: "var(--acc-soft)", color: "var(--acc-ink)", padding: "1px 5px", borderRadius: 3, marginRight: 5 }}>
-            {typeInfo?.label || conn.connector_type}
-          </span>
-          {conn.base_url}
+    <div style={{ borderBottom: "1px solid var(--line)" }}>
+      <div style={{
+        display: "grid", gridTemplateColumns: "20px 1fr 130px 130px 150px",
+        alignItems: "start", gap: 10, padding: "10px 12px",
+        fontSize: 12, opacity: conn.active ? 1 : 0.55,
+      }}>
+        <div style={{ paddingTop: 2 }}><StatusDot active={conn.active} /></div>
+        <div>
+          <div style={{ fontWeight: 600 }}>{conn.display_name}</div>
+          <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 1 }}>
+            <span style={{ fontFamily: "var(--mono, monospace)", background: "var(--acc-soft)", color: "var(--acc-ink)", padding: "1px 5px", borderRadius: 3, marginRight: 5 }}>
+              {typeInfo?.label || conn.connector_type}
+            </span>
+            {conn.base_url}
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--ink-4)", fontFamily: "var(--mono, monospace)", paddingTop: 2 }}>
+          <div>every {Math.round((conn.poll_interval_s || 1800) / 60)}m</div>
+          <div style={{ color: conn.last_poll_status === "error" ? "var(--red-ink)" : "var(--ink-4)" }}>{age}</div>
+        </div>
+        <div style={{ fontSize: 10, paddingTop: 2 }}>
+          {testState?.testing ? (
+            <span className="spin" style={{ display: "inline-block", width: 11, height: 11, borderWidth: 2 }} />
+          ) : testState?.result ? (
+            <span
+              style={{ color: testState.result.ok ? "var(--green-ink)" : "var(--red-ink)", cursor: isTruncated ? "pointer" : "default" }}
+              title={isTruncated ? "Click to see the full error" : testState.result.message}
+              onClick={() => isTruncated && setExpanded(e => !e)}>
+              {testState.result.ok ? "✓ " : "✗ "}{(testState.result.message || "").slice(0, _CONN_MSG_GLANCE_LEN)}
+              {isTruncated && (expanded ? " ▲" : "… ▼")}
+            </span>
+          ) : conn.last_poll_status === "error" ? (
+            <span
+              style={{ color: "var(--red-ink)", cursor: isTruncated ? "pointer" : "default" }}
+              title={isTruncated ? "Click to see the full error" : conn.last_poll_error}
+              onClick={() => isTruncated && setExpanded(e => !e)}>
+              Last poll failed{isTruncated && (expanded ? " ▲" : " ▼")}
+            </span>
+          ) : conn.last_poll_status === "ok" ? (
+            <span style={{ color: "var(--green-ink)" }}>Last poll OK</span>
+          ) : (
+            <span style={{ color: "var(--ink-4)" }}>—</span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 5, justifyContent: "flex-end", paddingTop: 2, flexWrap: "wrap" }}>
+          <button className="btn btn-sm btn-ghost" onClick={() => onTest(conn)} disabled={testState?.testing}
+            style={{ padding: "3px 7px", fontSize: 10 }}>
+            Test
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={() => onToggle(conn)}
+            title={conn.active ? "Deactivate" : "Activate"} style={{ padding: "3px 7px", fontSize: 10 }}>
+            {conn.active ? "Off" : "On"}
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={() => onEdit(conn)} style={{ padding: "3px 7px" }}>
+            <Icon name="edit" size={11}/>
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={() => onDelete(conn.id)} style={{ padding: "3px 7px", color: "var(--red-ink)" }}>
+            <Icon name="x" size={11}/>
+          </button>
         </div>
       </div>
-      <div style={{ fontSize: 10, color: "var(--ink-4)", fontFamily: "var(--mono, monospace)", paddingTop: 2 }}>
-        <div>every {Math.round((conn.poll_interval_s || 1800) / 60)}m</div>
-        <div style={{ color: conn.last_poll_status === "error" ? "var(--red-ink)" : "var(--ink-4)" }}>{age}</div>
-      </div>
-      <div style={{ fontSize: 10, paddingTop: 2 }}>
-        {testState?.testing ? (
-          <span className="spin" style={{ display: "inline-block", width: 11, height: 11, borderWidth: 2 }} />
-        ) : testState?.result ? (
-          <span style={{ color: testState.result.ok ? "var(--green-ink)" : "var(--red-ink)" }} title={testState.result.message}>
-            {testState.result.ok ? "✓ " : "✗ "}{(testState.result.message || "").slice(0, 40)}
-          </span>
-        ) : conn.last_poll_status === "error" ? (
-          <span style={{ color: "var(--red-ink)" }} title={conn.last_poll_error}>Last poll failed</span>
-        ) : conn.last_poll_status === "ok" ? (
-          <span style={{ color: "var(--green-ink)" }}>Last poll OK</span>
-        ) : (
-          <span style={{ color: "var(--ink-4)" }}>—</span>
-        )}
-      </div>
-      <div style={{ display: "flex", gap: 5, justifyContent: "flex-end", paddingTop: 2, flexWrap: "wrap" }}>
-        <button className="btn btn-sm btn-ghost" onClick={() => onTest(conn)} disabled={testState?.testing}
-          style={{ padding: "3px 7px", fontSize: 10 }}>
-          Test
-        </button>
-        <button className="btn btn-sm btn-ghost" onClick={() => onToggle(conn)}
-          title={conn.active ? "Deactivate" : "Activate"} style={{ padding: "3px 7px", fontSize: 10 }}>
-          {conn.active ? "Off" : "On"}
-        </button>
-        <button className="btn btn-sm btn-ghost" onClick={() => onEdit(conn)} style={{ padding: "3px 7px" }}>
-          <Icon name="edit" size={11}/>
-        </button>
-        <button className="btn btn-sm btn-ghost" onClick={() => onDelete(conn.id)} style={{ padding: "3px 7px", color: "var(--red-ink)" }}>
-          <Icon name="x" size={11}/>
-        </button>
-      </div>
+      {expanded && errorMessage && (
+        <div style={{ margin: "0 12px 10px", padding: "8px 10px", borderRadius: 5, background: "var(--surface-2)", border: "1px solid var(--red-ink)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 9.5, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Full error</span>
+            <button className="btn btn-sm btn-ghost" onClick={copyError} style={{ padding: "1px 6px", fontSize: 9.5 }}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <div style={{ fontSize: 10.5, fontFamily: "var(--mono, monospace)", color: "var(--red-ink)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {errorMessage}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
