@@ -47,6 +47,7 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `DENDRAI_CLAUDE_MODEL` | AI features | Override the Claude model (default `claude-opus-4-8`). |
 | `DENDRAI_MCP_URL` | Managed agents | Hosted MCP server URL for the cloud agent deployment. |
 | `AUTH_JWT_SECRET` | Authentication | JWT signing key. Auto-generates a random key each restart if not set — set explicitly for stable sessions. |
+| `AUDIT_SIGNING_KEY` | Platform audit trail | HMAC-SHA256 key signing `observability.audit_log` rows (identity/access changes + MCP tool calls) so `GET /auth/admin/audit-log/verify` can prove they haven't been tampered with. Optional — falls back to a random per-process key if unset (chain-hash tamper-evidence still catches row deletion/reordering either way; a missing explicit key only means HMAC signatures won't re-verify across a restart). Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
 | `PUBLIC_URL` | Authentication (SSO) | Base URL of your deployment, e.g. `https://app.railway.app`. Required for OAuth redirect URIs. |
 | `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` + `AZURE_TENANT_ID` | Microsoft SSO | All three required to enable Microsoft/Azure AD login. |
 | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Google SSO | Both required to enable Google Workspace login. |
@@ -57,7 +58,10 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `MCP_READ_ONLY` | PaC / CaC / DevOps Monitoring / Infrastructure Monitoring MCP servers | Set to `true` to block all write operations from these MCP servers. |
 | `OPA_BINARY` | Policy-as-Code (authoritative evaluation) | Path to a real OPA binary. Falls back to `opa` on PATH, then to a labelled Python heuristic simulation if neither is found. The Docker image (`project/Dockerfile`) always installs a real OPA binary — only local dev without OPA on PATH runs the heuristic. |
 | `GITHUB_WEBHOOK_SECRET` | GitHub webhook / DevOps Monitoring | HMAC-SHA256 secret for verifying `POST /github/webhook` deliveries. Skipped (with a warning) if unset — always set it in production. |
-| `CONNECTOR_ENCRYPTION_KEY` | Poll-based connectors (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS); Monitored Systems ingest API keys; encrypted `payroll_detail`/`treasury_detail` telemetry sub-payloads | Fernet key. Encrypts connector credentials at rest (`observability.poll_connectors.credentials_enc`), each Monitored System's ingest API key (`observability.monitored_systems.ingest_api_key_enc` — see `POST /observability/systems`), and sensitive telemetry detail sub-dicts. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Connector CRUD and new-system registration return HTTP 503/`None` without it — this was previously a plaintext UUID column for ingest keys; see `POST /observability/systems/{id}/rotate-key` to migrate a pre-existing system off the legacy column. |
+| `GITHUB_WRITE_TOKEN` | Closed-Loop Remediation | Personal access token with `repo` (push) scope. Lets `github_write_tool.py` open a real GitHub issue (or PR, for a future connector-specific fixer) once a proposed remediation is manager-approved. Without it, `POST /remediation/propose/{event_id}` still drafts and routes the proposal for approval, but the eventual write fails and surfaces as a retryable error in the Approval Inbox. |
+| `GITHUB_REMEDIATION_REPO` | Closed-Loop Remediation | Default `owner/repo` target for remediation issues/PRs, e.g. `acme-corp/infra`. Can be overridden per-proposal. |
+| `CONNECTOR_ENCRYPTION_KEY` | Poll-based connectors (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS); Monitored Systems ingest API keys; encrypted `payroll_detail`/`treasury_detail` telemetry sub-payloads; `exception_control_events.raw_payload` | Fernet key. Encrypts connector credentials at rest (`observability.poll_connectors.credentials_enc`), each Monitored System's ingest API key (`observability.monitored_systems.ingest_api_key_enc` — see `POST /observability/systems`), sensitive telemetry detail sub-dicts, and (see "Journal Entry Testing" below) `exception_control_events.raw_payload`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Connector CRUD and new-system registration return HTTP 503/`None` without it — this was previously a plaintext UUID column for ingest keys; see `POST /observability/systems/{id}/rotate-key` to migrate a pre-existing system off the legacy column. Without it, `raw_payload` is stored as plaintext (logged as a warning), not blocked — same graceful-degradation choice as the other sub-payload encryption above. |
+| `EXCEPTION_EVENT_RETENTION_DAYS` | PII retention (`pii_retention_sweep.py`) | Days `exception_control_events` rows (Exception Management / JE Testing findings — includes `raw_payload`/`actor` pulled from source-system connectors) are kept before the daily sweep purges them (cascading to `exception_model_inferences`/`exception_auditor_triage`). Default `400`. |
 | `EVIDENCE_SIGNING_KEY` | DevOps Monitoring (SARIF evidence) | HMAC-SHA256 key signing `observability.evidence_records` rows so `/evidence/records/{id}/verify` can prove they haven't been tampered with. **Required** — `/evidence/webhook` and `/evidence/records/{id}/verify` return HTTP 503 if unset, rather than signing with an empty key (an empty-key HMAC needs no secret to recompute, which would make every record forgeable). Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
 | `MCP_ALERT_WEBHOOK_URL` | Dendrai UBO Governance Brain | Slack-compatible webhook URL. When set, ESCALATE verdicts POST a JSON alert payload. |
 | `MCP_GOV_POLL_INTERVAL_S` | Dendrai UBO Governance Brain | Seconds between governance poll cycles (default `30`). |
@@ -97,6 +101,9 @@ Every mechanism below runs as an `asyncio` task started in `api_server.py`'s lif
 | `connector_hygiene_sweep.py` | Daily | Poll-connector credentials overdue for rotation (default 90 days) — the one check with no external system, Intelligenza checking itself |
 | `vendor_risk_sweep.py` | Daily | Vendor SOC 2 reports past their expiry date |
 | `ai_governance_sweep.py` | Daily | AI system assessments past their expiry date |
+| `identity_graph_sync.py` | Hourly | Full-refresh pull of user↔role assignments and open SoD violations from every active Oracle Fusion connector — feeds The Graph Architect's blast-radius/SPoF checks with real `role_count`/`entitlements` data (previously always zero/empty for every production event) |
+| `je_testing_sweep.py` | `JE_TESTING_SWEEP_TICK_S` (default 1800s/30min), `JE_TESTING_LOOKBACK_DAYS` lookback (default 7d) | Pulls journal entries from every active Oracle Fusion/NetSuite/SAP HANA/Dynamics 365/synthetic-transaction connector and scores them via `je_testing_tool.py`'s deterministic anomaly rules |
+| `pii_retention_sweep.py` | Daily | Purges `exception_control_events` rows (cascading to `exception_model_inferences`/`exception_auditor_triage`) past `EXCEPTION_EVENT_RETENTION_DAYS` (default 400d) — every purge run is itself recorded to the audit trail |
 | `model_health_drift_watch()` (`api_server.py`) | `MODEL_HEALTH_CHECK_INTERVAL_S` (default 6h) | PSI drift on financial ratios, FRED macro regime, and AI-suggestion acceptance rate — opens a tracked incident, deduplicated against any already-open one for that metric |
 
 **Outbound reporting (the "report" half — turns a caught signal into a notification):**
@@ -152,6 +159,80 @@ Industry news and compliance regulatory feed analysis.
 **REST endpoints:** `POST /rss/news`, `POST /rss/ingest`, `GET /rss/feeds/status`
 
 **MCP server:** `rss_mcp_server.py`
+
+---
+
+### Regulatory Change Management (`regulatory_change_tool.py` + `regulatory_change_endpoints.py`)
+
+Horizon scanning: extends `rss_ingest_service.py`'s feed fetching (which scores individual articles as they appear) with a second lens — does a feed's current content represent a MATERIAL CHANGE from what this system last saw, not just "is this a new article." Targets four horizon-scanning feeds (`eu_ai_act`, `dora`, `nis2`, `state_privacy`, distinct from the pre-existing company-gated BIS/CISA/SEC/Fed/EPA feeds `rss_tool.py` already scores per-article).
+
+**How it works:** `POST /regulatory-change/scan` fetches each target feed's current entries (title + summary, most recent 20), hashes the text, and compares it against the last stored snapshot (`regulatory_change_versions`, sha256-deduped the same way `pac_policy_documents` dedups uploaded policy text). An unchanged hash is a no-op; a changed hash below a 2%-of-content materiality threshold (`regulatory_change_tool.is_material_change`, via `difflib`) is stored (so the *next* scan diffs against current text) but doesn't reach the review queue — boilerplate churn (nav tweaks, "last updated" footers) shouldn't. A material change gets a unified diff (`diff_summary`, capped 20K chars) and an LLM-drafted proposal (`claude_client`, falls back to a plain templated proposal if the call fails): a summary, a control reference (existing `ref` or `NEW`), and a proposed control-description edit.
+
+**HITL review:** nothing reaches `controls_library` without an explicit human decision — same guardrail `pac_policy_docs.py` enforces for Rego modules. `POST /regulatory-change/proposals/{id}/decision` (`approved`/`rejected`) is gated on the `regchange` screen's edit permission; approval calls `db.upsert_control` with the proposed edit, rejection just records the decision.
+
+**REST endpoints (prefix `/regulatory-change`):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/scan` | Fetch target feeds, diff against last version, draft proposals for material changes |
+| `GET` | `/versions` | Recent fetched snapshots (`?feed_id=`) |
+| `GET` | `/proposals` | Review queue (`?status=`) |
+| `GET` | `/proposals/{id}` | One proposal, full diff included |
+| `POST` | `/proposals/{id}/decision` | `approved` \| `rejected` |
+
+**Frontend:** `project/regulatory-change.jsx`, nav entry `regchange` ("Regulatory Change Management").
+
+---
+
+### Journal Entry Testing (`je_testing_tool.py` + `je_testing_sweep.py` + `je_testing_endpoints.py`)
+
+Classic JE-testing anomaly rules run against real GL data — the gap this closes: `pac_endpoints.py`'s `record_to_report` Rego package already encodes real audit JE-testing logic in prose (manual JEs over $10K need approval, preparer and approver can't be the same person, weekend postings need an authorization code), but nothing ever constructed the `input.journal.*` payload those rules match on, so they've never fired against anything real. This module makes that vocabulary real, deterministically, without routing every JE through the OPA/Rego evaluator.
+
+**Rules** (`je_testing_tool.run_je_tests`), per-entry:
+- `JE-ROUND-DOLLAR` (MEDIUM) — exact multiple of $1,000
+- `JE-WEEKEND-POSTING` (HIGH) / `JE-AFTER-HOURS` (MEDIUM) — posted outside 06:00–20:00 UTC or on a weekend
+- `JE-SOD-PREPARER-APPROVER` (CRITICAL) — preparer and approver are the same person
+- `JE-THRESHOLD-UNAPPROVED` (HIGH) — over $10,000 with no approver
+- `JE-TOPSIDE-UNAPPROVED` (CRITICAL) — over $500,000 with no approver (a proxy for a top-side/CFO-approval flag; no connector exposes that as an explicit field)
+
+...and population-level, gated on a minimum 20-entry population so "rare" is meaningful:
+- `JE-RARE-ACCOUNT` (MEDIUM) — GL account seen ≤1 time across the tested population
+- `JE-UNUSUAL-DESCRIPTION` (LOW) — description unique across the population, amount ≥ $5,000
+- `JE-VELOCITY-SPIKE` (HIGH) — a preparer's daily posting count >2σ above their own baseline (needs ≥3 distinct posting days to establish one)
+
+**Sweep** (`je_testing_sweep.py`, tick `JE_TESTING_SWEEP_TICK_S` default 1800s/30min, lookback `JE_TESTING_LOOKBACK_DAYS` default 7d): pulls journal entries from every active `oracle_fusion`/`netsuite`/`sap_hana`/`dynamics365`/`synthetic_transaction` connector via each tool's `get_journal_entries()`, runs the rule set, and persists findings via `db.insert_exception_event` — reusing Exception Management's `exception_control_events`/`exception_model_inferences` schema (already generic enough: `control_id`, `system_source`, `process`, `raw_payload`). Unlike Exception Management's own ingestion path (`exceptions_endpoints.py`, gated to `deploy_env.IS_DEVELOPMENT` — a demo of ML-uncertainty scoring), JE Testing is a real, always-on control in every environment; findings are deterministic (`model_version="je-rules-v1"`), not from a trained model, so `uncertainty_score` is always 0. CRITICAL/HIGH findings set `requires_human_review=True`; MEDIUM/LOW don't.
+
+**REST endpoints (prefix `/je-testing`, screen permission `continuousmonitoring`):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/summary` | Headline tiles — entries tested, findings by rule, top preparers |
+| `GET` | `/findings` | Findings list (`?rule_id=&system_source=&preparer=&only_pending=&limit=&offset=`) |
+| `POST` | `/findings/{event_id}/disposition` | Auditor resolution — same 4-label vocabulary as Exception Management (`TRUE_CONTROL_FAILURE`, `BENIGN_OPERATIONAL_NOISE`, `APPROVED_CARVE_OUT`, `DATA_PIPELINE_ERROR`) |
+
+**Frontend:** a "JE Testing" tab on the Continuous Monitoring screen (`continuous-monitoring-viz.jsx`) — a findings table (rule filter, pending-only toggle), not a chart of adjudicated events like the other tabs: each row is a rule that actually fired against a real posting.
+
+**PII at rest:** `exception_control_events.raw_payload` (which can carry employee names/emails and transaction detail pulled straight from a source-system event) is Fernet-encrypted end-to-end (`db._encrypt_raw_payload`/`_decrypt_raw_payload`, `CONNECTOR_ENCRYPTION_KEY`) — the whole payload wrapped rather than named sub-keys, since its shape varies by connector. `actor` is deliberately left as plaintext: it's an equality-filtered column (JE Testing's "filter by preparer", Exception Management's triage view), and Fernet encryption is randomized, so an encrypted `actor` could never be filtered on without a separate blind-index column. Rows past `EXCEPTION_EVENT_RETENTION_DAYS` (default 400d) are purged daily by `pii_retention_sweep.py` — see "Background loops & listeners" above.
+
+---
+
+### Closed-Loop Remediation (`github_write_tool.py` + `remediation_endpoints.py`)
+
+The first write-capable connector primitive in this codebase — every `connector_poller.py` adapter is strictly `pull_events()`/`test_connection()`. Deliberately scoped to the lowest-blast-radius external system available: opening a GitHub issue is fully reversible and touches no access grant.
+
+**Flow:** `POST /remediation/propose/{event_id}` (screen permission `approvals`, edit) drafts a GitHub issue title/body for one `exception_control_events` finding (LLM-drafted via `claude_client`, falls back to a plain templated issue if the call fails) and submits it through the existing 2-stage preparer→manager approval workflow (`approvals_endpoints.py`, `gate_type='remediation_github'`). A submission is always `disposition='adjusted'` — there's no "accept the finding as computed" path, so a remediation always requires a human review step before the write can fire. Once a manager approves (or, with no manager configured, immediately — same auto-approve reasoning `devops_scm_exception` already uses), `approvals_endpoints._execute_remediation` fires the real write via `github_write_tool.create_issue`. On success, the source finding is auto-resolved (`TRUE_CONTROL_FAILURE`, noting the issue URL); on failure the error is persisted on the task (never swallowed) and the source finding stays open, surfaced in the Approval Inbox with a retry action.
+
+**`github_write_tool.py`:** `create_issue(title, body, repo, labels)` — the flow's only wired action. `create_pull_request(title, body, files, repo, base_branch)` is a complete, independently-tested primitive (full Git Data API flow: blob → tree → commit → ref → PR) for a future connector-specific fixer with real file changes ready — not called by today's remediation-proposal flow, since there's no principled way to synthesize a code diff from an arbitrary business-exception finding. `test_connection()` verifies the token can both read and push before first use. Configured via `GITHUB_WRITE_TOKEN` / `GITHUB_REMEDIATION_REPO` (env vars, not the `poll_connectors` table — this is a write-only target with no events to poll).
+
+**REST endpoints:**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/remediation/propose/{event_id}` | Draft a GitHub issue for one finding, submit for manager approval |
+| `GET` | `/approvals/remediations` | Recent closed-loop remediation tasks, any status |
+| `POST` | `/approvals/remediations/{id}/retry` | Re-fire a failed remediation's GitHub write with the same approved content |
+
+**Frontend:** `project/exceptions.jsx` — a "Propose remediation" button on a finding, showing status ("awaiting manager approval" / task status) once proposed. `project/approval-inbox.jsx` renders `remediation_github` tasks with a distinct label ("Closed-Loop Remediation · GitHub Issue") and exposes the retry action for a failed write.
 
 ---
 
@@ -432,6 +513,12 @@ Auditor-maintained register of the audited company's own AI system usage (AI-05 
 
 ---
 
+### Identity Graph Sync (`identity_graph_sync.py`)
+
+Hourly full-refresh pull of real user↔role assignments and open SoD violations from every active Oracle Fusion connector, via `oracle_fusion_tool.get_user_roles()`/`get_sod_violations()` (both pre-existing and correct, but previously only reachable on-demand, never scheduled). Feeds `observability.identity_role_edges`/`.sod_violations`, which `mcp_governance.py` reads to populate `role_count`/`entitlements` on a URO's `risk_indicators` before it reaches The Graph Architect (`UBO/agents/graph_architect.py`) — those fields were always zero/empty for every real production event, so the agent's blast-radius/SPoF checks, though correctly implemented, were structurally dead. A delete-then-insert full refresh rather than an incremental pull: identity/role state is a snapshot to diff, not a stream of discrete events, so a revoked role actually disappears here rather than lingering. SoD violations are persisted but not (yet) re-raised as adjudicated events.
+
+---
+
 ### Poll-Connector Dispatch Loop (`connector_poller.py`)
 
 The single scheduler behind every pull-model connector — Oracle Fusion, Oracle HCM, SAP HANA, SailPoint, Dynamics 365, NetSuite, denied-party screening, GitHub/GitLab/Bitbucket SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS, AWS IaaS, OT heartbeat (16 adapter types as of this writing). Adding a 17th means one new adapter module plus one `_ADAPTERS` entry — no new scheduler code.
@@ -462,10 +549,14 @@ JWT-based auth system integrated into `api_server.py`. Provides local login with
 | `GET` | `/auth/sso/providers` | List enabled SSO providers |
 | `GET` | `/auth/sso/{provider}/start` | Begin PKCE OAuth flow |
 | `GET` | `/auth/sso/{provider}/callback` | Token exchange + JIT provisioning |
+| `GET` | `/auth/admin/audit-log` | Tamper-evident identity/access audit trail (admin) — `?category=&actor=&limit=` |
+| `GET` | `/auth/admin/audit-log/verify` | Verify the audit trail's hash chain (admin) |
 
 **Middleware:** `_DendraiAuthMiddleware` (Starlette `BaseHTTPMiddleware`) validates JWT on all routes except `/auth/`, `/health`, `/db/status`, `/docs`, `/redoc`, `/openapi.json`, `/mcp/`, `/github/`.
 
 **Database schema:** `auth` PostgreSQL schema with 4 tables — `auth.users`, `auth.password_history`, `auth.sso_identities`, `auth.sessions`.
+
+**Platform audit trail (`observability.audit_log`, `db.py`):** a hash-chained, HMAC-signed, append-only log — same tamper-evidence construction as `evidence_records` (see DevOps Monitoring above), but generic (`category`/`action`/`actor`/`target`/`detail`) rather than SARIF-shaped, and never deduplicated (every call is its own row). A small `_audit()` helper in `auth_endpoints.py` records every login success/failure, logout, SSO JIT-provisioning, role change, user create/delete/activate, password reset, screen-permission edit, and role CRUD (`category="auth"`). `mcp_guards.audit_log()` now writes here too (`category="mcp_tool"`), replacing what used to be a local flat file (`mcp_audit.log`) that was silently wiped on every redeploy since no volume was mounted for it — the flat file is kept only as a last-resort fallback when the database itself is unreachable. Each row's `signature` is `HMAC-SHA256(record_json, AUDIT_SIGNING_KEY)` and `chain_hash = sha256(prev.chain_hash + this.signature)`, inserted under an advisory lock; `db.verify_audit_chain()` walks the table and reports the first broken link, if any. `AUDIT_SIGNING_KEY` is optional — a missing key falls back to a random per-process key (chain-hash tamper-evidence still works; only HMAC re-verification of old signatures is lost across a restart, a documented degradation, not a silent one). Insertion never raises — an audit-logging failure must never block the action it's recording.
 
 ---
 
@@ -644,6 +735,10 @@ Set `DATABASE_URL` to enable a PostgreSQL-backed schema covering:
   - `pipeline_attestations` — OIDC/SLSA/env-hash/Cosign/SBOM pipeline provenance
   - `itsm_tickets` — Jira/ServiceNow tickets tracking findings, with SLA due/breach timestamps
   - `pac_test_runs` — negative-control test run history (schema-contract + corpus results), audit evidence
+  - `identity_role_edges` / `sod_violations` — Oracle Fusion user↔role assignments and open SoD violations, full-refreshed hourly by `identity_graph_sync.py`
+  - `audit_log` — hash-chained, HMAC-signed, append-only platform audit trail (identity/access changes + MCP tool calls) — see "Authentication" above
+- **Journal Entry Testing** — reuses Exception Management's `exception_control_events`/`exception_model_inferences`/`exception_auditor_triage` tables (`control_id` prefixed `JE-*`, `event_type='JOURNAL_ENTRY'`); `raw_payload` is Fernet-encrypted at rest (`CONNECTOR_ENCRYPTION_KEY`) and purged past `EXCEPTION_EVENT_RETENTION_DAYS` (default 400d) by `pii_retention_sweep.py`
+- **Regulatory Change Management** (`regulatory_change_versions`, `regulatory_change_proposals`) — fetched feed-text snapshots (sha256-deduped) and the LLM-drafted proposals awaiting/recording a human decision
 
 Without `DATABASE_URL` the pipeline runs in stateless mode — all data is returned in the API response but nothing is persisted.
 
