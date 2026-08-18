@@ -10,17 +10,19 @@ provider — opening an issue or PR is fully reversible and touches no access
 grant, unlike a future SailPoint entitlement-revoke primitive would.
 
 Used by the closed-loop remediation flow (approvals_endpoints.py's
-remediation_github gate_type): once a manager approves a proposed fix
-(remediation_endpoints.py's propose step), create_issue fires the actual
-GitHub write. create_issue is the flow's only wired action — it needs no
-fabricated code change, just the finding's own facts written up as a tracked
-ticket. create_pull_request is a complete, independently-tested primitive
-(full Git Data API flow: blob -> tree -> commit -> ref -> PR) for a future
-connector-specific fixer that has real file changes ready (e.g. a
-Terraform/branch-protection auto-corrector) — the remediation-proposal flow
-does not call it today, since there's no principled way to synthesize a code
-diff from an arbitrary business-exception finding (a SoD conflict or a
-round-dollar journal entry has no "file" to patch).
+remediation_github / remediation_github_pr gate types): once a manager
+approves a proposed fix, _execute_remediation fires the actual GitHub write —
+create_issue for a proposal with no file target (remediation_endpoints.py's
+POST /remediation/propose/{event_id}, needs no fabricated code change, just
+the finding's own facts written up as a tracked ticket), or
+create_pull_request for one with real file changes ready
+(POST /remediation/propose-pr/{event_id}, full Git Data API flow: blob ->
+tree -> commit -> ref -> PR). Since there's no principled way to
+auto-detect which file an arbitrary business-exception finding (a SoD
+conflict, a round-dollar journal entry) maps to, the PR path requires the
+reviewer to name the file explicitly — get_file_content then reads it,
+Claude drafts the fix, and get_file_content's failure to find a real file at
+that path is exactly what stops a bogus PR from ever being proposed.
 
 Configuration mirrors github_endpoints.py's existing env-var style — that
 file is the one other GitHub integration in this codebase, and it already
@@ -156,6 +158,43 @@ def create_pull_request(title: str, body: str, files: dict[str, str], repo: Opti
         return {"number": data["number"], "url": data["html_url"], "id": data["id"], "branch": branch}
     except Exception as exc:
         logger.warning("github_write_tool.create_pull_request failed for %s: %s", target_repo, exc)
+        return {"error": str(exc)}
+
+
+def get_file_content(path: str, repo: Optional[str] = None, ref: str = "main", timeout: int = 15) -> dict:
+    """Fetch one file's current content via the Contents API — the starting
+    point for a PR-based remediation (create_pull_request commits full new
+    file contents, so a caller needs the current content to base an edit on;
+    unlike create_issue, there is no principled way to propose a file fix
+    without first reading the file). Returns {"content": str, "sha": str} on
+    success, decoded from the API's base64 encoding, or {"error": "..."} —
+    including when the decoded bytes aren't valid UTF-8 text, since a binary
+    file has no line-level fix to propose."""
+    if not _HAS_REQUESTS:
+        return {"error": "requests library required: pip install requests"}
+    if not _token():
+        return {"error": "GITHUB_WRITE_TOKEN is not configured"}
+    target_repo = repo or _default_repo()
+    if not target_repo:
+        return {"error": "No target repo configured (set GITHUB_REMEDIATION_REPO, or pass repo=)"}
+    try:
+        resp = requests.get(
+            f"{_API}/repos/{target_repo}/contents/{path}",
+            headers=_headers(), params={"ref": ref}, timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("encoding") != "base64" or "content" not in data:
+            return {"error": f"Unexpected response shape for {path} (not a single file?)"}
+        import base64
+        raw = base64.b64decode(data["content"])
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"error": f"{path} is not valid UTF-8 text — cannot propose a text-based fix"}
+        return {"content": text, "sha": data["sha"]}
+    except Exception as exc:
+        logger.warning("github_write_tool.get_file_content failed for %s/%s: %s", target_repo, path, exc)
         return {"error": str(exc)}
 
 

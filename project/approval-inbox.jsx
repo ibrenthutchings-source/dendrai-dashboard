@@ -16,10 +16,14 @@ const GATE_TYPE_LABEL = {
   // branch-protection weakness — same generic approval_tasks workflow, no
   // schema change (gate_type is free-text, per approvals_endpoints.py).
   devops_scm_exception: "DevOps Monitoring · SCM Exception",
-  // Closed-loop remediation (remediation_endpoints.py): the only gate_type
+  // Closed-loop remediation (remediation_endpoints.py): the only gate_types
   // whose approval fires a real external write (github_write_tool.py) —
-  // "Approve" here doesn't just record a decision, it opens the GitHub issue.
+  // "Approve" here doesn't just record a decision, it opens the GitHub
+  // issue/PR. remediation_github has no file target (just a tracked
+  // ticket); remediation_github_pr commits real file changes the reviewer
+  // named explicitly — see the diff preview below.
   remediation_github: "Closed-Loop Remediation · GitHub Issue",
+  remediation_github_pr: "Closed-Loop Remediation · GitHub PR",
 };
 
 const _REMEDIATION_STATUS_LABEL = {
@@ -48,7 +52,7 @@ function RemediationActivityRow({ task, onRetry, retrying }) {
           {succeeded && (
             <a className="mono" href={result.url} target="_blank" rel="noreferrer"
               style={{ fontSize: 11, color: "var(--green-ink)", fontWeight: 700 }}>
-              Issue #{result.number} opened →
+              {task.gate_type === "remediation_github_pr" ? "PR" : "Issue"} #{result.number} opened →
             </a>
           )}
           {failed && (
@@ -135,6 +139,30 @@ function formatAdjustmentValue(key, v) {
   return String(v);
 }
 
+// remediation_github_pr proposals carry a unified diff under the
+// underscore-prefixed "_diff" adjustment key (see remediation_endpoints.py's
+// propose_pr_remediation) — hidden from AdjustmentSummary's generic chip
+// list on purpose, shown here instead as an actual reviewable diff, since a
+// manager approving a real file-change PR needs to see the change itself,
+// not just a title/body like the issue flow shows.
+function PrDiffPreview({ diff, filePath }) {
+  if (!diff) return null;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 4 }}>
+        PROPOSED DIFF{filePath ? ` — ${filePath}` : ""}
+      </div>
+      <pre className="mono" style={{
+        fontSize: 10.5, lineHeight: 1.5, margin: 0, padding: "10px 12px", borderRadius: 6,
+        background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)",
+        maxHeight: 320, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word",
+      }}>
+        {diff}
+      </pre>
+    </div>
+  );
+}
+
 function AdjustmentSummary({ adjustments }) {
   if (!adjustments) return null;
   const entries = Object.entries(adjustments).filter(([k, v]) => !k.startsWith("_") && v !== undefined);
@@ -209,6 +237,9 @@ function InboxItem({ item, onDecide }) {
             </div>
           )}
           <AdjustmentSummary adjustments={item.adjustments} />
+          {item.gate_type === "remediation_github_pr" && (
+            <PrDiffPreview diff={item.adjustments?._diff} filePath={item.adjustments?.file_path} />
+          )}
           {item.ai_suggested && (
             <div className="mono" style={{ fontSize: 10, marginTop: 8, color: item.ai_accepted ? "var(--green-ink)" : "var(--amber-ink)" }}>
               <Icon name="spark" size={10} />{" "}

@@ -849,6 +849,15 @@ window.MCP = (function () {
     return _post(`/remediation/propose/${eventId}`, {});
   }
 
+  /** Draft a real GitHub PR fixing one named file for a finding, and submit
+   * it for manager approval. Unlike proposeRemediation (an issue needs no
+   * file target), the caller must name the specific repo file this finding
+   * maps to — there's no principled way to auto-detect that from an
+   * arbitrary business-exception finding. Returns {task, diff}. */
+  async function proposeRemediationPr(eventId, filePath, repo = null, baseBranch = 'main') {
+    return _post(`/remediation/propose-pr/${eventId}`, { file_path: filePath, repo, base_branch: baseBranch });
+  }
+
   // ── Regulatory Change Management — regulatory_change_endpoints.py ─────────────
 
   /** Fetch the horizon-scanning feeds, diff against the last snapshot, and
@@ -952,6 +961,7 @@ window.MCP = (function () {
     submitJeTestingDisposition,
     // Closed-loop remediation
     proposeRemediation,
+    proposeRemediationPr,
     // Regulatory Change Management
     regChangeScan,
     regChangeVersions,

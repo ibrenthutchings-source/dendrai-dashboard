@@ -22,9 +22,10 @@ Endpoints:
     GET  /approvals/remediations           Recent closed-loop remediation tasks (any status)
     POST /approvals/remediations/{id}/retry  Re-fire a failed remediation's GitHub write
 
-Closed-loop remediation (gate_type='remediation_github', proposed via
-remediation_endpoints.py) is the first gate type whose approval triggers a
-real external write, not just a DB row — see _execute_remediation below.
+Closed-loop remediation (gate_type='remediation_github' | 'remediation_github_pr',
+proposed via remediation_endpoints.py) is the first gate type whose approval
+triggers a real external write, not just a DB row — an issue for the former,
+a real file-change PR for the latter — see _execute_remediation below.
 """
 
 from __future__ import annotations
@@ -160,8 +161,9 @@ def review_item(req: ReviewRequest, current_user: dict = Depends(require_screen_
     # Closed-loop remediation: "approve = execute" — the manager's approval
     # IS the human-in-the-loop gate; nothing further blocks the write. A
     # rejected proposal fires nothing and the source finding stays open,
-    # same as any other rejected gate item.
-    if updated.get("status") == "manager_approved" and updated.get("gate_type") == "remediation_github":
+    # same as any other rejected gate item. Covers both the issue gate type
+    # and the PR gate type — _execute_remediation itself branches on which.
+    if updated.get("status") == "manager_approved" and updated.get("gate_type") in ("remediation_github", "remediation_github_pr"):
         full_task = db.get_approval_task(updated["id"]) or updated
         _execute_remediation(full_task)
 
@@ -196,34 +198,42 @@ def _create_waiver_from_task(task: dict, approved_by: str) -> None:
 
 
 def _execute_remediation(task: dict) -> None:
-    """Fire the actual GitHub write for an approved remediation_github task,
-    persist the outcome (github_write_tool.py's own {"number","url",...} or
-    {"error": "..."} shape, verbatim) via db.set_approval_task_execution_result,
-    and — only on success — mark the source exception resolved. A failed
-    write is NOT swallowed: execution_result carries the error so the
-    Approval Inbox can offer /approvals/remediations/{id}/retry instead of
-    the task silently vanishing once decided, and the source exception
-    stays open (submit_exception_triage is only called on success).
+    """Fire the actual GitHub write for an approved remediation_github or
+    remediation_github_pr task, persist the outcome (github_write_tool.py's
+    own {"number","url",...} or {"error": "..."} shape, verbatim) via
+    db.set_approval_task_execution_result, and — only on success — mark the
+    source exception resolved. A failed write is NOT swallowed:
+    execution_result carries the error so the Approval Inbox can offer
+    /approvals/remediations/{id}/retry instead of the task silently
+    vanishing once decided, and the source exception stays open
+    (submit_exception_triage is only called on success).
 
-    Called from two places: review_item (manager approved a submitted
-    proposal) and remediation_endpoints.propose_remediation (no manager
-    configured -> auto-approved, same immediate-execution reasoning
-    prepare_item already applies to devops_scm_exception's auto-approve path).
-    Never raises — a remediation failure must not break the approval
-    request/response it was triggered from."""
+    Called from three places: review_item (manager approved a submitted
+    proposal), remediation_endpoints.propose_remediation, and
+    propose_pr_remediation (no manager configured -> auto-approved, same
+    immediate-execution reasoning prepare_item already applies to
+    devops_scm_exception's auto-approve path). Never raises — a remediation
+    failure must not break the approval request/response it was triggered
+    from."""
     adjustments = task.get("adjustments") or {}
     title = adjustments.get("title") or task.get("item_label") or f"Remediation for {task.get('item_ref')}"
     body = adjustments.get("body") or task.get("rationale") or ""
-    labels = adjustments.get("labels") or ["dendrai-remediation"]
     repo = adjustments.get("repo")
+    is_pr = task.get("gate_type") == "remediation_github_pr"
 
-    mcp_guards.audit_log("github_write_tool.create_issue", task_id=task.get("id"),
-                          item_ref=task.get("item_ref"), repo=repo or "default")
+    tool_name = "github_write_tool.create_pull_request" if is_pr else "github_write_tool.create_issue"
+    mcp_guards.audit_log(tool_name, task_id=task.get("id"), item_ref=task.get("item_ref"), repo=repo or "default")
     try:
-        result = github_write_tool.create_issue(title, body, repo=repo, labels=labels)
+        if is_pr:
+            files = adjustments.get("_files") or {}
+            base_branch = adjustments.get("base_branch") or "main"
+            result = github_write_tool.create_pull_request(title, body, files, repo=repo, base_branch=base_branch)
+        else:
+            labels = adjustments.get("labels") or ["dendrai-remediation"]
+            result = github_write_tool.create_issue(title, body, repo=repo, labels=labels)
     except Exception as exc:
         result = {"error": str(exc)}
-    mcp_guards.audit_log("github_write_tool.create_issue.result", task_id=task.get("id"),
+    mcp_guards.audit_log(f"{tool_name}.result", task_id=task.get("id"),
                           ok=not result.get("error"), url=result.get("url") or result.get("error"))
 
     db.set_approval_task_execution_result(task["id"], result)
@@ -232,9 +242,10 @@ def _execute_remediation(task: dict) -> None:
         source_event_id = adjustments.get("source_event_id")
         if source_event_id is not None:
             try:
+                what = "GitHub PR" if is_pr else "GitHub issue"
                 db.submit_exception_triage(
                     int(source_event_id), "system:remediation", "TRUE_CONTROL_FAILURE",
-                    f"Auto-resolved by closed-loop remediation — GitHub issue opened: {result.get('url')}",
+                    f"Auto-resolved by closed-loop remediation — {what} opened: {result.get('url')}",
                 )
             except Exception as exc:
                 logger.warning("remediation: could not auto-resolve source event %s: %s", source_event_id, exc)
@@ -259,7 +270,7 @@ def retry_remediation(task_id: int, current_user: dict = Depends(require_screen_
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
     task = db.get_approval_task(task_id)
-    if not task or task.get("gate_type") != "remediation_github":
+    if not task or task.get("gate_type") not in ("remediation_github", "remediation_github_pr"):
         raise HTTPException(status_code=404, detail=f"No remediation task with id={task_id}")
     if task.get("status") not in ("approved", "manager_approved"):
         raise HTTPException(status_code=409, detail=f"Task is not in an approved state (status: {task.get('status')})")
