@@ -200,8 +200,13 @@ def check_rate_limit(tool_name: str, max_per_minute: int = _DEFAULT_RATE_LIMIT) 
 
 
 # ── Audit logger ───────────────────────────────────────────────────────────────
-# Append-only structured log at agentic-tools/mcp_audit.log.
-# One JSON line per tool call: {"ts":..., "tool":..., <safe summary of key args>}.
+# Structured, tamper-evident tool-call audit log — observability.audit_log
+# (see db.py), hash-chained and HMAC-signed the same way DevOps evidence
+# records are. Previously a local mcp_audit.log flat file: no tamper-evidence,
+# and it lived on the container's ephemeral filesystem, so it was silently
+# wiped on every redeploy/restart. Falls back to the flat file only when the
+# database itself is unavailable (e.g. local dev with no DATABASE_URL), so an
+# audit trail still exists rather than vanishing entirely.
 
 _audit_log_path = _TOOLS_DIR / "mcp_audit.log"
 _audit_lock     = threading.Lock()
@@ -209,16 +214,25 @@ _audit_lock     = threading.Lock()
 
 def audit_log(tool_name: str, **kwargs: object) -> None:
     """
-    Append a one-line JSON entry to mcp_audit.log.
+    Record one structured tool-call audit entry.
     Pass safe key-value summaries as kwargs (NOT raw secrets/credentials).
 
     Example:
         audit_log("edgar_risk_factors", ticker="AAPL", max_filings=2)
     """
+    detail = {k: str(v)[:120] for k, v in kwargs.items()}
+    try:
+        import db
+        if db.is_available():
+            db.insert_audit_log_entry("mcp_tool", tool_name, detail=detail)
+            return
+    except Exception:
+        pass  # fall through to the flat-file fallback below
+
     entry = {
         "ts":   datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "tool": tool_name,
-        **{k: str(v)[:120] for k, v in kwargs.items()},
+        **detail,
     }
     line = json.dumps(entry, separators=(",", ":"))
     try:

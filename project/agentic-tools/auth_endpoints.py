@@ -30,6 +30,8 @@ PUT  /auth/admin/roles/{id}                    Update a role's description, admi
 DELETE /auth/admin/roles/{id}                  Delete a role (blocked if system role or has assigned users), admin only
 GET  /auth/admin/roles/{id}/permissions        Get a role's default screen permissions, admin only
 PUT  /auth/admin/roles/{id}/permissions        Replace a role's default screen permissions, admin only
+GET  /auth/admin/audit-log                     Tamper-evident identity/access audit trail, admin only
+GET  /auth/admin/audit-log/verify              Verify the audit trail's hash chain, admin only
 
 Dependencies (pip install):
     passlib[bcrypt]     password hashing
@@ -60,8 +62,21 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 import auth_db
+import db
 
 logger = logging.getLogger("auth.endpoints")
+
+
+def _audit(action: str, actor: Optional[str], target: Optional[str] = None,
+           detail: Optional[dict] = None, request: Optional[Request] = None) -> None:
+    """Record an identity/access event to the tamper-evident audit trail
+    (observability.audit_log — see db.py). Never raises: an audit-logging
+    failure must not block the login/admin action it's recording."""
+    ip = request.client.host if request and request.client else None
+    try:
+        db.insert_audit_log_entry("auth", action, actor=actor, target=target, detail=detail, ip_address=ip)
+    except Exception as exc:
+        logger.warning("audit log write failed for action=%s: %s", action, exc)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -510,17 +525,21 @@ async def local_login(req: LoginRequest, request: Request, response: Response):
     # Constant-time path — always verify something to prevent timing attacks
     if not user or not user.get("password_hash"):
         _pwd_ctx.dummy_verify()
+        _audit("login_failed", req.username, detail={"reason": "invalid_credentials"}, request=request)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.get("is_active"):
         _pwd_ctx.dummy_verify()
+        _audit("login_failed", req.username, detail={"reason": "account_inactive"}, request=request)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not _pwd_ctx.verify(req.password, user["password_hash"]):
+        _audit("login_failed", req.username, detail={"reason": "invalid_credentials"}, request=request)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     _rate_clear(ip)
     _finish_login(user, request, response)
+    _audit("login", user["username"], request=request)
 
     return {
         "ok":   True,
@@ -544,6 +563,7 @@ def logout(
         payload = decode_jwt(dendrai_session)
         if payload and payload.get("jti"):
             auth_db.revoke_session(payload["jti"])
+            _audit("logout", payload.get("username"))
     _clear_cookie(response)
     return {"ok": True}
 
@@ -623,6 +643,23 @@ def set_my_preferences(prefs: Dict[str, Any] = Body(...), current_user: dict = D
 # role claim from the request body, and blocks an admin from locking
 # themselves out (self-demotion / self-deactivation).
 
+@router.get("/admin/audit-log", summary="Tamper-evident identity/access audit trail (admin)")
+def admin_audit_log(
+    category: Optional[str] = None, actor: Optional[str] = None, limit: int = 200,
+    current_user: dict = Depends(require_admin),
+):
+    """Queryable answer to 'who changed what, and when' — observability.audit_log
+    (see db.py) records every login/logout, role change, user create/delete,
+    password reset, and screen-permission edit, chain-hashed so a deleted or
+    reordered row is detectable (see GET .../audit-log/verify)."""
+    return {"entries": db.list_audit_log(category=category, actor=actor, limit=limit)}
+
+
+@router.get("/admin/audit-log/verify", summary="Verify the audit trail's tamper-evidence chain (admin)")
+def admin_audit_log_verify(current_user: dict = Depends(require_admin)):
+    return db.verify_audit_chain()
+
+
 @router.get("/admin/model-config", summary="Claude model configuration & fallback status (admin)")
 def admin_model_config(current_user: dict = Depends(require_admin)):
     """
@@ -663,6 +700,8 @@ def admin_set_role(user_id: int, req: AdminSetRoleRequest, current_user: dict = 
         raise HTTPException(status_code=404, detail="User not found")
     if not auth_db.set_role(user_id, req.role):
         raise HTTPException(status_code=500, detail="Failed to update role")
+    _audit("role_changed", current_user["username"], target=target["username"],
+           detail={"old_role": target.get("role"), "new_role": req.role})
     return {"ok": True, "role": req.role}
 
 
@@ -677,6 +716,8 @@ def admin_set_active(user_id: int, req: AdminSetActiveRequest, current_user: dic
         raise HTTPException(status_code=500, detail="Failed to update active status")
     if not req.is_active:
         auth_db.revoke_all_user_sessions(user_id)
+    _audit("user_activated" if req.is_active else "user_deactivated",
+           current_user["username"], target=target["username"])
     return {"ok": True, "is_active": req.is_active}
 
 
@@ -719,6 +760,8 @@ def admin_create_user(req: AdminCreateUserRequest, current_user: dict = Depends(
     if not uid:
         raise HTTPException(status_code=400, detail="Could not create user (username or email may already be in use)")
     auth_db.add_password_history(uid, pw_hash)
+    _audit("user_created", current_user["username"], target=username,
+           detail={"role": req.role, "generated_password": generated})
 
     return {"ok": True, "user": auth_db.get_user_by_id(uid), "generated_password": password if generated else None}
 
@@ -765,6 +808,8 @@ def admin_set_password(user_id: int, req: AdminSetPasswordRequest, current_user:
     # flow it was built for — an admin-issued password should still force a change.
     auth_db.set_must_change_pw(user_id, True)
     auth_db.revoke_all_user_sessions(user_id)
+    _audit("password_reset_by_admin", current_user["username"], target=target["username"],
+           detail={"generated": generated})
     return {"ok": True, "generated_password": password if generated else None}
 
 
@@ -777,6 +822,7 @@ def admin_delete_user(user_id: int, current_user: dict = Depends(require_admin))
         raise HTTPException(status_code=404, detail="User not found")
     if not auth_db.delete_user(user_id):
         raise HTTPException(status_code=500, detail="Failed to remove user")
+    _audit("user_deleted", current_user["username"], target=target["username"])
     return {"ok": True}
 
 
@@ -804,6 +850,8 @@ def admin_set_screen_permissions(user_id: int, req: SetScreenPermissionsRequest,
     ok = auth_db.set_screen_permissions(user_id, [p.model_dump() for p in req.permissions])
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to save screen permissions")
+    _audit("screen_permissions_changed", current_user["username"], target=target["username"],
+           detail={"permissions": [p.model_dump() for p in req.permissions]})
     return {"ok": True, "user_id": user_id, "permissions": auth_db.get_screen_permissions(user_id)}
 
 
@@ -828,6 +876,7 @@ def admin_create_role(req: CreateRoleRequest, current_user: dict = Depends(requi
     role_id = auth_db.create_role(name, req.description)
     if not role_id:
         raise HTTPException(status_code=500, detail="Failed to create role")
+    _audit("role_created", current_user["username"], target=name, detail={"description": req.description})
     return {"ok": True, "role_id": role_id}
 
 
@@ -843,6 +892,7 @@ def admin_delete_role(role_id: int, current_user: dict = Depends(require_admin))
     err = auth_db.delete_role(role_id)
     if err:
         raise HTTPException(status_code=409, detail=err)
+    _audit("role_deleted", current_user["username"], target=str(role_id))
     return {"ok": True}
 
 
@@ -856,6 +906,8 @@ def admin_set_role_permissions(role_id: int, req: SetScreenPermissionsRequest, c
     ok = auth_db.set_role_screen_permissions(role_id, [p.model_dump() for p in req.permissions])
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to save role permissions")
+    _audit("role_permissions_changed", current_user["username"], target=str(role_id),
+           detail={"permissions": [p.model_dump() for p in req.permissions]})
     return {"ok": True, "role_id": role_id, "permissions": auth_db.get_role_screen_permissions(role_id)}
 
 
@@ -890,6 +942,7 @@ def change_password(
         raise HTTPException(status_code=500, detail="Password update failed.")
 
     auth_db.revoke_all_user_sessions(current_user["id"])
+    _audit("password_changed", current_user["username"], target=current_user["username"])
     return {"ok": True, "message": "Password updated. Please log in again."}
 
 
@@ -1008,6 +1061,7 @@ async def sso_callback(
             if uid:
                 auth_db.link_sso_identity(uid, provider, provider_id, email)
                 user = auth_db.get_user_by_id(uid)
+                _audit("user_created", f"sso:{provider}", target=base, detail={"jit_provisioned": True})
 
     if not user:
         return RedirectResponse("/?auth_error=provisioning_failed", status_code=302)
@@ -1015,4 +1069,5 @@ async def sso_callback(
         return RedirectResponse("/?auth_error=account_inactive", status_code=302)
 
     _finish_login(user, request, response)
+    _audit("login", user["username"], detail={"provider": provider}, request=request)
     return RedirectResponse("/", status_code=302)
