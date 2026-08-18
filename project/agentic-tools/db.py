@@ -2319,6 +2319,32 @@ CREATE INDEX IF NOT EXISTS idx_itsm_tickets_sla_sweep
     WHERE sla_breached_at IS NULL AND status NOT IN ('closed', 'cancelled');
 CREATE INDEX IF NOT EXISTS idx_itsm_tickets_system
     ON observability.itsm_tickets (external_system, status);
+
+-- Platform-wide tamper-evident audit trail (identity/access changes + MCP
+-- tool calls). Distinct from evidence_records above (SARIF/SAST-shaped,
+-- scoped to DevOps findings) — this is a generic append-only ledger for "who
+-- did what, when", reusing the same hash-chain + HMAC-signature discipline
+-- rather than inventing a second tamper-evidence mechanism. category
+-- distinguishes the current producers: auth_endpoints.py's admin/session
+-- actions, and mcp_guards.py's MCP tool-call log (which used to be a local
+-- flat file, wiped on every redeploy since no volume is mounted for it).
+CREATE TABLE IF NOT EXISTS observability.audit_log (
+    id            BIGSERIAL    PRIMARY KEY,
+    occurred_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    category      VARCHAR(32)  NOT NULL,   -- auth | mcp_tool | ...
+    action        VARCHAR(64)  NOT NULL,   -- e.g. login, admin_set_role, user_created
+    actor         VARCHAR(128),            -- who did it (username, or 'system')
+    target        VARCHAR(128),            -- affected user/resource, if any
+    ip_address    TEXT,
+    detail        JSONB,                   -- old/new values, or a safe kwargs summary
+    record_json   JSONB        NOT NULL,   -- canonical payload the signature below covers
+    signature     CHAR(64)     NOT NULL,   -- HMAC-SHA256(record_json, AUDIT_SIGNING_KEY)
+    chain_hash    CHAR(64)                 -- sha256(prev_row.chain_hash + this row's signature)
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_category
+    ON observability.audit_log (category, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor
+    ON observability.audit_log (actor, occurred_at DESC);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -9774,6 +9800,43 @@ _VALID_TRIAGE_LABELS = {
 _TRIAGE_NOTES_REQUIRED_LABELS = {"TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"}
 
 
+
+# exception_control_events.raw_payload can carry PII pulled straight from a
+# source-system event (employee names/emails from HR/SoD connectors,
+# transaction detail) — encrypted at rest here the same way mcp_governance.py
+# encrypts payroll_detail/treasury_detail sub-keys, but wrapping the whole
+# payload rather than named sub-keys, since raw_payload's shape varies by
+# connector and there's no single well-known PII sub-key to target generically.
+# actor is left as plaintext: it's an equality-filtered column (JE Testing's
+# "filter by preparer", Exception Management's triage view), and Fernet
+# encryption is randomized, so an encrypted actor could never be filtered on
+# without a separate blind-index column — out of scope for this pass.
+_RAW_PAYLOAD_ENC_KEY = "_enc"
+
+
+def _encrypt_raw_payload(raw_payload: Optional[dict]) -> Optional[dict]:
+    if not raw_payload:
+        return raw_payload
+    try:
+        return {_RAW_PAYLOAD_ENC_KEY: encrypt_sensitive_json(raw_payload)}
+    except Exception as exc:
+        logging.getLogger("db").warning(
+            "Could not encrypt exception_control_events.raw_payload (storing as "
+            "plaintext — set CONNECTOR_ENCRYPTION_KEY to enable at-rest encryption): %s", exc,
+        )
+        return raw_payload
+
+
+def _decrypt_raw_payload(raw_payload: Optional[dict]) -> Optional[dict]:
+    if not raw_payload or _RAW_PAYLOAD_ENC_KEY not in raw_payload:
+        return raw_payload
+    try:
+        return decrypt_sensitive_json(raw_payload[_RAW_PAYLOAD_ENC_KEY])
+    except Exception as exc:
+        logging.getLogger("db").warning("Could not decrypt exception_control_events.raw_payload: %s", exc)
+        return raw_payload
+
+
 def insert_exception_event(control_id: str, system_source: str, process: Optional[str],
                             event_timestamp, features: dict, model_version: str,
                             anomaly_score: float, uncertainty_score: float,
@@ -9783,7 +9846,9 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                             system_telemetry_id: Optional[int] = None) -> Optional[int]:
     """One exception_control_events row + its exception_model_inferences row,
     in a single connection — connector_poller.py's per-event scoring hook
-    calls this for every polled event once deploy_env.IS_DEVELOPMENT."""
+    calls this for every polled event once deploy_env.IS_DEVELOPMENT, and
+    je_testing_sweep.py calls it unconditionally for JE findings."""
+    raw_payload = _encrypt_raw_payload(raw_payload)
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -9848,7 +9913,7 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> l
                         "event_timestamp": r[4].isoformat() if r[4] else None,
                         "point_in_time_features": r[5] or {},
                         "actor": r[6], "action": r[7], "event_type": r[8],
-                        "raw_payload": r[9] or {}, "system_telemetry_id": r[10],
+                        "raw_payload": _decrypt_raw_payload(r[9]) or {}, "system_telemetry_id": r[10],
                         "inference_id": r[11], "model_version": r[12],
                         "anomaly_score": float(r[13]), "uncertainty_score": float(r[14]),
                         "scored_at": r[15].isoformat() if r[15] else None,
@@ -10050,7 +10115,7 @@ def list_je_testing_findings(limit: int = 100, offset: int = 0, rule_id: Optiona
                     out.append({
                         "event_id": r[0], "rule_id": r[1], "system_source": r[2], "process": r[3],
                         "event_timestamp": r[4].isoformat() if r[4] else None, "preparer": r[5],
-                        "finding": r[6] or {}, "anomaly_score": float(r[7]),
+                        "finding": _decrypt_raw_payload(r[6]) or {}, "anomaly_score": float(r[7]),
                         "requires_human_review": r[8],
                         "resolution_label": r[9], "reviewed_at": r[10].isoformat() if r[10] else None,
                     })
@@ -10886,6 +10951,157 @@ def verify_evidence_chain(limit: Optional[int] = None) -> dict:
                                "unchained_legacy_count": 0, "error": "query failed"})
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Platform audit trail (observability.audit_log) — tamper-evident log of
+# identity/access changes (auth_endpoints.py) and MCP tool calls
+# (mcp_guards.py), replacing the latter's flat-file logger. Same hash-chain
+# construction as evidence_records above, kept as a separate table because its
+# rows carry a different shape (actor/action/target, not a SARIF finding) and
+# are never deduplicated — every call is its own event, not a re-ingest.
+# ─────────────────────────────────────────────────────────────────────────────
+
+AUDIT_CHAIN_GENESIS_HASH = "0" * 64
+_AUDIT_CHAIN_LOCK_KEY = 274_581_396  # distinct advisory-lock key from _EVIDENCE_CHAIN_LOCK_KEY
+_audit_signing_key_cache: Optional[str] = None
+
+
+def _audit_signing_key() -> str:
+    """AUDIT_SIGNING_KEY should be set explicitly in production so HMAC
+    signatures stay verifiable across restarts (same reasoning as
+    EVIDENCE_SIGNING_KEY's docstring in .env.example). Unlike
+    CONNECTOR_ENCRYPTION_KEY, a missing key must NOT block the login/admin
+    action being audited — so this falls back to a random key generated once
+    per process and cached, rather than raising. The chain_hash linkage still
+    catches row deletion/reordering regardless of key stability; only HMAC
+    re-verification of old signatures is lost across a restart without an
+    explicit key, which is a documented degradation, not a silent one."""
+    global _audit_signing_key_cache
+    key = os.environ.get("AUDIT_SIGNING_KEY", "").strip()
+    if key:
+        return key
+    if _audit_signing_key_cache is None:
+        import secrets as _secrets
+        _audit_signing_key_cache = _secrets.token_hex(32)
+        logging.getLogger("db").warning(
+            "AUDIT_SIGNING_KEY is not set — using a random per-process key. "
+            "Audit log entries will still chain-hash correctly, but HMAC "
+            "signatures won't re-verify after a restart. Set AUDIT_SIGNING_KEY "
+            "for durable tamper-evidence."
+        )
+    return _audit_signing_key_cache
+
+
+def _audit_chain_hash(prev_hash: Optional[str], signature: str) -> str:
+    import hashlib
+    return hashlib.sha256(((prev_hash or AUDIT_CHAIN_GENESIS_HASH) + signature).encode("utf-8")).hexdigest()
+
+
+def insert_audit_log_entry(
+    category: str, action: str, actor: Optional[str] = None, target: Optional[str] = None,
+    detail: Optional[dict] = None, ip_address: Optional[str] = None,
+) -> Optional[int]:
+    """Insert one immutable, chain-hashed audit row. Never raises — audit
+    logging must not block the action it's auditing (same discipline
+    mcp_guards.audit_log already followed for its flat-file log); callers
+    that care can check the None return."""
+    import hashlib
+    import hmac as _hmac
+    import json as _json
+
+    record_json = _json.dumps(
+        {"category": category, "action": action, "actor": actor,
+         "target": target, "ip_address": ip_address, "detail": detail},
+        sort_keys=True, default=str,
+    )
+    signature = _hmac.new(
+        _audit_signing_key().encode("utf-8"), record_json.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_AUDIT_CHAIN_LOCK_KEY,))
+                cur.execute("SELECT chain_hash FROM observability.audit_log ORDER BY id DESC LIMIT 1")
+                prev_row = cur.fetchone()
+                prev_hash = prev_row[0] if prev_row else None
+                chain_hash = _audit_chain_hash(prev_hash, signature)
+                cur.execute(
+                    """
+                    INSERT INTO observability.audit_log (
+                        category, action, actor, target, ip_address, detail, record_json, signature, chain_hash
+                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                    RETURNING id
+                    """,
+                    (category, action, actor, target, ip_address,
+                     Json(detail) if detail is not None else None, record_json, signature, chain_hash),
+                )
+                row = cur.fetchone()
+            return row[0] if row else None
+    try:
+        return _run(_do)
+    except Exception as exc:
+        logging.getLogger("db").warning("insert_audit_log_entry failed: %s", exc)
+        return None
+
+
+def list_audit_log(category: Optional[str] = None, actor: Optional[str] = None, limit: int = 200) -> list:
+    """Newest-first, optionally filtered — feeds an admin-facing audit viewer."""
+    def _do():
+        filters, params = [], []
+        if category:
+            filters.append("category = %s"); params.append(category)
+        if actor:
+            filters.append("actor = %s"); params.append(actor)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 1000))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, occurred_at, category, action, actor, target, ip_address, detail
+                    FROM observability.audit_log
+                    {where}
+                    ORDER BY occurred_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("occurred_at"):
+                        d["occurred_at"] = d["occurred_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do, default=[])
+
+
+def verify_audit_chain(limit: Optional[int] = None) -> dict:
+    """Mirrors verify_evidence_chain — walks observability.audit_log in
+    insertion order and recomputes each row's chain_hash from the previous
+    row's chain_hash plus this row's own signature."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                q = "SELECT id, signature, chain_hash FROM observability.audit_log ORDER BY id ASC"
+                if limit:
+                    cur.execute(q + " LIMIT %s", (limit,))
+                else:
+                    cur.execute(q)
+                rows = cur.fetchall()
+        prev_hash = None
+        checked = 0
+        for rid, signature, stored_chain_hash in rows:
+            expected = _audit_chain_hash(prev_hash, signature)
+            checked += 1
+            if expected != stored_chain_hash:
+                return {"valid": False, "checked": checked, "break_at_id": rid}
+            prev_hash = stored_chain_hash
+        return {"valid": True, "checked": checked, "break_at_id": None}
+    return _run(_do, default={"valid": False, "checked": 0, "break_at_id": None, "error": "query failed"})
+
+
 def get_scm_repository_state(resource: str) -> Optional[dict]:
     """Last-known compliance dict for one repo (server_name/repo_ref@branch), or
     None if this is the first audit ever recorded for it."""
@@ -11197,6 +11413,39 @@ def expire_overdue_vendor_soc2() -> list:
                     rows.append(d)
                 return rows
     return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Exception Management retention (exception_control_events)
+# ─────────────────────────────────────────────────────────────────────────────
+# exception_control_events.raw_payload/actor carries unredacted source-system
+# event data (can include employee names/emails from HR/SoD connectors) with
+# no prior TTL — this closes that gap. exception_model_inferences and
+# exception_auditor_triage both reference event_id ON DELETE CASCADE, so
+# deleting the parent row here cleanly removes its scoring/triage history too
+# rather than leaving orphans.
+
+DEFAULT_EXCEPTION_EVENT_RETENTION_DAYS = 400
+
+
+def purge_expired_exception_events(retention_days: int = DEFAULT_EXCEPTION_EVENT_RETENTION_DAYS) -> int:
+    """Delete exception_control_events rows (and their cascaded
+    inferences/triage) older than retention_days, keyed off created_at (when
+    the row was ingested), not event_timestamp (which reflects the source
+    system's own clock and can be backdated by a connector's historical
+    backfill). Returns the number of rows deleted."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM exception_control_events
+                    WHERE created_at < NOW() - (%s || ' days')::interval
+                    """,
+                    (retention_days,),
+                )
+                return cur.rowcount
+    return _run(_do, default=0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

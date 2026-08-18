@@ -147,6 +147,7 @@ import identity_graph_sync
 import je_testing_sweep
 import je_testing_endpoints
 import regulatory_change_endpoints
+import pii_retention_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -312,6 +313,7 @@ async def lifespan(application: FastAPI):
         _connector_hygiene_sweep_task = _vendor_risk_sweep_task = _ai_governance_sweep_task = None
         _identity_graph_sync_task = None
         _je_testing_sweep_task = None
+        _pii_retention_sweep_task = None
         _reconnect_task = None
         _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
@@ -340,6 +342,7 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(ai_governance_sweep.sweep_once, ai_governance_sweep._TICK_S, "AI Governance assessment expiry sweep")),
                 asyncio.create_task(_multi_tenant_loop(identity_graph_sync.sweep_once, identity_graph_sync._TICK_S, "Identity graph sync")),
                 asyncio.create_task(_multi_tenant_loop(je_testing_sweep.sweep_once, je_testing_sweep._TICK_S, "JE Testing sweep")),
+                asyncio.create_task(_multi_tenant_loop(pii_retention_sweep.sweep_once, pii_retention_sweep._TICK_S, "PII retention sweep")),
             ])
             logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
                         len(_multi_tenant_bg_tasks))
@@ -401,6 +404,13 @@ async def lifespan(application: FastAPI):
                 _je_testing_sweep_task = asyncio.create_task(je_testing_sweep.start_sweep())
                 logger.info("JE Testing sweep task started")
 
+            # SOC 2 Privacy (P4/P5): purges exception_control_events rows
+            # (and their cascaded scoring/triage history) past a configurable
+            # retention window — see pii_retention_sweep.py.
+            if db.is_available():
+                _pii_retention_sweep_task = asyncio.create_task(pii_retention_sweep.start_sweep())
+                logger.info("PII retention sweep task started")
+
             # Background DB reconnect loop — retries every 30 s if startup DB init failed.
             # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
             # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -443,6 +453,9 @@ async def lifespan(application: FastAPI):
                         if _je_testing_sweep_task is None:
                             asyncio.create_task(je_testing_sweep.start_sweep())
                             logger.info("JE Testing sweep started after DB reconnect")
+                        if _pii_retention_sweep_task is None:
+                            asyncio.create_task(pii_retention_sweep.start_sweep())
+                            logger.info("PII retention sweep started after DB reconnect")
 
             _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -454,7 +467,7 @@ async def lifespan(application: FastAPI):
             for _bg_task in (_gov_task, _connector_task, _drift_task,
                              _pac_negative_sweep_task, _connector_hygiene_sweep_task,
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
-                             _je_testing_sweep_task,
+                             _je_testing_sweep_task, _pii_retention_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
