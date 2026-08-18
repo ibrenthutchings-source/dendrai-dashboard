@@ -4600,13 +4600,14 @@ def get_approval_tasks_for_run(run_id: int, gate_type: Optional[str] = None) -> 
     return _run(_do) or []
 
 
-# ── Closed-loop remediation (remediation_github gate_type) ──────────────────
+# ── Closed-loop remediation (remediation_github / remediation_github_pr gate types) ──
 
 def set_approval_task_execution_result(task_id: int, result: dict) -> None:
     """Persist the outcome of the actual external write (github_write_tool
-    call) fired once a remediation_github task is approved. `result` is
-    either {"number","url",...} on success or {"error": "..."} on failure —
-    written verbatim, same shape github_write_tool.create_issue returns."""
+    call) fired once a remediation_github or remediation_github_pr task is
+    approved. `result` is either {"number","url",...} on success or
+    {"error": "..."} on failure — written verbatim, same shape
+    github_write_tool.create_issue/create_pull_request both return."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -4618,19 +4619,22 @@ def set_approval_task_execution_result(task_id: int, result: dict) -> None:
 
 
 def list_remediation_tasks(limit: int = 50) -> list:
-    """Recent remediation_github tasks regardless of status, newest first —
-    unlike get_approval_inbox (which only shows 'submitted', awaiting-review
-    items), this is how the Approval Inbox shows what happened AFTER a
-    decision: the created issue/PR link, or a failure to retry."""
+    """Recent closed-loop remediation tasks regardless of status, newest
+    first, covering both remediation_github (issue) and remediation_github_pr
+    (real file-change PR) gate types — unlike get_approval_inbox (which only
+    shows 'submitted', awaiting-review items), this is how the Approval Inbox
+    shows what happened AFTER a decision: the created issue/PR link, or a
+    failure to retry. gate_type is selected so the frontend can distinguish
+    "Issue #N opened" from "PR #N opened"."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, item_ref, item_label, status, adjustments, rationale,
+                    SELECT id, gate_type, item_ref, item_label, status, adjustments, rationale,
                            prepared_by_name, prepared_at, manager_name, reviewed_by_name,
                            reviewed_at, review_comment, execution_result, updated_at
-                    FROM approval_tasks WHERE gate_type = 'remediation_github'
+                    FROM approval_tasks WHERE gate_type IN ('remediation_github', 'remediation_github_pr')
                     ORDER BY updated_at DESC LIMIT %s
                     """,
                     (limit,),

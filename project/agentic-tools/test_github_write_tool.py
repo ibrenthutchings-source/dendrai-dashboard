@@ -171,6 +171,74 @@ def test_create_pull_request_generates_branch_name_when_not_given(monkeypatch):
     assert result["branch"].startswith("remediation/")
 
 
+# ── get_file_content ─────────────────────────────────────────────────────────
+
+def _b64(text: str) -> str:
+    import base64
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def test_get_file_content_success_decodes_base64(monkeypatch):
+    fake = _FakeRequests()
+    _configure(monkeypatch, fake)
+    fake.queue_get("/repos/acme/infra/contents/ci.yml",
+                    _FakeResponse({"encoding": "base64", "content": _b64("name: CI\n"), "sha": "file-sha"}))
+
+    result = gw.get_file_content("ci.yml")
+
+    assert result == {"content": "name: CI\n", "sha": "file-sha"}
+    method, url = fake.calls[0]
+    assert method == "GET" and url == f"{gw._API}/repos/acme/infra/contents/ci.yml"
+
+
+def test_get_file_content_no_token_configured(monkeypatch):
+    fake = _FakeRequests()
+    _configure(monkeypatch, fake, token="")
+    result = gw.get_file_content("ci.yml")
+    assert "error" in result
+    assert fake.calls == []
+
+
+def test_get_file_content_no_repo_configured(monkeypatch):
+    fake = _FakeRequests()
+    _configure(monkeypatch, fake, repo=None)
+    result = gw.get_file_content("ci.yml")
+    assert "error" in result
+    assert fake.calls == []
+
+
+def test_get_file_content_rejects_binary_non_utf8(monkeypatch):
+    fake = _FakeRequests()
+    _configure(monkeypatch, fake)
+    import base64
+    binary_b64 = base64.b64encode(b"\xff\xfe\x00\x01").decode("ascii")
+    fake.queue_get("/repos/acme/infra/contents/logo.png",
+                    _FakeResponse({"encoding": "base64", "content": binary_b64, "sha": "x"}))
+    result = gw.get_file_content("logo.png")
+    assert "error" in result
+    assert "utf-8" in result["error"].lower()
+
+
+def test_get_file_content_unexpected_shape_when_not_a_single_file(monkeypatch):
+    """A directory listing (or any response with no base64 content) must not
+    be treated as file text — same defensive shape check as the rest of this
+    module's HTTP handling."""
+    fake = _FakeRequests()
+    _configure(monkeypatch, fake)
+    fake.queue_get("/repos/acme/infra/contents/somedir",
+                    _FakeResponse([{"name": "a.txt"}, {"name": "b.txt"}]))
+    result = gw.get_file_content("somedir")
+    assert "error" in result
+
+
+def test_get_file_content_http_error_returns_error_dict_not_raise(monkeypatch):
+    fake = _FakeRequests()
+    _configure(monkeypatch, fake)
+    fake.queue_get("/repos/acme/infra/contents/missing.txt", _FakeResponse({"message": "Not Found"}, status_code=404))
+    result = gw.get_file_content("missing.txt")
+    assert "error" in result
+
+
 # ── test_connection ────────────────────────────────────────────────────────────
 
 def test_test_connection_success_when_push_access(monkeypatch):

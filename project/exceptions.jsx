@@ -151,6 +151,8 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
   const [remediation, setRemediation] = React.useState(null);
   const [remediating, setRemediating] = React.useState(false);
   const [remediationError, setRemediationError] = React.useState(null);
+  const [showPrForm, setShowPrForm] = React.useState(false);
+  const [prFilePath, setPrFilePath] = React.useState("");
 
   async function handleSubmit(label, notes) {
     setSubmitting(true);
@@ -171,6 +173,24 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
     try {
       const { task } = await window.MCP.proposeRemediation(row.event_id);
       setRemediation(task);
+    } catch (e) {
+      setRemediationError(e.message || String(e));
+    } finally {
+      setRemediating(false);
+    }
+  }
+
+  async function handleProposePr() {
+    if (!prFilePath.trim()) {
+      setRemediationError("Enter the repo file path this finding maps to.");
+      return;
+    }
+    setRemediating(true);
+    setRemediationError(null);
+    try {
+      const { task } = await window.MCP.proposeRemediationPr(row.event_id, prFilePath.trim());
+      setRemediation(task);
+      setShowPrForm(false);
     } catch (e) {
       setRemediationError(e.message || String(e));
     } finally {
@@ -213,8 +233,27 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
                   {remediating ? "Drafting…" : "Propose remediation"}
                 </button>
               )}
+              {!remediation && !showPrForm && (
+                <button type="button" className="btn btn-sm" disabled={remediating} onClick={() => setShowPrForm(true)}
+                  title="Draft a real GitHub pull request fixing a specific repo file for this finding">
+                  Propose PR fix
+                </button>
+              )}
             </div>
           </div>
+          {showPrForm && !remediation && (
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, marginBottom: 4 }} onClick={e => e.stopPropagation()}>
+              <input type="text" placeholder="e.g. .github/workflows/ci.yml" value={prFilePath}
+                onChange={e => setPrFilePath(e.target.value)}
+                style={{ fontSize: 11, padding: "4px 7px", border: "1px solid var(--line)", borderRadius: 4, minWidth: 240, flex: 1 }} />
+              <button type="button" className="btn btn-sm" disabled={remediating} onClick={handleProposePr}>
+                {remediating ? "Drafting…" : "Draft PR"}
+              </button>
+              <button type="button" className="btn btn-sm btn-ghost" disabled={remediating} onClick={() => setShowPrForm(false)}>
+                Cancel
+              </button>
+            </div>
+          )}
           <div style={{ fontSize: 11, color: "var(--ink)", marginTop: 4, marginBottom: 8 }}>
             {row.event_type ? <span className="mono" style={{ fontSize: 10 }}>{row.event_type}</span> : <span style={{ color: "var(--ink-4)" }}>Event type not captured</span>}
             {row.actor && <span style={{ color: "var(--ink-3)" }}> — performed by {row.actor}</span>}
@@ -225,7 +264,7 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
           {remediationError && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 8 }}>{remediationError}</div>}
           {remediation && (
             <div className="mono" style={{ fontSize: 10.5, color: "var(--acc-ink)", marginTop: 8 }}>
-              Remediation proposed — {remediation.status === "submitted" ? "awaiting manager approval" : `status: ${remediation.status}`} in the Approval Inbox.
+              {remediation.gate_type === "remediation_github_pr" ? "GitHub PR fix" : "Remediation"} proposed — {remediation.status === "submitted" ? "awaiting manager approval" : `status: ${remediation.status}`} in the Approval Inbox.
             </div>
           )}
           {error && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 8 }}>{error}</div>}
