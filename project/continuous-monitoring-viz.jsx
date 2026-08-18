@@ -96,9 +96,24 @@ const CATEGORICAL_PALETTE = [
 ];
 
 // ── Dimension: Core Domain — fixed known set, so colors are assigned by
-// position in that list rather than order of appearance. ──
+// position in that list rather than order of appearance.
+//
+// Identity & Access Management is split into its rule-family sub-domains
+// right here rather than as a separate dimension/tab — IAM alone is 86% of
+// all ADJUDICATED domain-classified volume (see pol_domain_mappings.
+// IAM_SUBDOMAIN_MAPPINGS's module comment), almost entirely one system-
+// agnostic-by-design rule, and SoD/privilege conflicts, stale-access
+// governance, and repo/branch-access bypass are three different
+// remediation owners today flattened into one bar. Every other domain
+// stays a single bucket — this is IAM-specific granularity, not a general
+// two-tier taxonomy. A row whose domain resolves to IAM but whose specific
+// rule isn't yet in IAM_SUBDOMAIN_MAPPINGS (the itgc catch-all, mostly)
+// lands in "IAM: Other" rather than disappearing. ──
 const DOMAIN_ORDER = [
-  "Identity & Access Management",
+  "IAM: SoD & Privilege Conflicts",
+  "IAM: Access Governance & Reviews",
+  "IAM: Repo & Branch Access",
+  "IAM: Other",
   "Financial Reporting & Controls",
   "Cyber Security & Data Protection",
   "Third-Party & Vendor Risk",
@@ -110,11 +125,16 @@ const DOMAIN_ORDER = [
   "Unclassified",
 ];
 const DOMAIN_COLOR_MAP = Object.fromEntries(DOMAIN_ORDER.map((d, i) => [d, CATEGORICAL_PALETTE[i % CATEGORICAL_PALETTE.length]]));
+const _IAM_DOMAIN = "Identity & Access Management";
+function domainGroupLabel(e) {
+  if (e.domain !== _IAM_DOMAIN) return e.domain || "Unclassified";
+  return `IAM: ${e.sub_domain || "Other"}`;
+}
 const DOMAIN_DIM = {
   key: "domain",
   label: "Core Domain",
   noun: "domain",
-  extract: e => e.domain || "Unclassified",
+  extract: domainGroupLabel,
   order: DOMAIN_ORDER,
   color: v => DOMAIN_COLOR_MAP[v || "Unclassified"] || "#64748b",
 };
@@ -137,39 +157,18 @@ const SOURCE_SYSTEM_DIM = {
   color: sourceSystemColor,
 };
 
-// ── Dimension: Identity & Access Management sub-domain — IAM is 86% of all
-// ADJUDICATED domain-classified volume (see pol_domain_mappings.
-// IAM_SUBDOMAIN_MAPPINGS's module comment), almost entirely one system-
-// agnostic-by-design rule. A second, finer grouping within that one Core
-// Domain tile: SoD/privilege conflicts, stale-access governance, and repo/
-// branch-access bypass are three different remediation owners today
-// flattened into one count. Non-IAM events land in a single honest "Other
-// Domains" bucket rather than disappearing — this view answers "what's
-// inside IAM," not "replace the Core Domain view." ──
-const IAM_SUBDOMAIN_ORDER = [
-  "SoD & Privilege Conflicts",
-  "Access Governance & Reviews",
-  "Repo & Branch Access",
-  "IAM — Other",
-  "Other Domains",
-];
-const IAM_SUBDOMAIN_COLOR_MAP = Object.fromEntries(IAM_SUBDOMAIN_ORDER.map((d, i) => [d, CATEGORICAL_PALETTE[i % CATEGORICAL_PALETTE.length]]));
-const IAM_SUBDOMAIN_DIM = {
-  key: "sub_domain",
-  label: "IAM Sub-Domain",
-  noun: "IAM sub-domain",
-  extract: e => e.domain === "Identity & Access Management" ? (e.sub_domain || "IAM — Other") : "Other Domains",
-  order: IAM_SUBDOMAIN_ORDER,
-  color: v => IAM_SUBDOMAIN_COLOR_MAP[v] || "#64748b",
-};
-
 // Click-through: cem.jsx's Adjudications tab (UBOGovPanel) accepts an
-// `initialFilter` of { domain, source, tier, verdict } (see cem.jsx). Only
-// "domain" and "source_system" map to a real Adjudications-tab filter column
-// — sub_domain (IAM_SUBDOMAIN_DIM) has no corresponding column there, so it
-// resolves to no group-specific filter rather than silently reusing another
-// dimension's key (the previous `: "source"` fallback was only ever correct
-// because SOURCE_SYSTEM_DIM was the only non-domain dimension in existence).
+// `initialFilter` of { domain, source, tier, verdict } (see cem.jsx) — and
+// its "domain" filter only knows the real Core Domain values (e.g.
+// "Identity & Access Management"), not the "IAM: SoD & Privilege Conflicts"
+// display sub-label DOMAIN_DIM.extract produces. This maps a clicked group
+// value back to the real filterable value before building the CEM filter.
+function domainFilterValue(dim, groupValue) {
+  if (dim.key === "domain" && typeof groupValue === "string" && groupValue.startsWith("IAM: ")) {
+    return _IAM_DOMAIN;
+  }
+  return groupValue;
+}
 function groupFilterKey(dim) {
   if (dim.key === "domain") return "domain";
   if (dim.key === "source_system") return "source";
@@ -177,7 +176,7 @@ function groupFilterKey(dim) {
 }
 function groupCemFilter(dim, groupValue, extra) {
   const key = groupFilterKey(dim);
-  const f = key && groupValue ? { [key]: groupValue } : {};
+  const f = key && groupValue ? { [key]: domainFilterValue(dim, groupValue) } : {};
   return { ...f, ...extra };
 }
 // Same idea for a Flow Graph node of any kind (group/tier/verdict/rule) —
@@ -2111,11 +2110,7 @@ export function ContinuousMonitoringSourceSystemViz({ onNavigate } = {}) {
   return <ContinuousMonitoringGroupedViz dim={SOURCE_SYSTEM_DIM} onNavigate={onNavigate} />;
 }
 
-export function ContinuousMonitoringIamSubdomainViz({ onNavigate } = {}) {
-  return <ContinuousMonitoringGroupedViz dim={IAM_SUBDOMAIN_DIM} onNavigate={onNavigate} />;
-}
-
 Object.assign(window, {
-  ContinuousMonitoringDomainViz, ContinuousMonitoringSourceSystemViz, ContinuousMonitoringIamSubdomainViz,
+  ContinuousMonitoringDomainViz, ContinuousMonitoringSourceSystemViz,
   EventReplayChart, DimensionSankey, DimensionHeatGrid, DimensionFlowGraph, CaseFlowGraph,
 });

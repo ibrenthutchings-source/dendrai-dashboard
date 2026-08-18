@@ -7,7 +7,7 @@
 
    Data comes from GET /api/mcp/observability/command-center.
    ============================================================ */
-import { ContinuousMonitoringDomainViz, ContinuousMonitoringSourceSystemViz, ContinuousMonitoringIamSubdomainViz } from "./continuous-monitoring-viz.jsx";
+import { ContinuousMonitoringDomainViz, ContinuousMonitoringSourceSystemViz } from "./continuous-monitoring-viz.jsx";
 
 function _cmBase() {
   return (window.MCP_API_BASE || "/api/mcp") + "/observability";
@@ -202,7 +202,7 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
           </div>
 
           <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            {[["domain", "By Core Domain & Risk"], ["legacy", "Adjudication Flow"], ["iam", "IAM Breakdown"]].map(([v, label]) => (
+            {[["domain", "By Core Domain & Risk"], ["legacy", "Adjudication Flow"]].map(([v, label]) => (
               <button key={v} type="button" onClick={() => setEvidenceView(v)}
                 style={{
                   fontSize: 11, padding: "5px 12px", borderRadius: 5, cursor: "pointer",
@@ -216,9 +216,9 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
             ))}
           </div>
 
-          {evidenceView === "domain" && <ContinuousMonitoringDomainViz onNavigate={goTo} />}
-          {evidenceView === "legacy" && <ContinuousMonitoringSourceSystemViz onNavigate={goTo} />}
-          {evidenceView === "iam" && <ContinuousMonitoringIamSubdomainViz onNavigate={goTo} />}
+          {evidenceView === "domain"
+            ? <ContinuousMonitoringDomainViz onNavigate={goTo} />
+            : <ContinuousMonitoringSourceSystemViz onNavigate={goTo} />}
 
           <div style={{ height: 28 }} />
 
