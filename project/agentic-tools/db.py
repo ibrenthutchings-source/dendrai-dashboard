@@ -10774,6 +10774,39 @@ def record_poll_result(connector_id: int, status: str, error: Optional[str] = No
 # ─────────────────────────────────────────────────────────────────────────────
 # DevOps Monitoring: SARIF/SAST evidence records (observability.evidence_records)
 # ─────────────────────────────────────────────────────────────────────────────
+# HMAC signing (EVIDENCE_SIGNING_KEY). Unlike AUDIT_SIGNING_KEY (db._audit_signing_key),
+# there is deliberately NO random-key fallback here: an empty/absent key would
+# make every signature trivially forgeable (HMAC with no secret authenticates
+# nothing), so evidence ingestion and verification both refuse outright rather
+# than silently producing signatures nobody should trust. Documented as
+# REQUIRED in .env.example; evidence_endpoints.py's /evidence/webhook and
+# /evidence/records/{id}/verify both surface this as an HTTP 503.
+
+class EvidenceSigningKeyMissing(RuntimeError):
+    """EVIDENCE_SIGNING_KEY is not set — cannot sign or verify evidence records."""
+
+
+def _evidence_signing_key() -> str:
+    key = os.environ.get("EVIDENCE_SIGNING_KEY", "").strip()
+    if not key:
+        raise EvidenceSigningKeyMissing(
+            "EVIDENCE_SIGNING_KEY is not set — generate one with "
+            "`python -c \"import secrets; print(secrets.token_hex(32))\"` "
+            "and set it before ingesting or verifying evidence records."
+        )
+    return key
+
+
+def sign_evidence_record(record_json: str) -> str:
+    """HMAC-SHA256 over the canonical (sort_keys=True) JSON string of an
+    evidence record's own fields — the caller builds that string identically
+    on both sign (evidence_endpoints._ingest_one_finding) and verify
+    (evidence_endpoints.verify_evidence) so the same input always reproduces
+    the same signature."""
+    import hashlib
+    import hmac as _hmac
+    return _hmac.new(_evidence_signing_key().encode("utf-8"), record_json.encode("utf-8"), hashlib.sha256).hexdigest()
+
 
 # Fixed seed for the first record in the tamper-evidence chain — documented,
 # not secret (the chain's integrity comes from linking, not from this value
