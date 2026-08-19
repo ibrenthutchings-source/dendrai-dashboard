@@ -132,6 +132,8 @@ import pac_policy_docs
 import approvals_endpoints
 import remediation_endpoints
 import evidence_pack_endpoints
+import evidence_endpoints
+import itsm_endpoints
 import vendor_risk_endpoints
 import ai_governance_endpoints
 import infrastructure_monitoring_endpoints
@@ -853,6 +855,14 @@ app.include_router(remediation_endpoints.router)
 
 # Audit Evidence Pack: one-shot assembly of everything defensible about a run.
 app.include_router(evidence_pack_endpoints.router)
+
+# DevOps Monitoring: SARIF/SAST evidence ingestion (tamper-evident, hash-chained).
+app.include_router(evidence_endpoints.router)
+logger.info("Evidence ingestion router registered at /evidence/webhook")
+
+# DevOps Monitoring: ITSM/Jira-ServiceNow ticket status sync.
+app.include_router(itsm_endpoints.router)
+logger.info("ITSM ticket sync router registered at /itsm/webhook")
 
 # GitHub Webhook: receive repo events and run them through the UBO pipeline.
 app.include_router(github_endpoints.router)
