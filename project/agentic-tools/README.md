@@ -85,8 +85,8 @@ Every mechanism below runs as an `asyncio` task started in `api_server.py`'s lif
 | Listener | Endpoint | Auth | Catches |
 |---|---|---|---|
 | GitHub Webhook Listener | `POST /github/webhook` | HMAC-SHA256 (`GITHUB_WEBHOOK_SECRET`) | Real-time GitHub events (secret scanning, branch protection, pushes, Dependabot, pipeline security) → full Bronze→Silver→Gold→Council adjudication |
-| Evidence/SARIF Webhook | `POST /evidence/webhook` | Bearer `ingest_api_key` | SARIF findings from any CI/SAST tool; HIGH/CRITICAL findings additionally escalate through adjudication |
-| ITSM Webhook | `POST /itsm/webhook` | Bearer `ingest_api_key` | Real-time ticket status push from a Jira Automation rule / ServiceNow Business Rule |
+| Evidence/SARIF Webhook (`evidence_endpoints.py`) | `POST /evidence/webhook` | Bearer `ingest_api_key` (Monitored Systems — same lookup as Generic Telemetry Ingest below) | SARIF 2.1.0 findings from any CI/SAST tool (any `source` string, no per-tool code) → one hash-chained, HMAC-signed row per finding in `observability.evidence_records`; a clean run (zero results) still writes one PASS row. HIGH/CRITICAL findings additionally escalate through adjudication (`mcp_governance._ingest_system_event`), so they surface in Continuous Monitoring / the HITL inbox too, not just the Evidence Inspector. |
+| ITSM Webhook (`itsm_endpoints.py`) | `POST /itsm/webhook` | Bearer `ingest_api_key` (Monitored Systems) | Real-time ticket status push from a Jira Automation rule / ServiceNow Business Rule — reconciles a tracked `observability.itsm_tickets` row the moment its status changes. The ticket must already be tracked (`POST /itsm/tickets`, on-demand today — no poll connector exists yet, see that section). |
 | Generic Telemetry Ingest | `POST /observability/telemetry/ingest` | Bearer `ingest_api_key` | Any other registered system (or non-MCP AI agent — LangChain, OpenAI function calling, a custom loop) — see "Monitored Systems" below and the top-level README's "Governing non-MCP AI agents" |
 
 **Outbound pollers (pull — we call an external system) and periodic sweeps:**
@@ -94,9 +94,9 @@ Every mechanism below runs as an `asyncio` task started in `api_server.py`'s lif
 | Loop | Cadence | Catches |
 |---|---|---|
 | `mcp_governance.start_polling()` | `MCP_GOV_POLL_INTERVAL_S` (default 30s) | Flagged `mcp_telemetry`/`system_telemetry` rows → full adjudication pipeline |
-| `connector_poller.start_polling()` | `CONNECTOR_POLLER_TICK_S` tick (default 60s), per-connector `poll_interval_s` (default 1800s) | All 16 pull-model connector types (Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, NetSuite, GitHub/GitLab/Bitbucket SCM, Jira/ServiceNow ITSM, Postgres CIS, Railway IaaS, AWS IaaS, OT heartbeat, denied-party screening, Oracle HCM) |
-| `risk_waiver_sweep.py` | Hourly | Expired risk waivers — re-opens the underlying SAST finding as failing |
-| `itsm_sla_sweep.py` | Hourly | ITSM tickets that blew their remediation SLA |
+| `connector_poller.start_polling()` | `CONNECTOR_POLLER_TICK_S` tick (default 60s), per-connector `poll_interval_s` (default 1800s) | The 12 pull-model connector types actually registered in `connector_poller._ADAPTERS`: Oracle Fusion, Oracle HCM, denied-party screening, SAP HANA, SailPoint, Dynamics 365, NetSuite, Postgres CIS, Railway IaaS, AWS IaaS, OT heartbeat, synthetic transaction. (Several other modules' docstrings reference a GitHub/GitLab SCM or Jira/ServiceNow ITSM connector type — neither exists; see the correction notes under "DevOps Monitoring" below.) |
+| `risk_waiver_sweep.py` (added 2026-08-19) | Hourly | Expired `observability.risk_waivers` rows (time-boxed compensating-control exceptions past `expires_at`) — re-opens the underlying finding as failing |
+| `itsm_sla_sweep.py` (added 2026-08-19) | Hourly | `observability.itsm_tickets` past `sla_due_at` with no prior breach flag — re-raises the underlying finding |
 | `pac_negative_sweep.py` | Hourly | Regressions in Policy-as-Code negative-test coverage (a process that passed last sweep and fails this one) |
 | `connector_hygiene_sweep.py` | Daily | Poll-connector credentials overdue for rotation (default 90 days) — the one check with no external system, Intelligenza checking itself |
 | `vendor_risk_sweep.py` | Daily | Vendor SOC 2 reports past their expiry date |
@@ -444,46 +444,60 @@ CaC artifacts are stored in the `controls_as_code_artifacts` table and indexed v
 
 ---
 
-### DevOps Monitoring (`scm_connectors.py` + `scm_audit_endpoints.py` + `evidence_endpoints.py` + `devops_monitoring_mcp_server.py`)
+### DevOps Monitoring: SARIF/SAST Evidence Ingestion (`evidence_endpoints.py`)
 
-SCM branch-protection auditing (GitHub/GitLab), GitHub Actions pipeline-as-code security auditing, real `gitleaks` secret scanning, SARIF/SAST evidence ingestion (with a tamper-evidence hash chain), drift detection, the Risk Waiver & Exception Hub, pipeline provenance/attestation, and DORA-style change-management metrics — all riding the same Bronze→Silver→Gold→Council pipeline every other source uses, not a parallel system. See [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for the full architecture.
+> **Correction (2026-08-19):** this section previously described a much larger surface —
+> `scm_connectors.py`, `scm_audit_endpoints.py`, `devops_monitoring_mcp_server.py`,
+> `pipeline_security_connectors.py`, `secret_scanner_connectors.py`, DORA metrics
+> endpoints, attestation endpoints, all under an `/api/scm-audit` / `/api/evidence`
+> prefix — none of which exist anywhere in this codebase; only `dora_metrics.py` and
+> `attestation.py` are real, and neither is wired to an endpoint. That was aspirational
+> documentation, not a description of shipped code. What's below is what actually
+> exists as of this date: real ingestion, hash-chained and HMAC-signed, plus the
+> waiver-expiry sweep below it, with no SCM auditing, pipeline-security scanning,
+> secret scanning, or DORA/attestation endpoints.
 
-**Repos are registered as poll connectors** on the Dendrai UBO Configuration screen (`connector_type` `github_scm`/`gitlab_scm`), the same way Oracle Fusion/SAP HANA/etc. are — no bespoke registration form. Pipeline-security auditing and secret scanning both reuse the same registered repo+token rather than requiring a second registration.
+`observability.evidence_records`'s tamper-evidence hash chain (`chain_hash = sha256(prev.chain_hash + this.signature)`, computed under an advisory lock) and its full CRUD (`db.insert_evidence_record` / `list_evidence_records` / `get_evidence_record` / `verify_evidence_chain`) existed with no endpoint ever calling any of it, and `EVIDENCE_SIGNING_KEY` was documented in `.env.example` but read nowhere. This file is that missing endpoint.
 
-**REST endpoints (prefix `/api/scm-audit`):** `POST/GET/DELETE /repositories`, `POST /repositories/{id}/run`, `POST /repositories/{id}/run-pipeline-security`, `POST /repositories/{id}/run-secret-scan`, `POST /run-all`, `GET /results`, `GET /results/history`, `GET /pipeline-security/results`, `GET /secret-scan/results`, `GET /drift`, `GET /waivers`, `POST /waivers/{id}/revoke`
+**Any SARIF 2.1.0-producing scanner works** — `source` is a free-text field (`github_actions`/`gitlab_ci`/`snyk`/`sonarqube`/`checkmarx`/`other`), no per-tool code required. Severity prefers a numeric `security-severity` score (CodeQL and most modern SARIF producers carry this) over the coarse `error`/`warning`/`note` level; CWE/CVE are extracted from the rule's `properties.tags`. A scan run with zero results still writes one summary PASS row, so a clean scan is itself evidence, not silence. HIGH/CRITICAL findings additionally raise a `system_telemetry` event (`mcp_governance._ingest_system_event`), so they flow through the normal adjudication pipeline and surface in Continuous Monitoring / the HITL inbox too.
 
-**REST endpoints (prefix `/api/evidence`):** `POST /webhook` (SARIF ingestion, Bearer-key auth), `GET /records`, `GET /records/{id}/verify`, `GET /chain/verify` (tamper-evidence hash-chain verification), `GET /dora-metrics`, `POST /attestation`, `GET /attestations`, `GET /attestations/{id}`
+**REST endpoints (prefix `/evidence`):**
 
-**Any SARIF-producing scanner works out of the box** — `source` is a free-text field, no per-tool code required. Verified against real Trivy output (container/dependency CVE scanning): correctly extracts CVSS-based severity and CVE IDs, though Trivy's SARIF never tags a CWE (CVE/GHSA-centric, unlike CodeQL) — see [`../../UBO/docs/integrations.md`](../../UBO/docs/integrations.md) for a copy-pasteable GitHub Actions recipe.
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/webhook` | Bearer `ingest_api_key` | Ingest one SARIF report |
+| `GET` | `/records` | Session (screen `infrastructuremonitoring`) | Filtered list (`?repository=&severity=&commit_sha=&limit=`) |
+| `GET` | `/records/{id}` | Session | Full record, including `raw_sarif` |
+| `GET` | `/records/{id}/verify` | Session | Recompute the HMAC over the stored record and compare — proves that one row's content wasn't altered |
+| `GET` | `/chain/verify` | Session | Walk the tamper-evidence hash chain and report the first broken link, if any |
 
-**Pipeline-as-code security** (`pipeline_security_connectors.py`): static analysis of every `.github/workflows/*.yml` — write-all `GITHUB_TOKEN` permissions, unpinned third-party actions, and `pull_request_target` combined with an untrusted PR-head checkout (CRITICAL — the fork-PR code-execution pattern). No runtime execution.
+`EVIDENCE_SIGNING_KEY` must be set — unlike `AUDIT_SIGNING_KEY`, there is deliberately no random-key fallback (an empty-key HMAC authenticates nothing), so `/evidence/webhook` and `/evidence/records/{id}/verify` both 503 rather than sign/verify with an absent key.
 
-**Real secret scanning** (`secret_scanner_connectors.py`): a real `gitleaks` binary scans the repo's full git history — the producer for `SECRET_DETECTED` outside a paid GitHub Advanced Security webhook. Secret values are never persisted, logged, or returned; a clean scan is never adjudicated as a false "compliant". Requires `gitleaks` + `git` in the runtime image (`project/Dockerfile`).
-
-**Tamper-evidence hash chain**: every `evidence_records` insert computes `chain_hash = sha256(prev.chain_hash + this.signature)` under an advisory lock — proves no row was deleted/reordered, which the per-record HMAC alone can't.
-
-**MCP server:** `devops_monitoring_mcp_server.py` — 15 tools (SCM audit, pipeline security, secret scan, drift, evidence, chain verification, waivers, attestations, DORA metrics, ITSM). See `mcp.md` → `devops-monitoring`.
-
-**Background sweeps:** `risk_waiver_sweep.py` (hourly — expires overdue waivers, re-opens the underlying finding), `itsm_sla_sweep.py` (hourly — flags overdue ITSM tickets, re-escalates the finding).
+**Risk Waiver & Exception Hub (`risk_waiver_sweep.py`, added 2026-08-19):** `observability.risk_waivers` (created via `approvals_endpoints._create_waiver_from_task` when a manager approves a `devops_scm_exception` HITL gate item — a time-boxed, documented exception for a flagged finding) had a complete CRUD in `db.py` (`create_risk_waiver` / `list_risk_waivers` / `get_active_waiver` / `revoke_risk_waiver` / `expire_overdue_waivers`) with no sweep ever calling `expire_overdue_waivers()` — every other sweep in this codebase cited "risk_waiver_sweep.py" in its own docstring as the shape it copied, but that file itself didn't exist until now. Hourly: flips `ACTIVE` waivers past their `expires_at` to `EXPIRED` and re-raises the underlying finding via `mcp_governance._ingest_system_event`, so a lapsed compensating control goes back to failing in Continuous Monitoring instead of silently staying green.
 
 ---
 
-### ITSM/Jira-ServiceNow SLA Bridge (`itsm_connectors.py` + `itsm_endpoints.py` + `itsm_sla_sweep.py`)
+### DevOps Monitoring: ITSM Ticket Sync (`itsm_endpoints.py` + `itsm_sla_sweep.py`)
 
-Opens a real Jira/ServiceNow ticket for a DevOps Monitoring finding and tracks its remediation SLA independent of the external system. SLA hours are severity-based: CRITICAL 48h, HIGH 168h (7d), MEDIUM 240h (10d), LOW 720h (30d).
+> **Correction (2026-08-19):** this section previously described `itsm_connectors.py`,
+> `itsm_jira_tool.py`/`itsm_servicenow_tool.py` poll adapters, an `/itsm/tickets/{id}/sync`
+> endpoint, and an `/itsm/sla-summary` endpoint — none of which exist; there is still no
+> Jira/ServiceNow poll connector, so a ticket only updates when its webhook fires or a
+> caller hits the endpoints below directly. `itsm_sla_sweep.py`, previously also listed
+> as missing, has since been built — see below.
 
-**REST endpoints (prefix `/api/itsm`):**
+`observability.itsm_tickets` and its full CRUD (`db.create_itsm_ticket` / `list_itsm_tickets` / `get_itsm_ticket` / `get_itsm_ticket_by_external_key` / `update_itsm_ticket_status` / `get_open_ticket_for_finding` / `expire_overdue_sla`) existed complete, with nothing calling any of it.
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/itsm/tickets` | Open a real ticket via a registered `itsm_jira`/`itsm_servicenow` connector |
-| `GET` | `/itsm/tickets` | Filtered list (status, external_system, breached_only) |
-| `GET` | `/itsm/tickets/{id}` | Single ticket |
-| `POST` | `/itsm/tickets/{id}/sync` | Resync one ticket's status from the external system now |
-| `POST` | `/itsm/webhook` | Real-time status push (Jira Automation / ServiceNow Business Rule), Bearer-key auth |
-| `GET` | `/itsm/sla-summary` | Open/breached/at-risk-24h counts |
+**REST endpoints (prefix `/itsm`):**
 
-Status reconciliation (`itsm_jira_tool.py`/`itsm_servicenow_tool.py` poll adapters) and SLA breach detection (`itsm_sla_sweep.py`) are deliberately separate concerns — a ticket that's never synced still gets its SLA breach detected on schedule.
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/webhook` | Bearer `ingest_api_key` | Real-time ticket status push (Jira Automation rule / ServiceNow Business Rule) — reconciles a tracked ticket the moment its status changes |
+| `POST` | `/tickets` | Session (screen `infrastructuremonitoring`, edit) | Open a new tracked ticket for a finding (`finding_hash`, `external_system`, `external_ticket_key`, `severity`, `sla_hours`); reuses the existing open ticket for the same finding rather than erroring |
+| `GET` | `/tickets` | Session | Filtered list (`?status=&external_system=&breached_only=&limit=`) |
+| `GET` | `/tickets/{id}` | Session | Single ticket |
+
+**SLA breach sweep (`itsm_sla_sweep.py`, hourly):** flags every open ticket past its `sla_due_at` with `sla_breached_at` (once — idempotent, only touches unflagged rows) and re-raises the underlying finding, same "goes back to failing" pattern as the Risk Waiver sweep above — a ticket that's open but nobody's touched reappears in Continuous Monitoring instead of silently sitting there overdue. Deliberately independent of ticket *status*: a late-arriving "resolved" via the webhook doesn't erase the fact that it already missed its SLA.
 
 ---
 
