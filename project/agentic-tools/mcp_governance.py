@@ -1983,6 +1983,13 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("ai_assessment_overdue")
     if payload.get("ai_human_oversight_missing"):
         flags.add("ai_human_oversight_missing")
+    # DevOps Monitoring: explicit signals set by risk_waiver_sweep.py and
+    # itsm_sla_sweep.py — same "producer knows exactly which event it's
+    # emitting" pattern as every flag above.
+    if payload.get("risk_waiver_expired"):
+        flags.add("risk_waiver_expired")
+    if payload.get("itsm_sla_breached"):
+        flags.add("itsm_sla_breached")
     # Order-to-Cash / Procure-to-Pay: explicit signals set by
     # generate_o2c_p2p_synthetic_log.py (and, going forward, any real Oracle
     # Fusion O2C/P2P producer) — same "producer knows exactly which event

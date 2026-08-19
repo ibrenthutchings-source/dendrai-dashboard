@@ -150,6 +150,8 @@ import je_testing_sweep
 import je_testing_endpoints
 import regulatory_change_endpoints
 import pii_retention_sweep
+import risk_waiver_sweep
+import itsm_sla_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -316,6 +318,8 @@ async def lifespan(application: FastAPI):
         _identity_graph_sync_task = None
         _je_testing_sweep_task = None
         _pii_retention_sweep_task = None
+        _risk_waiver_sweep_task = None
+        _itsm_sla_sweep_task = None
         _reconnect_task = None
         _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
@@ -345,6 +349,8 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(identity_graph_sync.sweep_once, identity_graph_sync._TICK_S, "Identity graph sync")),
                 asyncio.create_task(_multi_tenant_loop(je_testing_sweep.sweep_once, je_testing_sweep._TICK_S, "JE Testing sweep")),
                 asyncio.create_task(_multi_tenant_loop(pii_retention_sweep.sweep_once, pii_retention_sweep._TICK_S, "PII retention sweep")),
+                asyncio.create_task(_multi_tenant_loop(risk_waiver_sweep.sweep_once, risk_waiver_sweep._TICK_S, "Risk waiver expiry sweep")),
+                asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
             ])
             logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
                         len(_multi_tenant_bg_tasks))
@@ -413,6 +419,18 @@ async def lifespan(application: FastAPI):
                 _pii_retention_sweep_task = asyncio.create_task(pii_retention_sweep.start_sweep())
                 logger.info("PII retention sweep task started")
 
+            # DevOps Monitoring: expires time-boxed risk waivers past their
+            # expires_at and re-raises the underlying finding — see risk_waiver_sweep.py.
+            if db.is_available():
+                _risk_waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
+                logger.info("Risk waiver expiry sweep task started")
+
+            # DevOps Monitoring: flags ITSM tickets that blew their remediation
+            # SLA and re-raises the underlying finding — see itsm_sla_sweep.py.
+            if db.is_available():
+                _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
+                logger.info("ITSM SLA breach sweep task started")
+
             # Background DB reconnect loop — retries every 30 s if startup DB init failed.
             # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
             # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -458,6 +476,12 @@ async def lifespan(application: FastAPI):
                         if _pii_retention_sweep_task is None:
                             asyncio.create_task(pii_retention_sweep.start_sweep())
                             logger.info("PII retention sweep started after DB reconnect")
+                        if _risk_waiver_sweep_task is None:
+                            asyncio.create_task(risk_waiver_sweep.start_sweep())
+                            logger.info("Risk waiver expiry sweep started after DB reconnect")
+                        if _itsm_sla_sweep_task is None:
+                            asyncio.create_task(itsm_sla_sweep.start_sweep())
+                            logger.info("ITSM SLA breach sweep started after DB reconnect")
 
             _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -470,6 +494,7 @@ async def lifespan(application: FastAPI):
                              _pac_negative_sweep_task, _connector_hygiene_sweep_task,
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
+                             _risk_waiver_sweep_task, _itsm_sla_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
