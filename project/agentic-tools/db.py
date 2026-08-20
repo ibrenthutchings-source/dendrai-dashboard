@@ -1428,6 +1428,16 @@ ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS action            
 ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS event_type          VARCHAR(128);
 ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS raw_payload         JSONB;
 ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS system_telemetry_id BIGINT;
+-- Curation/delegation (Exception Management: curate, risk-rate, delegate):
+-- both snapshotted at scoring time from the connector that produced the
+-- event, not joined live — an owner/tier edited later on poll_connectors
+-- must not retroactively rewrite how an already-scored exception reads,
+-- same "capture what was true when scored" discipline
+-- management_action_plans.risk_rating/owner already use. connector_id is a
+-- soft reference (no FK), same style as system_telemetry_id above.
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS connector_id        BIGINT;
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS assigned_owner      VARCHAR(128);
+CREATE INDEX IF NOT EXISTS idx_exc_events_owner ON exception_control_events (assigned_owner);
 
 CREATE TABLE IF NOT EXISTS exception_model_inferences (
     id                      BIGSERIAL    PRIMARY KEY,
@@ -1441,6 +1451,14 @@ CREATE TABLE IF NOT EXISTS exception_model_inferences (
 CREATE INDEX IF NOT EXISTS idx_exc_inferences_event ON exception_model_inferences (event_id);
 CREATE INDEX IF NOT EXISTS idx_exc_inferences_pending
     ON exception_model_inferences (uncertainty_score DESC) WHERE requires_human_review = TRUE;
+-- risk_rating: R|A|G, same vocabulary management_action_plans.risk_rating /
+-- risk_scores.rag_status already use — an independent signal from
+-- severity+connector risk_tier (exception_tool.score_event), NOT derived
+-- from anomaly_score/uncertainty_score the way those two are derived from
+-- each other. Nullable: rows scored before this column existed (or by
+-- je_testing_sweep.py, which never sets it) simply have no risk_rating,
+-- sorting last rather than being coerced into a fake tier.
+ALTER TABLE exception_model_inferences ADD COLUMN IF NOT EXISTS risk_rating VARCHAR(8);
 
 CREATE TABLE IF NOT EXISTS exception_auditor_triage (
     id                      BIGSERIAL    PRIMARY KEY,
@@ -10054,11 +10072,16 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                             requires_human_review: bool, actor: Optional[str] = None,
                             action: Optional[str] = None, event_type: Optional[str] = None,
                             raw_payload: Optional[dict] = None,
-                            system_telemetry_id: Optional[int] = None) -> Optional[int]:
+                            system_telemetry_id: Optional[int] = None,
+                            connector_id: Optional[int] = None, assigned_owner: Optional[str] = None,
+                            risk_rating: Optional[str] = None) -> Optional[int]:
     """One exception_control_events row + its exception_model_inferences row,
     in a single connection — connector_poller.py's per-event scoring hook
     calls this for every polled event once deploy_env.IS_DEVELOPMENT, and
-    je_testing_sweep.py calls it unconditionally for JE findings."""
+    je_testing_sweep.py calls it unconditionally for JE findings (leaving
+    connector_id/assigned_owner/risk_rating at their default None — JE
+    findings aren't connector-scored events and are excluded from every
+    Exception Management query anyway, see _EXCLUDE_JE_TESTING_SQL)."""
     raw_payload = _encrypt_raw_payload(raw_payload)
     def _do():
         with _conn() as conn:
@@ -10067,55 +10090,83 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                     """
                     INSERT INTO exception_control_events
                         (control_id, system_source, process, event_timestamp, point_in_time_features,
-                         actor, action, event_type, raw_payload, system_telemetry_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         actor, action, event_type, raw_payload, system_telemetry_id,
+                         connector_id, assigned_owner)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (control_id[:128], system_source[:64], (process[:64] if process else None),
                      event_timestamp, Json(features or {}),
                      (actor[:128] if actor else None), (action[:128] if action else None),
                      (event_type[:128] if event_type else None),
-                     (Json(raw_payload) if raw_payload else None), system_telemetry_id),
+                     (Json(raw_payload) if raw_payload else None), system_telemetry_id,
+                     connector_id, (assigned_owner[:128] if assigned_owner else None)),
                 )
                 event_id = cur.fetchone()[0]
                 cur.execute(
                     """
                     INSERT INTO exception_model_inferences
-                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review)
-                    VALUES (%s, %s, %s, %s, %s)
+                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review, risk_rating)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (event_id, model_version[:64], anomaly_score, uncertainty_score, requires_human_review),
+                    (event_id, model_version[:64], anomaly_score, uncertainty_score, requires_human_review,
+                     risk_rating),
                 )
                 return event_id
     return _run(_do)
 
 
-def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> list:
+# Sort order for the R/A/G risk_rating vocabulary (management_action_plans.risk_rating /
+# risk_scores.rag_status) — R (urgent) first, an unset/legacy-scored row last so it
+# doesn't silently jump the queue ahead of a real R-rated item.
+_RISK_RATING_ORDER_SQL = "CASE mi.risk_rating WHEN 'R' THEN 0 WHEN 'A' THEN 1 WHEN 'G' THEN 2 ELSE 3 END"
+
+# Excludes je_testing_sweep.py's rows from exception_control_events/
+# exception_model_inferences — the two features share these tables verbatim,
+# discriminated only by event_type='JOURNAL_ENTRY' (see that module's own
+# comment above list_je_testing_findings). Every Exception-Management-only
+# query over these tables needs this, or JE Testing findings inflate Exception
+# Management's counts and queue.
+_EXCLUDE_JE_TESTING_SQL = "ce.event_type IS DISTINCT FROM 'JOURNAL_ENTRY'"
+
+
+def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0,
+                             risk_rating: Optional[str] = None, owner: Optional[str] = None) -> list:
     """Latest inference per event, for events flagged for review with no
-    triage decision yet — highest uncertainty (most ambiguous, most
-    valuable-to-label) first. Same predicate as devriskops-ccm's
-    GET /api/v1/triage/pending."""
+    triage decision yet — risk_rating (R/A/G) first, then highest uncertainty
+    (most ambiguous, most valuable-to-label) as the tiebreak. Same base
+    predicate as devriskops-ccm's GET /api/v1/triage/pending, extended with
+    the risk_rating/owner filters and JE Testing exclusion."""
     def _do():
+        filters = [f"mi.requires_human_review = TRUE", "tri.id IS NULL",
+                   "mi.uncertainty_score >= %s", _EXCLUDE_JE_TESTING_SQL]
+        params: list = [min_uncertainty]
+        if risk_rating:
+            filters.append("mi.risk_rating = %s")
+            params.append(risk_rating)
+        if owner:
+            filters.append("ce.assigned_owner = %s")
+            params.append(owner)
+        params.append(limit)
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
                            ce.point_in_time_features, ce.actor, ce.action, ce.event_type,
-                           ce.raw_payload, ce.system_telemetry_id,
-                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.scored_at
+                           ce.raw_payload, ce.system_telemetry_id, ce.connector_id, ce.assigned_owner,
+                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.risk_rating, mi.scored_at
                     FROM exception_control_events ce
                     JOIN LATERAL (
                         SELECT * FROM exception_model_inferences m
                         WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
                     ) mi ON TRUE
                     LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
-                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
-                      AND mi.uncertainty_score >= %s
-                    ORDER BY mi.uncertainty_score DESC, ce.event_timestamp DESC
+                    WHERE {" AND ".join(filters)}
+                    ORDER BY {_RISK_RATING_ORDER_SQL}, mi.uncertainty_score DESC, ce.event_timestamp DESC
                     LIMIT %s
                     """,
-                    (min_uncertainty, limit),
+                    params,
                 )
                 out = []
                 for r in cur.fetchall():
@@ -10125,12 +10176,106 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> l
                         "point_in_time_features": r[5] or {},
                         "actor": r[6], "action": r[7], "event_type": r[8],
                         "raw_payload": _decrypt_raw_payload(r[9]) or {}, "system_telemetry_id": r[10],
-                        "inference_id": r[11], "model_version": r[12],
-                        "anomaly_score": float(r[13]), "uncertainty_score": float(r[14]),
-                        "scored_at": r[15].isoformat() if r[15] else None,
+                        "connector_id": r[11], "assigned_owner": r[12],
+                        "inference_id": r[13], "model_version": r[14],
+                        "anomaly_score": float(r[15]), "uncertainty_score": float(r[16]),
+                        "risk_rating": r[17],
+                        "scored_at": r[18].isoformat() if r[18] else None,
                     })
                 return out
     return _run(_do) or []
+
+
+def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str] = None,
+                                     owner: Optional[str] = None) -> list:
+    """One row per (control_id, system_source) pair with a pending item,
+    occurrence_count, the worst (lowest-order) risk_rating in the group, the
+    most recent event's id/timestamp for drill-in, and whether the control is
+    already tracked by an open Management Action Plan (same open-status set
+    detect_recurring_exceptions checks) — surfaced so a reviewer doesn't
+    re-litigate one occurrence at a time when the recurrence has already been
+    escalated to a remediation plan. Curation lever: pairs this with
+    bulk_submit_exception_triage() so a reviewer can clear an entire
+    recurring group in one action instead of N."""
+    def _do():
+        filters = ["mi.requires_human_review = TRUE", "tri.id IS NULL", _EXCLUDE_JE_TESTING_SQL]
+        params: list = []
+        if risk_rating:
+            filters.append("mi.risk_rating = %s")
+            params.append(risk_rating)
+        if owner:
+            filters.append("ce.assigned_owner = %s")
+            params.append(owner)
+        params.append(limit)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ce.control_id, ce.system_source, COUNT(*) AS occurrence_count,
+                           MIN({_RISK_RATING_ORDER_SQL}) AS worst_rating_order,
+                           MIN(ce.event_timestamp) AS first_seen_at, MAX(ce.event_timestamp) AS last_seen_at,
+                           (array_agg(ce.id ORDER BY ce.event_timestamp DESC))[1] AS sample_event_id,
+                           (array_agg(ce.assigned_owner ORDER BY ce.event_timestamp DESC))[1] AS owner,
+                           bool_or(mp.id IS NOT NULL) AS has_open_map,
+                           (array_agg(mp.map_ref ORDER BY ce.event_timestamp DESC) FILTER (WHERE mp.id IS NOT NULL))[1] AS map_ref
+                    FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    LEFT JOIN observability.management_action_plans mp
+                        ON mp.control_id = ce.control_id AND mp.status IN ('proposed', 'approved', 'in_progress')
+                    WHERE {" AND ".join(filters)}
+                    GROUP BY ce.control_id, ce.system_source
+                    ORDER BY worst_rating_order, occurrence_count DESC, last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                out = []
+                _rating_by_order = {0: "R", 1: "A", 2: "G"}
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    d["worst_risk_rating"] = _rating_by_order.get(d.pop("worst_rating_order"))
+                    for k in ("first_seen_at", "last_seen_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    out.append(d)
+                return out
+    return _run(_do) or []
+
+
+def bulk_submit_exception_triage(event_ids: list, auditor: str, resolution_label: str,
+                                  justification_notes: Optional[str]) -> int:
+    """Applies one auditor resolution to every event_id in one batch — the
+    volume lever behind list_pending_exceptions_grouped's "resolve all N as
+    X" action. Same ON CONFLICT (event_id) DO UPDATE upsert as
+    submit_exception_triage, just applied to many rows in one round trip.
+    Returns the number of rows written; validation (label/notes) is the
+    caller's responsibility, same split as submit_exception_triage."""
+    if resolution_label not in _VALID_TRIAGE_LABELS:
+        return 0
+    if resolution_label in _TRIAGE_NOTES_REQUIRED_LABELS and not (justification_notes or "").strip():
+        return 0
+    if not event_ids:
+        return 0
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO exception_auditor_triage (event_id, auditor, resolution_label, justification_notes)
+                    SELECT unnest(%s::bigint[]), %s, %s, %s
+                    ON CONFLICT (event_id) DO UPDATE SET
+                        auditor = EXCLUDED.auditor, resolution_label = EXCLUDED.resolution_label,
+                        justification_notes = EXCLUDED.justification_notes, reviewed_at = NOW()
+                    """,
+                    (event_ids, auditor[:128], resolution_label, (justification_notes or None)),
+                )
+                return cur.rowcount
+    return _run(_do, default=0) or 0
 
 
 def submit_exception_triage(event_id: int, auditor: str, resolution_label: str,
@@ -10167,48 +10312,81 @@ def submit_exception_triage(event_id: int, auditor: str, resolution_label: str,
 
 
 def get_exception_summary() -> dict:
-    """Headline counts for the Triage Queue + Model Analytics tabs."""
+    """Headline counts for the Triage Queue + Model Analytics tabs. Every
+    query here excludes je_testing_sweep.py's rows (_EXCLUDE_JE_TESTING_SQL) —
+    JE Testing has its own summary (get_je_testing_summary) and must not
+    inflate these counts."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM exception_control_events ce
                     JOIN exception_model_inferences mi ON mi.event_id = ce.id
                     LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
-                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
                     """
                 )
                 pending = cur.fetchone()[0]
-                cur.execute("SELECT resolution_label, COUNT(*) FROM exception_auditor_triage GROUP BY resolution_label")
+                cur.execute(
+                    f"""
+                    SELECT tri.resolution_label, COUNT(*) FROM exception_auditor_triage tri
+                    JOIN exception_control_events ce ON ce.id = tri.event_id
+                    WHERE {_EXCLUDE_JE_TESTING_SQL}
+                    GROUP BY tri.resolution_label
+                    """
+                )
                 by_label = {r[0]: r[1] for r in cur.fetchall()}
                 cur.execute(
-                    """
+                    f"""
                     SELECT ce.system_source, COUNT(*) FROM exception_control_events ce
                     JOIN exception_model_inferences mi ON mi.event_id = ce.id
                     LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
-                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
                     GROUP BY ce.system_source
                     """
                 )
                 by_system = {r[0]: r[1] for r in cur.fetchall()}
-                cur.execute("SELECT COUNT(*) FROM exception_control_events")
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(ce.assigned_owner, '(unassigned)'), COUNT(*) FROM exception_control_events ce
+                    JOIN exception_model_inferences mi ON mi.event_id = ce.id
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
+                    GROUP BY COALESCE(ce.assigned_owner, '(unassigned)')
+                    """
+                )
+                by_owner = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(mi.risk_rating, '(unrated)'), COUNT(*) FROM exception_control_events ce
+                    JOIN exception_model_inferences mi ON mi.event_id = ce.id
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
+                    GROUP BY COALESCE(mi.risk_rating, '(unrated)')
+                    """
+                )
+                by_risk_rating = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute(f"SELECT COUNT(*) FROM exception_control_events ce WHERE {_EXCLUDE_JE_TESTING_SQL}")
                 total_events = cur.fetchone()[0]
                 return {
                     "pending_count": pending, "total_events": total_events,
                     "resolution_mix": by_label, "pending_by_system": by_system,
+                    "pending_by_owner": by_owner, "pending_by_risk_rating": by_risk_rating,
                 }
-    return _run(_do) or {"pending_count": 0, "total_events": 0, "resolution_mix": {}, "pending_by_system": {}}
+    return _run(_do) or {"pending_count": 0, "total_events": 0, "resolution_mix": {}, "pending_by_system": {},
+                          "pending_by_owner": {}, "pending_by_risk_rating": {}}
 
 
 def list_exception_triage_history(limit: int = 200) -> list:
     """Resolved triage decisions, most recent first — Model Analytics tab's
-    review-volume/resolution-mix trend."""
+    review-volume/resolution-mix trend. Excludes je_testing_sweep.py's rows —
+    see _EXCLUDE_JE_TESTING_SQL."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT tri.id, tri.event_id, ce.control_id, ce.system_source, ce.process,
                            tri.auditor, tri.resolution_label, tri.justification_notes, tri.reviewed_at,
                            mi.anomaly_score, mi.uncertainty_score
@@ -10218,6 +10396,7 @@ def list_exception_triage_history(limit: int = 200) -> list:
                         SELECT * FROM exception_model_inferences m WHERE m.event_id = ce.id
                         ORDER BY m.scored_at DESC LIMIT 1
                     ) mi ON TRUE
+                    WHERE {_EXCLUDE_JE_TESTING_SQL}
                     ORDER BY tri.reviewed_at DESC LIMIT %s
                     """,
                     (limit,),
@@ -10250,7 +10429,7 @@ def get_exception_score_history(system_source: str, metric: str, limit: int = 50
                     f"""
                     SELECT mi.{col} FROM exception_model_inferences mi
                     JOIN exception_control_events ce ON ce.id = mi.event_id
-                    WHERE ce.system_source = %s
+                    WHERE ce.system_source = %s AND {_EXCLUDE_JE_TESTING_SQL}
                     ORDER BY mi.scored_at ASC LIMIT %s
                     """,
                     (system_source, limit),
@@ -10260,12 +10439,44 @@ def get_exception_score_history(system_source: str, metric: str, limit: int = 50
 
 
 def list_exception_system_sources() -> list:
+    """Excludes je_testing_sweep.py's rows — see _EXCLUDE_JE_TESTING_SQL. Feeds
+    compute_exception_drift, which would otherwise compute PSI over
+    JE Testing's score distribution as if it were an Exception Management
+    system_source."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT system_source FROM exception_control_events ORDER BY 1")
+                cur.execute(f"SELECT DISTINCT system_source FROM exception_control_events ce WHERE {_EXCLUDE_JE_TESTING_SQL} ORDER BY 1")
                 return [r[0] for r in cur.fetchall()]
     return _run(_do) or []
+
+
+def escalate_stale_exceptions(stale_days: int = 14) -> int:
+    """exception_staleness_sweep.py's daily pass: flips risk_rating to 'R'
+    for any still-pending exception older than stale_days that isn't already
+    'R' — never touches requires_human_review/status, only visibility
+    ordering. Excludes je_testing_sweep.py's rows, same as every other
+    Exception-Management-only query (_EXCLUDE_JE_TESTING_SQL)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE exception_model_inferences mi
+                    SET risk_rating = 'R'
+                    FROM exception_control_events ce
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.event_id = ce.id
+                      AND mi.requires_human_review = TRUE
+                      AND tri.id IS NULL
+                      AND COALESCE(mi.risk_rating, '') != 'R'
+                      AND {_EXCLUDE_JE_TESTING_SQL}
+                      AND ce.event_timestamp < NOW() - (%s || ' days')::interval
+                    """,
+                    (stale_days,),
+                )
+                return cur.rowcount
+    return _run(_do, default=0) or 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11383,7 +11594,7 @@ def detect_recurring_exceptions(min_occurrences: int = 3, window_days: int = 30)
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT ce.control_id, ce.system_source, COUNT(*) AS occurrence_count,
                            MIN(ce.event_timestamp) AS first_occurrence_at,
                            MAX(ce.event_timestamp) AS last_occurrence_at,
@@ -11394,6 +11605,7 @@ def detect_recurring_exceptions(min_occurrences: int = 3, window_days: int = 30)
                         WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
                     ) mi ON TRUE
                     WHERE mi.requires_human_review = TRUE
+                      AND {_EXCLUDE_JE_TESTING_SQL}
                       AND ce.event_timestamp > NOW() - (%s || ' days')::interval
                       AND NOT EXISTS (
                           SELECT 1 FROM observability.management_action_plans mp
