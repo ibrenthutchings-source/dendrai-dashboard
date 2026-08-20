@@ -28,11 +28,22 @@ backend was built for this screen.
 
 Router prefix: /exceptions
 
-    GET  /exceptions/pending             Events awaiting triage, highest uncertainty first
-    POST /exceptions/{event_id}/triage   Record an auditor's resolution
-    GET  /exceptions/summary             Headline counts (pending, resolution mix, by system)
+    GET  /exceptions/pending             Events awaiting triage, risk_rating then uncertainty first
+                                          (?group=true collapses recurring control_id/system_source
+                                          pairs into one row each — see list_pending_exceptions_grouped)
+    POST /exceptions/bulk-triage         Resolve every pending event for one control_id/system_source at once
+    POST /exceptions/{event_id}/triage   Record an auditor's resolution for one event
+    GET  /exceptions/summary             Headline counts (pending, resolution mix, by system/owner/risk_rating)
     GET  /exceptions/history             Resolved triage decisions (Model Analytics tab)
     GET  /exceptions/drift-summary       Live PSI per system_source x {anomaly_score, uncertainty_score}
+
+Curation/risk-rating/delegation (added after volume review — see
+exception_tool.py's module docstring for the risk_rating design):
+pending items can be filtered by risk_rating (R/A/G) and by assigned_owner
+(snapshotted from poll_connectors.system_owner at scoring time — see
+connector_poller._score_exception_event), and grouped by (control_id,
+system_source) so a reviewer can bulk-resolve an entire recurring pattern
+instead of triaging one event at a time.
 
 Drift incidents/baseline resets for THIS screen's metric_kind="exception"
 rows are read/written via the existing /model-health/drift-incidents and
@@ -73,11 +84,49 @@ _NOTES_REQUIRED_LABELS = {"TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"}
 
 
 @router.get("/pending")
-def get_pending(limit: int = Query(100, ge=1, le=1000), min_uncertainty: float = Query(0.0, ge=0.0, le=1.0)):
+def get_pending(
+    limit: int = Query(100, ge=1, le=1000), min_uncertainty: float = Query(0.0, ge=0.0, le=1.0),
+    risk_rating: Optional[str] = None, owner: Optional[str] = None, group: bool = False,
+):
     if not db.is_available():
         return {"rows": [], "count": 0, "resolution_labels": _RESOLUTION_LABELS}
-    rows = db.list_pending_exceptions(limit=limit, min_uncertainty=min_uncertainty)
+    if group:
+        rows = db.list_pending_exceptions_grouped(limit=limit, risk_rating=risk_rating, owner=owner)
+    else:
+        rows = db.list_pending_exceptions(limit=limit, min_uncertainty=min_uncertainty,
+                                           risk_rating=risk_rating, owner=owner)
     return {"rows": rows, "count": len(rows), "resolution_labels": _RESOLUTION_LABELS}
+
+
+@router.post("/bulk-triage")
+def submit_bulk_triage(
+    body: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Resolves every currently-pending event for one (control_id,
+    system_source) pair in a single action — the curation lever behind the
+    grouped Triage Queue view. Same validation as the single-event endpoint."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    control_id = body.get("control_id")
+    system_source = body.get("system_source")
+    resolution_label = body.get("resolution_label")
+    notes = body.get("justification_notes")
+    if not control_id or not system_source:
+        raise HTTPException(status_code=422, detail="control_id and system_source are required")
+    if resolution_label not in _RESOLUTION_LABELS:
+        raise HTTPException(status_code=422, detail=f"resolution_label must be one of {_RESOLUTION_LABELS}")
+    if resolution_label in _NOTES_REQUIRED_LABELS and not (notes or "").strip():
+        raise HTTPException(status_code=422, detail=f"justification_notes is required for {resolution_label}")
+    auditor = current_user.get("display_name") or current_user.get("username") or "unknown"
+    pending = db.list_pending_exceptions(limit=1000)
+    event_ids = [r["event_id"] for r in pending if r["control_id"] == control_id and r["system_source"] == system_source]
+    if not event_ids:
+        raise HTTPException(status_code=404, detail=f"No pending exceptions for control_id={control_id}, system_source={system_source}")
+    resolved = db.bulk_submit_exception_triage(event_ids, auditor, resolution_label, notes)
+    logger.info("Exception Management: bulk-triaged %d event(s) for %s/%s as %s by %s",
+                resolved, control_id, system_source, resolution_label, auditor)
+    return {"control_id": control_id, "system_source": system_source, "resolved_count": resolved}
 
 
 @router.post("/{event_id}/triage")
@@ -105,7 +154,8 @@ def submit_triage(
 @router.get("/summary")
 def get_summary():
     if not db.is_available():
-        return {"pending_count": 0, "total_events": 0, "resolution_mix": {}, "pending_by_system": {}}
+        return {"pending_count": 0, "total_events": 0, "resolution_mix": {}, "pending_by_system": {},
+                 "pending_by_owner": {}, "pending_by_risk_rating": {}}
     return db.get_exception_summary()
 
 
