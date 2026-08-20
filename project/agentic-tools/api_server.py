@@ -531,6 +531,7 @@ async def lifespan(application: FastAPI):
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
                              _risk_waiver_sweep_task, _itsm_sla_sweep_task, _map_detection_sweep_task,
+                             _infra_asset_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
