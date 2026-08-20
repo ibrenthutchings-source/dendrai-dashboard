@@ -35,9 +35,10 @@ logger = logging.getLogger("ubo.evidence_quality")
 
 router = APIRouter(prefix="/evidence-quality", tags=["PBC Evidence Quality"])
 
-# Same "no dedicated nav item yet, reuse the nearest permission bucket"
-# reasoning as evidence_endpoints.py / itsm_endpoints.py / sample_selection_endpoints.py.
-_SCREEN_ID = "infrastructuremonitoring"
+# Dedicated nav item added 2026-08-19 (nav.jsx, "PBC Evidence Log") — id
+# deliberately matches that nav entry, same convention ai_governance_endpoints.py
+# documents for itself.
+_SCREEN_ID = "evidencequality"
 
 _CONTENT_CHECK_SYSTEM_PROMPT = (
     "You review one piece of audit evidence for plausibility, not authenticity. You are given "

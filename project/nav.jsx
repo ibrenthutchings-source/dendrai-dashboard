@@ -37,6 +37,10 @@ const NAV_SECTIONS = [
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping", divider: "Scoping" },
       { id: "scope",    icon: "grid",      l: "Audit Plan" },
+      // id deliberately matches evidence_quality_endpoints.py's _SCREEN_ID —
+      // see evidence_quality_tool.py's module docstring for the deterministic
+      // stale/unsigned/period-mismatch checks this screen surfaces.
+      { id: "evidencequality", icon: "check", l: "PBC Evidence Log" },
     ],
   },
    {

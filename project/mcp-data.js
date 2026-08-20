@@ -807,6 +807,13 @@ window.MCP = (function () {
     return _get(`/process-mining/cases?days=${days}&limit=${limit}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
   }
 
+  /** Draft a first-draft walkthrough narrative from an interview transcript
+   * + real process-mining stats for the same process. Never persisted —
+   * the caller pastes/edits the returned text into their own workpaper. */
+  async function draftWalkthroughNarrative(process, transcript, days = 90) {
+    return _post('/process-mining/walkthrough-narrative', { process, transcript, days });
+  }
+
   // ── Journal Entry Testing — je_testing_endpoints.py ───────────────────────────
 
   /** Headline tiles: entries tested, findings by rule, top preparers. */
@@ -1006,6 +1013,7 @@ window.MCP = (function () {
     pmCycleTimes,
     pmRework,
     pmCases,
+    draftWalkthroughNarrative,
     // Journal Entry Testing
     jeTestingSummary,
     jeTestingFindings,

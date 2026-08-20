@@ -2039,6 +2039,115 @@ export function JETestingView({ theme }) {
   );
 }
 
+function WalkthroughStatTile({ theme, label, value, sub }) {
+  return (
+    <div style={{ minWidth: 130, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+      <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+      <div className="mono" style={{ fontSize: 18, fontWeight: 700, color: theme.ink }}>{value}</div>
+      {sub && <div style={{ fontSize: 9.5, color: theme["ink-4"], marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function WalkthroughStatsSummary({ theme, stats }) {
+  const conf = stats?.conformance;
+  const cyc = stats?.cycle_times;
+  const rw = stats?.rework;
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+      <WalkthroughStatTile theme={theme} label="Conformance rate"
+        value={conf?.conformance_rate != null ? `${(conf.conformance_rate * 100).toFixed(0)}%` : "—"}
+        sub={conf ? `${conf.conforming_cases}/${conf.scored_cases} cases` : null} />
+      <WalkthroughStatTile theme={theme} label="Rework rate"
+        value={rw?.rework_rate != null ? `${(rw.rework_rate * 100).toFixed(0)}%` : "—"}
+        sub={rw ? `${rw.reworked_cases}/${rw.total_cases} cases` : null} />
+      <WalkthroughStatTile theme={theme} label="Avg case duration"
+        value={_pmFmtHours(cyc?.case_duration?.mean_hours)}
+        sub={cyc?.bottleneck ? `bottleneck: ${cyc.bottleneck.source} → ${cyc.bottleneck.target}` : null} />
+    </div>
+  );
+}
+
+function WalkthroughSection({ theme, label, text, highlight }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div className="mono" style={{ fontSize: 9.5, color: theme["ink-4"], letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: 12, lineHeight: 1.55, color: theme.ink, whiteSpace: "pre-wrap",
+        padding: highlight ? "8px 10px" : 0, borderRadius: 6,
+        background: highlight ? theme["surface-2"] : "transparent",
+        border: highlight ? `1px solid ${theme.line}` : "none",
+      }}>
+        {text}
+      </div>
+    </div>
+  );
+}
+
+export function WalkthroughNarrativeView({ theme }) {
+  const processes = useProcessList();
+  const [process, setProcess] = useState(null);
+  const [transcript, setTranscript] = useState("");
+  const [days, setDays] = useState(90);
+  const [drafting, setDrafting] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+
+  async function draft() {
+    if (!process) { setError("Select a process first."); return; }
+    if (!transcript.trim()) { setError("Paste the interview transcript first."); return; }
+    setDrafting(true); setError(null);
+    try {
+      const res = await window.MCP.draftWalkthroughNarrative(process, transcript, days);
+      setResult(res);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  return (
+    <VizFrame theme={theme} height={720}
+      kicker="Process mining · Walkthrough narrative — first draft for a human to correct"
+      sub="Combines a process interview transcript with real process-mining statistics for the same process, explicitly prompted to call out where the two disagree. Never published or persisted on its own — paste/edit the result into your actual workpaper."
+      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      error={error} loading={false} empty={null}>
+      <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "flex-end" }}>
+          <label style={{ fontSize: 10.5, color: theme["ink-4"] }}>
+            Lookback window
+            <select value={days} onChange={e => setDays(Number(e.target.value))}
+              style={{ display: "block", marginTop: 3, fontSize: 11, padding: "3px 6px", borderRadius: 4, border: `1px solid ${theme.line}`, background: theme.surface, color: theme.ink }}>
+              {[30, 60, 90, 180].map(d => <option key={d} value={d}>{d} days</option>)}
+            </select>
+          </label>
+        </div>
+        <textarea value={transcript} onChange={e => setTranscript(e.target.value)}
+          placeholder="Paste the process interview transcript here…"
+          className="code-input mono" style={{ width: "100%", height: 140, fontSize: 12 }} />
+        <div style={{ marginTop: 8, marginBottom: 4 }}>
+          <button type="button" className="btn btn-sm" disabled={drafting} onClick={draft}>
+            {drafting ? "Drafting…" : "Draft narrative"}
+          </button>
+        </div>
+
+        {result && (
+          <div style={{ marginTop: 16 }}>
+            <WalkthroughStatsSummary theme={theme} stats={result.supporting_stats} />
+            <WalkthroughSection theme={theme} label="Process description" text={result.narrative.process_description} />
+            <WalkthroughSection theme={theme} label="Key controls" text={result.narrative.key_controls} />
+            <WalkthroughSection theme={theme} label="System evidence" text={result.narrative.system_evidence} highlight />
+            <WalkthroughSection theme={theme} label="Open questions" text={result.narrative.open_questions} />
+          </div>
+        )}
+      </div>
+    </VizFrame>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Tabbed container — owns theme, the shared day-range, and one data
    fetch for whichever dimension is active, so switching chart tabs is
@@ -2056,6 +2165,7 @@ const CHART_TABS = [
   { id: "conformance", label: "Conformance" },
   { id: "cycletime", label: "Cycle Time" },
   { id: "jetesting", label: "JE Testing" },
+  { id: "walkthrough", label: "Walkthrough" },
 ];
 
 function ContinuousMonitoringGroupedViz({ dim, onNavigate }) {
@@ -2098,6 +2208,7 @@ function ContinuousMonitoringGroupedViz({ dim, onNavigate }) {
       {tab === "conformance" && <ProcessConformanceView theme={theme} days={days} />}
       {tab === "cycletime" && <ProcessCycleTimeView theme={theme} days={days} />}
       {tab === "jetesting" && <JETestingView theme={theme} />}
+      {tab === "walkthrough" && <WalkthroughNarrativeView theme={theme} />}
     </div>
   );
 }
