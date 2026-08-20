@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 
+import aws_patch_tool
 import db
 import mcp_governance
 import postgres_cis_tool
@@ -141,6 +142,43 @@ def test_sync_assets_tls_connector_syncs_one_asset_per_endpoint(monkeypatch):
     # only the reachable endpoint gets marked assessed — an unreachable
     # endpoint must not look like a real check happened
     assert assessed == ["cert:api.example.com:443"]
+
+
+def test_sync_assets_aws_patch_connector_syncs_one_asset_per_instance(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(db, "list_poll_connectors", lambda include_credentials: [
+        {"id": 4, "connector_type": "aws_patch", "active": True, "credentials": {"role_arn": "x"},
+         "extra_config": {"regions": "us-east-1"}},
+    ])
+    monkeypatch.setattr(aws_patch_tool, "_audit_once", lambda credentials, extra_config: [
+        {"instance_id": "i-0abc123", "region": "us-east-1", "os": "AMAZON_LINUX_2",
+         "installed_count": 40, "missing_count": 3, "failed_count": 0, "patch_group": "prod"},
+        {"instance_id": "i-0def456", "region": "us-east-1", "os": "AMAZON_LINUX_2",
+         "installed_count": 40, "missing_count": 0, "failed_count": 0, "patch_group": "prod"},
+    ])
+    upserts = []
+    assessed = []
+    monkeypatch.setattr(db, "upsert_infra_asset", lambda *a, **kw: upserts.append(a))
+    monkeypatch.setattr(db, "mark_infra_asset_assessed", lambda asset_key, source: assessed.append((asset_key, source)))
+
+    synced = asyncio.run(infra_asset_sweep._sync_assets())
+
+    assert synced == 2
+    assert upserts[0][0] == "ec2:i-0abc123:us-east-1"
+    assert upserts[0][1] == "host"
+    assert assessed == [("ec2:i-0abc123:us-east-1", "aws_patch"), ("ec2:i-0def456:us-east-1", "aws_patch")]
+
+
+def test_sync_assets_aws_patch_audit_failure_does_not_block_other_connectors(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(db, "list_poll_connectors", lambda include_credentials: [
+        {"id": 4, "connector_type": "aws_patch", "active": True, "credentials": {}, "extra_config": {}},
+    ])
+    monkeypatch.setattr(aws_patch_tool, "_audit_once", lambda credentials, extra_config: (_ for _ in ()).throw(RuntimeError("AWS API error")))
+
+    synced = asyncio.run(infra_asset_sweep._sync_assets())
+
+    assert synced == 0  # failure logged and swallowed, not raised
 
 
 # ── _check_expiry ─────────────────────────────────────────────────────────────

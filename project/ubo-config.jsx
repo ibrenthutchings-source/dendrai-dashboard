@@ -173,6 +173,37 @@ const CONNECTOR_TYPES = [
       { key: "regions", label: "Regions (comma-separated)", type: "text", placeholder: "us-east-1,us-west-2" },
       { key: "max_session_duration_hours", label: "Max IAM Session Duration (hours)", type: "text", placeholder: "12" },
     ] },
+  // Infrastructure Vulnerability & Currency Posture, Phase 3: real OS patch
+  // compliance via AWS SSM Patch Manager (aws_patch_tool.py). Same
+  // role_arn/access-key credential shape as the aws_iaas connector above —
+  // registered separately since a customer may grant SSM read access
+  // without granting the broader S3/EC2/IAM audit surface aws_iaas needs.
+  { id: "aws_patch", label: "AWS (SSM Patch Manager — OS Patch Compliance)",
+    baseUrlPlaceholder: "(unused — audits the AWS API directly)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "role_arn", label: "Role ARN (recommended — sts:AssumeRole, no long-lived keys)", type: "text", placeholder: "arn:aws:iam::123456789012:role/dendrai-readonly-audit" },
+      { key: "access_key_id", label: "Access Key ID (only if not using Role ARN)", type: "text" },
+      { key: "secret_access_key", label: "Secret Access Key (only if not using Role ARN)", type: "password" },
+      { key: "session_token", label: "Session Token (optional, temporary credentials only)", type: "password" },
+    ],
+    extraFields: [
+      { key: "regions", label: "Regions (comma-separated)", type: "text", placeholder: "us-east-1,us-west-2" },
+    ] },
+  // Infrastructure Vulnerability & Currency Posture, Phase 3: real CVE
+  // findings with CVSS via AWS Inspector v2 (aws_inspector_tool.py).
+  { id: "aws_inspector", label: "AWS Inspector (CVE Findings — EC2/ECR/Lambda)",
+    baseUrlPlaceholder: "(unused — audits the AWS API directly)",
+    baseUrlOptional: true,
+    credentialFields: [
+      { key: "role_arn", label: "Role ARN (recommended — sts:AssumeRole, no long-lived keys)", type: "text", placeholder: "arn:aws:iam::123456789012:role/dendrai-readonly-audit" },
+      { key: "access_key_id", label: "Access Key ID (only if not using Role ARN)", type: "text" },
+      { key: "secret_access_key", label: "Secret Access Key (only if not using Role ARN)", type: "password" },
+      { key: "session_token", label: "Session Token (optional, temporary credentials only)", type: "password" },
+    ],
+    extraFields: [
+      { key: "regions", label: "Regions (comma-separated)", type: "text", placeholder: "us-east-1,us-west-2" },
+    ] },
   // Technology Risk Pipeline: generic OT/SCADA device keep-alive monitoring
   // (ot_heartbeat_tool.py) — HTTP health-check only, not a real fieldbus
   // protocol; see that module's docstring for scope.

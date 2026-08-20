@@ -414,7 +414,7 @@ function InfrastructureMonitoringScreen({ onNavigate, isDevEnv = false } = {}) {
                   <div style={{ fontSize: 12, fontWeight: 600 }}>
                     {c.display_name}
                     <span className="mono" style={{ fontSize: 10, color: "var(--ink-4)", marginLeft: 8 }}>
-                      {{ postgres_cis: "Postgres CIS", railway_iaas: "Railway platform", aws_iaas: "AWS", ot_heartbeat: "OT/SCADA heartbeat" }[c.connector_type] || c.connector_type}
+                      {{ postgres_cis: "Postgres CIS", railway_iaas: "Railway platform", aws_iaas: "AWS", aws_patch: "AWS SSM Patch", aws_inspector: "AWS Inspector", ot_heartbeat: "OT/SCADA heartbeat", tls_cert: "TLS certificate" }[c.connector_type] || c.connector_type}
                     </span>
                   </div>
                   <button type="button" className="btn btn-sm" onClick={() => runConnector(c.id)} disabled={runningId === c.id}>
@@ -454,6 +454,14 @@ function InfrastructureMonitoringScreen({ onNavigate, isDevEnv = false } = {}) {
                           if (r.action === "iam_excessive_session" && compliance.max_session_duration_hours > 12) notes.push(`${compliance.max_session_duration_hours}h max session`);
                         } else if (c.connector_type === "ot_heartbeat") {
                           if (compliance.alive === false) notes.push(compliance.error || "no response");
+                        } else if (c.connector_type === "aws_patch") {
+                          if (compliance.failed_count > 0) notes.push(`${compliance.failed_count} failed install(s)`);
+                          if (compliance.missing_count > 0) notes.push(`${compliance.missing_count} missing patch(es)`);
+                        } else if (c.connector_type === "aws_inspector") {
+                          notes.push(`${compliance.vuln_id || "finding"}${compliance.package_name ? ` in ${compliance.package_name}` : ""}`);
+                        } else if (c.connector_type === "tls_cert") {
+                          if (compliance.cert_reachable === false) notes.push(compliance.cert_error || "unreachable");
+                          else if (typeof compliance.cert_days_to_expiry === "number") notes.push(`${compliance.cert_days_to_expiry}d to expiry`);
                         }
                         return (
                           <tr key={r.id} style={{ borderBottom: "1px solid var(--line)" }}>
