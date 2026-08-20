@@ -159,6 +159,7 @@ import map_detection_sweep
 import infra_asset_sweep
 import vulnerability_sweep
 import infra_posture_endpoints
+import exception_staleness_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -330,6 +331,7 @@ async def lifespan(application: FastAPI):
         _map_detection_sweep_task = None
         _infra_asset_sweep_task = None
         _vulnerability_sweep_task = None
+        _exception_staleness_sweep_task = None
         _reconnect_task = None
         _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
@@ -374,6 +376,9 @@ async def lifespan(application: FastAPI):
                 ))
                 _multi_tenant_bg_tasks.append(asyncio.create_task(
                     _multi_tenant_loop(vulnerability_sweep.sweep_once, vulnerability_sweep._TICK_S, "OSV vulnerability sweep")
+                ))
+                _multi_tenant_bg_tasks.append(asyncio.create_task(
+                    _multi_tenant_loop(exception_staleness_sweep.sweep_once, exception_staleness_sweep._TICK_S, "Exception staleness sweep")
                 ))
             logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
                         len(_multi_tenant_bg_tasks))
@@ -468,6 +473,8 @@ async def lifespan(application: FastAPI):
                 logger.info("Infra asset/expiry sweep task started")
                 _vulnerability_sweep_task = asyncio.create_task(vulnerability_sweep.start_sweep())
                 logger.info("OSV vulnerability sweep task started")
+                _exception_staleness_sweep_task = asyncio.create_task(exception_staleness_sweep.start_sweep())
+                logger.info("Exception staleness sweep task started")
 
             # Background DB reconnect loop — retries every 30 s if startup DB init failed.
             # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
@@ -529,6 +536,9 @@ async def lifespan(application: FastAPI):
                         if _vulnerability_sweep_task is None and deploy_env.IS_DEVELOPMENT:
                             asyncio.create_task(vulnerability_sweep.start_sweep())
                             logger.info("OSV vulnerability sweep started after DB reconnect")
+                        if _exception_staleness_sweep_task is None and deploy_env.IS_DEVELOPMENT:
+                            asyncio.create_task(exception_staleness_sweep.start_sweep())
+                            logger.info("Exception staleness sweep started after DB reconnect")
 
             _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -542,7 +552,7 @@ async def lifespan(application: FastAPI):
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
                              _risk_waiver_sweep_task, _itsm_sla_sweep_task, _map_detection_sweep_task,
-                             _infra_asset_sweep_task, _vulnerability_sweep_task,
+                             _infra_asset_sweep_task, _vulnerability_sweep_task, _exception_staleness_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()

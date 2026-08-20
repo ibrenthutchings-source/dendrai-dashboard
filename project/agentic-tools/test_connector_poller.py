@@ -226,3 +226,55 @@ def test_poll_due_connectors_only_polls_due_ones(monkeypatch):
 
     assert n == 2
     assert sorted(polled) == [1, 2]
+
+
+# ── _score_exception_event (Exception Management: curate, risk-rate, delegate) ──
+# connector["risk_tier"]/["id"]/.get("system_owner") must thread through to
+# exception_tool.score_event's connector_risk_tier param and
+# db.insert_exception_event's connector_id/assigned_owner/risk_rating args —
+# this is the delegation/risk-rating plumbing's only integration point.
+
+def test_score_exception_event_threads_connector_fields_through(monkeypatch):
+    connector = {
+        "id": 42, "connector_type": "sap_hana", "risk_tier": "high", "system_owner": "treasury-team@acme.com",
+        "extra_config": {},
+    }
+    event = {
+        "event_type": "sod_violation", "severity": "CRITICAL", "actor": "jdoe",
+        "action": "post_je", "resource": "je-123", "raw_payload": {"amount": 5000},
+    }
+    captured = {}
+    def _fake_insert(control_id, system_source, process, event_timestamp, features, model_version,
+                      anomaly_score, uncertainty_score, requires_human_review, **kw):
+        captured.update(control_id=control_id, system_source=system_source, **kw)
+        return 1
+    monkeypatch.setattr(db, "insert_exception_event", _fake_insert)
+
+    cp._score_exception_event(connector, event, system_telemetry_id=7)
+
+    assert captured["connector_id"] == 42
+    assert captured["assigned_owner"] == "treasury-team@acme.com"
+    assert captured["risk_rating"] == "R"  # high tier + CRITICAL severity
+    assert captured["system_telemetry_id"] == 7
+    assert captured["control_id"] == "je-123"
+    assert captured["system_source"] == "sap_hana"
+
+
+def test_score_exception_event_missing_owner_and_tier_still_scores(monkeypatch):
+    """A connector never classified via AI System Inventory (no risk_tier/
+    system_owner set) must not crash scoring — just no delegation/urgency
+    boost for it yet."""
+    connector = {"id": 5, "connector_type": "sailpoint", "extra_config": {}}
+    event = {"event_type": "x", "severity": "LOW", "resource": "r-1", "raw_payload": {}}
+    captured = {}
+    def _fake_insert(control_id, system_source, process, event_timestamp, features, model_version,
+                      anomaly_score, uncertainty_score, requires_human_review, **kw):
+        captured.update(kw)
+        return 1
+    monkeypatch.setattr(db, "insert_exception_event", _fake_insert)
+
+    cp._score_exception_event(connector, event, system_telemetry_id=None)
+
+    assert captured["connector_id"] == 5
+    assert captured["assigned_owner"] is None
+    assert captured["risk_rating"] == "G"

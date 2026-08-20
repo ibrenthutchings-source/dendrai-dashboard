@@ -740,11 +740,16 @@ window.MCP = (function () {
 
   // ── Exception Management — exceptions_endpoints.py (Development environment only) ──
 
-  /** Events awaiting triage, highest uncertainty first. 404s outside the Development environment. */
+  /** Events awaiting triage, risk_rating then uncertainty first. 404s outside the Development
+   *  environment. opts.group=true collapses recurring (control_id, system_source) pairs into
+   *  one row each (occurrence_count, worst_risk_rating, open-MAP badge) instead of one row per event. */
   async function exceptionsPending(opts = {}) {
     const params = new URLSearchParams();
     if (opts.limit) params.set('limit', opts.limit);
     if (opts.minUncertainty) params.set('min_uncertainty', opts.minUncertainty);
+    if (opts.riskRating) params.set('risk_rating', opts.riskRating);
+    if (opts.owner) params.set('owner', opts.owner);
+    if (opts.group) params.set('group', 'true');
     return _get(`/exceptions/pending?${params.toString()}`);
   }
 
@@ -755,7 +760,16 @@ window.MCP = (function () {
     });
   }
 
-  /** Headline counts: pending, resolution mix, pending-by-system. */
+  /** Resolve every currently-pending event for one (control_id, system_source) pair at once —
+   *  the bulk-resolve action behind the grouped Triage Queue view. */
+  async function exceptionsBulkTriage(controlId, systemSource, resolutionLabel, justificationNotes) {
+    return _post('/exceptions/bulk-triage', {
+      control_id: controlId, system_source: systemSource,
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
+  /** Headline counts: pending, resolution mix, pending-by-system/-owner/-risk_rating. */
   async function exceptionsSummary() {
     return _get('/exceptions/summary');
   }
@@ -1025,6 +1039,7 @@ window.MCP = (function () {
     // Exception Management
     exceptionsPending,
     submitExceptionTriage,
+    exceptionsBulkTriage,
     exceptionsSummary,
     exceptionsHistory,
     exceptionsDriftSummary,
