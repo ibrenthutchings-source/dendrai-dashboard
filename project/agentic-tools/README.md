@@ -97,6 +97,7 @@ Every mechanism below runs as an `asyncio` task started in `api_server.py`'s lif
 | `connector_poller.start_polling()` | `CONNECTOR_POLLER_TICK_S` tick (default 60s), per-connector `poll_interval_s` (default 1800s) | The 12 pull-model connector types actually registered in `connector_poller._ADAPTERS`: Oracle Fusion, Oracle HCM, denied-party screening, SAP HANA, SailPoint, Dynamics 365, NetSuite, Postgres CIS, Railway IaaS, AWS IaaS, OT heartbeat, synthetic transaction. (Several other modules' docstrings reference a GitHub/GitLab SCM or Jira/ServiceNow ITSM connector type — neither exists; see the correction notes under "DevOps Monitoring" below.) |
 | `risk_waiver_sweep.py` (added 2026-08-19) | Hourly | Expired `observability.risk_waivers` rows (time-boxed compensating-control exceptions past `expires_at`) — re-opens the underlying finding as failing |
 | `itsm_sla_sweep.py` (added 2026-08-19) | Hourly | `observability.itsm_tickets` past `sla_due_at` with no prior breach flag — re-raises the underlying finding |
+| `map_detection_sweep.py` (added 2026-08-19) | Daily (`MAP_MIN_OCCURRENCES`/`MAP_WINDOW_DAYS` control the trigger, default 3× in 30d) | Controls that keep requiring human review — drafts a Management Action Plan (risk rating, root cause, remediation, success criteria) for human review/approval |
 | `pac_negative_sweep.py` | Hourly | Regressions in Policy-as-Code negative-test coverage (a process that passed last sweep and fails this one) |
 | `connector_hygiene_sweep.py` | Daily | Poll-connector credentials overdue for rotation (default 90 days) — the one check with no external system, Intelligenza checking itself |
 | `vendor_risk_sweep.py` | Daily | Vendor SOC 2 reports past their expiry date |
@@ -213,6 +214,58 @@ Classic JE-testing anomaly rules run against real GL data — the gap this close
 **Frontend:** a "JE Testing" tab on the Continuous Monitoring screen (`continuous-monitoring-viz.jsx`) — a findings table (rule filter, pending-only toggle), not a chart of adjudicated events like the other tabs: each row is a rule that actually fired against a real posting.
 
 **PII at rest:** `exception_control_events.raw_payload` (which can carry employee names/emails and transaction detail pulled straight from a source-system event) is Fernet-encrypted end-to-end (`db._encrypt_raw_payload`/`_decrypt_raw_payload`, `CONNECTOR_ENCRYPTION_KEY`) — the whole payload wrapped rather than named sub-keys, since its shape varies by connector. `actor` is deliberately left as plaintext: it's an equality-filtered column (JE Testing's "filter by preparer", Exception Management's triage view), and Fernet encryption is randomized, so an encrypted `actor` could never be filtered on without a separate blind-index column. Rows past `EXCEPTION_EVENT_RETENTION_DAYS` (default 400d) are purged daily by `pii_retention_sweep.py` — see "Background loops & listeners" above.
+
+---
+
+### Continuous Monitoring: Management Action Plans (`map_detection_sweep.py` + `map_endpoints.py`, added 2026-08-19)
+
+When a control keeps requiring human review — not once, but repeatedly — a per-event triage decision never asks *why*. `map_detection_sweep.py` runs daily, finds every `(control_id, system_source)` pair whose latest scored inference required human review at least `MAP_MIN_OCCURRENCES` times (default 3) within `MAP_WINDOW_DAYS` (default 30), and drafts a Management Action Plan: a risk rating (R/A/G — the same vocabulary `risk_scores.rag_status` uses), a root cause, a remediation action, and success criteria, from the control's own recent event data. Falls back to a plain templated draft if the LLM call fails (`_draft_map_proposal`), same discipline `remediation_endpoints._draft_issue` already uses.
+
+**Nothing is official until a human decides it.** A drafted MAP lands in `status='proposed'` — the same propose → human review/adjust → approve discipline Enterprise Risk Gate 1 applies to a risk rating, not a shortcut around it. Deliberately its own review path rather than the generic preparer→manager `approval_tasks` flow (`approvals_endpoints.py`): a system-triggered proposal has no human preparer to derive a manager from, and that flow's "no manager configured → auto-approve" escape hatch would defeat the entire point here. Any reviewer with edit access to the `maps` screen can decide one and, before approving, adjust any of the drafted fields.
+
+Only one open MAP per control at a time (`idx_map_open_per_control`) — a repeat detection pass never proposes a duplicate while one is already proposed, approved, or in progress.
+
+**REST endpoints (prefix `/maps`):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/maps` | Filtered list (`?status=proposed\|approved\|rejected\|in_progress\|closed`) |
+| `GET` | `/maps/{map_ref}` | One MAP, including its source event ids |
+| `POST` | `/maps/{map_ref}/decision` | Approve (optionally adjusting drafted fields) or reject — comment required on reject |
+| `PUT` | `/maps/{map_ref}/progress` | Execution tracking — `completion_pct`; 100 closes the MAP |
+| `POST` | `/maps/detect` | On-demand detection pass (normally runs daily) |
+
+**Frontend:** `RecurringExceptionMaps` (`rail.jsx`), rendered above the existing per-loop-run `MapsTab` on the MAPs screen, reusing the same `.map-card`/`.pbar`/`.map-status` visual language — a distinct, backend-persisted population from the ephemeral per-run MAPs `risk-engine.js` generates for Stage 4 of the Enterprise Risk Loop.
+
+---
+
+### Audit Sample Selection (`sample_selection_tool.py` + `sample_selection_endpoints.py`, added 2026-08-19)
+
+Stateless, population-agnostic sampling — the caller supplies any population (a JE Testing findings export, a vendor list, an access review extract) and gets back both the sample and a `methodology` dict documenting exactly how it was drawn (seed, interval, start point, coverage %), reproducible from the same seed. Three methods: `random` (simple random sampling), `risk_based` (every item at/above a risk threshold is selected, remaining budget filled randomly from the rest), `mus` (monetary unit sampling — systematic selection with a fixed $-interval, so selection probability is proportional to dollar value). No persistence — this is a mechanical utility step, not a system of record for which samples were tested.
+
+**REST endpoint:** `POST /sample-selection/select` — body `{method, population, params}`.
+
+---
+
+### PBC/Workpaper Evidence Quality (`evidence_quality_tool.py` + `evidence_quality_endpoints.py`, added 2026-08-19)
+
+Flags evidence that's stale, unsigned, or collected outside the period it's supposed to support — three deterministic checks (`evidence_quality_tool.run_quality_checks`): `PERIOD_MISMATCH` (collected date outside `period_start`/`period_end`), `STALE` (older than `max_age_days`, default 90), `UNSIGNED` (a control that requires a signature has none recorded). Distinct from `observability.evidence_records` (SARIF/SAST findings from automated scanners) — this is auditor-logged evidence for a manual control test (a screenshot, a config export, an approval email).
+
+One additional check is LLM-assisted, not deterministic, and kept structurally separate on purpose: if a `control_description` is supplied alongside the evidence's own description, Claude judges whether the description plausibly supports that control (`PLAUSIBLE`/`MISMATCH`/`INCONCLUSIVE`) — advisory only, stored in `content_check` alongside (never merged into) the deterministic `quality_flags`, and a failed model call just leaves it null rather than blocking the evidence from being logged.
+
+**REST endpoints (prefix `/evidence-quality`):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/items` | Log one evidence item; runs both check kinds, persists, returns flags |
+| `GET` | `/items` | Filtered list (`?control_id=&flagged_only=`) |
+| `GET` | `/items/{id}` | One item |
+
+---
+
+### Process Mining: Walkthrough Narrative Drafting (`process_mining_endpoints.py`, added 2026-08-19)
+
+`POST /process-mining/walkthrough-narrative` drafts a first-draft SOX/ITGC walkthrough narrative from a process interview transcript — but not from the transcript alone. It pulls the same real process-mining statistics the Variants/Conformance/Cycle-Time/Rework tabs already compute (`_load_cases`, `pm.variant_analysis`/`conformance_summary`/`cycle_time_stats`/`rework_summary`) for the named process and hands both to Claude, with the prompt explicitly asking it to call out where the transcript's description and the observed system behavior disagree — a process owner's account and what the system actually did diverging is exactly what a walkthrough is supposed to catch, not something a transcript summary alone would ever surface. Four sections: process description, key controls, system evidence (including any contradiction), open questions. No safe templated fallback on a failed draft (unlike `remediation_endpoints._draft_issue`) — a human explicitly requested this and is standing by, so a 502 is preferable to a generic narrative that reads as real. Nothing is persisted; the auditor pastes/edits the returned text into their actual workpaper.
 
 ---
 
