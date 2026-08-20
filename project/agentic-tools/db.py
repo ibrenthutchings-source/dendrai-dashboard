@@ -2345,6 +2345,83 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_category
     ON observability.audit_log (category, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor
     ON observability.audit_log (actor, occurred_at DESC);
+
+CREATE SEQUENCE IF NOT EXISTS observability.map_ref_seq;
+
+-- Continuous Monitoring: Management Action Plans raised against a control
+-- that keeps requiring human review — map_detection_sweep.py's recurrence
+-- detector, not a one-off finding. Deliberately its own table rather than a
+-- row in exception_control_events (a MAP outlives and aggregates many of
+-- those rows) or in approval_tasks alone (a MAP has its own lifecycle —
+-- proposed -> approved -> in_progress -> closed — that outlasts the single
+-- decision approval_tasks tracks; approval_task_id links to that decision,
+-- not the whole plan). Field names deliberately match the existing
+-- client-only MAP shape risk-engine.js/rail.jsx already use (finding,
+-- root_cause, action, owner, due_date, completion_pct, reduction_pct,
+-- success_criteria) so the same MapsTab card UI can render both populations.
+CREATE TABLE IF NOT EXISTS observability.management_action_plans (
+    id                   BIGSERIAL    PRIMARY KEY,
+    map_ref              VARCHAR(32)  NOT NULL UNIQUE,   -- e.g. "MAP-CM-000042"
+    control_id           VARCHAR(128) NOT NULL,
+    system_source        VARCHAR(64),
+    finding              TEXT         NOT NULL,          -- what's recurring, human-readable
+    root_cause           TEXT,                            -- proposed by AI, reviewable/editable before approval
+    risk_rating          VARCHAR(8),                       -- R | A | G — same vocabulary as risk_scores.rag_status
+    action               TEXT,                            -- proposed remediation plan
+    owner                VARCHAR(128),
+    due_date             DATE,
+    success_criteria     TEXT,
+    reduction_pct        NUMERIC(5,2),
+    completion_pct       INTEGER      NOT NULL DEFAULT 0,
+    occurrence_count     INTEGER      NOT NULL,
+    window_days          INTEGER      NOT NULL,
+    first_occurrence_at  TIMESTAMPTZ,
+    last_occurrence_at   TIMESTAMPTZ,
+    source_event_ids     BIGINT[],
+    status               VARCHAR(16)  NOT NULL DEFAULT 'proposed',  -- proposed | approved | rejected | in_progress | closed
+    approval_task_id     BIGINT       REFERENCES approval_tasks(id),
+    reviewed_by_name     VARCHAR(128),
+    reviewed_at          TIMESTAMPTZ,
+    review_comment       TEXT,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+-- Only one open MAP per control at a time — a second recurrence pass while
+-- one is already proposed/approved/in_progress should never open a
+-- duplicate, same "one ACTIVE waiver per hash" discipline risk_waivers uses.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_open_per_control
+    ON observability.management_action_plans (control_id)
+    WHERE status IN ('proposed', 'approved', 'in_progress');
+CREATE INDEX IF NOT EXISTS idx_map_status
+    ON observability.management_action_plans (status, created_at DESC);
+
+-- PBC/workpaper evidence quality (evidence_quality_tool.py's deterministic
+-- checks + evidence_quality_endpoints.py's one LLM-assisted content check).
+-- Distinct from observability.evidence_records (SARIF/SAST findings from
+-- automated scanners) — this is auditor-logged evidence for a manual
+-- control test (a screenshot, a config export, an approval email), where
+-- the question isn't "did a scanner find something" but "does this
+-- artifact actually, and currently, support the control it's attached to."
+CREATE TABLE IF NOT EXISTS observability.pbc_evidence (
+    id                  BIGSERIAL    PRIMARY KEY,
+    control_id          VARCHAR(128) NOT NULL,
+    title               TEXT         NOT NULL,
+    description         TEXT,
+    source_url          TEXT,
+    period_start        DATE,
+    period_end          DATE,
+    collected_date      DATE,
+    has_signature       BOOLEAN      NOT NULL DEFAULT FALSE,
+    requires_signature  BOOLEAN      NOT NULL DEFAULT FALSE,
+    quality_flags       JSONB        NOT NULL DEFAULT '[]',
+    content_check       JSONB,
+    created_by          VARCHAR(128),
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pbc_evidence_control
+    ON observability.pbc_evidence (control_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pbc_evidence_flagged
+    ON observability.pbc_evidence (created_at DESC) WHERE quality_flags != '[]'::jsonb;
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -11137,6 +11214,355 @@ def verify_audit_chain(limit: Optional[int] = None) -> dict:
             prev_hash = stored_chain_hash
         return {"valid": True, "checked": checked, "break_at_id": None}
     return _run(_do, default={"valid": False, "checked": 0, "break_at_id": None, "error": "query failed"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Continuous Monitoring: Management Action Plans (observability.management_action_plans)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MAP_COLUMNS = (
+    "id, map_ref, control_id, system_source, finding, root_cause, risk_rating, action, owner, "
+    "due_date, success_criteria, reduction_pct, completion_pct, occurrence_count, window_days, "
+    "first_occurrence_at, last_occurrence_at, source_event_ids, status, approval_task_id, "
+    "reviewed_by_name, reviewed_at, review_comment, created_at, updated_at"
+)
+_MAP_TIMESTAMP_FIELDS = (
+    "due_date", "first_occurrence_at", "last_occurrence_at", "reviewed_at", "created_at", "updated_at",
+)
+
+
+def _map_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _MAP_TIMESTAMP_FIELDS:
+        if d.get(k) and hasattr(d[k], "isoformat"):
+            d[k] = d[k].isoformat()
+    if d.get("reduction_pct") is not None:
+        d["reduction_pct"] = float(d["reduction_pct"])
+    return d
+
+
+def detect_recurring_exceptions(min_occurrences: int = 3, window_days: int = 30) -> list:
+    """Finds (control_id, system_source) pairs whose latest scored inference
+    required human review at least min_occurrences times within window_days —
+    a control that keeps escalating for review, not a single one-off. Skips
+    any control that already has an open MAP (idx_map_open_per_control),
+    so a repeated detection pass never proposes a duplicate. Returns
+    occurrence_count, the occurrence window, and up to 20 of the underlying
+    event ids for map_detection_sweep.py to draft a proposal from."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ce.control_id, ce.system_source, COUNT(*) AS occurrence_count,
+                           MIN(ce.event_timestamp) AS first_occurrence_at,
+                           MAX(ce.event_timestamp) AS last_occurrence_at,
+                           (array_agg(ce.id ORDER BY ce.event_timestamp DESC))[1:20] AS event_ids
+                    FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT requires_human_review FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    WHERE mi.requires_human_review = TRUE
+                      AND ce.event_timestamp > NOW() - (%s || ' days')::interval
+                      AND NOT EXISTS (
+                          SELECT 1 FROM observability.management_action_plans mp
+                          WHERE mp.control_id = ce.control_id
+                            AND mp.status IN ('proposed', 'approved', 'in_progress')
+                      )
+                    GROUP BY ce.control_id, ce.system_source
+                    HAVING COUNT(*) >= %s
+                    ORDER BY occurrence_count DESC
+                    """,
+                    (window_days, min_occurrences),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("first_occurrence_at", "last_occurrence_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_recent_exception_events_for_control(control_id: str, limit: int = 5) -> list:
+    """Newest-first sample of a control's recent events, raw_payload
+    decrypted — the factual basis map_detection_sweep._draft_map_proposal
+    drafts a root cause/remediation plan from, same decrypt-on-read pattern
+    list_pending_exceptions already uses."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, event_timestamp, actor, action, event_type, raw_payload
+                    FROM exception_control_events
+                    WHERE control_id = %s
+                    ORDER BY event_timestamp DESC
+                    LIMIT %s
+                    """,
+                    (control_id, limit),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("event_timestamp"):
+                        d["event_timestamp"] = d["event_timestamp"].isoformat()
+                    d["raw_payload"] = _decrypt_raw_payload(d.get("raw_payload")) or {}
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def create_map(
+    control_id: str, system_source: Optional[str], finding: str,
+    root_cause: Optional[str], risk_rating: Optional[str], action: Optional[str],
+    owner: Optional[str], due_date, success_criteria: Optional[str], reduction_pct: Optional[float],
+    occurrence_count: int, window_days: int, first_occurrence_at, last_occurrence_at,
+    source_event_ids: list,
+) -> Optional[dict]:
+    """Insert one MAP in status='proposed' — always pending human review;
+    nothing about this function finalizes a MAP, only decide_map's approval
+    path does. map_ref is generated here from observability.map_ref_seq
+    (not passed in — a Python-side id would either need a DB round-trip to
+    stay unique anyway, or risk a collision under concurrent sweeps).
+    Returns None if idx_map_open_per_control already has an open MAP for
+    this control_id — same race-safe dedup discipline as risk_waivers'
+    unique-active-hash index, rather than trusting the caller's own
+    detect_recurring_exceptions NOT EXISTS check alone."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT nextval('observability.map_ref_seq')")
+                map_ref = f"MAP-CM-{cur.fetchone()[0]:06d}"
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.management_action_plans (
+                        map_ref, control_id, system_source, finding, root_cause, risk_rating, action,
+                        owner, due_date, success_criteria, reduction_pct, occurrence_count, window_days,
+                        first_occurrence_at, last_occurrence_at, source_event_ids, status
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'proposed')
+                    ON CONFLICT (control_id) WHERE status IN ('proposed', 'approved', 'in_progress')
+                    DO NOTHING
+                    RETURNING {_MAP_COLUMNS}
+                    """,
+                    (map_ref, control_id, system_source, finding, root_cause, risk_rating, action,
+                     owner, due_date, success_criteria, reduction_pct, occurrence_count, window_days,
+                     first_occurrence_at, last_occurrence_at, source_event_ids),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _map_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def list_maps(status: Optional[str] = None, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if status:
+            filters.append("status = %s"); params.append(status)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_MAP_COLUMNS} FROM observability.management_action_plans
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_map_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_map(map_ref: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_MAP_COLUMNS} FROM observability.management_action_plans WHERE map_ref = %s",
+                    (map_ref,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _map_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def decide_map(
+    map_ref: str, decision: str, reviewer_name: str, comment: Optional[str] = None,
+    adjustments: Optional[dict] = None, approval_task_id: Optional[int] = None,
+) -> Optional[dict]:
+    """Human decision on a proposed MAP — approve (optionally editing any of
+    the AI-drafted fields first, same 'adjust before approving' pattern
+    Gate 1/2 already use) or reject. Only acts on status='proposed' rows —
+    a MAP already decided is not re-decidable through this path (use
+    update_map_progress for an approved MAP's execution tracking)."""
+    if decision not in ("approved", "rejected"):
+        return None
+    adjustments = adjustments or {}
+    editable = {"risk_rating", "root_cause", "action", "owner", "due_date", "success_criteria", "reduction_pct"}
+    set_clauses = ["status = %s", "reviewed_by_name = %s", "reviewed_at = NOW()", "review_comment = %s", "updated_at = NOW()"]
+    params: list = [decision, reviewer_name, comment]
+    for key in editable:
+        if key in adjustments:
+            set_clauses.append(f"{key} = %s")
+            params.append(adjustments[key])
+    if approval_task_id is not None:
+        set_clauses.append("approval_task_id = %s")
+        params.append(approval_task_id)
+    params.append(map_ref)
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE observability.management_action_plans
+                    SET {', '.join(set_clauses)}
+                    WHERE map_ref = %s AND status = 'proposed'
+                    RETURNING {_MAP_COLUMNS}
+                    """,
+                    params,
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _map_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def update_map_progress(map_ref: str, completion_pct: int) -> Optional[dict]:
+    """Execution tracking for an approved MAP. Only acts on 'approved' or
+    'in_progress' rows — a rejected or still-proposed MAP has no execution
+    to track yet. completion_pct=100 closes the MAP; any positive value
+    below that moves a freshly-approved MAP into 'in_progress' so the
+    MapsTab card status badge reflects real movement, not just a number."""
+    completion_pct = max(0, min(100, completion_pct))
+    status = "closed" if completion_pct >= 100 else "in_progress" if completion_pct > 0 else "approved"
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE observability.management_action_plans
+                    SET completion_pct = %s, status = %s, updated_at = NOW()
+                    WHERE map_ref = %s AND status IN ('approved', 'in_progress')
+                    RETURNING {_MAP_COLUMNS}
+                    """,
+                    (completion_pct, status, map_ref),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _map_row_to_dict(cols, row)
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PBC/workpaper evidence quality (observability.pbc_evidence)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PBC_EVIDENCE_COLUMNS = (
+    "id, control_id, title, description, source_url, period_start, period_end, collected_date, "
+    "has_signature, requires_signature, quality_flags, content_check, created_by, created_at"
+)
+_PBC_EVIDENCE_DATE_FIELDS = ("period_start", "period_end", "collected_date", "created_at")
+
+
+def _pbc_evidence_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _PBC_EVIDENCE_DATE_FIELDS:
+        if d.get(k) and hasattr(d[k], "isoformat"):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def create_pbc_evidence(
+    control_id: str, title: str, description: Optional[str], source_url: Optional[str],
+    period_start, period_end, collected_date, has_signature: bool, requires_signature: bool,
+    quality_flags: list, content_check: Optional[dict], created_by: Optional[str],
+) -> Optional[dict]:
+    """Insert one evidence log entry with its quality checks already
+    computed (evidence_quality_endpoints.py runs evidence_quality_tool.py's
+    checks before calling this — the flags are stored, not recomputed on
+    every read, so a later change to the check logic doesn't silently
+    rewrite history for evidence already logged)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.pbc_evidence (
+                        control_id, title, description, source_url, period_start, period_end,
+                        collected_date, has_signature, requires_signature, quality_flags, content_check, created_by
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)
+                    RETURNING {_PBC_EVIDENCE_COLUMNS}
+                    """,
+                    (control_id, title, description, source_url, period_start, period_end, collected_date,
+                     has_signature, requires_signature, Json(quality_flags), Json(content_check) if content_check else None,
+                     created_by),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return _pbc_evidence_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def list_pbc_evidence(control_id: Optional[str] = None, flagged_only: bool = False, limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        if control_id:
+            filters.append("control_id = %s"); params.append(control_id)
+        if flagged_only:
+            filters.append("quality_flags != '[]'::jsonb")
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_PBC_EVIDENCE_COLUMNS} FROM observability.pbc_evidence
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_pbc_evidence_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_pbc_evidence(evidence_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_PBC_EVIDENCE_COLUMNS} FROM observability.pbc_evidence WHERE id = %s",
+                    (evidence_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _pbc_evidence_row_to_dict(cols, row)
+    return _run(_do)
 
 
 def get_scm_repository_state(resource: str) -> Optional[dict]:

@@ -232,6 +232,241 @@ function MapsTab({ maps }) {
   );
 }
 
+// ---------- Recurring-Exception MAPs (Continuous Monitoring, backend-persisted) ----------
+// Distinct population from MapsTab above: those are generated fresh for one
+// Enterprise Risk Loop run (risk-engine.js's buildMaps, ephemeral, never
+// persisted); these are raised by map_detection_sweep.py whenever a control
+// keeps requiring human review, persisted, and gated behind human
+// review/approval before they're official — same "AI proposes, human
+// decides" discipline Gate 1 applies to a risk rating, not a shortcut
+// around it. Reuses the same .map-card/.pbar/.map-status visual language.
+
+const _MAP_RATING_LABEL = { R: "Red", A: "Amber", G: "Green" };
+const _MAP_RATING_COLOR = { R: "var(--red-ink)", A: "var(--amber-ink)", G: "var(--green-ink)" };
+
+function MapReviewCard({ m, onDecided }) {
+  const [expanded, setExpanded] = useState(false);
+  const [fields, setFields] = useState({
+    risk_rating: m.risk_rating || "A", root_cause: m.root_cause || "",
+    action: m.action || "", success_criteria: m.success_criteria || "",
+    owner: m.owner || "", due_date: m.due_date ? m.due_date.slice(0, 10) : "",
+  });
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  function set(k, v) { setFields(f => ({ ...f, [k]: v })); }
+
+  async function decide(decision) {
+    if (decision === "rejected" && !comment.trim()) {
+      setErr("A comment is required when rejecting a MAP.");
+      return;
+    }
+    setBusy(true); setErr(null);
+    try {
+      const { map } = await window.MCP.decideMap(m.map_ref, decision, comment.trim() || null, fields);
+      onDecided(map);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="map-card" style={{ borderLeft: `3px solid ${_MAP_RATING_COLOR[fields.risk_rating]}` }}>
+      <div className="top" style={{ cursor: "pointer" }} onClick={() => setExpanded(e => !e)}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="title">{m.finding}</div>
+          <div className="meta-row">
+            <span>{m.control_id}</span>
+            <span>· {m.occurrence_count}× in {m.window_days}d</span>
+            <span>· {m.map_ref}</span>
+          </div>
+        </div>
+        <span className="map-status open">PENDING REVIEW</span>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
+            <label style={{ fontSize: 10.5, color: "var(--ink-4)" }}>
+              Risk rating
+              <select value={fields.risk_rating} onChange={e => set("risk_rating", e.target.value)}
+                style={{ display: "block", marginTop: 3, fontSize: 12, padding: "3px 6px" }}>
+                {["R", "A", "G"].map(r => <option key={r} value={r}>{_MAP_RATING_LABEL[r]}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: 10.5, color: "var(--ink-4)", flex: 1 }}>
+              Owner
+              <input value={fields.owner} onChange={e => set("owner", e.target.value)} placeholder="Unassigned"
+                style={{ display: "block", width: "100%", marginTop: 3, fontSize: 12, padding: "4px 7px" }} />
+            </label>
+            <label style={{ fontSize: 10.5, color: "var(--ink-4)" }}>
+              Due date
+              <input type="date" value={fields.due_date} onChange={e => set("due_date", e.target.value)}
+                style={{ display: "block", marginTop: 3, fontSize: 12, padding: "4px 7px" }} />
+            </label>
+          </div>
+
+          <label style={{ fontSize: 10.5, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>
+            Root cause
+            <textarea value={fields.root_cause} onChange={e => set("root_cause", e.target.value)}
+              className="code-input" style={{ display: "block", width: "100%", height: 50, fontSize: 12, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 10.5, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>
+            Remediation action
+            <textarea value={fields.action} onChange={e => set("action", e.target.value)}
+              className="code-input" style={{ display: "block", width: "100%", height: 60, fontSize: 12, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 10.5, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>
+            Success criteria
+            <textarea value={fields.success_criteria} onChange={e => set("success_criteria", e.target.value)}
+              className="code-input" style={{ display: "block", width: "100%", height: 40, fontSize: 12, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 10.5, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>
+            Review comment <span style={{ textTransform: "none" }}>(required to reject)</span>
+            <input value={comment} onChange={e => setComment(e.target.value)}
+              style={{ display: "block", width: "100%", marginTop: 3, fontSize: 12, padding: "4px 7px" }} />
+          </label>
+
+          {err && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 8 }}>{err}</div>}
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="btn btn-sm" disabled={busy} onClick={() => decide("approved")}>
+              {busy ? "Saving…" : "Approve"}
+            </button>
+            <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => decide("rejected")}>
+              Reject
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MapProgressCard({ m, onUpdated }) {
+  const [pct, setPct] = useState(m.completion_pct || 0);
+  const [saving, setSaving] = useState(false);
+  const closed = m.status === "closed";
+
+  async function save() {
+    setSaving(true);
+    try {
+      const { map } = await window.MCP.updateMapProgress(m.map_ref, pct);
+      onUpdated(map);
+    } catch { /* leave the slider at its last edit — the card's own value stays authoritative until a retry succeeds */ }
+    finally { setSaving(false); }
+  }
+
+  const sc = closed ? "done" : pct > 0 ? "prog" : "open";
+  const lbl = closed ? "CLOSED" : pct > 0 ? "IN PROG" : "APPROVED";
+
+  return (
+    <div className="map-card">
+      <div className="top">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="title">{m.finding}</div>
+          <div className="meta-row">
+            <span>{m.owner || "Unassigned"}</span>
+            {m.due_date && <span>· Due {m.due_date.slice(0, 10)}</span>}
+            <span>· {_MAP_RATING_LABEL[m.risk_rating] || m.risk_rating}</span>
+          </div>
+        </div>
+        <span className={`map-status ${sc}`}>{lbl}</span>
+      </div>
+      <div className="action">{m.action}</div>
+      <div className="pbar"><div className={pct < 60 ? "amber" : ""} style={{ width: `${pct}%` }} /></div>
+      <div className="foot">
+        <span>{m.map_ref}</span>
+        <span>{pct}% complete</span>
+      </div>
+      {!closed && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+          <input type="range" min="0" max="100" value={pct} onChange={e => setPct(Number(e.target.value))}
+            style={{ flex: 1 }} />
+          <button type="button" className="btn btn-sm" disabled={saving || pct === m.completion_pct} onClick={save}>
+            {saving ? "Saving…" : "Update"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecurringExceptionMaps() {
+  const [maps, setMaps] = useState(null);
+  const [detecting, setDetecting] = useState(false);
+  const available = typeof window !== "undefined" && window.MCP?.listMaps;
+
+  const load = React.useCallback(() => {
+    if (!available) return;
+    window.MCP.listMaps().then(d => setMaps(d.maps || [])).catch(() => setMaps([]));
+  }, [available]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function runDetection() {
+    setDetecting(true);
+    try {
+      await window.MCP.triggerMapDetection();
+      load();
+    } catch { /* transient — the daily sweep will still catch it */ }
+    finally { setDetecting(false); }
+  }
+
+  if (!available || maps === null) return null;
+
+  const pending = maps.filter(m => m.status === "proposed");
+  const active = maps.filter(m => m.status === "approved" || m.status === "in_progress");
+
+  if (!maps.length) {
+    return (
+      <div style={{ marginBottom: 20 }}>
+        <SectionLabel right={
+          <button type="button" className="btn btn-sm" disabled={detecting} onClick={runDetection}>
+            {detecting ? "Checking…" : "Check now"}
+          </button>
+        }>Recurring Exception MAPs</SectionLabel>
+        <Empty>No control has required repeated human review recently — nothing to act on.</Empty>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <SectionLabel right={
+        <button type="button" className="btn btn-sm" disabled={detecting} onClick={runDetection}>
+          {detecting ? "Checking…" : "Check now"}
+        </button>
+      }>Recurring Exception MAPs</SectionLabel>
+      {pending.length > 0 && (
+        <>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--red-ink)", marginBottom: 6, fontWeight: 700 }}>
+            {pending.length} AWAITING REVIEW
+          </div>
+          {pending.map(m => (
+            <MapReviewCard key={m.map_ref} m={m}
+              onDecided={updated => setMaps(ms => ms.map(x => x.map_ref === updated.map_ref ? updated : x))} />
+          ))}
+        </>
+      )}
+      {active.length > 0 && (
+        <>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", margin: "10px 0 6px", fontWeight: 700 }}>
+            {active.length} IN EXECUTION
+          </div>
+          {active.map(m => (
+            <MapProgressCard key={m.map_ref} m={m}
+              onUpdated={updated => setMaps(ms => ms.map(x => x.map_ref === updated.map_ref ? updated : x))} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------- LOOP ----------
 const LOOP_CADENCES = [
   { id: "monthly",   label: "Monthly",   cron: "0 8 1 * *",       desc: "1st of each month" },
@@ -828,4 +1063,5 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
 Object.assign(window, {
   Rail, RAIL_TABS,
   RiskTable, HeatmapTab, MapsTab, LoopTab, NotifTab, FlowMiniTab, PersonaTab,
+  RecurringExceptionMaps,
 });
