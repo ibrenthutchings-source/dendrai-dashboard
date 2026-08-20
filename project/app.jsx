@@ -2439,6 +2439,7 @@ function App() {
                 <div className="panel-sub">Findings, owners, due dates, and completion across the register.</div>
               </div>
             </div>
+            <RecurringExceptionMaps />
             <MapsTab maps={railMaps}/>
           </div>
           </ScreenAccessGate>

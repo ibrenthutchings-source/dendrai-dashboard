@@ -887,6 +887,58 @@ window.MCP = (function () {
     });
   }
 
+  // ── Management Action Plans — map_endpoints.py ─────────────────────────────
+  // Proposed by map_detection_sweep.py whenever a control keeps requiring
+  // human review; a human reviews/adjusts/decides here, same propose ->
+  // review -> approve shape Gate 1 applies to a risk rating.
+
+  /** Filtered list, newest first (status: 'proposed'|'approved'|'rejected'|'in_progress'|'closed'). */
+  async function listMaps(status = null) {
+    return _get(`/maps${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+  }
+
+  /** One MAP, including its source event ids. */
+  async function getMap(mapRef) {
+    return _get(`/maps/${encodeURIComponent(mapRef)}`);
+  }
+
+  /** approve | reject a proposed MAP — adjustments may override any of the
+   * AI-drafted fields (risk_rating/root_cause/action/owner/due_date/
+   * success_criteria/reduction_pct) before approving. comment required on reject. */
+  async function decideMap(mapRef, decision, comment, adjustments) {
+    return _post(`/maps/${encodeURIComponent(mapRef)}/decision`, {
+      decision, comment: comment || null, adjustments: adjustments || null,
+    });
+  }
+
+  /** Execution tracking for an approved MAP — 100 closes it. Routed through
+   * the same /api/mcp/ catch-all as every other call here (not a raw
+   * root-relative fetch) — /maps/ has no dedicated vite dev-proxy entry the
+   * way /approvals/ does. */
+  async function _putMcp(path, body) {
+    const res = await fetch(BASE + path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
+  async function updateMapProgress(mapRef, completionPct) {
+    return _putMcp(`/maps/${encodeURIComponent(mapRef)}/progress`, { completion_pct: completionPct });
+  }
+
+  /** On-demand recurrence-detection pass (normally runs daily). */
+  async function triggerMapDetection() {
+    return _post('/maps/detect', {});
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -967,5 +1019,11 @@ window.MCP = (function () {
     regChangeProposals,
     regChangeProposal,
     regChangeDecide,
+    // Management Action Plans
+    listMaps,
+    getMap,
+    decideMap,
+    updateMapProgress,
+    triggerMapDetection,
   };
 })();

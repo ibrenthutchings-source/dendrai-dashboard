@@ -134,6 +134,9 @@ import remediation_endpoints
 import evidence_pack_endpoints
 import evidence_endpoints
 import itsm_endpoints
+import map_endpoints
+import sample_selection_endpoints
+import evidence_quality_endpoints
 import vendor_risk_endpoints
 import ai_governance_endpoints
 import infrastructure_monitoring_endpoints
@@ -152,6 +155,7 @@ import regulatory_change_endpoints
 import pii_retention_sweep
 import risk_waiver_sweep
 import itsm_sla_sweep
+import map_detection_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -320,6 +324,7 @@ async def lifespan(application: FastAPI):
         _pii_retention_sweep_task = None
         _risk_waiver_sweep_task = None
         _itsm_sla_sweep_task = None
+        _map_detection_sweep_task = None
         _reconnect_task = None
         _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
@@ -351,6 +356,7 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(pii_retention_sweep.sweep_once, pii_retention_sweep._TICK_S, "PII retention sweep")),
                 asyncio.create_task(_multi_tenant_loop(risk_waiver_sweep.sweep_once, risk_waiver_sweep._TICK_S, "Risk waiver expiry sweep")),
                 asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
+                asyncio.create_task(_multi_tenant_loop(map_detection_sweep.sweep_once, map_detection_sweep._TICK_S, "MAP detection sweep")),
             ])
             logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
                         len(_multi_tenant_bg_tasks))
@@ -431,6 +437,12 @@ async def lifespan(application: FastAPI):
                 _itsm_sla_sweep_task = asyncio.create_task(itsm_sla_sweep.start_sweep())
                 logger.info("ITSM SLA breach sweep task started")
 
+            # Continuous Monitoring: proposes a Management Action Plan when a
+            # control keeps requiring human review — see map_detection_sweep.py.
+            if db.is_available():
+                _map_detection_sweep_task = asyncio.create_task(map_detection_sweep.start_sweep())
+                logger.info("MAP detection sweep task started")
+
             # Background DB reconnect loop — retries every 30 s if startup DB init failed.
             # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
             # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -482,6 +494,9 @@ async def lifespan(application: FastAPI):
                         if _itsm_sla_sweep_task is None:
                             asyncio.create_task(itsm_sla_sweep.start_sweep())
                             logger.info("ITSM SLA breach sweep started after DB reconnect")
+                        if _map_detection_sweep_task is None:
+                            asyncio.create_task(map_detection_sweep.start_sweep())
+                            logger.info("MAP detection sweep started after DB reconnect")
 
             _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -494,7 +509,7 @@ async def lifespan(application: FastAPI):
                              _pac_negative_sweep_task, _connector_hygiene_sweep_task,
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
-                             _risk_waiver_sweep_task, _itsm_sla_sweep_task,
+                             _risk_waiver_sweep_task, _itsm_sla_sweep_task, _map_detection_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
@@ -888,6 +903,15 @@ logger.info("Evidence ingestion router registered at /evidence/webhook")
 # DevOps Monitoring: ITSM/Jira-ServiceNow ticket status sync.
 app.include_router(itsm_endpoints.router)
 logger.info("ITSM ticket sync router registered at /itsm/webhook")
+
+# Continuous Monitoring: Management Action Plans for recurring exceptions.
+app.include_router(map_endpoints.router)
+
+# Audit sample selection: random / risk-based / monetary unit sampling.
+app.include_router(sample_selection_endpoints.router)
+
+# PBC/workpaper evidence quality: stale/unsigned/period-mismatch flags + content check.
+app.include_router(evidence_quality_endpoints.router)
 
 # GitHub Webhook: receive repo events and run them through the UBO pipeline.
 app.include_router(github_endpoints.router)
