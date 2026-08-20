@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""
+Unit tests for db.py's Exception Management curation/risk-rating/delegation
+layer: insert_exception_event's new connector_id/assigned_owner/risk_rating
+columns, list_pending_exceptions' filters/sort, list_pending_exceptions_grouped,
+bulk_submit_exception_triage, get_exception_summary's new breakdowns,
+escalate_stale_exceptions, and the JOURNAL_ENTRY exclusion applied across
+every Exception-Management-only query over the shared tables.
+
+db._conn() is faked at the boundary — no real database. A single fake
+cursor supports MULTIPLE sequential execute() calls in one `with
+conn.cursor()` block (functions like get_exception_summary/insert_exception_event
+run several queries on one cursor), each with its own canned
+fetchone/fetchall/rowcount/description, consumed in call order.
+
+    pytest test_exceptions_db.py -v
+"""
+
+from __future__ import annotations
+
+import db
+
+
+class _Call:
+    def __init__(self, fetchone=None, fetchall=None, rowcount=0, cols=None):
+        self.fetchone_result = fetchone
+        self.fetchall_result = fetchall or []
+        self.rowcount = rowcount
+        self.cols = cols or []
+
+
+class _FakeCursor:
+    def __init__(self, recorder, calls):
+        self._recorder = recorder
+        self._calls = list(calls)
+        self._current = None
+
+    def execute(self, sql, params=None):
+        self._recorder.append((sql, params))
+        self._current = self._calls.pop(0) if self._calls else _Call()
+        self.rowcount = self._current.rowcount
+        self.description = [(c,) for c in self._current.cols]
+
+    def fetchone(self):
+        return self._current.fetchone_result
+
+    def fetchall(self):
+        return list(self._current.fetchall_result)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, recorder, calls):
+        self._recorder = recorder
+        self._calls = calls
+
+    def cursor(self):
+        return _FakeCursor(self._recorder, self._calls)
+
+    def commit(self):
+        pass
+
+
+class _FakeConnCtx:
+    def __init__(self, recorder, calls):
+        self._recorder = recorder
+        self._calls = calls
+
+    def __enter__(self):
+        return _FakeConn(self._recorder, self._calls)
+
+    def __exit__(self, *a):
+        return False
+
+
+def _patch(monkeypatch, recorder, calls):
+    monkeypatch.setattr(db, "is_available", lambda: True)
+    monkeypatch.setattr(db, "_conn", lambda: _FakeConnCtx(recorder, calls))
+
+
+# ── insert_exception_event ───────────────────────────────────────────────────
+
+def test_insert_exception_event_threads_new_columns(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchone=(101,)), _Call()])
+
+    event_id = db.insert_exception_event(
+        "je-1", "sap_hana", "P2P", "2026-08-01T00:00:00Z", {}, "exception-heuristic-v1",
+        0.9, 0.2, True, connector_id=42, assigned_owner="treasury-team@acme.com", risk_rating="R",
+    )
+
+    assert event_id == 101
+    control_sql, control_params = recorder[0]
+    assert "connector_id, assigned_owner" in control_sql
+    assert control_params[-2:] == (42, "treasury-team@acme.com")
+    inference_sql, inference_params = recorder[1]
+    assert "risk_rating" in inference_sql
+    assert inference_params[-1] == "R"
+
+
+def test_insert_exception_event_defaults_new_columns_to_none(monkeypatch):
+    """je_testing_sweep.py calls this without the new kwargs — must not
+    error, and must persist NULL rather than a fabricated owner/rating."""
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchone=(1,)), _Call()])
+
+    db.insert_exception_event("JE-DUP-01", "oracle_fusion", None, "2026-08-01T00:00:00Z",
+                               {}, "je-testing-v1", 1.0, 0.0, True)
+
+    _, control_params = recorder[0]
+    assert control_params[-2:] == (None, None)
+    _, inference_params = recorder[1]
+    assert inference_params[-1] is None
+
+
+# ── list_pending_exceptions ────────────────────────────────────────────────────
+
+def test_list_pending_exceptions_excludes_journal_entry_rows(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_pending_exceptions()
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" in sql
+
+
+def test_list_pending_exceptions_orders_by_risk_rating_before_uncertainty(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_pending_exceptions()
+    sql, _ = recorder[0]
+    order_clause = sql.split("ORDER BY", 1)[1]
+    assert order_clause.index("CASE mi.risk_rating") < order_clause.index("mi.uncertainty_score DESC")
+
+
+def test_list_pending_exceptions_filters_by_risk_rating_and_owner(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_pending_exceptions(risk_rating="R", owner="treasury-team@acme.com")
+    sql, params = recorder[0]
+    assert "mi.risk_rating = %s" in sql
+    assert "ce.assigned_owner = %s" in sql
+    assert "R" in params and "treasury-team@acme.com" in params
+
+
+def test_list_pending_exceptions_decodes_new_columns(monkeypatch):
+    row = (1, "ctrl-1", "sap_hana", "P2P", None, {}, "jdoe", "post", "sod_violation",
+           None, 7, 42, "treasury-team@acme.com", 9, "exception-heuristic-v1", 0.9, 0.6, "R", None)
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[row])])
+    result = db.list_pending_exceptions()
+    assert result[0]["connector_id"] == 42
+    assert result[0]["assigned_owner"] == "treasury-team@acme.com"
+    assert result[0]["risk_rating"] == "R"
+
+
+# ── list_pending_exceptions_grouped ──────────────────────────────────────────
+
+def test_list_pending_exceptions_grouped_excludes_journal_entry_and_orders_by_worst_rating(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_pending_exceptions_grouped()
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" in sql
+    assert "GROUP BY ce.control_id, ce.system_source" in sql
+    assert "ORDER BY worst_rating_order" in sql
+
+
+def test_list_pending_exceptions_grouped_decodes_worst_rating_and_map_badge(monkeypatch):
+    cols = ["control_id", "system_source", "occurrence_count", "worst_rating_order",
+            "first_seen_at", "last_seen_at", "sample_event_id", "owner", "has_open_map", "map_ref"]
+    row = ("ctrl-1", "sap_hana", 5, 0, None, None, 99, "treasury-team@acme.com", True, "MAP-CM-000042")
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[row], cols=cols)])
+
+    result = db.list_pending_exceptions_grouped()
+
+    assert result[0]["worst_risk_rating"] == "R"
+    assert "worst_rating_order" not in result[0]
+    assert result[0]["occurrence_count"] == 5
+    assert result[0]["has_open_map"] is True
+    assert result[0]["map_ref"] == "MAP-CM-000042"
+
+
+def test_list_pending_exceptions_grouped_filters_by_risk_rating_and_owner(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_pending_exceptions_grouped(risk_rating="A", owner="ops@acme.com")
+    sql, params = recorder[0]
+    assert "mi.risk_rating = %s" in sql
+    assert "ce.assigned_owner = %s" in sql
+    assert "A" in params and "ops@acme.com" in params
+
+
+# ── bulk_submit_exception_triage ─────────────────────────────────────────────
+
+def test_bulk_submit_exception_triage_rejects_invalid_label(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [])
+    assert db.bulk_submit_exception_triage([1, 2], "auditor", "NOT_A_REAL_LABEL", None) == 0
+    assert recorder == []  # never touched the DB
+
+
+def test_bulk_submit_exception_triage_requires_notes_for_gated_labels(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [])
+    assert db.bulk_submit_exception_triage([1, 2], "auditor", "TRUE_CONTROL_FAILURE", "") == 0
+    assert recorder == []
+
+
+def test_bulk_submit_exception_triage_empty_ids_returns_zero(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [])
+    assert db.bulk_submit_exception_triage([], "auditor", "BENIGN_OPERATIONAL_NOISE", None) == 0
+    assert recorder == []
+
+
+def test_bulk_submit_exception_triage_happy_path(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(rowcount=3)])
+    resolved = db.bulk_submit_exception_triage([1, 2, 3], "auditor@acme.com", "BENIGN_OPERATIONAL_NOISE", None)
+    assert resolved == 3
+    sql, params = recorder[0]
+    assert "unnest(%s::bigint[])" in sql
+    assert "ON CONFLICT (event_id) DO UPDATE" in sql
+    assert params[0] == [1, 2, 3]
+
+
+# ── get_exception_summary ────────────────────────────────────────────────────
+
+def test_get_exception_summary_excludes_journal_entry_and_includes_new_breakdowns(monkeypatch):
+    recorder = []
+    calls = [
+        _Call(fetchone=(4,)),                                        # pending count
+        _Call(fetchall=[("BENIGN_OPERATIONAL_NOISE", 2)]),           # resolution mix
+        _Call(fetchall=[("sap_hana", 3)]),                            # pending_by_system
+        _Call(fetchall=[("treasury-team@acme.com", 3)]),              # pending_by_owner
+        _Call(fetchall=[("R", 1), ("A", 3)]),                         # pending_by_risk_rating
+        _Call(fetchone=(50,)),                                        # total_events
+    ]
+    _patch(monkeypatch, recorder, calls)
+
+    summary = db.get_exception_summary()
+
+    assert summary["pending_count"] == 4
+    assert summary["pending_by_owner"] == {"treasury-team@acme.com": 3}
+    assert summary["pending_by_risk_rating"] == {"R": 1, "A": 3}
+    assert summary["total_events"] == 50
+    for sql, _ in recorder:
+        assert "JOURNAL_ENTRY" in sql
+
+
+def test_get_exception_summary_no_db_returns_honest_zeroed_shape(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: False)
+    summary = db.get_exception_summary()
+    assert summary["pending_by_owner"] == {}
+    assert summary["pending_by_risk_rating"] == {}
+
+
+# ── detect_recurring_exceptions / list_exception_system_sources /
+#    get_exception_score_history / list_exception_triage_history: JE exclusion ──
+
+def test_detect_recurring_exceptions_excludes_journal_entry(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.detect_recurring_exceptions()
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" in sql
+
+
+def test_list_exception_system_sources_excludes_journal_entry(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exception_system_sources()
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" in sql
+
+
+def test_get_exception_score_history_excludes_journal_entry(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.get_exception_score_history("sap_hana", "anomaly_score")
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" in sql
+
+
+def test_list_exception_triage_history_excludes_journal_entry(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exception_triage_history()
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" in sql
+
+
+# ── escalate_stale_exceptions ─────────────────────────────────────────────────
+
+def test_escalate_stale_exceptions_returns_rowcount_and_excludes_journal_entry(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(rowcount=7)])
+    n = db.escalate_stale_exceptions(14)
+    assert n == 7
+    sql, params = recorder[0]
+    assert "SET risk_rating = 'R'" in sql
+    assert "JOURNAL_ENTRY" in sql
+    assert params == (14,)
+
+
+def test_escalate_stale_exceptions_no_db_returns_zero(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: False)
+    assert db.escalate_stale_exceptions() == 0
