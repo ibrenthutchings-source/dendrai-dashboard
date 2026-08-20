@@ -2490,6 +2490,68 @@ CREATE INDEX IF NOT EXISTS idx_infra_assets_expiring
     ON observability.infra_assets (expires_at) WHERE expires_at IS NOT NULL AND active = TRUE;
 CREATE INDEX IF NOT EXISTS idx_infra_assets_unassessed
     ON observability.infra_assets (last_assessed_at) WHERE active = TRUE;
+
+-- Infrastructure Vulnerability & Currency Posture (Phase 2): the
+-- vulnerability register itself. asset_id is nullable because a SARIF
+-- scanner finding (container image scan, SAST) often has no matching
+-- infra_assets row — it's keyed on a repo/commit, not a tracked asset —
+-- so the OSV-enrichment path (asset_id set) and the SARIF-bridge path
+-- (asset_id NULL, evidence_record_id set) both write here without one
+-- forcing a fake asset row for the other.
+CREATE TABLE IF NOT EXISTS observability.infra_vulnerabilities (
+    id                  BIGSERIAL    PRIMARY KEY,
+    asset_id            BIGINT       REFERENCES observability.infra_assets(id),
+    vuln_id             VARCHAR(64)  NOT NULL,   -- CVE-... | GHSA-... | OSV id
+    aliases             TEXT[],                  -- other ids OSV reports for the same vuln
+    source              VARCHAR(16)  NOT NULL DEFAULT 'osv',  -- osv | scanner | connector
+    source_ref          VARCHAR(256),            -- SARIF ruleId / evidence fingerprint, when source='scanner'
+    severity            VARCHAR(16)  NOT NULL DEFAULT 'INFO',
+    cvss_score          NUMERIC(4,1),
+    title               TEXT,
+    summary             TEXT,
+    affected_version    VARCHAR(64),
+    fixed_version       VARCHAR(64),
+    published_at        TIMESTAMPTZ,
+    first_detected_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    status              VARCHAR(24)  NOT NULL DEFAULT 'open',  -- open | remediated | accepted_risk | false_positive
+    remediated_at       TIMESTAMPTZ,
+    -- HOW a status flip to remediated was decided — never inferred from a
+    -- scan simply not re-reporting the finding (absence isn't evidence of a
+    -- fix). "version_advanced" is the one sweep-driven case: the asset's
+    -- software_version moved past fixed_version. Everything else is a human
+    -- action (waiver, manual close).
+    remediation_basis   VARCHAR(32),   -- version_advanced | waiver | manual
+    waiver_id           BIGINT       REFERENCES observability.risk_waivers(id),
+    evidence_record_id  BIGINT       REFERENCES observability.evidence_records(id),
+    disposition_reason  TEXT,
+    disposed_by         VARCHAR(128),
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+-- COALESCE both nullable dedup legs the same way idx_infra_assets_key does
+-- for connector_id — a NULL asset_id (SARIF path) or NULL source_ref
+-- (OSV path) must not make every row look "distinct" to a plain UNIQUE.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_infra_vulns_dedup
+    ON observability.infra_vulnerabilities (COALESCE(asset_id, 0), vuln_id, COALESCE(source_ref, ''));
+CREATE INDEX IF NOT EXISTS idx_infra_vulns_status
+    ON observability.infra_vulnerabilities (status, severity);
+CREATE INDEX IF NOT EXISTS idx_infra_vulns_asset
+    ON observability.infra_vulnerabilities (asset_id) WHERE asset_id IS NOT NULL;
+
+-- OSV.dev response cache, keyed on the exact query triple. OSV is free and
+-- unauthenticated but re-querying the same (ecosystem, package, version)
+-- every sweep tick is wasted API load for an answer that essentially never
+-- changes intra-day — osv_client.py treats a cache row as fresh for
+-- OSV_CACHE_TTL_HOURS (default 24h) before re-querying.
+CREATE TABLE IF NOT EXISTS observability.osv_cache (
+    ecosystem     VARCHAR(32)  NOT NULL,
+    package_name  VARCHAR(256) NOT NULL,
+    version       VARCHAR(64)  NOT NULL,
+    vulns         JSONB        NOT NULL,   -- raw OSV vulns[] array for this triple, [] = queried, none found
+    queried_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ecosystem, package_name, version)
+);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -11723,6 +11785,32 @@ def mark_infra_asset_assessed(asset_key: str, assessment_source: str) -> bool:
     return _run(_do, default=False) or False
 
 
+def list_assets_for_vuln_enrichment(limit: int = 500) -> list:
+    """Active assets with enough identity to actually query OSV against:
+    ecosystem + software_name + software_version all set. Nothing in Phase 1
+    populates ecosystem (OSV has no PostgreSQL ecosystem — see
+    version_baselines.py's docstring); this becomes non-empty once a Phase 3
+    connector (AWS Inspector, container scanning) or a manual/ingest asset
+    sets those three fields. Returning [] here is a real "nothing enrichable
+    yet", not a bug — vulnerability_sweep.py must not treat it as failure."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets
+                    WHERE active = TRUE AND ecosystem IS NOT NULL
+                      AND software_name IS NOT NULL AND software_version IS NOT NULL
+                    ORDER BY name
+                    LIMIT %s
+                    """,
+                    (min(limit, 2000),),
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_asset_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
 def list_infra_assets(asset_type: Optional[str] = None, unassessed_only: bool = False, limit: int = 500) -> list:
     def _do():
         filters, params = ["active = TRUE"], []
@@ -11812,6 +11900,222 @@ def list_expiring_infra_assets(warn_days: int = 30) -> list:
                 cols = [d[0] for d in cur.description]
                 return [_infra_asset_row_to_dict(cols, r) for r in cur.fetchall()]
     return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Infrastructure Vulnerability & Currency Posture (Phase 2): vulnerability
+# register (observability.infra_vulnerabilities) + OSV.dev response cache
+# (observability.osv_cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INFRA_VULN_COLUMNS = (
+    "id, asset_id, vuln_id, aliases, source, source_ref, severity, cvss_score, title, summary, "
+    "affected_version, fixed_version, published_at, first_detected_at, last_seen_at, status, "
+    "remediated_at, remediation_basis, waiver_id, evidence_record_id, disposition_reason, disposed_by, "
+    "created_at, updated_at"
+)
+_INFRA_VULN_TS_FIELDS = ("published_at", "first_detected_at", "last_seen_at", "remediated_at", "created_at", "updated_at")
+
+
+def _infra_vuln_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _INFRA_VULN_TS_FIELDS:
+        if d.get(k) and hasattr(d[k], "isoformat"):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def upsert_infra_vulnerability(
+    vuln_id: str, asset_id: Optional[int] = None, aliases: Optional[list] = None,
+    source: str = "osv", source_ref: Optional[str] = None, severity: str = "INFO",
+    cvss_score: Optional[float] = None, title: Optional[str] = None, summary: Optional[str] = None,
+    affected_version: Optional[str] = None, fixed_version: Optional[str] = None,
+    published_at=None, evidence_record_id: Optional[int] = None,
+) -> Optional[dict]:
+    """Create or refresh one vulnerability finding, keyed on
+    (asset_id, vuln_id, source_ref) — see idx_infra_vulns_dedup's
+    COALESCE comment. A re-detected finding never resets status/remediated_at
+    (ON CONFLICT DO UPDATE below deliberately omits both) — only
+    update_infra_vulnerability_status() gets to move a finding off 'open'.
+    A previously-remediated finding that OSV/a scanner reports again (e.g. a
+    downgrade, or the initial detection was itself wrong) simply keeps its
+    existing status/remediated_at; a human or the sweep's own
+    version-comparison must explicitly re-open it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.infra_vulnerabilities (
+                        asset_id, vuln_id, aliases, source, source_ref, severity, cvss_score,
+                        title, summary, affected_version, fixed_version, published_at, evidence_record_id
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (COALESCE(asset_id, 0), vuln_id, COALESCE(source_ref, '')) DO UPDATE SET
+                        aliases = EXCLUDED.aliases, severity = EXCLUDED.severity, cvss_score = EXCLUDED.cvss_score,
+                        title = EXCLUDED.title, summary = EXCLUDED.summary,
+                        affected_version = EXCLUDED.affected_version, fixed_version = EXCLUDED.fixed_version,
+                        published_at = EXCLUDED.published_at, evidence_record_id = EXCLUDED.evidence_record_id,
+                        last_seen_at = NOW(), updated_at = NOW()
+                    RETURNING {_INFRA_VULN_COLUMNS}
+                    """,
+                    (asset_id, vuln_id, aliases, source, source_ref, severity, cvss_score,
+                     title, summary, affected_version, fixed_version, published_at, evidence_record_id),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return _infra_vuln_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def update_infra_vulnerability_status(
+    vuln_row_id: int, status: str, remediation_basis: Optional[str] = None,
+    waiver_id: Optional[int] = None, disposition_reason: Optional[str] = None,
+    disposed_by: Optional[str] = None,
+) -> bool:
+    """The only function that moves a finding off 'open' — called by
+    vulnerability_sweep.py's version-advanced detection (status='remediated',
+    remediation_basis='version_advanced') or by an analyst's disposition
+    (accepted_risk/false_positive, with a mandatory reason). remediated_at is
+    stamped only when status='remediated', never for accepted_risk/
+    false_positive — those aren't fixes, they're decisions about an open one."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.infra_vulnerabilities
+                    SET status = %s, remediation_basis = %s, waiver_id = %s,
+                        disposition_reason = %s, disposed_by = %s, updated_at = NOW(),
+                        remediated_at = CASE WHEN %s = 'remediated' THEN NOW() ELSE remediated_at END
+                    WHERE id = %s
+                    """,
+                    (status, remediation_basis, waiver_id, disposition_reason, disposed_by, status, vuln_row_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def list_infra_vulnerabilities(
+    status: Optional[str] = None, severity: Optional[str] = None,
+    asset_id: Optional[int] = None, source: Optional[str] = None, limit: int = 500,
+) -> list:
+    def _do():
+        filters, params = [], []
+        if status:
+            filters.append("status = %s"); params.append(status)
+        if severity:
+            filters.append("severity = %s"); params.append(severity)
+        if asset_id:
+            filters.append("asset_id = %s"); params.append(asset_id)
+        if source:
+            filters.append("source = %s"); params.append(source)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 2000))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_VULN_COLUMNS} FROM observability.infra_vulnerabilities
+                    {where}
+                    ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+                             first_detected_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_vuln_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def list_open_vulnerabilities_with_asset_version() -> list:
+    """Open vulnerabilities joined to their asset's CURRENT software_version —
+    the exact pair vulnerability_sweep.py's version-advanced remediation
+    check needs, in one query instead of N+1 per-asset lookups. Only rows
+    where both fixed_version and the asset's software_version are non-NULL
+    are returned — nothing here has ever compared strings against 'unknown'."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT v.id, v.vuln_id, v.fixed_version, a.software_version, a.asset_key
+                    FROM observability.infra_vulnerabilities v
+                    JOIN observability.infra_assets a ON a.id = v.asset_id
+                    WHERE v.status = 'open' AND v.fixed_version IS NOT NULL
+                      AND a.software_version IS NOT NULL AND a.active = TRUE
+                    """
+                )
+                cols = ["id", "vuln_id", "fixed_version", "software_version", "asset_key"]
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_vulnerability_summary() -> dict:
+    """Coverage-aware summary: open-finding counts by severity, PLUS how many
+    assets have ever been assessed vs. total — every count in this dict must
+    be read alongside that coverage fraction, never as a standalone "all
+    clear" (see the feature's honest-gaps note: this reports 'no known-open
+    findings from connected sources', not 'no vulnerabilities exist')."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT severity, COUNT(*) FROM observability.infra_vulnerabilities WHERE status = 'open' GROUP BY severity"
+                )
+                by_severity = {row[0]: row[1] for row in cur.fetchall()}
+                cur.execute("SELECT COUNT(*) FROM observability.infra_assets WHERE active = TRUE")
+                total_assets = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM observability.infra_assets WHERE active = TRUE AND last_assessed_at IS NOT NULL")
+                assessed_assets = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.infra_vulnerabilities WHERE status = 'remediated' AND remediated_at > NOW() - INTERVAL '30 days'"
+                )
+                remediated_last_30d = cur.fetchone()[0]
+                return {
+                    "open_by_severity": by_severity,
+                    "open_total": sum(by_severity.values()),
+                    "assets_total": total_assets,
+                    "assets_assessed": assessed_assets,
+                    "remediated_last_30d": remediated_last_30d,
+                }
+    return _run(_do) or {"open_by_severity": {}, "open_total": 0, "assets_total": 0, "assets_assessed": 0, "remediated_last_30d": 0}
+
+
+def get_osv_cache_entry(ecosystem: str, package_name: str, version: str, max_age_hours: int = 24) -> Optional[list]:
+    """Returns the cached vulns[] list if a fresh-enough entry exists, else
+    None — None means "go query OSV", not "no vulnerabilities" (an empty
+    list [] is itself a valid, cached "queried, found none" result)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT vulns FROM observability.osv_cache
+                    WHERE ecosystem = %s AND package_name = %s AND version = %s
+                      AND queried_at > NOW() - (%s || ' hours')::interval
+                    """,
+                    (ecosystem, package_name, version, max_age_hours),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def put_osv_cache_entry(ecosystem: str, package_name: str, version: str, vulns: list) -> None:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.osv_cache (ecosystem, package_name, version, vulns, queried_at)
+                    VALUES (%s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (ecosystem, package_name, version) DO UPDATE SET
+                        vulns = EXCLUDED.vulns, queried_at = NOW()
+                    """,
+                    (ecosystem, package_name, version, Json(vulns)),
+                )
+    _run(_do)
 
 
 def get_scm_repository_state(resource: str) -> Optional[dict]:

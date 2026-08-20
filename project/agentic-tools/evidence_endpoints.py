@@ -154,6 +154,31 @@ def _insert_from_record(record: dict, raw_sarif: Optional[dict]) -> Optional[int
     )
 
 
+async def _bridge_to_vuln_register(record: dict, record_id: int) -> None:
+    """A SARIF finding that carries a real CVE tag (container/dependency
+    scanners — Trivy, Grype, Snyk — tag results this way; SAST tools like
+    CodeQL usually don't) is also worth a register row in
+    infra_vulnerabilities, source='scanner', so it shows up alongside
+    OSV-enriched findings in one place instead of only in the Evidence
+    Inspector. asset_id is deliberately NULL — a SARIF finding is keyed on a
+    repository/commit, not a tracked infra_assets row (see infra_vulnerabilities'
+    table comment) — dedup instead runs on (vuln_id, source_ref=fingerprint).
+    Never raises — this is additive projection, not part of evidence
+    ingestion's own correctness."""
+    if not record.get("cve"):
+        return
+    try:
+        await asyncio.to_thread(
+            db.upsert_infra_vulnerability,
+            record["cve"], None, None, "scanner", record["fingerprint"],
+            record["severity"], None, record.get("rule_id"), None,
+            None, None, None, record_id,
+        )
+    except Exception as exc:
+        logger.warning("evidence: failed to bridge cve=%s fingerprint=%s into vuln register: %s",
+                        record["cve"], record["fingerprint"], exc)
+
+
 async def _escalate_finding(req: EvidenceWebhookRequest, rule_id, severity, file_path, line_number, system: dict) -> None:
     """HIGH/CRITICAL SARIF findings additionally flow through the normal
     adjudication pipeline, same reasoning ai_governance_endpoints.py raises
@@ -223,6 +248,7 @@ async def evidence_webhook(req: EvidenceWebhookRequest, request: Request):
             if record_id is None:
                 continue  # duplicate (fingerprint, commit_sha) — same finding re-ingested, not an error
             inserted += 1
+            await _bridge_to_vuln_register(record, record_id)
             if severity in ("HIGH", "CRITICAL"):
                 await _escalate_finding(req, rule_id, severity, file_path, line_number, system)
                 escalated += 1
