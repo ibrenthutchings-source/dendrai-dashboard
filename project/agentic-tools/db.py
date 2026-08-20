@@ -1961,6 +1961,15 @@ ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS system_owner 
 -- ONLY when the credentials themselves are rotated, so it's an honest
 -- "credential age" signal rather than "row last touched for any reason".
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS credentials_rotated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+-- Infrastructure Vulnerability & Currency Posture: when this credential/API
+-- token actually expires, if known — distinct from credentials_rotated_at
+-- (when it was LAST rotated) the same way a driver's license issue date and
+-- expiry date are distinct facts. Nullable and never defaulted: an unset
+-- expiry means "no known expiry was configured," never "expired" — a
+-- connector created before this column existed, or one whose credential
+-- genuinely doesn't expire (a long-lived DB role), must not silently read
+-- as overdue. See expiry_sweep.py for how this is checked.
+ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS credentials_expires_at TIMESTAMPTZ;
 
 -- Identity/role graph: real user<->role edges pulled from connectors that
 -- expose them (currently Oracle Fusion's SCIM Users/Groups API via
@@ -2422,6 +2431,65 @@ CREATE INDEX IF NOT EXISTS idx_pbc_evidence_control
     ON observability.pbc_evidence (control_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pbc_evidence_flagged
     ON observability.pbc_evidence (created_at DESC) WHERE quality_flags != '[]'::jsonb;
+
+-- Infrastructure Vulnerability & Currency Posture (Phase 1): a unified
+-- asset inventory across DB/OS/container/network/credential/certificate —
+-- host/database/container config posture already lives in system_telemetry
+-- (postgres_cis/aws_iaas/railway_iaas events), but "what's still open vs.
+-- remediated" is inherently STATEFUL (an asset's patch/CVE/expiry status
+-- persists and changes over time), the same reasoning risk_waivers/
+-- vendor_risk_profiles/itsm_tickets/management_action_plans each earned
+-- their own table for instead of trying to re-derive current state from an
+-- event log on every read. last_assessed_at IS NULL is the load-bearing
+-- field here: it's what lets "never scanned" render distinctly from "scanned
+-- and clean" — an unscanned asset must never look the same as a clean one.
+CREATE TABLE IF NOT EXISTS observability.infra_assets (
+    id                 BIGSERIAL    PRIMARY KEY,
+    -- Dev/test tenants routinely register more than one customer estate
+    -- under one connector row (or none, for ingest-sourced assets) — without
+    -- this, two customers' "i-0abc123" or "primary-db" collide on asset_key.
+    estate_label       VARCHAR(128) NOT NULL DEFAULT 'default',
+    asset_key          VARCHAR(256) NOT NULL,  -- adapter-stable id: "postgres:primary-db", "aws:i-0abc123", "cert:api.example.com:443"
+    connector_id       BIGINT       REFERENCES observability.poll_connectors(id),
+    asset_type         VARCHAR(24)  NOT NULL,  -- host | database | container | network_device | credential | certificate
+    name               VARCHAR(256) NOT NULL,
+    environment        VARCHAR(64),
+    os_name            VARCHAR(64),
+    os_version         VARCHAR(64),
+    software_name      VARCHAR(128),
+    software_version   VARCHAR(64),
+    -- OSV.dev ecosystem string, e.g. "PyPI" | "Debian:12" | "npm" — see
+    -- osv_client.py. Deliberately NULL-able and often NULL: OSV has no
+    -- "PostgreSQL"/"generic DB engine" ecosystem, so a bare DSN-derived
+    -- version (no known host distro) can never populate this honestly.
+    -- version_baselines.py is the separate, non-OSV currency check for
+    -- exactly that case — see its module docstring.
+    ecosystem          VARCHAR(32),
+    image_digest       VARCHAR(128),
+    region             VARCHAR(64),
+    expires_at         TIMESTAMPTZ,   -- credential/certificate expiry, if applicable to this asset_type
+    last_assessed_at   TIMESTAMPTZ,   -- NULL = never assessed; distinct from "assessed and clean"
+    assessment_source  VARCHAR(24),   -- e.g. "postgres_cis" | "tls_cert" | "osv" | "scanner"
+    source             VARCHAR(24)  NOT NULL DEFAULT 'connector',  -- connector | ingest | manual
+    metadata           JSONB,
+    first_seen_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    active             BOOLEAN      NOT NULL DEFAULT TRUE
+);
+-- COALESCE(connector_id, 0) so ingest-sourced assets (connector_id NULL,
+-- e.g. a manually-registered credential or a future scanner upload) still
+-- dedup on (estate, asset_key) — a plain UNIQUE(connector_id, asset_key)
+-- would treat every NULL as distinct and re-insert the same asset per call.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_infra_assets_key
+    ON observability.infra_assets (estate_label, COALESCE(connector_id, 0), asset_key);
+CREATE INDEX IF NOT EXISTS idx_infra_assets_type
+    ON observability.infra_assets (asset_type, active);
+CREATE INDEX IF NOT EXISTS idx_infra_assets_connector
+    ON observability.infra_assets (connector_id);
+CREATE INDEX IF NOT EXISTS idx_infra_assets_expiring
+    ON observability.infra_assets (expires_at) WHERE expires_at IS NOT NULL AND active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_infra_assets_unassessed
+    ON observability.infra_assets (last_assessed_at) WHERE active = TRUE;
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -11565,6 +11633,187 @@ def get_pbc_evidence(evidence_id: int) -> Optional[dict]:
     return _run(_do)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Infrastructure Vulnerability & Currency Posture: asset inventory
+# (observability.infra_assets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INFRA_ASSET_COLUMNS = (
+    "id, estate_label, asset_key, connector_id, asset_type, name, environment, os_name, os_version, "
+    "software_name, software_version, ecosystem, image_digest, region, expires_at, "
+    "last_assessed_at, assessment_source, source, metadata, first_seen_at, last_seen_at, active"
+)
+_INFRA_ASSET_TS_FIELDS = ("expires_at", "last_assessed_at", "first_seen_at", "last_seen_at")
+
+
+def _infra_asset_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _INFRA_ASSET_TS_FIELDS:
+        if d.get(k) and hasattr(d[k], "isoformat"):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def upsert_infra_asset(
+    asset_key: str, asset_type: str, name: str, connector_id: Optional[int] = None,
+    estate_label: str = "default", environment: Optional[str] = None,
+    os_name: Optional[str] = None, os_version: Optional[str] = None,
+    software_name: Optional[str] = None, software_version: Optional[str] = None,
+    ecosystem: Optional[str] = None, image_digest: Optional[str] = None, region: Optional[str] = None,
+    expires_at=None, source: str = "connector", metadata: Optional[dict] = None,
+) -> Optional[dict]:
+    """Create or refresh one asset's identity/inventory fields, keyed on
+    (estate_label, connector_id, asset_key) — see idx_infra_assets_key's
+    COALESCE(connector_id,0) comment for why ingest-sourced (connector_id
+    NULL) assets still dedup correctly. Deliberately does NOT touch
+    last_assessed_at/assessment_source here — inventory discovery (an asset
+    exists, here's its version) and assessment (we actually checked it for
+    findings) are different events; conflating them would let a connector
+    that only lists assets accidentally mark them "assessed" with no real
+    check behind that claim. Call mark_infra_asset_assessed() separately
+    once a real check has run."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.infra_assets (
+                        estate_label, asset_key, connector_id, asset_type, name, environment, os_name, os_version,
+                        software_name, software_version, ecosystem, image_digest, region, expires_at,
+                        source, metadata, first_seen_at, last_seen_at, active
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,NOW(),NOW(),TRUE)
+                    ON CONFLICT (estate_label, COALESCE(connector_id, 0), asset_key) DO UPDATE SET
+                        asset_type = EXCLUDED.asset_type,
+                        name = EXCLUDED.name, environment = EXCLUDED.environment,
+                        os_name = EXCLUDED.os_name, os_version = EXCLUDED.os_version,
+                        software_name = EXCLUDED.software_name, software_version = EXCLUDED.software_version,
+                        ecosystem = EXCLUDED.ecosystem, image_digest = EXCLUDED.image_digest,
+                        region = EXCLUDED.region, expires_at = EXCLUDED.expires_at,
+                        source = EXCLUDED.source,
+                        metadata = EXCLUDED.metadata, last_seen_at = NOW(), active = TRUE
+                    RETURNING {_INFRA_ASSET_COLUMNS}
+                    """,
+                    (estate_label, asset_key, connector_id, asset_type, name, environment, os_name, os_version,
+                     software_name, software_version, ecosystem, image_digest, region, expires_at,
+                     source, Json(metadata) if metadata is not None else None),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return _infra_asset_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def mark_infra_asset_assessed(asset_key: str, assessment_source: str) -> bool:
+    """Stamps last_assessed_at = NOW() — the one function that gets to make
+    an asset stop looking "never assessed". Called by whatever actually ran
+    a real check (tls_cert_tool, osv enrichment, a future scanner), never by
+    inventory discovery alone."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.infra_assets
+                    SET last_assessed_at = NOW(), assessment_source = %s
+                    WHERE asset_key = %s
+                    """,
+                    (assessment_source, asset_key),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def list_infra_assets(asset_type: Optional[str] = None, unassessed_only: bool = False, limit: int = 500) -> list:
+    def _do():
+        filters, params = ["active = TRUE"], []
+        if asset_type:
+            filters.append("asset_type = %s"); params.append(asset_type)
+        if unassessed_only:
+            filters.append("last_assessed_at IS NULL")
+        where = "WHERE " + " AND ".join(filters)
+        params.append(min(limit, 2000))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets
+                    {where}
+                    ORDER BY name
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_asset_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_infra_asset(asset_key: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets WHERE asset_key = %s",
+                    (asset_key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _infra_asset_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def list_expiring_credentials(warn_days: int = 30) -> list:
+    """poll_connectors rows with credentials_expires_at inside the warning
+    window or already past it — the credential-expiry half of Phase 1.
+    Separate from list_infra_assets/certificate rows because a connector's
+    credential isn't itself an infra_assets row; expiry_sweep.py checks
+    both this and the certificate assets below in one pass."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, connector_type, display_name, credentials_expires_at
+                    FROM observability.poll_connectors
+                    WHERE active = TRUE AND credentials_expires_at IS NOT NULL
+                      AND credentials_expires_at < NOW() + (%s || ' days')::interval
+                    ORDER BY credentials_expires_at ASC
+                    """,
+                    (warn_days,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("credentials_expires_at"):
+                        d["credentials_expires_at"] = d["credentials_expires_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def list_expiring_infra_assets(warn_days: int = 30) -> list:
+    """infra_assets rows (certificates, and any future expiring asset type)
+    inside the warning window or already past it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets
+                    WHERE active = TRUE AND expires_at IS NOT NULL
+                      AND expires_at < NOW() + (%s || ' days')::interval
+                    ORDER BY expires_at ASC
+                    """,
+                    (warn_days,),
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_asset_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
 def get_scm_repository_state(resource: str) -> Optional[dict]:
     """Last-known compliance dict for one repo (server_name/repo_ref@branch), or
     None if this is the first audit ever recorded for it."""
@@ -12423,40 +12672,51 @@ def fetch_secret_scan_results(limit: int = 50) -> list:
     return _run(_do) or []
 
 
+# Every connector_type whose adapter writes event_type='infrastructure_finding'
+# rows on every poll tick (pass or fail — see postgres_cis_tool.pull_events'
+# docstring). A single module constant rather than three separate hardcoded
+# tuples (previously one per query branch here) — a new infra connector type
+# needing to appear in the Infrastructure Posture matrix now means editing
+# this one line, not hunting three literal IN-lists that drift out of sync.
+_INFRA_MONITORING_SYSTEM_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat", "tls_cert")
+
+
 def fetch_infra_monitoring_results(resource: Optional[str] = None, limit: int = 50) -> list:
-    """Postgres CIS + Railway platform/deployment drift audit rows
-    (postgres_cis_tool.py / railway_iaas_tool.py, via connector_poller.py's
-    scheduled ticks and infrastructure_monitoring_endpoints.py's on-demand
-    'run now' — both write through the same mcp_governance._ingest_system_event
-    path into observability.system_telemetry, unlike the SCM checks above
-    which go through the UBO adjudication pipeline). Unlike SCM/pipeline
-    security, event_type='infrastructure_finding' is written on EVERY poll
-    tick regardless of pass/fail (see postgres_cis_tool.pull_events), so this
-    is a full status matrix, not violations-only. Grouped by (server_name,
-    resource) rather than server_name alone — a single Railway connector
-    covers many services, one event per service instance."""
+    """Postgres CIS + Railway platform/deployment drift + TLS certificate
+    expiry audit rows (postgres_cis_tool.py / railway_iaas_tool.py /
+    tls_cert_tool.py, via connector_poller.py's scheduled ticks and
+    infrastructure_monitoring_endpoints.py's on-demand 'run now' — both
+    write through the same mcp_governance._ingest_system_event path into
+    observability.system_telemetry, unlike the SCM checks above which go
+    through the UBO adjudication pipeline). Unlike SCM/pipeline security,
+    event_type='infrastructure_finding' is written on EVERY poll tick
+    regardless of pass/fail, so this is a full status matrix, not
+    violations-only. Grouped by (server_name, resource) rather than
+    server_name alone — a single Railway connector covers many services,
+    one event per service instance."""
     def _do():
+        placeholders = ", ".join(["%s"] * len(_INFRA_MONITORING_SYSTEM_TYPES))
+        params: list = list(_INFRA_MONITORING_SYSTEM_TYPES) + ["infrastructure_finding"]
         with _conn() as conn:
             with conn.cursor() as cur:
-                params: list = ["postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat", "infrastructure_finding"]
                 if resource:
-                    query = """
+                    query = f"""
                         SELECT id, created_at, system_type, server_name, resource,
                                actor, action, severity, risk_flags, raw_payload
                         FROM observability.system_telemetry
-                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
+                        WHERE system_type IN ({placeholders}) AND event_type = %s
                           AND resource = %s
                         ORDER BY created_at DESC
                         LIMIT %s
                     """
                     params += [resource, min(limit, 500)]
                 else:
-                    query = """
+                    query = f"""
                         SELECT DISTINCT ON (server_name, resource)
                                id, created_at, system_type, server_name, resource,
                                actor, action, severity, risk_flags, raw_payload
                         FROM observability.system_telemetry
-                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
+                        WHERE system_type IN ({placeholders}) AND event_type = %s
                         ORDER BY server_name, resource, created_at DESC
                         LIMIT %s
                     """
