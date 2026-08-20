@@ -184,6 +184,18 @@ const CONNECTOR_TYPES = [
       { key: "devices", label: "Devices (comma-separated name=url pairs)", type: "text", placeholder: "pump-01=http://10.0.1.5/health,valve-12=http://10.0.1.9/health" },
       { key: "timeout_s", label: "Timeout (seconds)", type: "text", placeholder: "5" },
     ] },
+  // Infrastructure Vulnerability & Currency Posture, Phase 1
+  // (tls_cert_tool.py) — a public TLS handshake needs no credentials at
+  // all, unlike every other connector on this screen; only the endpoint
+  // list and warning threshold are configurable.
+  { id: "tls_cert", label: "TLS Certificate Expiry",
+    baseUrlPlaceholder: "(unused — each endpoint is set below)",
+    baseUrlOptional: true,
+    credentialFields: [],
+    extraFields: [
+      { key: "endpoints", label: "Endpoints (comma-separated name=host:port pairs)", type: "text", placeholder: "api=api.example.com:443,vpn=vpn.example.com:443" },
+      { key: "warn_days", label: "Warn Threshold (days to expiry)", type: "text", placeholder: "30" },
+    ] },
 ];
 
 function _uboConfigBase() {
@@ -726,6 +738,7 @@ const CONNECTOR_BLANK = {
   display_name: "",
   base_url: "",
   poll_interval_s: 1800,
+  credentials_expires_at: "",
   credentials: {},
   extra_config: {},
 };
@@ -752,6 +765,10 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
       base_url: form.base_url.trim() || null,
       auth_type: form.connector_type, // one auth scheme per connector type in this framework
       poll_interval_s: Number(form.poll_interval_s) || 1800,
+      // Optional — a missing/blank expiry means "no known expiry
+      // configured", never "expired". See db.py's credentials_expires_at
+      // column comment and infra_asset_sweep.py's expiry check.
+      credentials_expires_at: form.credentials_expires_at || null,
       extra_config: form.extra_config,
       // Omit credentials entirely on edit if the user left them blank —
       // update_poll_connector keeps the existing encrypted value in that case.
@@ -817,11 +834,19 @@ function ConnectorForm({ initial, onSave, onCancel, saving }) {
         </div>
       </div>
 
-      <div className="field" style={{ marginBottom: 0, maxWidth: 220 }}>
-        <label className="field-label">Poll interval (seconds)</label>
-        <input className="input" type="number" min={60} value={form.poll_interval_s}
-          onChange={e => set("poll_interval_s", e.target.value)}
-          style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+      <div style={{ display: "grid", gridTemplateColumns: "220px 220px", gap: 10 }}>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="field-label">Poll interval (seconds)</label>
+          <input className="input" type="number" min={60} value={form.poll_interval_s}
+            onChange={e => set("poll_interval_s", e.target.value)}
+            style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+        </div>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="field-label">Credential expiry (optional)</label>
+          <input className="input" type="date" value={form.credentials_expires_at || ""}
+            onChange={e => set("credentials_expires_at", e.target.value)}
+            style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }} />
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
