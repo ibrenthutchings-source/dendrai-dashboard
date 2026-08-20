@@ -24,6 +24,7 @@ const ExceptionsScreenLazy = lazyGlobal(() => import('./exceptions.jsx'), 'Excep
 const InfrastructureMonitoringScreenLazy = lazyGlobal(() => import('./infrastructure-monitoring.jsx'), 'InfrastructureMonitoringScreen');
 const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
 const AiGovernanceScreenLazy = lazyGlobal(() => import('./ai-governance.jsx'), 'AiGovernanceScreen');
+const EvidenceQualityScreenLazy = lazyGlobal(() => import('./evidence-quality.jsx'), 'EvidenceQualityScreen');
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
@@ -124,6 +125,7 @@ function App() {
       () => import('./infrastructure-monitoring.jsx'),
       () => import('./ai-inventory.jsx'),
       () => import('./ai-governance.jsx'),
+      () => import('./evidence-quality.jsx'),
       () => import('./flow.jsx'),
       () => import('./audit-scope.jsx'),
       () => import('./approval-inbox.jsx'),
@@ -2475,6 +2477,15 @@ function App() {
               hasRun={hasRun}
               savedRunAt={!output.s3?.objectives?.length ? savedAuditScope?.run_at : null} />
           </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- PBC Evidence Log ---- */}
+          {activeScreen === "evidencequality" && (
+          <ScreenAccessGate screenId="evidencequality">
+            <div className="panel active">
+              <EvidenceQualityScreenLazy />
+            </div>
           </ScreenAccessGate>
           )}
 

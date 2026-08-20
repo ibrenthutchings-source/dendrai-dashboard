@@ -946,6 +946,30 @@ window.MCP = (function () {
     return _post('/maps/detect', {});
   }
 
+  // ── PBC/Workpaper Evidence Quality — evidence_quality_endpoints.py ─────────
+  // Deterministic stale/unsigned/period-mismatch checks, plus one advisory
+  // LLM content-plausibility check when a control_description is supplied.
+
+  /** Log one evidence item; runs both check kinds server-side and returns
+   * the item with its computed quality_flags/content_check. */
+  async function logEvidence(evidence) {
+    return _post('/evidence-quality/items', evidence);
+  }
+
+  /** Filtered list, newest first. */
+  async function listEvidenceQuality(controlId = null, flaggedOnly = false) {
+    const params = new URLSearchParams();
+    if (controlId) params.set('control_id', controlId);
+    if (flaggedOnly) params.set('flagged_only', 'true');
+    const qs = params.toString();
+    return _get(`/evidence-quality/items${qs ? `?${qs}` : ''}`);
+  }
+
+  /** One evidence item. */
+  async function getEvidenceQualityItem(id) {
+    return _get(`/evidence-quality/items/${id}`);
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
@@ -1033,5 +1057,9 @@ window.MCP = (function () {
     decideMap,
     updateMapProgress,
     triggerMapDetection,
+    // PBC/Workpaper Evidence Quality
+    logEvidence,
+    listEvidenceQuality,
+    getEvidenceQualityItem,
   };
 })();
