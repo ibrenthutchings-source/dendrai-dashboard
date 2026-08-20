@@ -12982,7 +12982,7 @@ def fetch_secret_scan_results(limit: int = 50) -> list:
 # tuples (previously one per query branch here) — a new infra connector type
 # needing to appear in the Infrastructure Posture matrix now means editing
 # this one line, not hunting three literal IN-lists that drift out of sync.
-_INFRA_MONITORING_SYSTEM_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat", "tls_cert")
+_INFRA_MONITORING_SYSTEM_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "aws_patch", "aws_inspector", "ot_heartbeat", "tls_cert")
 
 
 def fetch_infra_monitoring_results(resource: Optional[str] = None, limit: int = 50) -> list:

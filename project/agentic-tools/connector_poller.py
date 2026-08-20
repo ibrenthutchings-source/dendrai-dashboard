@@ -37,6 +37,8 @@ import denied_party_screening_tool
 import deploy_env
 import dynamics365_tool
 import aws_iaas_tool
+import aws_patch_tool
+import aws_inspector_tool
 import exception_tool
 import mcp_governance
 import netsuite_tool
@@ -68,6 +70,8 @@ _ADAPTERS = {
     "postgres_cis":    postgres_cis_tool,
     "railway_iaas":    railway_iaas_tool,
     "aws_iaas":        aws_iaas_tool,
+    "aws_patch":       aws_patch_tool,
+    "aws_inspector":   aws_inspector_tool,
     "ot_heartbeat":    ot_heartbeat_tool,
     "synthetic_transaction": synthetic_transaction_tool,
     "tls_cert":        tls_cert_tool,

@@ -138,6 +138,14 @@ _INFRA_FIELDS = frozenset({
     "cert_issuer", "cert_error",
     # connector_hygiene.py (dogfooded on Intelligenza's own connector store)
     "stale_connector_count", "oldest_credential_age_days", "stale_connectors",
+    # aws_patch_tool.py (Infra Vulnerability & Currency Posture Phase 3 —
+    # AWS SSM Patch Manager OS patch compliance)
+    "instance_id", "region", "os", "installed_count", "missing_count", "failed_count",
+    "not_applicable_count", "patch_group", "last_scan_at",
+    # aws_inspector_tool.py (Infra Vulnerability & Currency Posture Phase 3 —
+    # AWS Inspector v2 CVE findings)
+    "vuln_id", "severity", "cvss_score", "title", "summary", "status", "resource_id", "resource_type",
+    "package_name", "package_version", "fixed_version", "first_observed_at",
 })
 
 # Fields oracle_hcm_tool.py contributes via its "payroll_detail" raw_payload

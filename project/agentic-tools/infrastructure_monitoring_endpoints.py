@@ -40,6 +40,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 import aws_iaas_tool
+import aws_patch_tool
+import aws_inspector_tool
 import connector_hygiene
 import db
 import mcp_governance
@@ -55,11 +57,11 @@ logger = logging.getLogger("ubo.infrastructure_monitoring")
 router = APIRouter(prefix="/infra-monitoring", tags=["Infrastructure Monitoring"],
                     dependencies=[Depends(require_screen_permission("infrastructuremonitoring"))])
 
-_CONNECTOR_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat", "tls_cert")
+_CONNECTOR_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "aws_patch", "aws_inspector", "ot_heartbeat", "tls_cert")
 _ADAPTERS = {
     "postgres_cis": postgres_cis_tool, "railway_iaas": railway_iaas_tool,
-    "aws_iaas": aws_iaas_tool, "ot_heartbeat": ot_heartbeat_tool,
-    "tls_cert": tls_cert_tool,
+    "aws_iaas": aws_iaas_tool, "aws_patch": aws_patch_tool, "aws_inspector": aws_inspector_tool,
+    "ot_heartbeat": ot_heartbeat_tool, "tls_cert": tls_cert_tool,
 }
 
 

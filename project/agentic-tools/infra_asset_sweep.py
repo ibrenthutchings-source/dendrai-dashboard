@@ -42,6 +42,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
+import aws_patch_tool
 import db
 import mcp_governance
 import postgres_cis_tool
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 _TICK_S = 86400  # daily
 _WARN_DAYS = int(os.environ.get("INFRA_EXPIRY_WARN_DAYS", "30"))
 
-_ASSET_SYNC_TYPES = ("postgres_cis", "tls_cert")
+_ASSET_SYNC_TYPES = ("postgres_cis", "tls_cert", "aws_patch")
 
 
 async def _sync_postgres_asset(connector: dict) -> bool:
@@ -101,6 +102,32 @@ async def _sync_tls_cert_assets(connector: dict) -> int:
     return synced
 
 
+async def _sync_aws_patch_assets(connector: dict) -> int:
+    """Phase 3: each SSM-managed EC2 instance becomes a 'host' asset, with
+    patch-state counts in metadata and last_assessed_at stamped — real OS
+    patch data, distinct from aws_iaas_tool's config-drift checks."""
+    extra_config = connector.get("extra_config") or {}
+    try:
+        rows = await asyncio.to_thread(aws_patch_tool._audit_once, connector.get("credentials") or {}, extra_config)
+    except Exception as exc:
+        logger.warning("infra_asset_sweep: aws_patch audit failed for connector %s: %s", connector["id"], exc)
+        return 0
+    synced = 0
+    for r in rows:
+        asset_key = f"ec2:{r['instance_id']}:{r['region']}"
+        await asyncio.to_thread(
+            db.upsert_infra_asset,
+            asset_key, "host", r["instance_id"], connector["id"],
+            "default", None, r.get("os"), None, None, None,
+            None, None, r["region"], None,
+            "connector", {"installed_count": r["installed_count"], "missing_count": r["missing_count"],
+                           "failed_count": r["failed_count"], "patch_group": r.get("patch_group")},
+        )
+        await asyncio.to_thread(db.mark_infra_asset_assessed, asset_key, "aws_patch")
+        synced += 1
+    return synced
+
+
 async def _sync_assets() -> int:
     if not db.is_available():
         return 0
@@ -115,6 +142,8 @@ async def _sync_assets() -> int:
                     synced += 1
             elif c["connector_type"] == "tls_cert":
                 synced += await _sync_tls_cert_assets(c)
+            elif c["connector_type"] == "aws_patch":
+                synced += await _sync_aws_patch_assets(c)
         except Exception as exc:
             logger.warning("infra_asset_sweep: asset sync failed for connector %s (%s): %s",
                             c.get("id"), c.get("connector_type"), exc)
