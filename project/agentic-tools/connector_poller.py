@@ -48,6 +48,7 @@ import railway_iaas_tool
 import sailpoint_tool
 import sap_hana_tool
 import synthetic_transaction_tool
+import tls_cert_tool
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ _ADAPTERS = {
     "aws_iaas":        aws_iaas_tool,
     "ot_heartbeat":    ot_heartbeat_tool,
     "synthetic_transaction": synthetic_transaction_tool,
+    "tls_cert":        tls_cert_tool,
 }
 
 

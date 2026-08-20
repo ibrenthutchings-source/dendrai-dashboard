@@ -124,9 +124,18 @@ _INFRA_FIELDS = frozenset({
     "ssl_enabled", "password_encryption", "log_connections", "row_security_enabled",
     "superuser_count", "superuser_no_expiry_count", "unencrypted_connection_count",
     "extension_count", "extensions", "check_id",
+    # postgres_cis_tool.py — server_version currency (Infra Vulnerability &
+    # Currency Posture Phase 1; see iaas_connectors.fetch_postgres_config and
+    # version_baselines.py — a non-OSV check, since OSV.dev has no
+    # PostgreSQL/generic-DB-engine ecosystem to enrich a bare version string
+    # against).
+    "server_version", "server_version_num", "version_current", "latest_known_version",
     # railway_iaas_tool.py
     "service_id", "service_name", "has_public_domain", "unexpected_public_domain",
     "image_digest", "image_digest_mismatch", "deployment_status",
+    # tls_cert_tool.py (Infra Vulnerability & Currency Posture Phase 1)
+    "cert_reachable", "cert_not_after", "cert_days_to_expiry", "cert_common_name",
+    "cert_issuer", "cert_error",
     # connector_hygiene.py (dogfooded on Intelligenza's own connector store)
     "stale_connector_count", "oldest_credential_age_days", "stale_connectors",
 })

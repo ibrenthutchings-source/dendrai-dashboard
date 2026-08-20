@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import version_baselines
+
 try:
     import psycopg2
     _HAS_PSYCOPG2 = True
@@ -57,6 +59,19 @@ def fetch_postgres_config(dsn: str, timeout: int = 10) -> dict:
         conn.set_session(readonly=True, autocommit=True)
         cur = conn.cursor()
 
+        # Infra Vulnerability & Currency Posture, Phase 1: the one real
+        # version-currency signal available from a bare DSN. `server_version`
+        # is the human-readable string ("15.4 (Debian 15.4-1)"); server_version_num
+        # is the stable numeric encoding (e.g. 150004) Postgres itself
+        # guarantees comparable across versions — kept alongside the string
+        # since normalize_postgres_compliance's currency check parses the
+        # string, but the numeric form is the more robust field for anything
+        # that needs a real comparison later.
+        cur.execute("SHOW server_version")
+        server_version = cur.fetchone()[0]
+        cur.execute("SHOW server_version_num")
+        server_version_num = cur.fetchone()[0]
+
         cur.execute("SHOW ssl")
         ssl_setting = cur.fetchone()[0]
 
@@ -90,6 +105,8 @@ def fetch_postgres_config(dsn: str, timeout: int = 10) -> dict:
 
         cur.close()
         return {
+            "server_version": server_version,
+            "server_version_num": server_version_num,
             "ssl_setting": ssl_setting,
             "password_encryption": password_encryption,
             "log_connections_setting": log_connections_setting,
@@ -105,8 +122,20 @@ def fetch_postgres_config(dsn: str, timeout: int = 10) -> dict:
 
 def normalize_postgres_compliance(raw: dict) -> dict:
     """Same normalize_*_compliance idiom as scm_connectors.py — booleans and
-    counts a Rego module can reference directly as input.event.<field>."""
+    counts a Rego module can reference directly as input.event.<field>.
+    version_current/latest_known_version come from version_baselines.py, NOT
+    OSV.dev — OSV has no PostgreSQL/generic-DB-engine ecosystem to enrich a
+    bare version string against (see that module's docstring). Both are
+    None when the version doesn't match anything in the curated baseline
+    table — an honest "don't know" rather than a guessed answer."""
+    version_current, latest_known_version = version_baselines.check_currency(
+        "postgresql", raw.get("server_version") or "",
+    )
     return {
+        "server_version": raw.get("server_version"),
+        "server_version_num": raw.get("server_version_num"),
+        "version_current": version_current,
+        "latest_known_version": latest_known_version,
         "ssl_enabled": str(raw.get("ssl_setting", "")).lower() == "on",
         "password_encryption": raw.get("password_encryption"),
         "log_connections": str(raw.get("log_connections_setting", "")).lower() == "on",
@@ -237,7 +266,11 @@ def evaluate_railway_severity(compliance: dict) -> str:
 def evaluate_severity(compliance: dict) -> str:
     """CRITICAL if SSL isn't enforced or any live connection is unencrypted
     (both mean credentials/data can travel in plaintext right now); HIGH for
-    weak password hashing or excess superusers; INFO otherwise."""
+    weak password hashing or excess superusers; MEDIUM for a known-outdated
+    server version (currency, not itself a live plaintext-exposure risk —
+    ranked below the HIGH config gaps, above a clean INFO); INFO otherwise.
+    version_current is None (not False) when version_baselines.py has no
+    opinion — that must never trip this check, only an explicit False does."""
     if not compliance.get("ssl_enabled"):
         return "CRITICAL"
     if (compliance.get("unencrypted_connection_count") or 0) > 0:
@@ -248,4 +281,6 @@ def evaluate_severity(compliance: dict) -> str:
         return "HIGH"
     if not compliance.get("log_connections"):
         return "HIGH"
+    if compliance.get("version_current") is False:
+        return "MEDIUM"
     return "INFO"
