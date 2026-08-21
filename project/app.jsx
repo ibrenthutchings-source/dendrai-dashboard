@@ -81,6 +81,38 @@ const _authHeaders = (extra = {}) => ({
   ...extra,
 });
 
+// Guards the Pipeline/Assess Risk autosave effects below (dendrai.config,
+// dendrai.lastLoop:<ticker>) against "Converting circular structure to JSON"
+// crashes. Those payloads carry large, largely-external object graphs
+// (profile, output, narrativeResult) built up over a run; if any field ever
+// ends up holding a live DOM/Window reference (a chart lib's internal ref, a
+// stray event, etc.) instead of plain data, a raw JSON.stringify throws and
+// takes the whole autosave — and the screen using it — down with it. This
+// drops any BOM object (Window/Document/Node) and de-dupes an already-seen
+// object (breaking a genuine reference cycle) instead of throwing, so a
+// stray non-serializable reference degrades to a dropped field, not a crash.
+// Does not fix the root cause — see the call sites' comments — just keeps
+// autosave from being fatal while that's tracked down.
+function _safeStringify(value) {
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(value, (key, v) => {
+      if (v !== null && typeof v === "object") {
+        if ((typeof Window !== "undefined" && v instanceof Window) ||
+            (typeof Node !== "undefined" && v instanceof Node)) {
+          return undefined;
+        }
+        if (seen.has(v)) return undefined;
+        seen.add(v);
+      }
+      return v;
+    });
+  } catch (e) {
+    console.warn("_safeStringify: falling back to {} — payload still not serializable:", e);
+    return "{}";
+  }
+}
+
 function App() {
   // ---- Tweaks ----
   const [tweaks, setTweak] = useTweaks(DEFAULT_TWEAKS);
@@ -211,12 +243,12 @@ function App() {
     const savedAt = Date.now();
     const payload = { cfg, signals: [...signalSet], velocity, hitl, rssEnabledFeeds, aiChatCfg, savedAt };
     // Write-through: localStorage for instant offline access, DB for cross-device persistence
-    try { localStorage.setItem("dendrai.config", JSON.stringify(payload)); } catch {}
+    try { localStorage.setItem("dendrai.config", _safeStringify(payload)); } catch {}
     setLastSaved(savedAt);
     fetch("/api/mcp/config/pipeline", {
       method: "PUT",
       headers: _authHeaders(),
-      body: JSON.stringify(payload),
+      body: _safeStringify(payload),
     }).catch(() => {});
   }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds, aiChatCfg]);
 
@@ -679,11 +711,11 @@ function App() {
     // real (zscore-bearing) run with someone else's stale data.
     const runTicker = profile?.entity?.ticker || cfg.ticker;
     // Write-through: localStorage for instant offline access, DB for persistence.
-    try { localStorage.setItem(`dendrai.lastLoop:${runTicker}`, JSON.stringify(payload)); } catch {}
+    try { localStorage.setItem(`dendrai.lastLoop:${runTicker}`, _safeStringify(payload)); } catch {}
     fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(runTicker)}`, {
       method: "PUT",
       headers: _authHeaders(),
-      body: JSON.stringify(payload),
+      body: _safeStringify(payload),
     }).catch(() => {});
   }, [hasRun, output, profile]);
 
