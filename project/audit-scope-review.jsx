@@ -145,7 +145,7 @@ function ScopeApprovalReview({
           <Icon name="alert" size={11}/> Override entire gate
         </button>
         {onAddObjective && (
-          <button className="btn btn-sm" onClick={onAddObjective}>
+          <button className="btn btn-sm" onClick={() => onAddObjective()}>
             <Icon name="plus" size={11}/> Add Objective
           </button>
         )}
