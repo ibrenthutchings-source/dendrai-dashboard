@@ -2862,7 +2862,7 @@ def save_last_loop_state(body: Dict[str, Any] = Body(...), ticker: Optional[str]
 
     Accepts the complete loop blob from app.jsx (output, stageState, gateState,
     loopLog, livefacts, perRiskAppetite, riskApprovals, scopeApprovals, manualAudits,
-    narrativeResult, openStages, profile). Stored as JSONB in app_config table,
+    narrativeResult, hubFocus, profile). Stored as JSONB in app_config table,
     keyed per-ticker — see _loop_state_key. Returns {saved: false} gracefully
     when the database is unavailable.
     """

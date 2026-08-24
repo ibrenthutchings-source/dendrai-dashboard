@@ -282,7 +282,17 @@ function App() {
   const [gateState, setGateState] = useState({ g1: null, g2: null }); // null / "pending" / "approved" / "overridden"
   const [output, setOutput] = useState({}); // per-stage payload
   const [loopLog, setLoopLog] = useState([]);
-  const [openStages, setOpenStages] = useState(new Set(["s1"]));
+  // Overview Hub focus: null = hub overview, else a node id ("s1".."s6" |
+  // "g1" | "g2"). Auto-follows the active stage while a run is in progress
+  // (runStage below) unless the user manually navigated away — hubPinnedRef
+  // tracks that without triggering a re-render. A pending gate always wins
+  // focus regardless of pinned, since showGate() awaits a promise the user
+  // must resolve before the run can continue — the screen can never be
+  // showing something else while that's true.
+  const [hubFocus, setHubFocus] = useState(null);
+  const hubPinnedRef = useRef(false);
+  const goToHub = useCallback(() => { hubPinnedRef.current = running; setHubFocus(null); }, [running]);
+  const goToNode = useCallback((id) => { hubPinnedRef.current = running; setHubFocus(id); }, [running]);
 
   // Pending gate promise resolvers (so the run sequence can await user action)
   const gateResRef = useRef({});
@@ -686,8 +696,8 @@ function App() {
         if (ma)                                          { setManualAudits(ma); manualAuditsRef.current = ma; }
         const nr = s.narrativeResult || s.narrative_result;
         if (nr)                                          setNarrativeResult(nr);
-        const os = s.openStages || s.open_stages;
-        if (os)                                          setOpenStages(new Set(os));
+        const hf = s.hubFocus ?? s.hub_focus;
+        if (hf !== undefined)                            setHubFocus(hf);
         // profile holds the actual chart data (forecasts.revenue/margin/eps/...)
         // rendered by pipeline.jsx — without restoring it, stage/gate state comes
         // back as "complete" but the charts silently show the hardcoded mock
@@ -745,7 +755,7 @@ function App() {
       scopeApprovals,
       manualAudits,
       narrativeResult,
-      openStages: [...openStages],
+      hubFocus,
       profile,
       runId: runIdRef.current,
       savedAt: Date.now(),
@@ -848,6 +858,11 @@ function App() {
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;
+    // A pending gate always wins focus, overriding a manual pin — this
+    // promise can't resolve until the user acts on it, so the hub can never
+    // be showing something else while it's outstanding.
+    hubPinnedRef.current = false;
+    setHubFocus(`g${n}`);
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
     if (n === 1) {
       const risksNow = (output.s2?.risks) || profileRef.current?.risks || [];
@@ -1163,8 +1178,8 @@ function App() {
 
   async function runStage(id, payload, durationMs = 1400) {
     setStageState((prev) => ({ ...prev, [id]: "running" }));
-    if (tweaks.autoExpand) {
-      setOpenStages((prev) => new Set([...prev, id]));
+    if (tweaks.autoExpand && !hubPinnedRef.current) {
+      setHubFocus(id);
     }
     log(`Stage ${id.toUpperCase()} starting`);
     await t(durationMs);
@@ -1185,7 +1200,8 @@ function App() {
     setGateState({ g1: null, g2: null });
     setEvents([]);
     setNotifLog([]);
-    setOpenStages(new Set(["s1"]));
+    hubPinnedRef.current = false;
+    setHubFocus(tweaks.autoExpand ? "s1" : null);
     setSelectedRiskId(null);
     setRiskApprovals({});
     log("Loop started");
@@ -1912,6 +1928,10 @@ function App() {
 
     setRunning(false);
     setHasRun(true);
+    // Every gate the loop hit has resolved by this point (each was awaited),
+    // so it's always safe to land back on the overview hub here.
+    hubPinnedRef.current = false;
+    setHubFocus(null);
 
     // Fire a synthetic CEM event so the Control Monitor tab has content too.
     setTimeout(() => fireSyntheticEvent(2), 1000 / speed);
@@ -1920,6 +1940,7 @@ function App() {
   async function rerunFromS3() {
     if (running) return;
     setRunning(true);
+    hubPinnedRef.current = false;
     try {
       log("Re-run triggered from Stage 3");
       setStageState(prev => ({ ...prev, s3: "idle", s4: "idle", s5: "idle", s6: "idle" }));
@@ -1940,6 +1961,8 @@ function App() {
       setActiveRailTab("loop");
       log("Re-run from Stage 3 complete");
       setHasRun(true);
+      hubPinnedRef.current = false;
+      setHubFocus(null);
     } catch (err) {
       log(`Re-run error: ${err?.message || err}`);
     }
@@ -1954,7 +1977,8 @@ function App() {
     setNotifLog([]);
     setLoopLog([]);
     setHasRun(false);
-    setOpenStages(new Set(["s1"]));
+    hubPinnedRef.current = false;
+    setHubFocus(null);
     setLivefacts(null);
     setFredLive(null);
     setLiveStatus("");
@@ -2401,10 +2425,12 @@ function App() {
 
             {activePipeTab === "stages" && (
               <Pipeline
+                hubFocus={hubFocus}
+                onFocusStage={goToNode}
+                onFocusGate={goToNode}
+                onGoHub={goToHub}
                 stageState={stageState}
                 output={output}
-                openStages={openStages}
-                setOpenStages={setOpenStages}
                 hitl={hitl}
                 gateState={gateState}
                 onApprove={approveGate}
