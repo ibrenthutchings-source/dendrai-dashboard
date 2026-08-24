@@ -148,6 +148,21 @@ function stagePill(status) {
     :                        <span className="stage-pill"><span className="dot"/>IDLE</span>;
 }
 
+// Sub-section switcher used inside a stage's own body — reuses the
+// .pipe-sub-tab classes verbatim (no new CSS) so it reads as the same tab
+// language as the rest of the app, just one level deeper than the canvas.
+function CanvasTabs({ tabs, active, onChange }) {
+  return (
+    <div className="pipe-sub-tabs" style={{padding: 0, marginBottom: 2}}>
+      {tabs.map(t => (
+        <button key={t.id} type="button" className={"pipe-sub-tab" + (active === t.id ? " active" : "")} onClick={() => onChange(t.id)}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // Trailing-gate summary shown at the bottom of the stage canvas right before
 // the gate it guards — pending renders a call-to-action into the gate's own
 // canvas, resolved renders HITLGate's compact banner unchanged.
@@ -426,7 +441,6 @@ function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, fo
                         flowMeta, onOpenMainFlow,
                         enabledFeedIds, onRssSignalsReady,
                         onBack, onPrev, onNext, prevLabel, nextLabel, gateBelow }) {
-  const kpis = status === "done" ? stageKpis(stage.id, output) : [];
   const subSteps = status === "done" ? buildSubSteps(stage.id, output, signals, livefacts, s1Extra, s2Extra, s3Extra) : [];
   return (
     <div className={`loop-canvas stage ${status}`} data-screen-label={`Stage ${stage.id.replace("s", "")}`}>
@@ -444,7 +458,8 @@ function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, fo
         {stagePill(status)}
       </div>
       <div className="canvas-body">
-        {kpis.length > 0 && <div className="stage-stat-row">{kpis.map((k, i) => <Stat key={i} {...k}/>)}</div>}
+        {/* Each *Body component already renders its own .stage-stat-row —
+            stageKpis() here exists only for the hub card, not duplicated. */}
         <div className="stage-body-grid">
           <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts}
                      s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
@@ -1305,6 +1320,14 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
   const narrRisks = narrativeResult?.emerging_risks || [];
   const narrChanges = narrativeResult?.yoy_changes || [];
 
+  const S1_TABS = [
+    { id: "overview", label: "Overview" },
+    { id: "signals", label: "Fraud & Distress Signals" },
+    { id: "forecasts", label: "Forecasts" },
+    ...(aiAvailable ? [{ id: "narrative", label: "AI Narrative" }] : []),
+  ];
+  const [activeTab, setActiveTab] = React.useState("overview");
+
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
@@ -1314,6 +1337,8 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         <Stat l="Sources" v={output?.sourceCount || 4}/>
         {narrRisks.length > 0 && <Stat l="Narrative risks" v={narrRisks.length} mono color="var(--acc-ink)"/>}
       </div>
+      <CanvasTabs tabs={S1_TABS} active={activeTab} onChange={setActiveTab}/>
+      {activeTab === "overview" && <>
       {livefacts && (
         <div className="stage-detail">
           <h5>EDGAR · live extract</h5>
@@ -1390,7 +1415,9 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           </div>
         </div>
       )}
+      </>}
 
+      {activeTab === "signals" && <>
       {/* Beneish M-Score gauge */}
       {forecasts?.mscore != null && (() => {
         const MSG = window.MScoreGauge;
@@ -1537,7 +1564,9 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           </div>
         );
       })()}
+      </>}
 
+      {activeTab === "forecasts" && <>
       {/* Revenue forecast chart */}
       {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
         const FC = window.ForecastChart;
@@ -1688,9 +1717,9 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           </div>
         );
       })()}
+      </>}
 
-      {/* AI Narrative Analysis */}
-      {aiAvailable && (
+      {activeTab === "narrative" && aiAvailable && (
         <div className="stage-detail">
           <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: narrRisks.length ? 10 : 0}}>
             <h5 style={{margin:0}}>Item 1A · AI narrative signals</h5>
@@ -1786,6 +1815,13 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
     return next;
   });
 
+  const S2_TABS = [
+    { id: "risks", label: "Risk Register" },
+    { id: "methodology", label: "Scoring & Methodology" },
+    { id: "forecast", label: "Forecast" },
+  ];
+  const [activeTab, setActiveTab] = React.useState("risks");
+
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
@@ -1796,7 +1832,9 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         <Stat l="Appetite breach" v={appetite?.breaching?.length || 0} mono
               color={(appetite?.breaching?.length || 0) > 0 ? "var(--red-ink)" : "var(--green-ink)"}/>
       </div>
+      <CanvasTabs tabs={S2_TABS} active={activeTab} onChange={setActiveTab}/>
 
+      {activeTab === "risks" && <>
       {/* Live RSS status bar */}
       <div className="s2-rss-bar">
         <span className="s2-rss-label">
@@ -1966,8 +2004,9 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           })}
         </div>
       </div>
+      </>}
 
-      {/* Scoring methodology */}
+      {activeTab === "methodology" && (
       <div className="stage-detail">
         <h5>Scoring methodology</h5>
         <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11, color:"var(--ink-2)"}}>
@@ -1988,7 +2027,9 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           </div>
         </div>
       </div>
+      )}
 
+      {activeTab === "forecast" && <>
       {/* Quarterly forecast for top risks */}
       {risks.length > 0 && (
         <div className="stage-detail">
@@ -2158,6 +2199,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           </div>
         );
       })()}
+      </>}
 
     </div>
   );
