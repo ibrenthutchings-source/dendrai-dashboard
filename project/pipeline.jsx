@@ -18,8 +18,170 @@ const STAGES = [
 
 const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
 
+// Gates as addressable nodes alongside STAGES — afterStage says where each
+// one sits in sequence, hitlKey says which cfg.hitl flag can skip it.
+const GATES = [
+  { id: "g1", num: 1, afterStage: "s2", hitlKey: "risk",
+    title: "Human Review · Risk Assessment", desc: "Validate AI risk scores before scoping audit." },
+  { id: "g2", num: 2, afterStage: "s3", hitlKey: "scope",
+    title: "Human Review · Audit Scope", desc: "Confirm scope and resource allocation before fieldwork." },
+];
+
+// Compact KPIs for a stage's hub card / canvas header — mirrors the exact
+// fields each *Body component already computes for its own .stage-stat-row,
+// just without rendering the full body. Kept in sync with S1Body–S6Body by
+// hand since they're the source of truth for these field shapes.
+function stageKpis(id, output) {
+  if (!output) return [];
+  switch (id) {
+    case "s1": {
+      const signals = output.signals || [];
+      const high = signals.filter(s => s.velocity >= 3).length;
+      const med = signals.filter(s => s.velocity === 2).length;
+      return [
+        { l: "Signals", v: signals.length },
+        { l: "High velocity", v: high, mono: true, color: high > 0 ? "var(--red-ink)" : undefined },
+        { l: "Medium velocity", v: med, mono: true, color: med > 0 ? "var(--amber-ink)" : undefined },
+        { l: "Sources", v: output.sourceCount || 4 },
+      ];
+    }
+    case "s2": {
+      const risks = output.risks || [];
+      const counts = risks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
+      const breach = output.riskAppetite?.breaching?.length || 0;
+      return [
+        { l: "Risks", v: risks.length },
+        { l: "Red", v: counts.R || 0, mono: true, color: "var(--red-ink)" },
+        { l: "Amber", v: counts.A || 0, mono: true, color: "var(--amber-ink)" },
+        { l: "Breaching", v: breach, mono: true, color: breach > 0 ? "var(--red-ink)" : "var(--green-ink)" },
+      ];
+    }
+    case "s3": {
+      const objs = output.objectives || [];
+      const totalHrs = objs.reduce((a, o) => a + (o.hours || 0), 0);
+      return [
+        { l: "Objectives", v: objs.length },
+        { l: "P1 priority", v: objs.filter(o => o.priority === "P1").length, mono: true, color: "var(--red-ink)" },
+        { l: "P2 priority", v: objs.filter(o => o.priority === "P2").length, mono: true, color: "var(--amber-ink)" },
+        { l: "Effort (hrs)", v: totalHrs, mono: true },
+      ];
+    }
+    case "s4": {
+      const maps = output.maps || [];
+      const avgRed = maps.reduce((a, m) => a + (m.reduction_pct || 0), 0);
+      return [
+        { l: "MAPs", v: maps.length },
+        { l: "High-impact", v: maps.filter(m => m.risk_impact === "R").length, mono: true, color: "var(--red-ink)" },
+        { l: "Total reduction", v: `${avgRed}%`, mono: true },
+        { l: "Avg completion", v: `${Math.round(maps.reduce((a, m) => a + (m.completion_pct || 0), 0) / Math.max(1, maps.length))}%`, mono: true },
+      ];
+    }
+    case "s5": {
+      const c = output.closure || {};
+      return [
+        { l: "Closed", v: c.risks_closed || 0, mono: true, color: "var(--green-ink)" },
+        { l: "Reduced", v: c.risks_reduced || 0, mono: true, color: "var(--acc-ink)" },
+        { l: "Unchanged", v: c.risks_unchanged || 0, mono: true, color: "var(--ink-3)" },
+        { l: "Projected ↓", v: `${c.projected_total_risk_reduction_pct || 0}%`, mono: true },
+      ];
+    }
+    case "s6": {
+      const lp = output.loop || {};
+      return [
+        { l: "Loop health", v: lp.loop_health || "—", mono: true, color: "var(--amber-ink)" },
+        { l: "Audit impact", v: `${lp.audit_impact_score ?? "—"}/25`, mono: true },
+        { l: "MAPs open", v: lp.maps_open || 0, mono: true },
+        { l: "Next cycle", v: `${lp.next_trigger_days || 0}d`, mono: true },
+      ];
+    }
+    default: return [];
+  }
+}
+
+// One-line "what should I know without opening this" summary per stage.
+function stageTopFinding(id, output) {
+  if (!output) return null;
+  switch (id) {
+    case "s1": {
+      const signals = output.signals || [];
+      if (!signals.length) return null;
+      const top = [...signals].sort((a, b) => b.velocity - a.velocity)[0];
+      return top ? `${top.src} — ${top.label}` : null;
+    }
+    case "s2": {
+      const risks = output.risks || [];
+      if (!risks.length) return null;
+      const top = [...risks].sort((a, b) => b.score - a.score)[0];
+      const breach = output.riskAppetite?.breaching?.length || 0;
+      return `${top.name} — score ${fmt2(top.score)}${breach > 0 ? ` · ${breach} risk${breach !== 1 ? "s" : ""} breaching appetite` : ""}`;
+    }
+    case "s3": {
+      const objs = output.objectives || [];
+      if (!objs.length) return null;
+      const totalHrs = objs.reduce((a, o) => a + (o.hours || 0), 0);
+      return `${objs.length} objectives mapped — ${totalHrs} planned hours`;
+    }
+    case "s4": {
+      const maps = output.maps || [];
+      if (!maps.length) return null;
+      const top = [...maps].sort((a, b) => (b.reduction_pct || 0) - (a.reduction_pct || 0))[0];
+      return `${top.finding} — projected −${top.reduction_pct || 0}% risk`;
+    }
+    case "s5": {
+      const c = output.closure || {};
+      if (!c.risks_closed && !c.risks_reduced && !c.risks_unchanged) return null;
+      return `${c.risks_closed || 0} closed, ${c.risks_reduced || 0} reduced — ${c.projected_total_risk_reduction_pct || 0}% projected reduction`;
+    }
+    case "s6": {
+      const lp = output.loop || {};
+      if (!lp.loop_health) return null;
+      return `Loop health ${lp.loop_health} — next cycle in ${lp.next_trigger_days || 0} days`;
+    }
+    default: return null;
+  }
+}
+
+function stagePill(status) {
+  return status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span>
+    : status === "done"    ? <span className="stage-pill done"><span className="dot"/>COMPLETE</span>
+    : status === "waiting" ? <span className="stage-pill wait"><span className="dot"/>AWAITING GATE</span>
+    :                        <span className="stage-pill"><span className="dot"/>IDLE</span>;
+}
+
+// Trailing-gate summary shown at the bottom of the stage canvas right before
+// the gate it guards — pending renders a call-to-action into the gate's own
+// canvas, resolved renders HITLGate's compact banner unchanged.
+function gateBelowCanvas(stageId, { hitl, gateState, onFocusGate, onApprove, onOverride }) {
+  const gate = GATES.find(g => g.afterStage === stageId);
+  if (!gate || !hitl[gate.hitlKey]) return null;
+  const state = gateState[gate.id];
+  if (!state) return null;
+  if (state === "pending") {
+    return (
+      <div className="hgate" style={{marginTop: 10}}>
+        <div className="icon"><Icon name="alert" size={15}/></div>
+        <div className="meta">
+          <div className="t">{gate.title}</div>
+          <div className="d">{gate.desc}</div>
+        </div>
+        <div className="actions">
+          <button type="button" className="btn btn-sm btn-acc" onClick={() => onFocusGate(gate.id)}>
+            Review <Icon name="arrow-r" size={11}/>
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{marginTop: 10}}>
+      <HITLGate num={gate.num} state={state} onApprove={() => onApprove(gate.num)} onOverride={() => onOverride(gate.num)}/>
+    </div>
+  );
+}
+
 // Insert HITL gates after stages 2 and 3
-function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts,
+function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
+                    stageState, output, hitl, gateState, onApprove, onOverride, signals, livefacts,
                     liveRssSignals, rssLastUpdated, rssRefreshing, rssRunProgress, rssFeeds,
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
@@ -73,204 +235,276 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     onOpenMain: onOpenMainFlow,
   };
   // Coordinates zoom across every KPI time-series chart rendered anywhere in
-  // this tree — the always-visible Forecasts panel (ForecastChartsInline)
-  // and S1Body's detailed per-metric charts both live under this same
-  // Pipeline root, so one provider here covers both. Falls back to a plain
-  // Fragment (each chart keeps its own independent zoom) if charts.jsx
-  // hasn't loaded for some reason.
+  // this tree — the Forecasts panel (ForecastChartsInline) and S1Body's
+  // detailed per-metric charts both live under this same Pipeline root
+  // regardless of which node is focused, so one provider here covers both.
+  // Falls back to a plain Fragment (each chart keeps its own independent
+  // zoom) if charts.jsx hasn't loaded for some reason.
   const ZoomProvider = window.ChartZoomProvider || React.Fragment;
+
+  const focusedGate = GATES.find(g => g.id === hubFocus) || null;
+  const stageIdx = STAGES.findIndex(s => s.id === hubFocus);
+  const focusedStage = stageIdx >= 0 ? STAGES[stageIdx] : null;
+
   return (
     <ZoomProvider>
-    <div className="pipeline">
-      {STAGES.map((s, i) => {
-        const status = stageState[s.id] || "idle";
-        const isDone = status === "done";
-        const isOpen = openStages.has(s.id);
-        const showGate = (i === 1 && hitl.risk && gateState.g1) || (i === 2 && hitl.scope && gateState.g2);
-        const gateNum = i === 1 ? 1 : 2;
-        return (
-          <React.Fragment key={s.id}>
-            <Stage
-              stage={s}
-              status={status}
-              isOpen={isOpen}
-              onToggle={() => {
-                const next = new Set(openStages);
-                next.has(s.id) ? next.delete(s.id) : next.add(s.id);
-                setOpenStages(next);
-              }}
-              output={output[s.id]}
-              signals={signals}
-              livefacts={livefacts}
-              forecasts={forecasts}
-              s1Extra={s.id === "s1" ? s1Extra : null}
-              s2Extra={s.id === "s2" ? s2Extra : null}
-              s3Extra={s.id === "s3" ? s3Extra : null}
-              s5Extra={s.id === "s5" ? s5Extra : null}
-            />
-
-            {/* ── Stage-linked panels (always visible when stage is done) ── */}
-            {isDone && s.id === "s1" && window.RSSPanel && (
-              <PipelinePanel label="RSS Signals">
-                <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
-              </PipelinePanel>
-            )}
-            {isDone && s.id === "s2" && forecasts && (() => {
-              const GeoSegKPI = window.GeoSegmentKPISection;
-              return (
-                <PipelinePanel label="Forecasts">
-                  <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
-                    peerData={peerData}
-                    peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
-                    peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
-                    onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}/>
-                  {GeoSegKPI && (
-                    <GeoSegKPI
-                      data={forecasts}
-                      industry={industry}
-                      ticker={pipelineTicker || ""}
-                      livefacts={livefacts}
-                    />
-                  )}
-                </PipelinePanel>
-              );
-            })()}
-            {isDone && s.id === "s4" && window.MapsTab && (output.s4?.maps?.length > 0) && (
-              <PipelinePanel label="Management Action Plans">
-                <MapsTab maps={output.s4.maps}/>
-              </PipelinePanel>
-            )}
-            {isDone && s.id === "s2" && flowMeta && (output.s2?.risks?.length > 0) && (
-              <PipelinePanel label="Risk Flow">
-                <SankeyInline
-                  risks={output.s2.risks}
-                  maps={output.s4?.maps || []}
-                  flowMeta={flowMeta}
-                  objectives={output.s3?.objectives || []}
-                  onOpenMain={onOpenMainFlow}
-                />
-              </PipelinePanel>
-            )}
-
-            {i < STAGES.length - 1 && (
-              <Connector active={status === "done" || status === "running"}/>
-            )}
-            {showGate && (
-              <>
-                {gateNum === 1 && gateState.g1 === "pending" ? (
-                  <RiskApprovalReview
-                    risks={output.s2?.risks || []}
-                    approvals={riskApprovals}
-                    appetiteLevel={appetiteLevel}
-                    appetiteThreshold={threshold}
-                    perRiskAppetite={perRiskAppetite || {}}
-                    onSetPerRiskAppetite={setPerRiskAppetite}
-                    onApproveRisk={onApproveRisk}
-                    onOpenAdjust={onOpenAdjustRisk}
-                    onApproveAll={onApproveAllRisks}
-                    onSubmit={() => onApprove(1)}
-                    onOverrideGate={() => onOverride(1)}
-                    onAddRisk={onAddRisk}
-                  />
-                ) : gateNum === 2 && gateState.g2 === "pending" ? (
-                  <ScopeApprovalReview
-                    objectives={output.s3?.objectives || []}
-                    approvals={scopeApprovals}
-                    risks={output.s2?.risks || []}
-                    onApproveObjective={onApproveObjective}
-                    onOpenAdjust={onOpenAdjustObjective}
-                    onApproveAll={onApproveAllObjectives}
-                    onSubmit={() => onApprove(2)}
-                    onOverrideGate={() => onOverride(2)}
-                    onAddObjective={onAddObjective}
-                  />
-                ) : (
-                  <>
-                    <HITLGate
-                      num={gateNum}
-                      state={gateState[`g${gateNum}`]}
-                      onApprove={() => onApprove(gateNum)}
-                      onOverride={() => onOverride(gateNum)}
-                    />
-                    {gateNum === 2 && (gateState.g2 === "approved" || gateState.g2 === "overridden") && window.CoverageGapPanel && (
-                      <PipelinePanel label="Coverage Gap Analysis">
-                        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, gap:12}}>
-                          <span style={{fontSize:11, color:"var(--ink-3)"}}>
-                            Cross-check scope against risk register — address gaps before Stage 4 or revise the audit scope.
-                          </span>
-                          {onRerunFromS3 && (
-                            <button className="btn btn-sm" style={{fontSize:10, padding:"3px 10px", flexShrink:0}} onClick={onRerunFromS3}>
-                              <Icon name="reset" size={10}/> Revise Stage 3 — Audit Scope
-                            </button>
-                          )}
-                        </div>
-                        <CoverageGapPanel
-                          risks={output.s2?.risks || []}
-                          objectives={output.s3?.objectives || []}
-                          rssSignals={liveRssSignals}
-                          events={events}
-                          ratios={ratios}
-                          industry={industry}
-                          ticker={pipelineTicker}
-                        />
-                      </PipelinePanel>
-                    )}
-                  </>
-                )}
-                {i < STAGES.length - 1 && (
-                  <Connector active={gateState[`g${gateNum}`] === "approved"}/>
-                )}
-              </>
-            )}
-          </React.Fragment>
-        );
-      })}
+    <div className="pipeline pipeline-hub" data-screen-label="Audit Closed Loop">
+      {!focusedGate && !focusedStage && (
+        <LoopHub
+          stageState={stageState} output={output} hitl={hitl} gateState={gateState}
+          onFocusStage={onFocusStage} onFocusGate={onFocusGate}
+        />
+      )}
+      {focusedGate && (
+        <GateCanvas
+          gate={focusedGate} state={gateState[focusedGate.id]} output={output}
+          appetiteLevel={appetiteLevel} appetiteThreshold={threshold}
+          perRiskAppetite={perRiskAppetite} setPerRiskAppetite={setPerRiskAppetite}
+          riskApprovals={riskApprovals} onApproveRisk={onApproveRisk} onOpenAdjustRisk={onOpenAdjustRisk}
+          onApproveAllRisks={onApproveAllRisks} onAddRisk={onAddRisk}
+          scopeApprovals={scopeApprovals} onApproveObjective={onApproveObjective} onOpenAdjustObjective={onOpenAdjustObjective}
+          onApproveAllObjectives={onApproveAllObjectives} onAddObjective={onAddObjective}
+          onSubmit={() => onApprove(focusedGate.num)} onOverride={() => onOverride(focusedGate.num)}
+          onBack={onGoHub}
+          liveRssSignals={liveRssSignals} events={events} ratios={ratios} industry={industry}
+          pipelineTicker={pipelineTicker} onRerunFromS3={onRerunFromS3}
+        />
+      )}
+      {focusedStage && (
+        <StageCanvas
+          stage={focusedStage}
+          status={stageState[focusedStage.id] || "idle"}
+          output={output[focusedStage.id]}
+          fullOutput={output}
+          signals={signals} livefacts={livefacts} forecasts={forecasts}
+          s1Extra={focusedStage.id === "s1" ? s1Extra : null}
+          s2Extra={focusedStage.id === "s2" ? s2Extra : null}
+          s3Extra={focusedStage.id === "s3" ? s3Extra : null}
+          s5Extra={focusedStage.id === "s5" ? s5Extra : null}
+          risks={risks} companyName={companyName} pipelineTicker={pipelineTicker}
+          peerData={peerData} peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+          peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+          onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
+          flowMeta={flowMeta} onOpenMainFlow={onOpenMainFlow}
+          enabledFeedIds={enabledFeedIds} onRssSignalsReady={onRssSignalsReady}
+          onBack={onGoHub}
+          onPrev={stageIdx > 0 ? () => onFocusStage(STAGES[stageIdx - 1].id) : null}
+          onNext={stageIdx < STAGES.length - 1 ? () => onFocusStage(STAGES[stageIdx + 1].id) : null}
+          prevLabel={stageIdx > 0 ? STAGES[stageIdx - 1].name : ""}
+          nextLabel={stageIdx < STAGES.length - 1 ? STAGES[stageIdx + 1].name : ""}
+          gateBelow={gateBelowCanvas(focusedStage.id, { hitl, gateState, onFocusGate, onApprove, onOverride })}
+        />
+      )}
     </div>
     </ZoomProvider>
   );
 }
 
-function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1Extra, s2Extra, s3Extra, s5Extra, forecasts }) {
-  const statusCls = status === "running" ? "running" : status === "done" ? "done" : "";
-  const pill =
-    status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
-    status === "done"    ? <span className="stage-pill done"><span className="dot"/>COMPLETE</span> :
-    status === "waiting" ? <span className="stage-pill wait"><span className="dot"/>AWAITING GATE</span> :
-                           <span className="stage-pill"><span className="dot"/>IDLE</span>;
-  const num = stage.id.replace("s", "");
-  const subSteps = status === "done"
-    ? buildSubSteps(stage.id, output, signals, livefacts, s1Extra, s2Extra, s3Extra)
-    : [];
+// ── Loop overview — the hub every run lands on ─────────────────────────────
+function LoopHub({ stageState, output, hitl, gateState, onFocusStage, onFocusGate }) {
+  const pendingGate = GATES.find(g => hitl[g.hitlKey] && gateState[g.id] === "pending");
   return (
-    <div className={`stage ${statusCls}`} data-screen-label={`Stage ${num}`}>
-      <Clickable className="stage-head" onClick={onToggle}>
-        <div className="stage-num">{num}</div>
-        <div className="stage-meta">
-          <div className="stage-name">{stage.name}</div>
-          <div className="stage-desc">{stage.desc}</div>
-        </div>
-        {pill}
-        <Icon name={isOpen ? "chev-u" : "chev-d"} size={14} className="muted"/>
-      </Clickable>
-      {subSteps.length > 0 && (
-        <div style={{padding: "8px 16px 10px 16px", borderTop: "1px solid var(--line)"}}>
-          <div className="mono" style={{fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 6}}>COMPLETED STEPS</div>
-          <ExpandableSubSteps steps={subSteps}/>
+    <>
+      {pendingGate && (
+        <div className="hgate hub-gate-banner">
+          <div className="icon"><Icon name="alert" size={15}/></div>
+          <div className="meta">
+            <div className="t">{pendingGate.title} awaiting your review</div>
+            <div className="d">{pendingGate.desc}</div>
+          </div>
+          <div className="actions">
+            <button type="button" className="btn btn-sm btn-acc" onClick={() => onFocusGate(pendingGate.id)}>
+              Review <Icon name="arrow-r" size={11}/>
+            </button>
+          </div>
         </div>
       )}
-      {isOpen && (
-        <div className="stage-body open">
-          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
+      <div className="hub-grid">
+        {STAGES.map(s => {
+          const status = stageState[s.id] || "idle";
+          const stageOutput = output[s.id];
+          const kpis = status === "done" ? stageKpis(s.id, stageOutput) : [];
+          const finding = status === "done" ? stageTopFinding(s.id, stageOutput) : null;
+          return (
+            <button key={s.id} type="button" className={`hub-card ${status}`} onClick={() => onFocusStage(s.id)}
+              data-screen-label={`Stage ${s.id.replace("s", "")} card`}>
+              <div className="hub-card-head">
+                <div className="stage-num">{s.id.replace("s", "")}</div>
+                {stagePill(status)}
+              </div>
+              <div className="hub-card-name">{s.name}</div>
+              {kpis.length > 0
+                ? <div className="stage-stat-row">{kpis.map((k, i) => <Stat key={i} {...k}/>)}</div>
+                : <div className="hub-card-find muted">{status === "waiting" ? "Awaiting gate approval" : s.desc}</div>}
+              {finding && <div className="hub-card-find">{finding}</div>}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ── Gate canvas — pending review table, or the resolved banner ────────────
+function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, perRiskAppetite, setPerRiskAppetite,
+                       riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onAddRisk,
+                       scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onAddObjective,
+                       onSubmit, onOverride, onBack,
+                       liveRssSignals, events, ratios, industry, pipelineTicker, onRerunFromS3 }) {
+  return (
+    <div className="loop-canvas">
+      <div className="canvas-nav">
+        <button type="button" className="btn btn-sm btn-ghost canvas-back" onClick={onBack}>
+          <Icon name="chev-u" size={11} style={{transform: "rotate(-90deg)"}}/> Loop overview
+        </button>
+      </div>
+      {state === "pending" ? (
+        gate.num === 1 ? (
+          <RiskApprovalReview
+            risks={output.s2?.risks || []}
+            approvals={riskApprovals}
+            appetiteLevel={appetiteLevel}
+            appetiteThreshold={appetiteThreshold}
+            perRiskAppetite={perRiskAppetite || {}}
+            onSetPerRiskAppetite={setPerRiskAppetite}
+            onApproveRisk={onApproveRisk}
+            onOpenAdjust={onOpenAdjustRisk}
+            onApproveAll={onApproveAllRisks}
+            onSubmit={onSubmit}
+            onOverrideGate={onOverride}
+            onAddRisk={onAddRisk}
+          />
+        ) : (
+          <ScopeApprovalReview
+            objectives={output.s3?.objectives || []}
+            approvals={scopeApprovals}
+            risks={output.s2?.risks || []}
+            onApproveObjective={onApproveObjective}
+            onOpenAdjust={onOpenAdjustObjective}
+            onApproveAll={onApproveAllObjectives}
+            onSubmit={onSubmit}
+            onOverrideGate={onOverride}
+            onAddObjective={onAddObjective}
+          />
+        )
+      ) : (
+        <div style={{padding: "0 22px 20px", display: "flex", flexDirection: "column", gap: 12}}>
+          <HITLGate num={gate.num} state={state} onApprove={onSubmit} onOverride={onOverride}/>
+          {gate.num === 2 && window.CoverageGapPanel && (
+            <PipelinePanel label="Coverage Gap Analysis">
+              <div style={{display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12}}>
+                <span style={{fontSize: 11, color: "var(--ink-3)"}}>
+                  Cross-check scope against risk register — address gaps before Stage 4 or revise the audit scope.
+                </span>
+                {onRerunFromS3 && (
+                  <button type="button" className="btn btn-sm" style={{fontSize: 10, padding: "3px 10px", flexShrink: 0}} onClick={onRerunFromS3}>
+                    <Icon name="reset" size={10}/> Revise Stage 3 — Audit Scope
+                  </button>
+                )}
+              </div>
+              <CoverageGapPanel
+                risks={output.s2?.risks || []}
+                objectives={output.s3?.objectives || []}
+                rssSignals={liveRssSignals}
+                events={events}
+                ratios={ratios}
+                industry={industry}
+                ticker={pipelineTicker}
+              />
+            </PipelinePanel>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function Connector({ active }) {
+// ── Stage canvas — full detail for one stage, with prev/next + trailing gate ──
+function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, forecasts, s1Extra, s2Extra, s3Extra, s5Extra,
+                        risks, companyName, pipelineTicker,
+                        peerData, peerCompareList, peerCompareLoading, peerCompareError, onAddPeerCompare, onRemovePeerCompare, onClearPeerCompare,
+                        flowMeta, onOpenMainFlow,
+                        enabledFeedIds, onRssSignalsReady,
+                        onBack, onPrev, onNext, prevLabel, nextLabel, gateBelow }) {
+  const kpis = status === "done" ? stageKpis(stage.id, output) : [];
+  const subSteps = status === "done" ? buildSubSteps(stage.id, output, signals, livefacts, s1Extra, s2Extra, s3Extra) : [];
   return (
-    <div className={"conn" + (active ? " on" : "")}>
-      <div className="line"/>
+    <div className={`loop-canvas stage ${status}`} data-screen-label={`Stage ${stage.id.replace("s", "")}`}>
+      <div className="canvas-nav">
+        <button type="button" className="btn btn-sm btn-ghost canvas-back" onClick={onBack}>
+          <Icon name="chev-u" size={11} style={{transform: "rotate(-90deg)"}}/> Loop overview
+        </button>
+      </div>
+      <div className="canvas-head">
+        <div className="stage-num">{stage.id.replace("s", "")}</div>
+        <div className="stage-meta">
+          <div className="stage-name">{stage.name}</div>
+          <div className="stage-desc">{stage.desc}</div>
+        </div>
+        {stagePill(status)}
+      </div>
+      <div className="canvas-body">
+        {kpis.length > 0 && <div className="stage-stat-row">{kpis.map((k, i) => <Stat key={i} {...k}/>)}</div>}
+        <div className="stage-body-grid">
+          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts}
+                     s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
+        </div>
+
+        {stage.id === "s1" && status === "done" && window.RSSPanel && (
+          <PipelinePanel label="RSS Signals">
+            <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
+          </PipelinePanel>
+        )}
+        {stage.id === "s2" && status === "done" && forecasts && (() => {
+          const GeoSegKPI = window.GeoSegmentKPISection;
+          return (
+            <PipelinePanel label="Forecasts">
+              <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
+                peerData={peerData}
+                peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+                peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+                onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}/>
+              {GeoSegKPI && (
+                <GeoSegKPI data={forecasts} industry={s2Extra?.industry || ""} ticker={pipelineTicker || ""} livefacts={livefacts}/>
+              )}
+            </PipelinePanel>
+          );
+        })()}
+        {stage.id === "s2" && status === "done" && flowMeta && (output?.risks?.length > 0) && (
+          <PipelinePanel label="Risk Flow">
+            <SankeyInline
+              risks={output.risks}
+              maps={fullOutput.s4?.maps || []}
+              flowMeta={flowMeta}
+              objectives={fullOutput.s3?.objectives || []}
+              onOpenMain={onOpenMainFlow}
+            />
+          </PipelinePanel>
+        )}
+        {stage.id === "s4" && window.MapsTab && (output?.maps?.length > 0) && (
+          <PipelinePanel label="Management Action Plans">
+            <MapsTab maps={output.maps}/>
+          </PipelinePanel>
+        )}
+        {subSteps.length > 0 && (
+          <PipelinePanel label="Completed steps" defaultOpen={false}>
+            <ExpandableSubSteps steps={subSteps}/>
+          </PipelinePanel>
+        )}
+        {gateBelow}
+      </div>
+      <div className="canvas-foot">
+        {onPrev ? (
+          <button type="button" className="btn btn-sm" onClick={onPrev}>
+            <Icon name="chev-u" size={10} style={{transform: "rotate(-90deg)"}}/> {prevLabel}
+          </button>
+        ) : <span/>}
+        {onNext ? (
+          <button type="button" className="btn btn-sm" onClick={onNext}>
+            {nextLabel} <Icon name="chev-d" size={10} style={{transform: "rotate(-90deg)"}}/>
+          </button>
+        ) : <span/>}
+      </div>
     </div>
   );
 }
@@ -494,8 +728,8 @@ function SankeyInline({ risks, maps, flowMeta, objectives, onOpenMain }) {
   );
 }
 
-function PipelinePanel({ label, children }) {
-  const [open, setOpen] = React.useState(true);
+function PipelinePanel({ label, defaultOpen = true, children }) {
+  const [open, setOpen] = React.useState(defaultOpen);
   return (
     <div className="stage" style={{marginTop: 0, borderStyle: "dashed", opacity: 0.97}}>
       <Clickable className="stage-head" onClick={() => setOpen(o => !o)} style={{cursor: "pointer"}}>
