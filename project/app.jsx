@@ -2265,7 +2265,7 @@ function App() {
           {activeScreen === "infrastructuremonitoring" && (
           <ScreenAccessGate screenId="infrastructuremonitoring">
             <div className="panel active">
-              <InfrastructureMonitoringScreenLazy onNavigate={navigateToScreen} />
+              <InfrastructureMonitoringScreenLazy onNavigate={navigateToScreen} isDevEnv={isDevEnv} />
             </div>
           </ScreenAccessGate>
           )}

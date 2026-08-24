@@ -42,6 +42,30 @@ const _EXC_LABEL_COLOR = {
   APPROVED_CARVE_OUT: "var(--ink-3)", DATA_PIPELINE_ERROR: "var(--amber-ink)",
 };
 
+// R/A/G — same vocabulary management_action_plans.risk_rating / risk_scores.rag_status
+// use elsewhere in this app. A genuinely separate signal from anomaly/uncertainty
+// (see exception_tool.py's module docstring) — combines severity with the
+// producing connector's own risk_tier, so it's shown as its own pill, not folded
+// into the score bars above.
+const _RISK_RATING_META = {
+  R: { label: "R — Urgent", bg: "var(--red-soft)", ink: "var(--red-ink)" },
+  A: { label: "A — Moderate", bg: "var(--amber-soft)", ink: "var(--amber-ink)" },
+  G: { label: "G — Low", bg: "var(--green-soft)", ink: "var(--green-ink)" },
+};
+
+function RiskRatingPill({ rating }) {
+  const meta = _RISK_RATING_META[rating];
+  if (!meta) return <span style={{ fontSize: 9.5, color: "var(--ink-4)" }}>Unrated</span>;
+  return (
+    <span className="mono" style={{
+      fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+      background: meta.bg, color: meta.ink, whiteSpace: "nowrap",
+    }}>
+      {meta.label}
+    </span>
+  );
+}
+
 function _excScoreTone(score) {
   if (score >= 0.70) return "bad";
   if (score >= 0.40) return "warn";
@@ -209,9 +233,11 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
           <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 2 }}>
             {row.action ? <span style={{ color: "var(--ink-3)" }}>{row.action}{row.actor ? ` · ${row.actor}` : ""} · </span> : null}
             {row.event_timestamp ? new Date(row.event_timestamp).toLocaleString() : "—"}
+            {row.assigned_owner ? <span> · owner: {row.assigned_owner}</span> : null}
           </div>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 150, flexShrink: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 150, flexShrink: 0, alignItems: "flex-end" }}>
+          <RiskRatingPill rating={row.risk_rating} />
           <ExcScoreBar label="Anomaly" value={row.anomaly_score} />
           <ExcScoreBar label="Uncertainty" value={row.uncertainty_score} />
         </div>
@@ -275,44 +301,224 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
   );
 }
 
+// One row per (control_id, system_source) recurring pattern instead of one
+// per event — the curation lever for a queue that's grown out of hand.
+// getFlatRows() is a memoized fetch-once accessor into the full flat pending
+// list (owned by TriageQueueTab) so expanding N groups doesn't mean N
+// separate network round trips.
+function GroupedQueueRow({ group, onResolved, onNavigate, getFlatRows }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [members, setMembers] = React.useState(null);
+  const [membersLoading, setMembersLoading] = React.useState(false);
+  const [bulkLabel, setBulkLabel] = React.useState(null);
+  const [bulkNotes, setBulkNotes] = React.useState("");
+  const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
+  const [bulkError, setBulkError] = React.useState(null);
+  const [bulkDone, setBulkDone] = React.useState(false);
+
+  async function toggleExpand() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && members === null) {
+      setMembersLoading(true);
+      try {
+        const flat = await getFlatRows();
+        setMembers(flat.filter(r => r.control_id === group.control_id && r.system_source === group.system_source));
+      } finally {
+        setMembersLoading(false);
+      }
+    }
+  }
+
+  function handleMemberResolved(eventId) {
+    setMembers(ms => (ms || []).filter(r => r.event_id !== eventId));
+    onResolved && onResolved(eventId, group);
+  }
+
+  const needsNotes = bulkLabel && _EXC_NOTES_REQUIRED.has(bulkLabel);
+  const canBulkSubmit = bulkLabel && (!needsNotes || bulkNotes.trim().length > 0) && !bulkSubmitting;
+
+  async function handleBulkSubmit() {
+    setBulkSubmitting(true);
+    setBulkError(null);
+    try {
+      await window.MCP.exceptionsBulkTriage(group.control_id, group.system_source, bulkLabel, bulkNotes);
+      setBulkDone(true);
+      onResolved && onResolved(null, group);
+    } catch (e) {
+      setBulkError(e.message || String(e));
+    } finally {
+      setBulkSubmitting(false);
+    }
+  }
+
+  if (bulkDone) return null;
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px", marginBottom: 8, background: "var(--surface)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, cursor: "pointer" }}
+        onClick={toggleExpand}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            {group.control_id}
+            <span style={{ fontWeight: 400, color: "var(--ink-4)" }}>· {group.system_source}</span>
+            <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "var(--surface-2)", color: "var(--ink-2)" }}>
+              ×{group.occurrence_count}
+            </span>
+            {group.has_open_map && (
+              <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "var(--acc-soft)", color: "var(--acc-ink)" }}
+                onClick={e => { e.stopPropagation(); onNavigate && onNavigate("continuousmonitoring"); }}
+                title="Already tracked by a Management Action Plan">
+                Tracked by {group.map_ref}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 2 }}>
+            {group.owner ? `owner: ${group.owner} · ` : ""}
+            first seen {group.first_seen_at ? new Date(group.first_seen_at).toLocaleDateString() : "—"}
+            {" · "}last seen {group.last_seen_at ? new Date(group.last_seen_at).toLocaleString() : "—"}
+          </div>
+        </div>
+        <RiskRatingPill rating={group.worst_risk_rating} />
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+          {group.occurrence_count > 1 && (
+            <div style={{ marginBottom: 10, padding: "8px 10px", background: "var(--surface-2)", borderRadius: 5 }}>
+              <div className="kicker" style={{ fontSize: 9.5, marginBottom: 6 }}>
+                Resolve all {group.occurrence_count} as one decision
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                {_EXC_RESOLUTION_LABELS.map(l => (
+                  <button key={l.value} type="button" onClick={() => setBulkLabel(l.value)} title={l.what}
+                    style={{
+                      fontSize: 10.5, padding: "5px 10px", borderRadius: 5, cursor: "pointer",
+                      border: l.value === bulkLabel ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line)",
+                      background: l.value === bulkLabel ? "var(--acc,#2563eb)" : "transparent",
+                      color: l.value === bulkLabel ? "#fff" : "var(--ink-2)",
+                      fontWeight: l.value === bulkLabel ? 600 : 400,
+                    }}>
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+              {needsNotes && (
+                <textarea className="code-input" rows={2} placeholder="Justification notes (required for this resolution)…"
+                  value={bulkNotes} onChange={e => setBulkNotes(e.target.value)}
+                  style={{ width: "100%", fontSize: 11, marginBottom: 8, resize: "vertical" }} />
+              )}
+              {bulkError && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 8 }}>{bulkError}</div>}
+              <button className="btn btn-acc btn-sm" disabled={!canBulkSubmit} onClick={handleBulkSubmit}>
+                {bulkSubmitting ? "Resolving…" : `Resolve all ${group.occurrence_count} as ${bulkLabel ? _EXC_LABEL_META[bulkLabel].label : "…"}`}
+              </button>
+            </div>
+          )}
+          <div className="kicker" style={{ fontSize: 9.5, marginBottom: 6 }}>Individual events</div>
+          {membersLoading ? <Empty>Loading…</Empty> : (members || []).map(row => (
+            <TriageQueueRow key={row.event_id} row={row} onResolved={handleMemberResolved} onNavigate={onNavigate} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TriageQueueTab({ onResolved, onNavigate }) {
+  const [grouped, setGrouped] = React.useState(true);
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
+  const [riskRating, setRiskRating] = React.useState("");
+  const [owner, setOwner] = React.useState("");
+  const flatCacheRef = React.useRef(null);
 
   const load = React.useCallback(() => {
     setLoading(true);
-    return window.MCP.exceptionsPending({ limit: 100 })
+    flatCacheRef.current = null;
+    return window.MCP.exceptionsPending({
+      limit: grouped ? 200 : 100, group: grouped,
+      riskRating: riskRating || undefined, owner: owner || undefined,
+    })
       .then(d => { setRows(d.rows || []); setError(null); })
       .catch(e => setError(e.message || String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [grouped, riskRating, owner]);
 
   React.useEffect(() => { load(); }, [load]);
+
+  const getFlatRows = React.useCallback(async () => {
+    if (flatCacheRef.current) return flatCacheRef.current;
+    const d = await window.MCP.exceptionsPending({ limit: 1000, riskRating: riskRating || undefined, owner: owner || undefined });
+    flatCacheRef.current = d.rows || [];
+    return flatCacheRef.current;
+  }, [riskRating, owner]);
 
   function handleResolved(eventId) {
     setRows(rs => rs.filter(r => r.event_id !== eventId));
     onResolved && onResolved();
   }
 
-  if (loading && !rows.length) return <Empty>Loading pending exceptions…</Empty>;
-  if (error) return <div className="mono" style={{ fontSize: 11, color: "var(--red-ink)" }}>{error}</div>;
-  if (!rows.length) {
-    return (
-      <Empty icon="✓">
-        No exceptions awaiting review right now. New ones appear here as connector events cross the
-        anomaly/uncertainty threshold — check back after Continuous Watch has ingested some activity.
-      </Empty>
-    );
+  function handleGroupResolved(eventId, group) {
+    if (eventId === null) {
+      // bulk-resolved — the whole group disappears from the grouped list
+      setRows(rs => rs.filter(r => !(r.control_id === group.control_id && r.system_source === group.system_source)));
+    }
+    onResolved && onResolved();
   }
+
+  const owners = React.useMemo(() => {
+    const seen = new Set();
+    rows.forEach(r => { if (r.owner || r.assigned_owner) seen.add(r.owner || r.assigned_owner); });
+    return [...seen].sort();
+  }, [rows]);
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div className="kicker">{rows.length} awaiting review — highest uncertainty first</div>
-        <button className="btn btn-sm" onClick={load}>Refresh</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+        <div className="kicker">
+          {loading ? "Loading…" : grouped
+            ? `${rows.length} recurring pattern(s) awaiting review`
+            : `${rows.length} event(s) awaiting review`}
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 10.5, display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={grouped} onChange={e => setGrouped(e.target.checked)} />
+            Group by control/system
+          </label>
+          <select className="code-input" style={{ fontSize: 10.5, padding: "3px 6px" }}
+            value={riskRating} onChange={e => setRiskRating(e.target.value)}>
+            <option value="">All risk ratings</option>
+            <option value="R">R — Urgent</option>
+            <option value="A">A — Moderate</option>
+            <option value="G">G — Low</option>
+          </select>
+          {owners.length > 0 && (
+            <select className="code-input" style={{ fontSize: 10.5, padding: "3px 6px" }}
+              value={owner} onChange={e => setOwner(e.target.value)}>
+              <option value="">All owners</option>
+              {owners.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
+          <button className="btn btn-sm" onClick={load}>Refresh</button>
+        </div>
       </div>
-      {rows.map(row => <TriageQueueRow key={row.event_id} row={row} onResolved={handleResolved} onNavigate={onNavigate} />)}
+
+      {loading && !rows.length ? <Empty>Loading pending exceptions…</Empty> : error ? (
+        <div className="mono" style={{ fontSize: 11, color: "var(--red-ink)" }}>{error}</div>
+      ) : !rows.length ? (
+        <Empty icon="✓">
+          No exceptions awaiting review right now. New ones appear here as connector events cross the
+          anomaly/uncertainty threshold — check back after Continuous Watch has ingested some activity.
+        </Empty>
+      ) : grouped ? (
+        rows.map(group => (
+          <GroupedQueueRow key={`${group.control_id}::${group.system_source}`} group={group}
+            onResolved={handleGroupResolved} onNavigate={onNavigate} getFlatRows={getFlatRows} />
+        ))
+      ) : (
+        rows.map(row => <TriageQueueRow key={row.event_id} row={row} onResolved={handleResolved} onNavigate={onNavigate} />)
+      )}
     </div>
   );
 }
@@ -375,12 +581,31 @@ function ModelAnalyticsTab() {
   if (loading) return <Empty>Loading…</Empty>;
 
   const bySystem = Object.entries(summary?.pending_by_system || {});
+  const byOwner = Object.entries(summary?.pending_by_owner || {});
+  const byRiskRating = ["R", "A", "G"].map(r => [r, (summary?.pending_by_risk_rating || {})[r] || 0]);
 
   return (
     <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
       <div style={{ flex: 1, minWidth: 280 }}>
         <div className="kicker" style={{ marginBottom: 8 }}>Resolution mix (all-time)</div>
         <ResolutionMixBars mix={summary?.resolution_mix || {}} />
+
+        <div className="kicker" style={{ marginTop: 20, marginBottom: 8 }}>Pending, by risk rating</div>
+        {byRiskRating.map(([rating, n]) => (
+          <div key={rating} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, padding: "4px 0" }}>
+            <RiskRatingPill rating={rating} /><span className="mono" style={{ fontWeight: 700 }}>{n}</span>
+          </div>
+        ))}
+
+        <div className="kicker" style={{ marginTop: 20, marginBottom: 8 }}>Pending, by owner</div>
+        {byOwner.length
+          ? byOwner.map(([own, n]) => (
+              <div key={own} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "4px 0" }}>
+                <span>{own}</span><span className="mono" style={{ fontWeight: 700 }}>{n}</span>
+              </div>
+            ))
+          : <Empty>Nothing pending.</Empty>}
+
         <div className="kicker" style={{ marginTop: 20, marginBottom: 8 }}>Pending, by system</div>
         {bySystem.length
           ? bySystem.map(([sys, n]) => (

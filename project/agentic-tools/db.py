@@ -1428,6 +1428,16 @@ ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS action            
 ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS event_type          VARCHAR(128);
 ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS raw_payload         JSONB;
 ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS system_telemetry_id BIGINT;
+-- Curation/delegation (Exception Management: curate, risk-rate, delegate):
+-- both snapshotted at scoring time from the connector that produced the
+-- event, not joined live — an owner/tier edited later on poll_connectors
+-- must not retroactively rewrite how an already-scored exception reads,
+-- same "capture what was true when scored" discipline
+-- management_action_plans.risk_rating/owner already use. connector_id is a
+-- soft reference (no FK), same style as system_telemetry_id above.
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS connector_id        BIGINT;
+ALTER TABLE exception_control_events ADD COLUMN IF NOT EXISTS assigned_owner      VARCHAR(128);
+CREATE INDEX IF NOT EXISTS idx_exc_events_owner ON exception_control_events (assigned_owner);
 
 CREATE TABLE IF NOT EXISTS exception_model_inferences (
     id                      BIGSERIAL    PRIMARY KEY,
@@ -1441,6 +1451,14 @@ CREATE TABLE IF NOT EXISTS exception_model_inferences (
 CREATE INDEX IF NOT EXISTS idx_exc_inferences_event ON exception_model_inferences (event_id);
 CREATE INDEX IF NOT EXISTS idx_exc_inferences_pending
     ON exception_model_inferences (uncertainty_score DESC) WHERE requires_human_review = TRUE;
+-- risk_rating: R|A|G, same vocabulary management_action_plans.risk_rating /
+-- risk_scores.rag_status already use — an independent signal from
+-- severity+connector risk_tier (exception_tool.score_event), NOT derived
+-- from anomaly_score/uncertainty_score the way those two are derived from
+-- each other. Nullable: rows scored before this column existed (or by
+-- je_testing_sweep.py, which never sets it) simply have no risk_rating,
+-- sorting last rather than being coerced into a fake tier.
+ALTER TABLE exception_model_inferences ADD COLUMN IF NOT EXISTS risk_rating VARCHAR(8);
 
 CREATE TABLE IF NOT EXISTS exception_auditor_triage (
     id                      BIGSERIAL    PRIMARY KEY,
@@ -1961,6 +1979,15 @@ ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS system_owner 
 -- ONLY when the credentials themselves are rotated, so it's an honest
 -- "credential age" signal rather than "row last touched for any reason".
 ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS credentials_rotated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+-- Infrastructure Vulnerability & Currency Posture: when this credential/API
+-- token actually expires, if known — distinct from credentials_rotated_at
+-- (when it was LAST rotated) the same way a driver's license issue date and
+-- expiry date are distinct facts. Nullable and never defaulted: an unset
+-- expiry means "no known expiry was configured," never "expired" — a
+-- connector created before this column existed, or one whose credential
+-- genuinely doesn't expire (a long-lived DB role), must not silently read
+-- as overdue. See expiry_sweep.py for how this is checked.
+ALTER TABLE observability.poll_connectors ADD COLUMN IF NOT EXISTS credentials_expires_at TIMESTAMPTZ;
 
 -- Identity/role graph: real user<->role edges pulled from connectors that
 -- expose them (currently Oracle Fusion's SCIM Users/Groups API via
@@ -2422,6 +2449,127 @@ CREATE INDEX IF NOT EXISTS idx_pbc_evidence_control
     ON observability.pbc_evidence (control_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pbc_evidence_flagged
     ON observability.pbc_evidence (created_at DESC) WHERE quality_flags != '[]'::jsonb;
+
+-- Infrastructure Vulnerability & Currency Posture (Phase 1): a unified
+-- asset inventory across DB/OS/container/network/credential/certificate —
+-- host/database/container config posture already lives in system_telemetry
+-- (postgres_cis/aws_iaas/railway_iaas events), but "what's still open vs.
+-- remediated" is inherently STATEFUL (an asset's patch/CVE/expiry status
+-- persists and changes over time), the same reasoning risk_waivers/
+-- vendor_risk_profiles/itsm_tickets/management_action_plans each earned
+-- their own table for instead of trying to re-derive current state from an
+-- event log on every read. last_assessed_at IS NULL is the load-bearing
+-- field here: it's what lets "never scanned" render distinctly from "scanned
+-- and clean" — an unscanned asset must never look the same as a clean one.
+CREATE TABLE IF NOT EXISTS observability.infra_assets (
+    id                 BIGSERIAL    PRIMARY KEY,
+    -- Dev/test tenants routinely register more than one customer estate
+    -- under one connector row (or none, for ingest-sourced assets) — without
+    -- this, two customers' "i-0abc123" or "primary-db" collide on asset_key.
+    estate_label       VARCHAR(128) NOT NULL DEFAULT 'default',
+    asset_key          VARCHAR(256) NOT NULL,  -- adapter-stable id: "postgres:primary-db", "aws:i-0abc123", "cert:api.example.com:443"
+    connector_id       BIGINT       REFERENCES observability.poll_connectors(id),
+    asset_type         VARCHAR(24)  NOT NULL,  -- host | database | container | network_device | credential | certificate
+    name               VARCHAR(256) NOT NULL,
+    environment        VARCHAR(64),
+    os_name            VARCHAR(64),
+    os_version         VARCHAR(64),
+    software_name      VARCHAR(128),
+    software_version   VARCHAR(64),
+    -- OSV.dev ecosystem string, e.g. "PyPI" | "Debian:12" | "npm" — see
+    -- osv_client.py. Deliberately NULL-able and often NULL: OSV has no
+    -- "PostgreSQL"/"generic DB engine" ecosystem, so a bare DSN-derived
+    -- version (no known host distro) can never populate this honestly.
+    -- version_baselines.py is the separate, non-OSV currency check for
+    -- exactly that case — see its module docstring.
+    ecosystem          VARCHAR(32),
+    image_digest       VARCHAR(128),
+    region             VARCHAR(64),
+    expires_at         TIMESTAMPTZ,   -- credential/certificate expiry, if applicable to this asset_type
+    last_assessed_at   TIMESTAMPTZ,   -- NULL = never assessed; distinct from "assessed and clean"
+    assessment_source  VARCHAR(24),   -- e.g. "postgres_cis" | "tls_cert" | "osv" | "scanner"
+    source             VARCHAR(24)  NOT NULL DEFAULT 'connector',  -- connector | ingest | manual
+    metadata           JSONB,
+    first_seen_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    active             BOOLEAN      NOT NULL DEFAULT TRUE
+);
+-- COALESCE(connector_id, 0) so ingest-sourced assets (connector_id NULL,
+-- e.g. a manually-registered credential or a future scanner upload) still
+-- dedup on (estate, asset_key) — a plain UNIQUE(connector_id, asset_key)
+-- would treat every NULL as distinct and re-insert the same asset per call.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_infra_assets_key
+    ON observability.infra_assets (estate_label, COALESCE(connector_id, 0), asset_key);
+CREATE INDEX IF NOT EXISTS idx_infra_assets_type
+    ON observability.infra_assets (asset_type, active);
+CREATE INDEX IF NOT EXISTS idx_infra_assets_connector
+    ON observability.infra_assets (connector_id);
+CREATE INDEX IF NOT EXISTS idx_infra_assets_expiring
+    ON observability.infra_assets (expires_at) WHERE expires_at IS NOT NULL AND active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_infra_assets_unassessed
+    ON observability.infra_assets (last_assessed_at) WHERE active = TRUE;
+
+-- Infrastructure Vulnerability & Currency Posture (Phase 2): the
+-- vulnerability register itself. asset_id is nullable because a SARIF
+-- scanner finding (container image scan, SAST) often has no matching
+-- infra_assets row — it's keyed on a repo/commit, not a tracked asset —
+-- so the OSV-enrichment path (asset_id set) and the SARIF-bridge path
+-- (asset_id NULL, evidence_record_id set) both write here without one
+-- forcing a fake asset row for the other.
+CREATE TABLE IF NOT EXISTS observability.infra_vulnerabilities (
+    id                  BIGSERIAL    PRIMARY KEY,
+    asset_id            BIGINT       REFERENCES observability.infra_assets(id),
+    vuln_id             VARCHAR(64)  NOT NULL,   -- CVE-... | GHSA-... | OSV id
+    aliases             TEXT[],                  -- other ids OSV reports for the same vuln
+    source              VARCHAR(16)  NOT NULL DEFAULT 'osv',  -- osv | scanner | connector
+    source_ref          VARCHAR(256),            -- SARIF ruleId / evidence fingerprint, when source='scanner'
+    severity            VARCHAR(16)  NOT NULL DEFAULT 'INFO',
+    cvss_score          NUMERIC(4,1),
+    title               TEXT,
+    summary             TEXT,
+    affected_version    VARCHAR(64),
+    fixed_version       VARCHAR(64),
+    published_at        TIMESTAMPTZ,
+    first_detected_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    status              VARCHAR(24)  NOT NULL DEFAULT 'open',  -- open | remediated | accepted_risk | false_positive
+    remediated_at       TIMESTAMPTZ,
+    -- HOW a status flip to remediated was decided — never inferred from a
+    -- scan simply not re-reporting the finding (absence isn't evidence of a
+    -- fix). "version_advanced" is the one sweep-driven case: the asset's
+    -- software_version moved past fixed_version. Everything else is a human
+    -- action (waiver, manual close).
+    remediation_basis   VARCHAR(32),   -- version_advanced | waiver | manual
+    waiver_id           BIGINT       REFERENCES observability.risk_waivers(id),
+    evidence_record_id  BIGINT       REFERENCES observability.evidence_records(id),
+    disposition_reason  TEXT,
+    disposed_by         VARCHAR(128),
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+-- COALESCE both nullable dedup legs the same way idx_infra_assets_key does
+-- for connector_id — a NULL asset_id (SARIF path) or NULL source_ref
+-- (OSV path) must not make every row look "distinct" to a plain UNIQUE.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_infra_vulns_dedup
+    ON observability.infra_vulnerabilities (COALESCE(asset_id, 0), vuln_id, COALESCE(source_ref, ''));
+CREATE INDEX IF NOT EXISTS idx_infra_vulns_status
+    ON observability.infra_vulnerabilities (status, severity);
+CREATE INDEX IF NOT EXISTS idx_infra_vulns_asset
+    ON observability.infra_vulnerabilities (asset_id) WHERE asset_id IS NOT NULL;
+
+-- OSV.dev response cache, keyed on the exact query triple. OSV is free and
+-- unauthenticated but re-querying the same (ecosystem, package, version)
+-- every sweep tick is wasted API load for an answer that essentially never
+-- changes intra-day — osv_client.py treats a cache row as fresh for
+-- OSV_CACHE_TTL_HOURS (default 24h) before re-querying.
+CREATE TABLE IF NOT EXISTS observability.osv_cache (
+    ecosystem     VARCHAR(32)  NOT NULL,
+    package_name  VARCHAR(256) NOT NULL,
+    version       VARCHAR(64)  NOT NULL,
+    vulns         JSONB        NOT NULL,   -- raw OSV vulns[] array for this triple, [] = queried, none found
+    queried_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ecosystem, package_name, version)
+);
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -9924,11 +10072,16 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                             requires_human_review: bool, actor: Optional[str] = None,
                             action: Optional[str] = None, event_type: Optional[str] = None,
                             raw_payload: Optional[dict] = None,
-                            system_telemetry_id: Optional[int] = None) -> Optional[int]:
+                            system_telemetry_id: Optional[int] = None,
+                            connector_id: Optional[int] = None, assigned_owner: Optional[str] = None,
+                            risk_rating: Optional[str] = None) -> Optional[int]:
     """One exception_control_events row + its exception_model_inferences row,
     in a single connection — connector_poller.py's per-event scoring hook
     calls this for every polled event once deploy_env.IS_DEVELOPMENT, and
-    je_testing_sweep.py calls it unconditionally for JE findings."""
+    je_testing_sweep.py calls it unconditionally for JE findings (leaving
+    connector_id/assigned_owner/risk_rating at their default None — JE
+    findings aren't connector-scored events and are excluded from every
+    Exception Management query anyway, see _EXCLUDE_JE_TESTING_SQL)."""
     raw_payload = _encrypt_raw_payload(raw_payload)
     def _do():
         with _conn() as conn:
@@ -9937,55 +10090,83 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                     """
                     INSERT INTO exception_control_events
                         (control_id, system_source, process, event_timestamp, point_in_time_features,
-                         actor, action, event_type, raw_payload, system_telemetry_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         actor, action, event_type, raw_payload, system_telemetry_id,
+                         connector_id, assigned_owner)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (control_id[:128], system_source[:64], (process[:64] if process else None),
                      event_timestamp, Json(features or {}),
                      (actor[:128] if actor else None), (action[:128] if action else None),
                      (event_type[:128] if event_type else None),
-                     (Json(raw_payload) if raw_payload else None), system_telemetry_id),
+                     (Json(raw_payload) if raw_payload else None), system_telemetry_id,
+                     connector_id, (assigned_owner[:128] if assigned_owner else None)),
                 )
                 event_id = cur.fetchone()[0]
                 cur.execute(
                     """
                     INSERT INTO exception_model_inferences
-                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review)
-                    VALUES (%s, %s, %s, %s, %s)
+                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review, risk_rating)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (event_id, model_version[:64], anomaly_score, uncertainty_score, requires_human_review),
+                    (event_id, model_version[:64], anomaly_score, uncertainty_score, requires_human_review,
+                     risk_rating),
                 )
                 return event_id
     return _run(_do)
 
 
-def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> list:
+# Sort order for the R/A/G risk_rating vocabulary (management_action_plans.risk_rating /
+# risk_scores.rag_status) — R (urgent) first, an unset/legacy-scored row last so it
+# doesn't silently jump the queue ahead of a real R-rated item.
+_RISK_RATING_ORDER_SQL = "CASE mi.risk_rating WHEN 'R' THEN 0 WHEN 'A' THEN 1 WHEN 'G' THEN 2 ELSE 3 END"
+
+# Excludes je_testing_sweep.py's rows from exception_control_events/
+# exception_model_inferences — the two features share these tables verbatim,
+# discriminated only by event_type='JOURNAL_ENTRY' (see that module's own
+# comment above list_je_testing_findings). Every Exception-Management-only
+# query over these tables needs this, or JE Testing findings inflate Exception
+# Management's counts and queue.
+_EXCLUDE_JE_TESTING_SQL = "ce.event_type IS DISTINCT FROM 'JOURNAL_ENTRY'"
+
+
+def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0,
+                             risk_rating: Optional[str] = None, owner: Optional[str] = None) -> list:
     """Latest inference per event, for events flagged for review with no
-    triage decision yet — highest uncertainty (most ambiguous, most
-    valuable-to-label) first. Same predicate as devriskops-ccm's
-    GET /api/v1/triage/pending."""
+    triage decision yet — risk_rating (R/A/G) first, then highest uncertainty
+    (most ambiguous, most valuable-to-label) as the tiebreak. Same base
+    predicate as devriskops-ccm's GET /api/v1/triage/pending, extended with
+    the risk_rating/owner filters and JE Testing exclusion."""
     def _do():
+        filters = [f"mi.requires_human_review = TRUE", "tri.id IS NULL",
+                   "mi.uncertainty_score >= %s", _EXCLUDE_JE_TESTING_SQL]
+        params: list = [min_uncertainty]
+        if risk_rating:
+            filters.append("mi.risk_rating = %s")
+            params.append(risk_rating)
+        if owner:
+            filters.append("ce.assigned_owner = %s")
+            params.append(owner)
+        params.append(limit)
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
                            ce.point_in_time_features, ce.actor, ce.action, ce.event_type,
-                           ce.raw_payload, ce.system_telemetry_id,
-                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.scored_at
+                           ce.raw_payload, ce.system_telemetry_id, ce.connector_id, ce.assigned_owner,
+                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.risk_rating, mi.scored_at
                     FROM exception_control_events ce
                     JOIN LATERAL (
                         SELECT * FROM exception_model_inferences m
                         WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
                     ) mi ON TRUE
                     LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
-                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
-                      AND mi.uncertainty_score >= %s
-                    ORDER BY mi.uncertainty_score DESC, ce.event_timestamp DESC
+                    WHERE {" AND ".join(filters)}
+                    ORDER BY {_RISK_RATING_ORDER_SQL}, mi.uncertainty_score DESC, ce.event_timestamp DESC
                     LIMIT %s
                     """,
-                    (min_uncertainty, limit),
+                    params,
                 )
                 out = []
                 for r in cur.fetchall():
@@ -9995,12 +10176,106 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0) -> l
                         "point_in_time_features": r[5] or {},
                         "actor": r[6], "action": r[7], "event_type": r[8],
                         "raw_payload": _decrypt_raw_payload(r[9]) or {}, "system_telemetry_id": r[10],
-                        "inference_id": r[11], "model_version": r[12],
-                        "anomaly_score": float(r[13]), "uncertainty_score": float(r[14]),
-                        "scored_at": r[15].isoformat() if r[15] else None,
+                        "connector_id": r[11], "assigned_owner": r[12],
+                        "inference_id": r[13], "model_version": r[14],
+                        "anomaly_score": float(r[15]), "uncertainty_score": float(r[16]),
+                        "risk_rating": r[17],
+                        "scored_at": r[18].isoformat() if r[18] else None,
                     })
                 return out
     return _run(_do) or []
+
+
+def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str] = None,
+                                     owner: Optional[str] = None) -> list:
+    """One row per (control_id, system_source) pair with a pending item,
+    occurrence_count, the worst (lowest-order) risk_rating in the group, the
+    most recent event's id/timestamp for drill-in, and whether the control is
+    already tracked by an open Management Action Plan (same open-status set
+    detect_recurring_exceptions checks) — surfaced so a reviewer doesn't
+    re-litigate one occurrence at a time when the recurrence has already been
+    escalated to a remediation plan. Curation lever: pairs this with
+    bulk_submit_exception_triage() so a reviewer can clear an entire
+    recurring group in one action instead of N."""
+    def _do():
+        filters = ["mi.requires_human_review = TRUE", "tri.id IS NULL", _EXCLUDE_JE_TESTING_SQL]
+        params: list = []
+        if risk_rating:
+            filters.append("mi.risk_rating = %s")
+            params.append(risk_rating)
+        if owner:
+            filters.append("ce.assigned_owner = %s")
+            params.append(owner)
+        params.append(limit)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ce.control_id, ce.system_source, COUNT(*) AS occurrence_count,
+                           MIN({_RISK_RATING_ORDER_SQL}) AS worst_rating_order,
+                           MIN(ce.event_timestamp) AS first_seen_at, MAX(ce.event_timestamp) AS last_seen_at,
+                           (array_agg(ce.id ORDER BY ce.event_timestamp DESC))[1] AS sample_event_id,
+                           (array_agg(ce.assigned_owner ORDER BY ce.event_timestamp DESC))[1] AS owner,
+                           bool_or(mp.id IS NOT NULL) AS has_open_map,
+                           (array_agg(mp.map_ref ORDER BY ce.event_timestamp DESC) FILTER (WHERE mp.id IS NOT NULL))[1] AS map_ref
+                    FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    LEFT JOIN observability.management_action_plans mp
+                        ON mp.control_id = ce.control_id AND mp.status IN ('proposed', 'approved', 'in_progress')
+                    WHERE {" AND ".join(filters)}
+                    GROUP BY ce.control_id, ce.system_source
+                    ORDER BY worst_rating_order, occurrence_count DESC, last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                out = []
+                _rating_by_order = {0: "R", 1: "A", 2: "G"}
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    d["worst_risk_rating"] = _rating_by_order.get(d.pop("worst_rating_order"))
+                    for k in ("first_seen_at", "last_seen_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    out.append(d)
+                return out
+    return _run(_do) or []
+
+
+def bulk_submit_exception_triage(event_ids: list, auditor: str, resolution_label: str,
+                                  justification_notes: Optional[str]) -> int:
+    """Applies one auditor resolution to every event_id in one batch — the
+    volume lever behind list_pending_exceptions_grouped's "resolve all N as
+    X" action. Same ON CONFLICT (event_id) DO UPDATE upsert as
+    submit_exception_triage, just applied to many rows in one round trip.
+    Returns the number of rows written; validation (label/notes) is the
+    caller's responsibility, same split as submit_exception_triage."""
+    if resolution_label not in _VALID_TRIAGE_LABELS:
+        return 0
+    if resolution_label in _TRIAGE_NOTES_REQUIRED_LABELS and not (justification_notes or "").strip():
+        return 0
+    if not event_ids:
+        return 0
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO exception_auditor_triage (event_id, auditor, resolution_label, justification_notes)
+                    SELECT unnest(%s::bigint[]), %s, %s, %s
+                    ON CONFLICT (event_id) DO UPDATE SET
+                        auditor = EXCLUDED.auditor, resolution_label = EXCLUDED.resolution_label,
+                        justification_notes = EXCLUDED.justification_notes, reviewed_at = NOW()
+                    """,
+                    (event_ids, auditor[:128], resolution_label, (justification_notes or None)),
+                )
+                return cur.rowcount
+    return _run(_do, default=0) or 0
 
 
 def submit_exception_triage(event_id: int, auditor: str, resolution_label: str,
@@ -10037,48 +10312,81 @@ def submit_exception_triage(event_id: int, auditor: str, resolution_label: str,
 
 
 def get_exception_summary() -> dict:
-    """Headline counts for the Triage Queue + Model Analytics tabs."""
+    """Headline counts for the Triage Queue + Model Analytics tabs. Every
+    query here excludes je_testing_sweep.py's rows (_EXCLUDE_JE_TESTING_SQL) —
+    JE Testing has its own summary (get_je_testing_summary) and must not
+    inflate these counts."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM exception_control_events ce
                     JOIN exception_model_inferences mi ON mi.event_id = ce.id
                     LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
-                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
                     """
                 )
                 pending = cur.fetchone()[0]
-                cur.execute("SELECT resolution_label, COUNT(*) FROM exception_auditor_triage GROUP BY resolution_label")
+                cur.execute(
+                    f"""
+                    SELECT tri.resolution_label, COUNT(*) FROM exception_auditor_triage tri
+                    JOIN exception_control_events ce ON ce.id = tri.event_id
+                    WHERE {_EXCLUDE_JE_TESTING_SQL}
+                    GROUP BY tri.resolution_label
+                    """
+                )
                 by_label = {r[0]: r[1] for r in cur.fetchall()}
                 cur.execute(
-                    """
+                    f"""
                     SELECT ce.system_source, COUNT(*) FROM exception_control_events ce
                     JOIN exception_model_inferences mi ON mi.event_id = ce.id
                     LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
-                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
                     GROUP BY ce.system_source
                     """
                 )
                 by_system = {r[0]: r[1] for r in cur.fetchall()}
-                cur.execute("SELECT COUNT(*) FROM exception_control_events")
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(ce.assigned_owner, '(unassigned)'), COUNT(*) FROM exception_control_events ce
+                    JOIN exception_model_inferences mi ON mi.event_id = ce.id
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
+                    GROUP BY COALESCE(ce.assigned_owner, '(unassigned)')
+                    """
+                )
+                by_owner = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(mi.risk_rating, '(unrated)'), COUNT(*) FROM exception_control_events ce
+                    JOIN exception_model_inferences mi ON mi.event_id = ce.id
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {_EXCLUDE_JE_TESTING_SQL}
+                    GROUP BY COALESCE(mi.risk_rating, '(unrated)')
+                    """
+                )
+                by_risk_rating = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute(f"SELECT COUNT(*) FROM exception_control_events ce WHERE {_EXCLUDE_JE_TESTING_SQL}")
                 total_events = cur.fetchone()[0]
                 return {
                     "pending_count": pending, "total_events": total_events,
                     "resolution_mix": by_label, "pending_by_system": by_system,
+                    "pending_by_owner": by_owner, "pending_by_risk_rating": by_risk_rating,
                 }
-    return _run(_do) or {"pending_count": 0, "total_events": 0, "resolution_mix": {}, "pending_by_system": {}}
+    return _run(_do) or {"pending_count": 0, "total_events": 0, "resolution_mix": {}, "pending_by_system": {},
+                          "pending_by_owner": {}, "pending_by_risk_rating": {}}
 
 
 def list_exception_triage_history(limit: int = 200) -> list:
     """Resolved triage decisions, most recent first — Model Analytics tab's
-    review-volume/resolution-mix trend."""
+    review-volume/resolution-mix trend. Excludes je_testing_sweep.py's rows —
+    see _EXCLUDE_JE_TESTING_SQL."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT tri.id, tri.event_id, ce.control_id, ce.system_source, ce.process,
                            tri.auditor, tri.resolution_label, tri.justification_notes, tri.reviewed_at,
                            mi.anomaly_score, mi.uncertainty_score
@@ -10088,6 +10396,7 @@ def list_exception_triage_history(limit: int = 200) -> list:
                         SELECT * FROM exception_model_inferences m WHERE m.event_id = ce.id
                         ORDER BY m.scored_at DESC LIMIT 1
                     ) mi ON TRUE
+                    WHERE {_EXCLUDE_JE_TESTING_SQL}
                     ORDER BY tri.reviewed_at DESC LIMIT %s
                     """,
                     (limit,),
@@ -10120,7 +10429,7 @@ def get_exception_score_history(system_source: str, metric: str, limit: int = 50
                     f"""
                     SELECT mi.{col} FROM exception_model_inferences mi
                     JOIN exception_control_events ce ON ce.id = mi.event_id
-                    WHERE ce.system_source = %s
+                    WHERE ce.system_source = %s AND {_EXCLUDE_JE_TESTING_SQL}
                     ORDER BY mi.scored_at ASC LIMIT %s
                     """,
                     (system_source, limit),
@@ -10130,12 +10439,44 @@ def get_exception_score_history(system_source: str, metric: str, limit: int = 50
 
 
 def list_exception_system_sources() -> list:
+    """Excludes je_testing_sweep.py's rows — see _EXCLUDE_JE_TESTING_SQL. Feeds
+    compute_exception_drift, which would otherwise compute PSI over
+    JE Testing's score distribution as if it were an Exception Management
+    system_source."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT system_source FROM exception_control_events ORDER BY 1")
+                cur.execute(f"SELECT DISTINCT system_source FROM exception_control_events ce WHERE {_EXCLUDE_JE_TESTING_SQL} ORDER BY 1")
                 return [r[0] for r in cur.fetchall()]
     return _run(_do) or []
+
+
+def escalate_stale_exceptions(stale_days: int = 14) -> int:
+    """exception_staleness_sweep.py's daily pass: flips risk_rating to 'R'
+    for any still-pending exception older than stale_days that isn't already
+    'R' — never touches requires_human_review/status, only visibility
+    ordering. Excludes je_testing_sweep.py's rows, same as every other
+    Exception-Management-only query (_EXCLUDE_JE_TESTING_SQL)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE exception_model_inferences mi
+                    SET risk_rating = 'R'
+                    FROM exception_control_events ce
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.event_id = ce.id
+                      AND mi.requires_human_review = TRUE
+                      AND tri.id IS NULL
+                      AND COALESCE(mi.risk_rating, '') != 'R'
+                      AND {_EXCLUDE_JE_TESTING_SQL}
+                      AND ce.event_timestamp < NOW() - (%s || ' days')::interval
+                    """,
+                    (stale_days,),
+                )
+                return cur.rowcount
+    return _run(_do, default=0) or 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11253,7 +11594,7 @@ def detect_recurring_exceptions(min_occurrences: int = 3, window_days: int = 30)
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT ce.control_id, ce.system_source, COUNT(*) AS occurrence_count,
                            MIN(ce.event_timestamp) AS first_occurrence_at,
                            MAX(ce.event_timestamp) AS last_occurrence_at,
@@ -11264,6 +11605,7 @@ def detect_recurring_exceptions(min_occurrences: int = 3, window_days: int = 30)
                         WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
                     ) mi ON TRUE
                     WHERE mi.requires_human_review = TRUE
+                      AND {_EXCLUDE_JE_TESTING_SQL}
                       AND ce.event_timestamp > NOW() - (%s || ' days')::interval
                       AND NOT EXISTS (
                           SELECT 1 FROM observability.management_action_plans mp
@@ -11563,6 +11905,429 @@ def get_pbc_evidence(evidence_id: int) -> Optional[dict]:
                 cols = [d[0] for d in cur.description]
                 return _pbc_evidence_row_to_dict(cols, row)
     return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Infrastructure Vulnerability & Currency Posture: asset inventory
+# (observability.infra_assets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INFRA_ASSET_COLUMNS = (
+    "id, estate_label, asset_key, connector_id, asset_type, name, environment, os_name, os_version, "
+    "software_name, software_version, ecosystem, image_digest, region, expires_at, "
+    "last_assessed_at, assessment_source, source, metadata, first_seen_at, last_seen_at, active"
+)
+_INFRA_ASSET_TS_FIELDS = ("expires_at", "last_assessed_at", "first_seen_at", "last_seen_at")
+
+
+def _infra_asset_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _INFRA_ASSET_TS_FIELDS:
+        if d.get(k) and hasattr(d[k], "isoformat"):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def upsert_infra_asset(
+    asset_key: str, asset_type: str, name: str, connector_id: Optional[int] = None,
+    estate_label: str = "default", environment: Optional[str] = None,
+    os_name: Optional[str] = None, os_version: Optional[str] = None,
+    software_name: Optional[str] = None, software_version: Optional[str] = None,
+    ecosystem: Optional[str] = None, image_digest: Optional[str] = None, region: Optional[str] = None,
+    expires_at=None, source: str = "connector", metadata: Optional[dict] = None,
+) -> Optional[dict]:
+    """Create or refresh one asset's identity/inventory fields, keyed on
+    (estate_label, connector_id, asset_key) — see idx_infra_assets_key's
+    COALESCE(connector_id,0) comment for why ingest-sourced (connector_id
+    NULL) assets still dedup correctly. Deliberately does NOT touch
+    last_assessed_at/assessment_source here — inventory discovery (an asset
+    exists, here's its version) and assessment (we actually checked it for
+    findings) are different events; conflating them would let a connector
+    that only lists assets accidentally mark them "assessed" with no real
+    check behind that claim. Call mark_infra_asset_assessed() separately
+    once a real check has run."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.infra_assets (
+                        estate_label, asset_key, connector_id, asset_type, name, environment, os_name, os_version,
+                        software_name, software_version, ecosystem, image_digest, region, expires_at,
+                        source, metadata, first_seen_at, last_seen_at, active
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,NOW(),NOW(),TRUE)
+                    ON CONFLICT (estate_label, COALESCE(connector_id, 0), asset_key) DO UPDATE SET
+                        asset_type = EXCLUDED.asset_type,
+                        name = EXCLUDED.name, environment = EXCLUDED.environment,
+                        os_name = EXCLUDED.os_name, os_version = EXCLUDED.os_version,
+                        software_name = EXCLUDED.software_name, software_version = EXCLUDED.software_version,
+                        ecosystem = EXCLUDED.ecosystem, image_digest = EXCLUDED.image_digest,
+                        region = EXCLUDED.region, expires_at = EXCLUDED.expires_at,
+                        source = EXCLUDED.source,
+                        metadata = EXCLUDED.metadata, last_seen_at = NOW(), active = TRUE
+                    RETURNING {_INFRA_ASSET_COLUMNS}
+                    """,
+                    (estate_label, asset_key, connector_id, asset_type, name, environment, os_name, os_version,
+                     software_name, software_version, ecosystem, image_digest, region, expires_at,
+                     source, Json(metadata) if metadata is not None else None),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return _infra_asset_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def mark_infra_asset_assessed(asset_key: str, assessment_source: str) -> bool:
+    """Stamps last_assessed_at = NOW() — the one function that gets to make
+    an asset stop looking "never assessed". Called by whatever actually ran
+    a real check (tls_cert_tool, osv enrichment, a future scanner), never by
+    inventory discovery alone."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.infra_assets
+                    SET last_assessed_at = NOW(), assessment_source = %s
+                    WHERE asset_key = %s
+                    """,
+                    (assessment_source, asset_key),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def list_assets_for_vuln_enrichment(limit: int = 500) -> list:
+    """Active assets with enough identity to actually query OSV against:
+    ecosystem + software_name + software_version all set. Nothing in Phase 1
+    populates ecosystem (OSV has no PostgreSQL ecosystem — see
+    version_baselines.py's docstring); this becomes non-empty once a Phase 3
+    connector (AWS Inspector, container scanning) or a manual/ingest asset
+    sets those three fields. Returning [] here is a real "nothing enrichable
+    yet", not a bug — vulnerability_sweep.py must not treat it as failure."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets
+                    WHERE active = TRUE AND ecosystem IS NOT NULL
+                      AND software_name IS NOT NULL AND software_version IS NOT NULL
+                    ORDER BY name
+                    LIMIT %s
+                    """,
+                    (min(limit, 2000),),
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_asset_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def list_infra_assets(asset_type: Optional[str] = None, unassessed_only: bool = False, limit: int = 500) -> list:
+    def _do():
+        filters, params = ["active = TRUE"], []
+        if asset_type:
+            filters.append("asset_type = %s"); params.append(asset_type)
+        if unassessed_only:
+            filters.append("last_assessed_at IS NULL")
+        where = "WHERE " + " AND ".join(filters)
+        params.append(min(limit, 2000))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets
+                    {where}
+                    ORDER BY name
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_asset_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_infra_asset(asset_key: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets WHERE asset_key = %s",
+                    (asset_key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return _infra_asset_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def list_expiring_credentials(warn_days: int = 30) -> list:
+    """poll_connectors rows with credentials_expires_at inside the warning
+    window or already past it — the credential-expiry half of Phase 1.
+    Separate from list_infra_assets/certificate rows because a connector's
+    credential isn't itself an infra_assets row; expiry_sweep.py checks
+    both this and the certificate assets below in one pass."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, connector_type, display_name, credentials_expires_at
+                    FROM observability.poll_connectors
+                    WHERE active = TRUE AND credentials_expires_at IS NOT NULL
+                      AND credentials_expires_at < NOW() + (%s || ' days')::interval
+                    ORDER BY credentials_expires_at ASC
+                    """,
+                    (warn_days,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("credentials_expires_at"):
+                        d["credentials_expires_at"] = d["credentials_expires_at"].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def list_expiring_infra_assets(warn_days: int = 30) -> list:
+    """infra_assets rows (certificates, and any future expiring asset type)
+    inside the warning window or already past it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_ASSET_COLUMNS} FROM observability.infra_assets
+                    WHERE active = TRUE AND expires_at IS NOT NULL
+                      AND expires_at < NOW() + (%s || ' days')::interval
+                    ORDER BY expires_at ASC
+                    """,
+                    (warn_days,),
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_asset_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Infrastructure Vulnerability & Currency Posture (Phase 2): vulnerability
+# register (observability.infra_vulnerabilities) + OSV.dev response cache
+# (observability.osv_cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INFRA_VULN_COLUMNS = (
+    "id, asset_id, vuln_id, aliases, source, source_ref, severity, cvss_score, title, summary, "
+    "affected_version, fixed_version, published_at, first_detected_at, last_seen_at, status, "
+    "remediated_at, remediation_basis, waiver_id, evidence_record_id, disposition_reason, disposed_by, "
+    "created_at, updated_at"
+)
+_INFRA_VULN_TS_FIELDS = ("published_at", "first_detected_at", "last_seen_at", "remediated_at", "created_at", "updated_at")
+
+
+def _infra_vuln_row_to_dict(cols: list, row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    for k in _INFRA_VULN_TS_FIELDS:
+        if d.get(k) and hasattr(d[k], "isoformat"):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def upsert_infra_vulnerability(
+    vuln_id: str, asset_id: Optional[int] = None, aliases: Optional[list] = None,
+    source: str = "osv", source_ref: Optional[str] = None, severity: str = "INFO",
+    cvss_score: Optional[float] = None, title: Optional[str] = None, summary: Optional[str] = None,
+    affected_version: Optional[str] = None, fixed_version: Optional[str] = None,
+    published_at=None, evidence_record_id: Optional[int] = None,
+) -> Optional[dict]:
+    """Create or refresh one vulnerability finding, keyed on
+    (asset_id, vuln_id, source_ref) — see idx_infra_vulns_dedup's
+    COALESCE comment. A re-detected finding never resets status/remediated_at
+    (ON CONFLICT DO UPDATE below deliberately omits both) — only
+    update_infra_vulnerability_status() gets to move a finding off 'open'.
+    A previously-remediated finding that OSV/a scanner reports again (e.g. a
+    downgrade, or the initial detection was itself wrong) simply keeps its
+    existing status/remediated_at; a human or the sweep's own
+    version-comparison must explicitly re-open it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.infra_vulnerabilities (
+                        asset_id, vuln_id, aliases, source, source_ref, severity, cvss_score,
+                        title, summary, affected_version, fixed_version, published_at, evidence_record_id
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (COALESCE(asset_id, 0), vuln_id, COALESCE(source_ref, '')) DO UPDATE SET
+                        aliases = EXCLUDED.aliases, severity = EXCLUDED.severity, cvss_score = EXCLUDED.cvss_score,
+                        title = EXCLUDED.title, summary = EXCLUDED.summary,
+                        affected_version = EXCLUDED.affected_version, fixed_version = EXCLUDED.fixed_version,
+                        published_at = EXCLUDED.published_at, evidence_record_id = EXCLUDED.evidence_record_id,
+                        last_seen_at = NOW(), updated_at = NOW()
+                    RETURNING {_INFRA_VULN_COLUMNS}
+                    """,
+                    (asset_id, vuln_id, aliases, source, source_ref, severity, cvss_score,
+                     title, summary, affected_version, fixed_version, published_at, evidence_record_id),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return _infra_vuln_row_to_dict(cols, row)
+    return _run(_do)
+
+
+def update_infra_vulnerability_status(
+    vuln_row_id: int, status: str, remediation_basis: Optional[str] = None,
+    waiver_id: Optional[int] = None, disposition_reason: Optional[str] = None,
+    disposed_by: Optional[str] = None,
+) -> bool:
+    """The only function that moves a finding off 'open' — called by
+    vulnerability_sweep.py's version-advanced detection (status='remediated',
+    remediation_basis='version_advanced') or by an analyst's disposition
+    (accepted_risk/false_positive, with a mandatory reason). remediated_at is
+    stamped only when status='remediated', never for accepted_risk/
+    false_positive — those aren't fixes, they're decisions about an open one."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.infra_vulnerabilities
+                    SET status = %s, remediation_basis = %s, waiver_id = %s,
+                        disposition_reason = %s, disposed_by = %s, updated_at = NOW(),
+                        remediated_at = CASE WHEN %s = 'remediated' THEN NOW() ELSE remediated_at END
+                    WHERE id = %s
+                    """,
+                    (status, remediation_basis, waiver_id, disposition_reason, disposed_by, status, vuln_row_id),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def list_infra_vulnerabilities(
+    status: Optional[str] = None, severity: Optional[str] = None,
+    asset_id: Optional[int] = None, source: Optional[str] = None, limit: int = 500,
+) -> list:
+    def _do():
+        filters, params = [], []
+        if status:
+            filters.append("status = %s"); params.append(status)
+        if severity:
+            filters.append("severity = %s"); params.append(severity)
+        if asset_id:
+            filters.append("asset_id = %s"); params.append(asset_id)
+        if source:
+            filters.append("source = %s"); params.append(source)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 2000))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_INFRA_VULN_COLUMNS} FROM observability.infra_vulnerabilities
+                    {where}
+                    ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+                             first_detected_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                cols = [d[0] for d in cur.description]
+                return [_infra_vuln_row_to_dict(cols, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def list_open_vulnerabilities_with_asset_version() -> list:
+    """Open vulnerabilities joined to their asset's CURRENT software_version —
+    the exact pair vulnerability_sweep.py's version-advanced remediation
+    check needs, in one query instead of N+1 per-asset lookups. Only rows
+    where both fixed_version and the asset's software_version are non-NULL
+    are returned — nothing here has ever compared strings against 'unknown'."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT v.id, v.vuln_id, v.fixed_version, a.software_version, a.asset_key
+                    FROM observability.infra_vulnerabilities v
+                    JOIN observability.infra_assets a ON a.id = v.asset_id
+                    WHERE v.status = 'open' AND v.fixed_version IS NOT NULL
+                      AND a.software_version IS NOT NULL AND a.active = TRUE
+                    """
+                )
+                cols = ["id", "vuln_id", "fixed_version", "software_version", "asset_key"]
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_vulnerability_summary() -> dict:
+    """Coverage-aware summary: open-finding counts by severity, PLUS how many
+    assets have ever been assessed vs. total — every count in this dict must
+    be read alongside that coverage fraction, never as a standalone "all
+    clear" (see the feature's honest-gaps note: this reports 'no known-open
+    findings from connected sources', not 'no vulnerabilities exist')."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT severity, COUNT(*) FROM observability.infra_vulnerabilities WHERE status = 'open' GROUP BY severity"
+                )
+                by_severity = {row[0]: row[1] for row in cur.fetchall()}
+                cur.execute("SELECT COUNT(*) FROM observability.infra_assets WHERE active = TRUE")
+                total_assets = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM observability.infra_assets WHERE active = TRUE AND last_assessed_at IS NOT NULL")
+                assessed_assets = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(*) FROM observability.infra_vulnerabilities WHERE status = 'remediated' AND remediated_at > NOW() - INTERVAL '30 days'"
+                )
+                remediated_last_30d = cur.fetchone()[0]
+                return {
+                    "open_by_severity": by_severity,
+                    "open_total": sum(by_severity.values()),
+                    "assets_total": total_assets,
+                    "assets_assessed": assessed_assets,
+                    "remediated_last_30d": remediated_last_30d,
+                }
+    return _run(_do) or {"open_by_severity": {}, "open_total": 0, "assets_total": 0, "assets_assessed": 0, "remediated_last_30d": 0}
+
+
+def get_osv_cache_entry(ecosystem: str, package_name: str, version: str, max_age_hours: int = 24) -> Optional[list]:
+    """Returns the cached vulns[] list if a fresh-enough entry exists, else
+    None — None means "go query OSV", not "no vulnerabilities" (an empty
+    list [] is itself a valid, cached "queried, found none" result)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT vulns FROM observability.osv_cache
+                    WHERE ecosystem = %s AND package_name = %s AND version = %s
+                      AND queried_at > NOW() - (%s || ' hours')::interval
+                    """,
+                    (ecosystem, package_name, version, max_age_hours),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def put_osv_cache_entry(ecosystem: str, package_name: str, version: str, vulns: list) -> None:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.osv_cache (ecosystem, package_name, version, vulns, queried_at)
+                    VALUES (%s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (ecosystem, package_name, version) DO UPDATE SET
+                        vulns = EXCLUDED.vulns, queried_at = NOW()
+                    """,
+                    (ecosystem, package_name, version, Json(vulns)),
+                )
+    _run(_do)
 
 
 def get_scm_repository_state(resource: str) -> Optional[dict]:
@@ -12423,40 +13188,51 @@ def fetch_secret_scan_results(limit: int = 50) -> list:
     return _run(_do) or []
 
 
+# Every connector_type whose adapter writes event_type='infrastructure_finding'
+# rows on every poll tick (pass or fail — see postgres_cis_tool.pull_events'
+# docstring). A single module constant rather than three separate hardcoded
+# tuples (previously one per query branch here) — a new infra connector type
+# needing to appear in the Infrastructure Posture matrix now means editing
+# this one line, not hunting three literal IN-lists that drift out of sync.
+_INFRA_MONITORING_SYSTEM_TYPES = ("postgres_cis", "railway_iaas", "aws_iaas", "aws_patch", "aws_inspector", "ot_heartbeat", "tls_cert")
+
+
 def fetch_infra_monitoring_results(resource: Optional[str] = None, limit: int = 50) -> list:
-    """Postgres CIS + Railway platform/deployment drift audit rows
-    (postgres_cis_tool.py / railway_iaas_tool.py, via connector_poller.py's
-    scheduled ticks and infrastructure_monitoring_endpoints.py's on-demand
-    'run now' — both write through the same mcp_governance._ingest_system_event
-    path into observability.system_telemetry, unlike the SCM checks above
-    which go through the UBO adjudication pipeline). Unlike SCM/pipeline
-    security, event_type='infrastructure_finding' is written on EVERY poll
-    tick regardless of pass/fail (see postgres_cis_tool.pull_events), so this
-    is a full status matrix, not violations-only. Grouped by (server_name,
-    resource) rather than server_name alone — a single Railway connector
-    covers many services, one event per service instance."""
+    """Postgres CIS + Railway platform/deployment drift + TLS certificate
+    expiry audit rows (postgres_cis_tool.py / railway_iaas_tool.py /
+    tls_cert_tool.py, via connector_poller.py's scheduled ticks and
+    infrastructure_monitoring_endpoints.py's on-demand 'run now' — both
+    write through the same mcp_governance._ingest_system_event path into
+    observability.system_telemetry, unlike the SCM checks above which go
+    through the UBO adjudication pipeline). Unlike SCM/pipeline security,
+    event_type='infrastructure_finding' is written on EVERY poll tick
+    regardless of pass/fail, so this is a full status matrix, not
+    violations-only. Grouped by (server_name, resource) rather than
+    server_name alone — a single Railway connector covers many services,
+    one event per service instance."""
     def _do():
+        placeholders = ", ".join(["%s"] * len(_INFRA_MONITORING_SYSTEM_TYPES))
+        params: list = list(_INFRA_MONITORING_SYSTEM_TYPES) + ["infrastructure_finding"]
         with _conn() as conn:
             with conn.cursor() as cur:
-                params: list = ["postgres_cis", "railway_iaas", "aws_iaas", "ot_heartbeat", "infrastructure_finding"]
                 if resource:
-                    query = """
+                    query = f"""
                         SELECT id, created_at, system_type, server_name, resource,
                                actor, action, severity, risk_flags, raw_payload
                         FROM observability.system_telemetry
-                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
+                        WHERE system_type IN ({placeholders}) AND event_type = %s
                           AND resource = %s
                         ORDER BY created_at DESC
                         LIMIT %s
                     """
                     params += [resource, min(limit, 500)]
                 else:
-                    query = """
+                    query = f"""
                         SELECT DISTINCT ON (server_name, resource)
                                id, created_at, system_type, server_name, resource,
                                actor, action, severity, risk_flags, raw_payload
                         FROM observability.system_telemetry
-                        WHERE system_type IN (%s, %s, %s, %s) AND event_type = %s
+                        WHERE system_type IN ({placeholders}) AND event_type = %s
                         ORDER BY server_name, resource, created_at DESC
                         LIMIT %s
                     """
