@@ -243,7 +243,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1
     : [];
   return (
     <div className={`stage ${statusCls}`} data-screen-label={`Stage ${num}`}>
-      <div className="stage-head" onClick={onToggle}>
+      <Clickable className="stage-head" onClick={onToggle}>
         <div className="stage-num">{num}</div>
         <div className="stage-meta">
           <div className="stage-name">{stage.name}</div>
@@ -251,7 +251,7 @@ function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1
         </div>
         {pill}
         <Icon name={isOpen ? "chev-u" : "chev-d"} size={14} className="muted"/>
-      </div>
+      </Clickable>
       {subSteps.length > 0 && (
         <div style={{padding: "8px 16px 10px 16px", borderTop: "1px solid var(--line)"}}>
           <div className="mono" style={{fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 6}}>COMPLETED STEPS</div>
@@ -498,7 +498,7 @@ function PipelinePanel({ label, children }) {
   const [open, setOpen] = React.useState(true);
   return (
     <div className="stage" style={{marginTop: 0, borderStyle: "dashed", opacity: 0.97}}>
-      <div className="stage-head" onClick={() => setOpen(o => !o)} style={{cursor: "pointer"}}>
+      <Clickable className="stage-head" onClick={() => setOpen(o => !o)} style={{cursor: "pointer"}}>
         <div className="stage-num" style={{background: "var(--acc-soft)", color: "var(--acc-ink)", border: "1px solid var(--acc-ink, var(--line))", fontSize: 9, letterSpacing: "0.04em", fontFamily: "var(--mono)", minWidth: 32, padding: "0 6px", display: "flex", alignItems: "center", justifyContent: "center"}}>
           {label.toUpperCase().slice(0, 4)}
         </div>
@@ -506,7 +506,7 @@ function PipelinePanel({ label, children }) {
           <div className="stage-name">{label}</div>
         </div>
         <Icon name={open ? "chev-u" : "chev-d"} size={14} className="muted"/>
-      </div>
+      </Clickable>
       {open && <div className="stage-body open">{children}</div>}
     </div>
   );
@@ -540,7 +540,7 @@ function HITLGate({ num, state, onApprove, onOverride }) {
         <div className="d">{desc}</div>
       </div>
       <div className="actions">
-        <button className="btn btn-sm approve" onClick={onApprove}><Icon name="check" size={11}/> Approve</button>
+        <button className="btn btn-sm btn-approve" onClick={onApprove}><Icon name="check" size={11}/> Approve</button>
         <button className="btn btn-sm" onClick={onOverride}>Override</button>
       </div>
     </div>

@@ -183,7 +183,7 @@ function CEMEvent({ ev, expanded, onToggle, onAckNotif }) {
 
   return (
     <div className={`cem-event ${ev.severity}`}>
-      <div className="cem-head" onClick={onToggle}>
+      <Clickable className="cem-head" onClick={onToggle}>
         <span className="sev">{ev.severity}</span>
         <span className="name">{ev.control}</span>
         {ev.source === "8-K Filing" && (
@@ -193,7 +193,7 @@ function CEMEvent({ ev, expanded, onToggle, onAckNotif }) {
         )}
         <span className="ts mono">{new Date(ev.ts).toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
         <Icon name={expanded ? "chev-u" : "chev-d"} size={14} className="muted"/>
-      </div>
+      </Clickable>
       {expanded && (
         <div className="cem-body">
           <div className="cem-meta">
@@ -1143,7 +1143,7 @@ function UBOAdjRow({ row, expanded, onToggle, isNew, onReview }) {
 
   return (
     <div className={`ubo-adj-row${row.requires_human_review && !reviewDone ? " needs-review" : ""}${isNew ? " ubo-adj-new" : ""}`}>
-      <div className="ubo-adj-head" onClick={onToggle}>
+      <Clickable className="ubo-adj-head" onClick={onToggle}>
         <span className="ubo-tier-badge"    style={{background:ts.bg, color:ts.ink}}>{tier}</span>
         <span className="ubo-verdict-badge" style={{background:vs.bg, color:vs.ink}}>{verdict}</span>
         {(row.source_system || "MCP_PROXY") === "GITHUB" && (
@@ -1163,10 +1163,13 @@ function UBOAdjRow({ row, expanded, onToggle, isNew, onReview }) {
           {row.adjudicated_at ? new Date(row.adjudicated_at).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : ""}
         </span>
         <Icon name={expanded ? "chev-u" : "chev-d"} size={13} className="muted"/>
-      </div>
+      </Clickable>
       {expanded && (
         <div className="ubo-adj-body">
-          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:6}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <ProvenanceChip verdict={row.final_verdict}
+              confidence={row.ensemble_confidence != null ? `${(row.ensemble_confidence * 100).toFixed(0)}%` : null}
+              reviewedByName={reviewDone ? "you (this session)" : null} />
             <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); _exportAdjudicationRecord(row); }}
               title="Download the full reasoning trail for this decision as a JSON record">
               ⬇ Export audit record
@@ -1286,7 +1289,7 @@ function UBOCouncilRow({ row, expanded, onToggle }) {
 
   return (
     <div className="ubo-adj-row">
-      <div className="ubo-adj-head" onClick={onToggle}>
+      <Clickable className="ubo-adj-head" onClick={onToggle}>
         <span className="ubo-tier-badge"    style={{background:ts.bg, color:ts.ink}}>{tier}</span>
         <span className="ubo-verdict-badge" style={{background:vs.bg, color:vs.ink}}>{verdict}</span>
         <span className="mono ubo-tool-name">{row.target_tool || "unknown"}</span>
@@ -1301,7 +1304,7 @@ function UBOCouncilRow({ row, expanded, onToggle }) {
           {row.adjudicated_at ? new Date(row.adjudicated_at).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : ""}
         </span>
         <Icon name={expanded ? "chev-u" : "chev-d"} size={13} className="muted"/>
-      </div>
+      </Clickable>
       {expanded && (
         <div className="ubo-adj-body">
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:12}}>
@@ -1635,6 +1638,10 @@ function GoldDetail({ row, adj }) {
           <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:4,
             background:vStyle.bg, color:vStyle.ink }}>{adj.final_verdict || "—"}</span>
         </div>
+        <div style={{ display:"flex", justifyContent:"center", marginTop:6 }}>
+          <ProvenanceChip verdict={adj.final_verdict}
+            confidence={adj.ensemble_confidence != null ? `${(adj.ensemble_confidence * 100).toFixed(0)}%` : null} />
+        </div>
       </div>
       <PaneSection label="Score Breakdown">
         <PaneKV k={`Base (${evType})`} v={baseW.toFixed(2)} vColor="var(--ink-2)" />
@@ -1733,7 +1740,7 @@ function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
                 const isSel    = rKey === selectedKey;
                 const ts       = r.ts ? new Date(r.ts) : null;
                 return (
-                  <div key={rKey} onClick={() => setSelectedKey(rKey)}
+                  <Clickable key={rKey} onClick={() => setSelectedKey(rKey)}
                     style={{ display:"flex", flexDirection:"column", gap:3, padding:"7px 12px",
                       cursor:"pointer", borderBottom:"1px solid var(--line)",
                       borderLeft: isSel ? "3px solid var(--amber-ink,#b45309)" : "3px solid transparent",
@@ -1768,7 +1775,7 @@ function RawFeedTab({ rows, adjudicated, loading, isPaused }) {
                         {isAdj ? "✓ ADJ" : hasFlags ? "⟳ PEND" : "OK"}
                       </span>
                     </div>
-                  </div>
+                  </Clickable>
                 );
               })}
             </div>

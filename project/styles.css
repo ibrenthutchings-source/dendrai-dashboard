@@ -392,7 +392,7 @@ a { color: inherit; text-decoration: none; }
   padding: 5px 10px;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-2);
   font-size: 12px;
 }
 .hdr-ctx-tkr {
@@ -403,7 +403,7 @@ a { color: inherit; text-decoration: none; }
 .hdr-ctx-pill {
   font-size: 10px;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--r-1);
   background: var(--acc-soft);
   color: var(--acc-ink);
   font-weight: 500;
@@ -460,7 +460,7 @@ a { color: inherit; text-decoration: none; }
   padding: 7px 14px;
   background: var(--surface);
   border: 1px solid var(--line-2);
-  border-radius: 8px;
+  border-radius: var(--r-2);
   font-size: 12px; font-weight: 500;
   color: var(--ink-2);
   transition: all .15s;
@@ -484,7 +484,7 @@ a { color: inherit; text-decoration: none; }
 /* Scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: var(--r-2); }
 ::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
 
 /* ============================================================
@@ -633,7 +633,7 @@ a { color: inherit; text-decoration: none; }
 .gov-info-card {
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-2);
   padding: 8px 10px;
 }
 .gov-info-label { font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 3px; }
@@ -900,7 +900,7 @@ a { color: inherit; text-decoration: none; }
 .pac-main-tab .pac-tab-badge {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 15px; height: 15px; padding: 0 4px; margin-left: 6px;
-  border-radius: 8px; font-size: 9px; font-weight: 700;
+  border-radius: var(--r-2); font-size: 9px; font-weight: 700;
   background: var(--amber-soft); color: var(--amber-ink);
 }
 
@@ -915,7 +915,7 @@ a { color: inherit; text-decoration: none; }
 
 .pac-doc-row {
   display: flex; flex-direction: column; gap: 3px; width: 100%;
-  padding: 8px 10px; border-radius: 8px; cursor: pointer; text-align: left;
+  padding: 8px 10px; border-radius: var(--r-2); cursor: pointer; text-align: left;
   border: 1px solid var(--line); background: var(--surface); transition: all .15s;
 }
 .pac-doc-row:hover { background: var(--hover); border-color: var(--line-strong); }
@@ -931,7 +931,7 @@ a { color: inherit; text-decoration: none; }
 .pac-doc-status {
   margin-left: auto; flex-shrink: 0;
   font-size: 8.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  padding: 1px 6px; border-radius: 8px;
+  padding: 1px 6px; border-radius: var(--r-2);
   background: var(--surface-2); color: var(--ink-3);
 }
 .pac-doc-status.in_review  { background: var(--amber-soft); color: var(--amber-ink); }
@@ -972,7 +972,7 @@ a { color: inherit; text-decoration: none; }
 }
 .pac-conv-tab.active { background: var(--surface-2); color: var(--ink); font-weight: 600; }
 .pac-conv-status, .pac-syntax-badge {
-  font-size: 8.5px; font-weight: 700; padding: 1px 6px; border-radius: 8px;
+  font-size: 8.5px; font-weight: 700; padding: 1px 6px; border-radius: var(--r-2);
   background: var(--surface-2); color: var(--ink-3); letter-spacing: .03em;
 }
 .pac-conv-status.pending_review    { background: var(--amber-soft); color: var(--amber-ink); }
@@ -1004,7 +1004,7 @@ a { color: inherit; text-decoration: none; }
   display: flex; align-items: center; gap: 8px;
 }
 .pac-hook-badge {
-  font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 8px;
+  font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: var(--r-2);
   letter-spacing: 0.05em;
 }
 .pac-hook-badge.github { background: #24292e18; color: #24292e; }
@@ -1036,7 +1036,7 @@ a { color: inherit; text-decoration: none; }
    this box has overflow:hidden, the squeezed-away rows/detail panel are
    silently clipped rather than reachable at all. flex-shrink:0 stops that. */
 .pac-flow-map {
-  border: 1px solid var(--line); border-radius: 12px;
+  border: 1px solid var(--line); border-radius: var(--r-3);
   background: var(--surface); overflow: hidden;
   flex-shrink: 0;
 }
@@ -1095,7 +1095,7 @@ a { color: inherit; text-decoration: none; }
 }
 .pac-modal {
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: 12px; padding: 24px; width: 360px;
+  border-radius: var(--r-3); padding: 24px; width: 360px;
   box-shadow: 0 16px 48px rgba(0,0,0,0.18);
 }
 .pac-modal h4 { margin: 0 0 16px; font-size: 14px; color: var(--ink); }
@@ -1126,7 +1126,7 @@ a { color: inherit; text-decoration: none; }
 .auth-card {
   width: 100%; max-width: 400px;
   background: var(--surface, #fff); border: 1px solid var(--line, #e0e0e0);
-  border-radius: 16px; padding: 36px 32px;
+  border-radius: var(--r-4); padding: 36px 32px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.08);
 }
 .auth-brand {
@@ -1139,12 +1139,12 @@ a { color: inherit; text-decoration: none; }
   margin: 0 0 22px; letter-spacing: -0.01em;
 }
 .auth-error {
-  padding: 9px 12px; border-radius: 8px;
+  padding: 9px 12px; border-radius: var(--r-2);
   background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
   color: #ef4444; font-size: 12px; line-height: 1.5;
 }
 .auth-btn-primary {
-  width: 100%; padding: 10px; border-radius: 8px; border: none; cursor: pointer;
+  width: 100%; padding: 10px; border-radius: var(--r-2); border: none; cursor: pointer;
   background: var(--acc, #6366f1); color: #fff;
   font-size: 13px; font-weight: 600; font-family: inherit;
   transition: opacity 0.15s, transform 0.1s;
@@ -1153,7 +1153,7 @@ a { color: inherit; text-decoration: none; }
 .auth-btn-primary:active:not(:disabled) { transform: scale(0.98); }
 .auth-btn-primary:disabled              { opacity: 0.5; cursor: not-allowed; }
 .auth-btn-secondary {
-  padding: 9px 16px; border-radius: 8px; cursor: pointer;
+  padding: 9px 16px; border-radius: var(--r-2); cursor: pointer;
   background: var(--surface-2, #f4f4f6); border: 1px solid var(--line, #e0e0e0);
   color: var(--ink); font-size: 12px; font-weight: 600; font-family: inherit;
   transition: background 0.15s;
@@ -1170,7 +1170,7 @@ a { color: inherit; text-decoration: none; }
 .auth-sso-grid  { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .auth-sso-btn {
   display: flex; align-items: center; justify-content: center; gap: 7px;
-  padding: 9px 12px; border-radius: 8px; text-decoration: none;
+  padding: 9px 12px; border-radius: var(--r-2); text-decoration: none;
   border: 1px solid var(--line, #e0e0e0); background: var(--surface);
   color: var(--ink); font-size: 11.5px; font-weight: 600;
   transition: background 0.15s, border-color 0.15s;

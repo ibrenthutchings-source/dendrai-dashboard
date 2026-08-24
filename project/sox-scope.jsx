@@ -40,15 +40,6 @@ const COV_COLORS = {
   Out: { label: "OUT", ink: "var(--ink-4)",      soft: "var(--surface-2, var(--surface))" },
 };
 
-function Pill({ label, ink, soft, size = 10 }) {
-  return (
-    <span className="mono" style={{
-      fontSize: size, padding: "2px 7px", borderRadius: 999,
-      background: soft, color: ink, letterSpacing: "0.05em", flexShrink: 0,
-    }}>{label}</span>
-  );
-}
-
 function Stat({ label, value, sub, ink }) {
   return (
     <div style={{flex: 1, minWidth: 80}}>
@@ -210,7 +201,7 @@ function AccountsTable({ accounts, ticker, onUpdate }) {
 
     return (
       <div style={{borderBottom: "1px solid var(--line)"}}>
-        <div
+        <Clickable
           onClick={() => setOpen(o => !o)}
           style={{display: "flex", alignItems: "center", gap: 8, padding: "7px 0", cursor: "pointer"}}>
           <span style={{width: 6, height: 6, borderRadius: "50%", background: rag.ink || "var(--ink-4)", flexShrink: 0}}/>
@@ -218,10 +209,10 @@ function AccountsTable({ accounts, ticker, onUpdate }) {
           {acc.balance_estimate && (
             <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{fmtM(acc.balance_estimate)}</span>
           )}
-          {acc.manual_override && <Pill label="MANUAL" ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}/>}
-          {acc.priority && <Pill label={acc.priority} ink={COV_COLORS[acc.priority]?.ink} soft={COV_COLORS[acc.priority]?.soft}/>}
+          {acc.manual_override && <Pill ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}>MANUAL</Pill>}
+          {acc.priority && <Pill ink={COV_COLORS[acc.priority]?.ink} soft={COV_COLORS[acc.priority]?.soft} size={10}>{acc.priority}</Pill>}
           <Icon name={open ? "chev-u" : "chev-d"} size={11} className="muted"/>
-        </div>
+        </Clickable>
         {open && (
           <div style={{paddingLeft: 14, paddingBottom: 10, fontSize: 10.5, color: "var(--ink-3)", borderLeft: "2px solid var(--line)", marginLeft: 3}}>
             <div style={{marginBottom: 4}}>{acc.rationale}</div>
@@ -264,7 +255,7 @@ function AccountsTable({ accounts, ticker, onUpdate }) {
                   </div>
                   {err && <div className="mono" style={{fontSize: 10, color: "var(--red-ink)", marginBottom: 6}}>{err}</div>}
                   <div style={{display: "flex", gap: 8}}>
-                    <button className="btn btn-sm approve" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                    <button className="btn btn-sm btn-approve" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                     <button className="btn btn-sm" onClick={() => setEditing(false)}>Cancel</button>
                   </div>
                 </div>
@@ -364,9 +355,9 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
 
     return (
       <div style={{borderBottom: "1px solid var(--line)"}}>
-        <div onClick={() => setOpen(o => !o)}
+        <Clickable onClick={() => setOpen(o => !o)}
           style={{display: "flex", alignItems: "center", gap: 8, padding: "7px 0", cursor: "pointer"}}>
-          <Pill label={cov.label || proc.coverage_level} ink={cov.ink} soft={cov.soft}/>
+          <Pill ink={cov.ink} soft={cov.soft} size={10}>{cov.label || proc.coverage_level}</Pill>
           <span style={{flex: 1, fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{proc.process_name}</span>
           {proc.estimated_exposure != null && (
             <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}
@@ -374,10 +365,10 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
               {proc.estimated_exposure_source === "derived" ? "≈ " : ""}{fmtM(proc.estimated_exposure)}
             </span>
           )}
-          {proc.manual_override && <Pill label="MANUAL" ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}/>}
+          {proc.manual_override && <Pill ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}>MANUAL</Pill>}
           {proc.always_in && <span className="mono" style={{fontSize: 9, color: "var(--acc-ink, var(--ink-3))"}}>REQUIRED</span>}
           <Icon name={open ? "chev-u" : "chev-d"} size={11} className="muted"/>
-        </div>
+        </Clickable>
         {open && (
           <div style={{paddingLeft: 14, paddingBottom: 10, fontSize: 10.5, color: "var(--ink-3)", borderLeft: "2px solid var(--line)", marginLeft: 3}}>
             <div style={{marginBottom: 4}}>{proc.description}</div>
@@ -414,7 +405,7 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
                   </div>
                   {err && <div className="mono" style={{fontSize: 10, color: "var(--red-ink)", marginBottom: 6}}>{err}</div>}
                   <div style={{display: "flex", gap: 8}}>
-                    <button className="btn btn-sm approve" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                    <button className="btn btn-sm btn-approve" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                     <button className="btn btn-sm" onClick={() => setEditing(false)}>Cancel</button>
                   </div>
                 </div>
@@ -438,7 +429,7 @@ function ProcessesTable({ processes, ticker, onUpdate }) {
           </button>
           {showOut && out.map((p, i) => (
             <div key={i} style={{display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--line)", opacity: 0.50}}>
-              <Pill label="OUT" ink="var(--ink-4)" soft="var(--surface-2, var(--surface))"/>
+              <Pill ink="var(--ink-4)" soft="var(--surface-2, var(--surface))" size={10}>OUT</Pill>
               <span style={{flex: 1, fontSize: 11, color: "var(--ink-3)"}}>{p.process_name}</span>
             </div>
           ))}
@@ -687,6 +678,7 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
   const [form, setForm] = React.useState({ system_name: "", system_type: "erp", vendor: "", significance: "medium", linked_processes: [], notes: "" });
   const [saving, setSaving] = React.useState(false);
   const [err, setErr] = React.useState(null);
+  const [confirmRemove, setConfirmRemove] = React.useState(null);
 
   const PROCESS_OPTIONS = [
     "order_to_cash", "procure_to_pay", "financial_close", "itgc",
@@ -717,7 +709,6 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
   }
 
   async function handleRemove(sys) {
-    if (!confirm(`Remove ${sys.system_name} from SOX registry?`)) return;
     await fetch(`/api/mcp/sox/systems/${encodeURIComponent(ticker)}/${sys.id}`, { method: "DELETE", credentials: "include" });
     onRemove && onRemove(sys.id);
   }
@@ -783,7 +774,7 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
             style={{width: "100%", fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)", marginBottom: 8, boxSizing: "border-box"}}/>
           {err && <div className="mono" style={{fontSize: 10, color: "var(--red-ink)", marginBottom: 6}}>{err}</div>}
           <div style={{display: "flex", gap: 8}}>
-            <button className="btn btn-sm approve" onClick={handleAdd} disabled={saving}>{saving ? "Saving…" : "Save system"}</button>
+            <button className="btn btn-sm btn-approve" onClick={handleAdd} disabled={saving}>{saving ? "Saving…" : "Save system"}</button>
             <button className="btn btn-sm" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
         </div>
@@ -798,7 +789,7 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
         return (
           <div key={i} style={{display: "flex", alignItems: "center", gap: 8, padding: "6px 0",
             borderBottom: "1px solid var(--line)", opacity: sys.decision === "out" ? 0.5 : 1}}>
-            <Pill label={dec.label || sys.decision.toUpperCase()} ink={dec.ink} soft={dec.soft}/>
+            <Pill ink={dec.ink} soft={dec.soft} size={10}>{dec.label || sys.decision.toUpperCase()}</Pill>
             <div style={{flex: 1, minWidth: 0}}>
               <span style={{fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{sys.system_name}</span>
               {sys.vendor && <span style={{fontSize: 10, color: "var(--ink-4)", marginLeft: 6}}>{sys.vendor}</span>}
@@ -809,11 +800,19 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
             <span style={{fontSize: 9.5, color: "var(--ink-4)", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{sys.rationale}</span>
             {sys.system_id && (
               <button className="btn btn-sm" style={{padding: "2px 7px", fontSize: 9, opacity: 0.7}}
-                onClick={() => handleRemove(sys)}>Remove</button>
+                onClick={() => setConfirmRemove(sys)}>Remove</button>
             )}
           </div>
         );
       })}
+      <ConfirmModal
+        open={!!confirmRemove}
+        title="Remove system?"
+        message={confirmRemove ? `Remove ${confirmRemove.system_name} from SOX registry?` : ""}
+        danger confirmLabel="Remove"
+        onCancel={() => setConfirmRemove(null)}
+        onConfirm={() => { const sys = confirmRemove; setConfirmRemove(null); handleRemove(sys); }}
+      />
     </div>
   );
 }
@@ -904,6 +903,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
   const [saving, setSaving]     = React.useState(false);
   const [editingId, setEditingId] = React.useState(null);
   const [editForm, setEditForm]   = React.useState(EMPTY_SEGMENT_FORM);
+  const [confirmDelete, setConfirmDelete] = React.useState(null);
 
   const reload = React.useCallback(async () => {
     if (!ticker || !fiscalYear) return;
@@ -964,7 +964,6 @@ function SegmentsManager({ ticker, fiscalYear }) {
   }
 
   async function handleDelete(seg) {
-    if (!confirm(`Delete segment "${seg.segment_name}"?`)) return;
     try {
       await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/${seg.id}`, { method: "DELETE", credentials: "include" });
       await reload();
@@ -991,7 +990,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
           <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 8}}>NEW SEGMENT · {fiscalYear}</div>
           <SegmentFieldGrid form={addForm} setForm={setAddForm}/>
           <div style={{display: "flex", gap: 8}}>
-            <button className="btn btn-sm approve" onClick={handleAdd} disabled={saving}>{saving ? "Saving…" : "Save segment"}</button>
+            <button className="btn btn-sm btn-approve" onClick={handleAdd} disabled={saving}>{saving ? "Saving…" : "Save segment"}</button>
             <button className="btn btn-sm" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
         </div>
@@ -1024,13 +1023,13 @@ function SegmentsManager({ ticker, fiscalYear }) {
                   <Icon name="edit" size={9}/> Edit
                 </button>
                 <button className="btn btn-sm" style={{padding: "2px 7px", fontSize: 9, opacity: 0.7}}
-                  onClick={() => handleDelete(seg)}>Delete</button>
+                  onClick={() => setConfirmDelete(seg)}>Delete</button>
               </div>
             ) : (
               <div style={{background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px"}}>
                 <SegmentFieldGrid form={editForm} setForm={setEditForm}/>
                 <div style={{display: "flex", gap: 8}}>
-                  <button className="btn btn-sm approve" onClick={() => handleSaveEdit(seg)} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                  <button className="btn btn-sm btn-approve" onClick={() => handleSaveEdit(seg)} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                   <button className="btn btn-sm" onClick={() => setEditingId(null)}>Cancel</button>
                 </div>
               </div>
@@ -1042,6 +1041,14 @@ function SegmentsManager({ ticker, fiscalYear }) {
       <div style={{marginTop: 10, fontSize: 9.5, color: "var(--ink-4)"}}>
         Saved to the database immediately. Click "Rescope" above to recompute SOX materiality coverage below with this data.
       </div>
+      <ConfirmModal
+        open={!!confirmDelete}
+        title="Delete segment?"
+        message={confirmDelete ? `Delete segment "${confirmDelete.segment_name}"?` : ""}
+        danger confirmLabel="Delete"
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={() => { const seg = confirmDelete; setConfirmDelete(null); handleDelete(seg); }}
+      />
     </div>
   );
 }
@@ -1128,10 +1135,10 @@ function SegmentCoverage({ segments, scope }) {
                       {segPerfM != null ? fmtM(segPerfM) : "—"}
                     </td>
                     <td style={{textAlign: "right", padding: "7px 10px 7px 0"}}>
-                      <Pill label={priClr.label} ink={priClr.ink} soft={priClr.soft} size={9}/>
+                      <Pill ink={priClr.ink} soft={priClr.soft} size={9}>{priClr.label}</Pill>
                     </td>
                     <td style={{textAlign: "right", padding: "7px 10px 7px 0"}}>
-                      <Pill label={decClr.label} ink={decClr.ink} soft={decClr.soft} size={9}/>
+                      <Pill ink={decClr.ink} soft={decClr.soft} size={9}>{decClr.label}</Pill>
                     </td>
                     <td style={{padding: "7px 0 7px 0", maxWidth: 260, fontSize: 10, color: "var(--ink-3)", lineHeight: 1.4}}>
                       {seg.rationale || "—"}

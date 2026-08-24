@@ -13,6 +13,9 @@ Router prefix: /je-testing
 
     GET  /je-testing/summary               Headline tiles: entries tested, findings by rule, top preparers
     GET  /je-testing/findings              Findings list (?rule_id=&system_source=&preparer=&only_pending=&limit=&offset=)
+                                            (?group=true collapses recurring rule_id/system_source pairs into
+                                            one row each — see db.list_pending_exceptions_grouped(scope="je_testing"))
+    POST /je-testing/findings/bulk-disposition   Resolve every pending finding for one rule_id/system_source at once
     POST /je-testing/findings/{id}/disposition   Record an auditor's resolution (same 4 labels as Exception Management)
 """
 from __future__ import annotations
@@ -54,11 +57,15 @@ def get_findings(
     system_source: Optional[str] = None,
     preparer: Optional[str] = None,
     only_pending: bool = False,
+    group: bool = False,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
     if not db.is_available():
         return {"rows": [], "count": 0, "total": 0, "offset": offset, "resolution_labels": _RESOLUTION_LABELS}
+    if group:
+        rows = db.list_pending_exceptions_grouped(limit=limit, scope="je_testing")
+        return {"rows": rows, "count": len(rows), "resolution_labels": _RESOLUTION_LABELS}
     rows = db.list_je_testing_findings(
         limit=limit, offset=offset, rule_id=rule_id, system_source=system_source,
         preparer=preparer, only_pending=only_pending,
@@ -68,6 +75,38 @@ def get_findings(
     )
     return {"rows": rows, "count": len(rows), "total": total, "offset": offset,
             "resolution_labels": _RESOLUTION_LABELS}
+
+
+@router.post("/findings/bulk-disposition")
+def submit_bulk_disposition(
+    body: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Resolves every currently-pending finding for one (rule_id,
+    system_source) pair in a single action — the curation lever behind the
+    grouped JE Testing view, mirroring exceptions_endpoints.py's
+    /exceptions/bulk-triage exactly (same underlying tables, same taxonomy)."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    rule_id = body.get("rule_id")
+    system_source = body.get("system_source")
+    resolution_label = body.get("resolution_label")
+    notes = body.get("justification_notes")
+    if not rule_id or not system_source:
+        raise HTTPException(status_code=422, detail="rule_id and system_source are required")
+    if resolution_label not in _RESOLUTION_LABELS:
+        raise HTTPException(status_code=422, detail=f"resolution_label must be one of {_RESOLUTION_LABELS}")
+    if resolution_label in _NOTES_REQUIRED_LABELS and not (notes or "").strip():
+        raise HTTPException(status_code=422, detail=f"justification_notes is required for {resolution_label}")
+    auditor = current_user.get("display_name") or current_user.get("username") or "unknown"
+    pending = db.list_je_testing_findings(rule_id=rule_id, system_source=system_source, only_pending=True, limit=1000)
+    event_ids = [r["event_id"] for r in pending]
+    if not event_ids:
+        raise HTTPException(status_code=404, detail=f"No pending JE findings for rule_id={rule_id}, system_source={system_source}")
+    resolved = db.bulk_submit_exception_triage(event_ids, auditor, resolution_label, notes)
+    logger.info("JE Testing: bulk-disposed %d finding(s) for %s/%s as %s by %s",
+                resolved, rule_id, system_source, resolution_label, auditor)
+    return {"rule_id": rule_id, "system_source": system_source, "resolved_count": resolved}
 
 
 @router.post("/findings/{event_id}/disposition")

@@ -25,46 +25,16 @@
    plus /model-health/drift-incidents + /model-health/baseline-reset (reused as-is).
    ============================================================ */
 
-const _EXC_RESOLUTION_LABELS = [
-  { value: "TRUE_CONTROL_FAILURE", label: "True Control Failure", tone: "bad",
-    what: "The control genuinely failed to do its job — a real finding, not noise. Requires notes." },
-  { value: "BENIGN_OPERATIONAL_NOISE", label: "Benign Operational Noise", tone: "good",
-    what: "Flagged, but on inspection this is normal business activity the scoring model was too sensitive to." },
-  { value: "APPROVED_CARVE_OUT", label: "Approved Carve-Out", tone: "neutral",
-    what: "Outside normal parameters, but already covered by a documented, approved exception. Requires notes." },
-  { value: "DATA_PIPELINE_ERROR", label: "Data Pipeline Error", tone: "warn",
-    what: "The event itself is bad data (a connector glitch, a malformed record) — not a real control signal either way." },
-];
-const _EXC_NOTES_REQUIRED = new Set(["TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"]);
-const _EXC_LABEL_META = Object.fromEntries(_EXC_RESOLUTION_LABELS.map(l => [l.value, l]));
-const _EXC_LABEL_COLOR = {
-  TRUE_CONTROL_FAILURE: "var(--red-ink)", BENIGN_OPERATIONAL_NOISE: "var(--green-ink)",
-  APPROVED_CARVE_OUT: "var(--ink-3)", DATA_PIPELINE_ERROR: "var(--amber-ink)",
-};
-
-// R/A/G — same vocabulary management_action_plans.risk_rating / risk_scores.rag_status
-// use elsewhere in this app. A genuinely separate signal from anomaly/uncertainty
-// (see exception_tool.py's module docstring) — combines severity with the
-// producing connector's own risk_tier, so it's shown as its own pill, not folded
-// into the score bars above.
-const _RISK_RATING_META = {
-  R: { label: "R — Urgent", bg: "var(--red-soft)", ink: "var(--red-ink)" },
-  A: { label: "A — Moderate", bg: "var(--amber-soft)", ink: "var(--amber-ink)" },
-  G: { label: "G — Low", bg: "var(--green-soft)", ink: "var(--green-ink)" },
-};
-
-function RiskRatingPill({ rating }) {
-  const meta = _RISK_RATING_META[rating];
-  if (!meta) return <span style={{ fontSize: 9.5, color: "var(--ink-4)" }}>Unrated</span>;
-  return (
-    <span className="mono" style={{
-      fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
-      background: meta.bg, color: meta.ink, whiteSpace: "nowrap",
-    }}>
-      {meta.label}
-    </span>
-  );
-}
+// The 4-label resolution taxonomy, risk-rating vocabulary, and grouped/
+// bulk-resolve row are shared with JE Testing (continuous-monitoring-viz.jsx)
+// via components.jsx's ATTENTION_* constants / RiskRatingPill / AttentionGroupRow
+// — see that file's comment for why (same underlying tables, same 4 root
+// causes, the "unify the queue" UX-audit recommendation). Local aliases below
+// keep this file's existing _EXC_* call sites unchanged.
+const _EXC_RESOLUTION_LABELS = ATTENTION_RESOLUTION_LABELS;
+const _EXC_NOTES_REQUIRED = ATTENTION_NOTES_REQUIRED;
+const _EXC_LABEL_META = ATTENTION_LABEL_META;
+const _EXC_LABEL_COLOR = ATTENTION_LABEL_COLOR;
 
 function _excScoreTone(score) {
   if (score >= 0.70) return "bad";
@@ -301,129 +271,6 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
   );
 }
 
-// One row per (control_id, system_source) recurring pattern instead of one
-// per event — the curation lever for a queue that's grown out of hand.
-// getFlatRows() is a memoized fetch-once accessor into the full flat pending
-// list (owned by TriageQueueTab) so expanding N groups doesn't mean N
-// separate network round trips.
-function GroupedQueueRow({ group, onResolved, onNavigate, getFlatRows }) {
-  const [expanded, setExpanded] = React.useState(false);
-  const [members, setMembers] = React.useState(null);
-  const [membersLoading, setMembersLoading] = React.useState(false);
-  const [bulkLabel, setBulkLabel] = React.useState(null);
-  const [bulkNotes, setBulkNotes] = React.useState("");
-  const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
-  const [bulkError, setBulkError] = React.useState(null);
-  const [bulkDone, setBulkDone] = React.useState(false);
-
-  async function toggleExpand() {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && members === null) {
-      setMembersLoading(true);
-      try {
-        const flat = await getFlatRows();
-        setMembers(flat.filter(r => r.control_id === group.control_id && r.system_source === group.system_source));
-      } finally {
-        setMembersLoading(false);
-      }
-    }
-  }
-
-  function handleMemberResolved(eventId) {
-    setMembers(ms => (ms || []).filter(r => r.event_id !== eventId));
-    onResolved && onResolved(eventId, group);
-  }
-
-  const needsNotes = bulkLabel && _EXC_NOTES_REQUIRED.has(bulkLabel);
-  const canBulkSubmit = bulkLabel && (!needsNotes || bulkNotes.trim().length > 0) && !bulkSubmitting;
-
-  async function handleBulkSubmit() {
-    setBulkSubmitting(true);
-    setBulkError(null);
-    try {
-      await window.MCP.exceptionsBulkTriage(group.control_id, group.system_source, bulkLabel, bulkNotes);
-      setBulkDone(true);
-      onResolved && onResolved(null, group);
-    } catch (e) {
-      setBulkError(e.message || String(e));
-    } finally {
-      setBulkSubmitting(false);
-    }
-  }
-
-  if (bulkDone) return null;
-
-  return (
-    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px", marginBottom: 8, background: "var(--surface)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, cursor: "pointer" }}
-        onClick={toggleExpand}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            {group.control_id}
-            <span style={{ fontWeight: 400, color: "var(--ink-4)" }}>· {group.system_source}</span>
-            <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "var(--surface-2)", color: "var(--ink-2)" }}>
-              ×{group.occurrence_count}
-            </span>
-            {group.has_open_map && (
-              <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "var(--acc-soft)", color: "var(--acc-ink)" }}
-                onClick={e => { e.stopPropagation(); onNavigate && onNavigate("continuousmonitoring"); }}
-                title="Already tracked by a Management Action Plan">
-                Tracked by {group.map_ref}
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 2 }}>
-            {group.owner ? `owner: ${group.owner} · ` : ""}
-            first seen {group.first_seen_at ? new Date(group.first_seen_at).toLocaleDateString() : "—"}
-            {" · "}last seen {group.last_seen_at ? new Date(group.last_seen_at).toLocaleString() : "—"}
-          </div>
-        </div>
-        <RiskRatingPill rating={group.worst_risk_rating} />
-      </div>
-
-      {expanded && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
-          {group.occurrence_count > 1 && (
-            <div style={{ marginBottom: 10, padding: "8px 10px", background: "var(--surface-2)", borderRadius: 5 }}>
-              <div className="kicker" style={{ fontSize: 9.5, marginBottom: 6 }}>
-                Resolve all {group.occurrence_count} as one decision
-              </div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-                {_EXC_RESOLUTION_LABELS.map(l => (
-                  <button key={l.value} type="button" onClick={() => setBulkLabel(l.value)} title={l.what}
-                    style={{
-                      fontSize: 10.5, padding: "5px 10px", borderRadius: 5, cursor: "pointer",
-                      border: l.value === bulkLabel ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line)",
-                      background: l.value === bulkLabel ? "var(--acc,#2563eb)" : "transparent",
-                      color: l.value === bulkLabel ? "#fff" : "var(--ink-2)",
-                      fontWeight: l.value === bulkLabel ? 600 : 400,
-                    }}>
-                    {l.label}
-                  </button>
-                ))}
-              </div>
-              {needsNotes && (
-                <textarea className="code-input" rows={2} placeholder="Justification notes (required for this resolution)…"
-                  value={bulkNotes} onChange={e => setBulkNotes(e.target.value)}
-                  style={{ width: "100%", fontSize: 11, marginBottom: 8, resize: "vertical" }} />
-              )}
-              {bulkError && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 8 }}>{bulkError}</div>}
-              <button className="btn btn-acc btn-sm" disabled={!canBulkSubmit} onClick={handleBulkSubmit}>
-                {bulkSubmitting ? "Resolving…" : `Resolve all ${group.occurrence_count} as ${bulkLabel ? _EXC_LABEL_META[bulkLabel].label : "…"}`}
-              </button>
-            </div>
-          )}
-          <div className="kicker" style={{ fontSize: 9.5, marginBottom: 6 }}>Individual events</div>
-          {membersLoading ? <Empty>Loading…</Empty> : (members || []).map(row => (
-            <TriageQueueRow key={row.event_id} row={row} onResolved={handleMemberResolved} onNavigate={onNavigate} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function TriageQueueTab({ onResolved, onNavigate }) {
   const [grouped, setGrouped] = React.useState(true);
   const [rows, setRows] = React.useState([]);
@@ -513,8 +360,17 @@ function TriageQueueTab({ onResolved, onNavigate }) {
         </Empty>
       ) : grouped ? (
         rows.map(group => (
-          <GroupedQueueRow key={`${group.control_id}::${group.system_source}`} group={group}
-            onResolved={handleGroupResolved} onNavigate={onNavigate} getFlatRows={getFlatRows} />
+          <AttentionGroupRow key={`${group.control_id}::${group.system_source}`} group={group}
+            onResolved={handleGroupResolved} onNavigate={onNavigate}
+            getMembers={async g => {
+              const flat = await getFlatRows();
+              return flat.filter(r => r.control_id === g.control_id && r.system_source === g.system_source);
+            }}
+            renderMember={(row, onMemberResolved) => (
+              <TriageQueueRow key={row.event_id} row={row} onResolved={onMemberResolved} onNavigate={onNavigate} />
+            )}
+            onBulkResolve={(g, label, notes) => window.MCP.exceptionsBulkTriage(g.control_id, g.system_source, label, notes)}
+            resolveAllLabel="event" />
         ))
       ) : (
         rows.map(row => <TriageQueueRow key={row.event_id} row={row} onResolved={handleResolved} onNavigate={onNavigate} />)

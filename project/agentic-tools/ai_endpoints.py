@@ -10,6 +10,7 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
 
     POST /ai/gate1/recommend     #2  per-risk HITL disposition drafts
     POST /ai/gate2/recommend     #2  per-objective scope drafts
+    POST /ai/sox/recommend       #2  SOX Gate S1/S2 materiality/account/process drafts
     POST /ai/approval/recommend  #2b manager review-assist for a submitted Approval Inbox item
     POST /ai/pac/draft-rego      #1b draft a Rego module from a policy narrative
     POST /ai/narrative-analysis  #3  Item 1A / proxy narrative extraction
@@ -398,6 +399,114 @@ def gate2_recommend(req: Gate2Request, current_user: dict = Depends(get_current_
         "gate2_recommendation", result,
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="medium",
         summary=f"{len(result.get('recommendations', []))} objective scopes",
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #2 — AI-assisted SOX HITL (Gate S1 materiality/account, Gate S2 process)
+#
+# Backfills the one capability gap the UX audit found between Gate 1/2 and
+# SOX HITL: identical Approve/Adjust-with-manager-routing structure (same
+# approval_tasks state machine, same >=30-char rationale rule), but SOX's
+# three Adjust modals (sox-hitl.jsx) never got a "Suggest with AI" button.
+# One endpoint, dispatched by `kind`, rather than three near-identical ones —
+# the three SOX decisions are different enough in shape (a materiality basis
+# is a %, an account is in/out + priority, a process is a P1/P2/Out level)
+# to need their own schema, but identical enough in spirit (approve the
+# computed value or adjust it with a grounded rationale) to share one system
+# prompt and one endpoint.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SOX_SYSTEM = """You are a senior internal-audit reviewer assisting at the SOX ICFR \
+Gate S1/S2 human review stage — the SOX equivalent of Gate 1/2 for the enterprise risk \
+register. You will be asked to review exactly one of three SOX scoping decisions:
+
+- "materiality": the computed planning/performance materiality basis, expressed as a \
+percentage of pre-tax income (planning) and of planning materiality (performance).
+- "account": whether a significant account should be in-scope for SOX testing, and at \
+what priority (P1 = highest, P2 = standard) if so.
+- "process": a business process's SOX coverage level — P1 (full walkthrough + testing), \
+P2 (limited procedures), or Out (not in scope).
+
+Recommend "approve" when the computed/current value is well-supported by the evidence, \
+or "adjust" with concrete suggested values when the evidence warrants a different call. \
+Ground every recommendation in the supplied evidence (balances, prior-year findings, \
+process risk indicators) — never invent numbers. Keep the rationale to 1-3 sentences; it \
+is captured verbatim into the audit trail and routed to the preparer's manager for review."""
+
+_SOX_SCHEMAS = {
+    "materiality": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "recommendation": {"type": "string", "enum": ["approve", "adjust"]},
+            "suggested_materiality_pct": {"type": "number"},
+            "suggested_performance_pct": {"type": "number"},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "rationale": {"type": "string"},
+        },
+        "required": ["recommendation", "suggested_materiality_pct", "suggested_performance_pct",
+                     "confidence", "rationale"],
+    },
+    "account": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "recommendation": {"type": "string", "enum": ["approve", "adjust"]},
+            "suggested_in_scope": {"type": "boolean"},
+            "suggested_priority": {"type": "string", "enum": ["P1", "P2"]},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "rationale": {"type": "string"},
+        },
+        "required": ["recommendation", "suggested_in_scope", "suggested_priority",
+                     "confidence", "rationale"],
+    },
+    "process": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "recommendation": {"type": "string", "enum": ["approve", "adjust"]},
+            "suggested_coverage_level": {"type": "string", "enum": ["P1", "P2", "Out"]},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "rationale": {"type": "string"},
+        },
+        "required": ["recommendation", "suggested_coverage_level", "confidence", "rationale"],
+    },
+}
+
+
+class SoxRecommendRequest(BaseModel):
+    ticker: str
+    run_id: Optional[int] = None
+    kind: str  # "materiality" | "account" | "process"
+    item: Dict[str, Any] = {}
+    context: Dict[str, Any] = {}
+
+
+@router.post("/ai/sox/recommend")
+def sox_recommend(req: SoxRecommendRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    schema = _SOX_SCHEMAS.get(req.kind)
+    if schema is None:
+        raise HTTPException(status_code=422, detail=f"kind must be one of {list(_SOX_SCHEMAS)}")
+    user = (
+        f"Company: {req.ticker}\n"
+        f"Decision type: {req.kind}\n\n"
+        f"Item under review:\n{json.dumps(req.item, indent=2, default=str)}\n\n"
+        f"Available evidence:\n{json.dumps(req.context, indent=2, default=str)[:24_000]}\n\n"
+        f"Return a {req.kind} recommendation."
+    )
+    try:
+        result = claude_client.complete_json(
+            _SOX_SYSTEM, user, schema, label=f"sox_{req.kind}",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=2000,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    db.save_ai_analysis(
+        f"sox_{req.kind}_recommendation", result,
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="medium",
+        summary=f"SOX {req.kind}: {result.get('recommendation', '?')}",
     )
     return result
 

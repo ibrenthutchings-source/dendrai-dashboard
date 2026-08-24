@@ -366,6 +366,7 @@ function DriftIncidentsPanel({ refreshToken }) {
   const [loading, setLoading] = React.useState(true);
   const [savingId, setSavingId] = React.useState(null);
   const [showResolved, setShowResolved] = React.useState(false);
+  const [confirmResetMetric, setConfirmResetMetric] = React.useState(null);
 
   const load = React.useCallback(() => {
     return fetch("/api/mcp/model-health/drift-incidents", { credentials: "include" })
@@ -394,7 +395,6 @@ function DriftIncidentsPanel({ refreshToken }) {
   }
 
   async function handleResetBaseline(metricKey) {
-    if (!window.confirm(`Reset the baseline for "${metricKey}"? Future drift checks will stop comparing against data from before now.`)) return;
     try {
       await fetch("/api/mcp/model-health/baseline-reset", {
         method: "POST", credentials: "include",
@@ -431,9 +431,17 @@ function DriftIncidentsPanel({ refreshToken }) {
         <Empty>{incidents.length ? "No open incidents — everything's resolved." : "No drift ever detected."}</Empty>
       ) : (
         visible.map(inc => (
-          <DriftIncidentRow key={inc.id} incident={inc} onUpdate={handleUpdate} onResetBaseline={handleResetBaseline} saving={savingId === inc.id} />
+          <DriftIncidentRow key={inc.id} incident={inc} onUpdate={handleUpdate} onResetBaseline={setConfirmResetMetric} saving={savingId === inc.id} />
         ))
       )}
+      <ConfirmModal
+        open={!!confirmResetMetric}
+        title="Reset baseline?"
+        message={`Reset the baseline for "${confirmResetMetric}"? Future drift checks will stop comparing against data from before now.`}
+        danger confirmLabel="Reset"
+        onCancel={() => setConfirmResetMetric(null)}
+        onConfirm={() => { const k = confirmResetMetric; setConfirmResetMetric(null); handleResetBaseline(k); }}
+      />
     </div>
   );
 }

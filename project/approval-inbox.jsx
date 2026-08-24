@@ -241,11 +241,13 @@ function InboxItem({ item, onDecide }) {
             <PrDiffPreview diff={item.adjustments?._diff} filePath={item.adjustments?.file_path} />
           )}
           {item.ai_suggested && (
-            <div className="mono" style={{ fontSize: 10, marginTop: 8, color: item.ai_accepted ? "var(--green-ink)" : "var(--amber-ink)" }}>
-              <Icon name="spark" size={10} />{" "}
-              {item.ai_accepted
-                ? "Preparer kept the AI's suggested values as-is"
-                : "Preparer adjusted the AI's suggestion before submitting"}
+            <div className="mono" style={{ fontSize: 10, marginTop: 8, color: item.ai_accepted ? "var(--green-ink)" : "var(--amber-ink)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span><Icon name="spark" size={10} />{" "}
+                {item.ai_accepted
+                  ? "Preparer kept the AI's suggested values as-is"
+                  : "Preparer adjusted the AI's suggestion before submitting"}
+              </span>
+              <ProvenanceChip verdict={item.ai_accepted ? "accepted" : "adjusted"} />
             </div>
           )}
 
@@ -267,8 +269,9 @@ function InboxItem({ item, onDecide }) {
               </div>
             )}
             {aiState.reco && (
-              <div className="mono" style={{ fontSize: 10.5, color: "var(--acc-ink)", marginBottom: 6 }}>
-                AI recommends: <b>{aiState.reco.recommendation}</b> ({aiState.reco.confidence} confidence) — comment pre-filled below, edit freely.
+              <div className="mono" style={{ fontSize: 10.5, color: "var(--acc-ink)", marginBottom: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span>AI recommends: <b>{aiState.reco.recommendation}</b> — comment pre-filled below, edit freely.</span>
+                <ProvenanceChip verdict={aiState.reco.recommendation} confidence={aiState.reco.confidence} />
               </div>
             )}
             <textarea className="fi-ta" value={comment} onChange={e => setComment(e.target.value)}
@@ -278,7 +281,7 @@ function InboxItem({ item, onDecide }) {
           {err && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 8 }}>{err}</div>}
 
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button className="btn btn-sm approve" disabled={busy} onClick={() => decide("approved")}>
+            <button className="btn btn-sm btn-approve" disabled={busy} onClick={() => decide("approved")}>
               <Icon name="check" size={11} /> Approve
             </button>
             <button className="btn btn-sm" disabled={busy} onClick={() => decide("rejected")}
@@ -507,11 +510,14 @@ function AiNarrativeReviewItem({ item, onDecide }) {
 }
 
 function ApprovalInboxScreen() {
+  const LiveBadge = window.LiveBadge;
   const [items, setItems] = React.useState([]);
   const [telemetryItems, setTelemetryItems] = React.useState([]);
   const [aiReviewItems, setAiReviewItems] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
+  const [lastRefresh, setLastRefresh] = React.useState(null);
+  const [isPaused, setIsPaused] = React.useState(false);
 
   const reload = React.useCallback(async () => {
     setLoading(true); setError(null);
@@ -529,6 +535,7 @@ function ApprovalInboxScreen() {
       // this screen.
       setTelemetryItems(telRes.ok ? (await telRes.json()).rows || [] : []);
       setAiReviewItems(aiRes.ok ? (await aiRes.json()).items || [] : []);
+      setLastRefresh(new Date());
     } catch (e) {
       setError(e.message);
     } finally {
@@ -536,7 +543,12 @@ function ApprovalInboxScreen() {
     }
   }, []);
 
-  React.useEffect(() => { reload(); }, [reload]);
+  React.useEffect(() => {
+    reload();
+    if (isPaused) return;
+    const id = setInterval(reload, 5000);
+    return () => clearInterval(id);
+  }, [reload, isPaused]);
 
   async function handleDecide(taskId, decision, comment) {
     const res = await fetch("/approvals/review", {
@@ -548,13 +560,22 @@ function ApprovalInboxScreen() {
     setItems(prev => prev.filter(i => i.id !== taskId));
   }
 
+  // Telemetry and AI-narrative reviews are broadcast to every manager's inbox
+  // at once — first to review wins, so a failed decide here is very often
+  // "someone else already resolved this," not a real error. There's nowhere
+  // for that fact to surface without a toast, and no reason to make the user
+  // wait for their next manual refresh to find out.
   async function handleDecideTelemetry(rowId, verdict, notes) {
     const res = await fetch(`${window.MCP_API_BASE || "/api/mcp"}/observability/telemetry/adjudicated/${rowId}/review`, {
       method: "PUT", credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ human_verdict: verdict, notes }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      window.showToast?.("This item may have already been resolved by someone else — refreshing the queue.", { tone: "warn" });
+      reload();
+      throw new Error(await res.text());
+    }
     // The backend clears requires_human_review on the shared row — this just
     // drops it from the current view immediately rather than waiting on the
     // next reload; every other user's inbox loses it on their next reload.
@@ -567,7 +588,11 @@ function ApprovalInboxScreen() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ note }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      window.showToast?.("This item may have already been resolved by someone else — refreshing the queue.", { tone: "warn" });
+      reload();
+      throw new Error(await res.text());
+    }
     setAiReviewItems(prev => prev.filter(i => i.id !== analysisId));
   }
 
@@ -586,9 +611,10 @@ function ApprovalInboxScreen() {
             and AI narrative reviews are broadcast to every user — whoever reviews one first resolves it for everyone.
           </div>
         </div>
-        <button className="btn btn-sm" onClick={reload} disabled={loading}>
-          <Icon name="reset" size={11} /> Refresh
-        </button>
+        {LiveBadge && (
+          <LiveBadge lastRefresh={lastRefresh} isPaused={isPaused}
+            onToggle={() => setIsPaused(p => !p)} intervalLabel="5s" />
+        )}
       </div>
 
       {error && (

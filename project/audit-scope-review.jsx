@@ -492,8 +492,9 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
           </div>
         )}
         {aiState.reco && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
-            AI recommends: <b>{aiState.reco.recommendation}</b> — fields pre-filled below, edit freely.
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap"}}>
+            <span>AI recommends: <b>{aiState.reco.recommendation}</b> — fields pre-filled below, edit freely.</span>
+            <ProvenanceChip verdict={aiState.reco.recommendation} confidence={aiState.reco.confidence} />
           </div>
         )}
         <div className="modal-body">

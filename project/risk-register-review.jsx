@@ -912,6 +912,8 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   const [fwCreate, setFwCreate]       = useState(null); // { key, fw }
   const [newCtrlDraft, setNewCtrlDraft] = useState({ ref: "", name: "", framework: "", desc: "", pacControlId: "" });
   const [createErr, setCreateErr]     = useState("");
+  // Pending shared-control removal awaiting ConfirmModal: { message, run }
+  const [confirmRemoveShared, setConfirmRemoveShared] = useState(null);
 
   // ── Spreadsheet-style sort / collapse / filter ─────────────────────────────
   const [sortCol, setSortCol]         = useState(null);   // null (default domain grouping) | "domain" | "risk" | a framework name
@@ -1572,6 +1574,14 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                   <button
                                     title={isNativeFw ? "Remove control" : "Shared control — removing it here removes it from every framework column showing it"}
                                     onClick={() => {
+                                      const isAuto = cs.autoMapped.includes(ref);
+                                      const doRemove = () => {
+                                        onRemoveControl(key, ref, isAuto);
+                                        // onRemoveControl only updates local state — without an explicit
+                                        // save it silently reverts on the next refresh/reload, which is
+                                        // exactly the "deleted framework comes back" bug this fixes.
+                                        onSaveRow(key, state, allRefs.filter(r => r !== ref));
+                                      };
                                       // This control isn't native to this framework column — it's an
                                       // Internal/unspecified-framework control shown here only because
                                       // it has no single "home" column (see fwRefs filter above), so
@@ -1579,15 +1589,14 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                       // Removing it always affects every column — that's unavoidable
                                       // given the data model — so require an explicit confirmation
                                       // instead of either silently cascading or being unremovable here.
-                                      if (!isNativeFw && !window.confirm(
-                                        `"${ctrl?.name || ref}" has no single framework — it's shown in every column because it's one shared control assignment. Removing it here removes it from ALL frameworks on this row, not just ${fw}. Continue?`
-                                      )) return;
-                                      const isAuto = cs.autoMapped.includes(ref);
-                                      onRemoveControl(key, ref, isAuto);
-                                      // onRemoveControl only updates local state — without an explicit
-                                      // save it silently reverts on the next refresh/reload, which is
-                                      // exactly the "deleted framework comes back" bug this fixes.
-                                      onSaveRow(key, state, allRefs.filter(r => r !== ref));
+                                      if (!isNativeFw) {
+                                        setConfirmRemoveShared({
+                                          message: `"${ctrl?.name || ref}" has no single framework — it's shown in every column because it's one shared control assignment. Removing it here removes it from ALL frameworks on this row, not just ${fw}.`,
+                                          run: doRemove,
+                                        });
+                                        return;
+                                      }
+                                      doRemove();
                                     }}
                                     style={{
                                       flexShrink: 0, fontSize: 13, padding: "0 5px", border: "none",
@@ -1764,6 +1773,15 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
         </table>
       </div>
       <StickyHScrollBar targetRef={scrollWrapRef} contentWidth={matrixMinWidth} />
+
+      <ConfirmModal
+        open={!!confirmRemoveShared}
+        title="Remove shared control?"
+        message={confirmRemoveShared?.message}
+        danger confirmLabel="Remove"
+        onCancel={() => setConfirmRemoveShared(null)}
+        onConfirm={() => { const action = confirmRemoveShared; setConfirmRemoveShared(null); action?.run(); }}
+      />
     </div>
   );
 }
@@ -2005,6 +2023,8 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   const [matrixCfg, setMatrixCfg] = useState({ matrix: _DEFAULT_MATRIX_FRAMEWORKS, preset: _DEFAULT_PRESET_FRAMEWORKS, hidden: [] });
   // controlsKey: incremented after DB load to force re-renders that read MASTER_CONTROLS
   const [controlsKey, setControlsKey] = useState(0);
+  // Pending framework-column removal awaiting ConfirmModal: { fw, message, run, requireTypedConfirmation }
+  const [confirmFrameworkAction, setConfirmFrameworkAction] = useState(null);
 
   // ── Discovery state ──────────────────────────────────────────────────────
   const [fwSearch, setFwSearch]           = useState("");
@@ -3213,16 +3233,8 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     } catch (_) {}
   }
 
-  async function handleRemoveFramework(fw) {
+  async function _doRemoveFramework(fw) {
     const affected = _findFrameworkControlRefs(fw);
-    const riskCount = new Set(affected.map(a => a.key)).size;
-    const msg = affected.length
-      ? `Remove "${fw}" from the Framework Matrix? This will also unassign ` +
-        `${affected.length} control${affected.length !== 1 ? "s" : ""} tagged to it from ` +
-        `${riskCount} risk${riskCount !== 1 ? "s" : ""} — the control${affected.length !== 1 ? "s" : ""} ` +
-        `will stay in the controls library, just no longer linked to those risks. This cannot be undone from this screen.`
-      : `Remove "${fw}" from the Framework Matrix?`;
-    if (!window.confirm(msg)) return;
 
     const nextMatrix = matrixCfg.matrix.filter(f => f !== fw);
     const nextPreset = matrixCfg.preset.filter(f => f !== fw);
@@ -3247,31 +3259,50 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     await handleRefresh();
   }
 
+  function handleRemoveFramework(fw) {
+    const affected = _findFrameworkControlRefs(fw);
+    const riskCount = new Set(affected.map(a => a.key)).size;
+    const message = affected.length
+      ? `Remove "${fw}" from the Framework Matrix? This will also unassign ` +
+        `${affected.length} control${affected.length !== 1 ? "s" : ""} tagged to it from ` +
+        `${riskCount} risk${riskCount !== 1 ? "s" : ""} — the control${affected.length !== 1 ? "s" : ""} ` +
+        `will stay in the controls library, just no longer linked to those risks. This cannot be undone from this screen.`
+      : `Remove "${fw}" from the Framework Matrix?`;
+    setConfirmFrameworkAction({
+      fw, message, run: () => _doRemoveFramework(fw),
+      // Only the cascading case (controls actually affected) needs the typed
+      // confirmation gate — an empty column is a reversible display toggle.
+      requireTypedConfirmation: affected.length ? fw : null,
+    });
+  }
+
   // Removing an "extra" (not-in-config) framework column has no config to
   // edit — it only exists because a real control tagged with that framework
   // is still assigned to a risk somewhere on the register. The only way to
   // actually make the column go away is to unassign those controls, so this
   // is a real, explicit, confirmed data change — not a display toggle.
-  async function handlePurgeExtraFramework(fw) {
+  async function _doPurgeExtraFramework(fw) {
     const affected = _findFrameworkControlRefs(fw);
-    if (affected.length === 0) return;
-    const riskCount = new Set(affected.map(a => a.key)).size;
-    const ok = window.confirm(
-      `"${fw}" isn't part of the configured Framework Matrix — it's only shown because ` +
-      `${affected.length} control${affected.length !== 1 ? "s are" : " is"} still assigned to it across ` +
-      `${riskCount} risk${riskCount !== 1 ? "s" : ""}. Removing this column will unassign ` +
-      `${affected.length === 1 ? "that control" : "those controls"} from every risk shown here — the control` +
-      `${affected.length !== 1 ? "s" : ""} will stay in the controls library, just no longer linked to those risks. ` +
-      `This cannot be undone from this screen. Continue?`
-    );
-    if (!ok) return;
-
     await _unassignFrameworkControls(affected);
     await _hideFramework(fw);
 
     // Re-fetch from the DB so the matrix reflects what actually persisted
     // across every affected row, not just the optimistic local removals.
     await handleRefresh();
+  }
+
+  function handlePurgeExtraFramework(fw) {
+    const affected = _findFrameworkControlRefs(fw);
+    if (affected.length === 0) return;
+    const riskCount = new Set(affected.map(a => a.key)).size;
+    const message =
+      `"${fw}" isn't part of the configured Framework Matrix — it's only shown because ` +
+      `${affected.length} control${affected.length !== 1 ? "s are" : " is"} still assigned to it across ` +
+      `${riskCount} risk${riskCount !== 1 ? "s" : ""}. Removing this column will unassign ` +
+      `${affected.length === 1 ? "that control" : "those controls"} from every risk shown here — the control` +
+      `${affected.length !== 1 ? "s" : ""} will stay in the controls library, just no longer linked to those risks. ` +
+      `This cannot be undone from this screen.`;
+    setConfirmFrameworkAction({ fw, message, run: () => _doPurgeExtraFramework(fw), requireTypedConfirmation: fw });
   }
 
   return (
@@ -3757,6 +3788,16 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           onDownload={handleDownload}
         />
       )}
+
+      <ConfirmModal
+        open={!!confirmFrameworkAction}
+        title={confirmFrameworkAction ? `Remove "${confirmFrameworkAction.fw}"?` : ""}
+        message={confirmFrameworkAction?.message}
+        danger confirmLabel="Remove"
+        requireTypedConfirmation={confirmFrameworkAction?.requireTypedConfirmation}
+        onCancel={() => setConfirmFrameworkAction(null)}
+        onConfirm={() => { const action = confirmFrameworkAction; setConfirmFrameworkAction(null); action?.run(); }}
+      />
     </div>
   );
 }

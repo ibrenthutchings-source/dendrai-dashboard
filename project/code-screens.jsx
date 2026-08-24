@@ -1073,8 +1073,9 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
     }
   }
 
+  const [confirmDeleteDocId, setConfirmDeleteDocId] = useState(null);
+
   async function handleDeleteDoc(docId) {
-    if (!window.confirm("Delete this policy document and its conversion drafts? Any module already published from it stays live.")) return;
     try {
       const r = await fetch(`/api/pac/policy-docs/${docId}`, { method:"DELETE", headers:_codeAuthHeaders() });
       if (!r.ok) { setPdMsg({ kind:"err", msg:`Delete failed (${r.status})` }); return; }
@@ -1615,7 +1616,7 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
                   <button className="btn btn-sm btn-acc" onClick={() => handleConvertDoc(docDetail.id)} disabled={converting}>
                     <Icon name="spark" size={11}/> {converting ? "Converting…" : (docDetail.conversions?.length ? "Re-convert" : "Convert to Rego")}
                   </button>
-                  <button className="btn btn-sm" onClick={() => handleDeleteDoc(docDetail.id)}>Delete</button>
+                  <button className="btn btn-sm" onClick={() => setConfirmDeleteDocId(docDetail.id)}>Delete</button>
                 </div>
 
                 <div className="pac-hook-input-row" style={{ padding:"0 16px 8px" }}>
@@ -2221,6 +2222,15 @@ function PolicyAsCodeScreen({ events, maps, risks, appetiteThreshold = 7.5, init
         </div>
         {appErr && <div className="pac-modal-err">{appErr}</div>}
       </Modal>
+
+      <ConfirmModal
+        open={!!confirmDeleteDocId}
+        title="Delete policy document?"
+        message="Delete this policy document and its conversion drafts? Any module already published from it stays live."
+        danger confirmLabel="Delete"
+        onCancel={() => setConfirmDeleteDocId(null)}
+        onConfirm={() => { const id = confirmDeleteDocId; setConfirmDeleteDocId(null); handleDeleteDoc(id); }}
+      />
     </div>
   );
 }
