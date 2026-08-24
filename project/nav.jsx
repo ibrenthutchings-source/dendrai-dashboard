@@ -130,7 +130,15 @@ const WORKFLOW_STAGE_LABELS = ["Risk Intelligence", "Scenario Intelligence", "Au
 // workflow stages as a clickable stepper, plus a Stage › Screen breadcrumb.
 // Always visible regardless of nav expand/collapse state. Screens outside
 // the four stages (Setup) resolve to a breadcrumb with no stage highlighted.
-function WorkflowStrip({ activeScreen, activeGovTab, onNavigate }) {
+// stageCounts: { [stageLabel]: number } — a live "does this stage need me
+// right now" badge, derived from data app.jsx already polls (the same
+// gate/telemetry sub-counts behind the Approval Inbox nav badge and
+// NextActionRail), not a new endpoint. Only Risk Intelligence (gate
+// approvals) and Monitoring Intelligence (UBO™ telemetry human-review) have
+// an existing live count to show — Scenario/Automation/Board Intelligence
+// have no equivalent signal in app.jsx's state today, so they render as
+// plain uncounted stage buttons rather than a fabricated always-zero badge.
+function WorkflowStrip({ activeScreen, activeGovTab, onNavigate, stageCounts = {} }) {
   const { sectionLabel, itemLabel } = findNavLocation(activeScreen, activeGovTab);
   const activeStageIdx = WORKFLOW_STAGE_LABELS.indexOf(sectionLabel);
 
@@ -147,11 +155,14 @@ function WorkflowStrip({ activeScreen, activeGovTab, onNavigate }) {
           const cls = "wf-step"
             + (i === activeStageIdx ? " active" : "")
             + (activeStageIdx >= 0 && i < activeStageIdx ? " past" : "");
+          const count = stageCounts[label] || 0;
           return (
             <React.Fragment key={label}>
-              <button type="button" className={cls} onClick={() => goToStage(label)} title={label}>
+              <button type="button" className={cls} onClick={() => goToStage(label)}
+                title={count > 0 ? `${label} — ${count} item${count !== 1 ? "s" : ""} need review` : label}>
                 <span className="wf-step-dot" />
                 <span className="wf-step-label">{label}</span>
+                {count > 0 && <span className="wf-step-count">{count}</span>}
               </button>
               {i < WORKFLOW_STAGE_LABELS.length - 1 && (
                 <span className="wf-step-sep"><Icon name="chev-r" size={10}/></span>

@@ -208,6 +208,10 @@ function App() {
   // ---- Config persistence (DB primary, localStorage fallback) ----
   const [lastSaved, setLastSaved] = useState(null);
   const cfgLoadedRef = useRef(false);
+  // Toast only on the transition into a failing streak, not once per
+  // keystroke-triggered autosave while the backend stays down.
+  const configSaveFailingRef = useRef(false);
+  const loopSaveFailingRef = useRef(false);
   useEffect(() => {
     (async () => {
       const applyConfig = (s) => {
@@ -249,7 +253,17 @@ function App() {
       method: "PUT",
       headers: _authHeaders(),
       body: _safeStringify(payload),
-    }).catch(() => {});
+    }).then(res => {
+      if (res.ok) { configSaveFailingRef.current = false; return; }
+      throw new Error(`HTTP ${res.status}`);
+    }).catch(() => {
+      // Still saved to localStorage above, so no data is lost — this is
+      // purely "your config isn't syncing to the server right now."
+      if (!configSaveFailingRef.current) {
+        configSaveFailingRef.current = true;
+        window.showToast?.("Couldn't sync your configuration to the server — saved locally, will retry.", { tone: "warn" });
+      }
+    });
   }, [cfg, signalSet, velocity, hitl, rssEnabledFeeds, aiChatCfg]);
 
   // ---- Data modes: mock / live (JS) / mcp (Python servers) ----
@@ -312,6 +326,32 @@ function App() {
   useEffect(() => {
     setScreenVisitCounts(prev => ({ ...prev, [activeScreen]: (prev[activeScreen] || 0) + 1 }));
   }, [activeScreen]);
+  // ---- Command palette (Cmd/Ctrl+K) ----
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    function onKeyDown(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(o => !o);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+  // Same navigation side-effects LeftNav's onNavigate triggers (clear the
+  // per-screen deep-link seeds so a stale filter/tab from a previous
+  // navigation doesn't leak into an unrelated screen) — shared so the
+  // command palette lands exactly like a normal nav click, not a shortcut
+  // with different behavior.
+  const handleLeftNavigate = useCallback((screen, govTab) => {
+    setActiveScreen(screen);
+    if (govTab) setActiveGovTab(govTab);
+    if (screen === "controls") setUnreadCEM(0);
+    setCemInitialTab(null);
+    setCemInitialFilter(null);
+    setPacInitialProcess(null);
+  }, []);
+
   const [activePipeTab, setActivePipeTab] = useState("stages"); // stages | rss (forecasts/scenarios moved to the rail)
   const [activeRailTab, setActiveRailTab] = useState("rr"); // Risk Register sub-tab: rr | hm | loop (also nudged by the run)
   const [personaOpen, setPersonaOpen] = useState(false);
@@ -368,6 +408,14 @@ function App() {
   // screen is open, unlike Control Tower's own 5s poll which only runs
   // while that screen is mounted — this is the point of a nav badge.
   const [approvalInboxCount, setApprovalInboxCount] = useState(0);
+  // Split out from the combined badge above so the workflow strip can show
+  // a live "needs you" count per stage (Risk Intelligence = pending gate
+  // approvals, Monitoring Intelligence = UBO™ telemetry human-review) —
+  // same poll, no new endpoint. aiCount (persona-brief/audit-report review)
+  // doesn't map cleanly to one stage, so it stays folded into
+  // approvalInboxCount only.
+  const [riskGateCount, setRiskGateCount] = useState(0);
+  const [monitoringReviewCount, setMonitoringReviewCount] = useState(0);
   useEffect(() => {
     let cancelled = false;
     async function pollApprovals() {
@@ -380,7 +428,11 @@ function App() {
         const gateCount = gateRes.ok ? ((await gateRes.json()).items || []).length : 0;
         const telCount  = telRes.ok  ? ((await telRes.json()).count ?? 0) : 0;
         const aiCount   = aiRes.ok   ? ((await aiRes.json()).count ?? 0) : 0;
-        if (!cancelled) setApprovalInboxCount(gateCount + telCount + aiCount);
+        if (!cancelled) {
+          setApprovalInboxCount(gateCount + telCount + aiCount);
+          setRiskGateCount(gateCount);
+          setMonitoringReviewCount(telCount);
+        }
       } catch { /* best-effort — badge just stays at its last known value */ }
     }
     pollApprovals();
@@ -716,7 +768,15 @@ function App() {
       method: "PUT",
       headers: _authHeaders(),
       body: _safeStringify(payload),
-    }).catch(() => {});
+    }).then(res => {
+      if (res.ok) { loopSaveFailingRef.current = false; return; }
+      throw new Error(`HTTP ${res.status}`);
+    }).catch(() => {
+      if (!loopSaveFailingRef.current) {
+        loopSaveFailingRef.current = true;
+        window.showToast?.("Couldn't sync this run's state to the server — saved locally, will retry.", { tone: "warn" });
+      }
+    });
   }, [hasRun, output, profile]);
 
   const auth = window.useAuth ? window.useAuth() : null;
@@ -2127,14 +2187,7 @@ function App() {
           isAdmin={auth?.user?.role === "admin"}
           screenPerms={auth?.user?.screen_permissions}
           isDevEnv={isDevEnv}
-          onNavigate={(screen, govTab) => {
-            setActiveScreen(screen);
-            if (govTab) setActiveGovTab(govTab);
-            if (screen === "controls") setUnreadCEM(0);
-            setCemInitialTab(null);
-            setCemInitialFilter(null);
-            setPacInitialProcess(null);
-          }}
+          onNavigate={handleLeftNavigate}
           counts={{
             controls: events.length,
             controlsPulse: unreadCEM > 0,
@@ -2149,14 +2202,8 @@ function App() {
         <WorkflowStrip
           activeScreen={activeScreen}
           activeGovTab={activeGovTab}
-          onNavigate={(screen, govTab) => {
-            setActiveScreen(screen);
-            if (govTab) setActiveGovTab(govTab);
-            if (screen === "controls") setUnreadCEM(0);
-            setCemInitialTab(null);
-            setCemInitialFilter(null);
-            setPacInitialProcess(null);
-          }} />
+          onNavigate={handleLeftNavigate}
+          stageCounts={{ "Risk Intelligence": riskGateCount, "Monitoring Intelligence": monitoringReviewCount }} />
         <NextActionRail
           hasRun={hasRun} running={running} gateState={gateState} output={output}
           approvalInboxCount={approvalInboxCount} notifLog={notifLog}
@@ -2779,6 +2826,8 @@ function App() {
         output={output}
         useDb={useDb} setUseDb={setUseDb}
         seedQuestion={chatSeedQuestion} />
+      <ToastHost />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handleLeftNavigate} />
       </ErrorBoundary>
     </div>);
 
@@ -3059,6 +3108,105 @@ function HelpNudge({ activeScreen, visitCount, onNavigate, onAskChat }) {
       <button type="button" className="help-nudge-dismiss" onClick={dismiss} title="Dismiss for this session">
         <Icon name="x" size={11}/>
       </button>
+    </div>
+  );
+}
+
+// ---- Command palette (Cmd/Ctrl+K) ----
+// v1 scope: fuzzy-search over the 33 nav screens (window.NAV_SECTIONS) plus
+// the shared control library (window.MASTER_CONTROLS — same live reference
+// HITL Gate 2 already reads, see risk-register-review.jsx). Deliberately
+// does NOT search risks/MAPs across all runs — output.s2?.risks/s4?.maps
+// are only populated for the currently-loaded run, not a standing cross-run
+// index, so that would need a new backend endpoint rather than reusing
+// existing data (see the UX audit's "worth building" writeup for this item).
+function CommandPalette({ open, onClose, onNavigate }) {
+  const inputRef = React.useRef(null);
+  const [query, setQuery] = React.useState("");
+  const [activeIdx, setActiveIdx] = React.useState(0);
+
+  React.useEffect(() => {
+    if (open) {
+      setQuery("");
+      setActiveIdx(0);
+      const t = setTimeout(() => inputRef.current?.focus(), 0);
+      return () => clearTimeout(t);
+    }
+  }, [open]);
+  useEscapeToClose(open, onClose);
+
+  const items = React.useMemo(() => {
+    const screens = [];
+    (window.NAV_SECTIONS || []).forEach(section => {
+      (section.items || []).forEach(item => {
+        screens.push({
+          key: `screen:${item.id}:${item.govTab || ""}`,
+          label: item.l, section: section.label, kind: "Screen",
+          go: () => onNavigate(item.id, item.govTab),
+        });
+      });
+    });
+    const controls = (window.MASTER_CONTROLS || []).map(c => ({
+      key: `control:${c.ref}`,
+      label: `${c.ref} — ${c.name}`, section: "Controls", kind: "Control", sub: c.desc,
+      go: () => {
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(c.ref).catch(() => {});
+        window.showToast?.(`Copied "${c.ref}" — opening Risk & Control Ledger, search for it there.`, { tone: "neutral" });
+        onNavigate("rrreview");
+      },
+    }));
+    return [...screens, ...controls];
+  }, [onNavigate]);
+
+  const results = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return items.slice(0, 8);
+    return items
+      .map(it => {
+        const hay = `${it.label} ${it.section} ${it.sub || ""}`.toLowerCase();
+        const idx = hay.indexOf(q);
+        if (idx === -1) return null;
+        const score = it.label.toLowerCase().startsWith(q) ? -1 : idx;
+        return { it, score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.score - b.score)
+      .slice(0, 20)
+      .map(r => r.it);
+  }, [items, query]);
+
+  function select(it) {
+    if (!it) return;
+    it.go();
+    onClose();
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "ArrowDown") { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, results.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); select(results[activeIdx]); }
+  }
+
+  if (!open) return null;
+  return (
+    <div className="cmdk-overlay" role="presentation" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="cmdk-box" role="dialog" aria-modal="true" aria-label="Command palette">
+        <input ref={inputRef} className="cmdk-input" value={query}
+          onChange={e => setQuery(e.target.value)} onKeyDown={onKeyDown}
+          placeholder="Search screens and controls…" />
+        <div className="cmdk-results">
+          {results.length === 0 ? (
+            <div className="cmdk-empty">No matches.</div>
+          ) : results.map((it, i) => (
+            <div key={it.key} className={"cmdk-item" + (i === activeIdx ? " active" : "")}
+              onMouseEnter={() => setActiveIdx(i)} onClick={() => select(it)}>
+              <span className="cmdk-item-label">{it.label}</span>
+              <span className="cmdk-item-meta">{it.kind === "Control" ? "Control" : it.section}</span>
+            </div>
+          ))}
+        </div>
+        <div className="cmdk-foot">↑↓ navigate · ↵ select · esc close</div>
+      </div>
     </div>
   );
 }

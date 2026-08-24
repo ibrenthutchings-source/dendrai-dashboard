@@ -110,11 +110,26 @@ function AdjustMaterialityModal({ open, scope, ticker, onClose, onSubmit }) {
   const [rationale, setRationale] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [err, setErr] = React.useState(null);
+  const [aiState, setAiState] = React.useState({ loading: false, error: null, reco: null });
 
   React.useEffect(() => {
-    if (open) { setMaterialityPct(5.0); setPerformancePct(75.0); setRationale(""); setErr(null); }
+    if (open) { setMaterialityPct(5.0); setPerformancePct(75.0); setRationale(""); setErr(null); setAiState({ loading: false, error: null, reco: null }); }
   }, [open]);
   useEscapeToClose(open, onClose);
+
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiSoxRecommend;
+  async function runAiSuggest() {
+    setAiState({ loading: true, error: null, reco: null });
+    try {
+      const res = await window.MCP.aiSoxRecommend(ticker || "", "materiality", scope, {});
+      setMaterialityPct(res.suggested_materiality_pct ?? materialityPct);
+      setPerformancePct(res.suggested_performance_pct ?? performancePct);
+      setRationale(`[AI suggestion · ${res.confidence || "?"} confidence] ${res.rationale || ""}`.trim());
+      setAiState({ loading: false, error: null, reco: res });
+    } catch (e) {
+      setAiState({ loading: false, error: e.message || "AI unavailable", reco: null });
+    }
+  }
 
   if (!open) return null;
   const valid = rationale.trim().length >= 30;
@@ -145,8 +160,26 @@ function AdjustMaterialityModal({ open, scope, ticker, onClose, onSubmit }) {
       <div className="modal-box" style={{width: 520}}>
         <div className="modal-head">
           <div className="modal-title">Adjust Materiality Basis</div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          <div style={{display: "flex", alignItems: "center", gap: 6}}>
+            {aiAvailable && (
+              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+                title="Draft a materiality recommendation with Claude — review and override as needed">
+                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          </div>
         </div>
+        {aiState.error && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+            AI suggestion unavailable: {aiState.error}
+          </div>
+        )}
+        {aiState.reco && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
+          </div>
+        )}
         <div className="modal-body">
           <div style={{display: "flex", gap: 12, marginBottom: 12}}>
             <div style={{flex: 1}}>
@@ -254,11 +287,27 @@ function AdjustAccountModal({ open, acc, ticker, onClose, onSubmit }) {
   const [rationale, setRationale] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [err, setErr] = React.useState(null);
+  const [aiState, setAiState] = React.useState({ loading: false, error: null, reco: null });
 
   React.useEffect(() => {
-    if (open && acc) { setInScope(acc.in_scope); setPriority(acc.priority || "P2"); setRationale(""); setErr(null); }
+    if (open && acc) { setInScope(acc.in_scope); setPriority(acc.priority || "P2"); setRationale(""); setErr(null); setAiState({ loading: false, error: null, reco: null }); }
   }, [open, acc?.account_id]);
   useEscapeToClose(open, onClose);
+
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiSoxRecommend;
+  async function runAiSuggest() {
+    if (!acc) return;
+    setAiState({ loading: true, error: null, reco: null });
+    try {
+      const res = await window.MCP.aiSoxRecommend(ticker || "", "account", acc, {});
+      setInScope(res.suggested_in_scope ?? inScope);
+      setPriority(res.suggested_priority ?? priority);
+      setRationale(`[AI suggestion · ${res.confidence || "?"} confidence] ${res.rationale || ""}`.trim());
+      setAiState({ loading: false, error: null, reco: res });
+    } catch (e) {
+      setAiState({ loading: false, error: e.message || "AI unavailable", reco: null });
+    }
+  }
 
   if (!open || !acc) return null;
   const valid = rationale.trim().length >= 30;
@@ -293,8 +342,26 @@ function AdjustAccountModal({ open, acc, ticker, onClose, onSubmit }) {
               Computed: {acc.in_scope ? `In scope (${acc.priority})` : "Out of scope"}
             </div>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          <div style={{display: "flex", alignItems: "center", gap: 6}}>
+            {aiAvailable && (
+              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+                title="Draft a scope/priority recommendation with Claude — review and override as needed">
+                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          </div>
         </div>
+        {aiState.error && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+            AI suggestion unavailable: {aiState.error}
+          </div>
+        )}
+        {aiState.reco && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
+          </div>
+        )}
         <div className="modal-body">
           <div style={{display: "flex", gap: 8, marginBottom: 12}}>
             <button className={`btn btn-sm ${inScope ? "btn-primary" : ""}`} onClick={() => setInScope(true)}>Force in-scope</button>
@@ -471,11 +538,26 @@ function AdjustProcessModal({ open, proc, ticker, onClose, onSubmit }) {
   const [rationale, setRationale] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [err, setErr] = React.useState(null);
+  const [aiState, setAiState] = React.useState({ loading: false, error: null, reco: null });
 
   React.useEffect(() => {
-    if (open && proc) { setLevel(proc.coverage_level || "P2"); setRationale(""); setErr(null); }
+    if (open && proc) { setLevel(proc.coverage_level || "P2"); setRationale(""); setErr(null); setAiState({ loading: false, error: null, reco: null }); }
   }, [open, proc?.process_id]);
   useEscapeToClose(open, onClose);
+
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiSoxRecommend;
+  async function runAiSuggest() {
+    if (!proc) return;
+    setAiState({ loading: true, error: null, reco: null });
+    try {
+      const res = await window.MCP.aiSoxRecommend(ticker || "", "process", proc, {});
+      setLevel(res.suggested_coverage_level ?? level);
+      setRationale(`[AI suggestion · ${res.confidence || "?"} confidence] ${res.rationale || ""}`.trim());
+      setAiState({ loading: false, error: null, reco: res });
+    } catch (e) {
+      setAiState({ loading: false, error: e.message || "AI unavailable", reco: null });
+    }
+  }
 
   if (!open || !proc) return null;
   const valid = rationale.trim().length >= 30;
@@ -508,8 +590,26 @@ function AdjustProcessModal({ open, proc, ticker, onClose, onSubmit }) {
             <div className="modal-title">Adjust Process · {proc.process_name}</div>
             <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>Computed: {proc.coverage_level}</div>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          <div style={{display: "flex", alignItems: "center", gap: 6}}>
+            {aiAvailable && (
+              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+                title="Draft a coverage-level recommendation with Claude — review and override as needed">
+                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+          </div>
         </div>
+        {aiState.error && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+            AI suggestion unavailable: {aiState.error}
+          </div>
+        )}
+        {aiState.reco && (
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
+          </div>
+        )}
         <div className="modal-body">
           <div style={{display: "flex", gap: 8, marginBottom: 12}}>
             {["P1", "P2", "Out"].map(l => (

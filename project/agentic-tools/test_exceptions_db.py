@@ -196,6 +196,27 @@ def test_list_pending_exceptions_grouped_filters_by_risk_rating_and_owner(monkey
     assert "A" in params and "ops@acme.com" in params
 
 
+def test_list_pending_exceptions_grouped_scope_je_testing_includes_instead_of_excludes(monkeypatch):
+    """JE Testing's grouped view (the 'unify the queue' UX-audit recommendation)
+    reuses this exact query — scope='je_testing' flips the JOURNAL_ENTRY
+    filter direction instead of forking a second SQL statement."""
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_pending_exceptions_grouped(scope="je_testing")
+    sql, _ = recorder[0]
+    assert "ce.event_type = 'JOURNAL_ENTRY'" in sql
+    assert "IS DISTINCT FROM" not in sql
+    assert "GROUP BY ce.control_id, ce.system_source" in sql
+
+
+def test_list_pending_exceptions_grouped_default_scope_still_excludes_journal_entry(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_pending_exceptions_grouped()
+    sql, _ = recorder[0]
+    assert "IS DISTINCT FROM 'JOURNAL_ENTRY'" in sql
+
+
 # ── bulk_submit_exception_triage ─────────────────────────────────────────────
 
 def test_bulk_submit_exception_triage_rejects_invalid_label(monkeypatch):

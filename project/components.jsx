@@ -12,7 +12,7 @@ function Icon({ name, size = 14, className = "" }) {
   const sw = 1.5;
   const common = { width: s, height: s, viewBox: "0 0 16 16", fill: "none",
     stroke, strokeWidth: sw, strokeLinecap: "round", strokeLinejoin: "round",
-    className };
+    className, "aria-hidden": "true" };
   switch (name) {
     case "play":     return <svg {...common}><path d="M4 3l9 5-9 5V3z" fill={stroke} stroke="none"/></svg>;
     case "pause":    return <svg {...common}><path d="M5 3v10M11 3v10"/></svg>;
@@ -92,9 +92,15 @@ function DendraiWordmark({ size = 13.5 }) {
 }
 
 // ---- Pill / tag ----
-function Pill({ tone = "neutral", mono = true, children }) {
-  const cls = `pill pill-${tone}` + (mono ? " mono" : "");
-  return <span className={cls}>{children}</span>;
+// `tone` picks a status color from the shared palette (good/warn/bad/neutral/acc).
+// `ink`/`soft` are an escape hatch for callers with their own color mapping
+// (e.g. a RAG or per-priority lookup) that still want the shared pill shape
+// instead of hand-rolling one.
+function Pill({ tone = "neutral", mono = true, size, ink, soft, children }) {
+  const custom = ink || soft;
+  const cls = "pill" + (custom ? "" : ` pill-${tone}`) + (mono ? " mono" : "");
+  const style = custom || size ? { ...(custom && { color: ink, background: soft }), ...(size && { fontSize: size }) } : undefined;
+  return <span className={cls} style={style}>{children}</span>;
 }
 
 // ---- RAG chip helpers ----
@@ -303,6 +309,355 @@ function Modal({ open, onClose, title, titleSub, size, boxClassName, children, f
   );
 }
 
+// ---- Clickable: a <div> that behaves like a real interactive control —
+// role="button", tabIndex, and Enter/Space handling — for the row/card
+// expanders that need arbitrary block-level content and can't just be a
+// <button>. Mirrors the pattern continuous-monitoring.jsx's CMTile and
+// continuous-monitoring-viz.jsx's event rows already used by hand, just
+// centralized so every other "div that toggles something" gets it too.
+function Clickable({ onClick, className = "", style, children, ...rest }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={className}
+      style={style}
+      onClick={onClick}
+      onKeyDown={e => {
+        // Only react to a key event that originated on this element itself —
+        // otherwise Enter/Space activating a nested real <button> (e.g. an
+        // inline Approve/Reject action) would also re-toggle the row via
+        // keydown bubbling, which native click handlers already guard against
+        // with stopPropagation but keydown never did until this component.
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick && onClick(e);
+        }
+      }}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ---- ConfirmModal: the app's one dialog for "are you sure" on an
+// irreversible action, built on Modal so it inherits Escape-to-close, the
+// focus trap, and scroll lock for free. `requireTypedConfirmation` (a string
+// the user must type verbatim) gates Confirm for the highest-stakes subset —
+// e.g. deleting a connector's stored credentials — where a stray click on
+// the wrong button is a materially worse outcome than on a routine delete.
+function ConfirmModal({
+  open, onConfirm, onCancel, title, message,
+  danger = false, confirmLabel = "Confirm", cancelLabel = "Cancel",
+  requireTypedConfirmation = null,
+}) {
+  const [typed, setTyped] = React.useState("");
+  React.useEffect(() => { if (open) setTyped(""); }, [open]);
+
+  const locked = !!requireTypedConfirmation && typed !== requireTypedConfirmation;
+
+  return (
+    <Modal open={open} onClose={onCancel} title={title} size="sm" foot={
+      <>
+        <button type="button" className="btn btn-sm" onClick={onCancel}>{cancelLabel}</button>
+        <button type="button" className={"btn btn-sm" + (danger ? " btn-danger" : "")}
+          disabled={locked} onClick={onConfirm}>{confirmLabel}</button>
+      </>
+    }>
+      <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.5 }}>{message}</div>
+      {requireTypedConfirmation && (
+        <div style={{ marginTop: 14 }}>
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", letterSpacing: "0.05em", marginBottom: 6 }}>
+            TYPE "{requireTypedConfirmation}" TO CONFIRM
+          </div>
+          <input className="code-input mono" value={typed} onChange={e => setTyped(e.target.value)}
+            placeholder={requireTypedConfirmation} autoFocus />
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ---- Toast: a small, dismissible, non-blocking surface for things a user
+// should know but that shouldn't interrupt them — a queue item someone else
+// already resolved, a background autosave that silently failed. Not a
+// general notification system (that's the existing in-page Notification Log
+// in rail.jsx) — this is transient and disappears on its own.
+let _toastListeners = [];
+let _toastIdSeq = 0;
+
+function showToast(message, { tone = "neutral", duration = 5000 } = {}) {
+  const toast = { id: ++_toastIdSeq, message, tone };
+  _toastListeners.forEach(fn => fn(toast, duration));
+  return toast.id;
+}
+
+function ToastHost() {
+  const [toasts, setToasts] = React.useState([]);
+
+  React.useEffect(() => {
+    function onToast(toast, duration) {
+      setToasts(prev => [...prev, toast]);
+      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toast.id)), duration);
+    }
+    _toastListeners.push(onToast);
+    return () => { _toastListeners = _toastListeners.filter(fn => fn !== onToast); };
+  }, []);
+
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-host" aria-live="polite">
+      {toasts.map(t => (
+        <div key={t.id} className={`toast toast-${t.tone}`}
+          onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}>
+          {t.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---- Shared "needs a human" queue taxonomy — Exception Management and
+// JE Testing both score connector events into the exact same
+// exception_control_events/exception_model_inferences/exception_auditor_triage
+// tables (discriminated only by event_type='JOURNAL_ENTRY', see db.py's
+// _EXCLUDE_JE_TESTING_SQL) and always resolve to one of these same 4 root
+// causes — a real finding, noise, an already-approved exception, or bad
+// data. One canonical definition here instead of two screens each keeping
+// their own copy (JE Testing's used to be a plainer, undocumented duplicate).
+const ATTENTION_RESOLUTION_LABELS = [
+  { value: "TRUE_CONTROL_FAILURE", label: "True Control Failure", tone: "bad",
+    what: "The control genuinely failed to do its job — a real finding, not noise. Requires notes." },
+  { value: "BENIGN_OPERATIONAL_NOISE", label: "Benign Operational Noise", tone: "good",
+    what: "Flagged, but on inspection this is normal business activity the scoring model was too sensitive to." },
+  { value: "APPROVED_CARVE_OUT", label: "Approved Carve-Out", tone: "neutral",
+    what: "Outside normal parameters, but already covered by a documented, approved exception. Requires notes." },
+  { value: "DATA_PIPELINE_ERROR", label: "Data Pipeline Error", tone: "warn",
+    what: "The event itself is bad data (a connector glitch, a malformed record) — not a real control signal either way." },
+];
+const ATTENTION_NOTES_REQUIRED = new Set(["TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"]);
+const ATTENTION_LABEL_META = Object.fromEntries(ATTENTION_RESOLUTION_LABELS.map(l => [l.value, l]));
+const ATTENTION_LABEL_COLOR = {
+  TRUE_CONTROL_FAILURE: "var(--red-ink)", BENIGN_OPERATIONAL_NOISE: "var(--green-ink)",
+  APPROVED_CARVE_OUT: "var(--ink-3)", DATA_PIPELINE_ERROR: "var(--amber-ink)",
+};
+
+// R/A/G — same vocabulary management_action_plans.risk_rating / risk_scores.rag_status
+// use elsewhere in this app. Shared because both queues' grouped rows carry a
+// worst_risk_rating field (JE rows are simply always "Unrated" today, since
+// je_testing_sweep.py doesn't compute one yet — same honest fallback either way).
+const ATTENTION_RISK_RATING_META = {
+  R: { label: "R — Urgent", bg: "var(--red-soft)", ink: "var(--red-ink)" },
+  A: { label: "A — Moderate", bg: "var(--amber-soft)", ink: "var(--amber-ink)" },
+  G: { label: "G — Low", bg: "var(--green-soft)", ink: "var(--green-ink)" },
+};
+
+function RiskRatingPill({ rating }) {
+  const meta = ATTENTION_RISK_RATING_META[rating];
+  if (!meta) return <span style={{ fontSize: 9.5, color: "var(--ink-4)" }}>Unrated</span>;
+  return (
+    <span className="mono" style={{
+      fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+      background: meta.bg, color: meta.ink, whiteSpace: "nowrap",
+    }}>
+      {meta.label}
+    </span>
+  );
+}
+
+// ---- AttentionGroupRow: the grouped/bulk-resolve queue row shared by
+// Exception Management and JE Testing (the "unify the queue" UX-audit
+// recommendation) — one row per (control_id, system_source) recurring
+// pattern instead of one per event, with a "resolve all N as one decision"
+// action. Deliberately NOT extended to Risk Approval/Audit Scope/SOX
+// (a different Approve-vs-Adjust-with-manager-routing paradigm) or CEM
+// Holds/Human Review (simple accept/reject verdicts, live-polling, no
+// notes) — those three are structurally different queues, not just
+// differently skinned copies of this one.
+//
+// Props:
+//   group          — { control_id, system_source, occurrence_count, worst_risk_rating,
+//                       owner, first_seen_at, last_seen_at, has_open_map, map_ref }
+//   getMembers(group) -> Promise<row[]>   fetch this group's individual pending rows
+//   renderMember(row, onMemberResolved) -> node   render one drilled-in row
+//   onBulkResolve(group, label, notes) -> Promise   resolve every member at once
+//   onResolved(eventId | null, group)   called after a single member or the whole
+//                                        group resolves (null eventId = bulk)
+//   onNavigate, resolveAllLabel (default "event")
+function AttentionGroupRow({ group, getMembers, renderMember, onBulkResolve, onResolved, onNavigate, resolveAllLabel = "event" }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [members, setMembers] = React.useState(null);
+  const [membersLoading, setMembersLoading] = React.useState(false);
+  const [bulkLabel, setBulkLabel] = React.useState(null);
+  const [bulkNotes, setBulkNotes] = React.useState("");
+  const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
+  const [bulkError, setBulkError] = React.useState(null);
+  const [bulkDone, setBulkDone] = React.useState(false);
+
+  async function toggleExpand() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && members === null) {
+      setMembersLoading(true);
+      try {
+        setMembers(await getMembers(group));
+      } finally {
+        setMembersLoading(false);
+      }
+    }
+  }
+
+  function handleMemberResolved(eventId) {
+    setMembers(ms => (ms || []).filter(r => r.event_id !== eventId));
+    onResolved && onResolved(eventId, group);
+  }
+
+  const needsNotes = bulkLabel && ATTENTION_NOTES_REQUIRED.has(bulkLabel);
+  const canBulkSubmit = bulkLabel && (!needsNotes || bulkNotes.trim().length > 0) && !bulkSubmitting;
+
+  async function handleBulkSubmit() {
+    setBulkSubmitting(true);
+    setBulkError(null);
+    try {
+      await onBulkResolve(group, bulkLabel, bulkNotes);
+      setBulkDone(true);
+      onResolved && onResolved(null, group);
+    } catch (e) {
+      setBulkError(e.message || String(e));
+    } finally {
+      setBulkSubmitting(false);
+    }
+  }
+
+  if (bulkDone) return null;
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px", marginBottom: 8, background: "var(--surface)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, cursor: "pointer" }}
+        onClick={toggleExpand}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            {group.control_id}
+            <span style={{ fontWeight: 400, color: "var(--ink-4)" }}>· {group.system_source}</span>
+            <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "var(--surface-2)", color: "var(--ink-2)" }}>
+              ×{group.occurrence_count}
+            </span>
+            {group.has_open_map && (
+              <span className="mono" style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "var(--acc-soft)", color: "var(--acc-ink)" }}
+                onClick={e => { e.stopPropagation(); onNavigate && onNavigate("continuousmonitoring"); }}
+                title="Already tracked by a Management Action Plan">
+                Tracked by {group.map_ref}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 2 }}>
+            {group.owner ? `owner: ${group.owner} · ` : ""}
+            first seen {group.first_seen_at ? new Date(group.first_seen_at).toLocaleDateString() : "—"}
+            {" · "}last seen {group.last_seen_at ? new Date(group.last_seen_at).toLocaleString() : "—"}
+          </div>
+        </div>
+        <RiskRatingPill rating={group.worst_risk_rating} />
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+          {group.occurrence_count > 1 && (
+            <div style={{ marginBottom: 10, padding: "8px 10px", background: "var(--surface-2)", borderRadius: 5 }}>
+              <div className="kicker" style={{ fontSize: 9.5, marginBottom: 6 }}>
+                Resolve all {group.occurrence_count} as one decision
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                {ATTENTION_RESOLUTION_LABELS.map(l => (
+                  <button key={l.value} type="button" onClick={() => setBulkLabel(l.value)} title={l.what}
+                    style={{
+                      fontSize: 10.5, padding: "5px 10px", borderRadius: 5, cursor: "pointer",
+                      border: l.value === bulkLabel ? "1px solid var(--acc,#2563eb)" : "1px solid var(--line)",
+                      background: l.value === bulkLabel ? "var(--acc,#2563eb)" : "transparent",
+                      color: l.value === bulkLabel ? "#fff" : "var(--ink-2)",
+                      fontWeight: l.value === bulkLabel ? 600 : 400,
+                    }}>
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+              {needsNotes && (
+                <textarea className="code-input" rows={2} placeholder="Justification notes (required for this resolution)…"
+                  value={bulkNotes} onChange={e => setBulkNotes(e.target.value)}
+                  style={{ width: "100%", fontSize: 11, marginBottom: 8, resize: "vertical" }} />
+              )}
+              {bulkError && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 8 }}>{bulkError}</div>}
+              <button className="btn btn-acc btn-sm" disabled={!canBulkSubmit} onClick={handleBulkSubmit}>
+                {bulkSubmitting ? "Resolving…" : `Resolve all ${group.occurrence_count} as ${bulkLabel ? ATTENTION_LABEL_META[bulkLabel].label : "…"}`}
+              </button>
+            </div>
+          )}
+          <div className="kicker" style={{ fontSize: 9.5, marginBottom: 6 }}>Individual {resolveAllLabel}s</div>
+          {membersLoading ? <Empty>Loading…</Empty> : (members || []).map(row => renderMember(row, handleMemberResolved))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- ProvenanceChip: one consistent "can I trust this number" affordance
+// for every AI-touched verdict/score in the app (risk-approval.jsx,
+// approval-inbox.jsx, cem.jsx, audit-scope-review.jsx today) — a UX-audit
+// "worth building" recommendation. Renders only the fields actually passed:
+// model name and a per-instance timestamp aren't threaded through to the
+// frontend anywhere yet (they exist server-side on ai_analyses.model/
+// created_at but aren't in the response payloads these screens read), so
+// this is deliberately tolerant of missing fields rather than blocking on
+// adding that plumbing everywhere first.
+function ProvenanceChip({ verdict, confidence, model, timestamp, reviewedByName, reviewedAt }) {
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [open]);
+
+  const reviewed = !!(reviewedByName || reviewedAt);
+
+  return (
+    <span ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button type="button" className="mono"
+        onClick={() => setOpen(o => !o)}
+        title="AI provenance — click for details"
+        style={{
+          fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, cursor: "pointer",
+          border: "1px solid transparent",
+          background: reviewed ? "var(--green-soft)" : "var(--acc-soft)",
+          color: reviewed ? "var(--green-ink)" : "var(--acc-ink)",
+        }}>
+        ✨ AI{confidence ? ` · ${confidence}` : ""}
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 50,
+          minWidth: 220, background: "var(--surface)", border: "1px solid var(--line)",
+          borderRadius: 8, boxShadow: "0 6px 20px rgba(0,0,0,0.15)", padding: "10px 12px",
+          fontSize: 11.5, color: "var(--ink-2)", display: "flex", flexDirection: "column", gap: 5,
+        }}>
+          {verdict && <div><b style={{ color: "var(--ink)" }}>Verdict</b> — {verdict}</div>}
+          {confidence && <div><b style={{ color: "var(--ink)" }}>Confidence</b> — {confidence}</div>}
+          {model && <div><b style={{ color: "var(--ink)" }}>Model</b> — <span className="mono">{model}</span></div>}
+          {timestamp && <div><b style={{ color: "var(--ink)" }}>Generated</b> — {new Date(timestamp).toLocaleString()}</div>}
+          <div>
+            <b style={{ color: "var(--ink)" }}>Reviewed</b> — {reviewed
+              ? <>{reviewedByName || "yes"}{reviewedAt ? ` · ${new Date(reviewedAt).toLocaleString()}` : ""}</>
+              : <span style={{ color: "var(--amber-ink)" }}>not yet reviewed</span>}
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ---- Screen access gate — enforces the per-user Read/Edit matrix configured
 // in Configuration > User Configuration > Screen Access (user-config.jsx /
 // auth.screen_permissions). Admins always bypass it. A screen with no saved
@@ -477,5 +832,9 @@ Object.assign(window, {
   Empty, SectionLabel, BBTermHeader, AiReviewBanner,
   LiveBadge, RefreshBadge,
   ScreenAccessGate, ScreenLoadingFallback,
-  Modal, useEscapeToClose,
+  Modal, useEscapeToClose, ConfirmModal, Clickable,
+  showToast, ToastHost,
+  ATTENTION_RESOLUTION_LABELS, ATTENTION_NOTES_REQUIRED, ATTENTION_LABEL_META, ATTENTION_LABEL_COLOR,
+  RiskRatingPill, AttentionGroupRow,
+  ProvenanceChip,
 });

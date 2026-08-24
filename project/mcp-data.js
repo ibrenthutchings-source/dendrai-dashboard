@@ -517,6 +517,13 @@ window.MCP = (function () {
     return _postAi('/ai/gate2/recommend', { ticker, run_id: runId, objectives, risks });
   }
 
+  /** #2 — SOX Gate S1/S2 materiality/account/process drafts. kind: "materiality" | "account" | "process".
+   *  Returns a single recommendation object (not wrapped in a list, unlike Gate 1/2 — SOX's Adjust
+   *  modals review one item at a time). */
+  function aiSoxRecommend(ticker, kind, item, context = {}, runId = null) {
+    return _postAi('/ai/sox/recommend', { ticker, run_id: runId, kind, item, context });
+  }
+
   /** #2b — AI-drafted approve/reject recommendation for a manager reviewing a
    *  submitted Approval Inbox item. Returns { recommendation, confidence, reasoning }. */
   function aiApprovalRecommend(taskId) {
@@ -835,13 +842,16 @@ window.MCP = (function () {
     return _get('/je-testing/summary');
   }
 
-  /** Findings list, most recent first. opts: ruleId, systemSource, preparer, onlyPending, limit, offset. */
+  /** Findings list, most recent first. opts: ruleId, systemSource, preparer, onlyPending, group, limit, offset.
+   *  opts.group=true collapses recurring (rule_id, system_source) pairs into one row each — same
+   *  shape as exceptionsPending's grouped view (occurrence_count, worst_risk_rating, owner). */
   async function jeTestingFindings(opts = {}) {
     const params = new URLSearchParams();
     if (opts.ruleId) params.set('rule_id', opts.ruleId);
     if (opts.systemSource) params.set('system_source', opts.systemSource);
     if (opts.preparer) params.set('preparer', opts.preparer);
     if (opts.onlyPending) params.set('only_pending', 'true');
+    if (opts.group) params.set('group', 'true');
     params.set('limit', opts.limit || 100);
     params.set('offset', opts.offset || 0);
     return _get(`/je-testing/findings?${params.toString()}`);
@@ -850,6 +860,15 @@ window.MCP = (function () {
   /** Record an auditor's resolution for one JE finding — same 4-label vocabulary as Exception Management. */
   async function submitJeTestingDisposition(eventId, resolutionLabel, justificationNotes) {
     return _post(`/je-testing/findings/${eventId}/disposition`, {
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
+  /** Resolve every currently-pending finding for one (rule_id, system_source) pair at once —
+   *  the bulk-resolve action behind the grouped JE Testing view. */
+  async function jeTestingBulkDisposition(ruleId, systemSource, resolutionLabel, justificationNotes) {
+    return _post('/je-testing/findings/bulk-disposition', {
+      rule_id: ruleId, system_source: systemSource,
       resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
     });
   }
@@ -1010,6 +1029,7 @@ window.MCP = (function () {
     aiEnabled,
     aiGate1Recommend,
     aiGate2Recommend,
+    aiSoxRecommend,
     aiApprovalRecommend,
     aiDraftRego,
     aiNarrative,
@@ -1057,6 +1077,7 @@ window.MCP = (function () {
     jeTestingSummary,
     jeTestingFindings,
     submitJeTestingDisposition,
+    jeTestingBulkDisposition,
     // Closed-loop remediation
     proposeRemediation,
     proposeRemediationPr,

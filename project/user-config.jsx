@@ -822,6 +822,7 @@ function RolesTab() {
   const [creating, setCreating] = React.useState(false);
   const [createErr, setCreateErr] = React.useState(null);
   const [deleteErr, setDeleteErr] = React.useState(null);
+  const [confirmDeleteRole, setConfirmDeleteRole] = React.useState(null);
   useEscapeToClose(addOpen, () => setAddOpen(false));
 
   const loadRoles = React.useCallback(async (selectId) => {
@@ -864,7 +865,6 @@ function RolesTab() {
   }
 
   async function deleteRole(role) {
-    if (!window.confirm(`Delete role "${role.name}"? This cannot be undone.`)) return;
     setDeleteErr(null);
     try {
       const res = await fetch(`/auth/admin/roles/${role.id}`, { method: "DELETE", credentials: "include" });
@@ -910,7 +910,7 @@ function RolesTab() {
               </div>
               {!r.is_system && (
                 <button className="btn btn-sm btn-ghost" title="Delete role"
-                  onClick={e => { e.stopPropagation(); deleteRole(r); }}>
+                  onClick={e => { e.stopPropagation(); setConfirmDeleteRole(r); }}>
                   <Icon name="x" size={11} />
                 </button>
               )}
@@ -977,6 +977,15 @@ function RolesTab() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        open={!!confirmDeleteRole}
+        title="Delete role?"
+        message={confirmDeleteRole ? `Delete role "${confirmDeleteRole.name}"? This cannot be undone.` : ""}
+        danger confirmLabel="Delete"
+        onCancel={() => setConfirmDeleteRole(null)}
+        onConfirm={() => { const role = confirmDeleteRole; setConfirmDeleteRole(null); deleteRole(role); }}
+      />
     </div>
   );
 }

@@ -1852,13 +1852,12 @@ export function ProcessCycleTimeView({ theme, days }) {
    endpoints rather than Exception Management's dev-only router.
    ════════════════════════════════════════════════════════════════════════ */
 
-const _JE_RESOLUTION_LABELS = [
-  { value: "TRUE_CONTROL_FAILURE", label: "True Control Failure" },
-  { value: "BENIGN_OPERATIONAL_NOISE", label: "Benign Operational Noise" },
-  { value: "APPROVED_CARVE_OUT", label: "Approved Carve-Out" },
-  { value: "DATA_PIPELINE_ERROR", label: "Data Pipeline Error" },
-];
-const _JE_NOTES_REQUIRED = new Set(["TRUE_CONTROL_FAILURE", "APPROVED_CARVE_OUT"]);
+// Shared with Exception Management (components.jsx's ATTENTION_* constants) —
+// both queues resolve to the same 4 root causes over the same backend
+// tables; see that file's comment for why this isn't duplicated per screen
+// anymore (the "unify the queue" UX-audit recommendation).
+const _JE_RESOLUTION_LABELS = ATTENTION_RESOLUTION_LABELS;
+const _JE_NOTES_REQUIRED = ATTENTION_NOTES_REQUIRED;
 
 function JeSeverityBadge({ severity, theme }) {
   const color = severity === "CRITICAL" || severity === "HIGH" ? theme["red-ink"]
@@ -1928,7 +1927,7 @@ function JeFindingRow({ row, theme, onDisposed }) {
             <>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
                 {_JE_RESOLUTION_LABELS.map(l => (
-                  <button key={l.value} type="button" onClick={() => setLabel(l.value)}
+                  <button key={l.value} type="button" onClick={() => setLabel(l.value)} title={l.what}
                     style={{
                       fontSize: 10.5, padding: "5px 10px", borderRadius: 5, cursor: "pointer",
                       border: l.value === label ? `1px solid ${theme.acc}` : `1px solid ${theme.line}`,
@@ -1971,21 +1970,35 @@ export function JETestingView({ theme }) {
   const [error, setError] = useState(null);
   const [ruleFilter, setRuleFilter] = useState("");
   const [onlyPending, setOnlyPending] = useState(true);
+  // Grouped/bulk-resolve view — same curation lever Exception Management
+  // has (recurring rule/system pairs collapsed into one row), sharing
+  // AttentionGroupRow from components.jsx. The grouped listing is always
+  // implicitly pending-only and doesn't support the rule/preparer filters
+  // the flat list does, so those controls are hidden while grouped.
+  const [grouped, setGrouped] = useState(true);
 
   const load = useCallback(() => {
     setLoading(true);
     return Promise.all([
       window.MCP.jeTestingSummary(),
-      window.MCP.jeTestingFindings({ ruleId: ruleFilter || null, onlyPending, limit: 100 }),
+      grouped
+        ? window.MCP.jeTestingFindings({ group: true, limit: 200 })
+        : window.MCP.jeTestingFindings({ ruleId: ruleFilter || null, onlyPending, limit: 100 }),
     ]).then(([s, f]) => { setSummary(s); setRows(f.rows || []); setError(null); })
       .catch(e => setError(e.message || String(e)))
       .finally(() => setLoading(false));
-  }, [ruleFilter, onlyPending]);
+  }, [ruleFilter, onlyPending, grouped]);
 
   useEffect(() => { load(); }, [load]);
 
   function handleDisposed(eventId) {
     setRows(rs => rs.filter(r => r.event_id !== eventId));
+  }
+
+  function handleGroupResolved(eventId, group) {
+    if (eventId === null) {
+      setRows(rs => rs.filter(r => !(r.control_id === group.control_id && r.system_source === group.system_source)));
+    }
   }
 
   const hasData = rows.length > 0;
@@ -1997,15 +2010,23 @@ export function JETestingView({ theme }) {
       sub="je_testing_tool.py's rule engine (round-dollar, weekend/after-hours, preparer==approver SoD, threshold-unapproved, rare account, unusual description, velocity spike) run against journal entries pulled from every active financial connector — not a chart of adjudicated events like the other tabs, but the same real-data discipline: each row is a rule that actually fired against a real posting."
       controls={
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select value={ruleFilter} onChange={e => setRuleFilter(e.target.value)}
-            style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: `1px solid ${theme.line}`, background: theme.surface, color: theme.ink }}>
-            <option value="">All rules</option>
-            {ruleOptions.map(r => <option key={r} value={r}>{r} ({summary.findings_by_rule[r]})</option>)}
-          </select>
           <label style={{ fontSize: 10.5, color: theme["ink-3"], display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-            <input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} />
-            Pending only
+            <input type="checkbox" checked={grouped} onChange={e => setGrouped(e.target.checked)} />
+            Group by rule/system
           </label>
+          {!grouped && (
+            <>
+              <select value={ruleFilter} onChange={e => setRuleFilter(e.target.value)}
+                style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: `1px solid ${theme.line}`, background: theme.surface, color: theme.ink }}>
+                <option value="">All rules</option>
+                {ruleOptions.map(r => <option key={r} value={r}>{r} ({summary.findings_by_rule[r]})</option>)}
+              </select>
+              <label style={{ fontSize: 10.5, color: theme["ink-3"], display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                <input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} />
+                Pending only
+              </label>
+            </>
+          )}
         </div>
       }
       error={error}
@@ -2032,7 +2053,22 @@ export function JETestingView({ theme }) {
               )}
             </div>
           )}
-          {hasData && rows.map(row => <JeFindingRow key={row.event_id} row={row} theme={theme} onDisposed={handleDisposed} />)}
+          {hasData && (grouped ? (
+            rows.map(group => (
+              <AttentionGroupRow key={`${group.control_id}::${group.system_source}`} group={group}
+                onResolved={handleGroupResolved}
+                getMembers={g => window.MCP.jeTestingFindings({
+                  ruleId: g.control_id, systemSource: g.system_source, onlyPending: true, limit: 200,
+                }).then(d => d.rows || [])}
+                renderMember={(row, onMemberResolved) => (
+                  <JeFindingRow key={row.event_id} row={row} theme={theme} onDisposed={onMemberResolved} />
+                )}
+                onBulkResolve={(g, label, notes) => window.MCP.jeTestingBulkDisposition(g.control_id, g.system_source, label, notes)}
+                resolveAllLabel="finding" />
+            ))
+          ) : (
+            rows.map(row => <JeFindingRow key={row.event_id} row={row} theme={theme} onDisposed={handleDisposed} />)
+          ))}
         </div>
       )}
     </VizFrame>

@@ -10187,7 +10187,7 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0,
 
 
 def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str] = None,
-                                     owner: Optional[str] = None) -> list:
+                                     owner: Optional[str] = None, scope: str = "exception") -> list:
     """One row per (control_id, system_source) pair with a pending item,
     occurrence_count, the worst (lowest-order) risk_rating in the group, the
     most recent event's id/timestamp for drill-in, and whether the control is
@@ -10196,9 +10196,20 @@ def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str]
     re-litigate one occurrence at a time when the recurrence has already been
     escalated to a remediation plan. Curation lever: pairs this with
     bulk_submit_exception_triage() so a reviewer can clear an entire
-    recurring group in one action instead of N."""
+    recurring group in one action instead of N.
+
+    scope="exception" (default) excludes JE Testing's rows, same split every
+    other Exception Management query uses. scope="je_testing" is the mirror
+    image — je_testing_sweep.py stores its rule_id as control_id (see that
+    module's _persist_finding), so the exact same GROUP BY already collapses
+    recurring rule/system pairs; only the WHERE-filter direction changes.
+    This is the one grouped-listing query both screens share, per the
+    "Unify the queue" UX-audit recommendation — Exception Management and JE
+    Testing are structurally the same shape (same tables, same 4-label
+    taxonomy), unlike the Approve/Adjust compliance gates or CEM's holds."""
     def _do():
-        filters = ["mi.requires_human_review = TRUE", "tri.id IS NULL", _EXCLUDE_JE_TESTING_SQL]
+        scope_sql = "ce.event_type = 'JOURNAL_ENTRY'" if scope == "je_testing" else _EXCLUDE_JE_TESTING_SQL
+        filters = ["mi.requires_human_review = TRUE", "tri.id IS NULL", scope_sql]
         params: list = []
         if risk_rating:
             filters.append("mi.risk_rating = %s")

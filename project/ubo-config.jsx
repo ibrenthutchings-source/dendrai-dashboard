@@ -267,19 +267,6 @@ function StatusDot({ active }) {
   );
 }
 
-function EmptyState({ icon, title, sub }) {
-  return (
-    <div style={{
-      textAlign: "center",
-      padding: "28px 16px",
-      color: "var(--ink-3)",
-    }}>
-      <div style={{ fontSize: 22, marginBottom: 8, opacity: 0.5 }}>{icon}</div>
-      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)", marginBottom: 4 }}>{title}</div>
-      <div style={{ fontSize: 11, lineHeight: 1.5 }}>{sub}</div>
-    </div>
-  );
-}
 
 // ── API key display (copy-to-clipboard with reveal toggle) ───────────────────
 
@@ -573,7 +560,7 @@ function SystemRow({ sys, onEdit, onDelete, onToggle }) {
           style={{ padding: "3px 7px" }}>
           <Icon name="edit" size={11}/>
         </button>
-        <button className="btn btn-sm btn-ghost" onClick={() => onDelete(sys.id)}
+        <button className="btn btn-sm btn-ghost" onClick={() => onDelete(sys)}
           style={{ padding: "3px 7px", color: "var(--red-ink)" }}>
           <Icon name="x" size={11}/>
         </button>
@@ -589,6 +576,7 @@ function MonitoredSystemsCard() {
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -630,7 +618,6 @@ function MonitoredSystemsCard() {
   }
 
   async function handleDelete(id) {
-    if (!confirm("Remove this system from UBO™ monitoring?")) return;
     try {
       await fetch(`${_uboConfigBase()}/systems/${id}`, { method: "DELETE" });
       await load();
@@ -700,10 +687,10 @@ function MonitoredSystemsCard() {
           <span className="spin" style={{ display: "inline-block", width: 16, height: 16, borderWidth: 2 }}/>
         </div>
       ) : systems.length === 0 && !adding ? (
-        <EmptyState
-          icon="🛡"
-          title="No systems registered"
-          sub="Add any system — Saviynt, SAP, Oracle Fusion, ServiceNow, Workday, Entra ID, GitHub, or an MCP server — to start receiving Dendrai UBO™ Governance Brain coverage." />
+        <Empty icon="🛡">
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)", marginBottom: 4 }}>No systems registered</div>
+          <div style={{ fontSize: 11, lineHeight: 1.5 }}>Add any system — Saviynt, SAP, Oracle Fusion, ServiceNow, Workday, Entra ID, GitHub, or an MCP server — to start receiving Dendrai UBO™ Governance Brain coverage.</div>
+        </Empty>
       ) : (
         <>
           {systems.length > 0 && (
@@ -732,7 +719,7 @@ function MonitoredSystemsCard() {
                 <SystemRow
                   sys={sys}
                   onEdit={(s) => { setEditingId(s.id); setAdding(false); }}
-                  onDelete={handleDelete}
+                  onDelete={setConfirmDeleteId}
                   onToggle={handleToggle} />
                 {editingId === sys.id && (
                   <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", background: "var(--surface-2)" }}>
@@ -753,6 +740,14 @@ function MonitoredSystemsCard() {
         Activity counts combine MCP proxy events with events pushed directly by other systems using their
         ingest API key.
       </div>
+      <ConfirmModal
+        open={!!confirmDeleteId}
+        title="Remove system?"
+        message="Remove this system from UBO™ monitoring?"
+        danger confirmLabel="Remove"
+        onCancel={() => setConfirmDeleteId(null)}
+        onConfirm={() => { const id = confirmDeleteId.id; setConfirmDeleteId(null); handleDelete(id); }}
+      />
     </section>
   );
 }
@@ -983,7 +978,7 @@ function ConnectorRow({ conn, onEdit, onDelete, onToggle, onTest, testState }) {
           <button className="btn btn-sm btn-ghost" onClick={() => onEdit(conn)} style={{ padding: "3px 7px" }}>
             <Icon name="edit" size={11}/>
           </button>
-          <button className="btn btn-sm btn-ghost" onClick={() => onDelete(conn.id)} style={{ padding: "3px 7px", color: "var(--red-ink)" }}>
+          <button className="btn btn-sm btn-ghost" onClick={() => onDelete(conn)} style={{ padding: "3px 7px", color: "var(--red-ink)" }}>
             <Icon name="x" size={11}/>
           </button>
         </div>
@@ -1013,6 +1008,7 @@ function PollConnectorsCard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [testStates, setTestStates] = useState({}); // { [id]: { testing, result } }
+  const [confirmDelete, setConfirmDelete] = useState(null); // the connector object pending deletion
 
   async function load() {
     setLoading(true);
@@ -1046,7 +1042,6 @@ function PollConnectorsCard() {
   }
 
   async function handleDelete(id) {
-    if (!confirm("Remove this connector? Its stored credentials will be permanently deleted.")) return;
     try {
       await fetch(`${_uboConfigBase()}/connectors/${id}`, { method: "DELETE" });
       await load();
@@ -1106,10 +1101,10 @@ function PollConnectorsCard() {
           <span className="spin" style={{ display: "inline-block", width: 16, height: 16, borderWidth: 2 }}/>
         </div>
       ) : connectors.length === 0 && !adding ? (
-        <EmptyState
-          icon="🔌"
-          title="No connectors configured"
-          sub="Add Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, or NetSuite to start pulling audit events into the Dendrai UBO™ Governance Brain on a schedule." />
+        <Empty icon="🔌">
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)", marginBottom: 4 }}>No connectors configured</div>
+          <div style={{ fontSize: 11, lineHeight: 1.5 }}>Add Oracle Fusion, SAP HANA, SailPoint, Dynamics 365, or NetSuite to start pulling audit events into the Dendrai UBO™ Governance Brain on a schedule.</div>
+        </Empty>
       ) : (
         <>
           {connectors.length > 0 && (
@@ -1127,7 +1122,7 @@ function PollConnectorsCard() {
                 <ConnectorRow
                   conn={conn}
                   onEdit={(c) => { setEditingId(c.id); setAdding(false); }}
-                  onDelete={handleDelete}
+                  onDelete={setConfirmDelete}
                   onToggle={handleToggle}
                   onTest={handleTest}
                   testState={testStates[conn.id]} />
@@ -1150,6 +1145,15 @@ function PollConnectorsCard() {
         Polled events are ingested the same way pushed telemetry is (via <code>observability.system_telemetry</code>),
         so they're picked up by the same adjudication pipeline — no separate review flow.
       </div>
+      <ConfirmModal
+        open={!!confirmDelete}
+        title="Remove connector?"
+        message="Remove this connector? Its stored credentials will be permanently deleted."
+        danger confirmLabel="Remove"
+        requireTypedConfirmation={confirmDelete?.display_name}
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={() => { const id = confirmDelete.id; setConfirmDelete(null); handleDelete(id); }}
+      />
     </section>
   );
 }
@@ -1431,6 +1435,7 @@ function PacReposCard() {
   const [error, setError] = useState(null);
   const [syncingId, setSyncingId] = useState(null);
   const [syncResults, setSyncResults] = useState({}); // { [repoId]: { ...result } | { error } }
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   useEffect(() => {
     fetch("/api/pac/processes")
@@ -1493,7 +1498,6 @@ function PacReposCard() {
   }
 
   async function handleDelete(id) {
-    if (!confirm("Remove this repository?")) return;
     try {
       await fetch(`${_uboConfigBase()}/pac-repos/${id}`, { method: "DELETE" });
       await load();
@@ -1570,10 +1574,10 @@ function PacReposCard() {
           <span className="spin" style={{ display: "inline-block", width: 16, height: 16, borderWidth: 2 }}/>
         </div>
       ) : repos.length === 0 && !adding ? (
-        <EmptyState
-          icon="📁"
-          title="No repositories registered"
-          sub="Add the Git repositories that contain your Rego policy modules. Supports GitHub, GitLab, Bitbucket, and Azure DevOps." />
+        <Empty icon="📁">
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)", marginBottom: 4 }}>No repositories registered</div>
+          <div style={{ fontSize: 11, lineHeight: 1.5 }}>Add the Git repositories that contain your Rego policy modules. Supports GitHub, GitLab, Bitbucket, and Azure DevOps.</div>
+        </Empty>
       ) : (
         <>
           {repos.length > 0 && (
@@ -1597,7 +1601,7 @@ function PacReposCard() {
                 <RepoRow
                   repo={repo}
                   onEdit={(r) => { setEditingId(r.id); setAdding(false); }}
-                  onDelete={handleDelete}
+                  onDelete={setConfirmDeleteId}
                   onToggle={handleToggle}
                   onSync={handleSync}
                   syncing={syncingId === repo.id}
@@ -1624,6 +1628,14 @@ function PacReposCard() {
         Editor — each registered repo syncs independently of the single legacy GitHub hook under
         <b> Policy-as-Code Engine → External Sources</b>.
       </div>
+      <ConfirmModal
+        open={!!confirmDeleteId}
+        title="Remove repository?"
+        message="Remove this repository?"
+        danger confirmLabel="Remove"
+        onCancel={() => setConfirmDeleteId(null)}
+        onConfirm={() => { const id = confirmDeleteId; setConfirmDeleteId(null); handleDelete(id); }}
+      />
     </section>
   );
 }
