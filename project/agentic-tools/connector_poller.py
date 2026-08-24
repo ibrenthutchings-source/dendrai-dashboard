@@ -37,6 +37,8 @@ import denied_party_screening_tool
 import deploy_env
 import dynamics365_tool
 import aws_iaas_tool
+import aws_patch_tool
+import aws_inspector_tool
 import exception_tool
 import mcp_governance
 import netsuite_tool
@@ -48,6 +50,7 @@ import railway_iaas_tool
 import sailpoint_tool
 import sap_hana_tool
 import synthetic_transaction_tool
+import tls_cert_tool
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +70,11 @@ _ADAPTERS = {
     "postgres_cis":    postgres_cis_tool,
     "railway_iaas":    railway_iaas_tool,
     "aws_iaas":        aws_iaas_tool,
+    "aws_patch":       aws_patch_tool,
+    "aws_inspector":   aws_inspector_tool,
     "ot_heartbeat":    ot_heartbeat_tool,
     "synthetic_transaction": synthetic_transaction_tool,
+    "tls_cert":        tls_cert_tool,
 }
 
 
@@ -85,13 +91,20 @@ def _score_exception_event(connector: dict, event: dict, system_telemetry_id: "i
     up later, so a reviewer triaging this exception can jump straight to the
     exact source telemetry row instead of just knowing which system it came
     from. actor/action/event_type/raw_payload are carried the same way, for
-    "what actually happened" in the triage card itself."""
+    "what actually happened" in the triage card itself.
+
+    connector["risk_tier"]/["id"]/.get("system_owner") are also already in
+    hand here — no extra query needed to feed exception_tool.py's
+    risk_rating computation or to snapshot connector_id/assigned_owner onto
+    the exception row for delegation (see db.py's DDL comment on those two
+    columns for why this is a snapshot, not a live join)."""
     extra_config = connector.get("extra_config") or {}
     system_source = extra_config.get("system_label") or connector["connector_type"]
     process = extra_config.get("process")
     control_id = event.get("resource") or event.get("event_id") or "unknown"
     scored = exception_tool.score_event(
         event.get("event_type") or "", event.get("severity") or "INFO", event.get("raw_payload") or {},
+        connector_risk_tier=connector.get("risk_tier"),
     )
     event_ts = event.get("created_at") or datetime.now(timezone.utc)
     db.insert_exception_event(
@@ -99,6 +112,8 @@ def _score_exception_event(connector: dict, event: dict, system_telemetry_id: "i
         scored["anomaly_score"], scored["uncertainty_score"], scored["requires_human_review"],
         actor=event.get("actor"), action=event.get("action"), event_type=event.get("event_type"),
         raw_payload=event.get("raw_payload"), system_telemetry_id=system_telemetry_id,
+        connector_id=connector.get("id"), assigned_owner=connector.get("system_owner"),
+        risk_rating=scored["risk_rating"],
     )
 
 

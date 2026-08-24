@@ -156,6 +156,10 @@ import pii_retention_sweep
 import risk_waiver_sweep
 import itsm_sla_sweep
 import map_detection_sweep
+import infra_asset_sweep
+import vulnerability_sweep
+import infra_posture_endpoints
+import exception_staleness_sweep
 from sox_scoping_tool import run_sox_scoping, compute_input_hash
 
 try:
@@ -325,6 +329,9 @@ async def lifespan(application: FastAPI):
         _risk_waiver_sweep_task = None
         _itsm_sla_sweep_task = None
         _map_detection_sweep_task = None
+        _infra_asset_sweep_task = None
+        _vulnerability_sweep_task = None
+        _exception_staleness_sweep_task = None
         _reconnect_task = None
         _multi_tenant_bg_tasks: list[asyncio.Task] = []
 
@@ -358,6 +365,21 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
                 asyncio.create_task(_multi_tenant_loop(map_detection_sweep.sweep_once, map_detection_sweep._TICK_S, "MAP detection sweep")),
             ])
+            # Infrastructure Vulnerability & Currency Posture: development
+            # environment only. Unlike Exception Management's dev-only gate
+            # (a router-level 404 — see exceptions_endpoints.py), a
+            # background sweep has no HTTP request to 404; the only
+            # enforcement point is not creating the task at all.
+            if deploy_env.IS_DEVELOPMENT:
+                _multi_tenant_bg_tasks.append(asyncio.create_task(
+                    _multi_tenant_loop(infra_asset_sweep.sweep_once, infra_asset_sweep._TICK_S, "Infra asset/expiry sweep")
+                ))
+                _multi_tenant_bg_tasks.append(asyncio.create_task(
+                    _multi_tenant_loop(vulnerability_sweep.sweep_once, vulnerability_sweep._TICK_S, "OSV vulnerability sweep")
+                ))
+                _multi_tenant_bg_tasks.append(asyncio.create_task(
+                    _multi_tenant_loop(exception_staleness_sweep.sweep_once, exception_staleness_sweep._TICK_S, "Exception staleness sweep")
+                ))
             logger.info("Multi-tenant background sweep schedulers started (%d loops, per-tenant iteration)",
                         len(_multi_tenant_bg_tasks))
         else:
@@ -443,6 +465,17 @@ async def lifespan(application: FastAPI):
                 _map_detection_sweep_task = asyncio.create_task(map_detection_sweep.start_sweep())
                 logger.info("MAP detection sweep task started")
 
+            # Infrastructure Vulnerability & Currency Posture: development
+            # environment only — see the multi-tenant branch's comment above
+            # for why this is gated at task-creation time, not a 404.
+            if db.is_available() and deploy_env.IS_DEVELOPMENT:
+                _infra_asset_sweep_task = asyncio.create_task(infra_asset_sweep.start_sweep())
+                logger.info("Infra asset/expiry sweep task started")
+                _vulnerability_sweep_task = asyncio.create_task(vulnerability_sweep.start_sweep())
+                logger.info("OSV vulnerability sweep task started")
+                _exception_staleness_sweep_task = asyncio.create_task(exception_staleness_sweep.start_sweep())
+                logger.info("Exception staleness sweep task started")
+
             # Background DB reconnect loop — retries every 30 s if startup DB init failed.
             # db.init_db() is blocking (DNS + TCP), so run it in a thread to avoid
             # stalling the event loop (which would cause 502s on all in-flight requests).
@@ -497,6 +530,15 @@ async def lifespan(application: FastAPI):
                         if _map_detection_sweep_task is None:
                             asyncio.create_task(map_detection_sweep.start_sweep())
                             logger.info("MAP detection sweep started after DB reconnect")
+                        if _infra_asset_sweep_task is None and deploy_env.IS_DEVELOPMENT:
+                            asyncio.create_task(infra_asset_sweep.start_sweep())
+                            logger.info("Infra asset/expiry sweep started after DB reconnect")
+                        if _vulnerability_sweep_task is None and deploy_env.IS_DEVELOPMENT:
+                            asyncio.create_task(vulnerability_sweep.start_sweep())
+                            logger.info("OSV vulnerability sweep started after DB reconnect")
+                        if _exception_staleness_sweep_task is None and deploy_env.IS_DEVELOPMENT:
+                            asyncio.create_task(exception_staleness_sweep.start_sweep())
+                            logger.info("Exception staleness sweep started after DB reconnect")
 
             _reconnect_task = asyncio.create_task(_db_reconnect_loop())
 
@@ -510,6 +552,7 @@ async def lifespan(application: FastAPI):
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
                              _risk_waiver_sweep_task, _itsm_sla_sweep_task, _map_detection_sweep_task,
+                             _infra_asset_sweep_task, _vulnerability_sweep_task, _exception_staleness_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
                     _bg_task.cancel()
@@ -925,6 +968,11 @@ app.include_router(infrastructure_monitoring_endpoints.router)
 # SOX processes, risk register entries, and CEM events.
 app.include_router(fair_endpoints.router)
 app.include_router(exceptions_endpoints.router)
+
+# Infrastructure Vulnerability & Currency Posture: asset inventory + OSV.dev
+# vulnerability register — Development environment only (404 gate inside
+# the router itself, same pattern as exceptions_endpoints.router above).
+app.include_router(infra_posture_endpoints.router)
 
 # Process Mining: variant analysis, conformance checking, cycle-time/bottleneck
 # stats, and rework detection over case-tracked adjudications.

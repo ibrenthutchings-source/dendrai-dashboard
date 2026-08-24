@@ -41,7 +41,11 @@ def _audit_once(credentials: dict, extra_config: dict) -> dict:
     raw = iaas_connectors.fetch_postgres_config(dsn)
     compliance = iaas_connectors.normalize_postgres_compliance(raw)
     severity = iaas_connectors.evaluate_severity(compliance)
-    violated = severity in ("CRITICAL", "HIGH")
+    # MEDIUM now covers the version-currency check (evaluate_severity) —
+    # included here so an outdated-version finding still sets
+    # infrastructure_finding=True and reaches _detect_system_flags, not just
+    # the CRITICAL/HIGH config gaps that predate that check.
+    violated = severity in ("CRITICAL", "HIGH", "MEDIUM")
 
     return {
         "resource_label": resource_label,
