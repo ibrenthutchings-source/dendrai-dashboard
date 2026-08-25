@@ -6572,6 +6572,24 @@ def get_sox_segments(company_id: int, fiscal_year: str) -> list:
     return _run(_do) or []
 
 
+def get_latest_sox_segments(company_id: int) -> list:
+    """get_sox_segments requires a fiscal_year; this resolves the most
+    recent one for the company first, mirroring get_latest_sox_scoping_result.
+    Used by the Risk Coverage Cube's optional operating-unit (Z) axis."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT fiscal_year FROM sox_financial_segments WHERE company_id = %s "
+                    "AND fiscal_year IS NOT NULL ORDER BY fiscal_year DESC LIMIT 1",
+                    (company_id,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    fiscal_year = _run(_do)
+    return get_sox_segments(company_id, fiscal_year) if fiscal_year else []
+
+
 def delete_sox_segment(company_id: int, segment_id: int) -> bool:
     """Delete a geography / business-segment financial record."""
     def _do():
