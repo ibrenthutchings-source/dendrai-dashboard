@@ -15,7 +15,19 @@
                            control has proven, not just asserted,
                            evidence (last_test_passed or fired
                            recently)
+
+   Rendered as an actual 3D bar landscape (three.js): the ground
+   plane is COSO component x objective category, bar height is
+   risk_count (sqrt-scaled so one hot cell doesn't flatten the
+   rest), color is the three-state above. Clicking a bar dollies
+   the camera toward it and opens the same detail panel a plain
+   click would. A Table view (the original flat grid) stays
+   available as an equivalent, non-WebGL-dependent fallback — see
+   dataviz accessibility guidance: color/state is never the only
+   way to read a cell.
    ============================================================ */
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 const _CUBE_STATE_META = {
   empty:              { label: "No coverage",       fg: "var(--ink-4)" },
@@ -27,6 +39,15 @@ const _RAG_META = {
   R: { label: "Red",   color: "var(--red-ink)" },
   A: { label: "Amber", color: "var(--amber-ink)" },
   G: { label: "Green", color: "var(--green-ink)" },
+};
+
+const _COMPONENT_SHORT = {
+  "Governance & Culture": "Governance",
+  "Strategy & Objective-Setting": "Strategy",
+  "Performance": "Performance",
+  "Review & Revision": "Review",
+  "Information, Communication & Reporting": "Info & Reporting",
+  "Unmapped": "Unmapped",
 };
 
 function CubeLegend() {
@@ -83,6 +104,323 @@ function CubeCell({ cell, onSelect, selected }) {
         </>
       )}
     </button>
+  );
+}
+
+function CubeGridTable({ data, cellsByKey, selectedKey, onSelectKey }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: `140px repeat(${data.coso_components.length}, minmax(110px, 1fr))`,
+        gap: 6, minWidth: 780,
+      }}>
+        <div />
+        {data.coso_components.map(c => (
+          <div key={c} className="mono" style={{
+            fontSize: 9.5, color: "var(--ink-3)", textAlign: "center", padding: "0 2px",
+            display: "flex", alignItems: "flex-end", justifyContent: "center", textWrap: "balance",
+          }}>{c}</div>
+        ))}
+
+        {data.objective_categories.map(row => (
+          <React.Fragment key={row}>
+            <div className="mono" style={{
+              fontSize: 10.5, color: "var(--ink-2, var(--ink))", fontWeight: 600,
+              display: "flex", alignItems: "center",
+            }}>{row}</div>
+            {data.coso_components.map(col => {
+              const key = `${row}::${col}`;
+              const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
+              return (
+                <CubeCell key={key} cell={cell} selected={selectedKey === key}
+                  onSelect={() => onSelectKey(prev => (prev === key ? null : key))} />
+              );
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── 3D bar landscape ─────────────────────────────────────────────────────
+// Ground plane = coso_component (x) x objective_category (z); bar height
+// (y) = sqrt-scaled risk_count so one concentrated cell doesn't flatten the
+// rest of the landscape; bar color = the same three-state palette as the
+// table view, resolved from the live CSS custom properties (via an offscreen
+// canvas fillStyle round-trip) so dark/light mode and the toggle both just
+// work with zero duplicated color literals.
+function _resolveCssColor(cssValue, fallbackHex) {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = cssValue;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+    return (r << 16) | (g << 8) | b;
+  } catch {
+    return fallbackHex;
+  }
+}
+
+function _cubePalette() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name, fb) => (cs.getPropertyValue(name) || "").trim() || fb;
+  return {
+    empty:    _resolveCssColor(v("--surface-3", "#e5e2da"), 0xe5e2da),
+    amber:    _resolveCssColor(v("--amber", "#e0a838"), 0xe0a838),
+    amberBg:  _resolveCssColor(v("--amber-soft", "#fbf1de"), 0xfbf1de),
+    green:    _resolveCssColor(v("--green-ink", "#2f6b46"), 0x2f6b46),
+    greenBg:  _resolveCssColor(v("--acc-soft", "#e5f3ea"), 0xe5f3ea),
+    ink:      _resolveCssColor(v("--ink", "#232019"), 0x232019),
+    ink3:     _resolveCssColor(v("--ink-3", "#8a8370"), 0x8a8370),
+    line:     _resolveCssColor(v("--line", "#e2ded2"), 0xe2ded2),
+    accent:   _resolveCssColor(v("--acc", "#2f8f5a"), 0x2f8f5a),
+    surface:  _resolveCssColor(v("--surface", "#faf8f3"), 0xfaf8f3),
+  };
+}
+
+function _stateColor(state, palette) {
+  if (state === "verified") return palette.greenBg;
+  if (state === "mapped_unverified") return palette.amberBg;
+  return palette.empty;
+}
+function _stateEdgeColor(state, palette) {
+  if (state === "verified") return palette.green;
+  if (state === "mapped_unverified") return palette.amber;
+  return palette.line;
+}
+
+function _makeTextSprite(text, { fontSize = 42, color = "#333333" } = {}) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = `600 ${fontSize}px system-ui, -apple-system, sans-serif`;
+  const padding = 14;
+  const w = Math.ceil(ctx.measureText(text).width) + padding * 2;
+  const h = fontSize + padding * 2;
+  canvas.width = w; canvas.height = h;
+  ctx.font = `600 ${fontSize}px system-ui, -apple-system, sans-serif`;
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  ctx.fillText(text, w / 2, h / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  const scale = 0.017;
+  sprite.scale.set(w * scale, h * scale, 1);
+  return sprite;
+}
+
+function Cube3D({ data, cellsByKey, onSelectKey }) {
+  const mountRef = useRef(null);
+  const onSelectKeyRef = useRef(onSelectKey);
+  onSelectKeyRef.current = onSelectKey;
+  const [webglError, setWebglError] = useState(false);
+  const [hoverInfo, setHoverInfo] = useState(null);
+
+  useEffect(() => {
+    const mount = mountRef.current;
+    if (!mount || !data) return;
+    let renderer, scene, camera, controls, raf, ro;
+    let disposed = false;
+
+    try {
+      const palette = _cubePalette();
+      const nCols = data.coso_components.length;
+      const nRows = data.objective_categories.length;
+      const spacing = 1.6;
+      const baseX = -((nCols - 1) * spacing) / 2;
+      const baseZ = -((nRows - 1) * spacing) / 2;
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(palette.surface);
+
+      const width = mount.clientWidth || 780;
+      const height = 460;
+      camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 100);
+      // A steeper, more top-down angle than a typical orbit default — the
+      // axis labels are camera-facing sprites, and a shallow oblique angle
+      // packs them close enough in screen space to overlap. Looking down
+      // more spreads them out; users can still orbit to a flatter angle
+      // themselves once oriented.
+      camera.position.set(nCols * 0.55, nRows * 2.85, nRows * 1.05);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(width, height);
+      mount.innerHTML = "";
+      mount.appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.set(0, 0.6, 0);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.minDistance = 2.5;
+      controls.maxDistance = nCols * 4.5;
+      controls.maxPolarAngle = Math.PI / 2.05;
+      controls.update();
+
+      scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+      dir.position.set(4, 8, 5);
+      scene.add(dir);
+
+      const grid = new THREE.GridHelper(Math.max(nCols, nRows) * spacing + 1, 20, palette.line, palette.line);
+      grid.position.y = 0;
+      scene.add(grid);
+
+      const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+      const clickable = [];
+
+      data.objective_categories.forEach((row, ri) => {
+        data.coso_components.forEach((col, ci) => {
+          const key = `${row}::${col}`;
+          const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
+          const h = 0.12 + Math.sqrt(cell.risk_count || 0) * 0.55;
+          const mat = new THREE.MeshStandardMaterial({
+            color: _stateColor(cell.state, palette), roughness: 0.7, metalness: 0.05,
+          });
+          const mesh = new THREE.Mesh(boxGeo, mat);
+          mesh.scale.set(1.1, h, 1.1);
+          const x = baseX + ci * spacing;
+          const z = baseZ + ri * spacing;
+          mesh.position.set(x, h / 2, z);
+          mesh.userData = { cell, key, baseColor: mat.color.getHex(), edgeColor: _stateEdgeColor(cell.state, palette) };
+          scene.add(mesh);
+
+          const edges = new THREE.EdgesGeometry(boxGeo);
+          const edgeMat = new THREE.LineBasicMaterial({ color: _stateEdgeColor(cell.state, palette) });
+          const wire = new THREE.LineSegments(edges, edgeMat);
+          wire.scale.copy(mesh.scale);
+          wire.position.copy(mesh.position);
+          scene.add(wire);
+
+          if (cell.state !== "empty") clickable.push(mesh);
+        });
+      });
+
+      data.coso_components.forEach((col, ci) => {
+        const sprite = _makeTextSprite(_COMPONENT_SHORT[col] || col, { fontSize: 30, color: "#" + palette.ink3.toString(16).padStart(6, "0") });
+        sprite.position.set(baseX + ci * spacing, 0.05, baseZ - spacing * 1.5);
+        scene.add(sprite);
+      });
+      data.objective_categories.forEach((row, ri) => {
+        const sprite = _makeTextSprite(row, { fontSize: 30, color: "#" + palette.ink.toString(16).padStart(6, "0") });
+        sprite.position.set(baseX - spacing * 1.5, 0.05, baseZ + ri * spacing);
+        scene.add(sprite);
+      });
+
+      const raycaster = new THREE.Raycaster();
+      const ndc = new THREE.Vector2();
+      let hovered = null;
+
+      const camAnim = { active: false, t: 0, dur: 550, fromPos: new THREE.Vector3(), toPos: new THREE.Vector3(), fromTarget: new THREE.Vector3(), toTarget: new THREE.Vector3() };
+
+      function setNdc(evt) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        ndc.x = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
+        ndc.y = -((evt.clientY - rect.top) / rect.height) * 2 + 1;
+      }
+
+      function pick(evt) {
+        setNdc(evt);
+        raycaster.setFromCamera(ndc, camera);
+        const hits = raycaster.intersectObjects(clickable, false);
+        return hits.length > 0 ? hits[0].object : null;
+      }
+
+      function onMove(evt) {
+        const hit = pick(evt);
+        if (hit !== hovered) {
+          if (hovered) hovered.material.color.setHex(hovered.userData.baseColor);
+          if (hit) hit.material.color.setHex(palette.accent);
+          hovered = hit;
+          renderer.domElement.style.cursor = hit ? "pointer" : "grab";
+          setHoverInfo(hit ? hit.userData.cell : null);
+        }
+      }
+
+      function onClick(evt) {
+        const hit = pick(evt);
+        if (!hit) return;
+        onSelectKeyRef.current(hit.userData.key);
+        camAnim.active = true;
+        camAnim.t = 0;
+        camAnim.fromPos.copy(camera.position);
+        camAnim.fromTarget.copy(controls.target);
+        const dirToCam = camera.position.clone().sub(hit.position).normalize();
+        camAnim.toTarget.copy(hit.position);
+        camAnim.toPos.copy(hit.position).add(dirToCam.multiplyScalar(2.6)).setY(Math.max(hit.position.y + 1.4, 1.6));
+      }
+
+      renderer.domElement.addEventListener("pointermove", onMove);
+      renderer.domElement.addEventListener("click", onClick);
+
+      function animate() {
+        if (disposed) return;
+        if (camAnim.active) {
+          camAnim.t += 16;
+          const p = Math.min(1, camAnim.t / camAnim.dur);
+          const ease = 1 - Math.pow(1 - p, 3);
+          camera.position.lerpVectors(camAnim.fromPos, camAnim.toPos, ease);
+          controls.target.lerpVectors(camAnim.fromTarget, camAnim.toTarget, ease);
+          if (p >= 1) camAnim.active = false;
+        }
+        controls.update();
+        renderer.render(scene, camera);
+        raf = requestAnimationFrame(animate);
+      }
+      animate();
+
+      ro = new ResizeObserver(() => {
+        const w = mount.clientWidth || width;
+        camera.aspect = w / height;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, height);
+      });
+      ro.observe(mount);
+
+      return () => {
+        disposed = true;
+        cancelAnimationFrame(raf);
+        ro?.disconnect();
+        renderer.domElement.removeEventListener("pointermove", onMove);
+        renderer.domElement.removeEventListener("click", onClick);
+        controls.dispose();
+        renderer.dispose();
+        scene.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+        });
+      };
+    } catch (e) {
+      setWebglError(true);
+    }
+  }, [data]);
+
+  if (webglError) {
+    return (
+      <div className="mono" style={{ fontSize: 11, color: "var(--red-ink)", padding: 20 }}>
+        ⚠ 3D rendering unavailable in this browser — use the Table view below instead.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div ref={mountRef} style={{ width: "100%", height: 460, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }} />
+      <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 6 }}>
+        Drag to rotate · scroll to zoom · click a bar to zoom in and open detail
+        {hoverInfo && ` — ${hoverInfo.objective_category} · ${hoverInfo.coso_component}: ${hoverInfo.risk_count} risk${hoverInfo.risk_count === 1 ? "" : "s"}`}
+      </div>
+    </div>
   );
 }
 
@@ -183,6 +521,7 @@ function SegmentStrip({ segments }) {
 function RiskCoverageCubeScreen({ ticker }) {
   const [state, setState] = useState({ loading: false, error: null, data: null });
   const [selectedKey, setSelectedKey] = useState(null);
+  const [view, setView] = useState("3d");
 
   useEffect(() => {
     if (!ticker || typeof window === "undefined" || !window.MCP?.getCoverageCube) return;
@@ -228,44 +567,33 @@ function RiskCoverageCubeScreen({ ticker }) {
         <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
             <CubeLegend />
-            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
-              {data.total_risks} risks assessed
-              {data.unmapped_risk_count > 0 ? ` · ${data.unmapped_risk_count} in an unmapped category` : ""}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
+                {data.total_risks} risks assessed
+                {data.unmapped_risk_count > 0 ? ` · ${data.unmapped_risk_count} in an unmapped category` : ""}
+              </div>
+              <div style={{ display: "flex", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
+                {["3d", "table"].map(v => (
+                  <button key={v} type="button"
+                    onClick={() => setView(v)}
+                    className="mono"
+                    style={{
+                      fontSize: 10.5, padding: "4px 12px", border: "none", cursor: "pointer",
+                      background: view === v ? "var(--acc)" : "var(--surface)",
+                      color: view === v ? "var(--surface)" : "var(--ink-3)",
+                    }}>
+                    {v === "3d" ? "3D" : "Table"}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
-          <div style={{ overflowX: "auto" }}>
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: `140px repeat(${data.coso_components.length}, minmax(110px, 1fr))`,
-              gap: 6, minWidth: 780,
-            }}>
-              <div />
-              {data.coso_components.map(c => (
-                <div key={c} className="mono" style={{
-                  fontSize: 9.5, color: "var(--ink-3)", textAlign: "center", padding: "0 2px",
-                  display: "flex", alignItems: "flex-end", justifyContent: "center", textWrap: "balance",
-                }}>{c}</div>
-              ))}
-
-              {data.objective_categories.map(row => (
-                <React.Fragment key={row}>
-                  <div className="mono" style={{
-                    fontSize: 10.5, color: "var(--ink-2, var(--ink))", fontWeight: 600,
-                    display: "flex", alignItems: "center",
-                  }}>{row}</div>
-                  {data.coso_components.map(col => {
-                    const key = `${row}::${col}`;
-                    const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
-                    return (
-                      <CubeCell key={key} cell={cell} selected={selectedKey === key}
-                        onSelect={c => setSelectedKey(prev => (prev === key ? null : key))} />
-                    );
-                  })}
-                </React.Fragment>
-              ))}
-            </div>
-          </div>
+          {view === "3d" ? (
+            <Cube3D data={data} cellsByKey={cellsByKey} onSelectKey={key => setSelectedKey(prev => (prev === key ? null : key))} />
+          ) : (
+            <CubeGridTable data={data} cellsByKey={cellsByKey} selectedKey={selectedKey} onSelectKey={setSelectedKey} />
+          )}
 
           <CubeCellDetail cell={selected} onClose={() => setSelectedKey(null)} />
 
