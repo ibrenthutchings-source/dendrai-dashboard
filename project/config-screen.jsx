@@ -221,6 +221,7 @@ function FinancialsUploadCard({ ticker }) {
           {saveResult && (
             <div className="mono" style={{fontSize: 10.5, color: "var(--green-ink)", marginTop: 8}}>
               ✓ Saved {saveResult.data_points_saved} data points across {saveResult.metrics_saved} metrics
+              {saveResult.segments_saved ? ` + ${saveResult.segments_saved} segment breakdown${saveResult.segments_saved === 1 ? "" : "s"}` : ""}
               {saveResult.skipped_unmapped ? ` (${saveResult.skipped_unmapped} unmapped rows skipped)` : ""}
             </div>
           )}
@@ -237,6 +238,7 @@ function FinancialsUploadCard({ ticker }) {
                     <tr style={{textAlign: "left", borderBottom: "1px solid var(--line)"}}>
                       <th style={{padding: "5px 8px"}}>Label</th>
                       <th style={{padding: "5px 8px"}}>Metric</th>
+                      <th style={{padding: "5px 8px"}}>Segment</th>
                       <th style={{padding: "5px 8px"}}>Period end</th>
                       <th style={{padding: "5px 8px"}}>Granularity</th>
                       <th style={{padding: "5px 8px", textAlign: "right"}}>Value</th>
@@ -253,6 +255,23 @@ function FinancialsUploadCard({ ticker }) {
                             <option value="">— unmapped —</option>
                             {MANUAL_FINANCIALS_METRICS.map(m => <option key={m} value={m}>{m}</option>)}
                           </select>
+                        </td>
+                        <td style={{padding: "5px 8px"}}>
+                          <div style={{display: "flex", gap: 3}}>
+                            <select className="input" style={{fontSize: 10.5, padding: "2px 4px", width: 70}}
+                              value={li.segment_type || ""}
+                              onChange={e => updateItem(li._key, { segment_type: e.target.value || null })}
+                              title="Operating unit dimension">
+                              <option value="">—</option>
+                              <option value="geography">geo</option>
+                              <option value="business_segment">segment</option>
+                            </select>
+                            {li.segment_type && (
+                              <input className="input" style={{fontSize: 10.5, padding: "2px 4px", width: 70}}
+                                value={li.segment_name || ""} placeholder="name"
+                                onChange={e => updateItem(li._key, { segment_name: e.target.value || null })} />
+                            )}
+                          </div>
                         </td>
                         <td style={{padding: "5px 8px"}} className="mono">{li.period_end}</td>
                         <td style={{padding: "5px 8px"}}>
