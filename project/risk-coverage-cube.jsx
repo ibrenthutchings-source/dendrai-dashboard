@@ -182,6 +182,26 @@ function _cubePalette() {
   };
 }
 
+// Bar height for a given risk_count — sqrt-scaled so one concentrated cell
+// doesn't flatten the rest of the landscape. Shared by the bars themselves
+// and by the vertical axis ticks below, so the ruler always matches what's
+// actually drawn.
+function _barHeight(riskCount) {
+  return 0.12 + Math.sqrt(riskCount || 0) * 0.55;
+}
+
+// "Nice" tick values for the vertical (risk-count) axis: 0 plus evenly
+// stepped counts up to the max, in a round step (1/2/5/10...) rather than
+// literal max/N divisions.
+function _niceTicks(maxCount) {
+  if (maxCount <= 0) return [0];
+  const step = maxCount <= 5 ? 1 : maxCount <= 10 ? 2 : maxCount <= 25 ? 5 : 10;
+  const ticks = [];
+  for (let v = 0; v <= maxCount; v += step) ticks.push(v);
+  if (ticks[ticks.length - 1] !== maxCount) ticks.push(maxCount);
+  return ticks;
+}
+
 function _stateColor(state, palette) {
   if (state === "verified") return palette.greenBg;
   if (state === "mapped_unverified") return palette.amberBg;
@@ -280,7 +300,7 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         data.coso_components.forEach((col, ci) => {
           const key = `${row}::${col}`;
           const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
-          const h = 0.12 + Math.sqrt(cell.risk_count || 0) * 0.55;
+          const h = _barHeight(cell.risk_count);
           const mat = new THREE.MeshStandardMaterial({
             color: _stateColor(cell.state, palette), roughness: 0.7, metalness: 0.05,
           });
@@ -313,6 +333,45 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         sprite.position.set(baseX - spacing * 1.5, 0.05, baseZ + ri * spacing);
         scene.add(sprite);
       });
+
+      // Vertical axis — bar height encodes risk_count, and without a ruler
+      // that's only discoverable via hover/click. Drawn at the corner
+      // furthest from both label rows so it doesn't collide with them.
+      {
+        const maxCount = Math.max(1, ...data.cells.map(c => c.risk_count || 0));
+        const ticks = _niceTicks(maxCount);
+        // Tucked just past the last column/row, close enough to the grid to
+        // stay inside the default camera framing (a thin THREE.Line rendered
+        // at the very edge of the frustum was easy to lose — a stubby pole +
+        // wider tick bars read far more reliably as "an axis").
+        const axisX = baseX + (nCols - 1) * spacing + spacing * 0.55;
+        const axisZ = baseZ + (nRows - 1) * spacing + spacing * 0.35;
+        const topH = _barHeight(maxCount);
+        const inkHex = "#" + palette.ink3.toString(16).padStart(6, "0");
+
+        const debugMarker = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+        debugMarker.position.set(axisX, 1, axisZ);
+        scene.add(debugMarker);
+
+        const poleMat = new THREE.MeshBasicMaterial({ color: palette.ink3 });
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, topH, 8), poleMat);
+        pole.position.set(axisX, topH / 2, axisZ);
+        scene.add(pole);
+
+        ticks.forEach(v => {
+          const h = _barHeight(v);
+          const tick = new THREE.Mesh(new THREE.BoxGeometry(spacing * 0.18, 0.02, 0.02), poleMat);
+          tick.position.set(axisX + spacing * 0.09, h, axisZ);
+          scene.add(tick);
+          const label = _makeTextSprite(String(v), { fontSize: 26, color: inkHex });
+          label.position.set(axisX + spacing * 0.32, h, axisZ);
+          scene.add(label);
+        });
+
+        const title = _makeTextSprite("risks (bar height)", { fontSize: 26, color: inkHex });
+        title.position.set(axisX, topH + 0.3, axisZ);
+        scene.add(title);
+      }
 
       const raycaster = new THREE.Raycaster();
       const ndc = new THREE.Vector2();
@@ -417,7 +476,8 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
     <div>
       <div ref={mountRef} style={{ width: "100%", height: 460, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }} />
       <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 6 }}>
-        Drag to rotate · scroll to zoom · click a bar to zoom in and open detail
+        Ground plane = COSO component x objective category · bar height = risk count (ruler at back-right corner) ·
+        drag to rotate · scroll to zoom · click a bar to zoom in and open detail
         {hoverInfo && ` — ${hoverInfo.objective_category} · ${hoverInfo.coso_component}: ${hoverInfo.risk_count} risk${hoverInfo.risk_count === 1 ? "" : "s"}`}
       </div>
     </div>
