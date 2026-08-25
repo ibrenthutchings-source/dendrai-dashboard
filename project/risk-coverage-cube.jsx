@@ -345,7 +345,7 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         // at the very edge of the frustum was easy to lose — a stubby pole +
         // wider tick bars read far more reliably as "an axis").
         const axisX = baseX + (nCols - 1) * spacing + spacing * 0.3;
-        const axisZ = baseZ + (nRows - 1) * spacing + spacing * 0.1;
+        const axisZ = baseZ - spacing * 0.3;
         const topH = _barHeight(maxCount);
         const inkHex = "#" + palette.ink3.toString(16).padStart(6, "0");
 
