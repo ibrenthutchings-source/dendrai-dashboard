@@ -125,6 +125,35 @@ _COSO_PRINCIPLES: Dict[str, Dict] = {
 # into a real principle it was never actually assessed against.
 _COSO_UNMAPPED = {"principle": None, "label": "Unmapped", "component": "Unmapped"}
 
+# COSO's classic objective categories (Operations / Reporting / Compliance),
+# plus Strategic (added in the 2013 IC-IF update and carried into ERM 2017).
+# This is the Risk Coverage Cube's Y-axis — a second, independent judgment
+# call from the component mapping above, so it's kept in its own dict rather
+# than folded into _COSO_PRINCIPLES. Reviewed and approved 2026-08-25
+# (4-category model): Strategic risks are their own row; Revenue, Operational,
+# Supply and Cybersecurity are read as core-operations risk (day-to-day
+# ability to run the business); Financial Reporting stands alone as
+# Reporting; Trade Compliance, Compliance, Legal, ESG and Governance are
+# grouped as Compliance — each is fundamentally about conforming to an
+# external or internal standard rather than running or reporting the
+# business, ESG and Governance included (ESG risk here is predominantly
+# disclosure/regulatory-driven; Governance risk is about oversight failing
+# to meet an expected standard, not a strategy or reporting failure).
+_OBJECTIVE_CATEGORY: Dict[str, str] = {
+    "Strategic":           "Strategic",
+    "Revenue":             "Operations",
+    "Operational":         "Operations",
+    "Supply":              "Operations",
+    "Cybersecurity":       "Operations",
+    "Financial Reporting": "Reporting",
+    "Trade Compliance":    "Compliance",
+    "Compliance":          "Compliance",
+    "Legal":               "Compliance",
+    "ESG":                 "Compliance",
+    "Governance":          "Compliance",
+}
+_OBJECTIVE_UNMAPPED = "Unmapped"
+
 _ISO_TREATMENT = {"R": "risk_modification", "A": "risk_modification", "G": "risk_retention"}
 _COSO_RESPONSE = {"R": "Reduce", "A": "Reduce", "G": "Accept"}
 
