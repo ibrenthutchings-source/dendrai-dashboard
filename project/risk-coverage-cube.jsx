@@ -352,6 +352,12 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         const debugMarker = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
         debugMarker.position.set(axisX, 1, axisZ);
         scene.add(debugMarker);
+        setTimeout(() => {
+          const p = debugMarker.position.clone().project(camera);
+          const sx = (p.x * 0.5 + 0.5) * width;
+          const sy = (1 - (p.y * 0.5 + 0.5)) * height;
+          console.log('[cube3d-debug-screen]', JSON.stringify({ sx, sy, width, height, sceneChildren: scene.children.length }));
+        }, 1000);
 
         const poleMat = new THREE.MeshBasicMaterial({ color: palette.ink3 });
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, topH, 8), poleMat);
