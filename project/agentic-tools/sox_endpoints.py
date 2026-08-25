@@ -21,6 +21,7 @@ Endpoints:
     POST /sox/hitl/coverage-approvals         Gate S2 — per-process coverage HITL decisions
     GET  /sox/hitl/gate-status/{run_id}       Gate S1/S2 status for a run
     POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
+    POST /sox/segments/{ticker}/import-xbrl   Auto-ingest segment/geography revenue from the latest 10-K/10-Q XBRL
     GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
     DELETE /sox/segments/{ticker}/{id}        Delete a geography/segment financial record
     GET  /sox/segments/{ticker}/forecasts/{run_id}  Retrieve computed segment forecast KPIs for a run
@@ -421,8 +422,9 @@ def upsert_sox_segments(ticker: str, req: SoxSegmentRequest, run_id: Optional[in
     Add or update geographic / business-segment financial data.
 
     Used for risk-based materiality allocation across geographies and segments.
-    When EDGAR XBRL includes segment data it is ingested automatically;
-    use this endpoint to supply or correct segment breakdowns manually.
+    When EDGAR XBRL includes segment data, POST .../import-xbrl ingests it
+    directly (edgar_segments.py); use this endpoint to supply data for a
+    private company/non-filer, or to correct an auto-ingested breakdown.
 
     segment_type: 'geography' | 'business_segment' | 'product_line'
     """
@@ -435,6 +437,25 @@ def upsert_sox_segments(ticker: str, req: SoxSegmentRequest, run_id: Optional[in
         db.upsert_sox_segment(company_id, run_id, seg)
         saved += 1
     return {"saved": saved, "fiscal_year": req.fiscal_year}
+
+
+@router.post("/segments/{ticker}/import-xbrl")
+def import_xbrl_segments(ticker: str):
+    """
+    Auto-ingest geographic / business-segment revenue straight from the
+    company's most recent 10-K/10-Q XBRL instance document (edgar_segments.py)
+    — this is the "ingested automatically" path upsert_sox_segments' docstring
+    above describes; that auto-ingestion didn't actually exist until now.
+
+    Only breakdowns that reconcile to the filing's own consolidated revenue
+    (within tolerance) are written, tagged source='filed' so they're never
+    confused with a manually-entered row. Unreconciled or unextractable
+    breakdowns are reported in the response but not persisted — see
+    edgar_segments.persist_segments's docstring for why.
+    """
+    import edgar_segments
+    result = edgar_segments.persist_segments(ticker)
+    return result
 
 
 @router.get("/segments/{ticker}/{fiscal_year}")

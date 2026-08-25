@@ -273,13 +273,22 @@ def parse_filings(sub: dict, form_types: set[str]) -> dict[str, list[dict]]:
 # ── Document fetching ──────────────────────────────────────────────────────────
 
 def _filing_index(cik: str, accession_number: str) -> list[dict]:
-    """Return the document list from a filing's JSON index."""
+    """Return the document list from a filing's JSON index.
+
+    EDGAR serves the machine-readable directory listing at plain
+    `index.json` in the filing's own accession folder — `{accession-with-
+    dashes}-index.json` (what this used to build) 404s; that dashed-name
+    convention only exists for the *human* `-index.htm` page. This was
+    previously a silent no-op for every caller: fetch_filing_text()'s
+    _best_document() falls through to the already-known primary_document
+    when items is empty, which happens to be right most of the time, so the
+    bug never surfaced — until a caller needed a *different* file in the
+    same directory (edgar_segments.py, locating the XBRL instance doc),
+    where there's no equivalent fallback.
+    """
     cik_int = int(cik)
     acc_clean = accession_number.replace("-", "")
-    url = (
-        f"{EDGAR_BASE}/Archives/edgar/data/{cik_int}"
-        f"/{acc_clean}/{accession_number}-index.json"
-    )
+    url = f"{EDGAR_BASE}/Archives/edgar/data/{cik_int}/{acc_clean}/index.json"
     r = _get_safe(url)
     if r is None:
         return []
