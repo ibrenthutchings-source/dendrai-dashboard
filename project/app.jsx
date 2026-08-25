@@ -36,6 +36,7 @@ const ScenarioAnalysisScreenLazy = lazyGlobal(() => import('./scenario-analysis.
 const SoxScopePanelLazy = lazyGlobal(() => Promise.all([import('./sox-scope.jsx'), import('./sox-hitl.jsx')]), 'SoxScopePanel');
 const GovernanceViewLazy = lazyGlobal(() => import('./governance.jsx'), 'GovernanceView');
 const PostureTrendScreenLazy = lazyGlobal(() => import('./posture-trend.jsx'), 'PostureTrendPanel');
+const RiskCoverageCubeScreenLazy = lazyGlobal(() => import('./risk-coverage-cube.jsx'), 'RiskCoverageCubeScreen');
 const HelpScreenLazy = lazyGlobal(() => import('./help.jsx'), 'HelpScreen');
 
 class ErrorBoundary extends React.Component {
@@ -2639,6 +2640,13 @@ function App() {
           {activeScreen === "posturetrend" && (
           <ScreenAccessGate screenId="posturetrend">
             <PostureTrendScreenLazy ticker={cfg.ticker} />
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Risk Coverage Cube ---- */}
+          {activeScreen === "coveragecube" && (
+          <ScreenAccessGate screenId="coveragecube">
+            <RiskCoverageCubeScreenLazy ticker={cfg.ticker} />
           </ScreenAccessGate>
           )}
 

@@ -34,6 +34,7 @@ const NAV_SECTIONS = [
       // like everything else in this list.
       { id: "ai_governance", icon: "shield", l: "AI Governance" },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
+      { id: "coveragecube", icon: "grid",  l: "Risk Coverage Cube" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping", divider: "Scoping" },
       { id: "scope",    icon: "grid",      l: "Audit Plan" },

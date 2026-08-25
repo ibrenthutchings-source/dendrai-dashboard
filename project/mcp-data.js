@@ -302,6 +302,16 @@ window.MCP = (function () {
     return _post('/financials/commit', { ticker, line_items: lineItems });
   }
 
+  /**
+   * Risk Coverage Cube — COSO-component x objective-category grid for the
+   * ticker's latest risk-loop run (risk_coverage_cube.py). Returns null on
+   * 404 rather than throwing so a not-yet-run ticker renders an empty state,
+   * not an error.
+   */
+  async function getCoverageCube(ticker) {
+    return _getSavedOrNull(`/coverage-cube/${encodeURIComponent(ticker)}`);
+  }
+
   // ── Governance Intelligence — load from DB without a live pipeline run ──────
   // Both return null on 404 (nothing saved yet for this ticker) instead of throwing,
   // so callers can treat "no saved data" as a normal, non-error case.
@@ -1018,6 +1028,7 @@ window.MCP = (function () {
     createPrivateCompany,
     uploadFinancials,
     commitFinancials,
+    getCoverageCube,
     fetchSavedProxyData,
     fetchSavedPeerBenchmarks,
     fetchSavedAuditScope,
