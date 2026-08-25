@@ -1,39 +1,44 @@
 /* ============================================================
-   Risk Coverage Cube — COSO ERM 2017 component (X) x objective
-   category (Y) grid, showing how much of the risk universe is
-   actually covered and by what. Standalone nav screen, scoped to
-   the ticker's latest risk-loop run (risk_coverage_cube.py) —
-   spans the whole loop plus RaC/CaC/PaC, so it doesn't belong
-   inside a single Assess Risk stage canvas.
+   Risk Coverage Cube — a real 3D cube, three axes:
+     X (ground)   COSO ERM 2017 component
+     Z (ground)   objective category
+     Y (vertical) operating unit, stacked as layers — Consolidated
+                  at the base (real risk bars), any filed/uploaded
+                  segment revenue as labeled layers above it.
+   Bar height WITHIN a layer separately encodes risk_count — the
+   only way to fit 2 categorical axes + 1 magnitude + 1 more
+   categorical axis into 3 spatial dimensions. Standalone nav
+   screen, scoped to the ticker's latest risk-loop run
+   (risk_coverage_cube.py) — spans the whole loop plus RaC/CaC/PaC,
+   so it doesn't belong inside a single Assess Risk stage canvas.
 
-   Each cell is one of three states, never collapsed to a binary
-   green/red:
-     empty              — no risk in the current run falls here
-     mapped_unverified  — a risk is here, but no linked control has
-                           real, tested/observed assurance evidence
-     verified           — a risk is here AND at least one linked
-                           control has proven, not just asserted,
-                           evidence (last_test_passed or fired
-                           recently)
+   Color = two independent signals, never merged:
+     - component IDENTITY: a fixed categorical hue per COSO
+       component (_COSO_COLOR) — COSO has no official per-component
+       color standard, so this is a hand-picked, colorblind-mindful
+       palette, chosen to stay clear of the red/amber/green band
+       already used for RAG severity and reused nowhere else here.
+     - coverage STATE: fill opacity + edge weight on top of that
+       hue — empty (flat neutral gray, no component color at all
+       for a cell with nothing in it), mapped_unverified (hollow,
+       ~30% fill), verified (solid, ~95% fill) — never collapsed to
+       a binary green/red, and never merged with the loop's own
+       inferred control_env (shown separately in the detail panel).
 
-   Rendered as an actual 3D bar landscape (three.js): the ground
-   plane is COSO component x objective category, bar height is
-   risk_count (sqrt-scaled so one hot cell doesn't flatten the
-   rest), color is the three-state above. Clicking a bar dollies
-   the camera toward it and opens the same detail panel a plain
-   click would. A Table view (the original flat grid) stays
-   available as an equivalent, non-WebGL-dependent fallback — see
-   dataviz accessibility guidance: color/state is never the only
-   way to read a cell.
+   Operating-unit layers above Consolidated are honestly incomplete
+   by design: no risk or control anywhere in the schema is tagged
+   to a segment, so those layers are real (named, revenue-weighted)
+   but carry no bars — a translucent labeled slab, not a fabricated
+   breakdown.
+
+   Clicking a bar dollies the camera toward it and opens the same
+   detail panel a plain click would. A Table view (the original
+   flat grid) stays available as an equivalent, non-WebGL-dependent
+   fallback — see dataviz accessibility guidance: color/state is
+   never the only way to read a cell.
    ============================================================ */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-
-const _CUBE_STATE_META = {
-  empty:              { label: "No coverage",       fg: "var(--ink-4)" },
-  mapped_unverified:  { label: "Mapped, unverified", fg: "var(--amber-ink)", bg: "var(--amber-soft)", border: "var(--amber)" },
-  verified:           { label: "Verified",           fg: "var(--green-ink)", bg: "var(--green-soft, var(--acc-soft))", border: "var(--green-ink)" },
-};
 
 const _RAG_META = {
   R: { label: "Red",   color: "var(--red-ink)" },
@@ -50,26 +55,70 @@ const _COMPONENT_SHORT = {
   "Unmapped": "Unmapped",
 };
 
+// COSO has no single official per-component color standard the way RAG has
+// red/amber/green — this is a hand-picked, fixed-order categorical palette
+// (one hue per ERM 2017 component, Unmapped as neutral gray), chosen to stay
+// clear of the red/amber/green band already carrying RAG-severity and
+// coverage-state meaning elsewhere on this screen. Color now encodes
+// component IDENTITY; coverage STATE is encoded separately via fill opacity
+// + edge weight (see _cellStyle) so the two signals never collide.
+const _COSO_COLOR = {
+  "Governance & Culture": "#17A398",
+  "Strategy & Objective-Setting": "#2E7BD6",
+  "Performance": "#6C5CE7",
+  "Review & Revision": "#9B4FE0",
+  "Information, Communication & Reporting": "#C43FA6",
+  "Unmapped": "#9AA0A6",
+};
+
+const _STATE_LABEL = { empty: "No coverage", mapped_unverified: "Mapped, unverified", verified: "Verified" };
+
+// Coverage state -> fill opacity + edge treatment, independent of the
+// component hue above. Empty always renders as flat neutral gray regardless
+// of component — a cell with nothing in it shouldn't borrow a component's
+// color and imply something's there.
+function _cellStyle(component, state, palette) {
+  const hex = _COSO_COLOR[component] || _COSO_COLOR.Unmapped;
+  if (state === "verified") return { fill: hex, fillOpacity: 0.92, edge: hex, edgeWeight: 2 };
+  if (state === "mapped_unverified") return { fill: hex, fillOpacity: 0.32, edge: hex, edgeWeight: 1 };
+  return { fill: "#" + palette.empty.toString(16).padStart(6, "0"), fillOpacity: 1, edge: "#" + palette.line.toString(16).padStart(6, "0"), edgeWeight: 1 };
+}
+
 function CubeLegend() {
   return (
-    <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-      {Object.entries(_CUBE_STATE_META).map(([state, meta]) => (
-        <div key={state} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{
-            width: 12, height: 12, borderRadius: 3, display: "inline-block",
-            background: meta.bg || "var(--surface-3)",
-            border: `1px solid ${meta.border || "var(--line-2)"}`,
-          }} />
-          <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{meta.label}</span>
-        </div>
-      ))}
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>COSO component:</span>
+        {Object.entries(_COSO_COLOR).map(([comp, hex]) => (
+          <div key={comp} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", display: "inline-block", background: hex }} />
+            <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>{_COMPONENT_SHORT[comp] || comp}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>Coverage:</span>
+        {["empty", "mapped_unverified", "verified"].map(state => {
+          const s = _cellStyle("Unmapped", state, { empty: 0xe5e2da, line: 0xe2ded2 });
+          return (
+            <div key={state} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{
+                width: 12, height: 12, borderRadius: 3, display: "inline-block",
+                background: s.fill, opacity: state === "empty" ? 1 : s.fillOpacity,
+                border: `${s.edgeWeight}px solid ${s.edge}`,
+              }} />
+              <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{_STATE_LABEL[state]}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 function CubeCell({ cell, onSelect, selected }) {
-  const meta = _CUBE_STATE_META[cell.state] || _CUBE_STATE_META.empty;
   const empty = cell.state === "empty";
+  const s = _cellStyle(cell.coso_component, cell.state, { empty: 0xe5e2da, line: 0xe2ded2 });
   return (
     <button
       type="button"
@@ -80,8 +129,8 @@ function CubeCell({ cell, onSelect, selected }) {
         width: "100%", minHeight: 64, padding: "8px 10px",
         display: "flex", flexDirection: "column", justifyContent: "space-between",
         borderRadius: 6, textAlign: "left", cursor: empty ? "default" : "pointer",
-        background: empty ? "var(--surface-2)" : (meta.bg || "var(--surface-2)"),
-        border: selected ? "2px solid var(--acc)" : `1px solid ${empty ? "var(--line)" : (meta.border || "var(--line)")}`,
+        background: empty ? s.fill : _rgba(s.fill, s.fillOpacity),
+        border: selected ? "2px solid var(--acc)" : `${s.edgeWeight}px solid ${empty ? "var(--line)" : s.edge}`,
       }}
     >
       {empty ? (
@@ -100,11 +149,17 @@ function CubeCell({ cell, onSelect, selected }) {
               </span>
             )}
           </div>
-          <span className="mono" style={{ fontSize: 9.5, color: meta.fg }}>{meta.label}</span>
+          <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-2)" }}>{_STATE_LABEL[cell.state]}</span>
         </>
       )}
     </button>
   );
+}
+
+function _rgba(hex, alpha) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 function CubeGridTable({ data, cellsByKey, selectedKey, onSelectKey }) {
@@ -117,10 +172,12 @@ function CubeGridTable({ data, cellsByKey, selectedKey, onSelectKey }) {
       }}>
         <div />
         {data.coso_components.map(c => (
-          <div key={c} className="mono" style={{
-            fontSize: 9.5, color: "var(--ink-3)", textAlign: "center", padding: "0 2px",
-            display: "flex", alignItems: "flex-end", justifyContent: "center", textWrap: "balance",
-          }}>{c}</div>
+          <div key={c} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: _COSO_COLOR[c] || _COSO_COLOR.Unmapped }} />
+            <div className="mono" style={{
+              fontSize: 9.5, color: "var(--ink-3)", textAlign: "center", padding: "0 2px", textWrap: "balance",
+            }}>{c}</div>
+          </div>
         ))}
 
         {data.objective_categories.map(row => (
@@ -170,16 +227,32 @@ function _cubePalette() {
   const v = (name, fb) => (cs.getPropertyValue(name) || "").trim() || fb;
   return {
     empty:    _resolveCssColor(v("--surface-3", "#e5e2da"), 0xe5e2da),
-    amber:    _resolveCssColor(v("--amber", "#e0a838"), 0xe0a838),
-    amberBg:  _resolveCssColor(v("--amber-soft", "#fbf1de"), 0xfbf1de),
-    green:    _resolveCssColor(v("--green-ink", "#2f6b46"), 0x2f6b46),
-    greenBg:  _resolveCssColor(v("--acc-soft", "#e5f3ea"), 0xe5f3ea),
     ink:      _resolveCssColor(v("--ink", "#232019"), 0x232019),
     ink3:     _resolveCssColor(v("--ink-3", "#8a8370"), 0x8a8370),
     line:     _resolveCssColor(v("--line", "#e2ded2"), 0xe2ded2),
     accent:   _resolveCssColor(v("--acc", "#2f8f5a"), 0x2f8f5a),
     surface:  _resolveCssColor(v("--surface", "#faf8f3"), 0xfaf8f3),
   };
+}
+
+// Z axis — operating unit. Real risk data has no per-segment attribution
+// today (no risk or control anywhere in the schema is tagged to a geography
+// or business segment), so "Consolidated" is the only layer that can honestly
+// carry risk bars. When the entity has a filed/uploaded segment breakdown
+// (edgar_segments.py / Mission Control upload), its top segments are still
+// drawn as real, labeled layers — just without fabricated risk bars on them —
+// so the axis is genuinely there rather than collapsed away, and the gap
+// (no risk-level segment attribution yet) is visible instead of hidden.
+function _operatingUnitLayers(segments) {
+  if (!segments || segments.length === 0) return [{ name: "Consolidated", real: true }];
+  const byType = {};
+  segments.forEach(s => { (byType[s.segment_type] = byType[s.segment_type] || []).push(s); });
+  const [chosenType, rows] = Object.entries(byType).sort((a, b) => b[1].length - a[1].length)[0];
+  const top = [...rows].sort((a, b) => (b.revenue_pct || 0) - (a.revenue_pct || 0)).slice(0, 3);
+  return [
+    { name: "Consolidated", real: true },
+    ...top.map(s => ({ name: s.segment_name, real: false, revenuePct: s.revenue_pct, segmentType: chosenType })),
+  ];
 }
 
 // Bar height for a given risk_count — sqrt-scaled so one concentrated cell
@@ -200,17 +273,6 @@ function _niceTicks(maxCount) {
   for (let v = 0; v <= maxCount; v += step) ticks.push(v);
   if (ticks[ticks.length - 1] !== maxCount) ticks.push(maxCount);
   return ticks;
-}
-
-function _stateColor(state, palette) {
-  if (state === "verified") return palette.greenBg;
-  if (state === "mapped_unverified") return palette.amberBg;
-  return palette.empty;
-}
-function _stateEdgeColor(state, palette) {
-  if (state === "verified") return palette.green;
-  if (state === "mapped_unverified") return palette.amber;
-  return palette.line;
 }
 
 function _makeTextSprite(text, { fontSize = 42, color = "#333333" } = {}) {
@@ -275,99 +337,133 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
       mount.innerHTML = "";
       mount.appendChild(renderer.domElement);
 
+      const maxCount = Math.max(1, ...data.cells.map(c => c.risk_count || 0));
+      const topH = _barHeight(maxCount);
+      const layers = _operatingUnitLayers(data.segments);
+      const layerGap = topH + 1.1;
+      const stackHeight = (layers.length - 1) * layerGap;
+
       controls = new OrbitControls(camera, renderer.domElement);
-      controls.target.set(0, 0.6, 0);
+      controls.target.set(0, 0.6 + stackHeight / 2, 0);
       controls.enableDamping = true;
       controls.dampingFactor = 0.08;
       controls.minDistance = 2.5;
-      controls.maxDistance = nCols * 4.5;
+      controls.maxDistance = nCols * 4.5 + stackHeight * 2;
       controls.maxPolarAngle = Math.PI / 2.05;
+      camera.position.y += stackHeight * 1.3;
+      camera.position.z += stackHeight * 0.6;
       controls.update();
 
       scene.add(new THREE.AmbientLight(0xffffff, 0.75));
       const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-      dir.position.set(4, 8, 5);
+      dir.position.set(4, 8 + stackHeight, 5);
       scene.add(dir);
-
-      const grid = new THREE.GridHelper(Math.max(nCols, nRows) * spacing + 1, 20, palette.line, palette.line);
-      grid.position.y = 0;
-      scene.add(grid);
 
       const boxGeo = new THREE.BoxGeometry(1, 1, 1);
       const clickable = [];
+      const inkHex = "#" + palette.ink.toString(16).padStart(6, "0");
+      const ink3Hex = "#" + palette.ink3.toString(16).padStart(6, "0");
 
-      data.objective_categories.forEach((row, ri) => {
-        data.coso_components.forEach((col, ci) => {
-          const key = `${row}::${col}`;
-          const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
-          const h = _barHeight(cell.risk_count);
-          const mat = new THREE.MeshStandardMaterial({
-            color: _stateColor(cell.state, palette), roughness: 0.7, metalness: 0.05,
+      layers.forEach((layer, li) => {
+        const yBase = li * layerGap;
+
+        const grid = new THREE.GridHelper(Math.max(nCols, nRows) * spacing + 1, 20, palette.line, palette.line);
+        grid.position.y = yBase;
+        scene.add(grid);
+
+        // Layer / operating-unit axis label — the third (Z) axis this whole
+        // stack exists to represent, read top-to-bottom rather than left-
+        // right/front-back since it shares the vertical dimension with bar
+        // height (see module comment: only 3 spatial axes exist, and two are
+        // already spent on component x objective category).
+        const layerLabel = _makeTextSprite(
+          layer.real ? "Consolidated" : `${layer.name}${layer.revenuePct != null ? ` · ${layer.revenuePct}% rev` : ""}`,
+          { fontSize: 28, color: layer.real ? inkHex : ink3Hex }
+        );
+        layerLabel.position.set(baseX - spacing * 2.5, yBase + 0.1, baseZ - spacing * 0.2);
+        scene.add(layerLabel);
+
+        if (!layer.real) {
+          // Ghost layer: a real, named operating unit (filed/uploaded
+          // segment revenue), but with no risk bars — no risk or control
+          // anywhere in the schema is tagged to a segment yet, so drawing
+          // bars here would fabricate a breakdown that doesn't exist. The
+          // flat translucent slab + label is the honest representation:
+          // the axis is real, this slice's risk data isn't (yet).
+          const slab = new THREE.Mesh(
+            new THREE.BoxGeometry(nCols * spacing * 0.94, 0.03, nRows * spacing * 0.94),
+            new THREE.MeshBasicMaterial({ color: palette.line, transparent: true, opacity: 0.35 })
+          );
+          slab.position.set(0, yBase, 0);
+          scene.add(slab);
+          return;
+        }
+
+        data.objective_categories.forEach((row, ri) => {
+          data.coso_components.forEach((col, ci) => {
+            const key = `${row}::${col}`;
+            const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
+            const h = _barHeight(cell.risk_count);
+            const style = _cellStyle(col, cell.state, palette);
+            const mat = new THREE.MeshStandardMaterial({
+              color: new THREE.Color(style.fill), roughness: 0.7, metalness: 0.05,
+              transparent: style.fillOpacity < 1, opacity: style.fillOpacity,
+            });
+            const mesh = new THREE.Mesh(boxGeo, mat);
+            mesh.scale.set(1.1, h, 1.1);
+            const x = baseX + ci * spacing;
+            const z = baseZ + ri * spacing;
+            mesh.position.set(x, yBase + h / 2, z);
+            mesh.userData = { cell, key, baseColor: mat.color.getHex(), baseOpacity: style.fillOpacity };
+            scene.add(mesh);
+
+            const edges = new THREE.EdgesGeometry(boxGeo);
+            const edgeMat = new THREE.LineBasicMaterial({ color: new THREE.Color(style.edge) });
+            const wire = new THREE.LineSegments(edges, edgeMat);
+            wire.scale.copy(mesh.scale);
+            wire.position.copy(mesh.position);
+            scene.add(wire);
+
+            if (cell.state !== "empty") clickable.push(mesh);
           });
-          const mesh = new THREE.Mesh(boxGeo, mat);
-          mesh.scale.set(1.1, h, 1.1);
-          const x = baseX + ci * spacing;
-          const z = baseZ + ri * spacing;
-          mesh.position.set(x, h / 2, z);
-          mesh.userData = { cell, key, baseColor: mat.color.getHex(), edgeColor: _stateEdgeColor(cell.state, palette) };
-          scene.add(mesh);
-
-          const edges = new THREE.EdgesGeometry(boxGeo);
-          const edgeMat = new THREE.LineBasicMaterial({ color: _stateEdgeColor(cell.state, palette) });
-          const wire = new THREE.LineSegments(edges, edgeMat);
-          wire.scale.copy(mesh.scale);
-          wire.position.copy(mesh.position);
-          scene.add(wire);
-
-          if (cell.state !== "empty") clickable.push(mesh);
         });
-      });
 
-      data.coso_components.forEach((col, ci) => {
-        const sprite = _makeTextSprite(_COMPONENT_SHORT[col] || col, { fontSize: 30, color: "#" + palette.ink3.toString(16).padStart(6, "0") });
-        sprite.position.set(baseX + ci * spacing, 0.05, baseZ - spacing * 1.5);
-        scene.add(sprite);
-      });
-      data.objective_categories.forEach((row, ri) => {
-        const sprite = _makeTextSprite(row, { fontSize: 30, color: "#" + palette.ink.toString(16).padStart(6, "0") });
-        sprite.position.set(baseX - spacing * 1.5, 0.05, baseZ + ri * spacing);
-        scene.add(sprite);
-      });
+        data.coso_components.forEach((col, ci) => {
+          const sprite = _makeTextSprite(_COMPONENT_SHORT[col] || col, { fontSize: 30, color: ink3Hex });
+          sprite.position.set(baseX + ci * spacing, yBase + 0.05, baseZ - spacing * 1.5);
+          scene.add(sprite);
+        });
+        data.objective_categories.forEach((row, ri) => {
+          const sprite = _makeTextSprite(row, { fontSize: 30, color: inkHex });
+          sprite.position.set(baseX - spacing * 1.5, yBase + 0.05, baseZ + ri * spacing);
+          scene.add(sprite);
+        });
 
-      // Vertical axis — bar height encodes risk_count, and without a ruler
-      // that's only discoverable via hover/click. Drawn at the corner
-      // furthest from both label rows so it doesn't collide with them.
-      {
-        const maxCount = Math.max(1, ...data.cells.map(c => c.risk_count || 0));
+        // Risk-count ruler — bar height within this layer encodes risk_count;
+        // without a ruler that's only discoverable via hover/click. Drawn at
+        // the corner furthest from both label rows so it doesn't collide.
         const ticks = _niceTicks(maxCount);
-        // Tucked just past the last column/row, close enough to the grid to
-        // stay inside the default camera framing (a thin THREE.Line rendered
-        // at the very edge of the frustum was easy to lose — a stubby pole +
-        // wider tick bars read far more reliably as "an axis").
         const axisX = baseX + (nCols - 1) * spacing + spacing * 0.75;
         const axisZ = baseZ - spacing * 0.15;
-        const topH = _barHeight(maxCount);
-        const inkHex = "#" + palette.ink3.toString(16).padStart(6, "0");
-
         const poleMat = new THREE.MeshBasicMaterial({ color: palette.ink3 });
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, topH, 8), poleMat);
-        pole.position.set(axisX, topH / 2, axisZ);
+        pole.position.set(axisX, yBase + topH / 2, axisZ);
         scene.add(pole);
 
         ticks.forEach(v => {
           const h = _barHeight(v);
           const tick = new THREE.Mesh(new THREE.BoxGeometry(spacing * 0.18, 0.02, 0.02), poleMat);
-          tick.position.set(axisX + spacing * 0.09, h, axisZ);
+          tick.position.set(axisX + spacing * 0.09, yBase + h, axisZ);
           scene.add(tick);
-          const label = _makeTextSprite(String(v), { fontSize: 26, color: inkHex });
-          label.position.set(axisX + spacing * 0.32, h, axisZ);
+          const label = _makeTextSprite(String(v), { fontSize: 26, color: ink3Hex });
+          label.position.set(axisX + spacing * 0.32, yBase + h, axisZ);
           scene.add(label);
         });
 
-        const title = _makeTextSprite("risks (bar height)", { fontSize: 26, color: inkHex });
-        title.position.set(axisX, topH + 0.3, axisZ);
+        const title = _makeTextSprite("risks (bar height)", { fontSize: 26, color: ink3Hex });
+        title.position.set(axisX, yBase + topH + 0.3, axisZ);
         scene.add(title);
-      }
+      });
 
       const raycaster = new THREE.Raycaster();
       const ndc = new THREE.Vector2();
@@ -391,8 +487,10 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
       function onMove(evt) {
         const hit = pick(evt);
         if (hit !== hovered) {
-          if (hovered) hovered.material.color.setHex(hovered.userData.baseColor);
-          if (hit) hit.material.color.setHex(palette.accent);
+          // Hover emphasis is opacity + emissive glow, not a hue swap — the
+          // color itself is the component identity and must survive hover.
+          if (hovered) { hovered.material.opacity = hovered.userData.baseOpacity; hovered.material.emissive?.setHex(0x000000); }
+          if (hit) { hit.material.opacity = 1; hit.material.emissive?.setHex(hit.userData.baseColor); hit.material.emissiveIntensity = 0.15; }
           hovered = hit;
           renderer.domElement.style.cursor = hit ? "pointer" : "grab";
           setHoverInfo(hit ? hit.userData.cell : null);
@@ -493,6 +591,8 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
       <div ref={mountRef} style={{ width: "100%", height: 460, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }} />
       <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 6 }}>
         Ground plane = COSO component x objective category · bar height = risk count (ruler at back-right corner) ·
+        stacked layers = operating unit, the 3rd axis (bottom = Consolidated, real bars; layers above = filed/uploaded
+        segments shown as labeled slabs — no risk-level segment attribution exists yet, so they carry no bars) ·
         drag to rotate · scroll to zoom · click a bar to zoom in and open detail
         {hoverInfo && ` — ${hoverInfo.objective_category} · ${hoverInfo.coso_component}: ${hoverInfo.risk_count} risk${hoverInfo.risk_count === 1 ? "" : "s"}`}
       </div>
@@ -512,7 +612,7 @@ function CubeCellDetail({ cell, onClose }) {
         <div>
           <div className="kicker">{cell.objective_category} · {cell.coso_component}</div>
           <div style={{ fontSize: 13, fontWeight: 600, marginTop: 2 }}>
-            {cell.risk_count} risk{cell.risk_count === 1 ? "" : "s"} — {(_CUBE_STATE_META[cell.state] || {}).label}
+            {cell.risk_count} risk{cell.risk_count === 1 ? "" : "s"} — {_STATE_LABEL[cell.state] || cell.state}
           </div>
         </div>
         <button type="button" className="btn btn-sm btn-ghost" onClick={onClose}>✕</button>
@@ -622,7 +722,8 @@ function RiskCoverageCubeScreen({ ticker }) {
           <div className="panel-title mt-8">Risk Coverage Cube</div>
           <div className="panel-sub">
             Where risk assessment (RaC), control assurance (CaC/PaC), and policy enforcement actually meet — and
-            where nothing is watching. COSO ERM 2017 component x objective category, for {ticker || "—"}'s latest run.
+            where nothing is watching. Three axes: COSO ERM 2017 component, objective category, and operating unit
+            (Consolidated, plus any filed/uploaded segments) — for {ticker || "—"}'s latest run.
           </div>
         </div>
       </div>
