@@ -116,7 +116,7 @@ function CubeLegend() {
   );
 }
 
-function CubeCell({ cell, onSelect, selected }) {
+function CubeCell({ cell, onSelect, selected, entityLabel = "Consolidated" }) {
   const empty = cell.state === "empty";
   const s = _cellStyle(cell.coso_component, cell.state, { empty: 0xe5e2da, line: 0xe2ded2 });
   return (
@@ -124,10 +124,10 @@ function CubeCell({ cell, onSelect, selected }) {
       type="button"
       onClick={() => !empty && onSelect(cell)}
       disabled={empty}
-      title={empty ? "No risk in this cell" : `${cell.risk_count} risk(s) — click for detail`}
+      title={empty ? "No risk in this cell" : `${cell.risk_count} risk(s) (RaC), ${cell.mapped_control_count} control(s) (CaC) — ${entityLabel} — click for detail`}
       style={{
-        width: "100%", minHeight: 64, padding: "8px 10px",
-        display: "flex", flexDirection: "column", justifyContent: "space-between",
+        width: "100%", minHeight: 76, padding: "8px 10px", position: "relative",
+        display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 2,
         borderRadius: 6, textAlign: "left", cursor: empty ? "default" : "pointer",
         background: empty ? s.fill : _rgba(s.fill, s.fillOpacity),
         border: selected ? "2px solid var(--acc)" : `${s.edgeWeight}px solid ${empty ? "var(--line)" : s.edge}`,
@@ -137,19 +137,28 @@ function CubeCell({ cell, onSelect, selected }) {
         <span className="mono" style={{ fontSize: 10, color: "var(--ink-4)" }}>—</span>
       ) : (
         <>
+          {/* Indicates the cell opens a detail panel — a cursor change alone
+              is invisible until the pointer happens to be there. */}
+          <span aria-hidden="true" title="Click for detail" style={{
+            position: "absolute", top: 5, right: 6, fontSize: 11, lineHeight: 1,
+            color: "var(--ink-3)", opacity: 0.75,
+          }}>⌕</span>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <span className="mono" style={{ fontSize: 16, fontWeight: 600, color: "var(--ink)" }}>
               {cell.risk_count}
             </span>
             {cell.worst_rag && (
               <span className="mono" style={{
-                fontSize: 9, fontWeight: 600, color: _RAG_META[cell.worst_rag]?.color || "var(--ink-3)",
+                fontSize: 9, fontWeight: 600, color: _RAG_META[cell.worst_rag]?.color || "var(--ink-3)", marginRight: 12,
               }}>
                 {cell.worst_rag}
               </span>
             )}
           </div>
           <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-2)" }}>{_STATE_LABEL[cell.state]}</span>
+          <span className="mono" style={{ fontSize: 8.5, color: "var(--ink-4)" }}>
+            RaC {cell.risk_count} · CaC {cell.verified_control_count}/{cell.mapped_control_count} · {entityLabel}
+          </span>
         </>
       )}
     </button>
@@ -424,7 +433,17 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
             wire.position.copy(mesh.position);
             scene.add(wire);
 
-            if (cell.state !== "empty") clickable.push(mesh);
+            if (cell.state !== "empty") {
+              clickable.push(mesh);
+              // Risks (RaC) and controls (CaC) counts, on the bar itself —
+              // not just reachable by clicking through to the detail panel.
+              const countLabel = _makeTextSprite(
+                `RaC ${cell.risk_count} · CaC ${cell.verified_control_count}/${cell.mapped_control_count} ⌕`,
+                { fontSize: 20, color: ink3Hex }
+              );
+              countLabel.position.set(x, yBase + h + 0.16, z);
+              scene.add(countLabel);
+            }
           });
         });
 
@@ -594,13 +613,14 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         stacked layers = operating unit, the 3rd axis (bottom = Consolidated, real bars; layers above = filed/uploaded
         segments shown as labeled slabs — no risk-level segment attribution exists yet, so they carry no bars) ·
         drag to rotate · scroll to zoom · click a bar to zoom in and open detail
-        {hoverInfo && ` — ${hoverInfo.objective_category} · ${hoverInfo.coso_component}: ${hoverInfo.risk_count} risk${hoverInfo.risk_count === 1 ? "" : "s"}`}
+        {hoverInfo && ` — ${hoverInfo.objective_category} · ${hoverInfo.coso_component} · Consolidated: `
+          + `RaC ${hoverInfo.risk_count} · CaC ${hoverInfo.verified_control_count}/${hoverInfo.mapped_control_count}`}
       </div>
     </div>
   );
 }
 
-function CubeCellDetail({ cell, onClose }) {
+function CubeCellDetail({ cell, entityLabel = "Consolidated", onClose }) {
   if (!cell) return null;
   const mix = cell.control_env_mix || {};
   return (
@@ -610,7 +630,7 @@ function CubeCellDetail({ cell, onClose }) {
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div className="kicker">{cell.objective_category} · {cell.coso_component}</div>
+          <div className="kicker">{cell.objective_category} · {cell.coso_component} · {entityLabel}</div>
           <div style={{ fontSize: 13, fontWeight: 600, marginTop: 2 }}>
             {cell.risk_count} risk{cell.risk_count === 1 ? "" : "s"} — {_STATE_LABEL[cell.state] || cell.state}
           </div>
@@ -620,18 +640,26 @@ function CubeCellDetail({ cell, onClose }) {
 
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 10 }}>
         <div>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }}>Risks (RaC)</div>
+          <div className="mono" style={{ fontSize: 13 }}>{cell.risk_count}</div>
+        </div>
+        <div>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }}>Controls (CaC)</div>
+          <div className="mono" style={{ fontSize: 13 }}>
+            {cell.mapped_control_count} mapped · {cell.verified_control_count} verified
+          </div>
+        </div>
+        <div>
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }}>Entity</div>
+          <div className="mono" style={{ fontSize: 13 }}>{entityLabel}</div>
+        </div>
+        <div>
           <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }}>Max score</div>
           <div className="mono" style={{ fontSize: 13 }}>{cell.max_score ?? "—"}</div>
         </div>
         <div>
           <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }}>Velocity</div>
           <div className="mono" style={{ fontSize: 13 }}>{cell.velocity_label || "—"}</div>
-        </div>
-        <div>
-          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }}>Mapped controls</div>
-          <div className="mono" style={{ fontSize: 13 }}>
-            {cell.verified_control_count}/{cell.mapped_control_count} verified
-          </div>
         </div>
         <div>
           <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }}>
@@ -644,7 +672,7 @@ function CubeCellDetail({ cell, onClose }) {
       </div>
 
       <div style={{ marginTop: 10 }}>
-        <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)", marginBottom: 4 }}>Risks</div>
+        <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)", marginBottom: 4 }}>Risks (RaC)</div>
         <div className="mono" style={{ fontSize: 11, display: "flex", flexWrap: "wrap", gap: 6 }}>
           {(cell.risk_refs || []).map(ref => (
             <span key={ref} style={{
@@ -713,6 +741,11 @@ function RiskCoverageCubeScreen({ ticker }) {
   const cellsByKey = {};
   (data?.cells || []).forEach(c => { cellsByKey[`${c.objective_category}::${c.coso_component}`] = c; });
   const selected = selectedKey ? cellsByKey[selectedKey] : null;
+  // Sums of per-cell risk-control mapping counts — a control mapped to risks
+  // in more than one cell counts once per cell it touches, so this is total
+  // mapped-control LINKS (RaC-to-CaC edges), not a deduplicated control-register count.
+  const totalMappedControlLinks = (data?.cells || []).reduce((sum, c) => sum + (c.mapped_control_count || 0), 0);
+  const totalVerifiedControlLinks = (data?.cells || []).reduce((sum, c) => sum + (c.verified_control_count || 0), 0);
 
   return (
     <div className="panel active" data-screen-label="Risk Coverage Cube">
@@ -746,8 +779,9 @@ function RiskCoverageCubeScreen({ ticker }) {
             <CubeLegend />
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
-                {data.total_risks} risks assessed
-                {data.unmapped_risk_count > 0 ? ` · ${data.unmapped_risk_count} in an unmapped category` : ""}
+                {data.total_risks} risks (RaC)
+                {data.unmapped_risk_count > 0 ? ` · ${data.unmapped_risk_count} unmapped` : ""}
+                {" · "}{totalMappedControlLinks} control links (CaC), {totalVerifiedControlLinks} verified
               </div>
               <div style={{ display: "flex", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
                 {["3d", "table"].map(v => (
