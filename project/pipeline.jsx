@@ -470,21 +470,16 @@ function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, fo
             <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
           </PipelinePanel>
         )}
-        {stage.id === "s2" && status === "done" && forecasts && (() => {
-          const GeoSegKPI = window.GeoSegmentKPISection;
-          return (
-            <PipelinePanel label="Forecasts">
-              <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
-                peerData={peerData}
-                peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
-                peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
-                onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}/>
-              {GeoSegKPI && (
-                <GeoSegKPI data={forecasts} industry={s2Extra?.industry || ""} ticker={pipelineTicker || ""} livefacts={livefacts}/>
-              )}
-            </PipelinePanel>
-          );
-        })()}
+        {stage.id === "s2" && status === "done" && forecasts && (
+          <PipelinePanel label="Forecasts">
+            <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
+              peerData={peerData}
+              peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+              peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+              onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}/>
+            <GeoSegmentKPISection ticker={pipelineTicker || ""}/>
+          </PipelinePanel>
+        )}
         {stage.id === "s2" && status === "done" && flowMeta && (output?.risks?.length > 0) && (
           <PipelinePanel label="Risk Flow">
             <SankeyInline
@@ -633,6 +628,76 @@ function FCWithMetrics({ history, forecast, unit, color, decimals, peers }) {
     } catch (e) {}
   }, [history]);
   return <ComparableChart history={history} forecast={forecast} unit={unit} color={color} decimals={decimals} chartMetrics={metrics} peers={peers}/>;
+}
+
+// Disaggregated geography / business-segment revenue for the current entity
+// — filed (EDGAR XBRL, edgar_segments.py) or user-uploaded (Mission Control
+// financials upload) breakdowns, both persisted to sox_financial_segments.
+// Fetches independently of `forecasts` (nothing populates a `.segments` key
+// on that object) so this renders real filed/uploaded data or an honest
+// empty state, never a silent gap.
+function GeoSegmentKPISection({ ticker }) {
+  const [state, setState] = React.useState({ loading: false, segments: null });
+
+  React.useEffect(() => {
+    if (!ticker) return;
+    let cancelled = false;
+    setState({ loading: true, segments: null });
+    fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/latest`, { credentials: "include" })
+      .then(r => (r.ok ? r.json() : { segments: [] }))
+      .then(d => { if (!cancelled) setState({ loading: false, segments: d.segments || [] }); })
+      .catch(() => { if (!cancelled) setState({ loading: false, segments: [] }); });
+    return () => { cancelled = true; };
+  }, [ticker]);
+
+  if (state.loading) return null;
+  const segments = state.segments || [];
+  if (segments.length === 0) {
+    return (
+      <div className="stage-detail">
+        <h5>Geography &amp; business-segment revenue</h5>
+        <div style={{fontSize:11, color:"var(--ink-3)"}}>
+          No disaggregated segment data on file for {ticker}. Import it from the latest 10-K/10-Q XBRL
+          (Mission Control · Upload Financials) or upload a spreadsheet with segment/geography columns.
+        </div>
+      </div>
+    );
+  }
+
+  const byType = { geography: [], business_segment: [] };
+  segments.forEach(s => (byType[s.segment_type] || (byType[s.segment_type] = [])).push(s));
+  const maxPct = Math.max(1, ...segments.map(s => s.revenue_pct || 0));
+
+  return (
+    <div className="stage-detail">
+      <h5>Geography &amp; business-segment revenue</h5>
+      <div style={{display:"flex", flexDirection:"column", gap:14, marginTop:4}}>
+        {Object.entries(byType).filter(([, rows]) => rows.length > 0).map(([type, rows]) => (
+          <div key={type}>
+            <div className="mono" style={{fontSize:10, color:"var(--ink-3)", marginBottom:6}}>
+              {type === "geography" ? "By geography" : "By business segment"} · source: {rows[0]?.source || "filed"}
+            </div>
+            <div style={{display:"flex", flexDirection:"column", gap:5}}>
+              {[...rows].sort((a,b) => (b.revenue_pct||0) - (a.revenue_pct||0)).map(r => (
+                <div key={r.segment_name} style={{display:"flex", alignItems:"center", gap:8}}>
+                  <span style={{width:130, fontSize:11, color:"var(--ink-2)", flexShrink:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{r.segment_name}</span>
+                  <div style={{flex:1, height:8, background:"var(--surface-2,var(--surface))", borderRadius:4, overflow:"hidden"}}>
+                    <div style={{width:`${((r.revenue_pct||0)/maxPct)*100}%`, height:"100%", background:"var(--acc)", borderRadius:4}}/>
+                  </div>
+                  <span className="mono" style={{fontSize:10.5, color:"var(--ink-2)", width:70, textAlign:"right", flexShrink:0}}>
+                    {r.revenue != null ? fmt$M(r.revenue) : "—"}
+                  </span>
+                  <span className="mono" style={{fontSize:10.5, color:"var(--ink-4)", width:44, textAlign:"right", flexShrink:0}}>
+                    {r.revenue_pct != null ? `${r.revenue_pct}%` : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
@@ -1927,6 +1992,15 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
                     )}
                   </div>
                 </div>
+
+                {/* Row 3: specific data behind the score — the model's own
+                    computed rationale (ratios, filing figures), not just the
+                    name/number above it */}
+                {r.narrative && (
+                  <div className="s2-ctrl-narrative" style={{fontSize:10.5, color:"var(--ink-3)", lineHeight:1.45, margin:"4px 0 2px"}}>
+                    {r.narrative}
+                  </div>
+                )}
 
                 {/* Signal evidence */}
                 {hasSigs && (

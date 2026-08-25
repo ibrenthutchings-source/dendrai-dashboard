@@ -22,6 +22,7 @@ Endpoints:
     GET  /sox/hitl/gate-status/{run_id}       Gate S1/S2 status for a run
     POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
     POST /sox/segments/{ticker}/import-xbrl   Auto-ingest segment/geography revenue from the latest 10-K/10-Q XBRL
+    GET  /sox/segments/{ticker}/latest        Most recent fiscal year's segments, no fy lookup required
     GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
     DELETE /sox/segments/{ticker}/{id}        Delete a geography/segment financial record
     GET  /sox/segments/{ticker}/forecasts/{run_id}  Retrieve computed segment forecast KPIs for a run
@@ -456,6 +457,22 @@ def import_xbrl_segments(ticker: str):
     import edgar_segments
     result = edgar_segments.persist_segments(ticker)
     return result
+
+
+@router.get("/segments/{ticker}/latest")
+def get_latest_sox_segments_endpoint(ticker: str):
+    """Retrieve the most recent fiscal year's segment/geography breakdown for
+    a company, without the caller needing to know which fiscal_year that is —
+    used by the Assess Risk loop's Stage 2 Forecasts panel, which only knows
+    the ticker. Registered ahead of the /{fiscal_year} route below since
+    "latest" would otherwise be swallowed by that pattern."""
+    company_id = _resolve_company_id(ticker)
+    segments = db.get_latest_sox_segments(company_id) if company_id else []
+    return {
+        "ticker": ticker.upper(),
+        "count": len(segments),
+        "segments": segments,
+    }
 
 
 @router.get("/segments/{ticker}/{fiscal_year}")
