@@ -86,17 +86,44 @@ _VELOCITY_LABEL = {
      3: "critical",
 }
 
+# COSO ERM 2017's real five components and 20 principles (the previous table
+# used "Risk Assessment"/"Risk Response" — those are IC-IF 2013 / ERM *2004*
+# component names, not 2017's Governance & Culture / Strategy & Objective-
+# Setting / Performance / Review & Revision / Information, Communication &
+# Reporting). Reviewed and approved 2026-08-25 — see conversation for the
+# per-row rationale; several are judgment calls (a risk category maps to the
+# ERM stage most associated with how that risk type is identified/managed,
+# not a 1:1 taxonomy — multiple categories legitimately sharing a principle
+# is expected, not a bug).
+#
+# "Macro" was removed: it's not a risk category the engine or any manual-entry
+# path ever produces — it's macro-economic context (FRED indicators) that
+# adjusts OTHER risks' scores, not a risk in its own right (see
+# adjustRiskScores in app.jsx). "Regulatory" and "Supply Chain" were removed
+# as genuinely unreachable dead keys: not in risk-engine.js's CATEGORY_IMPACT
+# (the 10 categories the loop actually emits) and not in FW_MOCK_RISKS (the
+# only other source AdjustRiskModal's category dropdown draws from) —
+# Regulatory's ground is already covered by Compliance/Trade Compliance/Legal,
+# and Supply Chain was a near-miss of the real "Supply" key.
 _COSO_PRINCIPLES: Dict[str, Dict] = {
-    "Revenue":             {"principle": 9,  "label": "Identifies Risk",              "component": "Risk Assessment"},
-    "Financial Reporting": {"principle": 11, "label": "Assesses Severity of Risk",    "component": "Risk Assessment"},
-    "Cybersecurity":       {"principle": 13, "label": "Implements Risk Responses",    "component": "Risk Response"},
-    "Operational":         {"principle": 10, "label": "Analyzes Risk",                "component": "Risk Assessment"},
-    "Governance":          {"principle": 3,  "label": "Defines Desired Culture",      "component": "Governance & Culture"},
-    "Macro":               {"principle": 6,  "label": "Analyzes Business Context",    "component": "Strategy & Objective-Setting"},
-    "Supply Chain":        {"principle": 10, "label": "Analyzes Risk",                "component": "Risk Assessment"},
-    "Regulatory":          {"principle": 8,  "label": "Evaluates Alternative Strategies", "component": "Strategy & Objective-Setting"},
+    "Revenue":             {"principle": 10, "label": "Identifies Risk",                    "component": "Performance"},
+    "Financial Reporting": {"principle": 11, "label": "Assesses Severity of Risk",          "component": "Performance"},
+    "Operational":         {"principle": 10, "label": "Identifies Risk",                    "component": "Performance"},
+    "Supply":              {"principle": 12, "label": "Prioritizes Risks",                  "component": "Performance"},
+    "Cybersecurity":       {"principle": 13, "label": "Implements Risk Responses",          "component": "Performance"},
+    "Trade Compliance":    {"principle": 8,  "label": "Evaluates Alternative Strategies",   "component": "Strategy & Objective-Setting"},
+    "ESG":                 {"principle": 4,  "label": "Demonstrates Commitment to Core Values", "component": "Governance & Culture"},
+    "Compliance":          {"principle": 7,  "label": "Defines Risk Appetite",              "component": "Strategy & Objective-Setting"},
+    "Legal":               {"principle": 14, "label": "Develops Portfolio View",             "component": "Performance"},
+    "Strategic":           {"principle": 9,  "label": "Formulates Business Objectives",      "component": "Strategy & Objective-Setting"},
+    "Governance":          {"principle": 3,  "label": "Defines Desired Culture",             "component": "Governance & Culture"},
 }
-_COSO_DEFAULT = {"principle": 9, "label": "Identifies Risk", "component": "Risk Assessment"}
+# Explicit, visible fallback — replaces the old silent default (which quietly
+# stamped every unrecognised category as principle 9 "Identifies Risk",
+# manufacturing a false concentration in one component). An uncategorised
+# risk now renders as its own "Unmapped" bucket instead of being absorbed
+# into a real principle it was never actually assessed against.
+_COSO_UNMAPPED = {"principle": None, "label": "Unmapped", "component": "Unmapped"}
 
 _ISO_TREATMENT = {"R": "risk_modification", "A": "risk_modification", "G": "risk_retention"}
 _COSO_RESPONSE = {"R": "Reduce", "A": "Reduce", "G": "Accept"}
@@ -393,7 +420,7 @@ def to_coso_erm(
         residual = float(risk.get("residual", score))
         velocity = risk.get("velocity", 0)
         category = risk.get("category", "Operational")
-        coso     = _COSO_PRINCIPLES.get(category, _COSO_DEFAULT)
+        coso     = _COSO_PRINCIPLES.get(category, _COSO_UNMAPPED)
 
         linked_objs = obj_by_risk.get(risk_id, [])
         linked_maps = map_by_risk.get(risk_id, [])
