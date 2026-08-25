@@ -113,6 +113,24 @@ function _safeStringify(value) {
   }
 }
 
+// A run restored from a stale/corrupted dendrai.lastLoop:<ticker> blob (DB or
+// localStorage) can carry a null entry in s2.risks/s3.objectives/s4.maps —
+// several write paths across the app (Risk Register conversion, MAP
+// generation) build these arrays with a `.filter(Boolean)`-shaped contract
+// that a bad edit can silently violate. Every `.find(x => x.id === ...)` over
+// these arrays (e.g. the always-mounted AdjustRiskModal/AdjustObjectiveModal
+// props below) then throws "Cannot read properties of null" on ANY render,
+// not just when that modal opens. Strip nulls once, here, on restore, rather
+// than null-guarding every read site across the app.
+function _sanitizeRunOutput(output) {
+  if (!output || typeof output !== "object") return output;
+  const clean = { ...output };
+  if (Array.isArray(clean.s2?.risks)) clean.s2 = { ...clean.s2, risks: clean.s2.risks.filter(Boolean) };
+  if (Array.isArray(clean.s3?.objectives)) clean.s3 = { ...clean.s3, objectives: clean.s3.objectives.filter(Boolean) };
+  if (Array.isArray(clean.s4?.maps)) clean.s4 = { ...clean.s4, maps: clean.s4.maps.filter(Boolean) };
+  return clean;
+}
+
 function App() {
   // ---- Tweaks ----
   const [tweaks, setTweak] = useTweaks(DEFAULT_TWEAKS);
@@ -677,7 +695,7 @@ function App() {
   useEffect(() => {
     (async () => {
       const applyLoop = (s) => {
-        if (s.output)                                    setOutput(s.output);
+        if (s.output)                                    setOutput(_sanitizeRunOutput(s.output));
         const ss = s.stageState || s.stage_state;
         if (ss)                                          setStageState(ss);
         const gs = s.gateState || s.gate_state;
@@ -2652,7 +2670,7 @@ function App() {
                 if (updatedRisks?.length) {
                   setOutput(prev => ({
                     ...prev,
-                    s2: { ...(prev.s2 || {}), risks: updatedRisks },
+                    s2: { ...(prev.s2 || {}), risks: updatedRisks.filter(Boolean) },
                   }));
                 }
               }} />
@@ -2822,7 +2840,7 @@ function App() {
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
       <AdjustRiskModal
         open={adjustOpen}
-        risk={(output.s2?.risks || []).find(r => r.id === adjustingRiskId)}
+        risk={(output.s2?.risks || []).find(r => r && r.id === adjustingRiskId)}
         risks={output.s2?.risks || []}
         ticker={cfg.ticker}
         runId={runIdRef.current}
@@ -2831,7 +2849,7 @@ function App() {
         onSubmit={submitAdjustment} />
       <AdjustObjectiveModal
         open={adjustObjOpen}
-        obj={(output.s3?.objectives || profile.objectives || []).find(o => o.id === adjustingObjId)}
+        obj={(output.s3?.objectives || profile.objectives || []).find(o => o && o.id === adjustingObjId)}
         risks={output.s2?.risks || []}
         ticker={cfg.ticker}
         runId={runIdRef.current}
