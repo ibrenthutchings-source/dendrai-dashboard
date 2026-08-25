@@ -27,7 +27,7 @@ def test_get_mapping_returns_curated_dict_for_known_control():
     mapping = fm.get_mapping("INFRA-001")
     assert mapping is not None
     assert "CC6.1" in mapping["soc2_criteria"]
-    assert mapping["coso_component"] == "Control Activities"
+    assert mapping["coso_component"] == "Performance"  # ERM 2017 name, corrected from IC-IF 2013's "Control Activities"
 
 
 def test_every_mapping_has_all_four_framework_keys():
