@@ -346,7 +346,6 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
 
       function onClick(evt) {
         const hit = pick(evt);
-        console.log('[cube3d] click', evt.clientX, evt.clientY, 'hit:', !!hit, 'clickable count:', clickable.length);
         if (!hit) return;
         onSelectKeyRef.current(hit.userData.key);
         camAnim.active = true;
