@@ -344,20 +344,10 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         // stay inside the default camera framing (a thin THREE.Line rendered
         // at the very edge of the frustum was easy to lose — a stubby pole +
         // wider tick bars read far more reliably as "an axis").
-        const axisX = baseX + (nCols - 1) * spacing + spacing * 0.3;
-        const axisZ = baseZ - spacing * 0.3;
+        const axisX = baseX + (nCols - 1) * spacing + spacing * 0.75;
+        const axisZ = baseZ - spacing * 0.15;
         const topH = _barHeight(maxCount);
         const inkHex = "#" + palette.ink3.toString(16).padStart(6, "0");
-
-        const debugMarker = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
-        debugMarker.position.set(axisX, 1, axisZ);
-        scene.add(debugMarker);
-        setTimeout(() => {
-          const p = debugMarker.position.clone().project(camera);
-          const sx = (p.x * 0.5 + 0.5) * width;
-          const sy = (1 - (p.y * 0.5 + 0.5)) * height;
-          console.log('[cube3d-debug-screen]', JSON.stringify({ sx, sy, width, height, sceneChildren: scene.children.length }));
-        }, 1000);
 
         const poleMat = new THREE.MeshBasicMaterial({ color: palette.ink3 });
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, topH, 8), poleMat);
@@ -406,6 +396,7 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
           hovered = hit;
           renderer.domElement.style.cursor = hit ? "pointer" : "grab";
           setHoverInfo(hit ? hit.userData.cell : null);
+          requestFrame();
         }
       }
 
@@ -420,12 +411,30 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         const dirToCam = camera.position.clone().sub(hit.position).normalize();
         camAnim.toTarget.copy(hit.position);
         camAnim.toPos.copy(hit.position).add(dirToCam.multiplyScalar(2.6)).setY(Math.max(hit.position.y + 1.4, 1.6));
+        requestFrame();
       }
 
       renderer.domElement.addEventListener("pointermove", onMove);
       renderer.domElement.addEventListener("click", onClick);
 
+      // Render on-demand, not an unconditional 60fps loop forever — a chart
+      // that keeps rendering every 16ms while nobody is touching it (which a
+      // naive requestAnimationFrame loop does) competes with the rest of the
+      // page for the main thread indefinitely. The loop runs only while the
+      // camera is actually moving (OrbitControls damping inertia, or the
+      // click-to-zoom animation) and stops itself once settled; user
+      // interaction (drag/zoom start) wakes it back up.
+      let rafScheduled = false;
+      function requestFrame() {
+        if (disposed || rafScheduled) return;
+        rafScheduled = true;
+        raf = requestAnimationFrame(animate);
+      }
+      controls.addEventListener("start", requestFrame);
+      controls.addEventListener("change", requestFrame);
+
       function animate() {
+        rafScheduled = false;
         if (disposed) return;
         if (camAnim.active) {
           camAnim.t += 16;
@@ -435,17 +444,18 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
           controls.target.lerpVectors(camAnim.fromTarget, camAnim.toTarget, ease);
           if (p >= 1) camAnim.active = false;
         }
-        controls.update();
+        const stillDamping = controls.update();
         renderer.render(scene, camera);
-        raf = requestAnimationFrame(animate);
+        if (camAnim.active || stillDamping) requestFrame();
       }
-      animate();
+      requestFrame();
 
       ro = new ResizeObserver(() => {
         const w = mount.clientWidth || width;
         camera.aspect = w / height;
         camera.updateProjectionMatrix();
         renderer.setSize(w, height);
+        requestFrame();
       });
       ro.observe(mount);
 
