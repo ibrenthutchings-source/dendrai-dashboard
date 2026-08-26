@@ -522,8 +522,14 @@ function App() {
     if (opts.cemFilter) setCemInitialFilter(opts.cemFilter);
     if (opts.pacProcess) setPacInitialProcess(opts.pacProcess);
     if (screen === "ubogov") setUnreadCEM(0);
+    // pipelineFocus (a stage id like "s2" or a gate id like "g1") jumps
+    // straight into that stage/gate's canvas — without this, navigating to
+    // "pipeline" while already on it is a no-op (setActiveScreen bails on an
+    // unchanged value), so a NextActionRail cta like "Review risks" did
+    // nothing when the user was already on the Risk Intelligence screen.
+    if (opts.pipelineFocus) goToNode(opts.pipelineFocus);
     setActiveScreen(screen);
-  }, []);
+  }, [goToNode]);
 
   // ---- Governance Intelligence pane ----
   const [govData, setGovData] = useState(null);     // proxy data from DEF 14A
@@ -3063,16 +3069,16 @@ function _computeNextActions({ hasRun, running, gateState, output, approvalInbox
       cta: "Go to Risk Radar" });
   }
   if (hasRun && gateState?.g1 === "pending") {
-    actions.push({ id: "gate1", priority: 1, screen: "pipeline",
+    actions.push({ id: "gate1", priority: 1, screen: "pipeline", opts: { pipelineFocus: "g1" },
       text: "Gate 1 risk approval is waiting on your review.", cta: "Review Gate 1" });
   }
   if (hasRun && gateState?.g2 === "pending") {
-    actions.push({ id: "gate2", priority: 1, screen: "pipeline",
+    actions.push({ id: "gate2", priority: 1, screen: "pipeline", opts: { pipelineFocus: "g2" },
       text: "Gate 2 scope approval is waiting on your review.", cta: "Review Gate 2" });
   }
   if (output?.s2?.riskAppetite?.status === "BREACHED") {
     const n = output.s2.riskAppetite.breaching?.length || 0;
-    actions.push({ id: "appetite", priority: 1, screen: "pipeline",
+    actions.push({ id: "appetite", priority: 1, screen: "pipeline", opts: { pipelineFocus: "s2" },
       text: `Risk appetite breached — ${n} risk${n !== 1 ? "s" : ""} exceed tolerance.`, cta: "Review risks" });
   }
   if (approvalInboxCount > 0) {
@@ -3118,7 +3124,7 @@ function NextActionRail({ hasRun, running, gateState, output, approvalInboxCount
       <div className="nba-head">
         <span className="nba-icon"><Icon name="compass" size={13}/></span>
         <span className="nba-text">{top.text}</span>
-        <button type="button" className="btn btn-sm nba-cta" onClick={() => onNavigate(top.screen)}>
+        <button type="button" className="btn btn-sm nba-cta" onClick={() => onNavigate(top.screen, top.opts)}>
           {top.cta} <Icon name="chev-r" size={10}/>
         </button>
         {rest.length > 0 && (
@@ -3135,7 +3141,7 @@ function NextActionRail({ hasRun, running, gateState, output, approvalInboxCount
           {rest.map(a => (
             <div key={a.id} className="nba-row">
               <span className="nba-row-text">{a.text}</span>
-              <button type="button" className="btn btn-sm" onClick={() => onNavigate(a.screen)}>{a.cta}</button>
+              <button type="button" className="btn btn-sm" onClick={() => onNavigate(a.screen, a.opts)}>{a.cta}</button>
             </div>
           ))}
         </div>
