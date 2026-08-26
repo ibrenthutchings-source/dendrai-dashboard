@@ -1172,6 +1172,25 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
 
     db.complete_risk_loop_run(run_id)
 
+    # Ingest the entity's filed segment/geography revenue breakdown on every
+    # run, unconditionally — not gated behind SOX materiality (a segment can
+    # be immaterial for SOX purposes and still be exactly what a risk
+    # assessment or the Coverage Cube needs to see). Runs BEFORE the SOX
+    # auto-rescope block below so db.get_sox_segments() has fresh data on
+    # the same run instead of scoping against whatever was last persisted
+    # (or nothing, if this ticker had never hit the manual import path).
+    # Skipped for private tickers (no CIK/SEC filings to parse) and never
+    # fatal to the run itself — a filer with no reportable segments, or a
+    # transient EDGAR fetch failure, is not a reason to fail the whole
+    # analysis.
+    ticker_for_segments = result.get("ticker", req.ticker)
+    if company_id and not db.is_private_ticker(ticker_for_segments):
+        try:
+            import edgar_segments
+            edgar_segments.persist_segments(ticker_for_segments)
+        except Exception as _seg_err:
+            logger.warning("Segment ingestion failed (non-fatal): %s", _seg_err)
+
     # Auto-rescope SOX if a config exists for this company + current FY
     if company_id:
         try:

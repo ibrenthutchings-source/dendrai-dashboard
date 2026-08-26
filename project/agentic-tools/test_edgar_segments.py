@@ -170,7 +170,7 @@ class TestPersistSegments:
         return {
             "extracted": True,
             "ticker": "ON",
-            "fiscal_year": "2026",
+            "fiscal_year": "FY2026",
             "breakdowns": [
                 {
                     "segment_type": "business_segment",

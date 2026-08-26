@@ -510,7 +510,11 @@ def _commit_segment_rows(company_id: int, segment_rows: list[dict]) -> int:
         if not field:
             continue
         period_end = li.get("period_end") or ""
-        fiscal_year = period_end[:4] or None
+        # "FY{year}" — matches the convention every other fiscal_year-keyed
+        # lookup in this codebase uses (see edgar_segments.py's fetch_segments
+        # for the full rationale); a bare year here would silently never
+        # match a SOX-scoping lookup for the same fiscal year.
+        fiscal_year = f"FY{period_end[:4]}" if period_end else None
         key = (fiscal_year, li["segment_type"], li["segment_name"])
         by_key.setdefault(key, {
             "fiscal_year": fiscal_year,
