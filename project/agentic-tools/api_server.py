@@ -126,6 +126,7 @@ import peer_intel
 import risks_as_code
 import risk_coverage_cube
 import ontology_export
+import ontology_endpoints
 import oracle_fusion_endpoints
 import sox_endpoints
 import risk_register_endpoints
@@ -298,6 +299,10 @@ async def lifespan(application: FastAPI):
             db.seed_builtin_pac_processes()
             db.seed_framework_mappings()
             db.seed_ontology()
+            try:
+                ontology_endpoints.reembed_stale_concepts()
+            except Exception as _ontology_embed_err:
+                logger.warning("Concept re-embed skipped at startup (non-fatal): %s", _ontology_embed_err)
             logger.info("Static reference data seeded")
             # Auth schema + default users
             if auth_db.init_auth_db():
@@ -910,6 +915,7 @@ app.include_router(chat_endpoint.router)
 app.include_router(risks_as_code.router)
 app.include_router(risk_coverage_cube.router)
 app.include_router(ontology_export.router)
+app.include_router(ontology_endpoints.router)
 
 # Oracle Fusion: control library, test results, issues, SOD, audit events.
 app.include_router(oracle_fusion_endpoints.router)
