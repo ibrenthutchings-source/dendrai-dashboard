@@ -34,6 +34,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import db
+import embedding_util
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/risks-as-code")
@@ -639,6 +640,24 @@ def _generate_all(data: dict) -> Dict[str, str]:
 # REST endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _embed_rac_artifact(ticker: str, artifact_id: Optional[int], framework: str, content: str) -> None:
+    """Embed a Risks-as-Code artifact (EMBT_RAC) so it's searchable via
+    pgvector, same as Controls-as-Code already is. Best-effort — never raises."""
+    if not artifact_id or not content or not embedding_util.is_available():
+        return
+    try:
+        company_id = db.get_company_id(ticker) if ticker else None
+        vec = embedding_util.embed_text(content[:8000])
+        if vec:
+            db.save_embedding(
+                source_table="risks_as_code_artifacts", source_id=artifact_id,
+                content_type=db.EMBT_RAC, embedding=vec,
+                company_id=company_id, text_snippet=f"{framework}: {content[:600]}",
+            )
+    except Exception:
+        pass  # embedding is non-fatal, same as CaC
+
+
 @router.post("/generate")
 async def generate(req: GenerateRequest):
     """Generate OSCAL + COSO ERM artifacts from the supplied risk payload and persist to DB."""
@@ -649,6 +668,7 @@ async def generate(req: GenerateRequest):
         for framework, content in artifacts.items():
             artifact_id = db.save_risks_as_code_artifact(req.run_id, req.ticker, framework, content)
             saved[framework] = artifact_id
+            _embed_rac_artifact(req.ticker, artifact_id, framework, content)
 
     return {
         "ticker":       req.ticker,
@@ -743,7 +763,8 @@ async def stream_artifacts(run_id: int):
 
                     if db.is_available():
                         for fw, content in artifacts.items():
-                            db.save_risks_as_code_artifact(run_id, run.get("ticker", ""), fw, content)
+                            artifact_id = db.save_risks_as_code_artifact(run_id, run.get("ticker", ""), fw, content)
+                            _embed_rac_artifact(run.get("ticker", ""), artifact_id, fw, content)
 
                     yield "data: " + json.dumps({
                         "type":        "update",
