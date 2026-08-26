@@ -116,7 +116,7 @@ class TestCommitSegmentRows:
         assert saved["United States"]["revenue_pct"] == 70.0
         assert saved["EMEA"]["revenue_pct"] == 30.0
         assert saved["United States"]["source"] == "uploaded"
-        assert saved["United States"]["fiscal_year"] == "2025"
+        assert saved["United States"]["fiscal_year"] == "FY2025"
 
     def test_multiple_metrics_for_same_segment_fold_into_one_row(self):
         line_items = [

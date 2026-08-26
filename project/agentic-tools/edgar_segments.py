@@ -248,7 +248,11 @@ def fetch_segments(ticker: str, form_types: Optional[set[str]] = None) -> dict[s
 
     filing = candidates[0]
     base.update({
-        "fiscal_year": filing["date"][:4],
+        # "FY{year}" — matches the convention sox_scoping_tool.py and every
+        # other fiscal_year-keyed lookup in this codebase uses (e.g.
+        # f"FY{datetime.utcnow().year}" in run_sox_scoping). A bare "2026"
+        # here would silently never match those lookups.
+        "fiscal_year": f"FY{filing['date'][:4]}",
         "accession_number": filing["accession_number"],
         "source_form": filing["form"],
     })
