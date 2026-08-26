@@ -1138,6 +1138,13 @@ ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS soc2_criteria   TEXT[];  -
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS nist_800_53     TEXT[];  -- e.g. {AC-3,AU-2,SC-8}
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS iso_27001       TEXT[];  -- e.g. {A.9.4.1,A.12.4.1}
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS coso_component  VARCHAR(64);  -- COSO ERM 2017 component name
+-- Independent of coso_component above, not derived from it: a control's IC-IF
+-- 2013 component (Control Environment / Risk Assessment / Control Activities /
+-- Information & Communication / Monitoring Activities) is a different fact
+-- about the control than its ERM 2017 component — see framework_mappings.py's
+-- 2026-08-26 note. Powers the Risk Coverage Cube's IC-IF view; coso_component
+-- powers its ERM 2017 view. Same "honest gap, never inferred" policy applies.
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS icif_component VARCHAR(64);  -- COSO IC-IF 2013 component name
 
 -- Policy-as-Code business processes: was a hardcoded 5-entry Python set
 -- (VALID_PROCESSES); now a real table so sync_github() can register a new
@@ -7997,6 +8004,112 @@ def get_risk_graph_expanded(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# COSO ERM 2017 evidence counts — for the Risk Coverage Cube's ERM view
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_erm_evidence_counts(run_id: int, company_id: Optional[int]) -> dict:
+    """One row-count (or 0/1 flag) per evidence key in
+    risks_as_code.ERM_PRINCIPLES, for a specific run. Every query here
+    answers "does a real, persisted artifact exist for this principle" —
+    never an inference. risk_coverage_cube.build_erm_evidence() turns these
+    counts into evidenced/no_evidence states; principles with `evidence=None`
+    in ERM_PRINCIPLES never reach this function at all (no_source, always).
+
+    Two principles are intentionally coarser than a per-run count:
+      - risk_appetite (P7): risk_loop_runs.appetite_level is a level
+        (conservative/moderate/aggressive), not a quantified threshold —
+        evidenced as 1/0, caveated as "coarse" by the caller.
+      - Some counts (P6, P14, P18) are company-wide rather than run-scoped,
+        because their source tables (rss_articles, risk_relationships) don't
+        carry a run_id — they reflect "as of now" state, not this run's
+        snapshot, same honest-scoping caveat the Evidence Pack already makes
+        for Controls-as-Code/Policy-as-Code (evidence_pack_endpoints.py).
+    """
+    def _do():
+        counts: Dict[str, int] = {}
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM approval_tasks WHERE run_id = %s", (run_id,))
+                counts["gate_approvals"] = cur.fetchone()[0]
+
+                if company_id:
+                    cur.execute("SELECT COUNT(*) FROM rss_articles WHERE company_id = %s", (company_id,))
+                    rss_n = cur.fetchone()[0]
+                    cur.execute("SELECT COUNT(*) FROM fred_correlations WHERE company_id = %s", (company_id,))
+                    fred_n = cur.fetchone()[0]
+                else:
+                    rss_n = fred_n = 0
+                counts["market_context"] = rss_n + fred_n
+
+                cur.execute("SELECT appetite_level FROM risk_loop_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+                counts["risk_appetite"] = 1 if (row and row[0]) else 0
+
+                cur.execute("SELECT COUNT(*) FROM scenario_analyses WHERE run_id = %s", (run_id,))
+                scen_n = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM grey_swan_models WHERE run_id = %s", (run_id,))
+                gs_n = cur.fetchone()[0]
+                counts["scenario_analysis"] = scen_n + gs_n
+
+                cur.execute("SELECT COUNT(*) FROM risk_scores WHERE run_id = %s", (run_id,))
+                counts["risk_register"] = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM risk_scores WHERE run_id = %s AND score IS NOT NULL", (run_id,))
+                counts["risk_scoring"] = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM risk_scores WHERE run_id = %s AND rag_status IS NOT NULL", (run_id,))
+                counts["risk_prioritization"] = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM audit_objectives WHERE run_id = %s", (run_id,))
+                counts["audit_objectives"] = cur.fetchone()[0]
+
+                if company_id:
+                    cur.execute("SELECT COUNT(*) FROM risk_relationships WHERE company_id = %s", (company_id,))
+                    counts["risk_graph"] = cur.fetchone()[0]
+                else:
+                    counts["risk_graph"] = 0
+
+                cur.execute("SELECT COUNT(*) FROM rss_signals WHERE run_id = %s AND velocity_delta IS NOT NULL", (run_id,))
+                rss_sig_n = cur.fetchone()[0]
+                if company_id:
+                    cur.execute("SELECT COUNT(*) FROM edgar_8k_events WHERE company_id = %s", (company_id,))
+                    events_n = cur.fetchone()[0]
+                else:
+                    events_n = 0
+                counts["change_signals"] = rss_sig_n + events_n
+
+                cur.execute("SELECT COUNT(*) FROM backtest_metrics WHERE run_id = %s", (run_id,))
+                counts["backtest_review"] = cur.fetchone()[0]
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM backtest_metrics WHERE run_id = %s AND calibrated_weight IS NOT NULL",
+                    (run_id,),
+                )
+                counts["loop_calibration"] = cur.fetchone()[0]
+
+                cur.execute("SELECT data_mode FROM risk_loop_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+                counts["mcp_ingestion"] = 1 if (row and row[0] == "mcp") else 0
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM ai_analyses WHERE run_id = %s AND kind = 'persona_brief'",
+                    (run_id,),
+                )
+                counts["notifications"] = cur.fetchone()[0]
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM ai_analyses WHERE run_id = %s AND kind = 'audit_report'",
+                    (run_id,),
+                )
+                ai_report_n = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM risks_as_code_artifacts WHERE run_id = %s", (run_id,))
+                rac_n = cur.fetchone()[0]
+                counts["audit_reporting"] = ai_report_n + rac_n
+        return counts
+    return _run(_do, default={}) or {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Graph relationships — scenario → risk impact edges
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -8991,7 +9104,7 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                 cur.execute(
                     f"SELECT control_id, name, description, process, source, created_at, "
                     f"       last_fired_at, last_verified_at, last_test_passed, "
-                    f"       soc2_criteria, nist_800_53, iso_27001, coso_component "
+                    f"       soc2_criteria, nist_800_53, iso_27001, coso_component, icif_component "
                     f"FROM controls_catalog {where} ORDER BY control_id",
                     params,
                 )
@@ -9005,6 +9118,7 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                         "last_test_passed": r[8],
                         "soc2_criteria": r[9] or [], "nist_800_53": r[10] or [],
                         "iso_27001": r[11] or [], "coso_component": r[12],
+                        "icif_component": r[13],
                     }
                     for r in cur.fetchall()
                 ]
@@ -9018,7 +9132,7 @@ def get_control(control_id: str) -> Optional[dict]:
                 cur.execute(
                     "SELECT control_id, name, description, process, source, created_at, "
                     "       last_fired_at, last_verified_at, last_test_passed, "
-                    "       soc2_criteria, nist_800_53, iso_27001, coso_component "
+                    "       soc2_criteria, nist_800_53, iso_27001, coso_component, icif_component "
                     "FROM controls_catalog WHERE control_id = %s",
                     (control_id,),
                 )
@@ -9034,17 +9148,23 @@ def get_control(control_id: str) -> Optional[dict]:
                     "last_test_passed": row[8],
                     "soc2_criteria": row[9] or [], "nist_800_53": row[10] or [],
                     "iso_27001": row[11] or [], "coso_component": row[12],
+                    "icif_component": row[13],
                 }
     return _run(_do)
 
 
 def upsert_framework_mapping(control_id: str, soc2_criteria: Optional[list] = None,
                               nist_800_53: Optional[list] = None, iso_27001: Optional[list] = None,
-                              coso_component: Optional[str] = None) -> bool:
+                              coso_component: Optional[str] = None,
+                              icif_component: Optional[str] = None) -> bool:
     """Set framework crosswalk metadata for one control. No-ops (returns
     False) if control_id doesn't exist yet — mappings are seeded after
     controls_catalog itself (see seed_framework_mappings, called after
-    _seed_controls_catalog in api_server.py's startup sequence)."""
+    _seed_controls_catalog in api_server.py's startup sequence).
+
+    coso_component and icif_component are independent fields (a control's ERM
+    2017 component vs. its IC-IF 2013 component — see framework_mappings.py's
+    2026-08-26 note); neither is derived from the other."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -9052,10 +9172,10 @@ def upsert_framework_mapping(control_id: str, soc2_criteria: Optional[list] = No
                     """
                     UPDATE controls_catalog
                     SET soc2_criteria = %s, nist_800_53 = %s, iso_27001 = %s,
-                        coso_component = %s, updated_at = NOW()
+                        coso_component = %s, icif_component = %s, updated_at = NOW()
                     WHERE control_id = %s
                     """,
-                    (soc2_criteria, nist_800_53, iso_27001, coso_component, control_id),
+                    (soc2_criteria, nist_800_53, iso_27001, coso_component, icif_component, control_id),
                 )
                 return cur.rowcount > 0
     return _run(_do, default=False) or False
@@ -10049,6 +10169,7 @@ def seed_framework_mappings() -> int:
             nist_800_53=mapping.get("nist_800_53"),
             iso_27001=mapping.get("iso_27001"),
             coso_component=mapping.get("coso_component"),
+            icif_component=mapping.get("icif_component"),
         ):
             updated += 1
     return updated

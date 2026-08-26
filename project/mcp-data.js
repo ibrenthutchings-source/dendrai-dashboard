@@ -344,13 +344,15 @@ window.MCP = (function () {
   }
 
   /**
-   * Risk Coverage Cube — COSO-component x objective-category grid for the
-   * ticker's latest risk-loop run (risk_coverage_cube.py). Returns null on
-   * 404 rather than throwing so a not-yet-run ticker renders an empty state,
-   * not an error.
+   * Risk Coverage Cube — two COSO-aligned views for the ticker's latest
+   * risk-loop run (risk_coverage_cube.py): "icif_2013" (default) is the real
+   * COSO Cube (IC-IF component x objective category x operating unit);
+   * "erm_2017" is a flat component x principle conformance list, not a cube
+   * (COSO ERM 2017 doesn't have one). Returns null on 404 rather than
+   * throwing so a not-yet-run ticker renders an empty state, not an error.
    */
-  async function getCoverageCube(ticker) {
-    return _getSavedOrNull(`/coverage-cube/${encodeURIComponent(ticker)}`);
+  async function getCoverageCube(ticker, framework = "icif_2013") {
+    return _getSavedOrNull(`/coverage-cube/${encodeURIComponent(ticker)}?framework=${encodeURIComponent(framework)}`);
   }
 
   // ── Governance Intelligence — load from DB without a live pipeline run ──────

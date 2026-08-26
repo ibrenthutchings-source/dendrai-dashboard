@@ -1,20 +1,39 @@
 /* ============================================================
-   Risk Coverage Cube — a real 3D cube, three axes:
-     X (ground)   COSO ERM 2017 component
-     Z (ground)   objective category
+   Risk Coverage Cube — two COSO-aligned views, selected by a
+   framework toggle. Corrected 2026-08-26 after an audit found the
+   original single "cube" mixed COSO ERM 2017 components with
+   COSO ERM 2004's objective categories, in a cube shape COSO itself
+   retired when it published ERM 2017 (replaced by a helix). See
+   risk_coverage_cube.py's module docstring for the full rationale.
+
+   COSO Cube (IC-IF 2013, default) — the real COSO Cube, still
+   current:
+     X (ground)   IC-IF component, driven by the mapped CONTROL,
+                  not the risk (the fix for "2 of 5 columns
+                  structurally unreachable" — see
+                  risk_coverage_cube.py's build_icif_cube)
+     Z (ground)   objective category (Operations/Reporting/
+                  Compliance — IC-IF has no "Strategic")
      Y (vertical) operating unit, stacked as layers — Consolidated
                   at the base (real risk bars), any filed/uploaded
                   segment revenue as labeled layers above it.
    Bar height WITHIN a layer separately encodes risk_count — the
    only way to fit 2 categorical axes + 1 magnitude + 1 more
-   categorical axis into 3 spatial dimensions. Standalone nav
-   screen, scoped to the ticker's latest risk-loop run
-   (risk_coverage_cube.py) — spans the whole loop plus RaC/CaC/PaC,
-   so it doesn't belong inside a single Assess Risk stage canvas.
+   categorical axis into 3 spatial dimensions.
 
-   Color = two independent signals, never merged:
-     - component IDENTITY: a fixed categorical hue per COSO
-       component (_COSO_COLOR) — COSO has no official per-component
+   COSO ERM 2017 — NOT a cube (COSO ERM 2017 doesn't have one): a
+   flat component x principle conformance list (ErmEvidencePanel),
+   answering "is this ERM activity evidenced?" from real persisted
+   artifacts, never a 3D shape.
+
+   Standalone nav screen, scoped to the ticker's latest risk-loop
+   run (risk_coverage_cube.py) — spans the whole loop plus
+   RaC/CaC/PaC, so it doesn't belong inside a single Assess Risk
+   stage canvas.
+
+   Color (COSO Cube view) = two independent signals, never merged:
+     - component IDENTITY: a fixed categorical hue per IC-IF
+       component (_ICIF_COLOR) — COSO has no official per-component
        color standard, so this is a hand-picked, colorblind-mindful
        palette, chosen to stay clear of the red/amber/green band
        already used for RAG severity and reused nowhere else here.
@@ -29,7 +48,9 @@
    by design: no risk or control anywhere in the schema is tagged
    to a segment, so those layers are real (named, revenue-weighted)
    but carry no bars — a translucent labeled slab, not a fabricated
-   breakdown.
+   breakdown. Division/Function (IC-IF's other org-structure levels)
+   are omitted from the axis entirely (see data.omitted_z_levels) —
+   no data source, so no permanently-empty level is rendered either.
 
    Clicking a bar dollies the camera toward it and opens the same
    detail panel a plain click would. A Table view (the original
@@ -46,30 +67,36 @@ const _RAG_META = {
   G: { label: "Green", color: "var(--green-ink)" },
 };
 
+// IC-IF 2013 — the framework this Cube view actually draws (COSO ERM 2017
+// has no cube; see ErmEvidencePanel below for that framework's view).
 const _COMPONENT_SHORT = {
-  "Governance & Culture": "Governance",
-  "Strategy & Objective-Setting": "Strategy",
-  "Performance": "Performance",
-  "Review & Revision": "Review",
-  "Information, Communication & Reporting": "Info & Reporting",
+  "Control Environment": "Control Env",
+  "Risk Assessment": "Risk Assessment",
+  "Control Activities": "Control Activities",
+  "Information & Communication": "Info & Comms",
+  "Monitoring Activities": "Monitoring",
   "Unmapped": "Unmapped",
 };
 
 // COSO has no single official per-component color standard the way RAG has
 // red/amber/green — this is a hand-picked, fixed-order categorical palette
-// (one hue per ERM 2017 component, Unmapped as neutral gray), chosen to stay
-// clear of the red/amber/green band already carrying RAG-severity and
+// (one hue per IC-IF 2013 component, Unmapped as neutral gray), chosen to
+// stay clear of the red/amber/green band already carrying RAG-severity and
 // coverage-state meaning elsewhere on this screen. Color now encodes
 // component IDENTITY; coverage STATE is encoded separately via fill opacity
 // + edge weight (see _cellStyle) so the two signals never collide.
-const _COSO_COLOR = {
-  "Governance & Culture": "#17A398",
-  "Strategy & Objective-Setting": "#2E7BD6",
-  "Performance": "#6C5CE7",
-  "Review & Revision": "#9B4FE0",
-  "Information, Communication & Reporting": "#C43FA6",
+const _ICIF_COLOR = {
+  "Control Environment": "#17A398",
+  "Risk Assessment": "#2E7BD6",
+  "Control Activities": "#6C5CE7",
+  "Information & Communication": "#C43FA6",
+  "Monitoring Activities": "#9B4FE0",
   "Unmapped": "#9AA0A6",
 };
+// Kept as an alias — the bulk of this file's cell-rendering code (written
+// when this screen only had one, mislabelled view) refers to the palette by
+// this name; renaming every call site wasn't worth the diff noise.
+const _COSO_COLOR = _ICIF_COLOR;
 
 const _STATE_LABEL = { empty: "No coverage", mapped_unverified: "Mapped, unverified", verified: "Verified" };
 
@@ -88,7 +115,7 @@ function CubeLegend() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>COSO component:</span>
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>IC-IF component:</span>
         {Object.entries(_COSO_COLOR).map(([comp, hex]) => (
           <div key={comp} style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <span style={{ width: 10, height: 10, borderRadius: "50%", display: "inline-block", background: hex }} />
@@ -262,7 +289,7 @@ function _cubePalette() {
 }
 
 // Z axis — operating unit. `entities` comes straight from the backend
-// (risk_coverage_cube.py's build_cube): "Consolidated" plus every distinct
+// (risk_coverage_cube.py's build_icif_cube): "Consolidated" plus every distinct
 // segment_name a real risk was tagged with by segment_risk_tool.py
 // (Concentration/Decline/Divergence) — these get REAL bars, same as
 // Consolidated. A segment with filed/uploaded revenue (`segments`) but no
@@ -626,7 +653,7 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
     <div>
       <div ref={mountRef} style={{ width: "100%", height: 460, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }} />
       <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 6 }}>
-        Ground plane = COSO component x objective category · bar height = risk count (ruler at back-right corner) ·
+        Ground plane = IC-IF component x objective category · bar height = risk count (ruler at back-right corner) ·
         stacked layers = operating unit, the 3rd axis (Consolidated + any segment with its own real risk data get
         full bars; a segment with filed/uploaded revenue but no risk of its own yet is a labeled slab with no bars) ·
         drag to rotate · scroll to zoom · click a bar to zoom in and open detail
@@ -745,7 +772,68 @@ function SegmentStrip({ segments, entities = [] }) {
   );
 }
 
+const _ERM_STATE_META = {
+  evidenced:   { label: "Evidenced",            color: "var(--green-ink)" },
+  no_evidence: { label: "No evidence this run", color: "var(--amber-ink)" },
+  no_source:   { label: "No source in schema",  color: "var(--ink-4)" },
+};
+
+// COSO ERM 2017's view: not a cube (COSO replaced the cube with a helix when
+// it published ERM 2017), and not a cross-product of component x principle —
+// each principle is nested under its own component, never repeated under
+// another. "Evidenced" means a real, persisted artifact was found for the
+// ticker's latest run (risk_coverage_cube.build_erm_evidence); "no source in
+// schema" means no such artifact exists anywhere in this app, ever — a
+// permanent gap, not something this run happens to be missing.
+function ErmEvidencePanel({ data }) {
+  if (!data) return null;
+  return (
+    <div>
+      <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 12, lineHeight: 1.55 }}>
+        COSO ERM 2017 has no cube — it replaced the cube with a helix/ribbon diagram. This view asks a different
+        question per principle: is this ERM activity <b>evidenced</b>, from a real persisted artifact, for
+        {" "}{data.ticker}'s latest run — never inferred.
+      </div>
+      <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <span>{data.evidenced_count} of {data.total_principles} evidenced</span>
+        <span style={{ color: "var(--amber-ink)" }}>{data.no_evidence_count} no evidence this run</span>
+        <span style={{ color: "var(--ink-4)" }}>{data.no_source_count} no source in schema</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {(data.components || []).map(comp => (
+          <div key={comp.component}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>{comp.component}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {comp.principles.map(p => {
+                const meta = _ERM_STATE_META[p.state] || {};
+                return (
+                  <div key={p.number} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "6px 10px",
+                    borderRadius: 6, border: "1px solid var(--line)", background: "var(--surface-2)",
+                  }}>
+                    <span className="mono" style={{ fontSize: 10, color: "var(--ink-4)", width: 24, flexShrink: 0 }}>P{p.number}</span>
+                    <span style={{ fontSize: 12, flex: 1 }}>{p.label}</span>
+                    <span className="mono" style={{ fontSize: 10, color: meta.color || "var(--ink-3)", flexShrink: 0 }}>
+                      {meta.label || p.state}{p.count != null ? ` (${p.count})` : ""}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const _FRAMEWORKS = [
+  { id: "icif_2013", label: "COSO Cube (IC-IF 2013)" },
+  { id: "erm_2017",  label: "COSO ERM 2017" },
+];
+
 function RiskCoverageCubeScreen({ ticker }) {
+  const [framework, setFramework] = useState("icif_2013");
   const [state, setState] = useState({ loading: false, error: null, data: null });
   const [selectedKey, setSelectedKey] = useState(null);
   const [view, setView] = useState("3d");
@@ -755,14 +843,16 @@ function RiskCoverageCubeScreen({ ticker }) {
     if (!ticker || typeof window === "undefined" || !window.MCP?.getCoverageCube) return;
     let cancelled = false;
     setState({ loading: true, error: null, data: null });
+    setSelectedKey(null);
     setSelectedEntity("Consolidated");
-    window.MCP.getCoverageCube(ticker)
+    window.MCP.getCoverageCube(ticker, framework)
       .then(data => { if (!cancelled) setState({ loading: false, error: null, data }); })
       .catch(e => { if (!cancelled) setState({ loading: false, error: e.message || "Request failed", data: null }); });
     return () => { cancelled = true; };
-  }, [ticker]);
+  }, [ticker, framework]);
 
   const data = state.data;
+  const isIcif = framework === "icif_2013";
   const cellsByKey = {};
   (data?.cells || []).forEach(c => { cellsByKey[`${c.entity}::${c.objective_category}::${c.coso_component}`] = c; });
   const selected = selectedKey ? cellsByKey[selectedKey] : null;
@@ -779,11 +869,33 @@ function RiskCoverageCubeScreen({ ticker }) {
           <div className="kicker">Risk Intelligence</div>
           <div className="panel-title mt-8">Risk Coverage Cube</div>
           <div className="panel-sub">
-            Where risk assessment (RaC), control assurance (CaC/PaC), and policy enforcement actually meet — and
-            where nothing is watching. Three axes: COSO ERM 2017 component, objective category, and operating unit
-            (Consolidated, plus any filed/uploaded segments) — for {ticker || "—"}'s latest run.
+            {isIcif ? (
+              <>Where risk assessment (RaC), control assurance (CaC/PaC), and policy enforcement actually meet — and
+              where nothing is watching, per the real COSO Cube (Internal Control — Integrated Framework, 2013):
+              IC-IF component (driven by the mapped control, not the risk), objective category, and operating unit
+              (Consolidated, plus any filed/uploaded segments) — for {ticker || "—"}'s latest run.</>
+            ) : (
+              <>COSO ERM 2017 conformance: is each of the framework's 20 principles evidenced by a real, persisted
+              artifact in this app — for {ticker || "—"}'s latest run. ERM 2017 has no cube (COSO replaced it with a
+              helix), so this view isn't one.</>
+            )}
           </div>
         </div>
+      </div>
+
+      <div style={{ display: "flex", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden", width: "fit-content", marginBottom: 14 }}>
+        {_FRAMEWORKS.map(f => (
+          <button key={f.id} type="button"
+            onClick={() => setFramework(f.id)}
+            className="mono"
+            style={{
+              fontSize: 10.5, padding: "5px 12px", border: "none", cursor: "pointer",
+              background: framework === f.id ? "var(--acc)" : "var(--surface)",
+              color: framework === f.id ? "var(--surface)" : "var(--ink-3)",
+            }}>
+            {f.label}
+          </button>
+        ))}
       </div>
 
       {!ticker ? (
@@ -798,6 +910,8 @@ function RiskCoverageCubeScreen({ ticker }) {
         <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
           No risk-loop run found for {ticker} yet — run Assess Risk first.
         </div>
+      ) : !isIcif ? (
+        <ErmEvidencePanel data={data} />
       ) : (
         <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -806,6 +920,7 @@ function RiskCoverageCubeScreen({ ticker }) {
               <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
                 {data.total_risks} risks (RaC)
                 {data.unmapped_risk_count > 0 ? ` · ${data.unmapped_risk_count} unmapped` : ""}
+                {data.out_of_icif_scope_risk_count > 0 ? ` · ${data.out_of_icif_scope_risk_count} out of IC-IF scope` : ""}
                 {" · "}{totalMappedControlLinks} control links (CaC), {totalVerifiedControlLinks} verified
               </div>
               <div style={{ display: "flex", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
@@ -843,6 +958,13 @@ function RiskCoverageCubeScreen({ ticker }) {
             <div className="kicker" style={{ marginBottom: 8 }}>Operating unit context</div>
             <SegmentStrip segments={data.segments} entities={data.entities} />
           </div>
+
+          {data.omitted_z_levels?.length > 0 && (
+            <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 12, fontStyle: "italic" }}>
+              IC-IF's org-structure axis also includes {data.omitted_z_levels.map(o => o.level).join(" and ")} —
+              omitted here, not rendered empty: {data.omitted_z_levels.map(o => `${o.level} (${o.reason})`).join("; ")}.
+            </div>
+          )}
         </>
       )}
     </div>
