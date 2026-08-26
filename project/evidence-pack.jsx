@@ -270,7 +270,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
                     whiteSpace: "pre-wrap", fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7,
                     background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "14px 16px",
                   }}>
-                    {d.audit_report.content}
+                    {d.audit_report.content?.markdown || ""}
                   </div>
                 </div>
               )}
