@@ -15,10 +15,12 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
-def _risk(risk_ref, category, score=10.0, rag="G", velocity=0, control_env="ADEQUATE"):
+def _risk(risk_ref, category, score=10.0, rag="G", velocity=0, control_env="ADEQUATE",
+          segment_type=None, segment_name=None):
     return {
         "risk_ref": risk_ref, "id": risk_ref, "category": category,
         "score": score, "rag": rag, "velocity": velocity, "control_env": control_env,
+        "segment_type": segment_type, "segment_name": segment_name,
     }
 
 
@@ -123,3 +125,58 @@ class TestAggregationAcrossRisks:
                     if c["objective_category"] == "Operations" and c["coso_component"] == "Performance")
         assert cell["control_env_mix"]["STRONG"] == 1
         assert cell["state"] == "mapped_unverified"
+
+
+class TestEntityAxis:
+    """The Z axis — Phase 3 (segment_risk_tool.py) tags real risks with a
+    segment_type/segment_name; a risk with no tag is Consolidated. This is
+    the real join, not a display-only placeholder."""
+
+    def test_untagged_risk_lands_in_consolidated_entity(self):
+        risks = [_risk("R1", "Cybersecurity")]
+        cube = cube_mod.build_cube(risks, [], {}, {})
+        assert cube["entities"] == ["Consolidated"]
+        cell = next(c for c in cube["cells"]
+                    if c["objective_category"] == "Operations" and c["coso_component"] == "Performance"
+                    and c["entity"] == "Consolidated")
+        assert cell["risk_count"] == 1
+
+    def test_segment_tagged_risk_gets_its_own_entity(self):
+        risks = [
+            _risk("R1", "Cybersecurity"),
+            _risk("SGG01C", "Revenue", segment_type="geography", segment_name="United States"),
+        ]
+        cube = cube_mod.build_cube(risks, [], {}, {})
+        assert cube["entities"] == ["Consolidated", "United States"]
+
+        us_cell = next(c for c in cube["cells"]
+                       if c["entity"] == "United States"
+                       and c["objective_category"] == "Operations" and c["coso_component"] == "Performance")
+        assert us_cell["risk_count"] == 1
+        assert us_cell["risk_refs"] == ["SGG01C"]
+
+        consolidated_cell = next(c for c in cube["cells"]
+                                  if c["entity"] == "Consolidated"
+                                  and c["objective_category"] == "Operations" and c["coso_component"] == "Performance")
+        assert consolidated_cell["risk_count"] == 1
+        assert consolidated_cell["risk_refs"] == ["R1"]
+
+    def test_consolidated_entity_always_present_even_with_zero_risks(self):
+        cube = cube_mod.build_cube([], [], {}, {})
+        assert cube["entities"] == ["Consolidated"]
+
+    def test_multiple_segments_each_get_a_distinct_entity(self):
+        risks = [
+            _risk("SGG01C", "Revenue", segment_type="geography", segment_name="United States"),
+            _risk("SGG02C", "Revenue", segment_type="geography", segment_name="EMEA"),
+        ]
+        cube = cube_mod.build_cube(risks, [], {}, {})
+        assert cube["entities"] == ["Consolidated", "EMEA", "United States"]
+
+    def test_grid_size_scales_with_entity_count(self):
+        risks = [
+            _risk("R1", "Cybersecurity"),
+            _risk("SGG01C", "Revenue", segment_type="geography", segment_name="United States"),
+        ]
+        cube = cube_mod.build_cube(risks, [], {}, {})
+        assert len(cube["cells"]) == len(cube_mod.OBJECTIVE_CATEGORIES) * len(cube_mod.COSO_COMPONENTS) * 2

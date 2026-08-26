@@ -126,6 +126,47 @@ window.MCP = (function () {
   }
 
   /**
+   * Segment/geography-specific risks (segment_risk_tool.py, Risk Coverage
+   * Cube Phase 3) — real Concentration/Decline/Divergence risk scored from
+   * a segment's own filed revenue, distinct from every templateRisk
+   * (there's no per-segment template — see that module's docstring for
+   * why). mergeRiskScores() above only overlays data onto EXISTING
+   * template risks by index/category match, so it silently drops these;
+   * this instead ADAPTS them into the same risk-object shape the rest of
+   * the app expects (id/name/category/score/rag/velocity/narrative/hist)
+   * so they can be concatenated onto the merged array as real additional
+   * risks, not merged into an existing one.
+   *
+   * Fields a segment risk has no basis for are left honestly absent rather
+   * than guessed: no impact/likelihood decomposition (the score isn't an
+   * impact x likelihood product here), no inferred control effectiveness
+   * (ce: null — no basis to infer one), no peer benchmark.
+   *
+   * @param {object} mcpResult  Full analysis result (may carry a
+   *                            `segment_risks` key — only present when the
+   *                            backend actually extracted segment data)
+   * @returns {object[]} Risk-shaped objects ready to concatenate onto the
+   *                      merged consolidated risk array
+   */
+  function mapSegmentRisks(mcpResult) {
+    return (mcpResult?.segment_risks || []).map(r => {
+      const score = r.score != null ? +r.score.toFixed(1) : 0;
+      const base  = r.base_score != null ? +r.base_score.toFixed(1) : score;
+      return {
+        id: r.risk_ref, name: r.name, category: r.category,
+        impact: null, likelihood: null,
+        score, base, rag: r.rag_status || 'G',
+        velocity: r.velocity ?? 0, ce: null,
+        inherent: score, residual: score, peer: 'in-line',
+        hist: _mkHist(base, score),
+        narrative: r.narrative || '',
+        segment_type: r.segment_type || null,
+        segment_name: r.segment_name || null,
+      };
+    });
+  }
+
+  /**
    * Merge MCP-computed risk scores onto template risks from RISK_ENGINE.
    * Template risks supply narrative fields (obj, controls, mapFinding, …);
    * MCP supplies data-driven scores, RAG, velocity, and control environment.
@@ -1019,6 +1060,7 @@ window.MCP = (function () {
     checkHealth,
     fetchFullAnalysis,
     mergeRiskScores,
+    mapSegmentRisks,
     mapRssSignals,
     mapFredSignals,
     fetchRiskFactors,

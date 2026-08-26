@@ -1228,6 +1228,13 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
                 )
                 if segment_risks:
                     db.save_risk_scores(run_id, segment_risks)
+                    # Mutating `result` here reaches the caller: predictive_full_analysis()
+                    # holds the same dict and returns it as the API response body, so this
+                    # is how a LIVE run (not just a DB-backed reload) gets segment risks in
+                    # front of the frontend — see mcp-data.js's mapSegmentRisks(), which
+                    # reads this key to fold them into output.s2.risks for Stage 3 and the
+                    # Sankey to see, closing the loop Phase 3 otherwise left DB-only.
+                    result["segment_risks"] = segment_risks
             except Exception as _seg_risk_err:
                 logger.warning("Segment risk assessment failed (non-fatal): %s", _seg_risk_err)
 

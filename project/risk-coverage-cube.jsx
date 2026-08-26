@@ -171,7 +171,7 @@ function _rgba(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function CubeGridTable({ data, cellsByKey, selectedKey, onSelectKey }) {
+function CubeGridTable({ data, entity, cellsByKey, selectedKey, onSelectKey }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <div style={{
@@ -196,16 +196,33 @@ function CubeGridTable({ data, cellsByKey, selectedKey, onSelectKey }) {
               display: "flex", alignItems: "center",
             }}>{row}</div>
             {data.coso_components.map(col => {
-              const key = `${row}::${col}`;
-              const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
+              const key = `${entity}::${row}::${col}`;
+              const cell = cellsByKey[key] || { objective_category: row, coso_component: col, entity, state: "empty", risk_count: 0 };
               return (
-                <CubeCell key={key} cell={cell} selected={selectedKey === key}
+                <CubeCell key={key} cell={cell} selected={selectedKey === key} entityLabel={entity}
                   onSelect={() => onSelectKey(prev => (prev === key ? null : key))} />
               );
             })}
           </React.Fragment>
         ))}
       </div>
+    </div>
+  );
+}
+
+function EntitySelector({ entities, selected, onSelect }) {
+  if (!entities || entities.length <= 1) return null;
+  return (
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+      <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", alignSelf: "center", marginRight: 2 }}>Entity:</span>
+      {entities.map(e => (
+        <button key={e} type="button" onClick={() => onSelect(e)} className="mono" style={{
+          fontSize: 10, padding: "3px 9px", borderRadius: 5, cursor: "pointer",
+          border: `1px solid ${e === selected ? "var(--acc)" : "var(--line)"}`,
+          background: e === selected ? "var(--acc)" : "var(--surface)",
+          color: e === selected ? "var(--surface)" : "var(--ink-3)",
+        }}>{e}</button>
+      ))}
     </div>
   );
 }
@@ -244,24 +261,24 @@ function _cubePalette() {
   };
 }
 
-// Z axis — operating unit. Real risk data has no per-segment attribution
-// today (no risk or control anywhere in the schema is tagged to a geography
-// or business segment), so "Consolidated" is the only layer that can honestly
-// carry risk bars. When the entity has a filed/uploaded segment breakdown
-// (edgar_segments.py / Mission Control upload), its top segments are still
-// drawn as real, labeled layers — just without fabricated risk bars on them —
-// so the axis is genuinely there rather than collapsed away, and the gap
-// (no risk-level segment attribution yet) is visible instead of hidden.
-function _operatingUnitLayers(segments) {
-  if (!segments || segments.length === 0) return [{ name: "Consolidated", real: true }];
-  const byType = {};
-  segments.forEach(s => { (byType[s.segment_type] = byType[s.segment_type] || []).push(s); });
-  const [chosenType, rows] = Object.entries(byType).sort((a, b) => b[1].length - a[1].length)[0];
-  const top = [...rows].sort((a, b) => (b.revenue_pct || 0) - (a.revenue_pct || 0)).slice(0, 3);
-  return [
-    { name: "Consolidated", real: true },
-    ...top.map(s => ({ name: s.segment_name, real: false, revenuePct: s.revenue_pct, segmentType: chosenType })),
-  ];
+// Z axis — operating unit. `entities` comes straight from the backend
+// (risk_coverage_cube.py's build_cube): "Consolidated" plus every distinct
+// segment_name a real risk was tagged with by segment_risk_tool.py
+// (Concentration/Decline/Divergence) — these get REAL bars, same as
+// Consolidated. A segment with filed/uploaded revenue (`segments`) but no
+// risk of its own yet (below every threshold, or Phase 2 forecasting
+// skipped it for insufficient history) is still drawn as a labeled ghost
+// layer — real entity, no risk data on it yet — so the axis reflects what's
+// actually known rather than hiding the gap.
+function _operatingUnitLayers(entities, segments) {
+  const real = (entities && entities.length ? entities : ["Consolidated"]).map(name => ({ name, real: true }));
+  const realNames = new Set(real.map(l => l.name));
+  const ghostCandidates = (segments || []).filter(s => !realNames.has(s.segment_name));
+  const ghosts = [...ghostCandidates]
+    .sort((a, b) => (b.revenue_pct || 0) - (a.revenue_pct || 0))
+    .slice(0, 3)
+    .map(s => ({ name: s.segment_name, real: false, revenuePct: s.revenue_pct, segmentType: s.segment_type }));
+  return [...real, ...ghosts];
 }
 
 // Bar height for a given risk_count — sqrt-scaled so one concentrated cell
@@ -348,7 +365,7 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
 
       const maxCount = Math.max(1, ...data.cells.map(c => c.risk_count || 0));
       const topH = _barHeight(maxCount);
-      const layers = _operatingUnitLayers(data.segments);
+      const layers = _operatingUnitLayers(data.entities, data.segments);
       const layerGap = topH + 1.1;
       const stackHeight = (layers.length - 1) * layerGap;
 
@@ -386,7 +403,7 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
         // height (see module comment: only 3 spatial axes exist, and two are
         // already spent on component x objective category).
         const layerLabel = _makeTextSprite(
-          layer.real ? "Consolidated" : `${layer.name}${layer.revenuePct != null ? ` · ${layer.revenuePct}% rev` : ""}`,
+          layer.real ? layer.name : `${layer.name}${layer.revenuePct != null ? ` · ${layer.revenuePct}% rev` : ""}`,
           { fontSize: 28, color: layer.real ? inkHex : ink3Hex }
         );
         layerLabel.position.set(baseX - spacing * 2.5, yBase + 0.1, baseZ - spacing * 0.2);
@@ -410,8 +427,8 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
 
         data.objective_categories.forEach((row, ri) => {
           data.coso_components.forEach((col, ci) => {
-            const key = `${row}::${col}`;
-            const cell = cellsByKey[key] || { objective_category: row, coso_component: col, state: "empty", risk_count: 0 };
+            const key = `${layer.name}::${row}::${col}`;
+            const cell = cellsByKey[key] || { objective_category: row, coso_component: col, entity: layer.name, state: "empty", risk_count: 0 };
             const h = _barHeight(cell.risk_count);
             const style = _cellStyle(col, cell.state, palette);
             const mat = new THREE.MeshStandardMaterial({
@@ -610,10 +627,10 @@ function Cube3D({ data, cellsByKey, onSelectKey }) {
       <div ref={mountRef} style={{ width: "100%", height: 460, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }} />
       <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 6 }}>
         Ground plane = COSO component x objective category · bar height = risk count (ruler at back-right corner) ·
-        stacked layers = operating unit, the 3rd axis (bottom = Consolidated, real bars; layers above = filed/uploaded
-        segments shown as labeled slabs — no risk-level segment attribution exists yet, so they carry no bars) ·
+        stacked layers = operating unit, the 3rd axis (Consolidated + any segment with its own real risk data get
+        full bars; a segment with filed/uploaded revenue but no risk of its own yet is a labeled slab with no bars) ·
         drag to rotate · scroll to zoom · click a bar to zoom in and open detail
-        {hoverInfo && ` — ${hoverInfo.objective_category} · ${hoverInfo.coso_component} · Consolidated: `
+        {hoverInfo && ` — ${hoverInfo.objective_category} · ${hoverInfo.coso_component} · ${hoverInfo.entity || "Consolidated"}: `
           + `RaC ${hoverInfo.risk_count} · CaC ${hoverInfo.verified_control_count}/${hoverInfo.mapped_control_count}`}
       </div>
     </div>
@@ -685,7 +702,7 @@ function CubeCellDetail({ cell, entityLabel = "Consolidated", onClose }) {
   );
 }
 
-function SegmentStrip({ segments }) {
+function SegmentStrip({ segments, entities = [] }) {
   if (!segments || segments.length === 0) {
     return (
       <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>
@@ -695,6 +712,7 @@ function SegmentStrip({ segments }) {
   }
   const byType = { geography: [], business_segment: [] };
   for (const s of segments) (byType[s.segment_type] || (byType[s.segment_type] = [])).push(s);
+  const hasRiskEntities = entities.filter(e => e !== "Consolidated").length > 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -704,19 +722,24 @@ function SegmentStrip({ segments }) {
             {type === "geography" ? "Geography" : "Business segment"} — revenue mix ({rows[0]?.source || "filed"})
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {rows.map(r => (
-              <span key={r.segment_name} className="mono" style={{
-                fontSize: 10.5, padding: "3px 8px", borderRadius: 5,
-                border: "1px solid var(--line)", background: "var(--surface-2)",
-              }}>
-                {r.segment_name} · {r.revenue_pct != null ? `${r.revenue_pct}%` : "—"}
-              </span>
-            ))}
+            {rows.map(r => {
+              const hasRisk = entities.includes(r.segment_name);
+              return (
+                <span key={r.segment_name} className="mono" style={{
+                  fontSize: 10.5, padding: "3px 8px", borderRadius: 5,
+                  border: `1px solid ${hasRisk ? "var(--acc)" : "var(--line)"}`, background: "var(--surface-2)",
+                }} title={hasRisk ? "Has real risk-level data in the cube above" : "Revenue context only — no risk assessed for this segment yet"}>
+                  {r.segment_name} · {r.revenue_pct != null ? `${r.revenue_pct}%` : "—"}{hasRisk ? " ✓" : ""}
+                </span>
+              );
+            })}
           </div>
         </div>
       ))}
       <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", fontStyle: "italic" }}>
-        Not yet joined to individual risks — shown for entity context only. The grid above is consolidated-only.
+        {hasRiskEntities
+          ? "✓ marks a segment with real risk-level data (Concentration/Decline/Divergence) in the cube above — select it via the Entity selector in Table view, or scroll up in 3D."
+          : "Not yet joined to individual risks for this entity — no segment cleared a risk threshold on this run."}
       </div>
     </div>
   );
@@ -726,11 +749,13 @@ function RiskCoverageCubeScreen({ ticker }) {
   const [state, setState] = useState({ loading: false, error: null, data: null });
   const [selectedKey, setSelectedKey] = useState(null);
   const [view, setView] = useState("3d");
+  const [selectedEntity, setSelectedEntity] = useState("Consolidated");
 
   useEffect(() => {
     if (!ticker || typeof window === "undefined" || !window.MCP?.getCoverageCube) return;
     let cancelled = false;
     setState({ loading: true, error: null, data: null });
+    setSelectedEntity("Consolidated");
     window.MCP.getCoverageCube(ticker)
       .then(data => { if (!cancelled) setState({ loading: false, error: null, data }); })
       .catch(e => { if (!cancelled) setState({ loading: false, error: e.message || "Request failed", data: null }); });
@@ -739,7 +764,7 @@ function RiskCoverageCubeScreen({ ticker }) {
 
   const data = state.data;
   const cellsByKey = {};
-  (data?.cells || []).forEach(c => { cellsByKey[`${c.objective_category}::${c.coso_component}`] = c; });
+  (data?.cells || []).forEach(c => { cellsByKey[`${c.entity}::${c.objective_category}::${c.coso_component}`] = c; });
   const selected = selectedKey ? cellsByKey[selectedKey] : null;
   // Sums of per-cell risk-control mapping counts — a control mapped to risks
   // in more than one cell counts once per cell it touches, so this is total
@@ -800,17 +825,23 @@ function RiskCoverageCubeScreen({ ticker }) {
             </div>
           </div>
 
+          {view === "table" && (
+            <div style={{ marginBottom: 10 }}>
+              <EntitySelector entities={data.entities} selected={selectedEntity} onSelect={setSelectedEntity} />
+            </div>
+          )}
+
           {view === "3d" ? (
             <Cube3D data={data} cellsByKey={cellsByKey} onSelectKey={key => setSelectedKey(prev => (prev === key ? null : key))} />
           ) : (
-            <CubeGridTable data={data} cellsByKey={cellsByKey} selectedKey={selectedKey} onSelectKey={setSelectedKey} />
+            <CubeGridTable data={data} entity={selectedEntity} cellsByKey={cellsByKey} selectedKey={selectedKey} onSelectKey={setSelectedKey} />
           )}
 
-          <CubeCellDetail cell={selected} onClose={() => setSelectedKey(null)} />
+          <CubeCellDetail cell={selected} entityLabel={selected?.entity || selectedEntity} onClose={() => setSelectedKey(null)} />
 
           <div style={{ marginTop: 20, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
             <div className="kicker" style={{ marginBottom: 8 }}>Operating unit context</div>
-            <SegmentStrip segments={data.segments} />
+            <SegmentStrip segments={data.segments} entities={data.entities} />
           </div>
         </>
       )}

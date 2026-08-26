@@ -1542,14 +1542,38 @@ function App() {
         });
         }
 
-        profileRef.current = { ...templateProfile, risks: enrichedRisks };
+        // Segment/geography-specific risks (segment_risk_tool.py, Coverage
+        // Cube Phase 3) — real Concentration/Decline/Divergence risk from
+        // the entity's own filed segment data. Concatenated, not merged:
+        // mergeRiskScores() above only overlays data onto EXISTING template
+        // risks, and there's no per-segment template to overlay onto (see
+        // mapSegmentRisks' own docstring) — these are additional risks, so
+        // Stage 3's buildObjectives can compete them for a slot alongside
+        // consolidated risks, not a replacement for any of enrichedRisks.
+        const segmentRisks = MCP.mapSegmentRisks(mcpResult);
+        if (segmentRisks.length) log(`MCP Segment Risks: ${segmentRisks.length} segment-tagged risk(s)`);
+        const allRisks = [...enrichedRisks, ...segmentRisks];
+
+        // templateProfile.objectives/maps were computed inside buildProfile()
+        // from the pre-MCP TEMPLATE risk scores, before mergeRiskScores/
+        // enrichRisksFromFactors/segment risks ever touched the risk set —
+        // stale even before segment risks existed (MCP-adjusted scores can
+        // reorder which risks rank in the top 6), and segment risks would
+        // never be considered for an objective slot at all otherwise.
+        // Recompute both from the FINAL risk set so Stage 3 competes every
+        // real risk — consolidated and segment-tagged alike — on its actual
+        // score, not the template placeholder's.
+        const finalObjectives = RISK_ENGINE.buildObjectives(allRisks, industry);
+        const finalMaps = RISK_ENGINE.buildMAPs(allRisks, finalObjectives);
+
+        profileRef.current = { ...templateProfile, risks: allRisks, objectives: finalObjectives, maps: finalMaps };
         setProfile(profileRef.current);
         // Forecasts/ratios/riskFlow are already fully computed at this point —
         // flip hasRun here (not at loop end) so Stage 1 charts and HITL 1
         // (which fires after Stage 2, long before the loop finishes) actually
         // have data to show instead of rendering blank until Stage 6 completes.
         setHasRun(true);
-        log(`Profile: ${templateProfile.entity.name} · ${industry} · ${enrichedRisks.length} risks (MCP-scored)`);
+        log(`Profile: ${templateProfile.entity.name} · ${industry} · ${allRisks.length} risks (MCP-scored)`);
 
       } catch (e) {
         log(`MCP error: ${e.message} · falling back to industry template`);
