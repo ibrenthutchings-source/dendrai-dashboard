@@ -108,6 +108,13 @@ EMBT_RAC           = "risks_as_code"        # Risks-as-Code YAML content
 EMBT_RISK_NARRATIVE = "risk_narrative"      # Risk name + category + narrative for similarity search
 EMBT_CAC           = "controls_as_code"     # Controls-as-Code Rego content
 EMBT_PAC           = "policy_as_code"       # Policy-as-Code Rego content per process
+# Concept-layer embeddings (concepts table) — the point where pgvector starts
+# serving the ontology rather than just document similarity: concepts and
+# documents share this same vector space, so a query can resolve to "which
+# concept is this about" via the identical ANN mechanism as everything else.
+# source_table='concepts', source_id=concepts.id, company_id=NULL (concepts
+# are global, not per-company) — see db.embed_concept / reembed_stale_concepts.
+EMBT_CONCEPT       = "concept"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DDL — 28 tables
@@ -2668,6 +2675,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     company_id   INT          REFERENCES companies(id),
     embedding    vector({dim}),
     text_snippet TEXT,
+    source_hash  VARCHAR(64),
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_embeddings UNIQUE (source_table, source_id, content_type, model, chunk_index)
 );
@@ -2679,6 +2687,13 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw   ON embeddings USING hnsw (embed
 _PGVECTOR_MIGRATIONS = """
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS chunk_index SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS company_id  INT REFERENCES companies(id);
+-- Freshness sidecar for concept embeddings (EMBT_CONCEPT): mirrors
+-- concepts.label_hash. When the two differ, the concept's label/definition/
+-- alt_labels changed since it was last embedded — reembed_stale_concepts()
+-- finds these and re-embeds, relying on uq_embeddings' upsert to overwrite
+-- in place (no delete needed). NULL for every other content type; nothing
+-- else uses staleness detection today.
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64);
 ALTER TABLE embeddings DROP CONSTRAINT IF EXISTS embeddings_source_table_source_id_content_type_model_key;
 DO $$
 BEGIN
@@ -6962,6 +6977,7 @@ def save_embedding(
     text_snippet: Optional[str] = None,
     chunk_index: int = 0,
     company_id: Optional[int] = None,
+    source_hash: Optional[str] = None,
 ) -> Optional[int]:
     """Store a vector embedding for any source row. Returns embedding id (or None).
 
@@ -6971,6 +6987,9 @@ def save_embedding(
     embedding    : list[float] from your embedding model — len must equal EMBEDDING_DIM
     chunk_index  : 0-based chunk position for long documents split before embedding
     company_id   : companies.id — enables fast per-company filtering in searches
+    source_hash  : freshness fingerprint of the embedded source content (e.g.
+                   concepts.label_hash for EMBT_CONCEPT); NULL for content
+                   types with no staleness check
     """
     if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
         return None
@@ -6981,17 +7000,18 @@ def save_embedding(
                     """
                     INSERT INTO embeddings
                         (source_table, source_id, content_type, model,
-                         chunk_index, company_id, embedding, text_snippet)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         chunk_index, company_id, embedding, text_snippet, source_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT ON CONSTRAINT uq_embeddings DO UPDATE
                         SET embedding    = EXCLUDED.embedding,
                             company_id   = COALESCE(EXCLUDED.company_id, embeddings.company_id),
                             text_snippet = EXCLUDED.text_snippet,
+                            source_hash  = EXCLUDED.source_hash,
                             created_at   = NOW()
                     RETURNING id
                     """,
                     (source_table, source_id, content_type, model or "unknown",
-                     chunk_index, company_id, embedding, text_snippet),
+                     chunk_index, company_id, embedding, text_snippet, source_hash),
                 )
                 row = cur.fetchone()
                 return row[0] if row else None
@@ -10399,6 +10419,37 @@ def get_concept_relations(concept_id: int) -> list:
                         "from_concept_id": r[0], "to_concept_id": r[1], "strm_type": r[2],
                         "strength": float(r[3]) if r[3] is not None else None,
                         "rationale": r[4], "source": r[5],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def list_concept_relations() -> list:
+    """Every STRM relation, globally, with both endpoints' identity denormalized
+    (scheme + pref_label, not just the internal id) — for full-graph consumers
+    like ontology_export.py that need concept identity, not DB row ids."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        r.id, fc.scheme, fc.pref_label,
+                        tc.scheme, tc.pref_label,
+                        r.strm_type, r.strength, r.rationale, r.source
+                    FROM concept_relations r
+                    JOIN concepts fc ON fc.id = r.from_concept_id
+                    JOIN concepts tc ON tc.id = r.to_concept_id
+                    ORDER BY fc.scheme, fc.pref_label, tc.scheme, tc.pref_label
+                    """
+                )
+                return [
+                    {
+                        "id": r[0], "from_scheme": r[1], "from_pref_label": r[2],
+                        "to_scheme": r[3], "to_pref_label": r[4],
+                        "strm_type": r[5], "strength": float(r[6]) if r[6] is not None else None,
+                        "rationale": r[7], "source": r[8],
                     }
                     for r in cur.fetchall()
                 ]
