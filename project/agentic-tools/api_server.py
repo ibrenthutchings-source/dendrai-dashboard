@@ -296,6 +296,7 @@ async def lifespan(application: FastAPI):
             _seed_synthetic_connectors()
             db.seed_builtin_pac_processes()
             db.seed_framework_mappings()
+            db.seed_ontology()
             logger.info("Static reference data seeded")
             # Auth schema + default users
             if auth_db.init_auth_db():
@@ -493,6 +494,12 @@ async def lifespan(application: FastAPI):
                         await asyncio.to_thread(risk_register_endpoints.seed_static_data)
                         await asyncio.to_thread(_seed_cem_templates)
                         await asyncio.to_thread(_seed_ticker_cik)
+                        # Also missing from this reconnect list before now (noted while
+                        # adding seed_ontology): a DB that comes back up after a startup
+                        # failure previously never got framework_mappings.py's curated
+                        # crosswalk applied until the next full process restart.
+                        await asyncio.to_thread(db.seed_framework_mappings)
+                        await asyncio.to_thread(db.seed_ontology)
                         if _HAS_MCP_GOVERNANCE and _gov_task is None:
                             asyncio.create_task(mcp_governance.start_polling())
                             logger.info("MCP governance polling started after DB reconnect")
