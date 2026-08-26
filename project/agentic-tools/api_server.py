@@ -1217,7 +1217,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
         # so they show up in Stage 2's register and the Coverage Cube
         # alongside consolidated risks rather than living in a side table
         # nothing else reads.
-        if _seg_persist_result:
+        if _seg_persist_result and _seg_persist_result.get("extracted"):
             try:
                 import segment_risk_tool
                 consolidated_growth = (result.get("financial_ratios") or {}).get("revenue_growth")
