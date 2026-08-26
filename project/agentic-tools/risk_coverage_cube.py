@@ -5,8 +5,12 @@ universe is actually watched, and by what.
 
     X — COSO ERM 2017 component (risks_as_code._COSO_PRINCIPLES), + Unmapped
     Y — COSO objective category  (risks_as_code._OBJECTIVE_CATEGORY), + Unmapped
-    Z — operating unit (geography | business_segment), optional; collapses
-        to "Consolidated" when no segment data exists for the company
+    Z — operating unit (geography | business_segment). Real, not a display-
+        only placeholder: segment_risk_tool.py (Risk Coverage Cube Phase 3)
+        tags a risk's own segment_type/segment_name on risk_scores when it
+        was derived from a specific segment's filed data (Concentration/
+        Decline/Divergence). A risk with no such tag is "Consolidated" — the
+        entity is real either way, never inferred here.
 
 Each cell is one of three states — never collapsed to a binary green/red:
     empty              no risk in the current run falls in this cell
@@ -103,12 +107,14 @@ def build_cube(
         mapped_refs_by_risk.setdefault(m["risk_ref"], []).append(m["control_ref"])
 
     cells: Dict[tuple, dict] = {}
+    entities_seen: set = set()
 
-    def _cell(objective_category: str, coso_component: str) -> dict:
-        key = (objective_category, coso_component)
+    def _cell(objective_category: str, coso_component: str, entity: str) -> dict:
+        key = (objective_category, coso_component, entity)
         if key not in cells:
             cells[key] = {
                 "objective_category": objective_category, "coso_component": coso_component,
+                "entity": entity,
                 "risk_count": 0, "worst_rag": None, "max_score": None,
                 "velocity_label": None, "control_env_mix": {"WEAK": 0, "ADEQUATE": 0, "STRONG": 0},
                 "mapped_control_count": 0, "verified_control_count": 0,
@@ -120,7 +126,9 @@ def build_cube(
         category = risk.get("category") or ""
         coso = _COSO_PRINCIPLES.get(category, _COSO_UNMAPPED)
         objective_category = _OBJECTIVE_CATEGORY.get(category, _OBJECTIVE_UNMAPPED)
-        cell = _cell(objective_category, coso["component"])
+        entity = risk.get("segment_name") or "Consolidated"
+        entities_seen.add(entity)
+        cell = _cell(objective_category, coso["component"], entity)
 
         risk_ref = risk.get("risk_ref") or risk.get("id") or ""
         rag = risk.get("rag") or risk.get("rag_status") or "G"
@@ -146,24 +154,33 @@ def build_cube(
             if _control_verified(catalog_row, cutoff):
                 cell["verified_control_count"] += 1
 
+    # "Consolidated" always exists as an entity, even with zero risks in it
+    # (an all-segment risk set would be a very odd but not impossible state
+    # to hide the axis for) — every OTHER entity is real risk-level data,
+    # never a placeholder.
+    entities = ["Consolidated"] + sorted(e for e in entities_seen if e != "Consolidated")
+
     grid = []
-    for objective_category in OBJECTIVE_CATEGORIES:
-        for coso_component in COSO_COMPONENTS:
-            cell = cells.get((objective_category, coso_component))
-            if cell is None:
-                grid.append({
-                    "objective_category": objective_category, "coso_component": coso_component,
-                    "state": "empty", "risk_count": 0, "worst_rag": None, "max_score": None,
-                    "velocity_label": None, "control_env_mix": {"WEAK": 0, "ADEQUATE": 0, "STRONG": 0},
-                    "mapped_control_count": 0, "verified_control_count": 0, "risk_refs": [],
-                })
-                continue
-            state = "verified" if cell["verified_control_count"] > 0 else "mapped_unverified"
-            grid.append({**cell, "state": state})
+    for entity in entities:
+        for objective_category in OBJECTIVE_CATEGORIES:
+            for coso_component in COSO_COMPONENTS:
+                cell = cells.get((objective_category, coso_component, entity))
+                if cell is None:
+                    grid.append({
+                        "objective_category": objective_category, "coso_component": coso_component,
+                        "entity": entity,
+                        "state": "empty", "risk_count": 0, "worst_rag": None, "max_score": None,
+                        "velocity_label": None, "control_env_mix": {"WEAK": 0, "ADEQUATE": 0, "STRONG": 0},
+                        "mapped_control_count": 0, "verified_control_count": 0, "risk_refs": [],
+                    })
+                    continue
+                state = "verified" if cell["verified_control_count"] > 0 else "mapped_unverified"
+                grid.append({**cell, "state": state})
 
     return {
         "objective_categories": OBJECTIVE_CATEGORIES,
         "coso_components": COSO_COMPONENTS,
+        "entities": entities,
         "cells": grid,
         "total_risks": len(risks),
         "unmapped_risk_count": sum(

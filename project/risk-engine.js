@@ -692,17 +692,26 @@ window.RISK_ENGINE = (function () {
     const tmpl = TEMPLATES[industry] || TEMPLATES['Generic'];
     const sorted = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
     return sorted.map((r, i) => {
-      const t = tmpl.find(x => x.id === r.id) || tmpl[0];
+      // A segment/geography-specific risk (segment_risk_tool.py — id like
+      // "SGG01C") has no matching template; there's no per-segment
+      // objective template to borrow one from either (see
+      // mapSegmentRisks' docstring in mcp-data.js for why). Falling back to
+      // tmpl[0] here used to silently borrow an unrelated template's
+      // objective text and controls list — worse than building the
+      // objective from the risk's own name/narrative directly.
+      const t = r.segment_name ? null : tmpl.find(x => x.id === r.id);
       const priority = r.score >= 17 ? 'P1' : r.score >= 11 ? 'P2' : 'P3';
       return {
         id: `O-${String(i + 1).padStart(2, '0')}`,
         priority,
-        objective: t.obj || `Audit ${r.name}`,
+        objective: t?.obj || `Audit ${r.name}`,
         linked_risk: r.id,
         sprint: priority === 'P1' ? 1 : priority === 'P2' ? 2 : 3,
         hours: priority === 'P1' ? 120 : priority === 'P2' ? 80 : 40,
-        controls: t.controls || [],
-        rationale: `${r.name} score ${r.score}/25 (${r.rag}), velocity ${r.velocity > 0 ? '+' : ''}${r.velocity}. ${r.narrative.slice(0, 120)}…`,
+        controls: t?.controls || [],
+        rationale: `${r.name} score ${r.score}/25 (${r.rag}), velocity ${r.velocity > 0 ? '+' : ''}${r.velocity}. ${(r.narrative || '').slice(0, 120)}…`,
+        segment_type: r.segment_type || null,
+        segment_name: r.segment_name || null,
       };
     });
   }
@@ -1980,6 +1989,7 @@ window.RISK_ENGINE = (function () {
 
   return { buildProfile, buildLoop, computeRatios, sic2industry, normalizeIndustry, quarterBoundaries: _quarterBoundaries,
            buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator,
-           buildGreySwan, buildScenarios, allocateRiskDollarExposure, applyFairOverridesToMaps };
+           buildGreySwan, buildScenarios, allocateRiskDollarExposure, applyFairOverridesToMaps,
+           buildObjectives, buildMAPs };
 
 })();
