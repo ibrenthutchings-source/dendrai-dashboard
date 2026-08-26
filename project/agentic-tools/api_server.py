@@ -115,6 +115,7 @@ from rss_ingest_service import (
 )
 from edgar_tool import _8K_ITEMS as EDGAR_8K_ITEMS
 import db
+import embedding_util
 import control_plane
 import manual_financials_tool
 
@@ -1108,6 +1109,122 @@ def _company_name_from_result(result: dict, fallback: str = "") -> str:
     return fallback
 
 
+def _embed_new_rss_articles(company_id: Optional[int], new_articles: list) -> None:
+    """Embed newly-inserted RSS articles (EMBT_ARTICLE) so chat RAG retrieval
+    can actually surface them — save_rss_articles_full() only returns rows it
+    just inserted, so this never re-embeds the same article twice."""
+    if not new_articles or not embedding_util.is_available():
+        return
+    try:
+        for art in new_articles:
+            text = f"{art['title']}: {art.get('summary') or ''}".strip()
+            vec = embedding_util.embed_text(text)
+            if vec:
+                db.save_embedding(
+                    source_table="rss_articles", source_id=art["id"],
+                    content_type=db.EMBT_ARTICLE, embedding=vec,
+                    company_id=company_id, text_snippet=text[:600],
+                )
+    except Exception as exc:
+        logger.warning("RSS article embedding failed (non-fatal): %s", exc)
+
+
+def _embed_new_cem_root_causes(run_id: int, new_events: list) -> None:
+    """Embed CEM (Continuous Exception Monitoring) root-cause narratives
+    (EMBT_CEM_RC) — save_cem_events() only returns rows that actually have a
+    narrative, via RETURNING, so no separate lookup query is needed here."""
+    if not new_events or not embedding_util.is_available():
+        return
+    try:
+        company_id = db.get_company_id_for_run(run_id)
+        for ev in new_events:
+            vec = embedding_util.embed_text(ev["root_cause"])
+            if vec:
+                db.save_embedding(
+                    source_table="cem_events", source_id=ev["pk_id"],
+                    content_type=db.EMBT_CEM_RC, embedding=vec,
+                    company_id=company_id, text_snippet=ev["root_cause"][:600],
+                )
+    except Exception as exc:
+        logger.warning("CEM root-cause embedding failed (non-fatal): %s", exc)
+
+
+def _embed_proxy_sections(company_id: Optional[int], proxy_id: Optional[int], sections: dict) -> None:
+    """Chunk and embed DEF 14A governance sections (EMBT_PROXY) — the four
+    section texts (exec comp, board, say-on-pay, shareholder proposals) can
+    each run to thousands of characters, so this chunks the same way
+    _embed_risk_factors chunks Item 1A text, rather than truncating to one
+    embedding per filing."""
+    if not proxy_id or not embedding_util.is_available():
+        return
+    try:
+        rows: list = []
+        chunk_idx = 0
+        for section_name, section_text in (sections or {}).items():
+            if not section_text:
+                continue
+            for chunk in embedding_util.chunk_text(section_text):
+                vec = embedding_util.embed_text(f"{section_name}: {chunk}")
+                if vec:
+                    rows.append({
+                        "source_table": "edgar_proxy_filings", "source_id": proxy_id,
+                        "content_type": db.EMBT_PROXY, "chunk_index": chunk_idx,
+                        "company_id": company_id, "embedding": vec,
+                        "text_snippet": chunk[:600],
+                    })
+                chunk_idx += 1
+        if rows:
+            db.save_embeddings_bulk(rows)
+    except Exception as exc:
+        logger.warning("Proxy section embedding failed (non-fatal): %s", exc)
+
+
+def _embed_new_scenario_narratives(company_id: Optional[int], run_id: int) -> None:
+    """Embed scenario_analyses narratives (EMBT_SCENARIO) so chat RAG can
+    surface scenario outlook text, not just risk-factor chunks."""
+    if not run_id or not embedding_util.is_available():
+        return
+    try:
+        for row in db.get_scenario_rows_for_embedding(run_id):
+            if not row.get("narrative"):
+                continue
+            text = f"{row['scenario']} scenario: {row['narrative']}".strip()
+            vec = embedding_util.embed_text(text)
+            if vec:
+                db.save_embedding(
+                    source_table="scenario_analyses", source_id=row["pk_id"],
+                    content_type=db.EMBT_SCENARIO, embedding=vec,
+                    company_id=company_id, text_snippet=text[:600],
+                )
+    except Exception as exc:
+        logger.warning("Scenario narrative embedding failed (non-fatal): %s", exc)
+
+
+def _embed_and_link_risk_narratives(company_id: int, run_id: int) -> None:
+    """Embed each risk's name+category+narrative and use the vectors to find
+    cross-category 'similar_to' relationships the rule-based graph edges
+    (compute_and_save_risk_relationships) can't see — those only ever connect
+    risks already in the same category. Best-effort: a missing OPENAI_API_KEY
+    or pgvector just means this run's graph has no similar_to edges, same as
+    every run before this feature existed."""
+    if not company_id or not run_id or not embedding_util.is_available():
+        return
+    try:
+        rows = db.get_risk_score_rows_for_embedding(run_id)
+        for r in rows:
+            text = f"{r['risk_name']} ({r['category'] or 'Uncategorised'}): {r['narrative'] or ''}".strip()
+            vec = embedding_util.embed_text(text)
+            if vec:
+                db.save_embedding(
+                    source_table="risk_scores", source_id=r["pk_id"],
+                    content_type=db.EMBT_RISK_NARRATIVE, embedding=vec,
+                    company_id=company_id, text_snippet=text[:600],
+                )
+        db.link_similar_risks_by_embedding(company_id, run_id)
+    except Exception as exc:
+        logger.warning("Risk narrative embedding/similarity linking failed (non-fatal): %s", exc)
+
+
 def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[int]:
     """Normalize and save a full_analysis result to the DB. Returns run_id."""
     if not db.is_available():
@@ -1148,6 +1265,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
     scenario_dict = result.get("scenario_analysis", {})
     db.save_scenario_analyses(run_id, scenario_dict)
     db.save_grey_swan(run_id, result.get("grey_swan", {}))
+    _embed_new_scenario_narratives(company_id, run_id)
 
     # Compute and persist graph relationships from this run's risk set
     if company_id and risks_list:
@@ -1156,6 +1274,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
             db.save_scenario_risk_impacts(run_id, risks_list, scenario_dict)
         except Exception as _rel_err:
             logger.warning("Risk relationship computation failed (non-fatal): %s", _rel_err)
+        _embed_and_link_risk_narratives(company_id, run_id)
 
     if result.get("forecast"):
         db.save_forecasts(run_id, req.forecast_metric, result["forecast"])
@@ -1747,7 +1866,8 @@ def rss_news(req: RssRequest):
                 "company_name": company_name,
             })
             if company_id:
-                db.save_rss_articles_full(company_id, result)
+                new_articles = db.save_rss_articles_full(company_id, result)
+                _embed_new_rss_articles(company_id, new_articles)
 
         return result
     except ValueError as e:
@@ -1782,7 +1902,7 @@ def rss_ingest(req: RssIngestRequest):
 
         # Persist graded articles to DB for velocity trending (best-effort)
         if db.is_available() and result.get("feeds"):
-            db.save_rss_articles_full(None, {"feeds": [
+            new_articles = db.save_rss_articles_full(None, {"feeds": [
                 {
                     "name": r["feed"]["name"],
                     "url":  r["feed"]["url"],
@@ -1798,6 +1918,7 @@ def rss_ingest(req: RssIngestRequest):
                 }
                 for r in result["feeds"]
             ]})
+            _embed_new_rss_articles(None, new_articles)
 
         return result
     except Exception as e:
@@ -2239,12 +2360,13 @@ def edgar_proxy(req: RiskFactorsRequest):
                 "sections": truncated,
             })
             if company_id:
-                db.save_edgar_proxy(
+                proxy_id = db.save_edgar_proxy(
                     company_id,
                     f["date"],
                     f["accession_number"],
                     sections,
                 )
+                _embed_proxy_sections(company_id, proxy_id, sections)
 
         result = {
             "ticker": req.ticker.upper(),
@@ -2360,7 +2482,8 @@ def persist_loop_completion(req: LoopPersistRequest):
 
     db.save_loop_log(req.run_id, req.loop_log)
     db.save_audit_objectives(req.run_id, req.objectives)
-    db.save_cem_events(req.run_id, req.cem_events)
+    new_cem_rows = db.save_cem_events(req.run_id, req.cem_events)
+    _embed_new_cem_root_causes(req.run_id, new_cem_rows)
     db.save_manual_audits(req.run_id, req.manual_audits)
 
     # Resolve CEM events → structured risk/control FK edges (graph layer)

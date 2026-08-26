@@ -532,6 +532,7 @@ async def decide_conversion(conversion_id: int, req: DecisionRequest):
         )
         if not module_id:
             raise HTTPException(status_code=500, detail="Approved, but publishing the module failed — nothing was saved")
+        pac_endpoints.embed_pac_module(module_id, conv["process"], draft)
 
     saved = db.record_pac_conversion_decision(
         conversion_id, status, req.reviewer.strip(),

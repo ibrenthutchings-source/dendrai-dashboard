@@ -3450,11 +3450,11 @@ def save_edgar_proxy(
     filing_date: str,
     accession_number: str,
     sections: dict,
-) -> None:
+) -> Optional[int]:
     """Save DEF 14A proxy governance sections. Upserts on
     (company_id, accession_number) so re-pulling the same filing refreshes it
     in place instead of piling up duplicate rows (see the edgar_proxy_filings
-    migration in _MIGRATIONS)."""
+    migration in _MIGRATIONS). Returns the row id (for EMBT_PROXY embedding)."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -3471,6 +3471,7 @@ def save_edgar_proxy(
                         board_of_directors     = EXCLUDED.board_of_directors,
                         say_on_pay              = EXCLUDED.say_on_pay,
                         shareholder_proposals   = EXCLUDED.shareholder_proposals
+                    RETURNING id
                     """,
                     (
                         company_id, filing_date, accession_number,
@@ -3480,7 +3481,9 @@ def save_edgar_proxy(
                         sections.get("shareholder_proposals") or sections.get("Shareholder Proposals"),
                     ),
                 )
-    _run(_do)
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
 
 
 def get_edgar_proxy(ticker: str) -> Optional[dict]:
@@ -4020,6 +4023,33 @@ def save_scenario_analyses(run_id: int, scenarios: dict) -> None:
     _run(_do)
 
 
+def get_company_id_for_run(run_id: int) -> Optional[int]:
+    """company_id for a risk_loop_runs row — needed by embedding call sites
+    (CEM events, etc.) that only receive a run_id from the frontend."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT company_id FROM risk_loop_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_scenario_rows_for_embedding(run_id: int) -> list:
+    """scenario_analyses id + narrative for a run, for EMBT_SCENARIO embeddings.
+    Same lookup-after-insert pattern as save_scenario_risk_impacts, since the
+    bulk insert above has no RETURNING clause."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, scenario, narrative FROM scenario_analyses WHERE run_id = %s",
+                    (run_id,),
+                )
+                return [{"pk_id": r[0], "scenario": r[1], "narrative": r[2]} for r in cur.fetchall()]
+    return _run(_do) or []
+
+
 def save_grey_swan(run_id: int, grey_swan: dict) -> None:
     if not grey_swan or grey_swan.get("error"):
         return
@@ -4224,10 +4254,17 @@ def save_rss_signals(run_id: int, rss_result: dict) -> None:
     _run(_do)
 
 
-def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> None:
-    """Save full RSS articles from rss_tool.py output (includes URLs, authors)."""
+def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> list:
+    """Save full RSS articles from rss_tool.py output (includes URLs, authors).
+
+    Returns the newly-inserted rows as [{id, title, summary}, ...] — rows that
+    already existed (ON CONFLICT DO NOTHING) are excluded, so the caller can
+    embed (EMBT_ARTICLE) only genuinely new content instead of re-embedding
+    the same article on every ingest.
+    """
     def _do():
         feeds = articles_result.get("feeds", articles_result.get("feed_results", []))
+        new_rows: list = []
         with _conn() as conn:
             with conn.cursor() as cur:
                 for feed in feeds:
@@ -4236,6 +4273,7 @@ def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> 
                         title = (art.get("title") or "")[:500]
                         if not title:
                             continue
+                        summary = (art.get("summary") or "")[:2000] or None
                         cur.execute(
                             """
                             INSERT INTO rss_articles
@@ -4243,6 +4281,7 @@ def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> 
                                  title, article_url, published_at, summary)
                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                             ON CONFLICT (title, feed_name) DO NOTHING
+                            RETURNING id
                             """,
                             (
                                 company_id,
@@ -4252,10 +4291,14 @@ def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> 
                                 title,
                                 art.get("url") or art.get("link"),
                                 art.get("published") or art.get("date"),
-                                (art.get("summary") or "")[:2000] or None,
+                                summary,
                             ),
                         )
-    _run(_do)
+                        row = cur.fetchone()
+                        if row:
+                            new_rows.append({"id": row[0], "title": title, "summary": summary})
+        return new_rows
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5057,9 +5100,15 @@ def save_manual_audits(run_id: int, audits: list) -> None:
     _run(_do)
 
 
-def save_cem_events(run_id: int, events: list) -> None:
+def save_cem_events(run_id: int, events: list) -> list:
+    """Bulk-insert CEM (Continuous Exception Monitoring) events for a run.
+
+    Returns [{pk_id, root_cause}, ...] for rows that have a root-cause
+    narrative, using execute_values(fetch=True) + RETURNING, so the caller
+    can embed them (EMBT_CEM_RC) without a separate lookup query.
+    """
     if not events:
-        return
+        return []
     def _do():
         rows = [
             (
@@ -5078,7 +5127,7 @@ def save_cem_events(run_id: int, events: list) -> None:
         ]
         with _conn() as conn:
             with conn.cursor() as cur:
-                execute_values(
+                inserted = execute_values(
                     cur,
                     """
                     INSERT INTO cem_events
@@ -5086,10 +5135,13 @@ def save_cem_events(run_id: int, events: list) -> None:
                          exposure, category, root_cause_narrative,
                          exposure_amount_m, exposure_source)
                     VALUES %s
+                    RETURNING id, root_cause_narrative
                     """,
                     rows,
+                    fetch=True,
                 )
-    _run(_do)
+        return [{"pk_id": r[0], "root_cause": r[1]} for r in (inserted or []) if r[1]]
+    return _run(_do) or []
 
 
 def list_recent_cem_events(limit: int = 200) -> list:
@@ -6877,64 +6929,6 @@ def save_embedding(
 _DISTANCE_OPS = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
 
 
-def search_similar_embeddings(
-    embedding: list,
-    *,
-    source_table: Optional[str] = None,
-    content_type: Optional[str] = None,
-    company_id: Optional[int] = None,
-    limit: int = 10,
-    metric: str = "cosine",
-) -> list:
-    """Return the top-k nearest embeddings via ANN (HNSW index).
-
-    metric: 'cosine' (default) | 'l2' | 'ip'
-    Returns list of dicts: id, source_table, source_id, content_type, model,
-    chunk_index, text_snippet, distance, created_at.
-    """
-    if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
-        return []
-    op = _DISTANCE_OPS.get(metric, "<=>")
-    def _do():
-        clauses: list = []
-        params: list = []
-        if source_table:
-            clauses.append("source_table = %s")
-            params.append(source_table)
-        if content_type:
-            clauses.append("content_type = %s")
-            params.append(content_type)
-        if company_id:
-            clauses.append("company_id = %s")
-            params.append(company_id)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT id, source_table, source_id, content_type, model,
-                           chunk_index, text_snippet,
-                           embedding {op} %s AS distance, created_at
-                    FROM embeddings
-                    {where}
-                    ORDER BY embedding {op} %s
-                    LIMIT %s
-                    """,
-                    params + [embedding, embedding, limit],
-                )
-                return [
-                    {
-                        "id": r[0], "source_table": r[1], "source_id": r[2],
-                        "content_type": r[3], "model": r[4],
-                        "chunk_index": r[5], "text_snippet": r[6],
-                        "distance": float(r[7]) if r[7] is not None else None,
-                        "created_at": r[8].isoformat() if r[8] else None,
-                    }
-                    for r in cur.fetchall()
-                ]
-    return _run(_do) or []
-
-
 def save_embeddings_bulk(rows: list) -> int:
     """Batch-upsert embeddings in a single transaction. Preferred over calling
     save_embedding() in a loop when chunking long documents.
@@ -6981,6 +6975,53 @@ def save_embeddings_bulk(rows: list) -> int:
                 )
         return len(data)
     return _run(_do, default=0) or 0
+
+
+def find_similar_risks_cross_company(
+    embedding: list, *, exclude_company_id: Optional[int] = None, limit: int = 10,
+) -> list:
+    """Nearest-neighbour risk narratives (EMBT_RISK_NARRATIVE) across every
+    company, not just the caller's own — peer-benchmarking search that
+    get_relevant_context() intentionally can't do (it always scopes to one
+    company_id for chat RAG). Optionally excludes the querying company so a
+    risk doesn't just match itself/its own near-duplicates.
+
+    Returns [{risk_ref, risk_name, category, score, rag, ticker, company_name,
+    distance}, ...], nearest first. [] when pgvector is unavailable.
+    """
+    if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
+        return []
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status,
+                           c.ticker, c.company_name,
+                           (e.embedding <=> %s) AS distance
+                    FROM embeddings e
+                    JOIN risk_scores rs ON rs.id = e.source_id AND e.source_table = 'risk_scores'
+                    JOIN risk_loop_runs r ON r.id = rs.run_id
+                    JOIN companies c ON c.id = r.company_id
+                    WHERE e.content_type = %s
+                      AND (%s::int IS NULL OR r.company_id != %s)
+                    ORDER BY e.embedding <=> %s
+                    LIMIT %s
+                    """,
+                    (embedding, EMBT_RISK_NARRATIVE, exclude_company_id, exclude_company_id,
+                     embedding, limit),
+                )
+                return [
+                    {
+                        "risk_ref": r[0], "risk_name": r[1], "category": r[2],
+                        "score": float(r[3]) if r[3] is not None else None,
+                        "rag": r[4], "ticker": r[5], "company_name": r[6],
+                        "distance": float(r[7]) if r[7] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
 
 
 def get_relevant_context(
@@ -7653,6 +7694,16 @@ def compute_and_save_risk_relationships(company_id: int, run_id: int, risks: lis
 
     if not edges:
         return 0
+    return _upsert_risk_relationship_edges(edges)
+
+
+def _upsert_risk_relationship_edges(edges: list) -> int:
+    """Shared upsert for risk_relationships rows. Each edge tuple:
+    (company_id, from_risk_ref, to_risk_ref, relationship_type, strength, source, run_id).
+    Used by both the rule-based edges (compute_and_save_risk_relationships) and
+    the embedding-based 'similar_to' edges (link_similar_risks_by_embedding)."""
+    if not edges:
+        return 0
 
     def _do():
         with _conn() as conn:
@@ -7673,6 +7724,85 @@ def compute_and_save_risk_relationships(company_id: int, run_id: int, risks: lis
                     edges,
                 )
         return len(edges)
+
+    return _run(_do, default=0)
+
+
+def get_risk_score_rows_for_embedding(run_id: int) -> list:
+    """risk_scores PK id + text fields for a run, for computing narrative embeddings.
+    Distinct from get_risk_scores_for_run(), which returns display-shaped dicts
+    without the surrogate PK the `embeddings` table needs as source_id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, risk_ref, risk_name, category, narrative
+                    FROM risk_scores
+                    WHERE run_id = %s AND risk_ref IS NOT NULL
+                    """,
+                    (run_id,),
+                )
+                return [
+                    {"pk_id": r[0], "risk_ref": r[1], "risk_name": r[2],
+                     "category": r[3], "narrative": r[4]}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def link_similar_risks_by_embedding(
+    company_id: int, run_id: int, *, max_distance: float = 0.30, max_edges: int = 40,
+) -> int:
+    """Populate 'similar_to' risk_relationships edges from EMBT_RISK_NARRATIVE
+    embeddings already saved for this run (see get_risk_score_rows_for_embedding
+    + the caller that embeds and saves them, api_server.py's
+    _embed_and_link_risk_narratives).
+
+    Restricted to cross-category pairs — same-category pairs are already
+    covered by compute_and_save_risk_relationships's rule-based
+    'correlates_with' edges, so this is the one genuinely new signal pgvector
+    adds to the graph: conceptual similarity that crosses category
+    boundaries a rule-based pass can't see (e.g. a supply-chain risk and a
+    geopolitical risk that read similarly but sit in different categories).
+
+    Returns number of edges upserted. No-ops (returns 0) when pgvector is
+    unavailable or this run has no risk-narrative embeddings yet.
+    """
+    if not company_id or not run_id or not (_HAS_PGVECTOR and _PGVECTOR_READY):
+        return 0
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH run_risk_emb AS (
+                        SELECT rs.id AS pk_id, rs.risk_ref, rs.category, e.embedding
+                        FROM risk_scores rs
+                        JOIN embeddings e
+                          ON e.source_table = 'risk_scores' AND e.source_id = rs.id
+                         AND e.content_type = %s
+                        WHERE rs.run_id = %s
+                    )
+                    SELECT a.risk_ref, b.risk_ref, (a.embedding <=> b.embedding) AS distance
+                    FROM run_risk_emb a
+                    JOIN run_risk_emb b
+                      ON a.risk_ref < b.risk_ref
+                     AND a.category IS DISTINCT FROM b.category
+                    WHERE (a.embedding <=> b.embedding) <= %s
+                    ORDER BY distance ASC
+                    LIMIT %s
+                    """,
+                    (EMBT_RISK_NARRATIVE, run_id, max_distance, max_edges),
+                )
+                pairs = cur.fetchall()
+        edges = [
+            (company_id, from_ref, to_ref, "similar_to",
+             round(max(0.0, min(1.0, 1.0 - float(dist))), 3), "embedding", run_id)
+            for from_ref, to_ref, dist in pairs
+        ]
+        return _upsert_risk_relationship_edges(edges)
 
     return _run(_do, default=0)
 
@@ -7751,6 +7881,119 @@ def get_risk_graph(company_id: int, run_id: Optional[int] = None) -> dict:
         return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
 
     return _run(_do, default={"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+
+def get_risk_graph_expanded(
+    company_id: int, risk_ref: str, *, max_hops: int = 2, run_id: Optional[int] = None,
+) -> dict:
+    """Multi-hop traversal from one risk over risk_relationships, via a
+    recursive CTE — get_risk_graph() above only ever returns direct (1-hop)
+    edges. Answers "what does this risk transitively touch N hops out?" —
+    e.g. a Red risk's amplifies edge into a peer, and that peer's similar_to
+    edge into a third, differently-categorised risk two hops away that a
+    single-hop view would never surface.
+
+    Implementation: BFS out to max_hops over risk_relationships treated as an
+    undirected adjacency (recursive CTE, tracking each path's visited-node
+    array so cycles stop it rather than looping), which gives the reached
+    node set with its hop distance; then a second, non-recursive query pulls
+    the induced subgraph — every edge with both endpoints in that node set —
+    so an edge between two 2-hop-away nodes is included even though neither
+    endpoint is the root.
+
+    Returns {nodes, edges, hops, root, node_count, edge_count}; each node
+    carries `hop`, its shortest distance from the root (0 for the root itself).
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH RECURSIVE bfs AS (
+                        SELECT %s::varchar AS node, 0 AS depth, ARRAY[%s::varchar] AS visited
+
+                        UNION ALL
+
+                        SELECT
+                            CASE WHEN r.from_risk_ref = b.node THEN r.to_risk_ref ELSE r.from_risk_ref END,
+                            b.depth + 1,
+                            b.visited || (CASE WHEN r.from_risk_ref = b.node THEN r.to_risk_ref ELSE r.from_risk_ref END)
+                        FROM risk_relationships r
+                        JOIN bfs b
+                          ON (r.from_risk_ref = b.node OR r.to_risk_ref = b.node)
+                        WHERE r.company_id = %s
+                          AND b.depth < %s
+                          AND NOT (
+                              (CASE WHEN r.from_risk_ref = b.node THEN r.to_risk_ref ELSE r.from_risk_ref END)
+                              = ANY(b.visited)
+                          )
+                    )
+                    SELECT node, MIN(depth) AS depth
+                    FROM bfs
+                    GROUP BY node
+                    """,
+                    (risk_ref, risk_ref, company_id, max_hops),
+                )
+                hop_rows = cur.fetchall()
+                hop_by_ref = {r[0]: r[1] for r in hop_rows}
+                risk_refs = list(hop_by_ref.keys()) or [risk_ref]
+
+                cur.execute(
+                    """
+                    SELECT from_risk_ref, to_risk_ref, relationship_type, strength, source
+                    FROM risk_relationships
+                    WHERE company_id = %s
+                      AND from_risk_ref = ANY(%s) AND to_risk_ref = ANY(%s)
+                    """,
+                    (company_id, risk_refs, risk_refs),
+                )
+                edge_rows = cur.fetchall()
+
+                if run_id:
+                    cur.execute(
+                        """
+                        SELECT risk_ref, risk_name, category, score, rag_status, velocity
+                        FROM risk_scores
+                        WHERE run_id = %s AND risk_ref = ANY(%s)
+                        """,
+                        (run_id, risk_refs),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT ON (rs.risk_ref)
+                            rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status, rs.velocity
+                        FROM risk_scores rs
+                        JOIN risk_loop_runs r ON r.id = rs.run_id
+                        WHERE r.company_id = %s AND rs.risk_ref = ANY(%s)
+                        ORDER BY rs.risk_ref, r.run_at DESC
+                        """,
+                        (company_id, risk_refs),
+                    )
+                node_rows = cur.fetchall()
+
+        nodes = [
+            {
+                "id": r[0], "name": r[1], "category": r[2],
+                "score": float(r[3]) if r[3] is not None else None,
+                "rag": r[4], "velocity": r[5],
+                "hop": hop_by_ref.get(r[0]),
+            }
+            for r in node_rows
+        ]
+        edges = [
+            {
+                "from": e[0], "to": e[1], "type": e[2],
+                "strength": float(e[3]) if e[3] is not None else 0,
+                "source": e[4],
+            }
+            for e in edge_rows
+        ]
+        return {"nodes": nodes, "edges": edges, "hops": max_hops, "root": risk_ref,
+                "node_count": len(nodes), "edge_count": len(edges)}
+
+    return _run(_do, default={"nodes": [], "edges": [], "hops": max_hops, "root": risk_ref,
+                               "node_count": 0, "edge_count": 0})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
