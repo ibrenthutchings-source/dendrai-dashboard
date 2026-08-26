@@ -28,15 +28,31 @@ function RepSubhead({ children, style }) {
 
 function EvidencePackModal({ open, onClose, runId, ticker }) {
   const [state, setState] = useState({ loading: false, error: null, data: null });
+  const [runList, setRunList] = useState({ loading: false, error: null, runs: [] });
+  const [selectedRunId, setSelectedRunId] = useState(runId);
+
+  // Reset to the run the caller opened with each time the modal is (re)opened
+  // or the underlying ticker/run changes — otherwise a stale pick from a
+  // previous ticker's session would silently carry over.
+  useEffect(() => { if (open) setSelectedRunId(runId); }, [open, runId, ticker]);
 
   useEffect(() => {
-    if (!open || !runId) return;
+    if (!open || !ticker) return;
+    setRunList({ loading: true, error: null, runs: [] });
+    fetch(`/api/history/runs/${ticker}?limit=50`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(data => setRunList({ loading: false, error: null, runs: data.runs || [] }))
+      .catch(e => setRunList({ loading: false, error: e.message || "Request failed", runs: [] }));
+  }, [open, ticker]);
+
+  useEffect(() => {
+    if (!open || !selectedRunId) return;
     setState({ loading: true, error: null, data: null });
-    fetch(`/api/evidence-pack/${runId}`)
+    fetch(`/api/evidence-pack/${selectedRunId}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => setState({ loading: false, error: null, data }))
       .catch(e => setState({ loading: false, error: e.message || "Request failed", data: null }));
-  }, [open, runId]);
+  }, [open, selectedRunId]);
   useEscapeToClose(open, onClose);
 
   if (!open) return null;
@@ -47,7 +63,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `dendrai_evidence_pack_${ticker || "run"}_${runId}.json`;
+    a.download = `dendrai_evidence_pack_${ticker || "run"}_${selectedRunId}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -61,10 +77,35 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
           <div>
             <div className="modal-title">Audit Evidence Pack</div>
             <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>
-              {ticker ? `${ticker} · ` : ""}Run {runId}
+              {ticker ? `${ticker} · ` : ""}Run {selectedRunId}
             </div>
           </div>
           <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+        </div>
+
+        <div style={{ padding: "10px 20px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600 }}>Run</span>
+          {runList.loading ? (
+            <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Loading run history…</span>
+          ) : runList.error ? (
+            <span style={{ fontSize: 11.5, color: "var(--red-ink, #b93333)" }}>Couldn't load run history — {runList.error}</span>
+          ) : runList.runs.length === 0 ? (
+            <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Run {selectedRunId} (no history available for {ticker})</span>
+          ) : (
+            <select
+              className="fi-in"
+              style={{ fontSize: 11.5, padding: "4px 8px", maxWidth: 460 }}
+              value={selectedRunId || ""}
+              onChange={e => setSelectedRunId(Number(e.target.value))}
+            >
+              {runList.runs.map(r => (
+                <option key={r.run_id} value={r.run_id}>
+                  Run {r.run_id} · {r.run_at ? new Date(r.run_at).toLocaleString() : "—"}
+                  {r.completed ? " · completed" : " · in progress"} · {r.risk_count} risk{r.risk_count === 1 ? "" : "s"}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="modal-body">
