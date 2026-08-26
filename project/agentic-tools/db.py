@@ -7193,6 +7193,61 @@ def get_relevant_context(
     return _run(_do) or []
 
 
+def get_concept_embedding_hashes() -> Dict[int, Optional[str]]:
+    """{concept_id: source_hash} for every concept that currently has an
+    EMBT_CONCEPT embedding — the freshness check reembed_stale_concepts()
+    compares against concepts.label_hash. A concept absent from this dict has
+    never been embedded at all (also stale, by the same comparison: dict.get
+    returns None, which only equals a concept's label_hash if that too is
+    somehow None)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT source_id, source_hash FROM embeddings WHERE source_table = 'concepts' AND content_type = %s",
+                    (EMBT_CONCEPT,),
+                )
+                return {r[0]: r[1] for r in cur.fetchall()}
+    return _run(_do) or {}
+
+
+def search_concepts_by_embedding(query_embedding: list, *, scheme: Optional[str] = None, limit: int = 10) -> list:
+    """Nearest EMBT_CONCEPT neighbours to a query vector — "which concept is
+    this text about". Joins back to concepts for identity (scheme,
+    pref_label), since the embeddings row alone only carries the concept id."""
+    if not query_embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
+        return []
+    def _do():
+        clauses = ["e.source_table = 'concepts'", "e.content_type = %s"]
+        params: list = [EMBT_CONCEPT]
+        if scheme:
+            clauses.append("c.scheme = %s")
+            params.append(scheme)
+        where = " AND ".join(clauses)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT c.id, c.scheme, c.pref_label, c.notation,
+                           (e.embedding <=> %s) AS distance
+                    FROM embeddings e
+                    JOIN concepts c ON c.id = e.source_id
+                    WHERE {where}
+                    ORDER BY e.embedding <=> %s
+                    LIMIT %s
+                    """,
+                    [query_embedding] + params + [query_embedding, limit],
+                )
+                return [
+                    {
+                        "concept_id": r[0], "scheme": r[1], "pref_label": r[2], "notation": r[3],
+                        "distance": float(r[4]) if r[4] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Code editor configs
 # ─────────────────────────────────────────────────────────────────────────────
