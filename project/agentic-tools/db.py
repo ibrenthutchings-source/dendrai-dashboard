@@ -1146,6 +1146,71 @@ ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS coso_component  VARCHAR(64
 -- powers its ERM 2017 view. Same "honest gap, never inferred" policy applies.
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS icif_component VARCHAR(64);  -- COSO IC-IF 2013 component name
 
+-- Concept layer — a controlled vocabulary + typed crosswalk, SKOS-shaped
+-- (prefLabel/altLabel/broader/narrower) plus NIST IR 8477 Set Theory
+-- Relationship Mapping (STRM) for typed relations between concepts across
+-- schemes/frameworks. Deliberately NOT an OWL ontology and NOT backed by a
+-- reasoner or triplestore: intersects_with is not transitive (A intersects B
+-- and B intersects C implies nothing about A and C), and this codebase's own
+-- guardrail (framework_mappings.py's "curated, hand-reviewed only, never
+-- auto-inferred") means an inferred relation could never be authoritative
+-- here without human review anyway — so a reasoner would only produce
+-- conclusions this app isn't allowed to act on unreviewed. See
+-- ontology_seed.py for the curated seed content and its sign-off history.
+--
+-- Seeding is a PROJECTION of the existing hardcoded vocabularies
+-- (risk-engine.js's CATEGORY_IMPACT, risks_as_code.py's COSO tables,
+-- framework_mappings.py, sox_scoping_tool.py, pac_processes above), never a
+-- replacement for them — those literals stay authoritative; nothing existing
+-- reads from these tables yet. See db.seed_ontology().
+CREATE TABLE IF NOT EXISTS concepts (
+    id          BIGSERIAL PRIMARY KEY,
+    scheme      VARCHAR(64)  NOT NULL,   -- 'risk_category' | 'enterprise_domain' |
+                                         -- 'coso_erm' | 'coso_icif' | 'sox_risk_category' |
+                                         -- 'sox_process' | 'pac_process' | 'scf' |
+                                         -- 'soc2' | 'nist_800_53' | 'iso_27001'
+    notation    VARCHAR(64),             -- stable external code, e.g. 'AC-2', 'CC6.1', 'P13'
+    pref_label  VARCHAR(255) NOT NULL,
+    alt_labels  TEXT[]       NOT NULL DEFAULT '{}',  -- synonyms; drives entity-linking recall
+    definition  TEXT,
+    broader_id  BIGINT REFERENCES concepts(id),      -- SKOS hierarchy (tree, not the STRM graph below)
+    source      VARCHAR(32)  NOT NULL DEFAULT 'curated',  -- 'curated' | 'scf_import'
+    reviewed_by VARCHAR(128),
+    reviewed_at TIMESTAMPTZ,
+    label_hash  VARCHAR(64),             -- sha256(pref_label|definition|sorted(alt_labels));
+                                         -- staleness check for the concept's embedding (Stage 2)
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (scheme, pref_label)
+);
+CREATE INDEX IF NOT EXISTS idx_concepts_scheme  ON concepts (scheme);
+CREATE INDEX IF NOT EXISTS idx_concepts_broader ON concepts (broader_id);
+
+-- Typed crosswalk relations between concepts (often across schemes/frameworks —
+-- this is the SOC2<->NIST-shaped relation the app has never had). strm_type is
+-- one of NIST IR 8477's five relations. 'no_relationship' is stored
+-- deliberately: an asserted negative is evidence ("we checked; these don't
+-- relate"), not the absence of a row — the same "honest gap, not papered
+-- over" standard framework_mappings.py already holds itself to.
+CREATE TABLE IF NOT EXISTS concept_relations (
+    id              BIGSERIAL PRIMARY KEY,
+    from_concept_id BIGINT      NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    to_concept_id   BIGINT      NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    strm_type       VARCHAR(24) NOT NULL,
+    strength        NUMERIC(4,3),
+    rationale       TEXT,
+    source          VARCHAR(32) NOT NULL DEFAULT 'curated',  -- 'curated' | 'scf_import'
+    reviewed_by     VARCHAR(128),
+    reviewed_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_concept_relations_strm_type CHECK (
+        strm_type IN ('subset_of', 'superset_of', 'equal', 'intersects_with', 'no_relationship')
+    ),
+    UNIQUE (from_concept_id, to_concept_id, strm_type)
+);
+CREATE INDEX IF NOT EXISTS idx_concept_relations_from ON concept_relations (from_concept_id);
+CREATE INDEX IF NOT EXISTS idx_concept_relations_to   ON concept_relations (to_concept_id);
+
 -- Policy-as-Code business processes: was a hardcoded 5-entry Python set
 -- (VALID_PROCESSES); now a real table so sync_github() can register a new
 -- process discovered in a synced repo instead of silently skipping it.
@@ -10173,6 +10238,290 @@ def seed_framework_mappings() -> int:
         ):
             updated += 1
     return updated
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Concept layer — controlled vocabulary + NIST IR 8477 (STRM) crosswalk
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_concept(
+    scheme: str, pref_label: str, *,
+    notation: Optional[str] = None, alt_labels: Optional[list] = None,
+    definition: Optional[str] = None, broader_scheme: Optional[str] = None,
+    broader_pref_label: Optional[str] = None, source: str = "curated",
+) -> Optional[int]:
+    """Insert or update one concept, keyed on (scheme, pref_label). Recomputes
+    label_hash so Stage 2's re-embed check can detect the change. broader_id is
+    resolved from (broader_scheme, broader_pref_label) if given — the parent
+    concept must already exist (seed schemes in dependency order, parents first)."""
+    import hashlib
+    alt_labels = alt_labels or []
+
+    def _do():
+        broader_id = None
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if broader_scheme and broader_pref_label:
+                    cur.execute(
+                        "SELECT id FROM concepts WHERE scheme = %s AND pref_label = %s",
+                        (broader_scheme, broader_pref_label),
+                    )
+                    row = cur.fetchone()
+                    broader_id = row[0] if row else None
+
+                label_hash = hashlib.sha256(
+                    f"{pref_label}|{definition or ''}|{'|'.join(sorted(alt_labels))}".encode("utf-8")
+                ).hexdigest()
+
+                cur.execute(
+                    """
+                    INSERT INTO concepts
+                        (scheme, notation, pref_label, alt_labels, definition,
+                         broader_id, source, label_hash, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (scheme, pref_label) DO UPDATE SET
+                        notation   = EXCLUDED.notation,
+                        alt_labels = EXCLUDED.alt_labels,
+                        definition = EXCLUDED.definition,
+                        broader_id = EXCLUDED.broader_id,
+                        source     = EXCLUDED.source,
+                        label_hash = EXCLUDED.label_hash,
+                        updated_at = NOW()
+                    RETURNING id
+                    """,
+                    (scheme, notation, pref_label, alt_labels, definition,
+                     broader_id, source, label_hash),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def upsert_concept_relation(
+    from_concept_id: int, to_concept_id: int, strm_type: str, *,
+    strength: Optional[float] = None, rationale: Optional[str] = None,
+    source: str = "curated",
+) -> Optional[int]:
+    """Insert or update one typed crosswalk relation. strm_type must be one of
+    NIST IR 8477's five: subset_of, superset_of, equal, intersects_with,
+    no_relationship — enforced by the ck_concept_relations_strm_type CHECK."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO concept_relations
+                        (from_concept_id, to_concept_id, strm_type, strength, rationale, source)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (from_concept_id, to_concept_id, strm_type) DO UPDATE SET
+                        strength  = EXCLUDED.strength,
+                        rationale = EXCLUDED.rationale,
+                        source    = EXCLUDED.source
+                    RETURNING id
+                    """,
+                    (from_concept_id, to_concept_id, strm_type, strength, rationale, source),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_concept(scheme: str, pref_label: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, scheme, notation, pref_label, alt_labels, definition,
+                           broader_id, source, label_hash
+                    FROM concepts WHERE scheme = %s AND pref_label = %s
+                    """,
+                    (scheme, pref_label),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "scheme": row[1], "notation": row[2], "pref_label": row[3],
+                    "alt_labels": row[4] or [], "definition": row[5], "broader_id": row[6],
+                    "source": row[7], "label_hash": row[8],
+                }
+    return _run(_do)
+
+
+def list_concepts(scheme: Optional[str] = None) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if scheme:
+                    cur.execute(
+                        """
+                        SELECT id, scheme, notation, pref_label, alt_labels, definition,
+                               broader_id, source, label_hash
+                        FROM concepts WHERE scheme = %s ORDER BY pref_label
+                        """,
+                        (scheme,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, scheme, notation, pref_label, alt_labels, definition,
+                               broader_id, source, label_hash
+                        FROM concepts ORDER BY scheme, pref_label
+                        """
+                    )
+                return [
+                    {
+                        "id": r[0], "scheme": r[1], "notation": r[2], "pref_label": r[3],
+                        "alt_labels": r[4] or [], "definition": r[5], "broader_id": r[6],
+                        "source": r[7], "label_hash": r[8],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def get_concept_relations(concept_id: int) -> list:
+    """All STRM relations touching this concept, either direction."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT from_concept_id, to_concept_id, strm_type, strength, rationale, source
+                    FROM concept_relations
+                    WHERE from_concept_id = %s OR to_concept_id = %s
+                    """,
+                    (concept_id, concept_id),
+                )
+                return [
+                    {
+                        "from_concept_id": r[0], "to_concept_id": r[1], "strm_type": r[2],
+                        "strength": float(r[3]) if r[3] is not None else None,
+                        "rationale": r[4], "source": r[5],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def get_concept_closure(concept_id: int, *, direction: str = "both", max_hops: int = 2) -> list:
+    """Walk the SKOS broader/narrower TREE (concepts.broader_id) out to
+    max_hops — separate from the STRM crosswalk graph in concept_relations.
+    direction: 'broader' (ancestors), 'narrower' (descendants), or 'both'.
+
+    Same recursive-CTE-with-visited-array shape as get_risk_graph_expanded
+    (this module, risk_relationships section) — cloned deliberately rather
+    than reinvented, adapted for a directed tree instead of an undirected
+    graph with multiple relationship types.
+
+    Returns [{concept_id, pref_label, hop}], nearest first. hop 0 is the
+    concept itself.
+    """
+    def _do():
+        results: Dict[int, dict] = {}
+
+        def _walk(sql: str, params: tuple):
+            with _conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    for cid, pref_label, depth in cur.fetchall():
+                        if cid not in results or depth < results[cid]["hop"]:
+                            results[cid] = {"concept_id": cid, "pref_label": pref_label, "hop": depth}
+
+        if direction in ("broader", "both"):
+            _walk(
+                """
+                WITH RECURSIVE up AS (
+                    SELECT id, broader_id, 0 AS depth, ARRAY[id] AS visited
+                    FROM concepts WHERE id = %s
+
+                    UNION ALL
+
+                    SELECT c.id, c.broader_id, u.depth + 1, u.visited || c.id
+                    FROM concepts c
+                    JOIN up u ON c.id = u.broader_id
+                    WHERE u.depth < %s AND NOT (c.id = ANY(u.visited))
+                )
+                SELECT up.id, c2.pref_label, MIN(up.depth)
+                FROM up JOIN concepts c2 ON c2.id = up.id
+                GROUP BY up.id, c2.pref_label
+                """,
+                (concept_id, max_hops),
+            )
+
+        if direction in ("narrower", "both"):
+            _walk(
+                """
+                WITH RECURSIVE down AS (
+                    SELECT id, 0 AS depth, ARRAY[id] AS visited
+                    FROM concepts WHERE id = %s
+
+                    UNION ALL
+
+                    SELECT c.id, d.depth + 1, d.visited || c.id
+                    FROM concepts c
+                    JOIN down d ON c.broader_id = d.id
+                    WHERE d.depth < %s AND NOT (c.id = ANY(d.visited))
+                )
+                SELECT down.id, c2.pref_label, MIN(down.depth)
+                FROM down JOIN concepts c2 ON c2.id = down.id
+                GROUP BY down.id, c2.pref_label
+                """,
+                (concept_id, max_hops),
+            )
+
+        return sorted(results.values(), key=lambda r: r["hop"])
+    return _run(_do, default=[]) or []
+
+
+def seed_ontology() -> dict:
+    """Idempotently apply ontology_seed.py's curated CONCEPTS/RELATIONS to the
+    concepts/concept_relations tables. Same pattern as seed_framework_mappings:
+    a projection of the existing hardcoded vocabularies, safe to re-run, always
+    overwrites with the current curated content so an edit to ontology_seed.py
+    takes effect on next restart without a manual migration.
+
+    Concepts are seeded before relations (relations reference concept ids), and
+    within concepts, schemes are seeded in ontology_seed.SEED_ORDER so a child's
+    broader_scheme/broader_pref_label parent already exists."""
+    import ontology_seed
+    concepts_upserted = 0
+    relations_upserted = 0
+    label_to_id: Dict[tuple, int] = {}
+
+    for scheme in ontology_seed.SEED_ORDER:
+        for c in ontology_seed.SEED_CONCEPTS.get(scheme, []):
+            cid = upsert_concept(
+                scheme, c["pref_label"],
+                notation=c.get("notation"), alt_labels=c.get("alt_labels"),
+                definition=c.get("definition"),
+                broader_scheme=c.get("broader_scheme"), broader_pref_label=c.get("broader_pref_label"),
+                source=c.get("source", "curated"),
+            )
+            if cid:
+                concepts_upserted += 1
+                label_to_id[(scheme, c["pref_label"])] = cid
+
+    for rel in ontology_seed.SEED_RELATIONS:
+        from_id = label_to_id.get((rel["from_scheme"], rel["from_pref_label"])) \
+            or (get_concept(rel["from_scheme"], rel["from_pref_label"]) or {}).get("id")
+        to_id = label_to_id.get((rel["to_scheme"], rel["to_pref_label"])) \
+            or (get_concept(rel["to_scheme"], rel["to_pref_label"]) or {}).get("id")
+        if not from_id or not to_id:
+            logger.warning(
+                "seed_ontology: skipping relation %s -[%s]-> %s — concept(s) not found",
+                rel["from_pref_label"], rel["strm_type"], rel["to_pref_label"],
+            )
+            continue
+        if upsert_concept_relation(
+            from_id, to_id, rel["strm_type"],
+            strength=rel.get("strength"), rationale=rel.get("rationale"),
+            source=rel.get("source", "curated"),
+        ):
+            relations_upserted += 1
+
+    return {"concepts_upserted": concepts_upserted, "relations_upserted": relations_upserted}
 
 
 def create_pac_process(process_id: str, label: str, short_label: str, *,
