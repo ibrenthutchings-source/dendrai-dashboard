@@ -1191,6 +1191,22 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
         except Exception as _seg_err:
             logger.warning("Segment ingestion failed (non-fatal): %s", _seg_err)
 
+        # Segment-level forecasts — walks up to 10 recent 10-Qs to build a
+        # real per-segment quarterly history (a single filing's own
+        # comparatives top out around 4 points, short of the 8-quarter
+        # minimum the ensemble forecast model needs) and persists to
+        # segment_forecasts. Noticeably heavier than the actuals-only
+        # ingestion above (up to ~20 EDGAR requests vs. ~2), so it's still
+        # unconditional but kept as its own try/except: a slow or failed
+        # segment forecast should never take down the analysis, and
+        # shouldn't block the actuals ingestion above from having already
+        # succeeded.
+        try:
+            import edgar_segments
+            edgar_segments.forecast_segments(ticker_for_segments, run_id=run_id)
+        except Exception as _seg_fc_err:
+            logger.warning("Segment forecasting failed (non-fatal): %s", _seg_fc_err)
+
     # Auto-rescope SOX if a config exists for this company + current FY
     if company_id:
         try:

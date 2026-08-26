@@ -336,3 +336,175 @@ def persist_segments(ticker: str, form_types: Optional[set[str]] = None) -> dict
             result["persisted"].append({"segment_type": axis, "segment_name": m["segment_name"]})
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-filing history + forecasting — a single filing's own comparatives
+# (current Q, prior-year Q, YTD, prior YTD) top out around 4 points, nowhere
+# near fit_arima's 8-observation minimum. Segment-level forecasting needs a
+# real run built by walking several filings, the same way the consolidated
+# forecast is built from a multi-year quarterly XBRL series.
+# ─────────────────────────────────────────────────────────────────────────────
+
+import datetime as _dt  # noqa: E402 (kept near its one use, matching this module's other lazy-ish imports)
+
+_QUARTER_DAYS_RANGE = (75, 100)  # a fiscal quarter's period length; excludes YTD/annual breakdowns
+
+
+def _is_quarterly_period(start: str, end: str) -> bool:
+    """True for a ~90-day period (a single fiscal quarter) — excludes YTD
+    (6/9-month) and annual (10-K) breakdowns, which report a different
+    accumulation window and would corrupt a quarterly revenue series if
+    mixed in with true quarterly points."""
+    try:
+        days = (_dt.date.fromisoformat(end) - _dt.date.fromisoformat(start)).days
+    except ValueError:
+        return False
+    return _QUARTER_DAYS_RANGE[0] <= days <= _QUARTER_DAYS_RANGE[1]
+
+
+def fetch_segment_history(ticker: str, max_filings: int = 10,
+                           form_types: Optional[set[str]] = None) -> dict[str, Any]:
+    """Walk the last `max_filings` 10-Q filings (10-Ks report only annual
+    segment figures, a different accumulation window — excluded here, see
+    _is_quarterly_period) and stitch each one's quarterly segment/geography
+    breakdowns into one chronological revenue series per (segment_type,
+    segment_name).
+
+    Processes filings newest-first: each 10-Q reports both its own current
+    quarter and the same quarter a year ago as a comparative, so a
+    period_end already recorded is kept from whichever filing reported it
+    as its OWN current period — not overwritten by an older filing's
+    restated comparative for the same quarter.
+
+    Returns {"extracted": bool, "series": {(segment_type, segment_name):
+    [{"period_end", "revenue"}, ...]}, "filings_used": int} — series is
+    empty (not fabricated) when fewer than 2 filings yield reconciled
+    quarterly breakdowns.
+    """
+    form_types = form_types or {"10-Q"}
+    ticker_u = ticker.upper()
+    try:
+        meta, sub = get_company_info(ticker)
+    except ValueError as e:
+        return {"extracted": False, "ticker": ticker_u, "reason": str(e), "series": {}, "filings_used": 0}
+
+    filings = parse_filings(sub, form_types)
+    candidates = sorted(
+        (f for forms in filings.values() for f in forms),
+        key=lambda f: f["date"], reverse=True,
+    )[:max_filings]
+    if not candidates:
+        return {
+            "extracted": False, "ticker": ticker_u, "series": {}, "filings_used": 0,
+            "reason": f"No {'/'.join(sorted(form_types))} filings found for {ticker}",
+        }
+
+    cik = meta["cik_plain"]
+    series: dict[tuple, dict[str, float]] = {}
+    filings_used = 0
+
+    for filing in candidates:
+        doc_name = _find_instance_doc(cik, filing["accession_number"])
+        if not doc_name:
+            continue
+        xml_text = _fetch_instance_xml(cik, filing["accession_number"], doc_name)
+        if not xml_text:
+            continue
+        extracted = extract_segments_from_xml(xml_text)
+        if not extracted["extracted"]:
+            continue
+        filings_used += 1
+        for b in extracted["breakdowns"]:
+            if not b["reconciled"] or not _is_quarterly_period(b["period_start"], b["period_end"]):
+                continue
+            for m in b["members"]:
+                key = (b["segment_type"], m["segment_name"])
+                bucket = series.setdefault(key, {})
+                bucket.setdefault(b["period_end"], m["revenue"])
+
+    if not series:
+        return {
+            "extracted": False, "ticker": ticker_u, "series": {}, "filings_used": filings_used,
+            "reason": "No reconciled quarterly segment breakdowns found across recent 10-Q filings",
+        }
+
+    result_series = {
+        key: [{"period_end": pe, "revenue": rev} for pe, rev in sorted(points.items())]
+        for key, points in series.items()
+    }
+    return {"extracted": True, "ticker": ticker_u, "series": result_series, "filings_used": filings_used}
+
+
+_MIN_FORECAST_POINTS = 8  # fit_arima's own floor (predictive_analytics_tool.py)
+
+
+def forecast_segments(ticker: str, run_id: Optional[int] = None, horizon: int = 4,
+                       max_filings: int = 10) -> dict[str, Any]:
+    """fetch_segment_history() + an ensemble forecast (ARIMA / Prophet-like /
+    Random Forest blend — the same model predictive_analytics_tool.py uses
+    for consolidated revenue) per segment with enough history, persisted to
+    segment_forecasts via db.save_segment_forecasts (source='filed').
+
+    A segment with fewer than _MIN_FORECAST_POINTS quarters of reconciled
+    history is reported as skipped with a reason, never forced through a
+    model that isn't backed by enough real observations.
+    """
+    import predictive_analytics_tool as pat  # local import: keeps this
+    # module's pure-parsing path (extract_segments_from_xml, tested with
+    # zero DB/model dependencies) usable without numpy installed.
+
+    history = fetch_segment_history(ticker, max_filings=max_filings)
+    result: dict[str, Any] = {
+        "ticker": ticker.upper(), "extracted": history["extracted"],
+        "forecasts": [], "skipped": [], "filings_used": history.get("filings_used", 0),
+    }
+    if not history["extracted"]:
+        result["reason"] = history.get("reason")
+        return result
+
+    for (segment_type, segment_name), points in history["series"].items():
+        if len(points) < _MIN_FORECAST_POINTS:
+            result["skipped"].append({
+                "segment_type": segment_type, "segment_name": segment_name,
+                "reason": f"Only {len(points)} reconciled quarters found — need at least {_MIN_FORECAST_POINTS}",
+            })
+            continue
+
+        series = [p["revenue"] for p in points]
+        ensemble = pat.compute_ensemble_forecast(series, horizon=horizon)
+        latest = points[-1]
+        # Same-quarter-last-year comparison (4 quarters back), not just the
+        # prior point — matches how rev_growth_yoy is computed everywhere
+        # else in this app.
+        yoy_point = points[-5] if len(points) >= 5 else None
+        rev_growth_yoy = (
+            round((latest["revenue"] - yoy_point["revenue"]) / yoy_point["revenue"] * 100, 2)
+            if yoy_point and yoy_point["revenue"] else None
+        )
+
+        forecast_entry = {
+            "segment_type": segment_type, "segment_name": segment_name,
+            "fiscal_year": f"FY{latest['period_end'][:4]}",
+            "revenue_m": round(latest["revenue"] / 1e6, 2),
+            "rev_growth_yoy": rev_growth_yoy,
+            "quarters_used": len(points),
+            "forecast": ensemble["forecasts"],
+            "source": "filed",
+        }
+        result["forecasts"].append(forecast_entry)
+
+        if run_id is not None:
+            try:
+                import db
+                db.save_segment_forecasts(run_id, [{
+                    "segment_type": segment_type, "segment_name": segment_name,
+                    "fiscal_year": forecast_entry["fiscal_year"],
+                    "revenue_m": forecast_entry["revenue_m"],
+                    "rev_growth_yoy": rev_growth_yoy,
+                    "source": "filed",
+                }])
+            except Exception:
+                pass  # persistence is best-effort here; the forecast is still returned to the caller
+
+    return result
