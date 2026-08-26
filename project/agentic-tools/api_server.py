@@ -125,6 +125,7 @@ import claude_client
 import peer_intel
 import risks_as_code
 import risk_coverage_cube
+import ontology_export
 import oracle_fusion_endpoints
 import sox_endpoints
 import risk_register_endpoints
@@ -908,6 +909,7 @@ app.include_router(chat_endpoint.router)
 # Risks-as-Code: OSCAL + COSO ERM translators + SSE live stream.
 app.include_router(risks_as_code.router)
 app.include_router(risk_coverage_cube.router)
+app.include_router(ontology_export.router)
 
 # Oracle Fusion: control library, test results, issues, SOD, audit events.
 app.include_router(oracle_fusion_endpoints.router)
