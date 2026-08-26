@@ -1184,10 +1184,12 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
     # transient EDGAR fetch failure, is not a reason to fail the whole
     # analysis.
     ticker_for_segments = result.get("ticker", req.ticker)
+    _seg_persist_result = None
+    _seg_forecast_result = None
     if company_id and not db.is_private_ticker(ticker_for_segments):
         try:
             import edgar_segments
-            edgar_segments.persist_segments(ticker_for_segments)
+            _seg_persist_result = edgar_segments.persist_segments(ticker_for_segments)
         except Exception as _seg_err:
             logger.warning("Segment ingestion failed (non-fatal): %s", _seg_err)
 
@@ -1203,9 +1205,31 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
         # succeeded.
         try:
             import edgar_segments
-            edgar_segments.forecast_segments(ticker_for_segments, run_id=run_id)
+            _seg_forecast_result = edgar_segments.forecast_segments(ticker_for_segments, run_id=run_id)
         except Exception as _seg_fc_err:
             logger.warning("Segment forecasting failed (non-fatal): %s", _seg_fc_err)
+
+        # Segment/geography-specific risk assessment (Coverage Cube Phase 3)
+        # — scores real segment concentration/decline/divergence risk from
+        # the actuals + forecast just gathered above, and writes them into
+        # the SAME risk_scores table the consolidated risk register uses
+        # (tagged segment_type/segment_name, source_framework='segment_risk'),
+        # so they show up in Stage 2's register and the Coverage Cube
+        # alongside consolidated risks rather than living in a side table
+        # nothing else reads.
+        if _seg_persist_result:
+            try:
+                import segment_risk_tool
+                consolidated_growth = (result.get("financial_ratios") or {}).get("revenue_growth")
+                consolidated_growth_pct = consolidated_growth * 100 if consolidated_growth is not None else None
+                segment_risks = segment_risk_tool.assess_segment_risks(
+                    _seg_persist_result, _seg_forecast_result,
+                    consolidated_revenue_growth_pct=consolidated_growth_pct,
+                )
+                if segment_risks:
+                    db.save_risk_scores(run_id, segment_risks)
+            except Exception as _seg_risk_err:
+                logger.warning("Segment risk assessment failed (non-fatal): %s", _seg_risk_err)
 
     # Auto-rescope SOX if a config exists for this company + current FY
     if company_id:

@@ -1494,6 +1494,13 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     N
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework  VARCHAR(128);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative          TEXT;
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
+-- Operating-unit attribution for a risk — NULL for every consolidated risk
+-- (the vast majority); set only by segment_risk_tool.py's per-segment risk
+-- assessment (Risk Coverage Cube Phase 3), so a risk can be traced to the
+-- specific geography/business segment it was actually derived from instead
+-- of always reading as "Consolidated".
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS segment_type      VARCHAR(16);
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS segment_name      VARCHAR(128);
 
 -- risk_scores was write-once (save_risk_scores only ever INSERTed, never
 -- updated) — Stage 2's signal-driven score adjustments and Gate 1's
@@ -3866,6 +3873,13 @@ def save_risk_scores(run_id: int, risks: list) -> None:
     endpoint (Stage 2) and update_risk_score_fields (Gate 1 approvals) below.
     Risks with no risk_ref are skipped (can't upsert without a stable key,
     same rows that would have been dropped by the old insert path anyway).
+
+    narrative/source_framework/segment_type/segment_name are optional and
+    COALESCE-preserved on conflict rather than overwritten with NULL — most
+    callers (Stage 2 resync, Gate 1 approvals) don't know about these fields
+    at all, and an update from one of them must never erase a segment tag or
+    narrative a different caller (segment_risk_tool.py, risk-register review)
+    already set for the same risk_ref.
     """
     if not risks:
         return
@@ -3883,6 +3897,10 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                 r.get("velocity"),
                 r.get("control_env") or r.get("ce"),
                 r.get("peer_benchmark"),
+                r.get("narrative"),
+                r.get("source_framework"),
+                r.get("segment_type"),
+                r.get("segment_name"),
             )
             for r in risks
             if (r.get("risk_ref") or r.get("id"))
@@ -3896,18 +3914,23 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                     """
                     INSERT INTO risk_scores
                         (run_id, risk_ref, risk_name, category, base_score, delta, score,
-                         rag_status, velocity, control_env, peer_benchmark)
+                         rag_status, velocity, control_env, peer_benchmark,
+                         narrative, source_framework, segment_type, segment_name)
                     VALUES %s
                     ON CONFLICT (run_id, risk_ref) WHERE risk_ref IS NOT NULL DO UPDATE SET
-                        risk_name      = EXCLUDED.risk_name,
-                        category       = EXCLUDED.category,
-                        base_score     = EXCLUDED.base_score,
-                        delta          = EXCLUDED.delta,
-                        score          = EXCLUDED.score,
-                        rag_status     = EXCLUDED.rag_status,
-                        velocity       = EXCLUDED.velocity,
-                        control_env    = EXCLUDED.control_env,
-                        peer_benchmark = EXCLUDED.peer_benchmark
+                        risk_name        = EXCLUDED.risk_name,
+                        category         = EXCLUDED.category,
+                        base_score       = EXCLUDED.base_score,
+                        delta            = EXCLUDED.delta,
+                        score            = EXCLUDED.score,
+                        rag_status       = EXCLUDED.rag_status,
+                        velocity         = EXCLUDED.velocity,
+                        control_env      = EXCLUDED.control_env,
+                        peer_benchmark   = EXCLUDED.peer_benchmark,
+                        narrative        = COALESCE(EXCLUDED.narrative, risk_scores.narrative),
+                        source_framework = COALESCE(EXCLUDED.source_framework, risk_scores.source_framework),
+                        segment_type     = COALESCE(EXCLUDED.segment_type, risk_scores.segment_type),
+                        segment_name     = COALESCE(EXCLUDED.segment_name, risk_scores.segment_name)
                     """,
                     rows,
                 )
@@ -7472,7 +7495,9 @@ def get_latest_risks_for_ticker(ticker: str) -> dict:
                            rs.control_env,
                            rs.peer_benchmark,
                            rrs.current_wording,
-                           rs.assigned_domain
+                           rs.assigned_domain,
+                           rs.segment_type,
+                           rs.segment_name
                     FROM risk_scores rs
                     LEFT JOIN LATERAL (
                         SELECT rrs2.current_wording
@@ -7508,6 +7533,8 @@ def get_latest_risks_for_ticker(ticker: str) -> dict:
                         "peer_benchmark": r[12],
                         "current_wording": r[13],
                         "assigned_domain": r[14],
+                        "segment_type": r[15],
+                        "segment_name": r[16],
                     }
                     for r in rows
                 ]
@@ -7525,7 +7552,7 @@ def get_risk_scores_for_run(run_id: int) -> list:
                     SELECT risk_ref, risk_name, narrative, category,
                            score, rag_status, source_framework,
                            base_score, delta, velocity, control_env, peer_benchmark,
-                           assigned_domain
+                           assigned_domain, segment_type, segment_name
                       FROM risk_scores
                      WHERE run_id = %s
                      ORDER BY score DESC NULLS LAST
@@ -7552,6 +7579,8 @@ def get_risk_scores_for_run(run_id: int) -> list:
                         "control_env":    r[10],
                         "peer_benchmark": r[11],
                         "assigned_domain": r[12],
+                        "segment_type":   r[13],
+                        "segment_name":   r[14],
                     }
                     for r in rows
                 ]
