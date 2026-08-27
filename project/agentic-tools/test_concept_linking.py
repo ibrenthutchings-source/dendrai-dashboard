@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import auth_endpoints
 import concept_linking as cl
 import db
 import embedding_util
@@ -124,9 +125,12 @@ class TestLinkEntityProposes:
 
 
 class TestEndpoints:
-    def _client(self):
+    def _client(self, role="admin"):
         app = FastAPI()
         app.include_router(cl.router)
+        app.dependency_overrides[auth_endpoints.get_current_user] = lambda: {
+            "id": 1, "username": "tester", "role": role,
+        }
         return TestClient(app)
 
     def test_link_endpoint_returns_link(self):
@@ -144,3 +148,32 @@ class TestEndpoints:
             r = self._client().get("/ontology/links", params={"source_table": "risk_scores", "source_id": "7"})
         assert r.status_code == 200
         assert r.json()["links"] == [{"scheme": "risk_category"}]
+
+    def test_pending_links_endpoint_returns_queue(self):
+        with patch.object(db, "list_pending_concept_links", MagicMock(return_value=[{"id": 1, "status": "proposed"}])):
+            r = self._client().get("/ontology/links/pending")
+        assert r.status_code == 200
+        assert r.json()["links"] == [{"id": 1, "status": "proposed"}]
+
+    def test_decide_endpoint_confirms(self):
+        decide = MagicMock(return_value={"id": 5, "status": "confirmed"})
+        with patch.object(db, "decide_concept_link", decide):
+            r = self._client().post("/ontology/links/5/decide", json={"decision": "confirmed"})
+        assert r.status_code == 200
+        assert r.json()["link"]["status"] == "confirmed"
+        decide.assert_called_once_with(5, "confirmed", "tester")
+
+    def test_decide_endpoint_rejects_invalid_decision(self):
+        r = self._client().post("/ontology/links/5/decide", json={"decision": "maybe"})
+        assert r.status_code == 400
+
+    def test_decide_endpoint_404s_when_already_decided(self):
+        with patch.object(db, "decide_concept_link", MagicMock(return_value=None)):
+            r = self._client().post("/ontology/links/5/decide", json={"decision": "confirmed"})
+        assert r.status_code == 409
+
+    def test_pending_links_endpoint_requires_permission(self):
+        with patch("auth_db.get_effective_screen_permissions",
+                   MagicMock(return_value={"approvals": {"can_read": True, "can_edit": False}})):
+            r = self._client(role="user").get("/ontology/links/pending")
+        assert r.status_code == 403

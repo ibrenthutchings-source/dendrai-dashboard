@@ -15,9 +15,20 @@ Honesty rules (per framework_mappings.py's guardrail, applied here):
 
 Router prefix: /ontology (shares the prefix with ontology_export.py and
 ontology_endpoints.py — distinct paths, so all three mount without collision)
-    POST /ontology/link         link one free-text subject to its nearest
-                                concept in a scheme
-    GET  /ontology/links        look up existing links for one subject
+    POST /ontology/link            link one free-text subject to its nearest
+                                   concept in a scheme
+    GET  /ontology/links           look up existing links for one subject
+    GET  /ontology/links/pending   every 'proposed' link awaiting a decision
+    POST /ontology/links/{id}/decide  confirm or reject one proposed link
+
+The pending/decide pair is a dedicated review surface, deliberately separate
+from approvals_endpoints.py's preparer->manager Approval Inbox lifecycle: a
+concept_link is a system-generated proposal, not something a preparer
+submitted for their manager to check, so that lifecycle (status='submitted'
++ a specific assigned manager_id) doesn't fit and — before this file added
+its own decide path — left every concept_link's approval_tasks row
+permanently stuck at status='pending' with no manager, unreachable through
+the existing Inbox UI or /approvals/review. See db.decide_concept_link.
 """
 
 from __future__ import annotations
@@ -25,14 +36,19 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import db
 import embedding_util
+from auth_endpoints import require_screen_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ontology")
+
+
+def _display_name(user: dict) -> str:
+    return user.get("display_name") or user.get("username") or f"User {user.get('id')}"
 
 # NIST IR 8477 gives no numeric thresholds — these bands are this app's own
 # calibration, subject to the plan's S-4 sign-off gate once real link data
@@ -113,3 +129,34 @@ def link_endpoint(req: LinkRequest):
 def get_links_endpoint(source_table: str, source_id: str):
     """Every link proposal recorded for one subject, across methods."""
     return {"links": db.get_concept_links(source_table, source_id)}
+
+
+@router.get("/links/pending")
+def get_pending_links_endpoint(
+    scheme: Optional[str] = None,
+    _user: dict = Depends(require_screen_permission("approvals", edit=True)),
+):
+    """Every status='proposed' link awaiting a human decision — the review
+    queue this module's own decide endpoint resolves."""
+    return {"links": db.list_pending_concept_links(scheme=scheme)}
+
+
+class DecideLinkRequest(BaseModel):
+    decision: str  # 'confirmed' | 'rejected'
+
+
+@router.post("/links/{link_id}/decide")
+def decide_link_endpoint(
+    link_id: int, req: DecideLinkRequest,
+    current_user: dict = Depends(require_screen_permission("approvals", edit=True)),
+):
+    """Confirm or reject one proposed link. Only status='confirmed' links
+    ever influence anything downstream (get_relevant_context_hybrid's graph
+    re-rank, _risk_similarity_boosts) — this is the one place that status
+    transition can happen."""
+    if req.decision not in ("confirmed", "rejected"):
+        raise HTTPException(status_code=400, detail="decision must be 'confirmed' or 'rejected'")
+    link = db.decide_concept_link(link_id, req.decision, _display_name(current_user))
+    if not link:
+        raise HTTPException(status_code=409, detail="Link not found or already decided")
+    return {"link": link}
