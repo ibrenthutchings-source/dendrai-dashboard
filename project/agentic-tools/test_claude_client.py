@@ -31,6 +31,23 @@ def _auth_error(msg="invalid x-api-key") -> anthropic.AuthenticationError:
     return anthropic.AuthenticationError(msg, response=resp, body=None)
 
 
+class _FakeStreamCtx:
+    """Fakes client.messages.stream(...)'s context-manager shape: __enter__
+    returns itself, get_final_message() is where the real call (and any
+    failure) actually happens — mirroring _create_message's real usage."""
+    def __init__(self, fn):
+        self._fn = fn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self._fn()
+
+
 class _FakeClient:
     """Records every model it was asked to create a message for."""
     def __init__(self, fail_models):
@@ -41,12 +58,15 @@ class _FakeClient:
         def __init__(self, outer):
             self._outer = outer
 
-        def create(self, **kwargs):
+        def stream(self, **kwargs):
             model = kwargs["model"]
-            self._outer.calls.append(model)
-            if model in self._outer.fail_models:
-                raise _not_found(f"model: {model}")
-            return {"model": model, "ok": True}
+
+            def _fn():
+                self._outer.calls.append(model)
+                if model in self._outer.fail_models:
+                    raise _not_found(f"model: {model}")
+                return {"model": model, "ok": True}
+            return _FakeStreamCtx(_fn)
 
     @property
     def messages(self):
@@ -99,9 +119,11 @@ def test_create_message_does_not_retry_non_not_found_errors():
     paid call and the fallback model won't fix a bad API key anyway."""
     class _AuthFailClient(_FakeClient):
         class _messages(_FakeClient._messages):
-            def create(self, **kwargs):
-                self._outer.calls.append(kwargs["model"])
-                raise _auth_error()
+            def stream(self, **kwargs):
+                def _fn():
+                    self._outer.calls.append(kwargs["model"])
+                    raise _auth_error()
+                return _FakeStreamCtx(_fn)
 
     client = _AuthFailClient(fail_models=set())
     with pytest.raises(anthropic.AuthenticationError):

@@ -647,6 +647,17 @@ ALTER TABLE approval_tasks ALTER COLUMN run_id DROP NOT NULL;
 -- {"error": "..."} on failure so the Approval Inbox can offer a retry
 -- instead of the task silently vanishing once decided.
 ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS execution_result JSONB;
+-- concept_link gate_type (Stage 3 entity linking) also runs with run_id=NULL
+-- (a link isn't tied to a risk_loop_run), but unlike devops_scm_exception it
+-- MUST upsert on re-proposal rather than duplicate — re-linking the same
+-- subject+scheme after a concept edit is the expected steady-state, not a
+-- one-off. Scoping this partial unique index to gate_type='concept_link' only
+-- (rather than changing the general NULL-run_id behavior above, which
+-- devops_scm_exception and its risk_waivers precedent still rely on) is what
+-- makes ON CONFLICT (item_ref) WHERE gate_type='concept_link' AND run_id IS
+-- NULL a valid inference target for upsert_concept_link_task() below.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_approval_tasks_concept_link
+    ON approval_tasks (item_ref) WHERE gate_type = 'concept_link' AND run_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
@@ -1217,6 +1228,40 @@ CREATE TABLE IF NOT EXISTS concept_relations (
 );
 CREATE INDEX IF NOT EXISTS idx_concept_relations_from ON concept_relations (from_concept_id);
 CREATE INDEX IF NOT EXISTS idx_concept_relations_to   ON concept_relations (to_concept_id);
+
+-- Stage 3: entity linking. Free-text risk/control names -> concept_id, kept as
+-- an audit trail alongside (never replacing) the existing free-text vocabulary
+-- assignment (_keyword_domain, risk_scores.assigned_domain). source_id is text
+-- because source rows carry different key types (risk_scores.id is an int,
+-- controls_catalog.control_id is a varchar) — no single numeric type fits both.
+-- A row is ALWAYS written, even when nothing resolved (status='unresolved'):
+-- silence would be indistinguishable from "linking never ran", the same
+-- honesty standard concept_relations.no_relationship already holds itself to.
+-- Two methods can propose different concepts for the same subject+scheme
+-- (e.g. 'ann' vs 'llm_domain') and are meant to visibly disagree, so the
+-- unique key includes method rather than collapsing them into one row.
+CREATE TABLE IF NOT EXISTS concept_links (
+    id                   BIGSERIAL   PRIMARY KEY,
+    source_table         VARCHAR(64) NOT NULL,
+    source_id            VARCHAR(64) NOT NULL,
+    scheme               VARCHAR(64) NOT NULL,
+    concept_id           BIGINT REFERENCES concepts(id),
+    runner_up_concept_id BIGINT REFERENCES concepts(id),
+    status               VARCHAR(24) NOT NULL,  -- 'proposed' | 'unresolved' | 'confirmed' | 'rejected'
+    confidence           NUMERIC(5,4),           -- 1 - cosine distance; NULL for unresolved
+    method               VARCHAR(32) NOT NULL,   -- 'ann' | 'llm_domain'
+    reviewed_by          VARCHAR(128),
+    reviewed_at          TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_concept_links_status CHECK (
+        status IN ('proposed', 'unresolved', 'confirmed', 'rejected')
+    ),
+    UNIQUE (source_table, source_id, scheme, method)
+);
+CREATE INDEX IF NOT EXISTS idx_concept_links_concept ON concept_links (concept_id);
+CREATE INDEX IF NOT EXISTS idx_concept_links_source   ON concept_links (source_table, source_id);
+CREATE INDEX IF NOT EXISTS idx_concept_links_status   ON concept_links (status);
 
 -- Policy-as-Code business processes: was a hardcoded 5-entry Python set
 -- (VALID_PROCESSES); now a real table so sync_github() can register a new
@@ -4756,6 +4801,40 @@ def upsert_approval_task(
                         Json(ai_suggested) if ai_suggested is not None else None,
                         ai_accepted,
                     ),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
+
+
+def upsert_concept_link_task(item_ref: str, item_label: Optional[str], ai_suggested: dict) -> Optional[dict]:
+    """Surface a 'proposed' concept_link into the existing Approval Inbox as a
+    gate_type='concept_link' task, run_id=NULL (a link isn't tied to a
+    risk_loop_run). Reuses the review workflow rather than building a new
+    screen, same as devops_scm_exception — but upserts on the partial unique
+    index above instead of that gate_type's known duplicate-row behavior,
+    since re-proposing the same subject+scheme is the expected steady state
+    here (a concept's label/definition changing re-triggers linking).
+    ai_suggested carries {"concept_id", "confidence", "runner_up_concept_id"}
+    so the reviewer sees what the linker proposed, same shape as every other
+    AI-suggested gate."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO approval_tasks
+                        (run_id, gate_type, item_ref, item_label, status, ai_suggested, updated_at)
+                    VALUES (NULL, 'concept_link', %s, %s, 'pending', %s, NOW())
+                    ON CONFLICT (item_ref) WHERE gate_type = 'concept_link' AND run_id IS NULL
+                    DO UPDATE SET
+                        item_label  = EXCLUDED.item_label,
+                        ai_suggested = EXCLUDED.ai_suggested,
+                        updated_at  = NOW()
+                    RETURNING id, gate_type, item_ref, item_label, status, ai_suggested
+                    """,
+                    (item_ref, item_label, Json(ai_suggested) if ai_suggested is not None else None),
                 )
                 row = cur.fetchone()
                 cols = [d[0] for d in cur.description]
@@ -10579,6 +10658,108 @@ def get_concept_closure(concept_id: int, *, direction: str = "both", max_hops: i
 
         return sorted(results.values(), key=lambda r: r["hop"])
     return _run(_do, default=[]) or []
+
+
+def upsert_concept_link(
+    source_table: str, source_id: str, scheme: str, *,
+    concept_id: Optional[int], status: str, confidence: Optional[float] = None,
+    method: str, runner_up_concept_id: Optional[int] = None,
+) -> Optional[dict]:
+    """Upsert one (source, scheme, method) link. Always called even when
+    concept_id is None (status='unresolved') — see concept_links' table
+    comment for why a written 'nothing resolved' row matters."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO concept_links
+                        (source_table, source_id, scheme, concept_id, runner_up_concept_id,
+                         status, confidence, method, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT (source_table, source_id, scheme, method) DO UPDATE SET
+                        concept_id           = EXCLUDED.concept_id,
+                        runner_up_concept_id = EXCLUDED.runner_up_concept_id,
+                        status               = EXCLUDED.status,
+                        confidence           = EXCLUDED.confidence,
+                        updated_at           = NOW()
+                    RETURNING id, source_table, source_id, scheme, concept_id,
+                              runner_up_concept_id, status, confidence, method
+                    """,
+                    (source_table, source_id, scheme, concept_id, runner_up_concept_id,
+                     status, confidence, method),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
+
+
+def get_concept_links(source_table: str, source_id: str) -> list:
+    """Every proposal for one subject, across methods — where an 'ann' link
+    and an 'llm_domain' link are meant to be visible even when they disagree."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT l.id, l.scheme, l.concept_id, c.pref_label, l.runner_up_concept_id,
+                           l.status, l.confidence, l.method, l.reviewed_by, l.reviewed_at
+                    FROM concept_links l
+                    LEFT JOIN concepts c ON c.id = l.concept_id
+                    WHERE l.source_table = %s AND l.source_id = %s
+                    ORDER BY l.scheme, l.method
+                    """,
+                    (source_table, source_id),
+                )
+                return [
+                    {
+                        "id": r[0], "scheme": r[1], "concept_id": r[2], "pref_label": r[3],
+                        "runner_up_concept_id": r[4], "status": r[5],
+                        "confidence": float(r[6]) if r[6] is not None else None,
+                        "method": r[7], "reviewed_by": r[8],
+                        "reviewed_at": r[9].isoformat() if r[9] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def list_concept_links(*, scheme: Optional[str] = None, status: Optional[str] = None) -> list:
+    """All links, optionally filtered — the aggregate view (e.g. 'how many
+    risks are still unresolved for risk_category'), never used to treat a
+    'proposed' row as authoritative on its own."""
+    def _do():
+        clauses, params = [], []
+        if scheme:
+            clauses.append("l.scheme = %s")
+            params.append(scheme)
+        if status:
+            clauses.append("l.status = %s")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT l.id, l.source_table, l.source_id, l.scheme, l.concept_id,
+                           c.pref_label, l.status, l.confidence, l.method
+                    FROM concept_links l
+                    LEFT JOIN concepts c ON c.id = l.concept_id
+                    {where}
+                    ORDER BY l.source_table, l.source_id, l.scheme, l.method
+                    """,
+                    params,
+                )
+                return [
+                    {
+                        "id": r[0], "source_table": r[1], "source_id": r[2], "scheme": r[3],
+                        "concept_id": r[4], "pref_label": r[5], "status": r[6],
+                        "confidence": float(r[7]) if r[7] is not None else None, "method": r[8],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
 
 
 def seed_ontology() -> dict:

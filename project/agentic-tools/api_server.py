@@ -127,6 +127,7 @@ import risks_as_code
 import risk_coverage_cube
 import ontology_export
 import ontology_endpoints
+import concept_linking
 import oracle_fusion_endpoints
 import sox_endpoints
 import risk_register_endpoints
@@ -916,6 +917,7 @@ app.include_router(risks_as_code.router)
 app.include_router(risk_coverage_cube.router)
 app.include_router(ontology_export.router)
 app.include_router(ontology_endpoints.router)
+app.include_router(concept_linking.router)
 
 # Oracle Fusion: control library, test results, issues, SOD, audit events.
 app.include_router(oracle_fusion_endpoints.router)
