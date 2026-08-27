@@ -116,3 +116,72 @@ class TestGetRelevantContextHybridOrchestration:
              patch.object(db, "list_concept_links", MagicMock(return_value=[])):
             results = db.get_relevant_context_hybrid([0.1] * 1536, "vendor breach", limit=5)
         assert results[0]["matched_concept"] is None
+
+    def test_no_company_id_skips_risk_similarity_boost_without_erroring(self):
+        """company_id is required to scope risk_relationships lookups — when
+        it's absent, the risk-edge step must no-op, not raise."""
+        dense_row = _row(source_table="risk_scores", source_id=5, distance=0.2)
+        with patch.object(db, "get_relevant_context", MagicMock(return_value=[dense_row])), \
+             patch.object(db, "_HAS_PGVECTOR", False), \
+             patch.object(db, "_fetch_lexical_candidates", MagicMock(return_value=[])), \
+             patch.object(db, "list_concept_links", MagicMock(return_value=[])), \
+             patch.object(db, "get_risk_refs_for_score_ids", MagicMock()) as refs:
+            results = db.get_relevant_context_hybrid([0.1] * 1536, "vendor breach", limit=5)
+        refs.assert_not_called()
+        assert results[0]["final_score"] == results[0]["rrf_score"]
+
+
+class TestRiskSimilarityBoosts:
+    def test_similar_risk_to_a_top_seed_gets_boosted(self):
+        fused = {
+            ("risk_scores", 1, 0): {"score": 0.02, "row": _row(source_table="risk_scores", source_id=1)},
+            ("risk_scores", 2, 0): {"score": 0.001, "row": _row(source_table="risk_scores", source_id=2)},
+        }
+        with patch.object(db, "get_risk_refs_for_score_ids", MagicMock(return_value={1: "R1", 2: "R2"})), \
+             patch.object(db, "get_similar_risk_edges", MagicMock(return_value={"R1": [("R2", 0.8)]})):
+            boosts = db._risk_similarity_boosts(fused, company_id=42)
+        assert boosts == {("risk_scores", 2, 0): 0.8}
+
+    def test_no_edge_produces_no_boost(self):
+        fused = {
+            ("risk_scores", 1, 0): {"score": 0.02, "row": _row(source_table="risk_scores", source_id=1)},
+            ("risk_scores", 2, 0): {"score": 0.001, "row": _row(source_table="risk_scores", source_id=2)},
+        }
+        with patch.object(db, "get_risk_refs_for_score_ids", MagicMock(return_value={1: "R1", 2: "R2"})), \
+             patch.object(db, "get_similar_risk_edges", MagicMock(return_value={})):
+            boosts = db._risk_similarity_boosts(fused, company_id=42)
+        assert boosts == {}
+
+    def test_non_risk_scores_candidates_are_ignored(self):
+        fused = {("rss_articles", 1, 0): {"score": 0.02, "row": _row(source_table="rss_articles", source_id=1)}}
+        refs = MagicMock()
+        with patch.object(db, "get_risk_refs_for_score_ids", refs):
+            boosts = db._risk_similarity_boosts(fused, company_id=42)
+        assert boosts == {}
+        refs.assert_not_called()
+
+    def test_missing_company_id_short_circuits(self):
+        fused = {("risk_scores", 1, 0): {"score": 0.02, "row": _row(source_table="risk_scores", source_id=1)}}
+        refs = MagicMock()
+        with patch.object(db, "get_risk_refs_for_score_ids", refs):
+            boosts = db._risk_similarity_boosts(fused, company_id=None)
+        assert boosts == {}
+        refs.assert_not_called()
+
+    def test_full_orchestration_applies_risk_edge_factor(self):
+        dense_rows = [
+            _row(source_table="risk_scores", source_id=1, distance=0.1),
+            _row(source_table="risk_scores", source_id=2, distance=0.5),
+        ]
+        with patch.object(db, "get_relevant_context", MagicMock(return_value=dense_rows)), \
+             patch.object(db, "_HAS_PGVECTOR", False), \
+             patch.object(db, "_fetch_lexical_candidates", MagicMock(return_value=[])), \
+             patch.object(db, "list_concept_links", MagicMock(return_value=[])), \
+             patch.object(db, "get_risk_refs_for_score_ids", MagicMock(return_value={1: "R1", 2: "R2"})), \
+             patch.object(db, "get_similar_risk_edges", MagicMock(return_value={"R1": [("R2", 1.0)]})):
+            results = db.get_relevant_context_hybrid(
+                [0.1] * 1536, "vendor breach", company_id=42, limit=5, risk_edge_weight=0.3,
+            )
+        by_id = {r["source_id"]: r for r in results}
+        assert by_id[2]["final_score"] > by_id[2]["rrf_score"]
+        assert by_id[1]["final_score"] == by_id[1]["rrf_score"]  # the seed itself gets no self-boost
