@@ -102,15 +102,77 @@ class TestSeedRelationContent:
         )
         assert rel["strm_type"] == "intersects_with"
 
-    def test_esg_has_no_seeded_domain_relation(self):
+    def test_esg_has_no_seeded_enterprise_domain_relation(self):
         """Signed off: no enterprise_domain's keyword list covers ESG terms,
         so asserting a relation would be a guess, not a finding — an
-        unreviewed gap, left absent rather than forced."""
-        touches_esg = [
+        unreviewed gap, left absent rather than forced. (sox_risk_category's
+        Macro->ESG no_relationship is a separate, deliberate assertion — a
+        checked negative, not a guess — and is exempt from this check.)"""
+        touches_esg_from_domain = [
             r for r in seed.SEED_RELATIONS
-            if r["from_pref_label"] == "ESG" or r["to_pref_label"] == "ESG"
+            if r["from_scheme"] == "enterprise_domain"
+            and (r["from_pref_label"] == "ESG" or r["to_pref_label"] == "ESG")
         ]
-        assert touches_esg == []
+        assert touches_esg_from_domain == []
+
+
+class TestCosoErmHierarchy:
+    def test_all_20_principles_present_with_broader_pointing_at_their_component(self):
+        principles = [c for c in seed.SEED_CONCEPTS["coso_erm"] if c.get("notation", "").startswith("P")]
+        assert len(principles) == 20
+        components = {c["pref_label"] for c in seed.SEED_CONCEPTS["coso_erm"] if not c.get("notation")}
+        assert len(components) == 5
+        for p in principles:
+            assert p["broader_scheme"] == "coso_erm"
+            assert p["broader_pref_label"] in components
+
+    def test_coso_icif_excludes_the_unmapped_fallback(self):
+        """Same reasoning as enterprise_domain's excluded fallback: 'Unmapped'
+        is the absence of a mapped control, not a real component."""
+        labels = {c["pref_label"] for c in seed.SEED_CONCEPTS["coso_icif"]}
+        assert "Unmapped" not in labels
+        assert len(labels) == 5
+
+
+class TestFrameworkCrosswalk:
+    def test_crosswalk_relations_are_all_intersects_with(self):
+        """This slice only asserts overlap, never a stronger claim (equal/
+        subset_of) between framework codes — that would need per-code
+        compliance review this slice doesn't carry out."""
+        crosswalk = [
+            r for r in seed.SEED_RELATIONS
+            if r["from_scheme"] in ("soc2", "nist_800_53") and r["to_scheme"] in ("nist_800_53", "iso_27001")
+        ]
+        assert crosswalk
+        assert all(r["strm_type"] == "intersects_with" for r in crosswalk)
+
+    def test_every_framework_code_concept_has_notation_equal_to_pref_label(self):
+        for scheme in ("soc2", "nist_800_53", "iso_27001"):
+            for c in seed.SEED_CONCEPTS[scheme]:
+                assert c["notation"] == c["pref_label"]
+
+
+class TestSoxReconciliation:
+    def test_macro_has_no_relationship_to_all_ten_risk_categories(self):
+        macro_rels = [r for r in seed.SEED_RELATIONS if r["from_pref_label"] == "Macro" and r["from_scheme"] == "sox_risk_category"]
+        assert len(macro_rels) == 10
+        assert all(r["strm_type"] == "no_relationship" for r in macro_rels)
+        assert {r["to_pref_label"] for r in macro_rels} == _EXPECTED_RISK_CATEGORIES
+
+    def test_financial_intersects_both_financial_reporting_and_revenue(self):
+        targets = {
+            r["to_pref_label"] for r in seed.SEED_RELATIONS
+            if r["from_scheme"] == "sox_risk_category" and r["from_pref_label"] == "Financial"
+        }
+        assert targets == {"Financial Reporting", "Revenue"}
+
+    def test_regulatory_is_superset_of_compliance_trade_compliance_and_legal(self):
+        rels = [
+            r for r in seed.SEED_RELATIONS
+            if r["from_scheme"] == "sox_risk_category" and r["from_pref_label"] == "Regulatory"
+        ]
+        assert {r["to_pref_label"] for r in rels} == {"Compliance", "Trade Compliance", "Legal"}
+        assert all(r["strm_type"] == "superset_of" for r in rels)
 
 
 class TestSeedOntologyOrchestration:
