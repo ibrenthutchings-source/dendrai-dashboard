@@ -11071,6 +11071,89 @@ def list_concept_links(*, scheme: Optional[str] = None, status: Optional[str] = 
     return _run(_do) or []
 
 
+def list_pending_concept_links(scheme: Optional[str] = None) -> list:
+    """Every status='proposed' link awaiting a human decision, with both the
+    proposed and runner-up concept's identity resolved for display. The
+    reviewable surface behind GET /ontology/links/pending — see
+    decide_concept_link for the other half of this review loop."""
+    def _do():
+        clauses = ["l.status = 'proposed'"]
+        params: list = []
+        if scheme:
+            clauses.append("l.scheme = %s")
+            params.append(scheme)
+        where = " AND ".join(clauses)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT l.id, l.source_table, l.source_id, l.scheme,
+                           l.concept_id, c.pref_label,
+                           l.runner_up_concept_id, ru.pref_label,
+                           l.confidence, l.method, l.created_at
+                    FROM concept_links l
+                    LEFT JOIN concepts c ON c.id = l.concept_id
+                    LEFT JOIN concepts ru ON ru.id = l.runner_up_concept_id
+                    WHERE {where}
+                    ORDER BY l.created_at
+                    """,
+                    params,
+                )
+                return [
+                    {
+                        "id": r[0], "source_table": r[1], "source_id": r[2], "scheme": r[3],
+                        "concept_id": r[4], "pref_label": r[5],
+                        "runner_up_concept_id": r[6], "runner_up_pref_label": r[7],
+                        "confidence": float(r[8]) if r[8] is not None else None,
+                        "method": r[9], "created_at": r[10].isoformat() if r[10] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def decide_concept_link(link_id: int, decision: str, reviewed_by: str) -> Optional[dict]:
+    """A human's confirm/reject decision on one proposed concept_link.
+    Deliberately bypasses approval_tasks.gate_type='concept_link' rows'
+    'submitted'+manager_id lifecycle (concept links are system-PROPOSED, not
+    submitted by a preparer for their manager to check — there is no
+    'manager' role that fits) — but the matching approval_tasks row's status
+    is still updated here so the Inbox's own view of the item doesn't go
+    stale for anyone who does look at it there.
+
+    Only 'proposed' rows are eligible, matching review_approval_task's own
+    status-gated UPDATE pattern (prevents a double-decision race)."""
+    if decision not in ("confirmed", "rejected"):
+        raise ValueError("decision must be 'confirmed' or 'rejected'")
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE concept_links SET
+                        status = %s, reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
+                    WHERE id = %s AND status = 'proposed'
+                    RETURNING id, source_table, source_id, scheme, concept_id, status, method
+                    """,
+                    (decision, reviewed_by, link_id),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description] if cur.description else []
+                link = dict(zip(cols, row)) if row else None
+                if link:
+                    item_ref = f"{link['source_table']}:{link['source_id']}:{link['scheme']}"
+                    task_status = "manager_approved" if decision == "confirmed" else "rejected"
+                    cur.execute(
+                        """
+                        UPDATE approval_tasks SET status = %s, updated_at = NOW()
+                        WHERE gate_type = 'concept_link' AND item_ref = %s AND run_id IS NULL
+                        """,
+                        (task_status, item_ref),
+                    )
+                return link
+    return _run(_do)
+
+
 def seed_ontology() -> dict:
     """Idempotently apply ontology_seed.py's curated CONCEPTS/RELATIONS to the
     concepts/concept_relations tables. Same pattern as seed_framework_mappings:
