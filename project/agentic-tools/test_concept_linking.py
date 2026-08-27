@@ -177,3 +177,55 @@ class TestEndpoints:
                    MagicMock(return_value={"approvals": {"can_read": True, "can_edit": False}})):
             r = self._client(role="user").get("/ontology/links/pending")
         assert r.status_code == 403
+
+    def test_link_risks_endpoint_calls_batch_linker(self):
+        with patch.object(cl, "link_all_risks_for_run", MagicMock(return_value={"checked": 3})) as fn:
+            r = self._client().post("/ontology/link/risks/42")
+        assert r.status_code == 200
+        assert r.json() == {"checked": 3}
+        fn.assert_called_once_with(42)
+
+    def test_link_controls_endpoint_calls_batch_linker(self):
+        with patch.object(cl, "link_all_controls", MagicMock(return_value={"checked": 5})) as fn:
+            r = self._client().post("/ontology/link/controls")
+        assert r.status_code == 200
+        assert r.json() == {"checked": 5}
+        fn.assert_called_once()
+
+
+class TestLinkAllRisksForRun:
+    def test_links_every_risk_and_tallies_proposed_vs_unresolved(self):
+        risks = [
+            {"id": 1, "risk_ref": "R1", "name": "Vendor breach", "category": "Cybersecurity"},
+            {"id": 2, "risk_ref": "R2", "name": "Unclear thing", "category": ""},
+        ]
+        link_entity_mock = MagicMock(side_effect=[
+            {"status": "proposed", "concept_id": 5},
+            {"status": "unresolved", "concept_id": None},
+        ])
+        with patch.object(db, "get_risk_score_ids_for_run", MagicMock(return_value=risks)), \
+             patch.object(cl, "link_entity", link_entity_mock):
+            result = cl.link_all_risks_for_run(42)
+        assert result == {"checked": 2, "proposed": 1, "unresolved": 1}
+        assert link_entity_mock.call_args_list[0].args == ("risk_scores", "1", "risk_category", "Vendor breach Cybersecurity")
+
+    def test_no_risks_in_run_is_a_clean_no_op(self):
+        with patch.object(db, "get_risk_score_ids_for_run", MagicMock(return_value=[])), \
+             patch.object(cl, "link_entity", MagicMock()) as link_entity_mock:
+            result = cl.link_all_risks_for_run(42)
+        assert result == {"checked": 0, "proposed": 0, "unresolved": 0}
+        link_entity_mock.assert_not_called()
+
+
+class TestLinkAllControls:
+    def test_links_every_control_against_all_four_schemes(self):
+        controls = [{"control_id": "INFRA-001", "name": "SSL not enforced", "description": "desc"}]
+        link_entity_mock = MagicMock(return_value={"status": "proposed"})
+        with patch.object(db, "list_controls", MagicMock(return_value=controls)), \
+             patch.object(cl, "link_entity", link_entity_mock):
+            result = cl.link_all_controls()
+        assert result["checked"] == 1
+        assert result["proposed"] == 4  # one per scheme
+        called_schemes = [c.args[2] for c in link_entity_mock.call_args_list]
+        assert called_schemes == ["enterprise_domain", "soc2", "nist_800_53", "iso_27001"]
+        assert all(c.args[0] == "controls_catalog" and c.args[1] == "INFRA-001" for c in link_entity_mock.call_args_list)

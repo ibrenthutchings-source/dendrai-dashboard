@@ -15,11 +15,13 @@ Honesty rules (per framework_mappings.py's guardrail, applied here):
 
 Router prefix: /ontology (shares the prefix with ontology_export.py and
 ontology_endpoints.py — distinct paths, so all three mount without collision)
-    POST /ontology/link            link one free-text subject to its nearest
-                                   concept in a scheme
-    GET  /ontology/links           look up existing links for one subject
-    GET  /ontology/links/pending   every 'proposed' link awaiting a decision
-    POST /ontology/links/{id}/decide  confirm or reject one proposed link
+    POST /ontology/link              link one free-text subject to its nearest
+                                     concept in a scheme
+    GET  /ontology/links             look up existing links for one subject
+    GET  /ontology/links/pending     every 'proposed' link awaiting a decision
+    POST /ontology/links/{id}/decide confirm or reject one proposed link
+    POST /ontology/link/risks/{run_id}  batch-link every risk in a run
+    POST /ontology/link/controls        batch-link every control in the catalog
 
 The pending/decide pair is a dedicated review surface, deliberately separate
 from approvals_endpoints.py's preparer->manager Approval Inbox lifecycle: a
@@ -106,6 +108,65 @@ def link_entity(source_table: str, source_id: str, scheme: str, text: str, *, me
         },
     )
     return link
+
+
+def link_all_risks_for_run(run_id: int) -> dict:
+    """Link every risk_scores row in a run to its nearest risk_category
+    concept. Purely additive — writes concept_links rows alongside
+    risk_register_endpoints.py's existing _keyword_domain/assigned_domain
+    assignment, which this never reads or touches. Not wired into
+    categorize-domains; called explicitly (POST /ontology/link/risks/{run_id})
+    until confirm-rate on real data justifies making it automatic."""
+    risks = db.get_risk_score_ids_for_run(run_id)
+    proposed = unresolved = 0
+    for r in risks:
+        text = f"{r['name']} {r['category']}".strip()
+        link = link_entity("risk_scores", str(r["id"]), "risk_category", text)
+        if (link or {}).get("status") == "proposed":
+            proposed += 1
+        else:
+            unresolved += 1
+    return {"checked": len(risks), "proposed": proposed, "unresolved": unresolved}
+
+
+def link_all_controls() -> dict:
+    """Link every controls_catalog row's name+description against
+    enterprise_domain (controls get a domain the same way risks do) and
+    against soc2/nist_800_53/iso_27001 (once those schemes are seeded — see
+    ontology_seed.py). Only 8 controls carry a curated FRAMEWORK_MAPPINGS
+    entry today; this surfaces ANN-based crosswalk SUGGESTIONS for every
+    other control, reviewable via /ontology/links/pending. Never treated as
+    authoritative until confirmed — same rule as every other concept_link."""
+    controls = db.list_controls()
+    schemes = ["enterprise_domain", "soc2", "nist_800_53", "iso_27001"]
+    proposed = unresolved = 0
+    for c in controls:
+        text = f"{c['name']} {c.get('description') or ''}".strip()
+        for scheme in schemes:
+            link = link_entity("controls_catalog", c["control_id"], scheme, text)
+            if (link or {}).get("status") == "proposed":
+                proposed += 1
+            else:
+                unresolved += 1
+    return {"checked": len(controls), "schemes": schemes, "proposed": proposed, "unresolved": unresolved}
+
+
+@router.post("/link/risks/{run_id}")
+def link_risks_endpoint(
+    run_id: int,
+    _user: dict = Depends(require_screen_permission("approvals", edit=True)),
+):
+    """Batch-link every risk in a run to its nearest risk_category concept."""
+    return link_all_risks_for_run(run_id)
+
+
+@router.post("/link/controls")
+def link_controls_endpoint(
+    _user: dict = Depends(require_screen_permission("approvals", edit=True)),
+):
+    """Batch-link every control in the catalog against enterprise_domain and
+    the soc2/nist_800_53/iso_27001 framework schemes."""
+    return link_all_controls()
 
 
 class LinkRequest(BaseModel):
