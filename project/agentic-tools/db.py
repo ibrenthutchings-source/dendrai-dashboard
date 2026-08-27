@@ -22,7 +22,7 @@ import os
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 # TYPE_CHECKING block guarantees Pylance sees these names as always bound.
 # At runtime, the try/except below imports them when the packages are installed.
