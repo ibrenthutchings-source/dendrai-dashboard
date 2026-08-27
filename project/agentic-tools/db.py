@@ -2752,6 +2752,14 @@ BEGIN
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHERE company_id IS NOT NULL;
+-- Stage 4: lexical half of hybrid retrieval. GENERATED (not maintained on the
+-- write path) so save_embedding()/save_embeddings_bulk() need no changes —
+-- Postgres recomputes it from text_snippet on every insert/update. The
+-- to_tsvector('english', ...) form (config passed as a literal, not read from
+-- a GUC) is the documented pattern for a STORED generated tsvector column.
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS text_search tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', coalesce(text_snippet, ''))) STORED;
+CREATE INDEX IF NOT EXISTS idx_embeddings_text_search ON embeddings USING GIN (text_search);
 """
 
 
@@ -7270,6 +7278,210 @@ def get_relevant_context(
             if r[6] is not None and float(r[6]) <= max_distance
         ][:limit]
     return _run(_do) or []
+
+
+def _rrf_fuse(dense_rows: list, lexical_rows: list, *, rrf_k: int = 60) -> Dict[tuple, dict]:
+    """Reciprocal Rank Fusion over two ranked lists, keyed by
+    (source_table, source_id, chunk_index). k=60 is the standard Cormack
+    default — not tuned blind. A lexical hit whose literal_rank is 0 (it
+    matched only via a concept-expansion term, never the user's actual
+    words) contributes at half weight, so a synonym alone can never outrank
+    a literal match. Pure function — no DB access — so it's testable without
+    a live Postgres."""
+    fused: Dict[tuple, dict] = {}
+    for i, row in enumerate(dense_rows, start=1):
+        key = (row["source_table"], row["source_id"], row.get("chunk_index", 0))
+        entry = fused.setdefault(key, {"score": 0.0, "row": row})
+        entry["score"] += 1.0 / (rrf_k + i)
+    for i, row in enumerate(lexical_rows, start=1):
+        key = (row["source_table"], row["source_id"], row.get("chunk_index", 0))
+        weight = 1.0 if row.get("literal_rank") else 0.5
+        entry = fused.setdefault(key, {"score": 0.0, "row": row})
+        entry["score"] += weight * (1.0 / (rrf_k + i))
+    return fused
+
+
+def _graph_rerank_factor(hop: Optional[int], graph_weight: float) -> float:
+    """final = rrf_score * (1 + graph_weight / (1 + hop)) for a candidate with
+    a CONFIRMED concept_link `hop` steps from a resolved query concept.
+    Unlinked candidates (hop=None — no confirmed link, or one outside the
+    resolved closure) get factor 1.0: never penalised, since most rows have
+    no link yet and burying them would defeat retrieval entirely. Pure
+    function, mirrors _rrf_fuse's testability."""
+    if hop is None:
+        return 1.0
+    return 1.0 + graph_weight / (1.0 + hop)
+
+
+def get_concepts_by_ids(concept_ids: list) -> list:
+    """Full concept rows (incl. alt_labels) for a set of ids — used by the
+    hybrid retrieval's query expansion to add synonyms, not just pref_labels,
+    to the lexical side of the search."""
+    if not concept_ids:
+        return []
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, scheme, pref_label, alt_labels FROM concepts WHERE id = ANY(%s)",
+                    (list(concept_ids),),
+                )
+                return [
+                    {"id": r[0], "scheme": r[1], "pref_label": r[2], "alt_labels": r[3] or []}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def _fetch_lexical_candidates(
+    query_text: str, expansion_terms: list, *,
+    company_id: Optional[int], content_types: Optional[list],
+    source_tables: Optional[list], limit: int,
+) -> list:
+    """Lexical (tsvector) half of hybrid retrieval. expansion_terms (concept
+    pref_labels/alt_labels from the closure walk) are OR'd into the tsquery
+    alongside the user's literal words — literal_rank (scored against the
+    literal query ALONE) is returned too, so the caller can tell a
+    literal-word match from an expansion-only one and weight accordingly."""
+    if not query_text or not query_text.strip():
+        return []
+    def _do():
+        tsq_expr = "websearch_to_tsquery('english', %s)"
+        tsq_params = [query_text]
+        for term in expansion_terms:
+            if not term or not term.strip():
+                continue
+            tsq_expr = f"({tsq_expr} || plainto_tsquery('english', %s))"
+            tsq_params.append(term)
+
+        where_clauses = [f"text_search @@ {tsq_expr}"]
+        where_params = list(tsq_params)
+        if company_id:
+            where_clauses.append("company_id = %s")
+            where_params.append(company_id)
+        if content_types:
+            where_clauses.append("content_type = ANY(%s)")
+            where_params.append(content_types)
+        if source_tables:
+            where_clauses.append("source_table = ANY(%s)")
+            where_params.append(source_tables)
+        where_sql = " AND ".join(where_clauses)
+
+        params = tsq_params + [query_text] + where_params + [limit]
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT source_table, source_id, content_type, model, chunk_index,
+                           text_snippet, created_at,
+                           ts_rank(text_search, {tsq_expr}) AS combined_rank,
+                           ts_rank(text_search, websearch_to_tsquery('english', %s)) AS literal_rank
+                    FROM embeddings
+                    WHERE {where_sql}
+                    ORDER BY combined_rank DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "source_table": r[0], "source_id": r[1], "content_type": r[2], "model": r[3],
+                "chunk_index": r[4], "text_snippet": r[5],
+                "created_at": r[6].isoformat() if r[6] else None,
+                "combined_rank": float(r[7]) if r[7] is not None else 0.0,
+                "literal_rank": float(r[8]) if r[8] is not None else 0.0,
+            }
+            for r in rows
+        ]
+    return _run(_do) or []
+
+
+def get_relevant_context_hybrid(
+    query_embedding: list,
+    query_text: str,
+    *,
+    company_id: Optional[int] = None,
+    content_types: Optional[list] = None,
+    source_tables: Optional[list] = None,
+    limit: int = 5,
+    concept_scheme: Optional[str] = None,
+    max_hops: int = 1,
+    graph_weight: float = 0.5,
+    rrf_k: int = 60,
+    top_k_each: int = 50,
+) -> list:
+    """Hybrid dense+lexical retrieval, concept-expanded and graph-reranked —
+    Stage 4 of the ontology plan. get_relevant_context is left completely
+    untouched; every existing caller (including this function's own dense
+    step) keeps its current behavior. This is a new, opt-in entry point.
+
+    1. Dense: get_relevant_context's own ANN search, with max_distance opened
+       to the full cosine range (2.0) so ranking — not a hard cutoff —
+       decides what survives to fusion.
+    2. Concept expansion: resolve the query to its nearest concepts, walk
+       their SKOS closure (max_hops) via get_concept_closure, and OR every
+       label found (pref_labels + alt_labels) into the lexical tsquery ONLY
+       — never into the dense vector, which would blur the user's actual
+       question.
+    3. Fuse dense + lexical via Reciprocal Rank Fusion. A lexical hit that
+       only matched via expansion (never the literal query terms) counts at
+       half weight, so a synonym can't outrank a literal match.
+    4. Re-rank by ontological graph distance: a candidate with a CONFIRMED
+       concept_link to one of the resolved concepts gets a small boost that
+       shrinks with hop count. Unlinked candidates get factor 1.0 — never
+       penalised, since most rows have no link yet.
+    """
+    dense_rows = get_relevant_context(
+        query_embedding, company_id=company_id, content_types=content_types,
+        source_tables=source_tables, limit=top_k_each, max_distance=2.0,
+    )
+
+    matched_concepts: list = []
+    hop_by_concept_id: Dict[int, int] = {}
+    expansion_terms: list = []
+    if query_embedding and _HAS_PGVECTOR and _PGVECTOR_READY:
+        matched_concepts = search_concepts_by_embedding(query_embedding, scheme=concept_scheme, limit=3)
+        seed_ids = [c["concept_id"] for c in matched_concepts]
+        closure_nodes: list = []
+        for cid in seed_ids:
+            closure_nodes.extend(get_concept_closure(cid, direction="both", max_hops=max_hops))
+        for node in closure_nodes:
+            hop_by_concept_id[node["concept_id"]] = min(
+                hop_by_concept_id.get(node["concept_id"], node["hop"]), node["hop"],
+            )
+            if node.get("pref_label"):
+                expansion_terms.append(node["pref_label"])
+        for c in get_concepts_by_ids(list(hop_by_concept_id.keys())):
+            expansion_terms.extend(c.get("alt_labels") or [])
+
+    lexical_rows = _fetch_lexical_candidates(
+        query_text, expansion_terms, company_id=company_id,
+        content_types=content_types, source_tables=source_tables, limit=top_k_each,
+    )
+
+    fused = _rrf_fuse(dense_rows, lexical_rows, rrf_k=rrf_k)
+
+    confirmed_concept_by_source = {
+        (l["source_table"], str(l["source_id"])): l["concept_id"]
+        for l in list_concept_links(status="confirmed")
+        if l.get("concept_id") is not None
+    }
+
+    matched_label = matched_concepts[0]["pref_label"] if matched_concepts else None
+    scored = []
+    for (source_table, source_id, _chunk_index), entry in fused.items():
+        concept_id = confirmed_concept_by_source.get((source_table, str(source_id)))
+        hop = hop_by_concept_id.get(concept_id) if concept_id is not None else None
+        factor = _graph_rerank_factor(hop, graph_weight)
+        row = dict(entry["row"])
+        row["rrf_score"] = entry["score"]
+        row["final_score"] = entry["score"] * factor
+        row["matched_concept"] = matched_label
+        scored.append(row)
+
+    scored.sort(key=lambda r: r["final_score"], reverse=True)
+    return scored[:limit]
 
 
 def get_concept_embedding_hashes() -> Dict[int, Optional[str]]:
