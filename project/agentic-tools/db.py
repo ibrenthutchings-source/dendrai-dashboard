@@ -7178,14 +7178,14 @@ def find_similar_risks_cross_company(
                     """
                     SELECT rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status,
                            c.ticker, c.company_name,
-                           (e.embedding <=> %s) AS distance
+                           (e.embedding <=> %s::vector) AS distance
                     FROM embeddings e
                     JOIN risk_scores rs ON rs.id = e.source_id AND e.source_table = 'risk_scores'
                     JOIN risk_loop_runs r ON r.id = rs.run_id
                     JOIN companies c ON c.id = r.company_id
                     WHERE e.content_type = %s
                       AND (%s::int IS NULL OR r.company_id != %s)
-                    ORDER BY e.embedding <=> %s
+                    ORDER BY e.embedding <=> %s::vector
                     LIMIT %s
                     """,
                     (embedding, EMBT_RISK_NARRATIVE, exclude_company_id, exclude_company_id,
@@ -7257,10 +7257,10 @@ def get_relevant_context(
                     f"""
                     SELECT source_table, source_id, content_type, model,
                            chunk_index, text_snippet,
-                           embedding {op} %s AS distance, created_at
+                           embedding {op} %s::vector AS distance, created_at
                     FROM embeddings
                     {where}
-                    ORDER BY embedding {op} %s
+                    ORDER BY embedding {op} %s::vector
                     LIMIT %s
                     """,
                     params + [query_embedding, query_embedding, fetch_limit],
@@ -7617,11 +7617,11 @@ def search_concepts_by_embedding(query_embedding: list, *, scheme: Optional[str]
                 cur.execute(
                     f"""
                     SELECT c.id, c.scheme, c.pref_label, c.notation,
-                           (e.embedding <=> %s) AS distance
+                           (e.embedding <=> %s::vector) AS distance
                     FROM embeddings e
                     JOIN concepts c ON c.id = e.source_id
                     WHERE {where}
-                    ORDER BY e.embedding <=> %s
+                    ORDER BY e.embedding <=> %s::vector
                     LIMIT %s
                     """,
                     [query_embedding] + params + [query_embedding, limit],
