@@ -258,6 +258,20 @@ async def _run_cycle_for_all_tenants(cycle_fn, label: str) -> None:
             auth_endpoints.unbind_tenant_secret()
 
 
+async def _run_startup_reembed() -> None:
+    """One-shot, backgrounded re-embed of any stale/never-embedded concept.
+    Run via asyncio.to_thread since ontology_endpoints.reembed_stale_concepts
+    is synchronous (blocking network calls to the embedding provider) — never
+    awaited inline in the startup sequence, so a slow or failing provider
+    (rate-limited, out of quota, unreachable) delays only this task, never
+    uvicorn's readiness or Railway's healthcheck."""
+    try:
+        result = await asyncio.to_thread(ontology_endpoints.reembed_stale_concepts)
+        logger.info("Startup concept re-embed: %s", result)
+    except Exception as exc:
+        logger.warning("Concept re-embed skipped at startup (non-fatal): %s", exc)
+
+
 async def _multi_tenant_loop(cycle_fn, tick_s: float, label: str) -> None:
     """TENANT_MODE=multi's replacement for a sweep module's own start_sweep()/
     start_polling(): identical infinite-loop-with-sleep shape, but each tick
@@ -300,10 +314,14 @@ async def lifespan(application: FastAPI):
             db.seed_builtin_pac_processes()
             db.seed_framework_mappings()
             db.seed_ontology()
-            try:
-                ontology_endpoints.reembed_stale_concepts()
-            except Exception as _ontology_embed_err:
-                logger.warning("Concept re-embed skipped at startup (non-fatal): %s", _ontology_embed_err)
+            # Backgrounded like every other sweep in this codebase (see
+            # risk_waiver_sweep.start_sweep's asyncio.create_task pattern
+            # below) — NOT awaited inline. A synchronous call here blocked
+            # the entire startup sequence (and Railway's 30s healthcheck
+            # window) behind OpenAI's SDK retry/backoff on every one of the
+            # ~70 seeded concepts when OPENAI_API_KEY was present but out of
+            # quota — a real incident, not a hypothetical.
+            asyncio.create_task(_run_startup_reembed())
             logger.info("Static reference data seeded")
             # Auth schema + default users
             if auth_db.init_auth_db():
