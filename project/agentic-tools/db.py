@@ -8118,6 +8118,27 @@ def get_latest_risks_for_ticker(ticker: str) -> dict:
     return _run(_do) or {"run_id": None, "risks": []}
 
 
+def get_risk_score_ids_for_run(run_id: int) -> list:
+    """{id, risk_ref, name, category} for every risk_scores row in a run —
+    the real BIGSERIAL id (not risk_ref) is what concept_links.source_id and
+    embeddings.source_id both key on for source_table='risk_scores', so
+    entity linking needs this, not get_risk_scores_for_run's risk_ref-as-'id'
+    shape below."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, risk_ref, COALESCE(risk_name, ''), COALESCE(category, '') "
+                    "FROM risk_scores WHERE run_id = %s",
+                    (run_id,),
+                )
+                return [
+                    {"id": r[0], "risk_ref": r[1], "name": r[2], "category": r[3]}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
 def get_risk_scores_for_run(run_id: int) -> list:
     """Return all risk_scores for a run, preferring narrative wording when present."""
     def _do():
