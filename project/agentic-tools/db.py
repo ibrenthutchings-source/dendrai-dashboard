@@ -7397,6 +7397,93 @@ def _fetch_lexical_candidates(
     return _run(_do) or []
 
 
+def get_risk_refs_for_score_ids(score_ids: list) -> Dict[int, str]:
+    """{risk_scores.id: risk_ref} for a batch of ids — bridges hybrid
+    retrieval's embeddings rows (source_table='risk_scores', source_id=the
+    integer PK) to risk_relationships' edges (keyed by the string risk_ref)."""
+    if not score_ids:
+        return {}
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, risk_ref FROM risk_scores WHERE id = ANY(%s)",
+                    (list(score_ids),),
+                )
+                return {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    return _run(_do) or {}
+
+
+def get_similar_risk_edges(company_id: int, risk_refs: list) -> Dict[str, list]:
+    """Adjacency map (either direction) of 'similar_to' risk_relationships
+    edges touching any of `risk_refs`, for one company. This is the plan's
+    'retire the similar_to dead end' step: that edge was computed by
+    link_similar_risks_by_embedding, stored, and drawn as a dashed line on
+    the graph viz — consumed by nothing else until get_relevant_context_hybrid
+    started using it to boost related risks' narratives in re-ranking."""
+    if not company_id or not risk_refs:
+        return {}
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT from_risk_ref, to_risk_ref, strength
+                    FROM risk_relationships
+                    WHERE company_id = %s AND relationship_type = 'similar_to'
+                      AND (from_risk_ref = ANY(%s) OR to_risk_ref = ANY(%s))
+                    """,
+                    (company_id, list(risk_refs), list(risk_refs)),
+                )
+                rows = cur.fetchall()
+        adjacency: Dict[str, list] = {}
+        for from_ref, to_ref, strength in rows:
+            s = float(strength) if strength is not None else 0.0
+            adjacency.setdefault(from_ref, []).append((to_ref, s))
+            adjacency.setdefault(to_ref, []).append((from_ref, s))
+        return adjacency
+    return _run(_do) or {}
+
+
+def _risk_similarity_boosts(fused: Dict[tuple, dict], company_id: Optional[int], *, seed_count: int = 3) -> Dict[tuple, float]:
+    """For every risk_scores candidate in `fused`, find the strongest
+    'similar_to' edge connecting it to one of the query's own top-ranked
+    risk_scores candidates (its "seed risks"), and return {key: strength}.
+    A risk that never independently ranked well can still surface because a
+    risk highly similar to it did — the same 'graph distance boosts an
+    otherwise-buried candidate' idea as the concept re-rank, applied to the
+    risk graph instead of the concept graph."""
+    if not company_id:
+        return {}
+    risk_keys = [k for k in fused if k[0] == "risk_scores"]
+    if not risk_keys:
+        return {}
+    ref_by_id = get_risk_refs_for_score_ids([k[1] for k in risk_keys])
+    if not ref_by_id:
+        return {}
+    seed_keys = sorted(risk_keys, key=lambda k: fused[k]["score"], reverse=True)[:seed_count]
+    seed_refs = [ref_by_id[k[1]] for k in seed_keys if k[1] in ref_by_id]
+    if not seed_refs:
+        return {}
+    adjacency = get_similar_risk_edges(company_id, seed_refs)
+
+    boosts: Dict[tuple, float] = {}
+    for key in risk_keys:
+        this_ref = ref_by_id.get(key[1])
+        if not this_ref:
+            continue
+        best = 0.0
+        for seed_ref in seed_refs:
+            if seed_ref == this_ref:
+                continue
+            for other_ref, strength in adjacency.get(seed_ref, []):
+                if other_ref == this_ref:
+                    best = max(best, strength)
+        if best:
+            boosts[key] = best
+    return boosts
+
+
 def get_relevant_context_hybrid(
     query_embedding: list,
     query_text: str,
@@ -7408,6 +7495,7 @@ def get_relevant_context_hybrid(
     concept_scheme: Optional[str] = None,
     max_hops: int = 1,
     graph_weight: float = 0.5,
+    risk_edge_weight: float = 0.3,
     rrf_k: int = 60,
     top_k_each: int = 50,
 ) -> list:
@@ -7431,6 +7519,11 @@ def get_relevant_context_hybrid(
        concept_link to one of the resolved concepts gets a small boost that
        shrinks with hop count. Unlinked candidates get factor 1.0 — never
        penalised, since most rows have no link yet.
+    5. Re-rank risk narratives by the risk graph: a risk_scores candidate
+       gets an additional boost when it has a 'similar_to' risk_relationships
+       edge to one of the query's own top-ranked risk candidates — the
+       signal link_similar_risks_by_embedding already computes and the graph
+       viz already draws, put to use for the first time.
     """
     dense_rows = get_relevant_context(
         query_embedding, company_id=company_id, content_types=content_types,
@@ -7467,16 +7560,20 @@ def get_relevant_context_hybrid(
         for l in list_concept_links(status="confirmed")
         if l.get("concept_id") is not None
     }
+    risk_edge_strength_by_key = _risk_similarity_boosts(fused, company_id)
 
     matched_label = matched_concepts[0]["pref_label"] if matched_concepts else None
     scored = []
-    for (source_table, source_id, _chunk_index), entry in fused.items():
+    for key, entry in fused.items():
+        source_table, source_id, _chunk_index = key
         concept_id = confirmed_concept_by_source.get((source_table, str(source_id)))
         hop = hop_by_concept_id.get(concept_id) if concept_id is not None else None
-        factor = _graph_rerank_factor(hop, graph_weight)
+        concept_factor = _graph_rerank_factor(hop, graph_weight)
+        risk_strength = risk_edge_strength_by_key.get(key)
+        risk_factor = 1.0 + risk_edge_weight * risk_strength if risk_strength else 1.0
         row = dict(entry["row"])
         row["rrf_score"] = entry["score"]
-        row["final_score"] = entry["score"] * factor
+        row["final_score"] = entry["score"] * concept_factor * risk_factor
         row["matched_concept"] = matched_label
         scored.append(row)
 
