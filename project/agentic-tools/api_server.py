@@ -124,7 +124,6 @@ import chat_endpoint
 import claude_client
 import peer_intel
 import risks_as_code
-import risk_coverage_cube
 import ontology_export
 import ontology_endpoints
 import concept_linking
@@ -945,7 +944,6 @@ app.include_router(chat_endpoint.router)
 
 # Risks-as-Code: OSCAL + COSO ERM translators + SSE live stream.
 app.include_router(risks_as_code.router)
-app.include_router(risk_coverage_cube.router)
 app.include_router(ontology_export.router)
 app.include_router(ontology_endpoints.router)
 app.include_router(concept_linking.router)
