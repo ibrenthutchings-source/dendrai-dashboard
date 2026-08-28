@@ -2224,6 +2224,14 @@ ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS token_enc   
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_synced_at   TIMESTAMPTZ;
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_status VARCHAR(16);
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_error  TEXT;
+-- Auto-sync monitoring (pac_auto_sync_sweep.py): opt-in per repo, defaults
+-- FALSE so adding this column never silently starts polling a repo someone
+-- registered under the old manual-only assumption. last_synced_sha is the
+-- branch HEAD commit as of the last successful sync (manual OR auto) — the
+-- sweep compares this against a cheap GET .../commits/{branch} check before
+-- paying for the full tree-walk sync; nothing captured a SHA anywhere before.
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_synced_sha    VARCHAR(64);
 
 -- Private-company support (no SEC ticker/CIK) and manual financial-statement
 -- ingestion: companies.is_private flags entities created via

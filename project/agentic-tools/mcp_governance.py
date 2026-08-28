@@ -2756,7 +2756,8 @@ def _fetch_pac_repos() -> list[dict]:
                            rego_path, process, description, active,
                            created_at, updated_at, created_by,
                            (token_enc IS NOT NULL) AS has_token,
-                           last_synced_at, last_sync_status, last_sync_error
+                           last_synced_at, last_sync_status, last_sync_error,
+                           auto_sync_enabled, last_synced_sha
                     FROM observability.pac_repositories
                     ORDER BY active DESC, display_name ASC
                     """
@@ -2833,6 +2834,7 @@ def _update_pac_repo(
     description: str | None,
     active: bool,
     token: str | None = None,
+    auto_sync_enabled: bool = False,
 ) -> bool:
     if not db.is_available():
         return False
@@ -2843,11 +2845,11 @@ def _update_pac_repo(
         sets = [
             "display_name = %s", "provider = %s", "repo_url = %s",
             "branch = %s", "rego_path = %s", "process = %s",
-            "description = %s", "active = %s", "updated_at = NOW()",
+            "description = %s", "active = %s", "auto_sync_enabled = %s", "updated_at = NOW()",
         ]
         params: list = [
             display_name[:128], provider[:32], repo_url, branch[:128],
-            rego_path[:256], process[:64], description or None, active,
+            rego_path[:256], process[:64], description or None, active, auto_sync_enabled,
         ]
         if token:
             sets.append("token_enc = %s")
@@ -2896,6 +2898,59 @@ def _fetch_pac_repo_with_token(repo_id: int) -> tuple[dict, str | None] | None:
     except Exception as exc:
         logger.warning("_fetch_pac_repo_with_token error (id=%s): %s", repo_id, exc)
         return None
+
+
+def _fetch_auto_sync_candidates() -> list[dict]:
+    """Every repo eligible for pac_auto_sync_sweep.py's polling: active,
+    opted into auto-sync, and has a token to actually sync with (a repo
+    missing a token would just fail sync_pac_repo — no point polling it).
+    Decrypts the token here (same as _fetch_pac_repo_with_token) since the
+    sweep needs it to call the GitHub commits API and, on change, sync."""
+    if not db.is_available():
+        return []
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, repo_url, branch, token_enc, last_synced_sha
+                    FROM observability.pac_repositories
+                    WHERE active AND auto_sync_enabled AND token_enc IS NOT NULL
+                    """
+                )
+                rows = cur.fetchall()
+        candidates = []
+        for repo_id, repo_url, branch, token_enc, last_synced_sha in rows:
+            token = db.decrypt_credentials(token_enc).get("token") if token_enc else None
+            if not token:
+                continue
+            try:
+                owner, repo_name = pac_endpoints._parse_github_repo(repo_url)
+            except ValueError:
+                continue
+            candidates.append({
+                "id": repo_id, "owner": owner, "repo_name": repo_name,
+                "branch": branch, "token": token, "last_synced_sha": last_synced_sha,
+            })
+        return candidates
+    except Exception as exc:
+        logger.warning("_fetch_auto_sync_candidates error: %s", exc)
+        return []
+
+
+def _update_last_synced_sha(repo_id: int, sha: str) -> None:
+    if not db.is_available():
+        return
+    try:
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE observability.pac_repositories SET last_synced_sha = %s WHERE id = %s",
+                    (sha[:64], repo_id),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("_update_last_synced_sha error (id=%s): %s", repo_id, exc)
 
 
 def _record_pac_repo_sync(repo_id: int, status: str, error: str | None = None) -> None:
@@ -2976,6 +3031,7 @@ async def update_pac_repo(repo_id: int, body: dict = Body(...)):
         body.get("description"),
         bool(body.get("active", True)),
         (str(body.get("token")).strip() or None) if body.get("token") else None,
+        bool(body.get("auto_sync_enabled", False)),
     )
     return {"ok": ok, "id": repo_id}
 

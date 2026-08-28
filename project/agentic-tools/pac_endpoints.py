@@ -2403,6 +2403,31 @@ async def _sync_github_repo(
     }
 
 
+async def get_branch_head_sha(owner: str, repo: str, branch: str, token: str) -> Optional[str]:
+    """The branch's current HEAD commit SHA — a single small GitHub API call
+    (GET .../commits/{branch}), not the recursive tree walk _sync_github_repo
+    does. pac_auto_sync_sweep.py uses this as the cheap "did anything change"
+    check before paying for a real sync; returns None (never raises) on any
+    failure so a transient GitHub/network hiccup skips this poll tick rather
+    than crashing the sweep."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "dendrai-policy-as-code-sync",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}",
+                headers=headers,
+            )
+        if r.status_code != 200:
+            return None
+        return r.json().get("sha")
+    except httpx.RequestError:
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Controls-as-Code endpoints
 # ─────────────────────────────────────────────────────────────────────────────

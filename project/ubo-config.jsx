@@ -1299,7 +1299,7 @@ const PROVIDER_BADGE_COLORS = {
   custom:      { bg: "var(--surface-2)", ink: "var(--ink-3)" },
 };
 
-function RepoRow({ repo, onEdit, onDelete, onToggle, onSync, syncing, syncResult, processes }) {
+function RepoRow({ repo, onEdit, onDelete, onToggle, onSync, onToggleAutoSync, syncing, syncResult, processes }) {
   const pColor = PROVIDER_BADGE_COLORS[repo.provider] || PROVIDER_BADGE_COLORS.custom;
   const process = (processes || PAC_PROCESSES_FALLBACK).find(p => p.id === repo.process)?.label || repo.process;
   const shortUrl = repo.repo_url.replace(/^https?:\/\//, "").replace(/\.git$/, "");
@@ -1389,12 +1389,22 @@ function RepoRow({ repo, onEdit, onDelete, onToggle, onSync, syncing, syncResult
           </button>
           {!repo.has_token && <span>No token saved — click Edit to add one</span>}
           {repo.has_token && repo.last_sync_status === "ok" && repo.last_synced_at && (
-            <span style={{ color: "var(--acc-ink)" }}>✓ Last synced {new Date(repo.last_synced_at).toLocaleString()}</span>
+            <span style={{ color: "var(--acc-ink)" }}>
+              ✓ Last synced {new Date(repo.last_synced_at).toLocaleString()}
+              {repo.last_synced_sha && ` @ ${repo.last_synced_sha.slice(0, 7)}`}
+            </span>
           )}
           {repo.last_sync_status === "error" && (
             <span style={{ color: "var(--red-ink)" }} title={repo.last_sync_error}>✗ Last sync failed</span>
           )}
           {repo.has_token && !repo.last_synced_at && <span>Never synced</span>}
+          {repo.has_token && (
+            <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", marginLeft: "auto" }}
+              title="Poll this repo hourly and sync automatically when its branch HEAD changes">
+              <input type="checkbox" checked={!!repo.auto_sync_enabled} onChange={() => onToggleAutoSync(repo)} />
+              Auto-sync
+            </label>
+          )}
         </>
       ) : (
         <span>Sync isn't supported yet for {PAC_PROVIDERS.find(p => p.id === repo.provider)?.label || repo.provider} — GitHub only for now</span>
@@ -1533,6 +1543,17 @@ function PacReposCard() {
     } catch (_) {}
   }
 
+  async function handleToggleAutoSync(repo) {
+    try {
+      await fetch(`${_uboConfigBase()}/pac-repos/${repo.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...repo, auto_sync_enabled: !repo.auto_sync_enabled }),
+      });
+      await load();
+    } catch (_) {}
+  }
+
   const editingRepo = editingId ? repos.find(r => r.id === editingId) : null;
   const editInitial = editingRepo
     ? { ...editingRepo, description: editingRepo.description || "" }
@@ -1604,6 +1625,7 @@ function PacReposCard() {
                   onDelete={setConfirmDeleteId}
                   onToggle={handleToggle}
                   onSync={handleSync}
+                  onToggleAutoSync={handleToggleAutoSync}
                   syncing={syncingId === repo.id}
                   syncResult={syncResults[repo.id]}
                   processes={processes} />
