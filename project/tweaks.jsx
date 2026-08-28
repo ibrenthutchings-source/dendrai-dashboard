@@ -47,7 +47,7 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
           unit="x"
         />
         <TweakToggle
-          label="Auto-expand stages while running"
+          label="Follow the loop as it runs"
           value={tweaks.autoExpand}
           onChange={(v) => setTweak("autoExpand", v)}
         />

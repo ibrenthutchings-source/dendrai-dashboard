@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 import claude_client
 import db
+import embedding_util
 from pac_endpoints import _controls_to_rego
 from auth_endpoints import require_screen_permission
 
@@ -923,10 +924,13 @@ async def generate_cac_from_review(review_id: int, req: GenerateCacFromReviewReq
 
     if artifact_id:
         try:
-            db.save_embedding(
-                source_table="controls_as_code_artifacts", source_id=artifact_id,
-                content_type=db.EMBT_CAC, text=content_rego[:8000],
-            )
+            vec = embedding_util.embed_text(content_rego[:8000])
+            if vec:
+                db.save_embedding(
+                    source_table="controls_as_code_artifacts", source_id=artifact_id,
+                    content_type=db.EMBT_CAC, embedding=vec,
+                    text_snippet=content_rego[:600],
+                )
         except Exception:
             pass  # embedding is non-fatal, same as cac_generate
         # Self-register ad-hoc controls into the canonical catalog, same pattern
@@ -1060,6 +1064,27 @@ async def get_risk_graph_for_run(ticker: str, run_id: int):
     return graph
 
 
+@router.get("/graph/{ticker}/expand/{risk_ref}")
+async def get_risk_graph_expanded(ticker: str, risk_ref: str, hops: int = 2, run_id: Optional[int] = None):
+    """Multi-hop traversal from one risk — get_risk_graph()/get_risk_graph_for_run()
+    above only ever return direct (1-hop) edges, so a risk two hops away
+    through an intermediate 'amplifies' or 'similar_to' edge never shows up
+    there. This walks out `hops` edges (default 2, capped at 4) and returns
+    the induced subgraph — every edge whose both endpoints fall within that
+    neighborhood, not just edges touching the root."""
+    hops = max(1, min(hops, 4))
+    if not db.is_available():
+        return {"nodes": [], "edges": [], "hops": hops, "root": risk_ref, "node_count": 0, "edge_count": 0}
+    company = await asyncio.to_thread(_resolve_company_id_or_none, ticker)
+    if not company:
+        return {"nodes": [], "edges": [], "hops": hops, "root": risk_ref, "node_count": 0, "edge_count": 0}
+    graph = await asyncio.to_thread(
+        db.get_risk_graph_expanded, company, risk_ref, max_hops=hops, run_id=run_id,
+    )
+    graph["ticker"] = ticker.upper()
+    return graph
+
+
 def _resolve_company_id_or_none(ticker: str) -> Optional[int]:
     """Return company_id for ticker, or None if not found. Never raises."""
     try:
@@ -1070,6 +1095,42 @@ def _resolve_company_id_or_none(ticker: str) -> Optional[int]:
                 return row[0] if row else None
     except Exception:
         return None
+
+
+@router.get("/similar-risks/{run_id}/{risk_ref}")
+async def get_similar_risks_cross_company(run_id: int, risk_ref: str, limit: int = 10):
+    """Peer-benchmarking search: find risks worded similarly to this one at
+    OTHER companies, via pgvector cosine similarity over EMBT_RISK_NARRATIVE
+    embeddings — cross-company, unlike chat's get_relevant_context() (which
+    always scopes to one company_id) or the risk_relationships graph (which
+    never leaves a single company). Requires this run's risk narratives to
+    have been embedded already (see api_server.py's
+    _embed_and_link_risk_narratives, run automatically after every MCP
+    pipeline run)."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    rows = await asyncio.to_thread(db.get_risk_score_rows_for_embedding, run_id)
+    match = next((r for r in rows if r["risk_ref"] == risk_ref), None)
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Risk '{risk_ref}' not found in run {run_id}")
+
+    if not embedding_util.is_available():
+        return {"risk_ref": risk_ref, "run_id": run_id, "similar_risks": [], "count": 0,
+                "note": "OPENAI_API_KEY not configured — cross-company similarity search unavailable"}
+
+    text = f"{match['risk_name']} ({match['category'] or 'Uncategorised'}): {match['narrative'] or ''}".strip()
+    vec = await asyncio.to_thread(embedding_util.embed_text, text)
+    if not vec:
+        return {"risk_ref": risk_ref, "run_id": run_id, "similar_risks": [], "count": 0,
+                "note": "Embedding failed — see server logs"}
+
+    company_id = await asyncio.to_thread(db.get_company_id_for_run, run_id)
+    similar = await asyncio.to_thread(
+        db.find_similar_risks_cross_company, vec,
+        exclude_company_id=company_id, limit=limit,
+    )
+    return {"risk_ref": risk_ref, "run_id": run_id, "similar_risks": similar, "count": len(similar)}
 
 
 @router.get("/risks/latest/{ticker}")

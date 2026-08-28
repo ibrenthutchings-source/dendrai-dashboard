@@ -69,6 +69,12 @@ const NAV_SECTIONS = [
     label: "Monitoring Intelligence",
     items: [
       { id: "approvals", icon: "check",    l: "Approval Inbox", countKey: "approvals", pulseKey: "approvalsPulse", divider: "Inbox" },
+      // Reviews concept_linking.py's Stage 3 entity-link proposals — a
+      // separate screen from Approval Inbox (concept links are system-
+      // proposed, not preparer-submitted, so they don't fit that gate's
+      // lifecycle), but gated by the SAME backend permission ("approvals")
+      // via permissionScreenId — see user-config.jsx's getPermissionSections.
+      { id: "conceptlinkreview", icon: "list", l: "Concept Links", permissionScreenId: "approvals" },
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch", divider: "Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
@@ -226,7 +232,12 @@ function LeftNav({ activeScreen, activeGovTab, onNavigate, counts = {}, isAdmin 
     if (item.devOnly && !isDevEnv) return false;
     if (item.adminOnly) return isAdmin;
     if (isAdmin || !screenPerms) return true;
-    const p = screenPerms[item.id];
+    // permissionScreenId lets two nav entries share one backend permission
+    // (e.g. Concept Links piggybacks on "approvals" — see nav entry comment
+    // above) — without resolving it here, a user with approvals read denied
+    // would still see this nav item (screenPerms has no "conceptlinkreview"
+    // key to deny it), even though the screen itself correctly blocks them.
+    const p = screenPerms[item.permissionScreenId || item.id];
     return !p || p.can_read !== false;
   }
 

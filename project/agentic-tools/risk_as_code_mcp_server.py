@@ -78,6 +78,7 @@ from mcp_guards import (
 
 from risks_as_code import to_oscal, to_coso_erm
 import db
+import embedding_util
 
 mcp = FastMCP("risk-as-code")
 
@@ -943,7 +944,19 @@ def rac_persist_artifacts(
         return json.dumps({"error": "yaml_content is empty"})
 
     try:
-        db.save_risks_as_code_artifact(run_id, ticker, framework, yaml_content)
+        artifact_id = db.save_risks_as_code_artifact(run_id, ticker, framework, yaml_content)
+        if artifact_id:
+            try:
+                company_id = db.get_company_id(ticker)
+                vec = embedding_util.embed_text(yaml_content[:8000])
+                if vec:
+                    db.save_embedding(
+                        source_table="risks_as_code_artifacts", source_id=artifact_id,
+                        content_type=db.EMBT_RAC, embedding=vec,
+                        company_id=company_id, text_snippet=f"{framework}: {yaml_content[:600]}",
+                    )
+            except Exception:
+                pass  # embedding is non-fatal
         return json.dumps({
             "saved":     True,
             "run_id":    run_id,

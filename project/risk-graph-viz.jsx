@@ -258,7 +258,8 @@ function Legend() {
             { color: "#4f46e5", dash: null,   label: "Membership" },
             { color: "#fbbf24", dash: null,   label: "Cross-Framework" },
             { color: "#22d3ee", dash: "3,2",  label: "Control → Risk" },
-            { color: "#f97316", dash: "5,3",  label: "Risk → Risk" },
+            { color: "#f97316", dash: "5,3",  label: "Risk → Risk (rule-based)" },
+            { color: "#a78bfa", dash: "1,3",  label: "Risk ↔ Risk (similar, embedding)" },
           ].map(({ color, dash, label }) => (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: 7 }}>
               <svg width="22" height="8" style={{ flexShrink: 0 }}>
@@ -460,10 +461,13 @@ export function RiskGraphViz({ risks, ticker, runId, ctrlStates, allowedFramewor
 
     const relLines = gEdges.append("g").selectAll("line")
       .data(filteredLinks.filter(l => l.type === "relationship")).join("line")
-      .attr("stroke",         "#f97316")
+      // similar_to is embedding-derived (pgvector cosine similarity, cross-category)
+      // rather than the rule-based correlates_with/amplifies edges, so it gets its
+      // own color (violet) instead of blending into the orange rule-based edges.
+      .attr("stroke",         d => d.relType === "similar_to" ? "#a78bfa" : "#f97316")
       .attr("stroke-width",   d => 0.8 + (d.strength ?? 0.5) * 1.2)
       .attr("stroke-opacity", d => 0.25 + (d.strength ?? 0.5) * 0.35)
-      .attr("stroke-dasharray", d => d.relType === "amplifies" ? null : "4,3")
+      .attr("stroke-dasharray", d => d.relType === "amplifies" ? null : d.relType === "similar_to" ? "1,3" : "4,3")
       .attr("marker-end",     "url(#arr-rel)");
 
     // ── Nodes ─────────────────────────────────────────────────────────────────

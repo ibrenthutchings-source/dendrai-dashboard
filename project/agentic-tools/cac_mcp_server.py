@@ -72,6 +72,7 @@ from mcp_guards import (
     validate_ticker,
 )
 import db
+import embedding_util
 from pac_endpoints import (
     _REGO_DEFAULTS,
     _controls_to_rego,
@@ -236,12 +237,15 @@ def cac_generate(
                 artifact_id = db.save_controls_as_code_artifact(content_rego, tok, rid)
                 if artifact_id:
                     try:
-                        db.save_embedding(
-                            source_table="controls_as_code_artifacts",
-                            source_id=artifact_id,
-                            content_type=db.EMBT_CAC,
-                            text=content_rego[:8000],
-                        )
+                        vec = embedding_util.embed_text(content_rego[:8000])
+                        if vec:
+                            db.save_embedding(
+                                source_table="controls_as_code_artifacts",
+                                source_id=artifact_id,
+                                content_type=db.EMBT_CAC,
+                                embedding=vec,
+                                text_snippet=content_rego[:600],
+                            )
                     except Exception as emb_exc:
                         pass  # embedding is non-fatal
 
@@ -440,12 +444,15 @@ def cac_from_pac(process: str = "", ticker: str = "") -> str:
             artifact_id = db.save_controls_as_code_artifact(content_rego, tok, None)
             if artifact_id:
                 try:
-                    db.save_embedding(
-                        source_table="controls_as_code_artifacts",
-                        source_id=artifact_id,
-                        content_type=db.EMBT_CAC,
-                        text=content_rego[:8000],
-                    )
+                    vec = embedding_util.embed_text(content_rego[:8000])
+                    if vec:
+                        db.save_embedding(
+                            source_table="controls_as_code_artifacts",
+                            source_id=artifact_id,
+                            content_type=db.EMBT_CAC,
+                            embedding=vec,
+                            text_snippet=content_rego[:600],
+                        )
                 except Exception:
                     pass
 

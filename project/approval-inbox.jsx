@@ -509,6 +509,20 @@ function AiNarrativeReviewItem({ item, onDecide }) {
   );
 }
 
+// Bails a setState out to the exact previous array (reference-equal, so React
+// skips the re-render entirely — it only bails on Object.is, not deep
+// equality) when the freshly-fetched data is unchanged from what's already
+// showing. Without this, every 5s poll tick — even when nobody has touched
+// the queue — replaced items/telemetryItems/aiReviewItems with new array
+// instances and forced React to re-render and re-diff the whole (often
+// 50-100 row) list, which is what shows up as "Forced reflow" console
+// violations: a large, otherwise-pointless layout recalculation every poll.
+function _sameContent(a, b) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function ApprovalInboxScreen() {
   const LiveBadge = window.LiveBadge;
   const [items, setItems] = React.useState([]);
@@ -518,9 +532,21 @@ function ApprovalInboxScreen() {
   const [error, setError] = React.useState(null);
   const [lastRefresh, setLastRefresh] = React.useState(null);
   const [isPaused, setIsPaused] = React.useState(false);
+  // Tracks whether we've completed at least one load, distinct from `loading`
+  // itself — the 5s background poll below also flips `loading` true/false on
+  // every tick, and gating the whole list render on `loading` (see below)
+  // collapsed the entire inbox down to a one-line "Loading…" placeholder and
+  // back every 5 seconds, which is what made the page look like it kept
+  // jumping to the top: the list's height (and the user's scroll position
+  // within it) got wiped out on every poll, not just the first one.
+  const hasLoadedRef = React.useRef(false);
 
   const reload = React.useCallback(async () => {
-    setLoading(true); setError(null);
+    // Only the very first load shows the "Loading…" placeholder — flipping
+    // `loading` true/false on every background poll forced a render even
+    // when the fetched data below turns out unchanged.
+    if (!hasLoadedRef.current) setLoading(true);
+    setError(null);
     try {
       const [gateRes, telRes, aiRes] = await Promise.all([
         fetch("/approvals/inbox", { credentials: "include" }),
@@ -529,17 +555,20 @@ function ApprovalInboxScreen() {
       ]);
       if (!gateRes.ok) throw new Error(await gateRes.text());
       const gateData = await gateRes.json();
-      setItems(gateData.items || []);
+      setItems(prev => _sameContent(prev, gateData.items || []) ? prev : (gateData.items || []));
       // Telemetry review and AI narrative review are both best-effort — a
       // DB-unavailable backend shouldn't take down the Gate-item half of
       // this screen.
-      setTelemetryItems(telRes.ok ? (await telRes.json()).rows || [] : []);
-      setAiReviewItems(aiRes.ok ? (await aiRes.json()).items || [] : []);
+      const telData = telRes.ok ? (await telRes.json()).rows || [] : [];
+      setTelemetryItems(prev => _sameContent(prev, telData) ? prev : telData);
+      const aiData = aiRes.ok ? (await aiRes.json()).items || [] : [];
+      setAiReviewItems(prev => _sameContent(prev, aiData) ? prev : aiData);
       setLastRefresh(new Date());
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
+      hasLoadedRef.current = true;
     }
   }, []);
 
@@ -621,7 +650,7 @@ function ApprovalInboxScreen() {
         <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4, marginBottom: 12 }}>{error}</div>
       )}
 
-      {loading ? (
+      {loading && !hasLoadedRef.current ? (
         <div style={{ padding: "24px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 12 }}>Loading…</div>
       ) : totalCount === 0 ? (
         <Empty>Nothing awaiting review right now.</Empty>

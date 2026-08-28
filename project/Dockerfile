@@ -4,6 +4,15 @@ WORKDIR /app
 COPY project/package.json project/package-lock.json* ./
 RUN npm install
 COPY project/ .
+# Railway auto-populates an ARG from a same-named service variable, but only
+# if the Dockerfile actually declares it — without this, `docker build`'s RUN
+# steps are isolated from Railway's runtime variables entirely, so
+# import.meta.env.VITE_API_KEY is always empty regardless of what's set in
+# the dashboard, and every write request silently goes out with no
+# X-API-Key header (see _authHeaders in app.jsx / _require_api_key in
+# api_server.py).
+ARG VITE_API_KEY
+ENV VITE_API_KEY=$VITE_API_KEY
 RUN npm run build
 
 # OPA static binary — fetched in a throwaway stage so curl/ca-certificates

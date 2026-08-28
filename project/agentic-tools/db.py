@@ -22,7 +22,7 @@ import os
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 # TYPE_CHECKING block guarantees Pylance sees these names as always bound.
 # At runtime, the try/except below imports them when the packages are installed.
@@ -108,6 +108,13 @@ EMBT_RAC           = "risks_as_code"        # Risks-as-Code YAML content
 EMBT_RISK_NARRATIVE = "risk_narrative"      # Risk name + category + narrative for similarity search
 EMBT_CAC           = "controls_as_code"     # Controls-as-Code Rego content
 EMBT_PAC           = "policy_as_code"       # Policy-as-Code Rego content per process
+# Concept-layer embeddings (concepts table) — the point where pgvector starts
+# serving the ontology rather than just document similarity: concepts and
+# documents share this same vector space, so a query can resolve to "which
+# concept is this about" via the identical ANN mechanism as everything else.
+# source_table='concepts', source_id=concepts.id, company_id=NULL (concepts
+# are global, not per-company) — see db.embed_concept / reembed_stale_concepts.
+EMBT_CONCEPT       = "concept"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DDL — 28 tables
@@ -640,6 +647,17 @@ ALTER TABLE approval_tasks ALTER COLUMN run_id DROP NOT NULL;
 -- {"error": "..."} on failure so the Approval Inbox can offer a retry
 -- instead of the task silently vanishing once decided.
 ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS execution_result JSONB;
+-- concept_link gate_type (Stage 3 entity linking) also runs with run_id=NULL
+-- (a link isn't tied to a risk_loop_run), but unlike devops_scm_exception it
+-- MUST upsert on re-proposal rather than duplicate — re-linking the same
+-- subject+scheme after a concept edit is the expected steady-state, not a
+-- one-off. Scoping this partial unique index to gate_type='concept_link' only
+-- (rather than changing the general NULL-run_id behavior above, which
+-- devops_scm_exception and its risk_waivers precedent still rely on) is what
+-- makes ON CONFLICT (item_ref) WHERE gate_type='concept_link' AND run_id IS
+-- NULL a valid inference target for upsert_concept_link_task() below.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_approval_tasks_concept_link
+    ON approval_tasks (item_ref) WHERE gate_type = 'concept_link' AND run_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
@@ -1138,6 +1156,112 @@ ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS soc2_criteria   TEXT[];  -
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS nist_800_53     TEXT[];  -- e.g. {AC-3,AU-2,SC-8}
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS iso_27001       TEXT[];  -- e.g. {A.9.4.1,A.12.4.1}
 ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS coso_component  VARCHAR(64);  -- COSO ERM 2017 component name
+-- Independent of coso_component above, not derived from it: a control's IC-IF
+-- 2013 component (Control Environment / Risk Assessment / Control Activities /
+-- Information & Communication / Monitoring Activities) is a different fact
+-- about the control than its ERM 2017 component — see framework_mappings.py's
+-- 2026-08-26 note. Powers the Risk Coverage Cube's IC-IF view; coso_component
+-- powers its ERM 2017 view. Same "honest gap, never inferred" policy applies.
+ALTER TABLE controls_catalog ADD COLUMN IF NOT EXISTS icif_component VARCHAR(64);  -- COSO IC-IF 2013 component name
+
+-- Concept layer — a controlled vocabulary + typed crosswalk, SKOS-shaped
+-- (prefLabel/altLabel/broader/narrower) plus NIST IR 8477 Set Theory
+-- Relationship Mapping (STRM) for typed relations between concepts across
+-- schemes/frameworks. Deliberately NOT an OWL ontology and NOT backed by a
+-- reasoner or triplestore: intersects_with is not transitive (A intersects B
+-- and B intersects C implies nothing about A and C), and this codebase's own
+-- guardrail (framework_mappings.py's "curated, hand-reviewed only, never
+-- auto-inferred") means an inferred relation could never be authoritative
+-- here without human review anyway — so a reasoner would only produce
+-- conclusions this app isn't allowed to act on unreviewed. See
+-- ontology_seed.py for the curated seed content and its sign-off history.
+--
+-- Seeding is a PROJECTION of the existing hardcoded vocabularies
+-- (risk-engine.js's CATEGORY_IMPACT, risks_as_code.py's COSO tables,
+-- framework_mappings.py, sox_scoping_tool.py, pac_processes above), never a
+-- replacement for them — those literals stay authoritative; nothing existing
+-- reads from these tables yet. See db.seed_ontology().
+CREATE TABLE IF NOT EXISTS concepts (
+    id          BIGSERIAL PRIMARY KEY,
+    scheme      VARCHAR(64)  NOT NULL,   -- 'risk_category' | 'enterprise_domain' |
+                                         -- 'coso_erm' | 'coso_icif' | 'sox_risk_category' |
+                                         -- 'sox_process' | 'pac_process' | 'scf' |
+                                         -- 'soc2' | 'nist_800_53' | 'iso_27001'
+    notation    VARCHAR(64),             -- stable external code, e.g. 'AC-2', 'CC6.1', 'P13'
+    pref_label  VARCHAR(255) NOT NULL,
+    alt_labels  TEXT[]       NOT NULL DEFAULT '{}',  -- synonyms; drives entity-linking recall
+    definition  TEXT,
+    broader_id  BIGINT REFERENCES concepts(id),      -- SKOS hierarchy (tree, not the STRM graph below)
+    source      VARCHAR(32)  NOT NULL DEFAULT 'curated',  -- 'curated' | 'scf_import'
+    reviewed_by VARCHAR(128),
+    reviewed_at TIMESTAMPTZ,
+    label_hash  VARCHAR(64),             -- sha256(pref_label|definition|sorted(alt_labels));
+                                         -- staleness check for the concept's embedding (Stage 2)
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (scheme, pref_label)
+);
+CREATE INDEX IF NOT EXISTS idx_concepts_scheme  ON concepts (scheme);
+CREATE INDEX IF NOT EXISTS idx_concepts_broader ON concepts (broader_id);
+
+-- Typed crosswalk relations between concepts (often across schemes/frameworks —
+-- this is the SOC2<->NIST-shaped relation the app has never had). strm_type is
+-- one of NIST IR 8477's five relations. 'no_relationship' is stored
+-- deliberately: an asserted negative is evidence ("we checked; these don't
+-- relate"), not the absence of a row — the same "honest gap, not papered
+-- over" standard framework_mappings.py already holds itself to.
+CREATE TABLE IF NOT EXISTS concept_relations (
+    id              BIGSERIAL PRIMARY KEY,
+    from_concept_id BIGINT      NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    to_concept_id   BIGINT      NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    strm_type       VARCHAR(24) NOT NULL,
+    strength        NUMERIC(4,3),
+    rationale       TEXT,
+    source          VARCHAR(32) NOT NULL DEFAULT 'curated',  -- 'curated' | 'scf_import'
+    reviewed_by     VARCHAR(128),
+    reviewed_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_concept_relations_strm_type CHECK (
+        strm_type IN ('subset_of', 'superset_of', 'equal', 'intersects_with', 'no_relationship')
+    ),
+    UNIQUE (from_concept_id, to_concept_id, strm_type)
+);
+CREATE INDEX IF NOT EXISTS idx_concept_relations_from ON concept_relations (from_concept_id);
+CREATE INDEX IF NOT EXISTS idx_concept_relations_to   ON concept_relations (to_concept_id);
+
+-- Stage 3: entity linking. Free-text risk/control names -> concept_id, kept as
+-- an audit trail alongside (never replacing) the existing free-text vocabulary
+-- assignment (_keyword_domain, risk_scores.assigned_domain). source_id is text
+-- because source rows carry different key types (risk_scores.id is an int,
+-- controls_catalog.control_id is a varchar) — no single numeric type fits both.
+-- A row is ALWAYS written, even when nothing resolved (status='unresolved'):
+-- silence would be indistinguishable from "linking never ran", the same
+-- honesty standard concept_relations.no_relationship already holds itself to.
+-- Two methods can propose different concepts for the same subject+scheme
+-- (e.g. 'ann' vs 'llm_domain') and are meant to visibly disagree, so the
+-- unique key includes method rather than collapsing them into one row.
+CREATE TABLE IF NOT EXISTS concept_links (
+    id                   BIGSERIAL   PRIMARY KEY,
+    source_table         VARCHAR(64) NOT NULL,
+    source_id            VARCHAR(64) NOT NULL,
+    scheme               VARCHAR(64) NOT NULL,
+    concept_id           BIGINT REFERENCES concepts(id),
+    runner_up_concept_id BIGINT REFERENCES concepts(id),
+    status               VARCHAR(24) NOT NULL,  -- 'proposed' | 'unresolved' | 'confirmed' | 'rejected'
+    confidence           NUMERIC(5,4),           -- 1 - cosine distance; NULL for unresolved
+    method               VARCHAR(32) NOT NULL,   -- 'ann' | 'llm_domain'
+    reviewed_by          VARCHAR(128),
+    reviewed_at          TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_concept_links_status CHECK (
+        status IN ('proposed', 'unresolved', 'confirmed', 'rejected')
+    ),
+    UNIQUE (source_table, source_id, scheme, method)
+);
+CREATE INDEX IF NOT EXISTS idx_concept_links_concept ON concept_links (concept_id);
+CREATE INDEX IF NOT EXISTS idx_concept_links_source   ON concept_links (source_table, source_id);
+CREATE INDEX IF NOT EXISTS idx_concept_links_status   ON concept_links (status);
 
 -- Policy-as-Code business processes: was a hardcoded 5-entry Python set
 -- (VALID_PROCESSES); now a real table so sync_github() can register a new
@@ -1494,6 +1618,13 @@ ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_margin_pct     N
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS source_framework  VARCHAR(128);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS narrative          TEXT;
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
+-- Operating-unit attribution for a risk — NULL for every consolidated risk
+-- (the vast majority); set only by segment_risk_tool.py's per-segment risk
+-- assessment (Risk Coverage Cube Phase 3), so a risk can be traced to the
+-- specific geography/business segment it was actually derived from instead
+-- of always reading as "Consolidated".
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS segment_type      VARCHAR(16);
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS segment_name      VARCHAR(128);
 
 -- risk_scores was write-once (save_risk_scores only ever INSERTed, never
 -- updated) — Stage 2's signal-driven score adjustments and Gate 1's
@@ -2093,6 +2224,14 @@ ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS token_enc   
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_synced_at   TIMESTAMPTZ;
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_status VARCHAR(16);
 ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_sync_error  TEXT;
+-- Auto-sync monitoring (pac_auto_sync_sweep.py): opt-in per repo, defaults
+-- FALSE so adding this column never silently starts polling a repo someone
+-- registered under the old manual-only assumption. last_synced_sha is the
+-- branch HEAD commit as of the last successful sync (manual OR auto) — the
+-- sweep compares this against a cheap GET .../commits/{branch} check before
+-- paying for the full tree-walk sync; nothing captured a SHA anywhere before.
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE observability.pac_repositories ADD COLUMN IF NOT EXISTS last_synced_sha    VARCHAR(64);
 
 -- Private-company support (no SEC ticker/CIK) and manual financial-statement
 -- ingestion: companies.is_private flags entities created via
@@ -2589,6 +2728,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     company_id   INT          REFERENCES companies(id),
     embedding    vector({dim}),
     text_snippet TEXT,
+    source_hash  VARCHAR(64),
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_embeddings UNIQUE (source_table, source_id, content_type, model, chunk_index)
 );
@@ -2600,6 +2740,13 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw   ON embeddings USING hnsw (embed
 _PGVECTOR_MIGRATIONS = """
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS chunk_index SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS company_id  INT REFERENCES companies(id);
+-- Freshness sidecar for concept embeddings (EMBT_CONCEPT): mirrors
+-- concepts.label_hash. When the two differ, the concept's label/definition/
+-- alt_labels changed since it was last embedded — reembed_stale_concepts()
+-- finds these and re-embeds, relying on uq_embeddings' upsert to overwrite
+-- in place (no delete needed). NULL for every other content type; nothing
+-- else uses staleness detection today.
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64);
 ALTER TABLE embeddings DROP CONSTRAINT IF EXISTS embeddings_source_table_source_id_content_type_model_key;
 DO $$
 BEGIN
@@ -2613,6 +2760,14 @@ BEGIN
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_embeddings_company ON embeddings (company_id) WHERE company_id IS NOT NULL;
+-- Stage 4: lexical half of hybrid retrieval. GENERATED (not maintained on the
+-- write path) so save_embedding()/save_embeddings_bulk() need no changes —
+-- Postgres recomputes it from text_snippet on every insert/update. The
+-- to_tsvector('english', ...) form (config passed as a literal, not read from
+-- a GUC) is the documented pattern for a STORED generated tsvector column.
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS text_search tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', coalesce(text_snippet, ''))) STORED;
+CREATE INDEX IF NOT EXISTS idx_embeddings_text_search ON embeddings USING GIN (text_search);
 """
 
 
@@ -3443,11 +3598,11 @@ def save_edgar_proxy(
     filing_date: str,
     accession_number: str,
     sections: dict,
-) -> None:
+) -> Optional[int]:
     """Save DEF 14A proxy governance sections. Upserts on
     (company_id, accession_number) so re-pulling the same filing refreshes it
     in place instead of piling up duplicate rows (see the edgar_proxy_filings
-    migration in _MIGRATIONS)."""
+    migration in _MIGRATIONS). Returns the row id (for EMBT_PROXY embedding)."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -3464,6 +3619,7 @@ def save_edgar_proxy(
                         board_of_directors     = EXCLUDED.board_of_directors,
                         say_on_pay              = EXCLUDED.say_on_pay,
                         shareholder_proposals   = EXCLUDED.shareholder_proposals
+                    RETURNING id
                     """,
                     (
                         company_id, filing_date, accession_number,
@@ -3473,7 +3629,9 @@ def save_edgar_proxy(
                         sections.get("shareholder_proposals") or sections.get("Shareholder Proposals"),
                     ),
                 )
-    _run(_do)
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
 
 
 def get_edgar_proxy(ticker: str) -> Optional[dict]:
@@ -3866,6 +4024,13 @@ def save_risk_scores(run_id: int, risks: list) -> None:
     endpoint (Stage 2) and update_risk_score_fields (Gate 1 approvals) below.
     Risks with no risk_ref are skipped (can't upsert without a stable key,
     same rows that would have been dropped by the old insert path anyway).
+
+    narrative/source_framework/segment_type/segment_name are optional and
+    COALESCE-preserved on conflict rather than overwritten with NULL — most
+    callers (Stage 2 resync, Gate 1 approvals) don't know about these fields
+    at all, and an update from one of them must never erase a segment tag or
+    narrative a different caller (segment_risk_tool.py, risk-register review)
+    already set for the same risk_ref.
     """
     if not risks:
         return
@@ -3883,6 +4048,10 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                 r.get("velocity"),
                 r.get("control_env") or r.get("ce"),
                 r.get("peer_benchmark"),
+                r.get("narrative"),
+                r.get("source_framework"),
+                r.get("segment_type"),
+                r.get("segment_name"),
             )
             for r in risks
             if (r.get("risk_ref") or r.get("id"))
@@ -3896,18 +4065,23 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                     """
                     INSERT INTO risk_scores
                         (run_id, risk_ref, risk_name, category, base_score, delta, score,
-                         rag_status, velocity, control_env, peer_benchmark)
+                         rag_status, velocity, control_env, peer_benchmark,
+                         narrative, source_framework, segment_type, segment_name)
                     VALUES %s
                     ON CONFLICT (run_id, risk_ref) WHERE risk_ref IS NOT NULL DO UPDATE SET
-                        risk_name      = EXCLUDED.risk_name,
-                        category       = EXCLUDED.category,
-                        base_score     = EXCLUDED.base_score,
-                        delta          = EXCLUDED.delta,
-                        score          = EXCLUDED.score,
-                        rag_status     = EXCLUDED.rag_status,
-                        velocity       = EXCLUDED.velocity,
-                        control_env    = EXCLUDED.control_env,
-                        peer_benchmark = EXCLUDED.peer_benchmark
+                        risk_name        = EXCLUDED.risk_name,
+                        category         = EXCLUDED.category,
+                        base_score       = EXCLUDED.base_score,
+                        delta            = EXCLUDED.delta,
+                        score            = EXCLUDED.score,
+                        rag_status       = EXCLUDED.rag_status,
+                        velocity         = EXCLUDED.velocity,
+                        control_env      = EXCLUDED.control_env,
+                        peer_benchmark   = EXCLUDED.peer_benchmark,
+                        narrative        = COALESCE(EXCLUDED.narrative, risk_scores.narrative),
+                        source_framework = COALESCE(EXCLUDED.source_framework, risk_scores.source_framework),
+                        segment_type     = COALESCE(EXCLUDED.segment_type, risk_scores.segment_type),
+                        segment_name     = COALESCE(EXCLUDED.segment_name, risk_scores.segment_name)
                     """,
                     rows,
                 )
@@ -3995,6 +4169,33 @@ def save_scenario_analyses(run_id: int, scenarios: dict) -> None:
                     rows,
                 )
     _run(_do)
+
+
+def get_company_id_for_run(run_id: int) -> Optional[int]:
+    """company_id for a risk_loop_runs row — needed by embedding call sites
+    (CEM events, etc.) that only receive a run_id from the frontend."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT company_id FROM risk_loop_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_scenario_rows_for_embedding(run_id: int) -> list:
+    """scenario_analyses id + narrative for a run, for EMBT_SCENARIO embeddings.
+    Same lookup-after-insert pattern as save_scenario_risk_impacts, since the
+    bulk insert above has no RETURNING clause."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, scenario, narrative FROM scenario_analyses WHERE run_id = %s",
+                    (run_id,),
+                )
+                return [{"pk_id": r[0], "scenario": r[1], "narrative": r[2]} for r in cur.fetchall()]
+    return _run(_do) or []
 
 
 def save_grey_swan(run_id: int, grey_swan: dict) -> None:
@@ -4201,10 +4402,17 @@ def save_rss_signals(run_id: int, rss_result: dict) -> None:
     _run(_do)
 
 
-def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> None:
-    """Save full RSS articles from rss_tool.py output (includes URLs, authors)."""
+def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> list:
+    """Save full RSS articles from rss_tool.py output (includes URLs, authors).
+
+    Returns the newly-inserted rows as [{id, title, summary}, ...] — rows that
+    already existed (ON CONFLICT DO NOTHING) are excluded, so the caller can
+    embed (EMBT_ARTICLE) only genuinely new content instead of re-embedding
+    the same article on every ingest.
+    """
     def _do():
         feeds = articles_result.get("feeds", articles_result.get("feed_results", []))
+        new_rows: list = []
         with _conn() as conn:
             with conn.cursor() as cur:
                 for feed in feeds:
@@ -4213,6 +4421,7 @@ def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> 
                         title = (art.get("title") or "")[:500]
                         if not title:
                             continue
+                        summary = (art.get("summary") or "")[:2000] or None
                         cur.execute(
                             """
                             INSERT INTO rss_articles
@@ -4220,6 +4429,7 @@ def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> 
                                  title, article_url, published_at, summary)
                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                             ON CONFLICT (title, feed_name) DO NOTHING
+                            RETURNING id
                             """,
                             (
                                 company_id,
@@ -4229,10 +4439,14 @@ def save_rss_articles_full(company_id: Optional[int], articles_result: dict) -> 
                                 title,
                                 art.get("url") or art.get("link"),
                                 art.get("published") or art.get("date"),
-                                (art.get("summary") or "")[:2000] or None,
+                                summary,
                             ),
                         )
-    _run(_do)
+                        row = cur.fetchone()
+                        if row:
+                            new_rows.append({"id": row[0], "title": title, "summary": summary})
+        return new_rows
+    return _run(_do) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4603,6 +4817,40 @@ def upsert_approval_task(
                         Json(ai_suggested) if ai_suggested is not None else None,
                         ai_accepted,
                     ),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
+
+
+def upsert_concept_link_task(item_ref: str, item_label: Optional[str], ai_suggested: dict) -> Optional[dict]:
+    """Surface a 'proposed' concept_link into the existing Approval Inbox as a
+    gate_type='concept_link' task, run_id=NULL (a link isn't tied to a
+    risk_loop_run). Reuses the review workflow rather than building a new
+    screen, same as devops_scm_exception — but upserts on the partial unique
+    index above instead of that gate_type's known duplicate-row behavior,
+    since re-proposing the same subject+scheme is the expected steady state
+    here (a concept's label/definition changing re-triggers linking).
+    ai_suggested carries {"concept_id", "confidence", "runner_up_concept_id"}
+    so the reviewer sees what the linker proposed, same shape as every other
+    AI-suggested gate."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO approval_tasks
+                        (run_id, gate_type, item_ref, item_label, status, ai_suggested, updated_at)
+                    VALUES (NULL, 'concept_link', %s, %s, 'pending', %s, NOW())
+                    ON CONFLICT (item_ref) WHERE gate_type = 'concept_link' AND run_id IS NULL
+                    DO UPDATE SET
+                        item_label  = EXCLUDED.item_label,
+                        ai_suggested = EXCLUDED.ai_suggested,
+                        updated_at  = NOW()
+                    RETURNING id, gate_type, item_ref, item_label, status, ai_suggested
+                    """,
+                    (item_ref, item_label, Json(ai_suggested) if ai_suggested is not None else None),
                 )
                 row = cur.fetchone()
                 cols = [d[0] for d in cur.description]
@@ -5034,9 +5282,15 @@ def save_manual_audits(run_id: int, audits: list) -> None:
     _run(_do)
 
 
-def save_cem_events(run_id: int, events: list) -> None:
+def save_cem_events(run_id: int, events: list) -> list:
+    """Bulk-insert CEM (Continuous Exception Monitoring) events for a run.
+
+    Returns [{pk_id, root_cause}, ...] for rows that have a root-cause
+    narrative, using execute_values(fetch=True) + RETURNING, so the caller
+    can embed them (EMBT_CEM_RC) without a separate lookup query.
+    """
     if not events:
-        return
+        return []
     def _do():
         rows = [
             (
@@ -5055,7 +5309,7 @@ def save_cem_events(run_id: int, events: list) -> None:
         ]
         with _conn() as conn:
             with conn.cursor() as cur:
-                execute_values(
+                inserted = execute_values(
                     cur,
                     """
                     INSERT INTO cem_events
@@ -5063,10 +5317,13 @@ def save_cem_events(run_id: int, events: list) -> None:
                          exposure, category, root_cause_narrative,
                          exposure_amount_m, exposure_source)
                     VALUES %s
+                    RETURNING id, root_cause_narrative
                     """,
                     rows,
+                    fetch=True,
                 )
-    _run(_do)
+        return [{"pk_id": r[0], "root_cause": r[1]} for r in (inserted or []) if r[1]]
+    return _run(_do) or []
 
 
 def list_recent_cem_events(limit: int = 200) -> list:
@@ -6572,6 +6829,24 @@ def get_sox_segments(company_id: int, fiscal_year: str) -> list:
     return _run(_do) or []
 
 
+def get_latest_sox_segments(company_id: int) -> list:
+    """get_sox_segments requires a fiscal_year; this resolves the most
+    recent one for the company first, mirroring get_latest_sox_scoping_result.
+    Used by the Risk Coverage Cube's optional operating-unit (Z) axis."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT fiscal_year FROM sox_financial_segments WHERE company_id = %s "
+                    "AND fiscal_year IS NOT NULL ORDER BY fiscal_year DESC LIMIT 1",
+                    (company_id,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    fiscal_year = _run(_do)
+    return get_sox_segments(company_id, fiscal_year) if fiscal_year else []
+
+
 def delete_sox_segment(company_id: int, segment_id: int) -> bool:
     """Delete a geography / business-segment financial record."""
     def _do():
@@ -6797,6 +7072,7 @@ def save_embedding(
     text_snippet: Optional[str] = None,
     chunk_index: int = 0,
     company_id: Optional[int] = None,
+    source_hash: Optional[str] = None,
 ) -> Optional[int]:
     """Store a vector embedding for any source row. Returns embedding id (or None).
 
@@ -6806,6 +7082,9 @@ def save_embedding(
     embedding    : list[float] from your embedding model — len must equal EMBEDDING_DIM
     chunk_index  : 0-based chunk position for long documents split before embedding
     company_id   : companies.id — enables fast per-company filtering in searches
+    source_hash  : freshness fingerprint of the embedded source content (e.g.
+                   concepts.label_hash for EMBT_CONCEPT); NULL for content
+                   types with no staleness check
     """
     if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
         return None
@@ -6816,17 +7095,18 @@ def save_embedding(
                     """
                     INSERT INTO embeddings
                         (source_table, source_id, content_type, model,
-                         chunk_index, company_id, embedding, text_snippet)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         chunk_index, company_id, embedding, text_snippet, source_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT ON CONSTRAINT uq_embeddings DO UPDATE
                         SET embedding    = EXCLUDED.embedding,
                             company_id   = COALESCE(EXCLUDED.company_id, embeddings.company_id),
                             text_snippet = EXCLUDED.text_snippet,
+                            source_hash  = EXCLUDED.source_hash,
                             created_at   = NOW()
                     RETURNING id
                     """,
                     (source_table, source_id, content_type, model or "unknown",
-                     chunk_index, company_id, embedding, text_snippet),
+                     chunk_index, company_id, embedding, text_snippet, source_hash),
                 )
                 row = cur.fetchone()
                 return row[0] if row else None
@@ -6834,64 +7114,6 @@ def save_embedding(
 
 
 _DISTANCE_OPS = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
-
-
-def search_similar_embeddings(
-    embedding: list,
-    *,
-    source_table: Optional[str] = None,
-    content_type: Optional[str] = None,
-    company_id: Optional[int] = None,
-    limit: int = 10,
-    metric: str = "cosine",
-) -> list:
-    """Return the top-k nearest embeddings via ANN (HNSW index).
-
-    metric: 'cosine' (default) | 'l2' | 'ip'
-    Returns list of dicts: id, source_table, source_id, content_type, model,
-    chunk_index, text_snippet, distance, created_at.
-    """
-    if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
-        return []
-    op = _DISTANCE_OPS.get(metric, "<=>")
-    def _do():
-        clauses: list = []
-        params: list = []
-        if source_table:
-            clauses.append("source_table = %s")
-            params.append(source_table)
-        if content_type:
-            clauses.append("content_type = %s")
-            params.append(content_type)
-        if company_id:
-            clauses.append("company_id = %s")
-            params.append(company_id)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT id, source_table, source_id, content_type, model,
-                           chunk_index, text_snippet,
-                           embedding {op} %s AS distance, created_at
-                    FROM embeddings
-                    {where}
-                    ORDER BY embedding {op} %s
-                    LIMIT %s
-                    """,
-                    params + [embedding, embedding, limit],
-                )
-                return [
-                    {
-                        "id": r[0], "source_table": r[1], "source_id": r[2],
-                        "content_type": r[3], "model": r[4],
-                        "chunk_index": r[5], "text_snippet": r[6],
-                        "distance": float(r[7]) if r[7] is not None else None,
-                        "created_at": r[8].isoformat() if r[8] else None,
-                    }
-                    for r in cur.fetchall()
-                ]
-    return _run(_do) or []
 
 
 def save_embeddings_bulk(rows: list) -> int:
@@ -6940,6 +7162,53 @@ def save_embeddings_bulk(rows: list) -> int:
                 )
         return len(data)
     return _run(_do, default=0) or 0
+
+
+def find_similar_risks_cross_company(
+    embedding: list, *, exclude_company_id: Optional[int] = None, limit: int = 10,
+) -> list:
+    """Nearest-neighbour risk narratives (EMBT_RISK_NARRATIVE) across every
+    company, not just the caller's own — peer-benchmarking search that
+    get_relevant_context() intentionally can't do (it always scopes to one
+    company_id for chat RAG). Optionally excludes the querying company so a
+    risk doesn't just match itself/its own near-duplicates.
+
+    Returns [{risk_ref, risk_name, category, score, rag, ticker, company_name,
+    distance}, ...], nearest first. [] when pgvector is unavailable.
+    """
+    if not embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
+        return []
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status,
+                           c.ticker, c.company_name,
+                           (e.embedding <=> %s::vector) AS distance
+                    FROM embeddings e
+                    JOIN risk_scores rs ON rs.id = e.source_id AND e.source_table = 'risk_scores'
+                    JOIN risk_loop_runs r ON r.id = rs.run_id
+                    JOIN companies c ON c.id = r.company_id
+                    WHERE e.content_type = %s
+                      AND (%s::int IS NULL OR r.company_id != %s)
+                    ORDER BY e.embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (embedding, EMBT_RISK_NARRATIVE, exclude_company_id, exclude_company_id,
+                     embedding, limit),
+                )
+                return [
+                    {
+                        "risk_ref": r[0], "risk_name": r[1], "category": r[2],
+                        "score": float(r[3]) if r[3] is not None else None,
+                        "rag": r[4], "ticker": r[5], "company_name": r[6],
+                        "distance": float(r[7]) if r[7] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
 
 
 def get_relevant_context(
@@ -6996,10 +7265,10 @@ def get_relevant_context(
                     f"""
                     SELECT source_table, source_id, content_type, model,
                            chunk_index, text_snippet,
-                           embedding {op} %s AS distance, created_at
+                           embedding {op} %s::vector AS distance, created_at
                     FROM embeddings
                     {where}
-                    ORDER BY embedding {op} %s
+                    ORDER BY embedding {op} %s::vector
                     LIMIT %s
                     """,
                     params + [query_embedding, query_embedding, fetch_limit],
@@ -7016,6 +7285,362 @@ def get_relevant_context(
             for r in rows
             if r[6] is not None and float(r[6]) <= max_distance
         ][:limit]
+    return _run(_do) or []
+
+
+def _rrf_fuse(dense_rows: list, lexical_rows: list, *, rrf_k: int = 60) -> Dict[tuple, dict]:
+    """Reciprocal Rank Fusion over two ranked lists, keyed by
+    (source_table, source_id, chunk_index). k=60 is the standard Cormack
+    default — not tuned blind. A lexical hit whose literal_rank is 0 (it
+    matched only via a concept-expansion term, never the user's actual
+    words) contributes at half weight, so a synonym alone can never outrank
+    a literal match. Pure function — no DB access — so it's testable without
+    a live Postgres."""
+    fused: Dict[tuple, dict] = {}
+    for i, row in enumerate(dense_rows, start=1):
+        key = (row["source_table"], row["source_id"], row.get("chunk_index", 0))
+        entry = fused.setdefault(key, {"score": 0.0, "row": row})
+        entry["score"] += 1.0 / (rrf_k + i)
+    for i, row in enumerate(lexical_rows, start=1):
+        key = (row["source_table"], row["source_id"], row.get("chunk_index", 0))
+        weight = 1.0 if row.get("literal_rank") else 0.5
+        entry = fused.setdefault(key, {"score": 0.0, "row": row})
+        entry["score"] += weight * (1.0 / (rrf_k + i))
+    return fused
+
+
+def _graph_rerank_factor(hop: Optional[int], graph_weight: float) -> float:
+    """final = rrf_score * (1 + graph_weight / (1 + hop)) for a candidate with
+    a CONFIRMED concept_link `hop` steps from a resolved query concept.
+    Unlinked candidates (hop=None — no confirmed link, or one outside the
+    resolved closure) get factor 1.0: never penalised, since most rows have
+    no link yet and burying them would defeat retrieval entirely. Pure
+    function, mirrors _rrf_fuse's testability."""
+    if hop is None:
+        return 1.0
+    return 1.0 + graph_weight / (1.0 + hop)
+
+
+def get_concepts_by_ids(concept_ids: list) -> list:
+    """Full concept rows (incl. alt_labels) for a set of ids — used by the
+    hybrid retrieval's query expansion to add synonyms, not just pref_labels,
+    to the lexical side of the search."""
+    if not concept_ids:
+        return []
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, scheme, pref_label, alt_labels FROM concepts WHERE id = ANY(%s)",
+                    (list(concept_ids),),
+                )
+                return [
+                    {"id": r[0], "scheme": r[1], "pref_label": r[2], "alt_labels": r[3] or []}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def _fetch_lexical_candidates(
+    query_text: str, expansion_terms: list, *,
+    company_id: Optional[int], content_types: Optional[list],
+    source_tables: Optional[list], limit: int,
+) -> list:
+    """Lexical (tsvector) half of hybrid retrieval. expansion_terms (concept
+    pref_labels/alt_labels from the closure walk) are OR'd into the tsquery
+    alongside the user's literal words — literal_rank (scored against the
+    literal query ALONE) is returned too, so the caller can tell a
+    literal-word match from an expansion-only one and weight accordingly."""
+    if not query_text or not query_text.strip():
+        return []
+    def _do():
+        tsq_expr = "websearch_to_tsquery('english', %s)"
+        tsq_params = [query_text]
+        for term in expansion_terms:
+            if not term or not term.strip():
+                continue
+            tsq_expr = f"({tsq_expr} || plainto_tsquery('english', %s))"
+            tsq_params.append(term)
+
+        where_clauses = [f"text_search @@ {tsq_expr}"]
+        where_params = list(tsq_params)
+        if company_id:
+            where_clauses.append("company_id = %s")
+            where_params.append(company_id)
+        if content_types:
+            where_clauses.append("content_type = ANY(%s)")
+            where_params.append(content_types)
+        if source_tables:
+            where_clauses.append("source_table = ANY(%s)")
+            where_params.append(source_tables)
+        where_sql = " AND ".join(where_clauses)
+
+        params = tsq_params + [query_text] + where_params + [limit]
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT source_table, source_id, content_type, model, chunk_index,
+                           text_snippet, created_at,
+                           ts_rank(text_search, {tsq_expr}) AS combined_rank,
+                           ts_rank(text_search, websearch_to_tsquery('english', %s)) AS literal_rank
+                    FROM embeddings
+                    WHERE {where_sql}
+                    ORDER BY combined_rank DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "source_table": r[0], "source_id": r[1], "content_type": r[2], "model": r[3],
+                "chunk_index": r[4], "text_snippet": r[5],
+                "created_at": r[6].isoformat() if r[6] else None,
+                "combined_rank": float(r[7]) if r[7] is not None else 0.0,
+                "literal_rank": float(r[8]) if r[8] is not None else 0.0,
+            }
+            for r in rows
+        ]
+    return _run(_do) or []
+
+
+def get_risk_refs_for_score_ids(score_ids: list) -> Dict[int, str]:
+    """{risk_scores.id: risk_ref} for a batch of ids — bridges hybrid
+    retrieval's embeddings rows (source_table='risk_scores', source_id=the
+    integer PK) to risk_relationships' edges (keyed by the string risk_ref)."""
+    if not score_ids:
+        return {}
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, risk_ref FROM risk_scores WHERE id = ANY(%s)",
+                    (list(score_ids),),
+                )
+                return {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    return _run(_do) or {}
+
+
+def get_similar_risk_edges(company_id: int, risk_refs: list) -> Dict[str, list]:
+    """Adjacency map (either direction) of 'similar_to' risk_relationships
+    edges touching any of `risk_refs`, for one company. This is the plan's
+    'retire the similar_to dead end' step: that edge was computed by
+    link_similar_risks_by_embedding, stored, and drawn as a dashed line on
+    the graph viz — consumed by nothing else until get_relevant_context_hybrid
+    started using it to boost related risks' narratives in re-ranking."""
+    if not company_id or not risk_refs:
+        return {}
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT from_risk_ref, to_risk_ref, strength
+                    FROM risk_relationships
+                    WHERE company_id = %s AND relationship_type = 'similar_to'
+                      AND (from_risk_ref = ANY(%s) OR to_risk_ref = ANY(%s))
+                    """,
+                    (company_id, list(risk_refs), list(risk_refs)),
+                )
+                rows = cur.fetchall()
+        adjacency: Dict[str, list] = {}
+        for from_ref, to_ref, strength in rows:
+            s = float(strength) if strength is not None else 0.0
+            adjacency.setdefault(from_ref, []).append((to_ref, s))
+            adjacency.setdefault(to_ref, []).append((from_ref, s))
+        return adjacency
+    return _run(_do) or {}
+
+
+def _risk_similarity_boosts(fused: Dict[tuple, dict], company_id: Optional[int], *, seed_count: int = 3) -> Dict[tuple, float]:
+    """For every risk_scores candidate in `fused`, find the strongest
+    'similar_to' edge connecting it to one of the query's own top-ranked
+    risk_scores candidates (its "seed risks"), and return {key: strength}.
+    A risk that never independently ranked well can still surface because a
+    risk highly similar to it did — the same 'graph distance boosts an
+    otherwise-buried candidate' idea as the concept re-rank, applied to the
+    risk graph instead of the concept graph."""
+    if not company_id:
+        return {}
+    risk_keys = [k for k in fused if k[0] == "risk_scores"]
+    if not risk_keys:
+        return {}
+    ref_by_id = get_risk_refs_for_score_ids([k[1] for k in risk_keys])
+    if not ref_by_id:
+        return {}
+    seed_keys = sorted(risk_keys, key=lambda k: fused[k]["score"], reverse=True)[:seed_count]
+    seed_refs = [ref_by_id[k[1]] for k in seed_keys if k[1] in ref_by_id]
+    if not seed_refs:
+        return {}
+    adjacency = get_similar_risk_edges(company_id, seed_refs)
+
+    boosts: Dict[tuple, float] = {}
+    for key in risk_keys:
+        this_ref = ref_by_id.get(key[1])
+        if not this_ref:
+            continue
+        best = 0.0
+        for seed_ref in seed_refs:
+            if seed_ref == this_ref:
+                continue
+            for other_ref, strength in adjacency.get(seed_ref, []):
+                if other_ref == this_ref:
+                    best = max(best, strength)
+        if best:
+            boosts[key] = best
+    return boosts
+
+
+def get_relevant_context_hybrid(
+    query_embedding: list,
+    query_text: str,
+    *,
+    company_id: Optional[int] = None,
+    content_types: Optional[list] = None,
+    source_tables: Optional[list] = None,
+    limit: int = 5,
+    concept_scheme: Optional[str] = None,
+    max_hops: int = 1,
+    graph_weight: float = 0.5,
+    risk_edge_weight: float = 0.3,
+    rrf_k: int = 60,
+    top_k_each: int = 50,
+) -> list:
+    """Hybrid dense+lexical retrieval, concept-expanded and graph-reranked —
+    Stage 4 of the ontology plan. get_relevant_context is left completely
+    untouched; every existing caller (including this function's own dense
+    step) keeps its current behavior. This is a new, opt-in entry point.
+
+    1. Dense: get_relevant_context's own ANN search, with max_distance opened
+       to the full cosine range (2.0) so ranking — not a hard cutoff —
+       decides what survives to fusion.
+    2. Concept expansion: resolve the query to its nearest concepts, walk
+       their SKOS closure (max_hops) via get_concept_closure, and OR every
+       label found (pref_labels + alt_labels) into the lexical tsquery ONLY
+       — never into the dense vector, which would blur the user's actual
+       question.
+    3. Fuse dense + lexical via Reciprocal Rank Fusion. A lexical hit that
+       only matched via expansion (never the literal query terms) counts at
+       half weight, so a synonym can't outrank a literal match.
+    4. Re-rank by ontological graph distance: a candidate with a CONFIRMED
+       concept_link to one of the resolved concepts gets a small boost that
+       shrinks with hop count. Unlinked candidates get factor 1.0 — never
+       penalised, since most rows have no link yet.
+    5. Re-rank risk narratives by the risk graph: a risk_scores candidate
+       gets an additional boost when it has a 'similar_to' risk_relationships
+       edge to one of the query's own top-ranked risk candidates — the
+       signal link_similar_risks_by_embedding already computes and the graph
+       viz already draws, put to use for the first time.
+    """
+    dense_rows = get_relevant_context(
+        query_embedding, company_id=company_id, content_types=content_types,
+        source_tables=source_tables, limit=top_k_each, max_distance=2.0,
+    )
+
+    matched_concepts: list = []
+    hop_by_concept_id: Dict[int, int] = {}
+    expansion_terms: list = []
+    if query_embedding and _HAS_PGVECTOR and _PGVECTOR_READY:
+        matched_concepts = search_concepts_by_embedding(query_embedding, scheme=concept_scheme, limit=3)
+        seed_ids = [c["concept_id"] for c in matched_concepts]
+        closure_nodes: list = []
+        for cid in seed_ids:
+            closure_nodes.extend(get_concept_closure(cid, direction="both", max_hops=max_hops))
+        for node in closure_nodes:
+            hop_by_concept_id[node["concept_id"]] = min(
+                hop_by_concept_id.get(node["concept_id"], node["hop"]), node["hop"],
+            )
+            if node.get("pref_label"):
+                expansion_terms.append(node["pref_label"])
+        for c in get_concepts_by_ids(list(hop_by_concept_id.keys())):
+            expansion_terms.extend(c.get("alt_labels") or [])
+
+    lexical_rows = _fetch_lexical_candidates(
+        query_text, expansion_terms, company_id=company_id,
+        content_types=content_types, source_tables=source_tables, limit=top_k_each,
+    )
+
+    fused = _rrf_fuse(dense_rows, lexical_rows, rrf_k=rrf_k)
+
+    confirmed_concept_by_source = {
+        (l["source_table"], str(l["source_id"])): l["concept_id"]
+        for l in list_concept_links(status="confirmed")
+        if l.get("concept_id") is not None
+    }
+    risk_edge_strength_by_key = _risk_similarity_boosts(fused, company_id)
+
+    matched_label = matched_concepts[0]["pref_label"] if matched_concepts else None
+    scored = []
+    for key, entry in fused.items():
+        source_table, source_id, _chunk_index = key
+        concept_id = confirmed_concept_by_source.get((source_table, str(source_id)))
+        hop = hop_by_concept_id.get(concept_id) if concept_id is not None else None
+        concept_factor = _graph_rerank_factor(hop, graph_weight)
+        risk_strength = risk_edge_strength_by_key.get(key)
+        risk_factor = 1.0 + risk_edge_weight * risk_strength if risk_strength else 1.0
+        row = dict(entry["row"])
+        row["rrf_score"] = entry["score"]
+        row["final_score"] = entry["score"] * concept_factor * risk_factor
+        row["matched_concept"] = matched_label
+        scored.append(row)
+
+    scored.sort(key=lambda r: r["final_score"], reverse=True)
+    return scored[:limit]
+
+
+def get_concept_embedding_hashes() -> Dict[int, Optional[str]]:
+    """{concept_id: source_hash} for every concept that currently has an
+    EMBT_CONCEPT embedding — the freshness check reembed_stale_concepts()
+    compares against concepts.label_hash. A concept absent from this dict has
+    never been embedded at all (also stale, by the same comparison: dict.get
+    returns None, which only equals a concept's label_hash if that too is
+    somehow None)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT source_id, source_hash FROM embeddings WHERE source_table = 'concepts' AND content_type = %s",
+                    (EMBT_CONCEPT,),
+                )
+                return {r[0]: r[1] for r in cur.fetchall()}
+    return _run(_do) or {}
+
+
+def search_concepts_by_embedding(query_embedding: list, *, scheme: Optional[str] = None, limit: int = 10) -> list:
+    """Nearest EMBT_CONCEPT neighbours to a query vector — "which concept is
+    this text about". Joins back to concepts for identity (scheme,
+    pref_label), since the embeddings row alone only carries the concept id."""
+    if not query_embedding or not (_HAS_PGVECTOR and _PGVECTOR_READY):
+        return []
+    def _do():
+        clauses = ["e.source_table = 'concepts'", "e.content_type = %s"]
+        params: list = [EMBT_CONCEPT]
+        if scheme:
+            clauses.append("c.scheme = %s")
+            params.append(scheme)
+        where = " AND ".join(clauses)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT c.id, c.scheme, c.pref_label, c.notation,
+                           (e.embedding <=> %s::vector) AS distance
+                    FROM embeddings e
+                    JOIN concepts c ON c.id = e.source_id
+                    WHERE {where}
+                    ORDER BY e.embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    [query_embedding] + params + [query_embedding, limit],
+                )
+                return [
+                    {
+                        "concept_id": r[0], "scheme": r[1], "pref_label": r[2], "notation": r[3],
+                        "distance": float(r[4]) if r[4] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
     return _run(_do) or []
 
 
@@ -7454,7 +8079,9 @@ def get_latest_risks_for_ticker(ticker: str) -> dict:
                            rs.control_env,
                            rs.peer_benchmark,
                            rrs.current_wording,
-                           rs.assigned_domain
+                           rs.assigned_domain,
+                           rs.segment_type,
+                           rs.segment_name
                     FROM risk_scores rs
                     LEFT JOIN LATERAL (
                         SELECT rrs2.current_wording
@@ -7490,11 +8117,34 @@ def get_latest_risks_for_ticker(ticker: str) -> dict:
                         "peer_benchmark": r[12],
                         "current_wording": r[13],
                         "assigned_domain": r[14],
+                        "segment_type": r[15],
+                        "segment_name": r[16],
                     }
                     for r in rows
                 ]
                 return {"run_id": run_id, "risks": risks}
     return _run(_do) or {"run_id": None, "risks": []}
+
+
+def get_risk_score_ids_for_run(run_id: int) -> list:
+    """{id, risk_ref, name, category} for every risk_scores row in a run —
+    the real BIGSERIAL id (not risk_ref) is what concept_links.source_id and
+    embeddings.source_id both key on for source_table='risk_scores', so
+    entity linking needs this, not get_risk_scores_for_run's risk_ref-as-'id'
+    shape below."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, risk_ref, COALESCE(risk_name, ''), COALESCE(category, '') "
+                    "FROM risk_scores WHERE run_id = %s",
+                    (run_id,),
+                )
+                return [
+                    {"id": r[0], "risk_ref": r[1], "name": r[2], "category": r[3]}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
 
 
 def get_risk_scores_for_run(run_id: int) -> list:
@@ -7507,7 +8157,7 @@ def get_risk_scores_for_run(run_id: int) -> list:
                     SELECT risk_ref, risk_name, narrative, category,
                            score, rag_status, source_framework,
                            base_score, delta, velocity, control_env, peer_benchmark,
-                           assigned_domain
+                           assigned_domain, segment_type, segment_name
                       FROM risk_scores
                      WHERE run_id = %s
                      ORDER BY score DESC NULLS LAST
@@ -7534,6 +8184,8 @@ def get_risk_scores_for_run(run_id: int) -> list:
                         "control_env":    r[10],
                         "peer_benchmark": r[11],
                         "assigned_domain": r[12],
+                        "segment_type":   r[13],
+                        "segment_name":   r[14],
                     }
                     for r in rows
                 ]
@@ -7606,6 +8258,16 @@ def compute_and_save_risk_relationships(company_id: int, run_id: int, risks: lis
 
     if not edges:
         return 0
+    return _upsert_risk_relationship_edges(edges)
+
+
+def _upsert_risk_relationship_edges(edges: list) -> int:
+    """Shared upsert for risk_relationships rows. Each edge tuple:
+    (company_id, from_risk_ref, to_risk_ref, relationship_type, strength, source, run_id).
+    Used by both the rule-based edges (compute_and_save_risk_relationships) and
+    the embedding-based 'similar_to' edges (link_similar_risks_by_embedding)."""
+    if not edges:
+        return 0
 
     def _do():
         with _conn() as conn:
@@ -7626,6 +8288,85 @@ def compute_and_save_risk_relationships(company_id: int, run_id: int, risks: lis
                     edges,
                 )
         return len(edges)
+
+    return _run(_do, default=0)
+
+
+def get_risk_score_rows_for_embedding(run_id: int) -> list:
+    """risk_scores PK id + text fields for a run, for computing narrative embeddings.
+    Distinct from get_risk_scores_for_run(), which returns display-shaped dicts
+    without the surrogate PK the `embeddings` table needs as source_id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, risk_ref, risk_name, category, narrative
+                    FROM risk_scores
+                    WHERE run_id = %s AND risk_ref IS NOT NULL
+                    """,
+                    (run_id,),
+                )
+                return [
+                    {"pk_id": r[0], "risk_ref": r[1], "risk_name": r[2],
+                     "category": r[3], "narrative": r[4]}
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def link_similar_risks_by_embedding(
+    company_id: int, run_id: int, *, max_distance: float = 0.30, max_edges: int = 40,
+) -> int:
+    """Populate 'similar_to' risk_relationships edges from EMBT_RISK_NARRATIVE
+    embeddings already saved for this run (see get_risk_score_rows_for_embedding
+    + the caller that embeds and saves them, api_server.py's
+    _embed_and_link_risk_narratives).
+
+    Restricted to cross-category pairs — same-category pairs are already
+    covered by compute_and_save_risk_relationships's rule-based
+    'correlates_with' edges, so this is the one genuinely new signal pgvector
+    adds to the graph: conceptual similarity that crosses category
+    boundaries a rule-based pass can't see (e.g. a supply-chain risk and a
+    geopolitical risk that read similarly but sit in different categories).
+
+    Returns number of edges upserted. No-ops (returns 0) when pgvector is
+    unavailable or this run has no risk-narrative embeddings yet.
+    """
+    if not company_id or not run_id or not (_HAS_PGVECTOR and _PGVECTOR_READY):
+        return 0
+
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH run_risk_emb AS (
+                        SELECT rs.id AS pk_id, rs.risk_ref, rs.category, e.embedding
+                        FROM risk_scores rs
+                        JOIN embeddings e
+                          ON e.source_table = 'risk_scores' AND e.source_id = rs.id
+                         AND e.content_type = %s
+                        WHERE rs.run_id = %s
+                    )
+                    SELECT a.risk_ref, b.risk_ref, (a.embedding <=> b.embedding) AS distance
+                    FROM run_risk_emb a
+                    JOIN run_risk_emb b
+                      ON a.risk_ref < b.risk_ref
+                     AND a.category IS DISTINCT FROM b.category
+                    WHERE (a.embedding <=> b.embedding) <= %s
+                    ORDER BY distance ASC
+                    LIMIT %s
+                    """,
+                    (EMBT_RISK_NARRATIVE, run_id, max_distance, max_edges),
+                )
+                pairs = cur.fetchall()
+        edges = [
+            (company_id, from_ref, to_ref, "similar_to",
+             round(max(0.0, min(1.0, 1.0 - float(dist))), 3), "embedding", run_id)
+            for from_ref, to_ref, dist in pairs
+        ]
+        return _upsert_risk_relationship_edges(edges)
 
     return _run(_do, default=0)
 
@@ -7704,6 +8445,225 @@ def get_risk_graph(company_id: int, run_id: Optional[int] = None) -> dict:
         return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
 
     return _run(_do, default={"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+
+def get_risk_graph_expanded(
+    company_id: int, risk_ref: str, *, max_hops: int = 2, run_id: Optional[int] = None,
+) -> dict:
+    """Multi-hop traversal from one risk over risk_relationships, via a
+    recursive CTE — get_risk_graph() above only ever returns direct (1-hop)
+    edges. Answers "what does this risk transitively touch N hops out?" —
+    e.g. a Red risk's amplifies edge into a peer, and that peer's similar_to
+    edge into a third, differently-categorised risk two hops away that a
+    single-hop view would never surface.
+
+    Implementation: BFS out to max_hops over risk_relationships treated as an
+    undirected adjacency (recursive CTE, tracking each path's visited-node
+    array so cycles stop it rather than looping), which gives the reached
+    node set with its hop distance; then a second, non-recursive query pulls
+    the induced subgraph — every edge with both endpoints in that node set —
+    so an edge between two 2-hop-away nodes is included even though neither
+    endpoint is the root.
+
+    Returns {nodes, edges, hops, root, node_count, edge_count}; each node
+    carries `hop`, its shortest distance from the root (0 for the root itself).
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH RECURSIVE bfs AS (
+                        SELECT %s::varchar AS node, 0 AS depth, ARRAY[%s::varchar] AS visited
+
+                        UNION ALL
+
+                        SELECT
+                            CASE WHEN r.from_risk_ref = b.node THEN r.to_risk_ref ELSE r.from_risk_ref END,
+                            b.depth + 1,
+                            b.visited || (CASE WHEN r.from_risk_ref = b.node THEN r.to_risk_ref ELSE r.from_risk_ref END)
+                        FROM risk_relationships r
+                        JOIN bfs b
+                          ON (r.from_risk_ref = b.node OR r.to_risk_ref = b.node)
+                        WHERE r.company_id = %s
+                          AND b.depth < %s
+                          AND NOT (
+                              (CASE WHEN r.from_risk_ref = b.node THEN r.to_risk_ref ELSE r.from_risk_ref END)
+                              = ANY(b.visited)
+                          )
+                    )
+                    SELECT node, MIN(depth) AS depth
+                    FROM bfs
+                    GROUP BY node
+                    """,
+                    (risk_ref, risk_ref, company_id, max_hops),
+                )
+                hop_rows = cur.fetchall()
+                hop_by_ref = {r[0]: r[1] for r in hop_rows}
+                risk_refs = list(hop_by_ref.keys()) or [risk_ref]
+
+                cur.execute(
+                    """
+                    SELECT from_risk_ref, to_risk_ref, relationship_type, strength, source
+                    FROM risk_relationships
+                    WHERE company_id = %s
+                      AND from_risk_ref = ANY(%s) AND to_risk_ref = ANY(%s)
+                    """,
+                    (company_id, risk_refs, risk_refs),
+                )
+                edge_rows = cur.fetchall()
+
+                if run_id:
+                    cur.execute(
+                        """
+                        SELECT risk_ref, risk_name, category, score, rag_status, velocity
+                        FROM risk_scores
+                        WHERE run_id = %s AND risk_ref = ANY(%s)
+                        """,
+                        (run_id, risk_refs),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT ON (rs.risk_ref)
+                            rs.risk_ref, rs.risk_name, rs.category, rs.score, rs.rag_status, rs.velocity
+                        FROM risk_scores rs
+                        JOIN risk_loop_runs r ON r.id = rs.run_id
+                        WHERE r.company_id = %s AND rs.risk_ref = ANY(%s)
+                        ORDER BY rs.risk_ref, r.run_at DESC
+                        """,
+                        (company_id, risk_refs),
+                    )
+                node_rows = cur.fetchall()
+
+        nodes = [
+            {
+                "id": r[0], "name": r[1], "category": r[2],
+                "score": float(r[3]) if r[3] is not None else None,
+                "rag": r[4], "velocity": r[5],
+                "hop": hop_by_ref.get(r[0]),
+            }
+            for r in node_rows
+        ]
+        edges = [
+            {
+                "from": e[0], "to": e[1], "type": e[2],
+                "strength": float(e[3]) if e[3] is not None else 0,
+                "source": e[4],
+            }
+            for e in edge_rows
+        ]
+        return {"nodes": nodes, "edges": edges, "hops": max_hops, "root": risk_ref,
+                "node_count": len(nodes), "edge_count": len(edges)}
+
+    return _run(_do, default={"nodes": [], "edges": [], "hops": max_hops, "root": risk_ref,
+                               "node_count": 0, "edge_count": 0})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COSO ERM 2017 evidence counts — for the Risk Coverage Cube's ERM view
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_erm_evidence_counts(run_id: int, company_id: Optional[int]) -> dict:
+    """One row-count (or 0/1 flag) per evidence key in
+    risks_as_code.ERM_PRINCIPLES, for a specific run. Every query here
+    answers "does a real, persisted artifact exist for this principle" —
+    never an inference. risk_coverage_cube.build_erm_evidence() turns these
+    counts into evidenced/no_evidence states; principles with `evidence=None`
+    in ERM_PRINCIPLES never reach this function at all (no_source, always).
+
+    Two principles are intentionally coarser than a per-run count:
+      - risk_appetite (P7): risk_loop_runs.appetite_level is a level
+        (conservative/moderate/aggressive), not a quantified threshold —
+        evidenced as 1/0, caveated as "coarse" by the caller.
+      - Some counts (P6, P14, P18) are company-wide rather than run-scoped,
+        because their source tables (rss_articles, risk_relationships) don't
+        carry a run_id — they reflect "as of now" state, not this run's
+        snapshot, same honest-scoping caveat the Evidence Pack already makes
+        for Controls-as-Code/Policy-as-Code (evidence_pack_endpoints.py).
+    """
+    def _do():
+        counts: Dict[str, int] = {}
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM approval_tasks WHERE run_id = %s", (run_id,))
+                counts["gate_approvals"] = cur.fetchone()[0]
+
+                if company_id:
+                    cur.execute("SELECT COUNT(*) FROM rss_articles WHERE company_id = %s", (company_id,))
+                    rss_n = cur.fetchone()[0]
+                    cur.execute("SELECT COUNT(*) FROM fred_correlations WHERE company_id = %s", (company_id,))
+                    fred_n = cur.fetchone()[0]
+                else:
+                    rss_n = fred_n = 0
+                counts["market_context"] = rss_n + fred_n
+
+                cur.execute("SELECT appetite_level FROM risk_loop_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+                counts["risk_appetite"] = 1 if (row and row[0]) else 0
+
+                cur.execute("SELECT COUNT(*) FROM scenario_analyses WHERE run_id = %s", (run_id,))
+                scen_n = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM grey_swan_models WHERE run_id = %s", (run_id,))
+                gs_n = cur.fetchone()[0]
+                counts["scenario_analysis"] = scen_n + gs_n
+
+                cur.execute("SELECT COUNT(*) FROM risk_scores WHERE run_id = %s", (run_id,))
+                counts["risk_register"] = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM risk_scores WHERE run_id = %s AND score IS NOT NULL", (run_id,))
+                counts["risk_scoring"] = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM risk_scores WHERE run_id = %s AND rag_status IS NOT NULL", (run_id,))
+                counts["risk_prioritization"] = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM audit_objectives WHERE run_id = %s", (run_id,))
+                counts["audit_objectives"] = cur.fetchone()[0]
+
+                if company_id:
+                    cur.execute("SELECT COUNT(*) FROM risk_relationships WHERE company_id = %s", (company_id,))
+                    counts["risk_graph"] = cur.fetchone()[0]
+                else:
+                    counts["risk_graph"] = 0
+
+                cur.execute("SELECT COUNT(*) FROM rss_signals WHERE run_id = %s AND velocity_delta IS NOT NULL", (run_id,))
+                rss_sig_n = cur.fetchone()[0]
+                if company_id:
+                    cur.execute("SELECT COUNT(*) FROM edgar_8k_events WHERE company_id = %s", (company_id,))
+                    events_n = cur.fetchone()[0]
+                else:
+                    events_n = 0
+                counts["change_signals"] = rss_sig_n + events_n
+
+                cur.execute("SELECT COUNT(*) FROM backtest_metrics WHERE run_id = %s", (run_id,))
+                counts["backtest_review"] = cur.fetchone()[0]
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM backtest_metrics WHERE run_id = %s AND calibrated_weight IS NOT NULL",
+                    (run_id,),
+                )
+                counts["loop_calibration"] = cur.fetchone()[0]
+
+                cur.execute("SELECT data_mode FROM risk_loop_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+                counts["mcp_ingestion"] = 1 if (row and row[0] == "mcp") else 0
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM ai_analyses WHERE run_id = %s AND kind = 'persona_brief'",
+                    (run_id,),
+                )
+                counts["notifications"] = cur.fetchone()[0]
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM ai_analyses WHERE run_id = %s AND kind = 'audit_report'",
+                    (run_id,),
+                )
+                ai_report_n = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM risks_as_code_artifacts WHERE run_id = %s", (run_id,))
+                rac_n = cur.fetchone()[0]
+                counts["audit_reporting"] = ai_report_n + rac_n
+        return counts
+    return _run(_do, default={}) or {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -8701,7 +9661,7 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                 cur.execute(
                     f"SELECT control_id, name, description, process, source, created_at, "
                     f"       last_fired_at, last_verified_at, last_test_passed, "
-                    f"       soc2_criteria, nist_800_53, iso_27001, coso_component "
+                    f"       soc2_criteria, nist_800_53, iso_27001, coso_component, icif_component "
                     f"FROM controls_catalog {where} ORDER BY control_id",
                     params,
                 )
@@ -8715,6 +9675,7 @@ def list_controls(process: Optional[str] = None, source: Optional[str] = None) -
                         "last_test_passed": r[8],
                         "soc2_criteria": r[9] or [], "nist_800_53": r[10] or [],
                         "iso_27001": r[11] or [], "coso_component": r[12],
+                        "icif_component": r[13],
                     }
                     for r in cur.fetchall()
                 ]
@@ -8728,7 +9689,7 @@ def get_control(control_id: str) -> Optional[dict]:
                 cur.execute(
                     "SELECT control_id, name, description, process, source, created_at, "
                     "       last_fired_at, last_verified_at, last_test_passed, "
-                    "       soc2_criteria, nist_800_53, iso_27001, coso_component "
+                    "       soc2_criteria, nist_800_53, iso_27001, coso_component, icif_component "
                     "FROM controls_catalog WHERE control_id = %s",
                     (control_id,),
                 )
@@ -8744,17 +9705,23 @@ def get_control(control_id: str) -> Optional[dict]:
                     "last_test_passed": row[8],
                     "soc2_criteria": row[9] or [], "nist_800_53": row[10] or [],
                     "iso_27001": row[11] or [], "coso_component": row[12],
+                    "icif_component": row[13],
                 }
     return _run(_do)
 
 
 def upsert_framework_mapping(control_id: str, soc2_criteria: Optional[list] = None,
                               nist_800_53: Optional[list] = None, iso_27001: Optional[list] = None,
-                              coso_component: Optional[str] = None) -> bool:
+                              coso_component: Optional[str] = None,
+                              icif_component: Optional[str] = None) -> bool:
     """Set framework crosswalk metadata for one control. No-ops (returns
     False) if control_id doesn't exist yet — mappings are seeded after
     controls_catalog itself (see seed_framework_mappings, called after
-    _seed_controls_catalog in api_server.py's startup sequence)."""
+    _seed_controls_catalog in api_server.py's startup sequence).
+
+    coso_component and icif_component are independent fields (a control's ERM
+    2017 component vs. its IC-IF 2013 component — see framework_mappings.py's
+    2026-08-26 note); neither is derived from the other."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -8762,10 +9729,10 @@ def upsert_framework_mapping(control_id: str, soc2_criteria: Optional[list] = No
                     """
                     UPDATE controls_catalog
                     SET soc2_criteria = %s, nist_800_53 = %s, iso_27001 = %s,
-                        coso_component = %s, updated_at = NOW()
+                        coso_component = %s, icif_component = %s, updated_at = NOW()
                     WHERE control_id = %s
                     """,
-                    (soc2_criteria, nist_800_53, iso_27001, coso_component, control_id),
+                    (soc2_criteria, nist_800_53, iso_27001, coso_component, icif_component, control_id),
                 )
                 return cur.rowcount > 0
     return _run(_do, default=False) or False
@@ -9759,9 +10726,510 @@ def seed_framework_mappings() -> int:
             nist_800_53=mapping.get("nist_800_53"),
             iso_27001=mapping.get("iso_27001"),
             coso_component=mapping.get("coso_component"),
+            icif_component=mapping.get("icif_component"),
         ):
             updated += 1
     return updated
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Concept layer — controlled vocabulary + NIST IR 8477 (STRM) crosswalk
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_concept(
+    scheme: str, pref_label: str, *,
+    notation: Optional[str] = None, alt_labels: Optional[list] = None,
+    definition: Optional[str] = None, broader_scheme: Optional[str] = None,
+    broader_pref_label: Optional[str] = None, source: str = "curated",
+) -> Optional[int]:
+    """Insert or update one concept, keyed on (scheme, pref_label). Recomputes
+    label_hash so Stage 2's re-embed check can detect the change. broader_id is
+    resolved from (broader_scheme, broader_pref_label) if given — the parent
+    concept must already exist (seed schemes in dependency order, parents first)."""
+    import hashlib
+    alt_labels = alt_labels or []
+
+    def _do():
+        broader_id = None
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if broader_scheme and broader_pref_label:
+                    cur.execute(
+                        "SELECT id FROM concepts WHERE scheme = %s AND pref_label = %s",
+                        (broader_scheme, broader_pref_label),
+                    )
+                    row = cur.fetchone()
+                    broader_id = row[0] if row else None
+
+                label_hash = hashlib.sha256(
+                    f"{pref_label}|{definition or ''}|{'|'.join(sorted(alt_labels))}".encode("utf-8")
+                ).hexdigest()
+
+                cur.execute(
+                    """
+                    INSERT INTO concepts
+                        (scheme, notation, pref_label, alt_labels, definition,
+                         broader_id, source, label_hash, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (scheme, pref_label) DO UPDATE SET
+                        notation   = EXCLUDED.notation,
+                        alt_labels = EXCLUDED.alt_labels,
+                        definition = EXCLUDED.definition,
+                        broader_id = EXCLUDED.broader_id,
+                        source     = EXCLUDED.source,
+                        label_hash = EXCLUDED.label_hash,
+                        updated_at = NOW()
+                    RETURNING id
+                    """,
+                    (scheme, notation, pref_label, alt_labels, definition,
+                     broader_id, source, label_hash),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def upsert_concept_relation(
+    from_concept_id: int, to_concept_id: int, strm_type: str, *,
+    strength: Optional[float] = None, rationale: Optional[str] = None,
+    source: str = "curated",
+) -> Optional[int]:
+    """Insert or update one typed crosswalk relation. strm_type must be one of
+    NIST IR 8477's five: subset_of, superset_of, equal, intersects_with,
+    no_relationship — enforced by the ck_concept_relations_strm_type CHECK."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO concept_relations
+                        (from_concept_id, to_concept_id, strm_type, strength, rationale, source)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (from_concept_id, to_concept_id, strm_type) DO UPDATE SET
+                        strength  = EXCLUDED.strength,
+                        rationale = EXCLUDED.rationale,
+                        source    = EXCLUDED.source
+                    RETURNING id
+                    """,
+                    (from_concept_id, to_concept_id, strm_type, strength, rationale, source),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def get_concept(scheme: str, pref_label: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, scheme, notation, pref_label, alt_labels, definition,
+                           broader_id, source, label_hash
+                    FROM concepts WHERE scheme = %s AND pref_label = %s
+                    """,
+                    (scheme, pref_label),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0], "scheme": row[1], "notation": row[2], "pref_label": row[3],
+                    "alt_labels": row[4] or [], "definition": row[5], "broader_id": row[6],
+                    "source": row[7], "label_hash": row[8],
+                }
+    return _run(_do)
+
+
+def list_concepts(scheme: Optional[str] = None) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if scheme:
+                    cur.execute(
+                        """
+                        SELECT id, scheme, notation, pref_label, alt_labels, definition,
+                               broader_id, source, label_hash
+                        FROM concepts WHERE scheme = %s ORDER BY pref_label
+                        """,
+                        (scheme,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, scheme, notation, pref_label, alt_labels, definition,
+                               broader_id, source, label_hash
+                        FROM concepts ORDER BY scheme, pref_label
+                        """
+                    )
+                return [
+                    {
+                        "id": r[0], "scheme": r[1], "notation": r[2], "pref_label": r[3],
+                        "alt_labels": r[4] or [], "definition": r[5], "broader_id": r[6],
+                        "source": r[7], "label_hash": r[8],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def get_concept_relations(concept_id: int) -> list:
+    """All STRM relations touching this concept, either direction."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT from_concept_id, to_concept_id, strm_type, strength, rationale, source
+                    FROM concept_relations
+                    WHERE from_concept_id = %s OR to_concept_id = %s
+                    """,
+                    (concept_id, concept_id),
+                )
+                return [
+                    {
+                        "from_concept_id": r[0], "to_concept_id": r[1], "strm_type": r[2],
+                        "strength": float(r[3]) if r[3] is not None else None,
+                        "rationale": r[4], "source": r[5],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def list_concept_relations() -> list:
+    """Every STRM relation, globally, with both endpoints' identity denormalized
+    (scheme + pref_label, not just the internal id) — for full-graph consumers
+    like ontology_export.py that need concept identity, not DB row ids."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        r.id, fc.scheme, fc.pref_label,
+                        tc.scheme, tc.pref_label,
+                        r.strm_type, r.strength, r.rationale, r.source
+                    FROM concept_relations r
+                    JOIN concepts fc ON fc.id = r.from_concept_id
+                    JOIN concepts tc ON tc.id = r.to_concept_id
+                    ORDER BY fc.scheme, fc.pref_label, tc.scheme, tc.pref_label
+                    """
+                )
+                return [
+                    {
+                        "id": r[0], "from_scheme": r[1], "from_pref_label": r[2],
+                        "to_scheme": r[3], "to_pref_label": r[4],
+                        "strm_type": r[5], "strength": float(r[6]) if r[6] is not None else None,
+                        "rationale": r[7], "source": r[8],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def get_concept_closure(concept_id: int, *, direction: str = "both", max_hops: int = 2) -> list:
+    """Walk the SKOS broader/narrower TREE (concepts.broader_id) out to
+    max_hops — separate from the STRM crosswalk graph in concept_relations.
+    direction: 'broader' (ancestors), 'narrower' (descendants), or 'both'.
+
+    Same recursive-CTE-with-visited-array shape as get_risk_graph_expanded
+    (this module, risk_relationships section) — cloned deliberately rather
+    than reinvented, adapted for a directed tree instead of an undirected
+    graph with multiple relationship types.
+
+    Returns [{concept_id, pref_label, hop}], nearest first. hop 0 is the
+    concept itself.
+    """
+    def _do():
+        results: Dict[int, dict] = {}
+
+        def _walk(sql: str, params: tuple):
+            with _conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    for cid, pref_label, depth in cur.fetchall():
+                        if cid not in results or depth < results[cid]["hop"]:
+                            results[cid] = {"concept_id": cid, "pref_label": pref_label, "hop": depth}
+
+        if direction in ("broader", "both"):
+            _walk(
+                """
+                WITH RECURSIVE up AS (
+                    SELECT id, broader_id, 0 AS depth, ARRAY[id] AS visited
+                    FROM concepts WHERE id = %s
+
+                    UNION ALL
+
+                    SELECT c.id, c.broader_id, u.depth + 1, u.visited || c.id
+                    FROM concepts c
+                    JOIN up u ON c.id = u.broader_id
+                    WHERE u.depth < %s AND NOT (c.id = ANY(u.visited))
+                )
+                SELECT up.id, c2.pref_label, MIN(up.depth)
+                FROM up JOIN concepts c2 ON c2.id = up.id
+                GROUP BY up.id, c2.pref_label
+                """,
+                (concept_id, max_hops),
+            )
+
+        if direction in ("narrower", "both"):
+            _walk(
+                """
+                WITH RECURSIVE down AS (
+                    SELECT id, 0 AS depth, ARRAY[id] AS visited
+                    FROM concepts WHERE id = %s
+
+                    UNION ALL
+
+                    SELECT c.id, d.depth + 1, d.visited || c.id
+                    FROM concepts c
+                    JOIN down d ON c.broader_id = d.id
+                    WHERE d.depth < %s AND NOT (c.id = ANY(d.visited))
+                )
+                SELECT down.id, c2.pref_label, MIN(down.depth)
+                FROM down JOIN concepts c2 ON c2.id = down.id
+                GROUP BY down.id, c2.pref_label
+                """,
+                (concept_id, max_hops),
+            )
+
+        return sorted(results.values(), key=lambda r: r["hop"])
+    return _run(_do, default=[]) or []
+
+
+def upsert_concept_link(
+    source_table: str, source_id: str, scheme: str, *,
+    concept_id: Optional[int], status: str, confidence: Optional[float] = None,
+    method: str, runner_up_concept_id: Optional[int] = None,
+) -> Optional[dict]:
+    """Upsert one (source, scheme, method) link. Always called even when
+    concept_id is None (status='unresolved') — see concept_links' table
+    comment for why a written 'nothing resolved' row matters."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO concept_links
+                        (source_table, source_id, scheme, concept_id, runner_up_concept_id,
+                         status, confidence, method, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT (source_table, source_id, scheme, method) DO UPDATE SET
+                        concept_id           = EXCLUDED.concept_id,
+                        runner_up_concept_id = EXCLUDED.runner_up_concept_id,
+                        status               = EXCLUDED.status,
+                        confidence           = EXCLUDED.confidence,
+                        updated_at           = NOW()
+                    RETURNING id, source_table, source_id, scheme, concept_id,
+                              runner_up_concept_id, status, confidence, method
+                    """,
+                    (source_table, source_id, scheme, concept_id, runner_up_concept_id,
+                     status, confidence, method),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row)) if row else None
+    return _run(_do)
+
+
+def get_concept_links(source_table: str, source_id: str) -> list:
+    """Every proposal for one subject, across methods — where an 'ann' link
+    and an 'llm_domain' link are meant to be visible even when they disagree."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT l.id, l.scheme, l.concept_id, c.pref_label, l.runner_up_concept_id,
+                           l.status, l.confidence, l.method, l.reviewed_by, l.reviewed_at
+                    FROM concept_links l
+                    LEFT JOIN concepts c ON c.id = l.concept_id
+                    WHERE l.source_table = %s AND l.source_id = %s
+                    ORDER BY l.scheme, l.method
+                    """,
+                    (source_table, source_id),
+                )
+                return [
+                    {
+                        "id": r[0], "scheme": r[1], "concept_id": r[2], "pref_label": r[3],
+                        "runner_up_concept_id": r[4], "status": r[5],
+                        "confidence": float(r[6]) if r[6] is not None else None,
+                        "method": r[7], "reviewed_by": r[8],
+                        "reviewed_at": r[9].isoformat() if r[9] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def list_concept_links(*, scheme: Optional[str] = None, status: Optional[str] = None) -> list:
+    """All links, optionally filtered — the aggregate view (e.g. 'how many
+    risks are still unresolved for risk_category'), never used to treat a
+    'proposed' row as authoritative on its own."""
+    def _do():
+        clauses, params = [], []
+        if scheme:
+            clauses.append("l.scheme = %s")
+            params.append(scheme)
+        if status:
+            clauses.append("l.status = %s")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT l.id, l.source_table, l.source_id, l.scheme, l.concept_id,
+                           c.pref_label, l.status, l.confidence, l.method
+                    FROM concept_links l
+                    LEFT JOIN concepts c ON c.id = l.concept_id
+                    {where}
+                    ORDER BY l.source_table, l.source_id, l.scheme, l.method
+                    """,
+                    params,
+                )
+                return [
+                    {
+                        "id": r[0], "source_table": r[1], "source_id": r[2], "scheme": r[3],
+                        "concept_id": r[4], "pref_label": r[5], "status": r[6],
+                        "confidence": float(r[7]) if r[7] is not None else None, "method": r[8],
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def list_pending_concept_links(scheme: Optional[str] = None) -> list:
+    """Every status='proposed' link awaiting a human decision, with both the
+    proposed and runner-up concept's identity resolved for display. The
+    reviewable surface behind GET /ontology/links/pending — see
+    decide_concept_link for the other half of this review loop."""
+    def _do():
+        clauses = ["l.status = 'proposed'"]
+        params: list = []
+        if scheme:
+            clauses.append("l.scheme = %s")
+            params.append(scheme)
+        where = " AND ".join(clauses)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT l.id, l.source_table, l.source_id, l.scheme,
+                           l.concept_id, c.pref_label,
+                           l.runner_up_concept_id, ru.pref_label,
+                           l.confidence, l.method, l.created_at
+                    FROM concept_links l
+                    LEFT JOIN concepts c ON c.id = l.concept_id
+                    LEFT JOIN concepts ru ON ru.id = l.runner_up_concept_id
+                    WHERE {where}
+                    ORDER BY l.created_at
+                    """,
+                    params,
+                )
+                return [
+                    {
+                        "id": r[0], "source_table": r[1], "source_id": r[2], "scheme": r[3],
+                        "concept_id": r[4], "pref_label": r[5],
+                        "runner_up_concept_id": r[6], "runner_up_pref_label": r[7],
+                        "confidence": float(r[8]) if r[8] is not None else None,
+                        "method": r[9], "created_at": r[10].isoformat() if r[10] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+def decide_concept_link(link_id: int, decision: str, reviewed_by: str) -> Optional[dict]:
+    """A human's confirm/reject decision on one proposed concept_link.
+    Deliberately bypasses approval_tasks.gate_type='concept_link' rows'
+    'submitted'+manager_id lifecycle (concept links are system-PROPOSED, not
+    submitted by a preparer for their manager to check — there is no
+    'manager' role that fits) — but the matching approval_tasks row's status
+    is still updated here so the Inbox's own view of the item doesn't go
+    stale for anyone who does look at it there.
+
+    Only 'proposed' rows are eligible, matching review_approval_task's own
+    status-gated UPDATE pattern (prevents a double-decision race)."""
+    if decision not in ("confirmed", "rejected"):
+        raise ValueError("decision must be 'confirmed' or 'rejected'")
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE concept_links SET
+                        status = %s, reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
+                    WHERE id = %s AND status = 'proposed'
+                    RETURNING id, source_table, source_id, scheme, concept_id, status, method
+                    """,
+                    (decision, reviewed_by, link_id),
+                )
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description] if cur.description else []
+                link = dict(zip(cols, row)) if row else None
+                if link:
+                    item_ref = f"{link['source_table']}:{link['source_id']}:{link['scheme']}"
+                    task_status = "manager_approved" if decision == "confirmed" else "rejected"
+                    cur.execute(
+                        """
+                        UPDATE approval_tasks SET status = %s, updated_at = NOW()
+                        WHERE gate_type = 'concept_link' AND item_ref = %s AND run_id IS NULL
+                        """,
+                        (task_status, item_ref),
+                    )
+                return link
+    return _run(_do)
+
+
+def seed_ontology() -> dict:
+    """Idempotently apply ontology_seed.py's curated CONCEPTS/RELATIONS to the
+    concepts/concept_relations tables. Same pattern as seed_framework_mappings:
+    a projection of the existing hardcoded vocabularies, safe to re-run, always
+    overwrites with the current curated content so an edit to ontology_seed.py
+    takes effect on next restart without a manual migration.
+
+    Concepts are seeded before relations (relations reference concept ids), and
+    within concepts, schemes are seeded in ontology_seed.SEED_ORDER so a child's
+    broader_scheme/broader_pref_label parent already exists."""
+    import ontology_seed
+    concepts_upserted = 0
+    relations_upserted = 0
+    label_to_id: Dict[tuple, int] = {}
+
+    for scheme in ontology_seed.SEED_ORDER:
+        for c in ontology_seed.SEED_CONCEPTS.get(scheme, []):
+            cid = upsert_concept(
+                scheme, c["pref_label"],
+                notation=c.get("notation"), alt_labels=c.get("alt_labels"),
+                definition=c.get("definition"),
+                broader_scheme=c.get("broader_scheme"), broader_pref_label=c.get("broader_pref_label"),
+                source=c.get("source", "curated"),
+            )
+            if cid:
+                concepts_upserted += 1
+                label_to_id[(scheme, c["pref_label"])] = cid
+
+    for rel in ontology_seed.SEED_RELATIONS:
+        from_id = label_to_id.get((rel["from_scheme"], rel["from_pref_label"])) \
+            or (get_concept(rel["from_scheme"], rel["from_pref_label"]) or {}).get("id")
+        to_id = label_to_id.get((rel["to_scheme"], rel["to_pref_label"])) \
+            or (get_concept(rel["to_scheme"], rel["to_pref_label"]) or {}).get("id")
+        if not from_id or not to_id:
+            logger.warning(
+                "seed_ontology: skipping relation %s -[%s]-> %s — concept(s) not found",
+                rel["from_pref_label"], rel["strm_type"], rel["to_pref_label"],
+            )
+            continue
+        if upsert_concept_relation(
+            from_id, to_id, rel["strm_type"],
+            strength=rel.get("strength"), rationale=rel.get("rationale"),
+            source=rel.get("source", "curated"),
+        ):
+            relations_upserted += 1
+
+    return {"concepts_upserted": concepts_upserted, "relations_upserted": relations_upserted}
 
 
 def create_pac_process(process_id: str, label: str, short_label: str, *,

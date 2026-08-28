@@ -115,6 +115,7 @@ from rss_ingest_service import (
 )
 from edgar_tool import _8K_ITEMS as EDGAR_8K_ITEMS
 import db
+import embedding_util
 import control_plane
 import manual_financials_tool
 
@@ -123,6 +124,9 @@ import chat_endpoint
 import claude_client
 import peer_intel
 import risks_as_code
+import ontology_export
+import ontology_endpoints
+import concept_linking
 import oracle_fusion_endpoints
 import sox_endpoints
 import risk_register_endpoints
@@ -154,6 +158,7 @@ import je_testing_endpoints
 import regulatory_change_endpoints
 import pii_retention_sweep
 import risk_waiver_sweep
+import pac_auto_sync_sweep
 import itsm_sla_sweep
 import map_detection_sweep
 import infra_asset_sweep
@@ -253,6 +258,20 @@ async def _run_cycle_for_all_tenants(cycle_fn, label: str) -> None:
             auth_endpoints.unbind_tenant_secret()
 
 
+async def _run_startup_reembed() -> None:
+    """One-shot, backgrounded re-embed of any stale/never-embedded concept.
+    Run via asyncio.to_thread since ontology_endpoints.reembed_stale_concepts
+    is synchronous (blocking network calls to the embedding provider) — never
+    awaited inline in the startup sequence, so a slow or failing provider
+    (rate-limited, out of quota, unreachable) delays only this task, never
+    uvicorn's readiness or Railway's healthcheck."""
+    try:
+        result = await asyncio.to_thread(ontology_endpoints.reembed_stale_concepts)
+        logger.info("Startup concept re-embed: %s", result)
+    except Exception as exc:
+        logger.warning("Concept re-embed skipped at startup (non-fatal): %s", exc)
+
+
 async def _multi_tenant_loop(cycle_fn, tick_s: float, label: str) -> None:
     """TENANT_MODE=multi's replacement for a sweep module's own start_sweep()/
     start_polling(): identical infinite-loop-with-sleep shape, but each tick
@@ -294,6 +313,15 @@ async def lifespan(application: FastAPI):
             _seed_synthetic_connectors()
             db.seed_builtin_pac_processes()
             db.seed_framework_mappings()
+            db.seed_ontology()
+            # Backgrounded like every other sweep in this codebase (see
+            # risk_waiver_sweep.start_sweep's asyncio.create_task pattern
+            # below) — NOT awaited inline. A synchronous call here blocked
+            # the entire startup sequence (and Railway's 30s healthcheck
+            # window) behind OpenAI's SDK retry/backoff on every one of the
+            # ~70 seeded concepts when OPENAI_API_KEY was present but out of
+            # quota — a real incident, not a hypothetical.
+            asyncio.create_task(_run_startup_reembed())
             logger.info("Static reference data seeded")
             # Auth schema + default users
             if auth_db.init_auth_db():
@@ -327,6 +355,7 @@ async def lifespan(application: FastAPI):
         _je_testing_sweep_task = None
         _pii_retention_sweep_task = None
         _risk_waiver_sweep_task = None
+        _pac_auto_sync_sweep_task = None
         _itsm_sla_sweep_task = None
         _map_detection_sweep_task = None
         _infra_asset_sweep_task = None
@@ -362,6 +391,7 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(je_testing_sweep.sweep_once, je_testing_sweep._TICK_S, "JE Testing sweep")),
                 asyncio.create_task(_multi_tenant_loop(pii_retention_sweep.sweep_once, pii_retention_sweep._TICK_S, "PII retention sweep")),
                 asyncio.create_task(_multi_tenant_loop(risk_waiver_sweep.sweep_once, risk_waiver_sweep._TICK_S, "Risk waiver expiry sweep")),
+                asyncio.create_task(_multi_tenant_loop(pac_auto_sync_sweep.sweep_once, pac_auto_sync_sweep._TICK_S, "PaC auto-sync sweep")),
                 asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
                 asyncio.create_task(_multi_tenant_loop(map_detection_sweep.sweep_once, map_detection_sweep._TICK_S, "MAP detection sweep")),
             ])
@@ -453,6 +483,12 @@ async def lifespan(application: FastAPI):
                 _risk_waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
                 logger.info("Risk waiver expiry sweep task started")
 
+            # Policy-as-Code: polls every auto_sync_enabled repo and syncs it
+            # when the branch's HEAD commit has moved — see pac_auto_sync_sweep.py.
+            if db.is_available():
+                _pac_auto_sync_sweep_task = asyncio.create_task(pac_auto_sync_sweep.start_sweep())
+                logger.info("PaC auto-sync sweep task started")
+
             # DevOps Monitoring: flags ITSM tickets that blew their remediation
             # SLA and re-raises the underlying finding — see itsm_sla_sweep.py.
             if db.is_available():
@@ -491,6 +527,12 @@ async def lifespan(application: FastAPI):
                         await asyncio.to_thread(risk_register_endpoints.seed_static_data)
                         await asyncio.to_thread(_seed_cem_templates)
                         await asyncio.to_thread(_seed_ticker_cik)
+                        # Also missing from this reconnect list before now (noted while
+                        # adding seed_ontology): a DB that comes back up after a startup
+                        # failure previously never got framework_mappings.py's curated
+                        # crosswalk applied until the next full process restart.
+                        await asyncio.to_thread(db.seed_framework_mappings)
+                        await asyncio.to_thread(db.seed_ontology)
                         if _HAS_MCP_GOVERNANCE and _gov_task is None:
                             asyncio.create_task(mcp_governance.start_polling())
                             logger.info("MCP governance polling started after DB reconnect")
@@ -524,6 +566,9 @@ async def lifespan(application: FastAPI):
                         if _risk_waiver_sweep_task is None:
                             asyncio.create_task(risk_waiver_sweep.start_sweep())
                             logger.info("Risk waiver expiry sweep started after DB reconnect")
+                        if _pac_auto_sync_sweep_task is None:
+                            asyncio.create_task(pac_auto_sync_sweep.start_sweep())
+                            logger.info("PaC auto-sync sweep started after DB reconnect")
                         if _itsm_sla_sweep_task is None:
                             asyncio.create_task(itsm_sla_sweep.start_sweep())
                             logger.info("ITSM SLA breach sweep started after DB reconnect")
@@ -551,7 +596,8 @@ async def lifespan(application: FastAPI):
                              _pac_negative_sweep_task, _connector_hygiene_sweep_task,
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
-                             _risk_waiver_sweep_task, _itsm_sla_sweep_task, _map_detection_sweep_task,
+                             _risk_waiver_sweep_task, _pac_auto_sync_sweep_task,
+                             _itsm_sla_sweep_task, _map_detection_sweep_task,
                              _infra_asset_sweep_task, _vulnerability_sweep_task, _exception_staleness_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
@@ -898,6 +944,9 @@ app.include_router(chat_endpoint.router)
 
 # Risks-as-Code: OSCAL + COSO ERM translators + SSE live stream.
 app.include_router(risks_as_code.router)
+app.include_router(ontology_export.router)
+app.include_router(ontology_endpoints.router)
+app.include_router(concept_linking.router)
 
 # Oracle Fusion: control library, test results, issues, SOD, audit events.
 app.include_router(oracle_fusion_endpoints.router)
@@ -1106,6 +1155,122 @@ def _company_name_from_result(result: dict, fallback: str = "") -> str:
     return fallback
 
 
+def _embed_new_rss_articles(company_id: Optional[int], new_articles: list) -> None:
+    """Embed newly-inserted RSS articles (EMBT_ARTICLE) so chat RAG retrieval
+    can actually surface them — save_rss_articles_full() only returns rows it
+    just inserted, so this never re-embeds the same article twice."""
+    if not new_articles or not embedding_util.is_available():
+        return
+    try:
+        for art in new_articles:
+            text = f"{art['title']}: {art.get('summary') or ''}".strip()
+            vec = embedding_util.embed_text(text)
+            if vec:
+                db.save_embedding(
+                    source_table="rss_articles", source_id=art["id"],
+                    content_type=db.EMBT_ARTICLE, embedding=vec,
+                    company_id=company_id, text_snippet=text[:600],
+                )
+    except Exception as exc:
+        logger.warning("RSS article embedding failed (non-fatal): %s", exc)
+
+
+def _embed_new_cem_root_causes(run_id: int, new_events: list) -> None:
+    """Embed CEM (Continuous Exception Monitoring) root-cause narratives
+    (EMBT_CEM_RC) — save_cem_events() only returns rows that actually have a
+    narrative, via RETURNING, so no separate lookup query is needed here."""
+    if not new_events or not embedding_util.is_available():
+        return
+    try:
+        company_id = db.get_company_id_for_run(run_id)
+        for ev in new_events:
+            vec = embedding_util.embed_text(ev["root_cause"])
+            if vec:
+                db.save_embedding(
+                    source_table="cem_events", source_id=ev["pk_id"],
+                    content_type=db.EMBT_CEM_RC, embedding=vec,
+                    company_id=company_id, text_snippet=ev["root_cause"][:600],
+                )
+    except Exception as exc:
+        logger.warning("CEM root-cause embedding failed (non-fatal): %s", exc)
+
+
+def _embed_proxy_sections(company_id: Optional[int], proxy_id: Optional[int], sections: dict) -> None:
+    """Chunk and embed DEF 14A governance sections (EMBT_PROXY) — the four
+    section texts (exec comp, board, say-on-pay, shareholder proposals) can
+    each run to thousands of characters, so this chunks the same way
+    _embed_risk_factors chunks Item 1A text, rather than truncating to one
+    embedding per filing."""
+    if not proxy_id or not embedding_util.is_available():
+        return
+    try:
+        rows: list = []
+        chunk_idx = 0
+        for section_name, section_text in (sections or {}).items():
+            if not section_text:
+                continue
+            for chunk in embedding_util.chunk_text(section_text):
+                vec = embedding_util.embed_text(f"{section_name}: {chunk}")
+                if vec:
+                    rows.append({
+                        "source_table": "edgar_proxy_filings", "source_id": proxy_id,
+                        "content_type": db.EMBT_PROXY, "chunk_index": chunk_idx,
+                        "company_id": company_id, "embedding": vec,
+                        "text_snippet": chunk[:600],
+                    })
+                chunk_idx += 1
+        if rows:
+            db.save_embeddings_bulk(rows)
+    except Exception as exc:
+        logger.warning("Proxy section embedding failed (non-fatal): %s", exc)
+
+
+def _embed_new_scenario_narratives(company_id: Optional[int], run_id: int) -> None:
+    """Embed scenario_analyses narratives (EMBT_SCENARIO) so chat RAG can
+    surface scenario outlook text, not just risk-factor chunks."""
+    if not run_id or not embedding_util.is_available():
+        return
+    try:
+        for row in db.get_scenario_rows_for_embedding(run_id):
+            if not row.get("narrative"):
+                continue
+            text = f"{row['scenario']} scenario: {row['narrative']}".strip()
+            vec = embedding_util.embed_text(text)
+            if vec:
+                db.save_embedding(
+                    source_table="scenario_analyses", source_id=row["pk_id"],
+                    content_type=db.EMBT_SCENARIO, embedding=vec,
+                    company_id=company_id, text_snippet=text[:600],
+                )
+    except Exception as exc:
+        logger.warning("Scenario narrative embedding failed (non-fatal): %s", exc)
+
+
+def _embed_and_link_risk_narratives(company_id: int, run_id: int) -> None:
+    """Embed each risk's name+category+narrative and use the vectors to find
+    cross-category 'similar_to' relationships the rule-based graph edges
+    (compute_and_save_risk_relationships) can't see — those only ever connect
+    risks already in the same category. Best-effort: a missing OPENAI_API_KEY
+    or pgvector just means this run's graph has no similar_to edges, same as
+    every run before this feature existed."""
+    if not company_id or not run_id or not embedding_util.is_available():
+        return
+    try:
+        rows = db.get_risk_score_rows_for_embedding(run_id)
+        for r in rows:
+            text = f"{r['risk_name']} ({r['category'] or 'Uncategorised'}): {r['narrative'] or ''}".strip()
+            vec = embedding_util.embed_text(text)
+            if vec:
+                db.save_embedding(
+                    source_table="risk_scores", source_id=r["pk_id"],
+                    content_type=db.EMBT_RISK_NARRATIVE, embedding=vec,
+                    company_id=company_id, text_snippet=text[:600],
+                )
+        db.link_similar_risks_by_embedding(company_id, run_id)
+    except Exception as exc:
+        logger.warning("Risk narrative embedding/similarity linking failed (non-fatal): %s", exc)
+
+
 def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[int]:
     """Normalize and save a full_analysis result to the DB. Returns run_id."""
     if not db.is_available():
@@ -1146,6 +1311,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
     scenario_dict = result.get("scenario_analysis", {})
     db.save_scenario_analyses(run_id, scenario_dict)
     db.save_grey_swan(run_id, result.get("grey_swan", {}))
+    _embed_new_scenario_narratives(company_id, run_id)
 
     # Compute and persist graph relationships from this run's risk set
     if company_id and risks_list:
@@ -1154,6 +1320,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
             db.save_scenario_risk_impacts(run_id, risks_list, scenario_dict)
         except Exception as _rel_err:
             logger.warning("Risk relationship computation failed (non-fatal): %s", _rel_err)
+        _embed_and_link_risk_narratives(company_id, run_id)
 
     if result.get("forecast"):
         db.save_forecasts(run_id, req.forecast_metric, result["forecast"])
@@ -1169,6 +1336,72 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
             db.save_forecasts(run_id, "EPS_Diluted", result["analyst_series"]["eps_forecast"])
 
     db.complete_risk_loop_run(run_id)
+
+    # Ingest the entity's filed segment/geography revenue breakdown on every
+    # run, unconditionally — not gated behind SOX materiality (a segment can
+    # be immaterial for SOX purposes and still be exactly what a risk
+    # assessment or the Coverage Cube needs to see). Runs BEFORE the SOX
+    # auto-rescope block below so db.get_sox_segments() has fresh data on
+    # the same run instead of scoping against whatever was last persisted
+    # (or nothing, if this ticker had never hit the manual import path).
+    # Skipped for private tickers (no CIK/SEC filings to parse) and never
+    # fatal to the run itself — a filer with no reportable segments, or a
+    # transient EDGAR fetch failure, is not a reason to fail the whole
+    # analysis.
+    ticker_for_segments = result.get("ticker", req.ticker)
+    _seg_persist_result = None
+    _seg_forecast_result = None
+    if company_id and not db.is_private_ticker(ticker_for_segments):
+        try:
+            import edgar_segments
+            _seg_persist_result = edgar_segments.persist_segments(ticker_for_segments)
+        except Exception as _seg_err:
+            logger.warning("Segment ingestion failed (non-fatal): %s", _seg_err)
+
+        # Segment-level forecasts — walks up to 10 recent 10-Qs to build a
+        # real per-segment quarterly history (a single filing's own
+        # comparatives top out around 4 points, short of the 8-quarter
+        # minimum the ensemble forecast model needs) and persists to
+        # segment_forecasts. Noticeably heavier than the actuals-only
+        # ingestion above (up to ~20 EDGAR requests vs. ~2), so it's still
+        # unconditional but kept as its own try/except: a slow or failed
+        # segment forecast should never take down the analysis, and
+        # shouldn't block the actuals ingestion above from having already
+        # succeeded.
+        try:
+            import edgar_segments
+            _seg_forecast_result = edgar_segments.forecast_segments(ticker_for_segments, run_id=run_id)
+        except Exception as _seg_fc_err:
+            logger.warning("Segment forecasting failed (non-fatal): %s", _seg_fc_err)
+
+        # Segment/geography-specific risk assessment (Coverage Cube Phase 3)
+        # — scores real segment concentration/decline/divergence risk from
+        # the actuals + forecast just gathered above, and writes them into
+        # the SAME risk_scores table the consolidated risk register uses
+        # (tagged segment_type/segment_name, source_framework='segment_risk'),
+        # so they show up in Stage 2's register and the Coverage Cube
+        # alongside consolidated risks rather than living in a side table
+        # nothing else reads.
+        if _seg_persist_result and _seg_persist_result.get("extracted"):
+            try:
+                import segment_risk_tool
+                consolidated_growth = (result.get("financial_ratios") or {}).get("revenue_growth")
+                consolidated_growth_pct = consolidated_growth * 100 if consolidated_growth is not None else None
+                segment_risks = segment_risk_tool.assess_segment_risks(
+                    _seg_persist_result, _seg_forecast_result,
+                    consolidated_revenue_growth_pct=consolidated_growth_pct,
+                )
+                if segment_risks:
+                    db.save_risk_scores(run_id, segment_risks)
+                    # Mutating `result` here reaches the caller: predictive_full_analysis()
+                    # holds the same dict and returns it as the API response body, so this
+                    # is how a LIVE run (not just a DB-backed reload) gets segment risks in
+                    # front of the frontend — see mcp-data.js's mapSegmentRisks(), which
+                    # reads this key to fold them into output.s2.risks for Stage 3 and the
+                    # Sankey to see, closing the loop Phase 3 otherwise left DB-only.
+                    result["segment_risks"] = segment_risks
+            except Exception as _seg_risk_err:
+                logger.warning("Segment risk assessment failed (non-fatal): %s", _seg_risk_err)
 
     # Auto-rescope SOX if a config exists for this company + current FY
     if company_id:
@@ -1679,7 +1912,8 @@ def rss_news(req: RssRequest):
                 "company_name": company_name,
             })
             if company_id:
-                db.save_rss_articles_full(company_id, result)
+                new_articles = db.save_rss_articles_full(company_id, result)
+                _embed_new_rss_articles(company_id, new_articles)
 
         return result
     except ValueError as e:
@@ -1714,7 +1948,7 @@ def rss_ingest(req: RssIngestRequest):
 
         # Persist graded articles to DB for velocity trending (best-effort)
         if db.is_available() and result.get("feeds"):
-            db.save_rss_articles_full(None, {"feeds": [
+            new_articles = db.save_rss_articles_full(None, {"feeds": [
                 {
                     "name": r["feed"]["name"],
                     "url":  r["feed"]["url"],
@@ -1730,6 +1964,7 @@ def rss_ingest(req: RssIngestRequest):
                 }
                 for r in result["feeds"]
             ]})
+            _embed_new_rss_articles(None, new_articles)
 
         return result
     except Exception as e:
@@ -2171,12 +2406,13 @@ def edgar_proxy(req: RiskFactorsRequest):
                 "sections": truncated,
             })
             if company_id:
-                db.save_edgar_proxy(
+                proxy_id = db.save_edgar_proxy(
                     company_id,
                     f["date"],
                     f["accession_number"],
                     sections,
                 )
+                _embed_proxy_sections(company_id, proxy_id, sections)
 
         result = {
             "ticker": req.ticker.upper(),
@@ -2292,7 +2528,8 @@ def persist_loop_completion(req: LoopPersistRequest):
 
     db.save_loop_log(req.run_id, req.loop_log)
     db.save_audit_objectives(req.run_id, req.objectives)
-    db.save_cem_events(req.run_id, req.cem_events)
+    new_cem_rows = db.save_cem_events(req.run_id, req.cem_events)
+    _embed_new_cem_root_causes(req.run_id, new_cem_rows)
     db.save_manual_audits(req.run_id, req.manual_audits)
 
     # Resolve CEM events → structured risk/control FK edges (graph layer)
@@ -2862,7 +3099,7 @@ def save_last_loop_state(body: Dict[str, Any] = Body(...), ticker: Optional[str]
 
     Accepts the complete loop blob from app.jsx (output, stageState, gateState,
     loopLog, livefacts, perRiskAppetite, riskApprovals, scopeApprovals, manualAudits,
-    narrativeResult, openStages, profile). Stored as JSONB in app_config table,
+    narrativeResult, hubFocus, profile). Stored as JSONB in app_config table,
     keyed per-ticker — see _loop_state_key. Returns {saved: false} gracefully
     when the database is unavailable.
     """

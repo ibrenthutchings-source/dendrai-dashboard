@@ -557,9 +557,16 @@ function getPermissionSections() {
       const seen = new Set();
       const screens = [];
       section.items.forEach(item => {
-        if (item.adminOnly || seen.has(item.id)) return;
-        seen.add(item.id);
-        screens.push({ id: item.id, label: item.govTab ? section.label : item.l, icon: item.icon });
+        // permissionScreenId lets a nav item piggyback on another item's
+        // backend permission (e.g. Concept Links shares Approval Inbox's
+        // "approvals" scope — see nav.jsx) — resolving it here, not just
+        // item.id, is what collapses the two into one real settable row
+        // instead of a second row whose checkbox writes to a screen_id
+        // nothing on the backend ever reads.
+        const permId = item.permissionScreenId || item.id;
+        if (item.adminOnly || seen.has(permId)) return;
+        seen.add(permId);
+        screens.push({ id: permId, label: item.govTab ? section.label : item.l, icon: item.icon });
       });
       return { label: section.label, screens };
     })

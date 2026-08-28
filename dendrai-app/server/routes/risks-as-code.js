@@ -17,17 +17,36 @@ const VEL_LABEL   = { '-1': 'improving', '0': 'stable', '1': 'slightly-elevated'
 const ISO_TREAT   = { R: 'risk_modification', A: 'risk_modification', G: 'risk_retention' }
 const COSO_RESP   = { R: 'Reduce', A: 'Reduce', G: 'Accept' }
 
+// COSO ERM 2017's real five components and 20 principles — ported verbatim
+// 2026-08-26 from project/agentic-tools/risks_as_code.py's _COSO_PRINCIPLES
+// (reviewed and approved there 2026-08-25). This table used to carry IC-IF
+// 2013 / ERM *2004* component names ('Risk Assessment', 'Risk Response' —
+// not real ERM 2017 components), a silent `principle: 9` default for any
+// unmapped category, and three dead keys (Macro, Supply Chain, Regulatory)
+// that risk-engine.js's CATEGORY_IMPACT never emits — while still labelling
+// its own output 'COSO ERM 2017' below. Port the Python table verbatim if it
+// changes again; do not let the two drift apart a second time.
 const COSO_PRINCIPLES = {
-  Revenue:             { principle: 9,  label: 'Identifies Risk',              component: 'Risk Assessment' },
-  'Financial Reporting':{ principle: 11, label: 'Assesses Severity of Risk',   component: 'Risk Assessment' },
-  Cybersecurity:       { principle: 13, label: 'Implements Risk Responses',    component: 'Risk Response' },
-  Operational:         { principle: 10, label: 'Analyzes Risk',                component: 'Risk Assessment' },
-  Governance:          { principle: 3,  label: 'Defines Desired Culture',      component: 'Governance & Culture' },
-  Macro:               { principle: 6,  label: 'Analyzes Business Context',    component: 'Strategy & Objective-Setting' },
-  'Supply Chain':      { principle: 10, label: 'Analyzes Risk',                component: 'Risk Assessment' },
-  Regulatory:          { principle: 8,  label: 'Evaluates Alternative Strategies', component: 'Strategy & Objective-Setting' },
+  Revenue:               { principle: 10, label: 'Identifies Risk',                        component: 'Performance' },
+  'Financial Reporting':  { principle: 11, label: 'Assesses Severity of Risk',              component: 'Performance' },
+  Operational:            { principle: 10, label: 'Identifies Risk',                        component: 'Performance' },
+  Supply:                 { principle: 12, label: 'Prioritizes Risks',                      component: 'Performance' },
+  Cybersecurity:          { principle: 13, label: 'Implements Risk Responses',              component: 'Performance' },
+  'Trade Compliance':     { principle: 8,  label: 'Evaluates Alternative Strategies',        component: 'Strategy & Objective-Setting' },
+  ESG:                    { principle: 4,  label: 'Demonstrates Commitment to Core Values',  component: 'Governance & Culture' },
+  Compliance:             { principle: 7,  label: 'Defines Risk Appetite',                   component: 'Strategy & Objective-Setting' },
+  Legal:                  { principle: 14, label: 'Develops Portfolio View',                 component: 'Performance' },
+  Strategic:              { principle: 9,  label: 'Formulates Business Objectives',          component: 'Strategy & Objective-Setting' },
+  Governance:             { principle: 3,  label: 'Defines Desired Culture',                 component: 'Governance & Culture' },
 }
-const COSO_DEFAULT = { principle: 9, label: 'Identifies Risk', component: 'Risk Assessment' }
+// Explicit sentinel, not a silent default — a category with no entry above
+// (there shouldn't be one; all 10 risk-engine.js categories are covered) is
+// visibly Unmapped, never quietly assigned principle 9.
+const COSO_UNMAPPED = { principle: null, label: 'Unmapped', component: 'Unmapped' }
+// P13 "Implements Risk Responses" sits in the Performance component
+// structurally, for every risk regardless of category — not a per-category
+// lookup, so it's named here rather than left as a literal at the call site.
+const RISK_RESPONSE_COMPONENT = 'Performance'
 
 function indexByRisk(items, ...keys) {
   const idx = {}
@@ -211,7 +230,7 @@ function toCosoErm({ ticker, risks, objectives, maps, ratios, signals, industry,
     const residual = parseFloat(risk.residual ?? score)
     const velocity = risk.velocity ?? 0
     const category = risk.category || 'Operational'
-    const coso     = COSO_PRINCIPLES[category] || COSO_DEFAULT
+    const coso     = COSO_PRINCIPLES[category] || COSO_UNMAPPED
 
     const linkedObjs = objByRisk[riskId] || []
     const linkedMaps = mapByRisk[riskId] || []
@@ -255,7 +274,7 @@ function toCosoErm({ ticker, risks, objectives, maps, ratios, signals, industry,
       velocity_label: VEL_LABEL[String(velocity)] || String(velocity),
       peer_benchmark: risk.peer || 'in-line',
       risk_response: {
-        coso_component: 'Performance',
+        coso_component: RISK_RESPONSE_COMPONENT,
         strategy: COSO_RESP[rag] || 'Accept',
         owner: linkedMaps[0]?.owner || 'Risk Owner',
         actions: linkedMaps.map(m => ({

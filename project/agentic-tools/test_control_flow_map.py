@@ -103,13 +103,13 @@ def test_build_control_flow_map_attaches_framework_metadata_to_control_nodes():
     control_meta = {"VM-DENY-001": {
         "name": "Vendor bank change requires approver",
         "soc2_criteria": ["CC6.1"], "nist_800_53": ["AC-2"],
-        "iso_27001": ["A.9.2"], "coso_component": "Control Activities",
+        "iso_27001": ["A.9.2"], "coso_component": "Performance",
     }}
     result = db._build_control_flow_map(rows, control_meta)
 
     ctrl_node = _nodes_by_id(result)["ctrl:VM-DENY-001"]
     assert ctrl_node["soc2_criteria"] == ["CC6.1"]
-    assert ctrl_node["coso_component"] == "Control Activities"
+    assert ctrl_node["coso_component"] == "Performance"
 
 
 def test_build_control_flow_map_null_fields_fall_back_to_unknown():
@@ -171,7 +171,7 @@ def test_get_control_flow_map_passes_days_window_and_only_queries_controls_that_
     results = [
         [("SAP", "HIGH", "ESCALATE", ["VM-DENY-001"])],
         [],
-        [("VM-DENY-001", "Vendor bank change", ["CC6.1"], [], [], "Control Activities")],
+        [("VM-DENY-001", "Vendor bank change", ["CC6.1"], [], [], "Performance")],
     ]
     monkeypatch.setattr(db, "is_available", lambda: True)
     monkeypatch.setattr(db, "_conn", lambda: _FakeConnCtx(recorder, results))

@@ -8,11 +8,20 @@ Lets a user supply financial data the risk pipeline can't get from SEC EDGAR:
 
 All input adapters (Excel/CSV today; PDF and API connectors phased in later,
 see IngestionAdapter below) converge on one common shape — a "line item":
-    {raw_label, metric, confidence, period_start, period_end, value, granularity}
+    {raw_label, metric, confidence, period_start, period_end, value, granularity,
+     segment_type, segment_name}
 `metric` is mapped onto the same internal taxonomy edgar_tool.XBRL_METRICS
 already uses (Revenue, NetIncome, TotalAssets, ...) so the ratio/Beneish/
 Altman models in predictive_analytics_tool.py need zero changes to consume
 manually-entered data — see db.get_manual_financials / build_company_xbrl.
+
+`segment_type` ('geography' | 'business_segment') and `segment_name` are
+optional and both None on an ordinary consolidated line item. When present,
+commit_line_items() routes the row to db.upsert_sox_segment (the same
+sox_financial_segments table edgar_segments.py populates from filed XBRL,
+tagged source='filed') instead of the consolidated xbrl_metric_series path,
+tagged source='uploaded' — so private companies and non-filers can populate
+the Risk Coverage Cube's operating-unit axis the same way public filers do.
 
 Two spreadsheet layouts are auto-detected:
   1. Template      — columns: metric | period_start | period_end | value | [granularity]
@@ -110,6 +119,18 @@ def map_label_to_metric(label: str) -> tuple[Optional[str], str]:
 # vice versa) purely because form-string membership is the primary gate there.
 _MANUAL_FORM = {"annual": "MANUAL-A", "quarterly": "MANUAL-Q", "monthly": "MANUAL-M"}
 
+# Metrics sox_financial_segments can carry, and the column each maps to —
+# mirrors the actuals edgar_segments.py extracts from filed XBRL, so an
+# uploaded segment breakdown lands in the same shape as a filed one.
+_SEGMENT_METRIC_FIELD = {
+    "Revenue": "revenue",
+    "GrossProfit": "gross_profit",
+    "OperatingIncome": "operating_income",
+    "NetIncome": "net_income",
+    "TotalAssets": "assets",
+}
+_SEGMENT_TYPES = {"geography", "business_segment"}
+
 
 def _infer_granularity(start: Optional[date], end: Optional[date]) -> str:
     if not start or not end:
@@ -174,11 +195,13 @@ def parse_spreadsheet(content: bytes, filename: str) -> dict:
                 return c
         return None
 
-    metric_col = _col("metric", "line_item", "account", "gl_account", "label", "item")
-    start_col  = _col("period_start", "start", "start_date")
-    end_col    = _col("period_end", "end", "end_date", "period", "date", "as_of")
-    value_col  = _col("value", "amount")
-    gran_col   = _col("granularity", "period_type", "frequency")
+    metric_col   = _col("metric", "line_item", "account", "gl_account", "label", "item")
+    start_col    = _col("period_start", "start", "start_date")
+    end_col      = _col("period_end", "end", "end_date", "period", "date", "as_of")
+    value_col    = _col("value", "amount")
+    gran_col     = _col("granularity", "period_type", "frequency")
+    seg_type_col = _col("segment_type", "segment_axis", "dimension")
+    seg_name_col = _col("segment_name", "segment", "operating_unit", "geography", "business_segment")
 
     if not metric_col:
         raise ValueError(
@@ -188,10 +211,12 @@ def parse_spreadsheet(content: bytes, filename: str) -> dict:
         )
 
     if value_col and end_col:
-        line_items = _parse_template(df, metric_col, start_col, end_col, value_col, gran_col)
+        line_items = _parse_template(df, metric_col, start_col, end_col, value_col, gran_col,
+                                      seg_type_col, seg_name_col)
         fmt = "template"
     else:
-        line_items = _parse_trial_balance(df, metric_col, orig_columns, norm_columns)
+        line_items = _parse_trial_balance(df, metric_col, orig_columns, norm_columns,
+                                           seg_type_col, seg_name_col)
         fmt = "trial_balance"
 
     unmapped = sorted({li["raw_label"] for li in line_items if li["metric"] is None})
@@ -203,7 +228,31 @@ def parse_spreadsheet(content: bytes, filename: str) -> dict:
     }
 
 
-def _parse_template(df, metric_col, start_col, end_col, value_col, gran_col) -> list[dict]:
+def _segment_dims(row, seg_type_col, seg_name_col) -> tuple[Optional[str], Optional[str]]:
+    """Read the optional segment dimension off a row. A column literally named
+    'geography' or 'business_segment' implies its own segment_type even
+    without a separate segment_type column; otherwise segment_type defaults
+    to 'business_segment' (geography names are usually self-evident, but
+    ambiguous free text isn't, so an explicit segment_type column is honored
+    first when present)."""
+    if not seg_name_col:
+        return None, None
+    name = str(row.get(seg_name_col, "")).strip()
+    if not name or name.lower() in ("nan", "none", ""):
+        return None, None
+    if seg_type_col:
+        seg_type = str(row.get(seg_type_col, "")).strip().lower()
+    elif seg_name_col in _SEGMENT_TYPES:
+        seg_type = seg_name_col
+    else:
+        seg_type = ""
+    if seg_type not in _SEGMENT_TYPES:
+        seg_type = "business_segment"
+    return seg_type, name
+
+
+def _parse_template(df, metric_col, start_col, end_col, value_col, gran_col,
+                     seg_type_col=None, seg_name_col=None) -> list[dict]:
     items = []
     for _, row in df.iterrows():
         raw_label = str(row.get(metric_col, "")).strip()
@@ -221,19 +270,22 @@ def _parse_template(df, metric_col, start_col, end_col, value_col, gran_col) -> 
         if granularity not in ("annual", "quarterly", "monthly"):
             granularity = _infer_granularity(start, end)
         metric, confidence = map_label_to_metric(raw_label)
+        segment_type, segment_name = _segment_dims(row, seg_type_col, seg_name_col)
         items.append({
             "raw_label": raw_label, "metric": metric, "confidence": confidence,
             "period_start": start.isoformat() if start else None,
             "period_end": end.isoformat(), "value": value, "granularity": granularity,
+            "segment_type": segment_type, "segment_name": segment_name,
         })
     return items
 
 
-def _parse_trial_balance(df, metric_col, orig_columns, norm_columns) -> list[dict]:
+def _parse_trial_balance(df, metric_col, orig_columns, norm_columns,
+                          seg_type_col=None, seg_name_col=None) -> list[dict]:
     """Wide layout: one row per line item, one column per month-end date."""
     date_cols = []
     for orig, norm in zip(orig_columns, norm_columns):
-        if norm == metric_col:
+        if norm == metric_col or norm in (seg_type_col, seg_name_col):
             continue
         d = _coerce_date(orig)
         if d:
@@ -245,6 +297,7 @@ def _parse_trial_balance(df, metric_col, orig_columns, norm_columns) -> list[dic
         if not raw_label or raw_label.lower() in ("nan", "none", ""):
             continue
         metric, confidence = map_label_to_metric(raw_label)
+        segment_type, segment_name = _segment_dims(row, seg_type_col, seg_name_col)
         for col, end in date_cols:
             try:
                 value = float(row.get(col))
@@ -255,6 +308,7 @@ def _parse_trial_balance(df, metric_col, orig_columns, norm_columns) -> list[dic
                 "period_start": _month_start(end).isoformat(),
                 "period_end": _month_end(end).isoformat(),
                 "value": value, "granularity": "monthly",
+                "segment_type": segment_type, "segment_name": segment_name,
             })
     return items
 
@@ -388,20 +442,31 @@ class IngestionAdapter:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def commit_line_items(company_id: int, line_items: list[dict]) -> dict:
-    """Persist reviewed line items via db.upsert_xbrl_series +
-    db.upsert_manual_data_points, grouped by metric so each metric gets its
-    own xbrl_metric_series row exactly like the live EDGAR write path does.
-    Rows still missing a metric (unmapped in review) are skipped, not guessed."""
+    """Persist reviewed line items. Ordinary (non-segment) rows go through
+    db.upsert_xbrl_series + db.upsert_manual_data_points, grouped by metric so
+    each metric gets its own xbrl_metric_series row exactly like the live
+    EDGAR write path does. Rows carrying a segment_type/segment_name (an
+    operating-unit breakdown the user is supplying by hand, e.g. a private
+    company with no XBRL filings) are instead routed to
+    db.upsert_sox_segment — the same sox_financial_segments table
+    edgar_segments.py populates from filed XBRL — tagged source='uploaded' so
+    it's distinguishable from a filed breakdown (source='filed') at the point
+    of use. Rows still missing a metric (unmapped in review) are skipped, not
+    guessed."""
     import db
 
     by_metric: dict[str, list[dict]] = {}
+    segment_rows: list[dict] = []
     skipped = 0
     for li in line_items:
         metric = li.get("metric")
         if not metric or metric not in XBRL_METRICS:
             skipped += 1
             continue
-        by_metric.setdefault(metric, []).append(li)
+        if li.get("segment_type") and li.get("segment_name"):
+            segment_rows.append(li)
+        else:
+            by_metric.setdefault(metric, []).append(li)
 
     saved = 0
     for metric, items in by_metric.items():
@@ -421,4 +486,55 @@ def commit_line_items(company_id: int, line_items: list[dict]) -> dict:
         db.upsert_manual_data_points(series_id, rows)
         saved += len(rows)
 
-    return {"metrics_saved": len(by_metric), "data_points_saved": saved, "skipped_unmapped": skipped}
+    segments_saved = _commit_segment_rows(company_id, segment_rows)
+
+    return {
+        "metrics_saved": len(by_metric), "data_points_saved": saved,
+        "skipped_unmapped": skipped, "segments_saved": segments_saved,
+    }
+
+
+def _commit_segment_rows(company_id: int, segment_rows: list[dict]) -> int:
+    """Fold segment-tagged line items into sox_financial_segments rows, one
+    per (fiscal_year, segment_type, segment_name), combining whichever
+    _SEGMENT_METRIC_FIELD metrics were supplied for that slice. revenue_pct is
+    the row's share of the segment_type's total revenue *within this upload*
+    — a same-type consolidated figure isn't guaranteed to exist here the way
+    it does in edgar_segments.py's reconciliation, so this is a mix-share,
+    not a reconciled-to-consolidated percentage."""
+    import db
+
+    by_key: dict[tuple, dict] = {}
+    for li in segment_rows:
+        field = _SEGMENT_METRIC_FIELD.get(li["metric"])
+        if not field:
+            continue
+        period_end = li.get("period_end") or ""
+        # "FY{year}" — matches the convention every other fiscal_year-keyed
+        # lookup in this codebase uses (see edgar_segments.py's fetch_segments
+        # for the full rationale); a bare year here would silently never
+        # match a SOX-scoping lookup for the same fiscal year.
+        fiscal_year = f"FY{period_end[:4]}" if period_end else None
+        key = (fiscal_year, li["segment_type"], li["segment_name"])
+        by_key.setdefault(key, {
+            "fiscal_year": fiscal_year,
+            "segment_type": li["segment_type"],
+            "segment_name": li["segment_name"],
+            "source": "uploaded",
+        })[field] = li.get("value")
+
+    totals: dict[tuple, float] = {}
+    for (fiscal_year, segment_type, _name), seg in by_key.items():
+        rev = seg.get("revenue")
+        if rev is not None:
+            totals[(fiscal_year, segment_type)] = totals.get((fiscal_year, segment_type), 0.0) + rev
+
+    saved = 0
+    for (fiscal_year, segment_type, _name), seg in by_key.items():
+        total = totals.get((fiscal_year, segment_type))
+        rev = seg.get("revenue")
+        if rev is not None and total:
+            seg["revenue_pct"] = round(rev / total * 100, 2)
+        db.upsert_sox_segment(company_id, None, seg)
+        saved += 1
+    return saved

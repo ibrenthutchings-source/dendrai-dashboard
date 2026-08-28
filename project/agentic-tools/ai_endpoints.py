@@ -42,6 +42,7 @@ from pydantic import BaseModel
 
 import claude_client
 import db
+import embedding_util
 from auth_endpoints import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -75,56 +76,13 @@ _REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES = True
 # ── Embedding helpers ─────────────────────────────────────────────────────────
 # Used by narrative_analysis to chunk and index EDGAR text so that future calls
 # can retrieve relevant snippets from pgvector instead of re-sending entire docs.
+# The actual OpenAI client + chunker live in embedding_util.py so every other
+# module that writes to pgvector (RSS ingestion, scenario analysis, proxy
+# parsing, CEM, CaC/PaC generation) shares the same implementation instead of
+# each hand-rolling its own.
 
-_openai_client = None
-
-
-def _get_openai():
-    global _openai_client
-    if _openai_client is not None:
-        return _openai_client
-    try:
-        import openai  # optional dependency; pip install openai
-        key = os.environ.get("OPENAI_API_KEY", "")
-        if key:
-            _openai_client = openai.OpenAI(api_key=key)
-    except ImportError:
-        pass
-    return _openai_client
-
-
-def _embed_text(text: str) -> "Optional[list]":
-    """Return a text-embedding-3-small vector, or None when OpenAI is unavailable."""
-    client = _get_openai()
-    if client is None:
-        return None
-    try:
-        resp = client.embeddings.create(model="text-embedding-3-small", input=text[:8191])
-        return resp.data[0].embedding
-    except Exception as exc:
-        logger.warning("embedding failed: %s", exc)
-        return None
-
-
-def _chunk_text(text: str, chunk_chars: int = 600, overlap: int = 80) -> "list[str]":
-    """Split text into overlapping chunks, breaking at paragraph/sentence boundaries."""
-    if not text:
-        return []
-    chunks: list = []
-    start = 0
-    while start < len(text):
-        end = min(start + chunk_chars, len(text))
-        if end < len(text):
-            for sep in ("\n\n", "\n", ". ", " "):
-                pos = text.rfind(sep, start + chunk_chars // 2, end)
-                if pos != -1:
-                    end = pos + len(sep)
-                    break
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        start = end - overlap
-    return chunks
+_embed_text = embedding_util.embed_text
+_chunk_text = embedding_util.chunk_text
 
 
 def _embed_risk_factors(ticker: str, analysis_id: "Optional[int]", rf_texts: list) -> None:
@@ -152,6 +110,25 @@ def _embed_risk_factors(ticker: str, analysis_id: "Optional[int]", rf_texts: lis
     if rows:
         saved = db.save_embeddings_bulk(rows)
         logger.info("saved %d risk factor embeddings for %s", saved, ticker)
+
+
+def _embed_ai_summary(analysis_id: "Optional[int]", ticker: str, text: str) -> None:
+    """Embed a human-facing AI narrative (persona brief / audit report) as
+    EMBT_AI_SUMMARY, so chat RAG can retrieve prior narratives instead of
+    only ever surfacing 10-K risk-factor chunks. Best-effort — never raises."""
+    if not analysis_id or not text or not db.is_available():
+        return
+    try:
+        company_id = db.get_company_id(ticker) if ticker else None
+        vec = _embed_text(text[:8000])
+        if vec:
+            db.save_embedding(
+                source_table="ai_analyses", source_id=analysis_id,
+                content_type=db.EMBT_AI_SUMMARY, embedding=vec,
+                company_id=company_id, text_snippet=text[:600],
+            )
+    except Exception as exc:
+        logger.debug("AI summary embedding skipped (non-fatal): %s", exc)
 
 
 def _require_ai():
@@ -914,6 +891,7 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
         sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
         input_hash=input_hash,
     )
+    _embed_ai_summary(analysis_id, req.ticker, f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
     return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
 
 
@@ -977,6 +955,7 @@ def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_us
         sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
         input_hash=input_hash,
     )
+    _embed_ai_summary(analysis_id, req.ticker, markdown)
     return {
         "ticker": req.ticker, "markdown": markdown,
         "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None},

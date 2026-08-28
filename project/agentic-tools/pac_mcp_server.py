@@ -78,6 +78,7 @@ from pac_endpoints import (
     _PROCESS_LABELS,
     _REGO_DEFAULTS,
     _valid_processes,
+    embed_pac_module,
 )
 
 mcp = FastMCP("policy-as-code")
@@ -251,6 +252,7 @@ def pac_save_module(
         module_id = db.save_pac_module(proc, mod_name, content, ver)
         if not module_id:
             return "Error: Database insert failed"
+        embed_pac_module(module_id, proc, content)
 
         return json.dumps({
             "saved": True,

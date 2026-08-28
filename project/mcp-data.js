@@ -37,8 +37,20 @@ window.MCP = (function () {
 
   function _postAi(path, body) { return _post(path, body, AI_TIMEOUT_MS); }
 
-  async function _get(path) {
-    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(5000) });
+  // 5s was too aggressive for every _get caller sharing one budget — some
+  // endpoints do real work server-side (e.g. exceptionsDriftSummary's live
+  // PSI computation across every system_source x metric pair), and under
+  // any real network/DB latency that surfaced to the user as a bare
+  // "TimeoutError: signal timed out" with no indication of which call or
+  // why. Default raised to a more realistic budget; slow callers can still
+  // pass a longer one explicitly, same override pattern _post already has.
+  async function _get(path, timeoutMs = 20_000) {
+    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
     return res.json();
   }
 
@@ -122,6 +134,47 @@ window.MCP = (function () {
     return Array.from({ length: 6 }, (_, k) => {
       const frac = k / 5;
       return +Math.max(1, Math.min(25, base + (score - base) * frac)).toFixed(1);
+    });
+  }
+
+  /**
+   * Segment/geography-specific risks (segment_risk_tool.py, Risk Coverage
+   * Cube Phase 3) — real Concentration/Decline/Divergence risk scored from
+   * a segment's own filed revenue, distinct from every templateRisk
+   * (there's no per-segment template — see that module's docstring for
+   * why). mergeRiskScores() above only overlays data onto EXISTING
+   * template risks by index/category match, so it silently drops these;
+   * this instead ADAPTS them into the same risk-object shape the rest of
+   * the app expects (id/name/category/score/rag/velocity/narrative/hist)
+   * so they can be concatenated onto the merged array as real additional
+   * risks, not merged into an existing one.
+   *
+   * Fields a segment risk has no basis for are left honestly absent rather
+   * than guessed: no impact/likelihood decomposition (the score isn't an
+   * impact x likelihood product here), no inferred control effectiveness
+   * (ce: null — no basis to infer one), no peer benchmark.
+   *
+   * @param {object} mcpResult  Full analysis result (may carry a
+   *                            `segment_risks` key — only present when the
+   *                            backend actually extracted segment data)
+   * @returns {object[]} Risk-shaped objects ready to concatenate onto the
+   *                      merged consolidated risk array
+   */
+  function mapSegmentRisks(mcpResult) {
+    return (mcpResult?.segment_risks || []).map(r => {
+      const score = r.score != null ? +r.score.toFixed(1) : 0;
+      const base  = r.base_score != null ? +r.base_score.toFixed(1) : score;
+      return {
+        id: r.risk_ref, name: r.name, category: r.category,
+        impact: null, likelihood: null,
+        score, base, rag: r.rag_status || 'G',
+        velocity: r.velocity ?? 0, ce: null,
+        inherent: score, residual: score, peer: 'in-line',
+        hist: _mkHist(base, score),
+        narrative: r.narrative || '',
+        segment_type: r.segment_type || null,
+        segment_name: r.segment_name || null,
+      };
     });
   }
 
@@ -1009,6 +1062,7 @@ window.MCP = (function () {
     checkHealth,
     fetchFullAnalysis,
     mergeRiskScores,
+    mapSegmentRisks,
     mapRssSignals,
     mapFredSignals,
     fetchRiskFactors,

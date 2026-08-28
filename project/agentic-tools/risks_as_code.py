@@ -34,6 +34,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import db
+import embedding_util
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/risks-as-code")
@@ -86,20 +87,195 @@ _VELOCITY_LABEL = {
      3: "critical",
 }
 
+# COSO ERM 2017's real five components and 20 principles (the previous table
+# used "Risk Assessment"/"Risk Response" — those are IC-IF 2013 / ERM *2004*
+# component names, not 2017's Governance & Culture / Strategy & Objective-
+# Setting / Performance / Review & Revision / Information, Communication &
+# Reporting). Reviewed and approved 2026-08-25 — see conversation for the
+# per-row rationale; several are judgment calls (a risk category maps to the
+# ERM stage most associated with how that risk type is identified/managed,
+# not a 1:1 taxonomy — multiple categories legitimately sharing a principle
+# is expected, not a bug).
+#
+# "Macro" was removed: it's not a risk category the engine or any manual-entry
+# path ever produces — it's macro-economic context (FRED indicators) that
+# adjusts OTHER risks' scores, not a risk in its own right (see
+# adjustRiskScores in app.jsx). "Regulatory" and "Supply Chain" were removed
+# as genuinely unreachable dead keys: not in risk-engine.js's CATEGORY_IMPACT
+# (the 10 categories the loop actually emits) and not in FW_MOCK_RISKS (the
+# only other source AdjustRiskModal's category dropdown draws from) —
+# Regulatory's ground is already covered by Compliance/Trade Compliance/Legal,
+# and Supply Chain was a near-miss of the real "Supply" key.
 _COSO_PRINCIPLES: Dict[str, Dict] = {
-    "Revenue":             {"principle": 9,  "label": "Identifies Risk",              "component": "Risk Assessment"},
-    "Financial Reporting": {"principle": 11, "label": "Assesses Severity of Risk",    "component": "Risk Assessment"},
-    "Cybersecurity":       {"principle": 13, "label": "Implements Risk Responses",    "component": "Risk Response"},
-    "Operational":         {"principle": 10, "label": "Analyzes Risk",                "component": "Risk Assessment"},
-    "Governance":          {"principle": 3,  "label": "Defines Desired Culture",      "component": "Governance & Culture"},
-    "Macro":               {"principle": 6,  "label": "Analyzes Business Context",    "component": "Strategy & Objective-Setting"},
-    "Supply Chain":        {"principle": 10, "label": "Analyzes Risk",                "component": "Risk Assessment"},
-    "Regulatory":          {"principle": 8,  "label": "Evaluates Alternative Strategies", "component": "Strategy & Objective-Setting"},
+    "Revenue":             {"principle": 10, "label": "Identifies Risk",                    "component": "Performance"},
+    "Financial Reporting": {"principle": 11, "label": "Assesses Severity of Risk",          "component": "Performance"},
+    "Operational":         {"principle": 10, "label": "Identifies Risk",                    "component": "Performance"},
+    "Supply":              {"principle": 12, "label": "Prioritizes Risks",                  "component": "Performance"},
+    "Cybersecurity":       {"principle": 13, "label": "Implements Risk Responses",          "component": "Performance"},
+    "Trade Compliance":    {"principle": 8,  "label": "Evaluates Alternative Strategies",   "component": "Strategy & Objective-Setting"},
+    "ESG":                 {"principle": 4,  "label": "Demonstrates Commitment to Core Values", "component": "Governance & Culture"},
+    "Compliance":          {"principle": 7,  "label": "Defines Risk Appetite",              "component": "Strategy & Objective-Setting"},
+    "Legal":               {"principle": 14, "label": "Develops Portfolio View",             "component": "Performance"},
+    "Strategic":           {"principle": 9,  "label": "Formulates Business Objectives",      "component": "Strategy & Objective-Setting"},
+    "Governance":          {"principle": 3,  "label": "Defines Desired Culture",             "component": "Governance & Culture"},
 }
-_COSO_DEFAULT = {"principle": 9, "label": "Identifies Risk", "component": "Risk Assessment"}
+# Explicit, visible fallback — replaces the old silent default (which quietly
+# stamped every unrecognised category as principle 9 "Identifies Risk",
+# manufacturing a false concentration in one component). An uncategorised
+# risk now renders as its own "Unmapped" bucket instead of being absorbed
+# into a real principle it was never actually assessed against.
+_COSO_UNMAPPED = {"principle": None, "label": "Unmapped", "component": "Unmapped"}
+
+# COSO's classic objective categories (Operations / Reporting / Compliance),
+# plus Strategic (added in the 2013 IC-IF update and carried into ERM 2017).
+# This is the Risk Coverage Cube's Y-axis — a second, independent judgment
+# call from the component mapping above, so it's kept in its own dict rather
+# than folded into _COSO_PRINCIPLES. Reviewed and approved 2026-08-25
+# (4-category model): Strategic risks are their own row; Revenue, Operational,
+# Supply and Cybersecurity are read as core-operations risk (day-to-day
+# ability to run the business); Financial Reporting stands alone as
+# Reporting; Trade Compliance, Compliance, Legal, ESG and Governance are
+# grouped as Compliance — each is fundamentally about conforming to an
+# external or internal standard rather than running or reporting the
+# business, ESG and Governance included (ESG risk here is predominantly
+# disclosure/regulatory-driven; Governance risk is about oversight failing
+# to meet an expected standard, not a strategy or reporting failure).
+_OBJECTIVE_CATEGORY: Dict[str, str] = {
+    "Strategic":           "Strategic",
+    "Revenue":             "Operations",
+    "Operational":         "Operations",
+    "Supply":              "Operations",
+    "Cybersecurity":       "Operations",
+    "Financial Reporting": "Reporting",
+    "Trade Compliance":    "Compliance",
+    "Compliance":          "Compliance",
+    "Legal":               "Compliance",
+    "ESG":                 "Compliance",
+    "Governance":          "Compliance",
+}
+_OBJECTIVE_UNMAPPED = "Unmapped"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COSO Internal Control — Integrated Framework (2013) — still current, and the
+# framework that actually has a "cube": COSO replaced the cube with a helix/
+# ribbon diagram when it published ERM 2017 above. Added 2026-08-26, reviewed
+# and approved, ALONGSIDE the ERM 2017 tables above, not instead of them — the
+# Risk Coverage Cube now offers both views rather than mislabelling an
+# ERM-2017 cube that actually mixed in ERM 2004's objective categories.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ICIF_COMPONENTS = [
+    "Control Environment",
+    "Risk Assessment",
+    "Control Activities",
+    "Information & Communication",
+    "Monitoring Activities",
+    "Unmapped",
+]
+
+# IC-IF's real three objective categories, plus an Unmapped catch-all for any
+# risk category this dict doesn't yet know about (same purpose as
+# _OBJECTIVE_UNMAPPED above). NOT the same list as the ERM-2004-shaped
+# OBJECTIVE_CATEGORIES in risk_coverage_cube.py (pre-correction) — that one
+# included "Strategic", which belongs to ERM 2004/2013's IC-IF update carried
+# it forward for entities that track it separately, but classic IC-IF 2013
+# itself has only these three.
+ICIF_OBJECTIVES = ["Operations", "Reporting", "Compliance", "Unmapped"]
+
+# Same 11 risk categories as _OBJECTIVE_CATEGORY, reviewed 2026-08-26: IC-IF
+# has no "Strategic" objective, so Strategic risks are explicitly OUT OF SCOPE
+# for the IC-IF cube — None, not a guess at Operations/Reporting/Compliance,
+# and not a fourth row (a fourth row would silently re-commit the ERM-2004-
+# labelled-as-IC-IF error this correction exists to fix). The caller
+# (risk_coverage_cube.build_icif_cube) counts these risks into
+# out_of_icif_scope_risk_count and surfaces them as a footnote, never folds
+# them into a cell.
+_OBJECTIVE_CATEGORY_ICIF: Dict[str, Optional[str]] = {
+    "Strategic":           None,
+    "Revenue":             "Operations",
+    "Operational":         "Operations",
+    "Supply":              "Operations",
+    "Cybersecurity":       "Operations",
+    "Financial Reporting": "Reporting",
+    "Trade Compliance":    "Compliance",
+    "Compliance":          "Compliance",
+    "Legal":               "Compliance",
+    "ESG":                 "Compliance",
+    "Governance":          "Compliance",
+}
+
+# Deliberately no risk-category -> IC-IF-component dict here. The IC-IF cube's
+# component axis (X) is NOT keyed off a risk's category — that was the
+# original bug (a risk taxonomy standing in for a control-activity taxonomy).
+# It's keyed off the icif_component of whichever controls_catalog control(s)
+# are actually mapped to that risk (see framework_mappings.py). A risk with no
+# IC-IF-tagged control lands in the "Unmapped" column — a real, informative
+# finding, not a structural dead zone. See risk_coverage_cube.build_icif_cube.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COSO ERM 2017 principle evidence sourcing — reviewed and approved 2026-08-26.
+#
+# NOT a cross-product: a principle exists only under its own component (P7
+# exists only under "Strategy & Objective-Setting", never anywhere else).
+#
+# Each principle names either a real, persisted artifact this app can query
+# (`evidence` = a short machine key), or `evidence=None` when no such artifact
+# exists anywhere in the schema. `_COSO_PRINCIPLES` above must NEVER be reused
+# as "evidence of ERM activity" — it maps risk categories to principles for
+# the RaC artifact, a different question (what principle does THIS RISK
+# relate to) from what this table answers (is this ERM ACTIVITY evidenced at
+# all, anywhere in the app). Reusing it here would re-introduce the exact
+# category-as-lifecycle-stage error the ERM component mapping was corrected
+# for, through the back door.
+#
+# `evidence` keys are dispatched by risk_coverage_cube.py's
+# _ERM_EVIDENCE_PROBES to the db getter(s) that actually answer them — kept
+# declarative here so the principle list and its evidence source are reviewed
+# together in one table.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ERM_PRINCIPLES: List[Dict[str, Any]] = [
+    {"component": "Governance & Culture", "principles": [
+        {"number": 1, "label": "Exercises Board Risk Oversight",               "evidence": "gate_approvals"},
+        {"number": 2, "label": "Establishes Operating Structures",             "evidence": None},
+        {"number": 3, "label": "Defines Desired Culture",                      "evidence": None},
+        {"number": 4, "label": "Demonstrates Commitment to Core Values",       "evidence": None},
+        {"number": 5, "label": "Attracts, Develops, and Retains Individuals",  "evidence": None},
+    ]},
+    {"component": "Strategy & Objective-Setting", "principles": [
+        {"number": 6, "label": "Analyzes Business Context",           "evidence": "market_context"},
+        {"number": 7, "label": "Defines Risk Appetite",               "evidence": "risk_appetite"},
+        {"number": 8, "label": "Evaluates Alternative Strategies",    "evidence": "scenario_analysis"},
+        {"number": 9, "label": "Formulates Business Objectives",      "evidence": None},
+    ]},
+    {"component": "Performance", "principles": [
+        {"number": 10, "label": "Identifies Risk",             "evidence": "risk_register"},
+        {"number": 11, "label": "Assesses Severity of Risk",   "evidence": "risk_scoring"},
+        {"number": 12, "label": "Prioritizes Risks",           "evidence": "risk_prioritization"},
+        {"number": 13, "label": "Implements Risk Responses",   "evidence": "audit_objectives"},
+        {"number": 14, "label": "Develops Portfolio View",     "evidence": "risk_graph"},
+    ]},
+    {"component": "Review & Revision", "principles": [
+        {"number": 15, "label": "Assesses Substantial Change",   "evidence": "change_signals"},
+        {"number": 16, "label": "Reviews Risk and Performance",  "evidence": "backtest_review"},
+        {"number": 17, "label": "Pursues Improvement in ERM",    "evidence": "loop_calibration"},
+    ]},
+    {"component": "Information, Communication & Reporting", "principles": [
+        {"number": 18, "label": "Leverages Information and Technology",     "evidence": "mcp_ingestion"},
+        {"number": 19, "label": "Communicates Risk Information",            "evidence": "notifications"},
+        {"number": 20, "label": "Reports on Risk, Culture, and Performance","evidence": "audit_reporting"},
+    ]},
+]
 
 _ISO_TREATMENT = {"R": "risk_modification", "A": "risk_modification", "G": "risk_retention"}
 _COSO_RESPONSE = {"R": "Reduce", "A": "Reduce", "G": "Accept"}
+# P13 "Implements Risk Responses" sits in the Performance component
+# structurally, for every risk regardless of category — not a per-category
+# lookup, so it's named here rather than left as a literal at the call site
+# (see the risk_response block below).
+_RISK_RESPONSE_COMPONENT = "Performance"
 
 
 def _index_by_risk(items: list, *keys: str) -> Dict[str, list]:
@@ -393,7 +569,7 @@ def to_coso_erm(
         residual = float(risk.get("residual", score))
         velocity = risk.get("velocity", 0)
         category = risk.get("category", "Operational")
-        coso     = _COSO_PRINCIPLES.get(category, _COSO_DEFAULT)
+        coso     = _COSO_PRINCIPLES.get(category, _COSO_UNMAPPED)
 
         linked_objs = obj_by_risk.get(risk_id, [])
         linked_maps = map_by_risk.get(risk_id, [])
@@ -454,7 +630,7 @@ def to_coso_erm(
 
             # COSO ERM component 3 — Risk Response
             "risk_response": {
-                "coso_component": "Performance",
+                "coso_component": _RISK_RESPONSE_COMPONENT,
                 "strategy": _COSO_RESPONSE.get(rag, "Accept"),
                 "owner": linked_maps[0].get("owner", "Risk Owner") if linked_maps else "Risk Owner",
                 "actions": [
@@ -583,6 +759,24 @@ def _generate_all(data: dict) -> Dict[str, str]:
 # REST endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _embed_rac_artifact(ticker: str, artifact_id: Optional[int], framework: str, content: str) -> None:
+    """Embed a Risks-as-Code artifact (EMBT_RAC) so it's searchable via
+    pgvector, same as Controls-as-Code already is. Best-effort — never raises."""
+    if not artifact_id or not content or not embedding_util.is_available():
+        return
+    try:
+        company_id = db.get_company_id(ticker) if ticker else None
+        vec = embedding_util.embed_text(content[:8000])
+        if vec:
+            db.save_embedding(
+                source_table="risks_as_code_artifacts", source_id=artifact_id,
+                content_type=db.EMBT_RAC, embedding=vec,
+                company_id=company_id, text_snippet=f"{framework}: {content[:600]}",
+            )
+    except Exception:
+        pass  # embedding is non-fatal, same as CaC
+
+
 @router.post("/generate")
 async def generate(req: GenerateRequest):
     """Generate OSCAL + COSO ERM artifacts from the supplied risk payload and persist to DB."""
@@ -593,6 +787,7 @@ async def generate(req: GenerateRequest):
         for framework, content in artifacts.items():
             artifact_id = db.save_risks_as_code_artifact(req.run_id, req.ticker, framework, content)
             saved[framework] = artifact_id
+            _embed_rac_artifact(req.ticker, artifact_id, framework, content)
 
     return {
         "ticker":       req.ticker,
@@ -687,7 +882,8 @@ async def stream_artifacts(run_id: int):
 
                     if db.is_available():
                         for fw, content in artifacts.items():
-                            db.save_risks_as_code_artifact(run_id, run.get("ticker", ""), fw, content)
+                            artifact_id = db.save_risks_as_code_artifact(run_id, run.get("ticker", ""), fw, content)
+                            _embed_rac_artifact(run.get("ticker", ""), artifact_id, fw, content)
 
                     yield "data: " + json.dumps({
                         "type":        "update",

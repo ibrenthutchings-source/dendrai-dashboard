@@ -28,6 +28,7 @@ const EvidenceQualityScreenLazy = lazyGlobal(() => import('./evidence-quality.js
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
+const ConceptLinkReviewScreenLazy = lazyGlobal(() => import('./concept-link-review.jsx'), 'ConceptLinkReviewScreen');
 const RiskAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RiskAsCodeScreen');
 const PolicyAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'PolicyAsCodeScreen');
 const RegulatoryChangeScreenLazy = lazyGlobal(() => import('./regulatory-change.jsx'), 'RegulatoryChangeScreen');
@@ -111,6 +112,24 @@ function _safeStringify(value) {
     console.warn("_safeStringify: falling back to {} — payload still not serializable:", e);
     return "{}";
   }
+}
+
+// A run restored from a stale/corrupted dendrai.lastLoop:<ticker> blob (DB or
+// localStorage) can carry a null entry in s2.risks/s3.objectives/s4.maps —
+// several write paths across the app (Risk Register conversion, MAP
+// generation) build these arrays with a `.filter(Boolean)`-shaped contract
+// that a bad edit can silently violate. Every `.find(x => x.id === ...)` over
+// these arrays (e.g. the always-mounted AdjustRiskModal/AdjustObjectiveModal
+// props below) then throws "Cannot read properties of null" on ANY render,
+// not just when that modal opens. Strip nulls once, here, on restore, rather
+// than null-guarding every read site across the app.
+function _sanitizeRunOutput(output) {
+  if (!output || typeof output !== "object") return output;
+  const clean = { ...output };
+  if (Array.isArray(clean.s2?.risks)) clean.s2 = { ...clean.s2, risks: clean.s2.risks.filter(Boolean) };
+  if (Array.isArray(clean.s3?.objectives)) clean.s3 = { ...clean.s3, objectives: clean.s3.objectives.filter(Boolean) };
+  if (Array.isArray(clean.s4?.maps)) clean.s4 = { ...clean.s4, maps: clean.s4.maps.filter(Boolean) };
+  return clean;
 }
 
 function App() {
@@ -282,7 +301,17 @@ function App() {
   const [gateState, setGateState] = useState({ g1: null, g2: null }); // null / "pending" / "approved" / "overridden"
   const [output, setOutput] = useState({}); // per-stage payload
   const [loopLog, setLoopLog] = useState([]);
-  const [openStages, setOpenStages] = useState(new Set(["s1"]));
+  // Overview Hub focus: null = hub overview, else a node id ("s1".."s6" |
+  // "g1" | "g2"). Auto-follows the active stage while a run is in progress
+  // (runStage below) unless the user manually navigated away — hubPinnedRef
+  // tracks that without triggering a re-render. A pending gate always wins
+  // focus regardless of pinned, since showGate() awaits a promise the user
+  // must resolve before the run can continue — the screen can never be
+  // showing something else while that's true.
+  const [hubFocus, setHubFocus] = useState(null);
+  const hubPinnedRef = useRef(false);
+  const goToHub = useCallback(() => { hubPinnedRef.current = running; setHubFocus(null); }, [running]);
+  const goToNode = useCallback((id) => { hubPinnedRef.current = running; setHubFocus(id); }, [running]);
 
   // Pending gate promise resolvers (so the run sequence can await user action)
   const gateResRef = useRef({});
@@ -493,8 +522,14 @@ function App() {
     if (opts.cemFilter) setCemInitialFilter(opts.cemFilter);
     if (opts.pacProcess) setPacInitialProcess(opts.pacProcess);
     if (screen === "ubogov") setUnreadCEM(0);
+    // pipelineFocus (a stage id like "s2" or a gate id like "g1") jumps
+    // straight into that stage/gate's canvas — without this, navigating to
+    // "pipeline" while already on it is a no-op (setActiveScreen bails on an
+    // unchanged value), so a NextActionRail cta like "Review risks" did
+    // nothing when the user was already on the Risk Intelligence screen.
+    if (opts.pipelineFocus) goToNode(opts.pipelineFocus);
     setActiveScreen(screen);
-  }, []);
+  }, [goToNode]);
 
   // ---- Governance Intelligence pane ----
   const [govData, setGovData] = useState(null);     // proxy data from DEF 14A
@@ -667,7 +702,7 @@ function App() {
   useEffect(() => {
     (async () => {
       const applyLoop = (s) => {
-        if (s.output)                                    setOutput(s.output);
+        if (s.output)                                    setOutput(_sanitizeRunOutput(s.output));
         const ss = s.stageState || s.stage_state;
         if (ss)                                          setStageState(ss);
         const gs = s.gateState || s.gate_state;
@@ -686,8 +721,8 @@ function App() {
         if (ma)                                          { setManualAudits(ma); manualAuditsRef.current = ma; }
         const nr = s.narrativeResult || s.narrative_result;
         if (nr)                                          setNarrativeResult(nr);
-        const os = s.openStages || s.open_stages;
-        if (os)                                          setOpenStages(new Set(os));
+        const hf = s.hubFocus ?? s.hub_focus;
+        if (hf !== undefined)                            setHubFocus(hf);
         // profile holds the actual chart data (forecasts.revenue/margin/eps/...)
         // rendered by pipeline.jsx — without restoring it, stage/gate state comes
         // back as "complete" but the charts silently show the hardcoded mock
@@ -745,7 +780,7 @@ function App() {
       scopeApprovals,
       manualAudits,
       narrativeResult,
-      openStages: [...openStages],
+      hubFocus,
       profile,
       runId: runIdRef.current,
       savedAt: Date.now(),
@@ -848,6 +883,11 @@ function App() {
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;
+    // A pending gate always wins focus, overriding a manual pin — this
+    // promise can't resolve until the user acts on it, so the hub can never
+    // be showing something else while it's outstanding.
+    hubPinnedRef.current = false;
+    setHubFocus(`g${n}`);
     setGateState((prev) => ({ ...prev, [`g${n}`]: "pending" }));
     if (n === 1) {
       const risksNow = (output.s2?.risks) || profileRef.current?.risks || [];
@@ -1163,8 +1203,8 @@ function App() {
 
   async function runStage(id, payload, durationMs = 1400) {
     setStageState((prev) => ({ ...prev, [id]: "running" }));
-    if (tweaks.autoExpand) {
-      setOpenStages((prev) => new Set([...prev, id]));
+    if (tweaks.autoExpand && !hubPinnedRef.current) {
+      setHubFocus(id);
     }
     log(`Stage ${id.toUpperCase()} starting`);
     await t(durationMs);
@@ -1185,7 +1225,8 @@ function App() {
     setGateState({ g1: null, g2: null });
     setEvents([]);
     setNotifLog([]);
-    setOpenStages(new Set(["s1"]));
+    hubPinnedRef.current = false;
+    setHubFocus(tweaks.autoExpand ? "s1" : null);
     setSelectedRiskId(null);
     setRiskApprovals({});
     log("Loop started");
@@ -1507,14 +1548,38 @@ function App() {
         });
         }
 
-        profileRef.current = { ...templateProfile, risks: enrichedRisks };
+        // Segment/geography-specific risks (segment_risk_tool.py, Coverage
+        // Cube Phase 3) — real Concentration/Decline/Divergence risk from
+        // the entity's own filed segment data. Concatenated, not merged:
+        // mergeRiskScores() above only overlays data onto EXISTING template
+        // risks, and there's no per-segment template to overlay onto (see
+        // mapSegmentRisks' own docstring) — these are additional risks, so
+        // Stage 3's buildObjectives can compete them for a slot alongside
+        // consolidated risks, not a replacement for any of enrichedRisks.
+        const segmentRisks = MCP.mapSegmentRisks(mcpResult);
+        if (segmentRisks.length) log(`MCP Segment Risks: ${segmentRisks.length} segment-tagged risk(s)`);
+        const allRisks = [...enrichedRisks, ...segmentRisks];
+
+        // templateProfile.objectives/maps were computed inside buildProfile()
+        // from the pre-MCP TEMPLATE risk scores, before mergeRiskScores/
+        // enrichRisksFromFactors/segment risks ever touched the risk set —
+        // stale even before segment risks existed (MCP-adjusted scores can
+        // reorder which risks rank in the top 6), and segment risks would
+        // never be considered for an objective slot at all otherwise.
+        // Recompute both from the FINAL risk set so Stage 3 competes every
+        // real risk — consolidated and segment-tagged alike — on its actual
+        // score, not the template placeholder's.
+        const finalObjectives = RISK_ENGINE.buildObjectives(allRisks, industry);
+        const finalMaps = RISK_ENGINE.buildMAPs(allRisks, finalObjectives);
+
+        profileRef.current = { ...templateProfile, risks: allRisks, objectives: finalObjectives, maps: finalMaps };
         setProfile(profileRef.current);
         // Forecasts/ratios/riskFlow are already fully computed at this point —
         // flip hasRun here (not at loop end) so Stage 1 charts and HITL 1
         // (which fires after Stage 2, long before the loop finishes) actually
         // have data to show instead of rendering blank until Stage 6 completes.
         setHasRun(true);
-        log(`Profile: ${templateProfile.entity.name} · ${industry} · ${enrichedRisks.length} risks (MCP-scored)`);
+        log(`Profile: ${templateProfile.entity.name} · ${industry} · ${allRisks.length} risks (MCP-scored)`);
 
       } catch (e) {
         log(`MCP error: ${e.message} · falling back to industry template`);
@@ -1912,6 +1977,10 @@ function App() {
 
     setRunning(false);
     setHasRun(true);
+    // Every gate the loop hit has resolved by this point (each was awaited),
+    // so it's always safe to land back on the overview hub here.
+    hubPinnedRef.current = false;
+    setHubFocus(null);
 
     // Fire a synthetic CEM event so the Control Monitor tab has content too.
     setTimeout(() => fireSyntheticEvent(2), 1000 / speed);
@@ -1920,6 +1989,7 @@ function App() {
   async function rerunFromS3() {
     if (running) return;
     setRunning(true);
+    hubPinnedRef.current = false;
     try {
       log("Re-run triggered from Stage 3");
       setStageState(prev => ({ ...prev, s3: "idle", s4: "idle", s5: "idle", s6: "idle" }));
@@ -1940,6 +2010,8 @@ function App() {
       setActiveRailTab("loop");
       log("Re-run from Stage 3 complete");
       setHasRun(true);
+      hubPinnedRef.current = false;
+      setHubFocus(null);
     } catch (err) {
       log(`Re-run error: ${err?.message || err}`);
     }
@@ -1954,7 +2026,8 @@ function App() {
     setNotifLog([]);
     setLoopLog([]);
     setHasRun(false);
-    setOpenStages(new Set(["s1"]));
+    hubPinnedRef.current = false;
+    setHubFocus(null);
     setLivefacts(null);
     setFredLive(null);
     setLiveStatus("");
@@ -2401,10 +2474,12 @@ function App() {
 
             {activePipeTab === "stages" && (
               <Pipeline
+                hubFocus={hubFocus}
+                onFocusStage={goToNode}
+                onFocusGate={goToNode}
+                onGoHub={goToHub}
                 stageState={stageState}
                 output={output}
-                openStages={openStages}
-                setOpenStages={setOpenStages}
                 hitl={hitl}
                 gateState={gateState}
                 onApprove={approveGate}
@@ -2577,6 +2652,20 @@ function App() {
           </ScreenAccessGate>
           )}
 
+          {/* ---- Concept Link Review ---- */}
+          {/* screenId is deliberately "approvals", not "conceptlinkreview" —
+              the backend enforces require_screen_permission("approvals",
+              edit=True) on both /ontology/links endpoints (concept_linking.py),
+              the same permission Approval Inbox uses; there is no separate
+              backend scope for this screen. */}
+          {activeScreen === "conceptlinkreview" && (
+          <ScreenAccessGate screenId="approvals">
+          <div className="panel active">
+            <ConceptLinkReviewScreenLazy />
+          </div>
+          </ScreenAccessGate>
+          )}
+
           {/* ---- Coverage Gap Analysis ---- */}
           {activeScreen === "coverage" && (
           <div className="panel active" style={{overflow:"auto"}}>
@@ -2626,7 +2715,7 @@ function App() {
                 if (updatedRisks?.length) {
                   setOutput(prev => ({
                     ...prev,
-                    s2: { ...(prev.s2 || {}), risks: updatedRisks },
+                    s2: { ...(prev.s2 || {}), risks: updatedRisks.filter(Boolean) },
                   }));
                 }
               }} />
@@ -2796,7 +2885,7 @@ function App() {
       <OverrideModal open={overrideOpen} gateNum={overrideGateNum} onClose={() => setOverrideOpen(false)} onConfirm={confirmOverride} />
       <AdjustRiskModal
         open={adjustOpen}
-        risk={(output.s2?.risks || []).find(r => r.id === adjustingRiskId)}
+        risk={(output.s2?.risks || []).find(r => r && r.id === adjustingRiskId)}
         risks={output.s2?.risks || []}
         ticker={cfg.ticker}
         runId={runIdRef.current}
@@ -2805,7 +2894,7 @@ function App() {
         onSubmit={submitAdjustment} />
       <AdjustObjectiveModal
         open={adjustObjOpen}
-        obj={(output.s3?.objectives || profile.objectives || []).find(o => o.id === adjustingObjId)}
+        obj={(output.s3?.objectives || profile.objectives || []).find(o => o && o.id === adjustingObjId)}
         risks={output.s2?.risks || []}
         ticker={cfg.ticker}
         runId={runIdRef.current}
@@ -2987,16 +3076,16 @@ function _computeNextActions({ hasRun, running, gateState, output, approvalInbox
       cta: "Go to Risk Radar" });
   }
   if (hasRun && gateState?.g1 === "pending") {
-    actions.push({ id: "gate1", priority: 1, screen: "pipeline",
+    actions.push({ id: "gate1", priority: 1, screen: "pipeline", opts: { pipelineFocus: "g1" },
       text: "Gate 1 risk approval is waiting on your review.", cta: "Review Gate 1" });
   }
   if (hasRun && gateState?.g2 === "pending") {
-    actions.push({ id: "gate2", priority: 1, screen: "pipeline",
+    actions.push({ id: "gate2", priority: 1, screen: "pipeline", opts: { pipelineFocus: "g2" },
       text: "Gate 2 scope approval is waiting on your review.", cta: "Review Gate 2" });
   }
   if (output?.s2?.riskAppetite?.status === "BREACHED") {
     const n = output.s2.riskAppetite.breaching?.length || 0;
-    actions.push({ id: "appetite", priority: 1, screen: "pipeline",
+    actions.push({ id: "appetite", priority: 1, screen: "pipeline", opts: { pipelineFocus: "s2" },
       text: `Risk appetite breached — ${n} risk${n !== 1 ? "s" : ""} exceed tolerance.`, cta: "Review risks" });
   }
   if (approvalInboxCount > 0) {
@@ -3042,7 +3131,7 @@ function NextActionRail({ hasRun, running, gateState, output, approvalInboxCount
       <div className="nba-head">
         <span className="nba-icon"><Icon name="compass" size={13}/></span>
         <span className="nba-text">{top.text}</span>
-        <button type="button" className="btn btn-sm nba-cta" onClick={() => onNavigate(top.screen)}>
+        <button type="button" className="btn btn-sm nba-cta" onClick={() => onNavigate(top.screen, top.opts)}>
           {top.cta} <Icon name="chev-r" size={10}/>
         </button>
         {rest.length > 0 && (
@@ -3059,7 +3148,7 @@ function NextActionRail({ hasRun, running, gateState, output, approvalInboxCount
           {rest.map(a => (
             <div key={a.id} className="nba-row">
               <span className="nba-row-text">{a.text}</span>
-              <button type="button" className="btn btn-sm" onClick={() => onNavigate(a.screen)}>{a.cta}</button>
+              <button type="button" className="btn btn-sm" onClick={() => onNavigate(a.screen, a.opts)}>{a.cta}</button>
             </div>
           ))}
         </div>

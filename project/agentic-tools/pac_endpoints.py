@@ -47,6 +47,7 @@ from pydantic import BaseModel
 
 import claude_client
 import db
+import embedding_util
 import pac_assurance
 import pac_contracts
 from auth_endpoints import require_screen_permission
@@ -1568,6 +1569,25 @@ async def get_module(process: str):
     }
 
 
+def embed_pac_module(module_id: Optional[int], process: str, rego_content: str) -> None:
+    """Embed a Policy-as-Code Rego module (EMBT_PAC) so it's searchable via
+    pgvector, same as Controls-as-Code / Risks-as-Code. PaC modules are
+    enterprise-wide (Oracle Fusion process controls), not company-scoped, so
+    company_id is intentionally left null. Best-effort — never raises."""
+    if not module_id or not rego_content or not embedding_util.is_available():
+        return
+    try:
+        vec = embedding_util.embed_text(rego_content[:8000])
+        if vec:
+            db.save_embedding(
+                source_table="pac_policy_modules", source_id=module_id,
+                content_type=db.EMBT_PAC, embedding=vec,
+                text_snippet=f"{process}: {rego_content[:600]}",
+            )
+    except Exception:
+        pass  # embedding is non-fatal, same as CaC/RaC
+
+
 @router.put("/modules/{process}")
 async def save_module(process: str, req: SaveModuleRequest):
     """Save a new version of a Rego module for a process."""
@@ -1590,6 +1610,7 @@ async def save_module(process: str, req: SaveModuleRequest):
     module_id = db.save_pac_module(process, module_name, req.rego_content, req.version)
     if not module_id:
         raise HTTPException(status_code=500, detail="Failed to save module")
+    embed_pac_module(module_id, process, req.rego_content)
 
     return {
         "saved": True,
@@ -2361,6 +2382,7 @@ async def _sync_github_repo(
             source_format = "llm_converted" if converted_any else "rego"
             module_id = db.save_pac_module(process, module_name, combined, "1.0", source_format=source_format)
             if module_id:
+                embed_pac_module(module_id, process, combined)
                 imported.append({
                     "process": process, "module_name": module_name, "module_id": module_id,
                     "file_count": len(files), "source_format": source_format,
@@ -2379,6 +2401,31 @@ async def _sync_github_repo(
         "queued_for_review": queued_for_review,
         "newly_registered": sorted(newly_registered),
     }
+
+
+async def get_branch_head_sha(owner: str, repo: str, branch: str, token: str) -> Optional[str]:
+    """The branch's current HEAD commit SHA — a single small GitHub API call
+    (GET .../commits/{branch}), not the recursive tree walk _sync_github_repo
+    does. pac_auto_sync_sweep.py uses this as the cheap "did anything change"
+    check before paying for a real sync; returns None (never raises) on any
+    failure so a transient GitHub/network hiccup skips this poll tick rather
+    than crashing the sweep."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "dendrai-policy-as-code-sync",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}",
+                headers=headers,
+            )
+        if r.status_code != 200:
+            return None
+        return r.json().get("sha")
+    except httpx.RequestError:
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2400,12 +2447,15 @@ async def generate_cac(req: GenerateCaCRequest):
         # Save embedding so the CaC content is searchable via vector similarity
         if artifact_id:
             try:
-                db.save_embedding(
-                    source_table="controls_as_code_artifacts",
-                    source_id=artifact_id,
-                    content_type=db.EMBT_CAC,
-                    text=content_rego[:8000],   # truncate for embedding budget
-                )
+                vec = embedding_util.embed_text(content_rego[:8000])  # truncate for embedding budget
+                if vec:
+                    db.save_embedding(
+                        source_table="controls_as_code_artifacts",
+                        source_id=artifact_id,
+                        content_type=db.EMBT_CAC,
+                        embedding=vec,
+                        text_snippet=content_rego[:600],
+                    )
             except Exception as exc:
                 logger.debug("CaC embedding skipped (non-fatal): %s", exc)
 

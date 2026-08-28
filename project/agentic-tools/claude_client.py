@@ -124,10 +124,22 @@ def _create_message(client: "anthropic.Anthropic", **kwargs) -> Any:
     "one log line and a slightly different model" instead of every
     AI-augmented endpoint in the app erroring simultaneously until someone
     notices and edits the environment.
+
+    Uses client.messages.stream(...).get_final_message() rather than a plain
+    (non-streaming) messages.create() call: the SDK itself refuses a
+    non-streaming request once max_tokens is large enough that it estimates
+    the call could run past 10 minutes (adaptive thinking at effort="high"
+    with a large max_tokens, e.g. pac_endpoints.py's Markdown->Rego
+    conversion, hits exactly this — "Streaming is required for operations
+    that may take longer than 10 minutes"). get_final_message() still
+    returns the same accumulated Message object every caller here already
+    expects (.content, .usage, .model, .stop_reason) — only the transport
+    underneath changes.
     """
     model = kwargs.get("model")
     try:
-        return client.messages.create(**kwargs)
+        with client.messages.stream(**kwargs) as stream:
+            return stream.get_final_message()
     except anthropic.NotFoundError:
         if model == FALLBACK_MODEL:
             raise  # the fallback itself is retired too — nothing left to try
@@ -142,7 +154,8 @@ def _create_message(client: "anthropic.Anthropic", **kwargs) -> Any:
         _fallback_state["at"] = time.time()
         _fallback_state["count"] += 1
         kwargs["model"] = FALLBACK_MODEL
-        return client.messages.create(**kwargs)
+        with client.messages.stream(**kwargs) as stream:
+            return stream.get_final_message()
 
 
 def _thinking_kwargs(model: str, effort: str) -> dict:
