@@ -47,6 +47,23 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("ubo.governance")
 
+
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """Real client IP behind nginx's reverse proxy. uvicorn binds to
+    127.0.0.1 (see project/start.sh) and is only ever reached via nginx on
+    the loopback interface — request.client.host is therefore ALWAYS
+    "127.0.0.1" in production. project/nginx.conf sets X-Forwarded-For on
+    every proxied route; this reads that instead, so source_ip on ingested
+    telemetry events reflects the actual caller rather than every event
+    recording the same loopback address. Falls back to request.client.host
+    for local dev, where uvicorn is often run directly with no proxy."""
+    if not request:
+        return None
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
 # ── UBO pipeline import (optional — degrades to no-op if package not on path) ─
 # Try one level up first (Docker: /app/UBO), then two levels up (local: repo-root/UBO).
 
@@ -2337,7 +2354,7 @@ async def ingest_system_telemetry(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=422, detail="event_type is required")
 
     flags = _detect_system_flags(body)
-    source_ip = request.client.host if request.client else None
+    source_ip = _client_ip(request)
 
     row_id = await asyncio.to_thread(
         _ingest_system_event,

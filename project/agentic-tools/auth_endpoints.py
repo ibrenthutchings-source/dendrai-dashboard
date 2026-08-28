@@ -67,12 +67,31 @@ import db
 logger = logging.getLogger("auth.endpoints")
 
 
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """Real client IP behind nginx's reverse proxy. uvicorn binds to
+    127.0.0.1 (see project/start.sh) and is only ever reached via nginx on
+    the loopback interface — request.client.host is therefore ALWAYS
+    "127.0.0.1" in production, regardless of who the real caller is.
+    project/nginx.conf's /auth/ location already sets X-Forwarded-For /
+    X-Real-IP correctly on every request; this reads that instead, so the
+    login rate limiter (_rate_check) and the audit/session IP fields
+    reflect the actual caller rather than colliding every visitor into one
+    shared "127.0.0.1" bucket. Falls back to request.client.host for local
+    dev, where uvicorn is often run directly with no proxy in front."""
+    if not request:
+        return None
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
 def _audit(action: str, actor: Optional[str], target: Optional[str] = None,
            detail: Optional[dict] = None, request: Optional[Request] = None) -> None:
     """Record an identity/access event to the tamper-evident audit trail
     (observability.audit_log — see db.py). Never raises: an audit-logging
     failure must not block the login/admin action it's recording."""
-    ip = request.client.host if request and request.client else None
+    ip = _client_ip(request)
     try:
         db.insert_audit_log_entry("auth", action, actor=actor, target=target, detail=detail, ip_address=ip)
     except Exception as exc:
@@ -390,7 +409,7 @@ async def _github_user_info(access_token: str) -> tuple[str, Optional[str], Opti
 
 
 def _finish_login(user: dict, request: Request, response: Response) -> dict:
-    ip = request.client.host if request.client else None
+    ip = _client_ip(request)
     ua = request.headers.get("user-agent")
     jti   = auth_db.create_session(user["id"], ip, ua)
     token = _create_jwt(user, jti)
@@ -512,7 +531,7 @@ def list_providers():
 
 @router.post("/login", summary="Local username/password login")
 async def local_login(req: LoginRequest, request: Request, response: Response):
-    ip = request.client.host if request.client else "unknown"
+    ip = _client_ip(request) or "unknown"
 
     if not _rate_check(ip):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again in 15 minutes.")
