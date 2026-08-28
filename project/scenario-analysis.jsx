@@ -640,7 +640,6 @@ function AddAuditFromEventModal({ event, risks, onClose, onSubmit }) {
   const [riskId, setRiskId] = React.useState("");
   const [when, setWhen] = React.useState(_CE_AUDIT_QUARTERS[0]);
   const [reduction, setReduction] = React.useState(20);
-  useEscapeToClose(true, onClose);
 
   const selectedRisk = risks.find(r => r.id === riskId);
   const baseScore = selectedRisk?.score ?? 0;
@@ -648,19 +647,30 @@ function AddAuditFromEventModal({ event, risks, onClose, onSubmit }) {
   const valid = title.trim().length >= 5;
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{ width: 560 }}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Add Audit from Corporate Event</div>
-            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>
-              {event.event_date} · {_CE_TYPE_LABEL[cls.action_type] || "8-K event"}
-            </div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+    <Modal open={true} onClose={onClose} title="Add Audit from Corporate Event" width={560}
+      titleSub={`${event.event_date} · ${_CE_TYPE_LABEL[cls.action_type] || "8-K event"}`}
+      foot={<>
+        <span className="muted mono" style={{ fontSize: 11 }}>
+          {!valid ? "Audit objective must be at least 5 characters" : "Ready to add to plan"}
+        </span>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid}
+            onClick={() => onSubmit({
+              id: `MA-${Date.now().toString(36).toUpperCase()}`,
+              riskId: riskId || null,
+              riskName: selectedRisk?.name || null,
+              when,
+              title: title.trim(),
+              reduction: selectedRisk ? reduction : 0,
+              baseScore: selectedRisk ? baseScore : null,
+              residualScore,
+              sourceEventId: event.id,
+            })}>
+            <Icon name="plus" size={10}/> Add to Plan
+          </button>
         </div>
-
-        <div className="modal-body">
+      </>}>
           <div className="ar-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
             <div className="ar-field" style={{ gridColumn: "1 / -1" }}>
               <label className="ar-label">Audit Objective</label>
@@ -717,32 +727,7 @@ function AddAuditFromEventModal({ event, risks, onClose, onSubmit }) {
               </div>
             </div>
           )}
-        </div>
-
-        <div className="modal-foot">
-          <span className="muted mono" style={{ fontSize: 11 }}>
-            {!valid ? "Audit objective must be at least 5 characters" : "Ready to add to plan"}
-          </span>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({
-                id: `MA-${Date.now().toString(36).toUpperCase()}`,
-                riskId: riskId || null,
-                riskName: selectedRisk?.name || null,
-                when,
-                title: title.trim(),
-                reduction: selectedRisk ? reduction : 0,
-                baseScore: selectedRisk ? baseScore : null,
-                residualScore,
-                sourceEventId: event.id,
-              })}>
-              <Icon name="plus" size={10}/> Add to Plan
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 

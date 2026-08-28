@@ -83,7 +83,6 @@ function PasswordModeFields({ mode, setMode, password, setPassword }) {
 
 function GeneratedPasswordReveal({ username, password, onClose }) {
   const [copied, setCopied] = React.useState(false);
-  useEscapeToClose(true, onClose);
   function copy() {
     if (!navigator.clipboard) return;
     navigator.clipboard.writeText(password).then(() => {
@@ -92,36 +91,26 @@ function GeneratedPasswordReveal({ username, password, onClose }) {
     }).catch(() => {});
   }
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{ width: 440 }}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Password for @{username}</div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12} /></button>
+    <Modal open={true} onClose={onClose} title={`Password for @${username}`} width={440}
+      foot={<>
+        <span />
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn btn-sm" onClick={copy}>{copied ? "Copied!" : "Copy"}</button>
+          <button className="btn btn-sm btn-primary" onClick={onClose}>Done</button>
         </div>
-        <div className="modal-body">
-          <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.55, marginBottom: 12 }}>
-            This is shown once. Copy it now and share it with the user through a secure channel —
-            Dendrai does not store or display it again. They'll be required to set their own password at first login.
-          </div>
-          <div className="mono" style={{
-            fontSize: 15, letterSpacing: "0.03em", padding: "12px 14px", borderRadius: 6,
-            background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)",
-            userSelect: "all", wordBreak: "break-all",
-          }}>
-            {password}
-          </div>
-        </div>
-        <div className="modal-foot">
-          <span />
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn btn-sm" onClick={copy}>{copied ? "Copied!" : "Copy"}</button>
-            <button className="btn btn-sm btn-primary" onClick={onClose}>Done</button>
-          </div>
-        </div>
+      </>}>
+      <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.55, marginBottom: 12 }}>
+        This is shown once. Copy it now and share it with the user through a secure channel —
+        Dendrai does not store or display it again. They'll be required to set their own password at first login.
       </div>
-    </div>
+      <div className="mono" style={{
+        fontSize: 15, letterSpacing: "0.03em", padding: "12px 14px", borderRadius: 6,
+        background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)",
+        userSelect: "all", wordBreak: "break-all",
+      }}>
+        {password}
+      </div>
+    </Modal>
   );
 }
 
@@ -141,7 +130,6 @@ function AddUserModal({ open, onClose, onCreated, roles = [] }) {
       setPwMode("generate"); setPassword(""); setErr(null);
     }
   }, [open]);
-  useEscapeToClose(open, onClose);
 
   if (!open) return null;
 
@@ -171,55 +159,47 @@ function AddUserModal({ open, onClose, onCreated, roles = [] }) {
   }
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{ width: 480 }}>
-        <div className="modal-head">
-          <div className="modal-title">Add User</div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12} /></button>
+    <Modal open={open} onClose={onClose} title="Add User" width={480}
+      foot={<>
+        <span />
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid || busy} onClick={submit}>
+            {busy ? "Creating…" : "Create User"}
+          </button>
         </div>
-        <div className="modal-body">
-          <div className="ar-field">
-            <label className="ar-label">Username</label>
-            <input type="text" className="fi-input" value={username} onChange={e => setUsername(e.target.value)}
-              placeholder="jsmith" autoFocus />
-            {username && !usernameValid && (
-              <div className="mono" style={{ fontSize: 10, color: "var(--red-ink)", marginTop: 3 }}>
-                3-64 characters: lowercase letters, numbers, dot, underscore, hyphen.
-              </div>
-            )}
+      </>}>
+      <div className="ar-field">
+        <label className="ar-label">Username</label>
+        <input type="text" className="fi-input" value={username} onChange={e => setUsername(e.target.value)}
+          placeholder="jsmith" />
+        {username && !usernameValid && (
+          <div className="mono" style={{ fontSize: 10, color: "var(--red-ink)", marginTop: 3 }}>
+            3-64 characters: lowercase letters, numbers, dot, underscore, hyphen.
           </div>
-          <div className="ar-field" style={{ marginTop: 10, display: "flex", gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label className="ar-label">Display Name</label>
-              <input type="text" className="fi-input" value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="Jane Smith" />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label className="ar-label">Email</label>
-              <input type="email" className="fi-input" value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@company.com" />
-            </div>
-          </div>
-          <div className="ar-field" style={{ marginTop: 10 }}>
-            <label className="ar-label">Role</label>
-            <select className="fi-input" value={role} onChange={e => setRole(e.target.value)}>
-              {(roles.length ? roles : [{ name: "user" }, { name: "admin" }]).map(r => (
-                <option key={r.name} value={r.name}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-          <PasswordModeFields mode={pwMode} setMode={setPwMode} password={password} setPassword={setPassword} />
-          {err && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 10 }}>{err}</div>}
+        )}
+      </div>
+      <div className="ar-field" style={{ marginTop: 10, display: "flex", gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <label className="ar-label">Display Name</label>
+          <input type="text" className="fi-input" value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="Jane Smith" />
         </div>
-        <div className="modal-foot">
-          <span />
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid || busy} onClick={submit}>
-              {busy ? "Creating…" : "Create User"}
-            </button>
-          </div>
+        <div style={{ flex: 1 }}>
+          <label className="ar-label">Email</label>
+          <input type="email" className="fi-input" value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@company.com" />
         </div>
       </div>
-    </div>
+      <div className="ar-field" style={{ marginTop: 10 }}>
+        <label className="ar-label">Role</label>
+        <select className="fi-input" value={role} onChange={e => setRole(e.target.value)}>
+          {(roles.length ? roles : [{ name: "user" }, { name: "admin" }]).map(r => (
+            <option key={r.name} value={r.name}>{r.name}</option>
+          ))}
+        </select>
+      </div>
+      <PasswordModeFields mode={pwMode} setMode={setPwMode} password={password} setPassword={setPassword} />
+      {err && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 10 }}>{err}</div>}
+    </Modal>
   );
 }
 
@@ -238,7 +218,6 @@ function EditUserModal({ open, user, onClose, onSaved, onPasswordSet }) {
       setResetPw(false); setPwMode("generate"); setPassword(""); setErr(null);
     }
   }, [open, user?.id]);
-  useEscapeToClose(open, onClose);
 
   if (!open || !user) return null;
 
@@ -278,48 +257,37 @@ function EditUserModal({ open, user, onClose, onSaved, onPasswordSet }) {
   }
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{ width: 480 }}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Edit User</div>
-            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>@{user.username}</div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12} /></button>
+    <Modal open={open} onClose={onClose} title="Edit User" titleSub={`@${user.username}`} width={480}
+      foot={<>
+        <span />
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!pwValid || busy} onClick={submit}>
+            {busy ? "Saving…" : "Save Changes"}
+          </button>
         </div>
-        <div className="modal-body">
-          <div className="ar-field" style={{ display: "flex", gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label className="ar-label">Display Name</label>
-              <input type="text" className="fi-input" value={displayName} onChange={e => setDisplayName(e.target.value)} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label className="ar-label">Email</label>
-              <input type="email" className="fi-input" value={email} onChange={e => setEmail(e.target.value)} />
-            </div>
-          </div>
-          <div className="ar-field" style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, cursor: "pointer" }}>
-              <input type="checkbox" checked={resetPw} onChange={e => setResetPw(e.target.checked)} />
-              Reset password
-            </label>
-          </div>
-          {resetPw && (
-            <PasswordModeFields mode={pwMode} setMode={setPwMode} password={password} setPassword={setPassword} />
-          )}
-          {err && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 10 }}>{err}</div>}
+      </>}>
+      <div className="ar-field" style={{ display: "flex", gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <label className="ar-label">Display Name</label>
+          <input type="text" className="fi-input" value={displayName} onChange={e => setDisplayName(e.target.value)} />
         </div>
-        <div className="modal-foot">
-          <span />
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!pwValid || busy} onClick={submit}>
-              {busy ? "Saving…" : "Save Changes"}
-            </button>
-          </div>
+        <div style={{ flex: 1 }}>
+          <label className="ar-label">Email</label>
+          <input type="email" className="fi-input" value={email} onChange={e => setEmail(e.target.value)} />
         </div>
       </div>
-    </div>
+      <div className="ar-field" style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, cursor: "pointer" }}>
+          <input type="checkbox" checked={resetPw} onChange={e => setResetPw(e.target.checked)} />
+          Reset password
+        </label>
+      </div>
+      {resetPw && (
+        <PasswordModeFields mode={pwMode} setMode={setPwMode} password={password} setPassword={setPassword} />
+      )}
+      {err && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 10 }}>{err}</div>}
+    </Modal>
   );
 }
 
@@ -830,7 +798,6 @@ function RolesTab() {
   const [createErr, setCreateErr] = React.useState(null);
   const [deleteErr, setDeleteErr] = React.useState(null);
   const [confirmDeleteRole, setConfirmDeleteRole] = React.useState(null);
-  useEscapeToClose(addOpen, () => setAddOpen(false));
 
   const loadRoles = React.useCallback(async (selectId) => {
     setLoading(true); setError(null);
@@ -950,40 +917,30 @@ function RolesTab() {
         )}
       </div>
 
-      {addOpen && (
-        <div className="modal open">
-          <div className="modal-box" style={{ width: 400 }}>
-            <div className="modal-head">
-              <div className="modal-title">Add Role</div>
-              <button className="btn btn-sm btn-ghost" onClick={() => setAddOpen(false)}><Icon name="x" size={12} /></button>
-            </div>
-            <div className="modal-body">
-              <div className="ar-field">
-                <label className="ar-label">Name</label>
-                <input type="text" className="fi-input" value={newName} onChange={e => setNewName(e.target.value)}
-                  placeholder="auditor" autoFocus />
-                <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 3 }}>
-                  Lowercase letters, numbers, underscore, hyphen. 2-32 characters.
-                </div>
-              </div>
-              <div className="ar-field" style={{ marginTop: 10 }}>
-                <label className="ar-label">Description</label>
-                <input type="text" className="fi-input" value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="Optional" />
-              </div>
-              {createErr && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 10 }}>{createErr}</div>}
-            </div>
-            <div className="modal-foot">
-              <span />
-              <div style={{ display: "flex", gap: 6 }}>
-                <button className="btn btn-sm" onClick={() => setAddOpen(false)}>Cancel</button>
-                <button className="btn btn-sm btn-primary" disabled={!newName.trim() || creating} onClick={createRole}>
-                  {creating ? "Creating…" : "Create Role"}
-                </button>
-              </div>
-            </div>
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add Role" width={400}
+        foot={<>
+          <span />
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className="btn btn-sm" onClick={() => setAddOpen(false)}>Cancel</button>
+            <button className="btn btn-sm btn-primary" disabled={!newName.trim() || creating} onClick={createRole}>
+              {creating ? "Creating…" : "Create Role"}
+            </button>
+          </div>
+        </>}>
+        <div className="ar-field">
+          <label className="ar-label">Name</label>
+          <input type="text" className="fi-input" value={newName} onChange={e => setNewName(e.target.value)}
+            placeholder="auditor" />
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", marginTop: 3 }}>
+            Lowercase letters, numbers, underscore, hyphen. 2-32 characters.
           </div>
         </div>
-      )}
+        <div className="ar-field" style={{ marginTop: 10 }}>
+          <label className="ar-label">Description</label>
+          <input type="text" className="fi-input" value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="Optional" />
+        </div>
+        {createErr && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 10 }}>{createErr}</div>}
+      </Modal>
 
       <ConfirmModal
         open={!!confirmDeleteRole}

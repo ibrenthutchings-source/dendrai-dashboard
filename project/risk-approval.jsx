@@ -356,8 +356,6 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
     }
   }
 
-  useEscapeToClose(open, onClose);
-
   if (!open || !risk) return null;
 
   const frameworkRisks = window.FW_MOCK_RISKS || {};
@@ -397,25 +395,26 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
   } : null;
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{width: 640}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Adjust Risk · {risk.id}</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>
-              {risk.name} · {risk.category}
-            </div>
-          </div>
-          <div style={{display: "flex", alignItems: "center", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
-                title="Draft a disposition with Claude — review and override as needed">
-                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
-              </button>
-            )}
-            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-          </div>
+    <Modal open={open} onClose={onClose} title={`Adjust Risk · ${risk.id}`} width={640}
+      titleSub={`${risk.name} · ${risk.category}`}
+      headerActions={aiAvailable && (
+        <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+          title="Draft a disposition with Claude — review and override as needed">
+          <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+        </button>
+      )}
+      foot={<>
+        <span className="muted mono" style={{fontSize: 11}}>
+          {valid ? "Submitting routes to your manager for review" : "Write a rationale (min 30 characters) to continue"}
+        </span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid}
+            onClick={() => onSubmit({ name: name.trim(), category: category.trim(), rag, score, velocity, ce, rationale: rationale.trim(), ai_suggested: aiSuggestedFields })}>
+            Submit Adjustment
+          </button>
         </div>
+      </>}>
         {aiState.error && (
           <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
             AI suggestion unavailable: {aiState.error}
@@ -427,7 +426,6 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
             <ProvenanceChip verdict={aiState.reco.recommendation} confidence={aiState.reco.confidence} />
           </div>
         )}
-        <div className="modal-body">
           <div className="ar-field" style={{marginBottom: 14, display: "flex", gap: 12}}>
             <div style={{flex: 2}}>
               <label className="ar-label">Risk Name</label>
@@ -525,21 +523,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
           <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", padding: "8px 10px", background: "var(--surface-2, var(--surface))", borderRadius: 6, border: "1px solid var(--line)"}}>
             This adjustment will be submitted to your manager for review. If you have no manager configured (set one from the header user menu), it is auto-approved so the workflow still completes.
           </div>
-        </div>
-        <div className="modal-foot">
-          <span className="muted mono" style={{fontSize: 11}}>
-            {valid ? "Submitting routes to your manager for review" : "Write a rationale (min 30 characters) to continue"}
-          </span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({ name: name.trim(), category: category.trim(), rag, score, velocity, ce, rationale: rationale.trim(), ai_suggested: aiSuggestedFields })}>
-              Submit Adjustment
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 

@@ -553,7 +553,11 @@ function ApprovalInboxScreen() {
         fetch(`${window.MCP_API_BASE || "/api/mcp"}/observability/telemetry/human-review`, { credentials: "include" }),
         fetch(`${window.MCP_API_BASE || "/api/mcp"}/ai/review-queue`, { credentials: "include" }),
       ]);
-      if (!gateRes.ok) throw new Error(await gateRes.text());
+      if (!gateRes.ok) {
+        const err = new Error(await gateRes.text());
+        err.status = gateRes.status;
+        throw err;
+      }
       const gateData = await gateRes.json();
       setItems(prev => _sameContent(prev, gateData.items || []) ? prev : (gateData.items || []));
       // Telemetry review and AI narrative review are both best-effort — a
@@ -566,18 +570,17 @@ function ApprovalInboxScreen() {
       setLastRefresh(new Date());
     } catch (e) {
       setError(e.message);
+      // Re-throw so usePolling's 401 counter can see it and, after enough
+      // consecutive hits, stop polling and log out instead of retrying a
+      // dead session every 5 seconds forever.
+      if (e && e.status === 401) throw e;
     } finally {
       setLoading(false);
       hasLoadedRef.current = true;
     }
   }, []);
 
-  React.useEffect(() => {
-    reload();
-    if (isPaused) return;
-    const id = setInterval(reload, 5000);
-    return () => clearInterval(id);
-  }, [reload, isPaused]);
+  window.usePolling(reload, 5000, { paused: isPaused });
 
   async function handleDecide(taskId, decision, comment) {
     const res = await fetch("/approvals/review", {

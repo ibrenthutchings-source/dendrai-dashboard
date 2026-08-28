@@ -670,7 +670,7 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
   async function refresh() {
     const base = _uboBase();
     try {
-      const [adjRes, hrRes, latRes, rawRes, holdsRes, covRes] = await Promise.all([
+      const responses = await Promise.all([
         fetch(`${base}/observability/telemetry/adjudicated?limit=100`),
         fetch(`${base}/observability/telemetry/human-review`),
         fetch(`${base}/observability/telemetry/summary`),
@@ -678,6 +678,17 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
         fetch(`${base}/observability/holds`),
         fetch(`${base}/observability/coverage`),
       ]);
+      const [adjRes, hrRes, latRes, rawRes, holdsRes, covRes] = responses;
+      // These 6 calls share one session cookie — if any came back 401 the
+      // session is dead, not just that one endpoint. Signal it distinctly so
+      // usePolling's counter can stop retrying and log out instead of
+      // silently no-op'ing every 5 seconds forever (each fetch below is
+      // otherwise treated as independently best-effort).
+      if (responses.some(r => r.status === 401)) {
+        const err = new Error("Session expired");
+        err.status = 401;
+        throw err;
+      }
       if (adjRes.ok) {
         const d = await adjRes.json();
         const rows = d.rows || [];
@@ -700,6 +711,7 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
       setLastRefresh(new Date());
     } catch (e) {
       setFetchErr(e.message);
+      if (e && e.status === 401) throw e;
     } finally {
       setLoading(false);
     }
@@ -745,12 +757,7 @@ function UBOGovPanel({ initialTab, initialFilter } = {}) {
     return res.ok;
   }
 
-  useEffect(() => {
-    if (isPaused) return;
-    refresh();
-    const t = setInterval(refresh, 5_000);
-    return () => clearInterval(t);
-  }, [isPaused]); // eslint-disable-line react-hooks/exhaustive-deps
+  window.usePolling(refresh, 5_000, { paused: isPaused });
 
   async function triggerProcess() {
     setTriggering(true);

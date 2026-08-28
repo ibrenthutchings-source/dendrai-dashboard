@@ -255,7 +255,7 @@ function useEscapeToClose(open, onClose) {
   }, [open, onClose]);
 }
 
-function Modal({ open, onClose, title, titleSub, size, boxClassName, children, foot }) {
+function Modal({ open, onClose, title, titleSub, size, width, boxClassName, headerActions, banner, children, foot }) {
   const boxRef = React.useRef(null);
   useEscapeToClose(open, onClose);
 
@@ -290,7 +290,7 @@ function Modal({ open, onClose, title, titleSub, size, boxClassName, children, f
   if (!open) return null;
   return (
     <div className="modal open" role="presentation">
-      <div className={"modal-box" + (boxClassName ? " " + boxClassName : "")} style={size === "sm" ? { width: 480 } : undefined}
+      <div className={"modal-box" + (boxClassName ? " " + boxClassName : "")} style={size === "sm" ? { width: 480 } : (width ? { width } : undefined)}
         role="dialog" aria-modal="true" aria-label={title || undefined}
         tabIndex={-1} ref={boxRef} onKeyDown={onKeyDown}>
         {title && (
@@ -299,9 +299,13 @@ function Modal({ open, onClose, title, titleSub, size, boxClassName, children, f
               <div className="modal-title">{title}</div>
               {titleSub && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2 }}>{titleSub}</div>}
             </div>
-            <button type="button" className="btn btn-sm" onClick={onClose} aria-label="Close">✕</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {headerActions}
+              <button type="button" className="btn btn-sm" onClick={onClose} aria-label="Close">✕</button>
+            </div>
           </div>
         )}
+        {banner}
         <div className="modal-body">{children}</div>
         {foot && <div className="modal-foot">{foot}</div>}
       </div>
@@ -811,6 +815,75 @@ function RefreshBadge({ lastRefresh, onRefresh, loading }) {
   );
 }
 
+// ---- usePolling: pausable interval + auto-pause on hidden tab + session-
+// expiry backoff ----
+// Every LIVE-badge screen (Approval Inbox, Continuous Watch, CEM,
+// Infrastructure Monitoring) used to hand-roll its own polling effect, with
+// the same two gaps in every copy: a backgrounded tab kept polling forever
+// (nothing in this codebase ever checked document.hidden), and a dead
+// session — fn() rejecting on a 401 — retried every tick forever instead of
+// routing into the logout() flow auth.jsx's idle timer already uses. That
+// combination is what produced the 401 console flood seen on Approval Inbox:
+// a stale session, polled every 5s, with no backoff.
+//
+// Skips the fetch entirely while paused (manual or hidden-tab), fires it
+// immediately on mount and on every transition back to unpaused (resume, or
+// tab foregrounded) — matching the one hand-rolled effect (CEM's) that was
+// already careful not to fetch while paused, since some screens treat a
+// pause as "don't touch my state right now" (e.g. CEM's manual pagination).
+//
+// `fn` should reject with an Error whose `.status === 401` to signal an
+// expired session (as opposed to any other transient failure) — three in a
+// row stops polling and logs out, rather than retrying forever.
+const _AUTH_EXPIRED_THRESHOLD = 3;
+
+function usePolling(fn, intervalMs, { paused = false } = {}) {
+  const auth = window.useAuth ? window.useAuth() : null;
+  const fnRef = React.useRef(fn);
+  fnRef.current = fn;
+  const failCountRef = React.useRef(0);
+
+  const [hidden, setHidden] = React.useState(document.hidden);
+  React.useEffect(() => {
+    function onVisibility() { setHidden(document.hidden); }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  // A backgrounded tab is paused exactly like an explicit user pause.
+  const effectivePaused = paused || hidden;
+
+  const run = React.useCallback(async () => {
+    try {
+      await fnRef.current();
+      failCountRef.current = 0;
+    } catch (e) {
+      if (e && e.status === 401) {
+        failCountRef.current += 1;
+        if (failCountRef.current >= _AUTH_EXPIRED_THRESHOLD) {
+          failCountRef.current = 0;
+          auth?.logout?.("Your session expired — sign back in to keep watching this screen.");
+        }
+      } else {
+        failCountRef.current = 0;
+      }
+    }
+  }, [auth]);
+
+  React.useEffect(() => {
+    // Skip the fetch entirely while paused (manual or hidden-tab) rather than
+    // firing one anyway before bailing — a couple of screens rely on a pause
+    // meaning "don't touch my state right now" (e.g. CEM's manual pagination
+    // while paused), and a redundant fetch on the way into a pause serves no
+    // one. Coming back from a pause (resume, or tab foregrounded) re-runs
+    // this effect and fires the immediate refresh here.
+    if (effectivePaused) return;
+    run();
+    const id = setInterval(run, intervalMs);
+    return () => clearInterval(id);
+  }, [run, intervalMs, effectivePaused]);
+}
+
 // Shown in the screen-switch Suspense boundary while a lazily-loaded
 // screen chunk is being fetched on first navigation.
 function ScreenLoadingFallback() {
@@ -830,7 +903,7 @@ Object.assign(window, {
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,
   Empty, SectionLabel, BBTermHeader, AiReviewBanner,
-  LiveBadge, RefreshBadge,
+  LiveBadge, RefreshBadge, usePolling,
   ScreenAccessGate, ScreenLoadingFallback,
   Modal, useEscapeToClose, ConfirmModal, Clickable,
   showToast, ToastHost,

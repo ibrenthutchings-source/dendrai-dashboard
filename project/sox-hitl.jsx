@@ -115,7 +115,6 @@ function AdjustMaterialityModal({ open, scope, ticker, onClose, onSubmit }) {
   React.useEffect(() => {
     if (open) { setMaterialityPct(5.0); setPerformancePct(75.0); setRationale(""); setErr(null); setAiState({ loading: false, error: null, reco: null }); }
   }, [open]);
-  useEscapeToClose(open, onClose);
 
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiSoxRecommend;
   async function runAiSuggest() {
@@ -156,66 +155,56 @@ function AdjustMaterialityModal({ open, scope, ticker, onClose, onSubmit }) {
   }
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{width: 520}}>
-        <div className="modal-head">
-          <div className="modal-title">Adjust Materiality Basis</div>
-          <div style={{display: "flex", alignItems: "center", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
-                title="Draft a materiality recommendation with Claude — review and override as needed">
-                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
-              </button>
-            )}
-            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-          </div>
+    <Modal open={open} onClose={onClose} title="Adjust Materiality Basis" width={520}
+      headerActions={aiAvailable && (
+        <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+          title="Draft a materiality recommendation with Claude — review and override as needed">
+          <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+        </button>
+      )}
+      foot={<>
+        <span className="muted" style={{fontSize: 11}}>{rationale.length} chars</span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid || saving} onClick={handleSubmit}>{saving ? "Saving…" : "Submit Adjustment"}</button>
         </div>
-        {aiState.error && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
-            AI suggestion unavailable: {aiState.error}
-          </div>
-        )}
-        {aiState.reco && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
-            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
-          </div>
-        )}
-        <div className="modal-body">
-          <div style={{display: "flex", gap: 12, marginBottom: 12}}>
-            <div style={{flex: 1}}>
-              <label className="ar-label">Planning materiality % (of pre-tax income)</label>
-              <input type="number" step="0.1" min="0.1" max="20" value={materialityPct}
-                onChange={e => setMaterialityPct(parseFloat(e.target.value) || 0)}
-                style={{width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
-            </div>
-            <div style={{flex: 1}}>
-              <label className="ar-label">Performance materiality % (of planning)</label>
-              <input type="number" step="1" min="10" max="100" value={performancePct}
-                onChange={e => setPerformancePct(parseFloat(e.target.value) || 0)}
-                style={{width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
-            </div>
-          </div>
-          <div className="rar-sub" style={{marginBottom: 10}}>
-            Current computed basis: {scope.materiality_basis} — Planning {sxFmtM(scope.planning_materiality)}, Performance {sxFmtM(scope.performance_materiality)}.
-            Saved immediately to the SOX config for {(ticker || "").toUpperCase()} {scope.fiscal_year}; takes effect on the next Rescope.
-          </div>
-          <label className="ar-label">
-            Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
-          </label>
-          <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
-            placeholder="Describe the basis for this materiality adjustment. Minimum 30 characters."
-            style={{minHeight: 90}}/>
-          {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 6}}>{err}</div>}
+      </>}>
+      {aiState.error && (
+        <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+          AI suggestion unavailable: {aiState.error}
         </div>
-        <div className="modal-foot">
-          <span className="muted" style={{fontSize: 11}}>{rationale.length} chars</span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid || saving} onClick={handleSubmit}>{saving ? "Saving…" : "Submit Adjustment"}</button>
-          </div>
+      )}
+      {aiState.reco && (
+        <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+          AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
+        </div>
+      )}
+      <div style={{display: "flex", gap: 12, marginBottom: 12}}>
+        <div style={{flex: 1}}>
+          <label className="ar-label">Planning materiality % (of pre-tax income)</label>
+          <input type="number" step="0.1" min="0.1" max="20" value={materialityPct}
+            onChange={e => setMaterialityPct(parseFloat(e.target.value) || 0)}
+            style={{width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
+        </div>
+        <div style={{flex: 1}}>
+          <label className="ar-label">Performance materiality % (of planning)</label>
+          <input type="number" step="1" min="10" max="100" value={performancePct}
+            onChange={e => setPerformancePct(parseFloat(e.target.value) || 0)}
+            style={{width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"}}/>
         </div>
       </div>
-    </div>
+      <div className="rar-sub" style={{marginBottom: 10}}>
+        Current computed basis: {scope.materiality_basis} — Planning {sxFmtM(scope.planning_materiality)}, Performance {sxFmtM(scope.performance_materiality)}.
+        Saved immediately to the SOX config for {(ticker || "").toUpperCase()} {scope.fiscal_year}; takes effect on the next Rescope.
+      </div>
+      <label className="ar-label">
+        Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
+      </label>
+      <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
+        placeholder="Describe the basis for this materiality adjustment. Minimum 30 characters."
+        style={{minHeight: 90}}/>
+      {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 6}}>{err}</div>}
+    </Modal>
   );
 }
 
@@ -292,7 +281,6 @@ function AdjustAccountModal({ open, acc, ticker, onClose, onSubmit }) {
   React.useEffect(() => {
     if (open && acc) { setInScope(acc.in_scope); setPriority(acc.priority || "P2"); setRationale(""); setErr(null); setAiState({ loading: false, error: null, reco: null }); }
   }, [open, acc?.account_id]);
-  useEscapeToClose(open, onClose);
 
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiSoxRecommend;
   async function runAiSuggest() {
@@ -333,64 +321,50 @@ function AdjustAccountModal({ open, acc, ticker, onClose, onSubmit }) {
   }
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{width: 520}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Adjust Account · {acc.account_name}</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>
-              Computed: {acc.in_scope ? `In scope (${acc.priority})` : "Out of scope"}
-            </div>
-          </div>
-          <div style={{display: "flex", alignItems: "center", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
-                title="Draft a scope/priority recommendation with Claude — review and override as needed">
-                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
-              </button>
-            )}
-            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-          </div>
+    <Modal open={open} onClose={onClose} title={`Adjust Account · ${acc.account_name}`} width={520}
+      titleSub={`Computed: ${acc.in_scope ? `In scope (${acc.priority})` : "Out of scope"}`}
+      headerActions={aiAvailable && (
+        <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+          title="Draft a scope/priority recommendation with Claude — review and override as needed">
+          <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+        </button>
+      )}
+      foot={<>
+        <span className="muted" style={{fontSize: 11}}>{rationale.length} chars</span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid || saving} onClick={handleSubmit}>{saving ? "Saving…" : "Submit Adjustment"}</button>
         </div>
-        {aiState.error && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
-            AI suggestion unavailable: {aiState.error}
-          </div>
-        )}
-        {aiState.reco && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
-            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
-          </div>
-        )}
-        <div className="modal-body">
-          <div style={{display: "flex", gap: 8, marginBottom: 12}}>
-            <button className={`btn btn-sm ${inScope ? "btn-primary" : ""}`} onClick={() => setInScope(true)}>Force in-scope</button>
-            <button className={`btn btn-sm ${!inScope ? "btn-primary" : ""}`} onClick={() => setInScope(false)}>Force out-of-scope</button>
-          </div>
-          {inScope && (
-            <div style={{display: "flex", gap: 8, marginBottom: 12}}>
-              {["P1", "P2"].map(p => (
-                <button key={p} className={`btn btn-sm ${priority === p ? "btn-primary" : ""}`} onClick={() => setPriority(p)}>{p}</button>
-              ))}
-            </div>
-          )}
-          <label className="ar-label">
-            Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
-          </label>
-          <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
-            placeholder="Describe the basis for this override. Minimum 30 characters."
-            style={{minHeight: 90}}/>
-          {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 6}}>{err}</div>}
+      </>}>
+      {aiState.error && (
+        <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+          AI suggestion unavailable: {aiState.error}
         </div>
-        <div className="modal-foot">
-          <span className="muted" style={{fontSize: 11}}>{rationale.length} chars</span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid || saving} onClick={handleSubmit}>{saving ? "Saving…" : "Submit Adjustment"}</button>
-          </div>
+      )}
+      {aiState.reco && (
+        <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+          AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
         </div>
+      )}
+      <div style={{display: "flex", gap: 8, marginBottom: 12}}>
+        <button className={`btn btn-sm ${inScope ? "btn-primary" : ""}`} onClick={() => setInScope(true)}>Force in-scope</button>
+        <button className={`btn btn-sm ${!inScope ? "btn-primary" : ""}`} onClick={() => setInScope(false)}>Force out-of-scope</button>
       </div>
-    </div>
+      {inScope && (
+        <div style={{display: "flex", gap: 8, marginBottom: 12}}>
+          {["P1", "P2"].map(p => (
+            <button key={p} className={`btn btn-sm ${priority === p ? "btn-primary" : ""}`} onClick={() => setPriority(p)}>{p}</button>
+          ))}
+        </div>
+      )}
+      <label className="ar-label">
+        Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
+      </label>
+      <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
+        placeholder="Describe the basis for this override. Minimum 30 characters."
+        style={{minHeight: 90}}/>
+      {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 6}}>{err}</div>}
+    </Modal>
   );
 }
 
@@ -543,7 +517,6 @@ function AdjustProcessModal({ open, proc, ticker, onClose, onSubmit }) {
   React.useEffect(() => {
     if (open && proc) { setLevel(proc.coverage_level || "P2"); setRationale(""); setErr(null); setAiState({ loading: false, error: null, reco: null }); }
   }, [open, proc?.process_id]);
-  useEscapeToClose(open, onClose);
 
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiSoxRecommend;
   async function runAiSuggest() {
@@ -583,56 +556,44 @@ function AdjustProcessModal({ open, proc, ticker, onClose, onSubmit }) {
   }
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{width: 520}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Adjust Process · {proc.process_name}</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>Computed: {proc.coverage_level}</div>
-          </div>
-          <div style={{display: "flex", alignItems: "center", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
-                title="Draft a coverage-level recommendation with Claude — review and override as needed">
-                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
-              </button>
-            )}
-            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-          </div>
+    <Modal open={open} onClose={onClose} title={`Adjust Process · ${proc.process_name}`} width={520}
+      titleSub={`Computed: ${proc.coverage_level}`}
+      headerActions={aiAvailable && (
+        <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+          title="Draft a coverage-level recommendation with Claude — review and override as needed">
+          <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+        </button>
+      )}
+      foot={<>
+        <span className="muted" style={{fontSize: 11}}>{rationale.length} chars</span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid || saving} onClick={handleSubmit}>{saving ? "Saving…" : "Submit Adjustment"}</button>
         </div>
-        {aiState.error && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
-            AI suggestion unavailable: {aiState.error}
-          </div>
-        )}
-        {aiState.reco && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
-            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
-          </div>
-        )}
-        <div className="modal-body">
-          <div style={{display: "flex", gap: 8, marginBottom: 12}}>
-            {["P1", "P2", "Out"].map(l => (
-              <button key={l} className={`btn btn-sm ${level === l ? "btn-primary" : ""}`} onClick={() => setLevel(l)}>{l}</button>
-            ))}
-          </div>
-          <label className="ar-label">
-            Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
-          </label>
-          <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
-            placeholder="Describe the basis for this override. Minimum 30 characters."
-            style={{minHeight: 90}}/>
-          {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 6}}>{err}</div>}
+      </>}>
+      {aiState.error && (
+        <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
+          AI suggestion unavailable: {aiState.error}
         </div>
-        <div className="modal-foot">
-          <span className="muted" style={{fontSize: 11}}>{rationale.length} chars</span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid || saving} onClick={handleSubmit}>{saving ? "Saving…" : "Submit Adjustment"}</button>
-          </div>
+      )}
+      {aiState.reco && (
+        <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
+          AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
         </div>
+      )}
+      <div style={{display: "flex", gap: 8, marginBottom: 12}}>
+        {["P1", "P2", "Out"].map(l => (
+          <button key={l} className={`btn btn-sm ${level === l ? "btn-primary" : ""}`} onClick={() => setLevel(l)}>{l}</button>
+        ))}
       </div>
-    </div>
+      <label className="ar-label">
+        Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
+      </label>
+      <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
+        placeholder="Describe the basis for this override. Minimum 30 characters."
+        style={{minHeight: 90}}/>
+      {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 6}}>{err}</div>}
+    </Modal>
   );
 }
 

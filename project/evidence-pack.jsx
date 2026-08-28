@@ -53,7 +53,6 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
       .then(data => setState({ loading: false, error: null, data }))
       .catch(e => setState({ loading: false, error: e.message || "Request failed", data: null }));
   }, [open, selectedRunId]);
-  useEscapeToClose(open, onClose);
 
   if (!open) return null;
 
@@ -70,45 +69,50 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
 
   const d = state.data;
 
+  const runBanner = (
+    <div style={{ padding: "10px 20px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
+      <span style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600 }}>Run</span>
+      {runList.loading ? (
+        <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Loading run history…</span>
+      ) : runList.error ? (
+        <span style={{ fontSize: 11.5, color: "var(--red-ink, #b93333)" }}>Couldn't load run history — {runList.error}</span>
+      ) : runList.runs.length === 0 ? (
+        <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Run {selectedRunId} (no history available for {ticker})</span>
+      ) : (
+        <select
+          className="fi-in"
+          style={{ fontSize: 11.5, padding: "4px 8px", maxWidth: 460 }}
+          value={selectedRunId || ""}
+          onChange={e => setSelectedRunId(Number(e.target.value))}
+        >
+          {runList.runs.map(r => (
+            <option key={r.run_id} value={r.run_id}>
+              Run {r.run_id} · {r.run_at ? new Date(r.run_at).toLocaleString() : "—"}
+              {r.completed ? " · completed" : " · in progress"} · {r.risk_count} risk{r.risk_count === 1 ? "" : "s"}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+
+  const modalFoot = (
+    <>
+      <span className="mono muted" style={{ fontSize: 11 }}>
+        {d ? `${d.risk_scores?.length || 0} risks · ${d.approval_tasks?.length || 0} sign-offs · ${d.adjudications_meta?.total || 0} adjudications` : ""}
+      </span>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button className="btn btn-sm" onClick={downloadJson} disabled={!d}><Icon name="download" size={11}/> Download JSON</button>
+        <button className="btn btn-sm" onClick={() => window.print()} disabled={!d}><Icon name="download" size={11}/> Print / PDF</button>
+        <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
+      </div>
+    </>
+  );
+
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{ width: 920 }}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Audit Evidence Pack</div>
-            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>
-              {ticker ? `${ticker} · ` : ""}Run {selectedRunId}
-            </div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-        </div>
-
-        <div style={{ padding: "10px 20px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600 }}>Run</span>
-          {runList.loading ? (
-            <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Loading run history…</span>
-          ) : runList.error ? (
-            <span style={{ fontSize: 11.5, color: "var(--red-ink, #b93333)" }}>Couldn't load run history — {runList.error}</span>
-          ) : runList.runs.length === 0 ? (
-            <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Run {selectedRunId} (no history available for {ticker})</span>
-          ) : (
-            <select
-              className="fi-in"
-              style={{ fontSize: 11.5, padding: "4px 8px", maxWidth: 460 }}
-              value={selectedRunId || ""}
-              onChange={e => setSelectedRunId(Number(e.target.value))}
-            >
-              {runList.runs.map(r => (
-                <option key={r.run_id} value={r.run_id}>
-                  Run {r.run_id} · {r.run_at ? new Date(r.run_at).toLocaleString() : "—"}
-                  {r.completed ? " · completed" : " · in progress"} · {r.risk_count} risk{r.risk_count === 1 ? "" : "s"}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-
-        <div className="modal-body">
+    <Modal open={open} onClose={onClose} title="Audit Evidence Pack" width={920}
+      titleSub={`${ticker ? `${ticker} · ` : ""}Run ${selectedRunId}`}
+      banner={runBanner} foot={modalFoot}>
           {state.loading && (
             <div style={{ padding: "40px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 12 }}>
               Assembling evidence pack…
@@ -332,20 +336,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
               </div>
             </>
           )}
-        </div>
-
-        <div className="modal-foot">
-          <span className="mono muted" style={{ fontSize: 11 }}>
-            {d ? `${d.risk_scores?.length || 0} risks · ${d.approval_tasks?.length || 0} sign-offs · ${d.adjudications_meta?.total || 0} adjudications` : ""}
-          </span>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn btn-sm" onClick={downloadJson} disabled={!d}><Icon name="download" size={11}/> Download JSON</button>
-            <button className="btn btn-sm" onClick={() => window.print()} disabled={!d}><Icon name="download" size={11}/> Print / PDF</button>
-            <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 

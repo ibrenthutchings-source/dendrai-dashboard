@@ -284,37 +284,58 @@ function InfrastructureMonitoringScreen({ onNavigate, isDevEnv = false } = {}) {
 
   const load = React.useCallback(() => {
     setLoading(true);
-    Promise.all([
-      fetch(`${_infraBase()}/infra-monitoring/connectors`, { credentials: "include" }).then(r => r.json()),
-      fetch(`${_infraBase()}/infra-monitoring/results`, { credentials: "include" }).then(r => r.json()),
+    return Promise.all([
+      fetch(`${_infraBase()}/infra-monitoring/connectors`, { credentials: "include" }),
+      fetch(`${_infraBase()}/infra-monitoring/results`, { credentials: "include" }),
     ])
+      .then(([cRes, rRes]) => {
+        // Neither response's status was checked before this — a 401 body
+        // (just {"detail": "Not authenticated"}) parsed fine as JSON and
+        // silently rendered as zero connectors/results, no error at all.
+        // Surface it distinctly so usePolling's counter can log out instead
+        // of polling a dead session forever.
+        if (cRes.status === 401 || rRes.status === 401) {
+          const err = new Error("Session expired");
+          err.status = 401;
+          throw err;
+        }
+        return Promise.all([cRes.json(), rRes.json()]);
+      })
       .then(([c, r]) => {
         setConnectors(c.connectors || []);
         setResults(r.results || []);
         setError(null);
         setLastRefresh(new Date());
       })
-      .catch(e => setError(e.message || "Failed to load infrastructure monitoring data"))
+      .catch(e => {
+        setError(e.message || "Failed to load infrastructure monitoring data");
+        if (e && e.status === 401) throw e;
+      })
       .finally(() => setLoading(false));
   }, []);
 
   const loadHygiene = React.useCallback(() => {
     setHygieneLoading(true);
     return fetch(`${_infraBase()}/infra-monitoring/connector-hygiene`, { credentials: "include" })
-      .then(r => r.json())
+      .then(r => {
+        if (r.status === 401) {
+          const err = new Error("Session expired");
+          err.status = 401;
+          throw err;
+        }
+        return r.json();
+      })
       .then(d => setHygiene(d))
-      .catch(e => setHygiene({ compliance: { stale_connectors: [] }, error: e.message }))
+      .catch(e => {
+        if (e && e.status === 401) throw e;
+        setHygiene({ compliance: { stale_connectors: [] }, error: e.message });
+      })
       .finally(() => setHygieneLoading(false));
   }, []);
 
-  React.useEffect(() => { load(); }, [load]);
-  React.useEffect(() => { loadHygiene(); }, [loadHygiene]);
+  const refreshAll = React.useCallback(() => Promise.all([load(), loadHygiene()]), [load, loadHygiene]);
 
-  React.useEffect(() => {
-    if (isPaused) return;
-    const id = setInterval(() => { load(); loadHygiene(); }, 15000);
-    return () => clearInterval(id);
-  }, [isPaused, load, loadHygiene]);
+  window.usePolling(refreshAll, 15000, { paused: isPaused });
 
   function runConnector(connectorId) {
     setRunningId(connectorId);

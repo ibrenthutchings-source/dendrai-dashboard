@@ -6,7 +6,6 @@ function ReportModal({ open, onClose, payload }) {
   // Hooks must run unconditionally — declare before the early return.
   const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null, _review: null });
   React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null, _review: null }); }, [payload?.ts]);
-  useEscapeToClose(open, onClose);
 
   if (!open || !payload) return null;
   const {
@@ -42,17 +41,25 @@ function ReportModal({ open, onClose, payload }) {
     }
   }
 
+  const modalFoot = (
+    <>
+      <span className="mono muted" style={{fontSize: 11}}>{loop.audit_impact_score ? `Audit impact ${loop.audit_impact_score}/25` : ""} · {risks.length} risks · {maps.length} MAPs</span>
+      <div style={{display: "flex", gap: 6}}>
+        {aiAvailable && (
+          <button className="btn btn-sm" onClick={generateAiReport} disabled={aiReport.loading}
+            title="Generate a board-ready narrative report with Claude">
+            <Icon name="spark" size={11}/> {aiReport.loading ? "Generating…" : aiReport.markdown ? "Regenerate AI report" : "Generate AI report"}
+          </button>
+        )}
+        <button className="btn btn-sm" onClick={() => window.print()}><Icon name="download" size={11}/> Print / PDF</button>
+        <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
+      </div>
+    </>
+  );
+
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{width: 920}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Loop Report</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>Generated {new Date(ts).toLocaleString()}</div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-        </div>
-        <div className="modal-body">
+    <Modal open={open} onClose={onClose} title="Loop Report"
+      titleSub={`Generated ${new Date(ts).toLocaleString()}`} width={920} foot={modalFoot}>
           <div className="rep-h1">{entity}</div>
           <div className="rep-h1-sub">{cfg.industry} · {(Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus]).join(" · ")} · {new Date(ts).toLocaleDateString()}</div>
 
@@ -495,22 +502,7 @@ function ReportModal({ open, onClose, payload }) {
               ))}
             </div>
           </div>
-        </div>
-        <div className="modal-foot">
-          <span className="mono muted" style={{fontSize: 11}}>{loop.audit_impact_score ? `Audit impact ${loop.audit_impact_score}/25` : ""} · {risks.length} risks · {maps.length} MAPs</span>
-          <div style={{display: "flex", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={generateAiReport} disabled={aiReport.loading}
-                title="Generate a board-ready narrative report with Claude">
-                <Icon name="spark" size={11}/> {aiReport.loading ? "Generating…" : aiReport.markdown ? "Regenerate AI report" : "Generate AI report"}
-              </button>
-            )}
-            <button className="btn btn-sm" onClick={() => window.print()}><Icon name="download" size={11}/> Print / PDF</button>
-            <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -670,30 +662,20 @@ function PipelineStagesReport({ stageState, stageOutput }) {
 function OverrideModal({ open, gateNum, onClose, onConfirm }) {
   const [reason, setReason] = useState("");
   useEffect(() => { if (open) setReason(""); }, [open]);
-  useEscapeToClose(open, onClose);
-  if (!open) return null;
   return (
-    <div className="modal open">
-      <div className="modal-box sm">
-        <div className="modal-head">
-          <div className="modal-title">Override Gate {gateNum} · Add Rationale</div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+    <Modal open={open} onClose={onClose} title={`Override Gate ${gateNum} · Add Rationale`} size="sm"
+      foot={<>
+        <span className="muted" style={{fontSize: 11}}>{reason.length} chars</span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!reason.trim()} onClick={() => onConfirm(reason.trim())}>Confirm Override</button>
         </div>
-        <div className="modal-body">
-          <div style={{fontSize: 12, color: "var(--ink-3)", marginBottom: 8, lineHeight: 1.5}}>
-            Required for audit trail. The rationale is captured verbatim into the Loop Report.
-          </div>
-          <textarea className="fi-ta" value={reason} onChange={e => setReason(e.target.value)} placeholder="Describe the basis for your override decision…"/>
-        </div>
-        <div className="modal-foot">
-          <span className="muted" style={{fontSize: 11}}>{reason.length} chars</span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!reason.trim()} onClick={() => onConfirm(reason.trim())}>Confirm Override</button>
-          </div>
-        </div>
+      </>}>
+      <div style={{fontSize: 12, color: "var(--ink-3)", marginBottom: 8, lineHeight: 1.5}}>
+        Required for audit trail. The rationale is captured verbatim into the Loop Report.
       </div>
-    </div>
+      <textarea className="fi-ta" value={reason} onChange={e => setReason(e.target.value)} placeholder="Describe the basis for your override decision…"/>
+    </Modal>
   );
 }
 

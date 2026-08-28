@@ -120,20 +120,25 @@ function ContinuousMonitoringScreen({ onNavigate } = {}) {
   const load = React.useCallback(() => {
     return fetch(`${_cmBase()}/command-center`, { credentials: "include" })
       .then(res => {
-        if (!res.ok) throw new Error(`Failed to load command center (${res.status})`);
+        if (!res.ok) {
+          const err = new Error(`Failed to load command center (${res.status})`);
+          err.status = res.status;
+          throw err;
+        }
         return res.json();
       })
       .then(d => { setData(d); setError(null); setLastRefresh(new Date()); })
-      .catch(e => setError(e.message))
+      .catch(e => {
+        setError(e.message);
+        // Re-throw a 401 so usePolling's counter can see it and log out
+        // after enough consecutive hits, instead of polling a dead session
+        // every 5 seconds forever.
+        if (e && e.status === 401) throw e;
+      })
       .finally(() => setLoading(false));
   }, []);
 
-  React.useEffect(() => {
-    load();
-    if (isPaused) return;
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
-  }, [load, isPaused]);
+  window.usePolling(load, 5000, { paused: isPaused });
 
   const systems = data?.systems || [];
   const connectors = data?.connectors || [];

@@ -383,8 +383,6 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
     }
   }
 
-  useEscapeToClose(open, onClose);
-
   if (!open || !obj) return null;
 
   const sortedRisks = [...risks].sort((a, b) => b.score - a.score);
@@ -467,25 +465,36 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
   } : null;
 
   return (
-    <div className="modal open">
-      <div className="modal-box" style={{width: 640}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Adjust Objective · {obj.id}</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3, maxWidth: 500, lineHeight: 1.4}}>
-              {obj.objective}
-            </div>
-          </div>
-          <div style={{display: "flex", alignItems: "center", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
-                title="Draft a scope with Claude — review and override as needed">
-                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
-              </button>
-            )}
-            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-          </div>
+    <Modal open={open} onClose={onClose} title={`Adjust Objective · ${obj.id}`} width={640}
+      titleSub={<span className="mono" style={{maxWidth: 500, display: "inline-block", lineHeight: 1.4}}>{obj.objective}</span>}
+      headerActions={aiAvailable && (
+        <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+          title="Draft a scope with Claude — review and override as needed">
+          <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+        </button>
+      )}
+      foot={<>
+        <span className="muted mono" style={{fontSize: 11}}>
+          {valid ? "Submitting routes to your manager for review" : "Write a rationale (min 30 characters) to continue"}
+        </span>
+        <div style={{display:"flex",gap:6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid}
+            onClick={() => onSubmit({
+              objective: objectiveText.trim(),
+              priority,
+              sprint,
+              hours: hoursValid ? hoursNum : obj.hours,
+              linked_risks: linkedRiskIds,
+              controls: controlRefs,
+              residualRiskReduction: residualReduction,
+              rationale: rationale.trim(),
+              ai_suggested: aiSuggestedFields,
+            })}>
+            Submit Adjustment
+          </button>
         </div>
+      </>}>
         {aiState.error && (
           <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
             AI suggestion unavailable: {aiState.error}
@@ -497,7 +506,6 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
             <ProvenanceChip verdict={aiState.reco.recommendation} confidence={aiState.reco.confidence} />
           </div>
         )}
-        <div className="modal-body">
           <div className="ar-field" style={{marginBottom: 14}}>
             <label className="ar-label">Objective</label>
             <textarea value={objectiveText} onChange={e => setObjectiveText(e.target.value)}
@@ -715,31 +723,7 @@ function AdjustObjectiveModal({ open, obj, risks = [], ticker, runId, onClose, o
           <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", padding: "8px 10px", background: "var(--surface-2, var(--surface))", borderRadius: 6, border: "1px solid var(--line)"}}>
             This adjustment will be submitted to your manager for review. If you have no manager configured (set one from the header user menu), it is auto-approved so the workflow still completes.
           </div>
-        </div>
-        <div className="modal-foot">
-          <span className="muted mono" style={{fontSize: 11}}>
-            {valid ? "Submitting routes to your manager for review" : "Write a rationale (min 30 characters) to continue"}
-          </span>
-          <div style={{display:"flex",gap:6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({
-                objective: objectiveText.trim(),
-                priority,
-                sprint,
-                hours: hoursValid ? hoursNum : obj.hours,
-                linked_risks: linkedRiskIds,
-                controls: controlRefs,
-                residualRiskReduction: residualReduction,
-                rationale: rationale.trim(),
-                ai_suggested: aiSuggestedFields,
-              })}>
-              Submit Adjustment
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
