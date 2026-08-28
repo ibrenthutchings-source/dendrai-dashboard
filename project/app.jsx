@@ -28,6 +28,7 @@ const EvidenceQualityScreenLazy = lazyGlobal(() => import('./evidence-quality.js
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
+const ConceptLinkReviewScreenLazy = lazyGlobal(() => import('./concept-link-review.jsx'), 'ConceptLinkReviewScreen');
 const RiskAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RiskAsCodeScreen');
 const PolicyAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'PolicyAsCodeScreen');
 const RegulatoryChangeScreenLazy = lazyGlobal(() => import('./regulatory-change.jsx'), 'RegulatoryChangeScreen');
@@ -2648,6 +2649,20 @@ function App() {
           <ScreenAccessGate screenId="approvals">
           <div className="panel active">
             <ApprovalInboxScreenLazy />
+          </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Concept Link Review ---- */}
+          {/* screenId is deliberately "approvals", not "conceptlinkreview" —
+              the backend enforces require_screen_permission("approvals",
+              edit=True) on both /ontology/links endpoints (concept_linking.py),
+              the same permission Approval Inbox uses; there is no separate
+              backend scope for this screen. */}
+          {activeScreen === "conceptlinkreview" && (
+          <ScreenAccessGate screenId="approvals">
+          <div className="panel active">
+            <ConceptLinkReviewScreenLazy />
           </div>
           </ScreenAccessGate>
           )}
