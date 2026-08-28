@@ -26,20 +26,8 @@ def client(monkeypatch):
     app.dependency_overrides[auth_endpoints.get_current_user] = lambda: {
         "username": "tester", "display_name": "Test Reviewer", "role": "admin", "id": 1,
     }
-    monkeypatch.setattr(ee.deploy_env, "IS_DEVELOPMENT", True)
     monkeypatch.setattr(ee.db, "is_available", lambda: True)
     return TestClient(app)
-
-
-# ── dev-only 404 gate ─────────────────────────────────────────────────────────
-
-def test_returns_404_outside_development_environment(monkeypatch):
-    app = FastAPI()
-    app.include_router(ee.router)
-    app.dependency_overrides[auth_endpoints.get_current_user] = lambda: {"username": "tester", "role": "admin", "id": 1}
-    monkeypatch.setattr(ee.deploy_env, "IS_DEVELOPMENT", False)
-    r = TestClient(app).get("/exceptions/pending")
-    assert r.status_code == 404
 
 
 # ── GET /exceptions/pending ──────────────────────────────────────────────────
@@ -162,3 +150,121 @@ def test_summary_passes_through_db_result(client, monkeypatch):
     body = client.get("/exceptions/summary").json()
     assert body["pending_by_owner"] == {"treasury-team@acme.com": 5}
     assert body["pending_by_risk_rating"] == {"R": 5}
+
+
+# ── GET /exceptions/report — board/executive period report ──────────────────
+
+def test_report_rejects_malformed_dates(client):
+    r = client.get("/exceptions/report", params={"date_from": "not-a-date", "date_to": "2026-08-01"})
+    assert r.status_code == 422
+
+
+def test_report_rejects_date_to_before_date_from(client):
+    r = client.get("/exceptions/report", params={"date_from": "2026-08-10", "date_to": "2026-08-01"})
+    assert r.status_code == 422
+
+
+def test_report_group_with_literal_amounts_skips_fair(client, monkeypatch):
+    monkeypatch.setattr(ee.db, "list_exceptions_report_grouped", lambda date_from, date_to: [
+        {"control_id": "JE-ROUND-DOLLAR", "system_source": "oracle_fusion", "process": "record_to_report",
+         "occurrence_count": 3, "worst_risk_rating": "A", "first_seen_at": "2026-08-01T00:00:00",
+         "last_seen_at": "2026-08-05T00:00:00", "literal_amount_total": 45000.0, "unpriced_count": 0},
+    ])
+    fair_called = {"n": 0}
+    monkeypatch.setattr(ee.fair_tool, "quantify", lambda **kw: fair_called.update(n=fair_called["n"] + 1) or {"ale": 999})
+
+    body = client.get("/exceptions/report", params={"date_from": "2026-08-01", "date_to": "2026-08-31"}).json()
+
+    assert fair_called["n"] == 0
+    assert body["by_control"][0]["impact_usd"] == 45000.0
+    assert body["by_control"][0]["impact_source"] == "transaction_amount"
+    assert body["summary"]["total_impact_usd"] == 45000.0
+    assert body["summary"]["total_occurrences"] == 3
+    assert body["summary"]["by_risk_rating"] == {"A": 3}
+
+
+def test_report_group_with_no_literal_amounts_uses_fair_estimate(client, monkeypatch):
+    monkeypatch.setattr(ee.db, "list_exceptions_report_grouped", lambda date_from, date_to: [
+        {"control_id": "ITGC-AC-01", "system_source": "sap_hana", "process": "itgc",
+         "occurrence_count": 12, "worst_risk_rating": "R", "first_seen_at": "2026-08-01T00:00:00",
+         "last_seen_at": "2026-08-20T00:00:00", "literal_amount_total": 0.0, "unpriced_count": 12},
+    ])
+    captured = {}
+    def _fake_quantify(**kw):
+        captured.update(kw)
+        return {"ale": 123456.0, "tef_mean": 12.0, "tef_source": "empirical"}
+    monkeypatch.setattr(ee.fair_tool, "quantify", _fake_quantify)
+
+    body = client.get("/exceptions/report", params={"date_from": "2026-08-01", "date_to": "2026-08-31"}).json()
+
+    assert captured["fire_count_window"] == 12
+    assert body["by_control"][0]["impact_usd"] == 123456.0
+    assert body["by_control"][0]["impact_source"] == "fair_estimate"
+    assert body["summary"]["total_impact_usd"] == 123456.0
+
+
+def test_report_mixed_group_reports_literal_sum_flagged_partial(client, monkeypatch):
+    monkeypatch.setattr(ee.db, "list_exceptions_report_grouped", lambda date_from, date_to: [
+        {"control_id": "JE-WEEKEND", "system_source": "netsuite", "process": "record_to_report",
+         "occurrence_count": 5, "worst_risk_rating": "G", "first_seen_at": "2026-08-01T00:00:00",
+         "last_seen_at": "2026-08-15T00:00:00", "literal_amount_total": 8000.0, "unpriced_count": 2},
+    ])
+    fair_called = {"n": 0}
+    monkeypatch.setattr(ee.fair_tool, "quantify", lambda **kw: fair_called.update(n=fair_called["n"] + 1) or {"ale": 0})
+
+    body = client.get("/exceptions/report", params={"date_from": "2026-08-01", "date_to": "2026-08-31"}).json()
+
+    assert fair_called["n"] == 0  # never blend a real dollar figure with a modeled one
+    assert body["by_control"][0]["impact_usd"] == 8000.0
+    assert body["by_control"][0]["impact_source"] == "transaction_amount_partial"
+
+
+def test_report_summary_aggregates_across_multiple_groups(client, monkeypatch):
+    monkeypatch.setattr(ee.db, "list_exceptions_report_grouped", lambda date_from, date_to: [
+        {"control_id": "A", "system_source": "sap_hana", "process": "itgc", "occurrence_count": 2,
+         "worst_risk_rating": "R", "first_seen_at": "x", "last_seen_at": "y",
+         "literal_amount_total": 1000.0, "unpriced_count": 0},
+        {"control_id": "B", "system_source": "oracle_fusion", "process": "order_to_cash", "occurrence_count": 3,
+         "worst_risk_rating": None, "first_seen_at": "x", "last_seen_at": "y",
+         "literal_amount_total": 2000.0, "unpriced_count": 0},
+    ])
+    body = client.get("/exceptions/report", params={"date_from": "2026-08-01", "date_to": "2026-08-31"}).json()
+
+    assert body["summary"]["total_occurrences"] == 5
+    assert body["summary"]["controls_affected"] == 2
+    assert body["summary"]["total_impact_usd"] == 3000.0
+    assert body["summary"]["by_system"] == {"sap_hana": 2, "oracle_fusion": 3}
+    assert body["summary"]["by_process"] == {"itgc": 2, "order_to_cash": 3}
+    assert body["summary"]["by_risk_rating"] == {"R": 2, "unrated": 3}
+
+
+def test_report_no_db_returns_empty_shape_not_error(client, monkeypatch):
+    monkeypatch.setattr(ee.db, "is_available", lambda: False)
+    r = client.get("/exceptions/report", params={"date_from": "2026-08-01", "date_to": "2026-08-31"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["by_control"] == []
+    assert body["summary"]["total_occurrences"] == 0
+
+
+# ── GET /exceptions/report/detail — drill-down ───────────────────────────────
+
+def test_report_detail_rejects_malformed_dates(client):
+    r = client.get("/exceptions/report/detail", params={"date_from": "bad", "date_to": "2026-08-01"})
+    assert r.status_code == 422
+
+
+def test_report_detail_passes_control_id_scope_through(client, monkeypatch):
+    captured = {}
+    def _fake_detail(date_from, date_to, control_id=None):
+        captured.update(date_from=date_from, date_to=date_to, control_id=control_id)
+        return [{"event_id": 1, "control_id": control_id}]
+    monkeypatch.setattr(ee.db, "list_exceptions_report_detail", _fake_detail)
+
+    r = client.get("/exceptions/report/detail", params={
+        "date_from": "2026-08-01", "date_to": "2026-08-31", "control_id": "ITGC-AC-01",
+    })
+
+    assert r.status_code == 200
+    assert captured["control_id"] == "ITGC-AC-01"
+    assert r.json()["events"] == [{"event_id": 1, "control_id": "ITGC-AC-01"}]

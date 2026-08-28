@@ -29,6 +29,7 @@ const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
 const ConceptLinkReviewScreenLazy = lazyGlobal(() => import('./concept-link-review.jsx'), 'ConceptLinkReviewScreen');
+const ExceptionsReportScreenLazy = lazyGlobal(() => import('./exceptions-report.jsx'), 'ExceptionsReportScreen');
 const RiskAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'RiskAsCodeScreen');
 const PolicyAsCodeScreenLazy = lazyGlobal(() => import('./code-screens.jsx'), 'PolicyAsCodeScreen');
 const RegulatoryChangeScreenLazy = lazyGlobal(() => import('./regulatory-change.jsx'), 'RegulatoryChangeScreen');
@@ -2662,6 +2663,19 @@ function App() {
           <ScreenAccessGate screenId="approvals">
           <div className="panel active">
             <ConceptLinkReviewScreenLazy />
+          </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Exception Report ---- */}
+          {/* screenId "exceptions" — same backend permission Exception
+              Management uses (require_screen_permission("exceptions") on
+              exceptions_endpoints.py's router); no separate scope for this
+              screen, see nav.jsx's permissionScreenId comment. */}
+          {activeScreen === "exceptionsreport" && (
+          <ScreenAccessGate screenId="exceptions">
+          <div className="panel active">
+            <ExceptionsReportScreenLazy />
           </div>
           </ScreenAccessGate>
           )}

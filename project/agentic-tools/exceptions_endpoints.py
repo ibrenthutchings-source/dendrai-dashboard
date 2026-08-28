@@ -6,9 +6,11 @@ Ported from devriskops-ccm (a standalone Streamlit + FastAPI + Airflow
 service — app.py/backend_api.py/mcp_server.py/dags/ccm_dag.py — that was
 committed to this repo but never wired into the main React dashboard) into
 this app's own DB, auth, and connector infrastructure instead of a separate
-service+database. Deliberately restricted to the Development Railway
-environment only (deploy_env.py) — this is a new, still-settling feature,
-not yet meant to reach UAT/Sandbox/Production.
+service+database. Was restricted to the Development Railway environment
+only while the feature was still settling; lifted once the board/executive
+reporting screen needed real production exception data (see GET
+/exceptions/report below) — the underlying triage/scoring pipeline was
+already stable, the gate had simply never been revisited.
 
 Data model (db.py): exception_control_events (what happened) ->
 exception_model_inferences (the anomaly/uncertainty score assigned to it) ->
@@ -36,6 +38,7 @@ Router prefix: /exceptions
     GET  /exceptions/summary             Headline counts (pending, resolution mix, by system/owner/risk_rating)
     GET  /exceptions/history             Resolved triage decisions (Model Analytics tab)
     GET  /exceptions/drift-summary       Live PSI per system_source x {anomaly_score, uncertainty_score}
+    GET  /exceptions/report              Board/executive period report — summary + by-control $ impact + drill-down
 
 Curation/risk-rating/delegation (added after volume review — see
 exception_tool.py's module docstring for the risk_rating design):
@@ -52,29 +55,20 @@ rows are read/written via the existing /model-health/drift-incidents and
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 import db
-import deploy_env
+import fair_tool
 from auth_endpoints import get_current_user, require_screen_permission
 
 logger = logging.getLogger("ubo.exceptions")
 
-
-def _require_dev_environment() -> None:
-    """Exception Management is a Development-only feature (still settling —
-    see the module docstring). 404, not 403: a UAT/Sandbox/Production caller
-    shouldn't be able to tell the feature exists at all, same as a route
-    that was never registered."""
-    if not deploy_env.IS_DEVELOPMENT:
-        raise HTTPException(status_code=404, detail="Not found")
-
-
 router = APIRouter(
     prefix="/exceptions", tags=["Exception Management"],
-    dependencies=[Depends(_require_dev_environment), Depends(require_screen_permission("exceptions"))],
+    dependencies=[Depends(require_screen_permission("exceptions"))],
 )
 
 _RESOLUTION_LABELS = [
@@ -239,3 +233,112 @@ def check_exception_drift_once() -> list:
         alerted.append({"metric": metric_key, "incident_id": incident_id, **entry})
         logger.info("Exception Management: drift incident #%s opened for %s", incident_id, metric_key)
     return alerted
+
+
+# ── Board/executive period report ────────────────────────────────────────────
+
+def _parse_report_dates(date_from: str, date_to: str) -> tuple[date, date]:
+    try:
+        d_from = date.fromisoformat(date_from)
+        d_to = date.fromisoformat(date_to)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_from/date_to must be YYYY-MM-DD")
+    if d_to < d_from:
+        raise HTTPException(status_code=422, detail="date_to must be on or after date_from")
+    return d_from, d_to
+
+
+@router.get("/report")
+def get_exceptions_report(
+    date_from: str = Query(..., description="YYYY-MM-DD, inclusive"),
+    date_to: str = Query(..., description="YYYY-MM-DD, inclusive"),
+):
+    """Board/executive period report: every exception in [date_from, date_to]
+    grouped by (control_id, system_source, process), with a $ impact per
+    group and headline totals. Deliberately not scoped to requires_human_
+    review/untriaged like /pending — a period report covers everything that
+    happened, triaged or not, JE Testing included (see
+    db.list_exceptions_report_grouped's docstring).
+
+    $ impact per group: the literal transaction amount when one was captured
+    (JE Testing findings carry a real dollar amount in
+    point_in_time_features), otherwise a FAIR (Factor Analysis of
+    Information Risk) Monte Carlo estimate — same engine as POST
+    /fair/quantify — using this group's occurrence count as the period's
+    threat-event frequency. A group with a mix of priced and unpriced
+    occurrences reports the literal sum only, flagged partial, rather than
+    silently blending a real dollar figure with a modeled one.
+    """
+    d_from, d_to = _parse_report_dates(date_from, date_to)
+    if not db.is_available():
+        return {
+            "period": {"date_from": date_from, "date_to": date_to},
+            "summary": {"total_occurrences": 0, "total_impact_usd": 0, "controls_affected": 0,
+                        "by_system": {}, "by_process": {}, "by_risk_rating": {}},
+            "by_control": [],
+        }
+
+    groups = db.list_exceptions_report_grouped(date_from, date_to)
+    window_days = max(1, (d_to - d_from).days + 1)
+
+    by_control = []
+    total_impact = 0.0
+    total_occurrences = 0
+    by_system: Dict[str, int] = {}
+    by_process: Dict[str, int] = {}
+    by_risk_rating: Dict[str, int] = {}
+
+    for g in groups:
+        count = g["occurrence_count"]
+        total_occurrences += count
+        by_system[g["system_source"]] = by_system.get(g["system_source"], 0) + count
+        by_process[g["process"]] = by_process.get(g["process"], 0) + count
+        rating_label = g["worst_risk_rating"] or "unrated"
+        by_risk_rating[rating_label] = by_risk_rating.get(rating_label, 0) + count
+
+        literal_total = g["literal_amount_total"]
+        unpriced = g["unpriced_count"]
+        if unpriced == 0:
+            impact_usd, impact_source = literal_total, "transaction_amount"
+        elif unpriced == count:
+            # No occurrence in this group carries a literal amount — estimate
+            # the whole group's exposure via FAIR, never invent a number.
+            fair = fair_tool.quantify(fire_count_window=count, window_days=window_days)
+            impact_usd, impact_source = fair["ale"], "fair_estimate"
+        else:
+            impact_usd, impact_source = literal_total, "transaction_amount_partial"
+
+        total_impact += impact_usd
+        by_control.append({
+            **g,
+            "impact_usd": round(impact_usd, 2),
+            "impact_source": impact_source,
+        })
+
+    return {
+        "period": {"date_from": date_from, "date_to": date_to},
+        "summary": {
+            "total_occurrences": total_occurrences,
+            "total_impact_usd": round(total_impact, 2),
+            "controls_affected": len(groups),
+            "by_system": by_system,
+            "by_process": by_process,
+            "by_risk_rating": by_risk_rating,
+        },
+        "by_control": by_control,
+    }
+
+
+@router.get("/report/detail")
+def get_exceptions_report_detail(
+    date_from: str = Query(..., description="YYYY-MM-DD, inclusive"),
+    date_to: str = Query(..., description="YYYY-MM-DD, inclusive"),
+    control_id: Optional[str] = None,
+):
+    """Row-level drill-down for /report — every individual occurrence in the
+    period, optionally scoped to one control_id (the group a user clicked
+    into from the report's summary table)."""
+    _parse_report_dates(date_from, date_to)
+    if not db.is_available():
+        return {"events": []}
+    return {"events": db.list_exceptions_report_detail(date_from, date_to, control_id)}

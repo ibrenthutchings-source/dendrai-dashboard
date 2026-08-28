@@ -79,6 +79,15 @@ const NAV_SECTIONS = [
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch", divider: "Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
       { id: "exceptions", icon: "alert",   l: "Exception Management", devOnly: true },
+      // Board/executive period reporting over the same exception data —
+      // deliberately its own screen (a summary-then-drill-down report is a
+      // different job than the operational triage queue above) but gated by
+      // the SAME backend permission ("exceptions") via permissionScreenId,
+      // same pattern as Concept Links above. Not devOnly: exceptions_
+      // endpoints.py's router-level dev-only 404 gate was lifted specifically
+      // so this report could reach production; the triage screen above stays
+      // devOnly until that "still settling" feature is separately reviewed.
+      { id: "exceptionsreport", icon: "doc", l: "Exception Report", permissionScreenId: "exceptions" },
       { id: "ubogov",   icon: "shield",    l: "Telemetry Detail" },
       // Previously a separate, commented-out NAV_SECTIONS entry — the screen
       // (infrastructure-monitoring.jsx) was fully built but had no nav path

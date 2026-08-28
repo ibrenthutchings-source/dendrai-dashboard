@@ -11726,6 +11726,104 @@ def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str]
     return _run(_do) or []
 
 
+def list_exceptions_report_grouped(date_from: str, date_to: str) -> list:
+    """One row per (control_id, system_source, process) with at least one
+    exception in [date_from, date_to] — the board/executive report's summary
+    table. Unlike list_pending_exceptions_grouped, this deliberately does NOT
+    exclude JE Testing rows or filter to requires_human_review-and-untriaged:
+    an executive period report covers every exception that occurred, not
+    just what's still sitting in the operational queue. LEFT JOIN LATERAL
+    (not the inner JOIN list_pending_exceptions_grouped uses) because JE
+    Testing rows never get an exception_model_inferences row at all — they'd
+    vanish from the report entirely under an inner join.
+
+    literal_amount_total sums point_in_time_features->>'amount' where
+    present (real transaction dollars, from JE Testing findings); occurrences
+    lacking a literal amount are counted in unpriced_count so the caller
+    knows which groups still need a FAIR estimate for their $ impact."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ce.control_id, ce.system_source, ce.process,
+                           COUNT(*) AS occurrence_count,
+                           MIN({_RISK_RATING_ORDER_SQL}) AS worst_rating_order,
+                           MIN(ce.event_timestamp) AS first_seen_at, MAX(ce.event_timestamp) AS last_seen_at,
+                           COALESCE(SUM((ce.point_in_time_features->>'amount')::numeric)
+                                    FILTER (WHERE ce.point_in_time_features->>'amount' IS NOT NULL), 0) AS literal_amount_total,
+                           COUNT(*) FILTER (WHERE ce.point_in_time_features->>'amount' IS NULL) AS unpriced_count
+                    FROM exception_control_events ce
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    WHERE ce.event_timestamp >= %s AND ce.event_timestamp < (%s::date + INTERVAL '1 day')
+                    GROUP BY ce.control_id, ce.system_source, ce.process
+                    ORDER BY occurrence_count DESC, last_seen_at DESC
+                    """,
+                    (date_from, date_to),
+                )
+                cols = [d[0] for d in cur.description]
+                out = []
+                _rating_by_order = {0: "R", 1: "A", 2: "G", 3: None}
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    d["worst_risk_rating"] = _rating_by_order.get(d.pop("worst_rating_order"))
+                    for k in ("first_seen_at", "last_seen_at"):
+                        if d.get(k):
+                            d[k] = d[k].isoformat()
+                    d["literal_amount_total"] = float(d["literal_amount_total"] or 0)
+                    out.append(d)
+                return out
+    return _run(_do) or []
+
+
+def list_exceptions_report_detail(date_from: str, date_to: str, control_id: Optional[str] = None,
+                                   limit: int = 2000) -> list:
+    """Row-per-occurrence detail for the board report's drill-down — every
+    exception in [date_from, date_to], optionally scoped to one control_id
+    (the group a user clicked through from). Same LEFT JOIN LATERAL
+    reasoning as list_exceptions_report_grouped: JE Testing rows have no
+    inference row and must still appear."""
+    def _do():
+        filters = ["ce.event_timestamp >= %s", "ce.event_timestamp < (%s::date + INTERVAL '1 day')"]
+        params: list = [date_from, date_to]
+        if control_id:
+            filters.append("ce.control_id = %s")
+            params.append(control_id)
+        params.append(limit)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
+                           ce.point_in_time_features, ce.actor, ce.action, ce.event_type,
+                           ce.assigned_owner, mi.risk_rating
+                    FROM exception_control_events ce
+                    LEFT JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    WHERE {" AND ".join(filters)}
+                    ORDER BY ce.event_timestamp DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                out = []
+                for r in cur.fetchall():
+                    out.append({
+                        "event_id": r[0], "control_id": r[1], "system_source": r[2], "process": r[3],
+                        "event_timestamp": r[4].isoformat() if r[4] else None,
+                        "point_in_time_features": r[5] or {},
+                        "actor": r[6], "action": r[7], "event_type": r[8],
+                        "assigned_owner": r[9], "risk_rating": r[10],
+                    })
+                return out
+    return _run(_do) or []
+
+
 def bulk_submit_exception_triage(event_ids: list, auditor: str, resolution_label: str,
                                   justification_notes: Optional[str]) -> int:
     """Applies one auditor resolution to every event_id in one batch — the

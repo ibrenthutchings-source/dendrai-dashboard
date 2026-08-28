@@ -333,3 +333,80 @@ def test_escalate_stale_exceptions_returns_rowcount_and_excludes_journal_entry(m
 def test_escalate_stale_exceptions_no_db_returns_zero(monkeypatch):
     monkeypatch.setattr(db, "is_available", lambda: False)
     assert db.escalate_stale_exceptions() == 0
+
+
+# ── list_exceptions_report_grouped ───────────────────────────────────────────
+
+def test_report_grouped_does_not_exclude_journal_entry(monkeypatch):
+    """Unlike every other Exception Management query, the board report must
+    include JE Testing rows — it's a period-of-everything-that-happened
+    report, not the operational triage queue."""
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exceptions_report_grouped("2026-08-01", "2026-08-31")
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" not in sql
+    assert "LEFT JOIN LATERAL" in sql  # not an inner join — JE rows have no inference row
+
+
+def test_report_grouped_filters_by_date_range(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exceptions_report_grouped("2026-08-01", "2026-08-31")
+    sql, params = recorder[0]
+    assert "ce.event_timestamp >= %s" in sql
+    assert params == ("2026-08-01", "2026-08-31")
+
+
+def test_report_grouped_decodes_worst_rating_and_literal_amount(monkeypatch):
+    row = ("ITGC-AC-01", "sap_hana", "itgc", 3, 0, None, None, 1500.5, 1)
+    cols = ["control_id", "system_source", "process", "occurrence_count", "worst_rating_order",
+            "first_seen_at", "last_seen_at", "literal_amount_total", "unpriced_count"]
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[row], cols=cols)])
+    result = db.list_exceptions_report_grouped("2026-08-01", "2026-08-31")
+    assert result[0]["worst_risk_rating"] == "R"
+    assert result[0]["literal_amount_total"] == 1500.5
+    assert result[0]["unpriced_count"] == 1
+
+
+def test_report_grouped_worst_rating_unrated_when_no_inference(monkeypatch):
+    row = ("JE-ROUND-DOLLAR", "oracle_fusion", "record_to_report", 2, 3, None, None, 900.0, 0)
+    cols = ["control_id", "system_source", "process", "occurrence_count", "worst_rating_order",
+            "first_seen_at", "last_seen_at", "literal_amount_total", "unpriced_count"]
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[row], cols=cols)])
+    result = db.list_exceptions_report_grouped("2026-08-01", "2026-08-31")
+    assert result[0]["worst_risk_rating"] is None
+
+
+def test_report_grouped_no_db_returns_empty_list(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: False)
+    assert db.list_exceptions_report_grouped("2026-08-01", "2026-08-31") == []
+
+
+# ── list_exceptions_report_detail ────────────────────────────────────────────
+
+def test_report_detail_does_not_exclude_journal_entry(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exceptions_report_detail("2026-08-01", "2026-08-31")
+    sql, _ = recorder[0]
+    assert "JOURNAL_ENTRY" not in sql
+
+
+def test_report_detail_filters_by_control_id_when_given(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exceptions_report_detail("2026-08-01", "2026-08-31", control_id="ITGC-AC-01")
+    sql, params = recorder[0]
+    assert "ce.control_id = %s" in sql
+    assert "ITGC-AC-01" in params
+
+
+def test_report_detail_omits_control_filter_when_not_given(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exceptions_report_detail("2026-08-01", "2026-08-31")
+    sql, _ = recorder[0]
+    assert "ce.control_id = %s" not in sql

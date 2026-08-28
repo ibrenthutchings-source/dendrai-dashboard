@@ -844,6 +844,22 @@ window.MCP = (function () {
     return _get('/exceptions/drift-summary');
   }
 
+  /** Board/executive period report: every exception in [dateFrom, dateTo]
+   *  grouped by control, with a $ impact per group (literal transaction
+   *  amount where captured, else a FAIR estimate) and headline totals. */
+  async function exceptionsReport(dateFrom, dateTo) {
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    return _get(`/exceptions/report?${params.toString()}`);
+  }
+
+  /** Row-level drill-down for exceptionsReport — every occurrence in the
+   *  period, optionally scoped to one control_id (a report row clicked into). */
+  async function exceptionsReportDetail(dateFrom, dateTo, controlId) {
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    if (controlId) params.set('control_id', controlId);
+    return _get(`/exceptions/report/detail?${params.toString()}`);
+  }
+
   // ── Process Mining — process_mining_endpoints.py ──────────────────────────────
 
   /** The known process templates (id, label, canonical step order). */
@@ -1117,6 +1133,8 @@ window.MCP = (function () {
     exceptionsSummary,
     exceptionsHistory,
     exceptionsDriftSummary,
+    exceptionsReport,
+    exceptionsReportDetail,
     fetchEnvironment,
     // Process Mining
     pmListProcesses,
