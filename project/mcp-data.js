@@ -37,8 +37,20 @@ window.MCP = (function () {
 
   function _postAi(path, body) { return _post(path, body, AI_TIMEOUT_MS); }
 
-  async function _get(path) {
-    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(5000) });
+  // 5s was too aggressive for every _get caller sharing one budget — some
+  // endpoints do real work server-side (e.g. exceptionsDriftSummary's live
+  // PSI computation across every system_source x metric pair), and under
+  // any real network/DB latency that surfaced to the user as a bare
+  // "TimeoutError: signal timed out" with no indication of which call or
+  // why. Default raised to a more realistic budget; slow callers can still
+  // pass a longer one explicitly, same override pattern _post already has.
+  async function _get(path, timeoutMs = 20_000) {
+    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
     return res.json();
   }
 
