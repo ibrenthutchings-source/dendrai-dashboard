@@ -11726,7 +11726,7 @@ def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str]
     return _run(_do) or []
 
 
-def list_exceptions_report_grouped(date_from: str, date_to: str) -> list:
+def list_exceptions_report_grouped(date_from: str, date_to: str, limit: int = 200) -> list:
     """One row per (control_id, system_source, process) with at least one
     exception in [date_from, date_to] — the board/executive report's summary
     table. Unlike list_pending_exceptions_grouped, this deliberately does NOT
@@ -11740,7 +11740,14 @@ def list_exceptions_report_grouped(date_from: str, date_to: str) -> list:
     literal_amount_total sums point_in_time_features->>'amount' where
     present (real transaction dollars, from JE Testing findings); occurrences
     lacking a literal amount are counted in unpriced_count so the caller
-    knows which groups still need a FAIR estimate for their $ impact."""
+    knows which groups still need a FAIR estimate for their $ impact.
+
+    LIMIT is a real, load-bearing bound, not a nicety: a busy connector mix
+    over even a 30-day window can produce tens of thousands of distinct
+    (control_id, system_source, process) groups, and the caller runs a FAIR
+    Monte Carlo simulation per unpriced group — see
+    count_exceptions_report_groups for the true total when the caller needs
+    to say "showing top N of M" rather than silently truncating."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -11761,8 +11768,9 @@ def list_exceptions_report_grouped(date_from: str, date_to: str) -> list:
                     WHERE ce.event_timestamp >= %s AND ce.event_timestamp < (%s::date + INTERVAL '1 day')
                     GROUP BY ce.control_id, ce.system_source, ce.process
                     ORDER BY occurrence_count DESC, last_seen_at DESC
+                    LIMIT %s
                     """,
-                    (date_from, date_to),
+                    (date_from, date_to, limit),
                 )
                 cols = [d[0] for d in cur.description]
                 out = []
@@ -11777,6 +11785,95 @@ def list_exceptions_report_grouped(date_from: str, date_to: str) -> list:
                     out.append(d)
                 return out
     return _run(_do) or []
+
+
+def count_exceptions_report_groups(date_from: str, date_to: str) -> int:
+    """True count of distinct (control_id, system_source, process) groups in
+    [date_from, date_to] — cheap (COUNT DISTINCT, no per-group aggregates or
+    JOIN LATERAL), used so the report can say "showing top 200 of 91,503
+    controls" instead of silently truncating list_exceptions_report_grouped's
+    bounded result with no indication anything was cut."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT (control_id, system_source, process))
+                    FROM exception_control_events
+                    WHERE event_timestamp >= %s AND event_timestamp < (%s::date + INTERVAL '1 day')
+                    """,
+                    (date_from, date_to),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+    return _run(_do, default=0) or 0
+
+
+def get_exceptions_report_totals(date_from: str, date_to: str) -> dict:
+    """TRUE totals across every exception in [date_from, date_to] — total
+    count, by system_source, by process, by risk_rating — computed as plain
+    SQL aggregates over the raw events, not derived from
+    list_exceptions_report_grouped's bounded (LIMIT'd) group list. A period
+    with tens of thousands of distinct control groups still needs an
+    accurate headline "how many exceptions happened" for the board; only the
+    per-control drill-down table (and its $ impact, which needs a FAIR
+    simulation per group) is bounded for performance."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(cnt), 0),
+                           jsonb_object_agg(system_source, cnt) FILTER (WHERE system_source IS NOT NULL)
+                    FROM (
+                        SELECT ce.system_source, COUNT(*) AS cnt
+                        FROM exception_control_events ce
+                        WHERE ce.event_timestamp >= %s AND ce.event_timestamp < (%s::date + INTERVAL '1 day')
+                        GROUP BY ce.system_source
+                    ) x
+                    """,
+                    (date_from, date_to),
+                )
+                total, by_system = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT jsonb_object_agg(process, cnt) FILTER (WHERE process IS NOT NULL)
+                    FROM (
+                        SELECT ce.process, COUNT(*) AS cnt
+                        FROM exception_control_events ce
+                        WHERE ce.event_timestamp >= %s AND ce.event_timestamp < (%s::date + INTERVAL '1 day')
+                        GROUP BY ce.process
+                    ) x
+                    """,
+                    (date_from, date_to),
+                )
+                (by_process,) = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT jsonb_object_agg(rating, cnt)
+                    FROM (
+                        SELECT COALESCE(mi.risk_rating, 'unrated') AS rating, COUNT(*) AS cnt
+                        FROM exception_control_events ce
+                        LEFT JOIN LATERAL (
+                            SELECT * FROM exception_model_inferences m
+                            WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                        ) mi ON TRUE
+                        WHERE ce.event_timestamp >= %s AND ce.event_timestamp < (%s::date + INTERVAL '1 day')
+                        GROUP BY COALESCE(mi.risk_rating, 'unrated')
+                    ) x
+                    """,
+                    (date_from, date_to),
+                )
+                (by_risk_rating,) = cur.fetchone()
+                return {
+                    "total_occurrences": int(total or 0),
+                    "by_system": by_system or {},
+                    "by_process": by_process or {},
+                    "by_risk_rating": by_risk_rating or {},
+                }
+    return _run(_do, default=None) or {
+        "total_occurrences": 0, "by_system": {}, "by_process": {}, "by_risk_rating": {},
+    }
 
 
 def list_exceptions_report_detail(date_from: str, date_to: str, control_id: Optional[str] = None,

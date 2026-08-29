@@ -55,6 +55,7 @@ rows are read/written via the existing /model-health/drift-incidents and
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 from typing import Any, Dict, Optional
 
@@ -268,62 +269,97 @@ def get_exceptions_report(
     threat-event frequency. A group with a mix of priced and unpriced
     occurrences reports the literal sum only, flagged partial, rather than
     silently blending a real dollar figure with a modeled one.
+
+    Bounds keep this fast regardless of data volume — a busy connector mix
+    over even 30 days can produce tens of thousands of distinct control
+    groups (confirmed against real data: 91,000+ groups, one with 19,000+
+    occurrences), and fair_tool.run_simulation is an unvectorized Python
+    loop whose cost scales worse than linearly with fire_count_window
+    (measured: ~0.13s at window=5, ~2.2s at window=50, ~5s at window=100 —
+    a fixed per-group call budget isn't safe against whatever fire count a
+    real group turns out to have):
+      - the drill-down table itself is capped at _MAX_GROUPS groups (highest
+        occurrence_count first — see list_exceptions_report_grouped), with
+        summary.controls_total/controls_shown telling the caller how much
+        was cut;
+      - fire_count_window passed into FAIR is capped at _FAIR_WINDOW_CAP —
+        an unrated volume difference between "fired 50 times" and "fired
+        19,000 times" doesn't change the board takeaway (this control needs
+        attention) enough to justify a simulation whose cost scales with the
+        raw count;
+      - FAIR estimation as a whole stops once _FAIR_TIME_BUDGET_S of wall
+        -clock time is spent on it, not after a fixed number of calls — a
+        cap on calls alone is exactly the assumption that broke here the
+        first time (guessed against typical volumes, not worst-case ones).
+        Groups reached after the budget get impact_source="not_computed"
+        rather than a number.
+    summary's totals (occurrences, by_system, by_process, by_risk_rating)
+    are computed separately over ALL exceptions in range (see
+    db.get_exceptions_report_totals), not summed from the capped groups —
+    only total_impact_usd is necessarily scoped to what was actually priced.
     """
+    _MAX_GROUPS = 200
+    _FAIR_WINDOW_CAP = 50
+    _FAIR_TIME_BUDGET_S = 5.0
+    _REPORT_FAIR_SIMULATIONS = 500  # fair_tool.MIN_SIMULATIONS — the floor run_simulation clamps to anyway
+
     d_from, d_to = _parse_report_dates(date_from, date_to)
     if not db.is_available():
         return {
             "period": {"date_from": date_from, "date_to": date_to},
-            "summary": {"total_occurrences": 0, "total_impact_usd": 0, "controls_affected": 0,
+            "summary": {"total_occurrences": 0, "total_impact_usd": 0, "impact_basis": "none",
+                        "controls_total": 0, "controls_shown": 0,
                         "by_system": {}, "by_process": {}, "by_risk_rating": {}},
             "by_control": [],
         }
 
-    groups = db.list_exceptions_report_grouped(date_from, date_to)
+    groups = db.list_exceptions_report_grouped(date_from, date_to, limit=_MAX_GROUPS)
+    controls_total = db.count_exceptions_report_groups(date_from, date_to)
+    totals = db.get_exceptions_report_totals(date_from, date_to)
     window_days = max(1, (d_to - d_from).days + 1)
 
     by_control = []
     total_impact = 0.0
-    total_occurrences = 0
-    by_system: Dict[str, int] = {}
-    by_process: Dict[str, int] = {}
-    by_risk_rating: Dict[str, int] = {}
+    fair_time_used = 0.0
 
     for g in groups:
         count = g["occurrence_count"]
-        total_occurrences += count
-        by_system[g["system_source"]] = by_system.get(g["system_source"], 0) + count
-        by_process[g["process"]] = by_process.get(g["process"], 0) + count
-        rating_label = g["worst_risk_rating"] or "unrated"
-        by_risk_rating[rating_label] = by_risk_rating.get(rating_label, 0) + count
-
         literal_total = g["literal_amount_total"]
         unpriced = g["unpriced_count"]
         if unpriced == 0:
             impact_usd, impact_source = literal_total, "transaction_amount"
-        elif unpriced == count:
+        elif unpriced != count:
+            impact_usd, impact_source = literal_total, "transaction_amount_partial"
+        elif fair_time_used < _FAIR_TIME_BUDGET_S:
             # No occurrence in this group carries a literal amount — estimate
             # the whole group's exposure via FAIR, never invent a number.
-            fair = fair_tool.quantify(fire_count_window=count, window_days=window_days)
+            _t0 = time.monotonic()
+            fair = fair_tool.quantify(fire_count_window=min(count, _FAIR_WINDOW_CAP), window_days=window_days,
+                                       simulations=_REPORT_FAIR_SIMULATIONS)
+            fair_time_used += time.monotonic() - _t0
             impact_usd, impact_source = fair["ale"], "fair_estimate"
         else:
-            impact_usd, impact_source = literal_total, "transaction_amount_partial"
+            impact_usd, impact_source = None, "not_computed"
 
-        total_impact += impact_usd
+        if impact_usd is not None:
+            total_impact += impact_usd
         by_control.append({
             **g,
-            "impact_usd": round(impact_usd, 2),
+            "impact_usd": round(impact_usd, 2) if impact_usd is not None else None,
             "impact_source": impact_source,
         })
 
     return {
         "period": {"date_from": date_from, "date_to": date_to},
         "summary": {
-            "total_occurrences": total_occurrences,
+            "total_occurrences": totals["total_occurrences"],
             "total_impact_usd": round(total_impact, 2),
-            "controls_affected": len(groups),
-            "by_system": by_system,
-            "by_process": by_process,
-            "by_risk_rating": by_risk_rating,
+            "impact_basis": f"top {len(groups)} of {controls_total} control group(s) shown below",
+            "controls_total": controls_total,
+            "controls_shown": len(groups),
+            "by_system": totals["by_system"],
+            "by_process": totals["by_process"],
+            "by_risk_rating": totals["by_risk_rating"],
         },
         "by_control": by_control,
     }

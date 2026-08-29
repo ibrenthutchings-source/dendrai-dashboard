@@ -43,6 +43,13 @@ function ImpactCell({ row }) {
       </span>
     );
   }
+  if (row.impact_source === "not_computed") {
+    return (
+      <span title="This report estimates impact for the highest-occurrence groups first and stops once its time budget is spent — this group's FAIR estimate wasn't reached this run.">
+        <span className="mono" style={{ fontSize: 9, color: "var(--ink-4)" }}>not computed</span>
+      </span>
+    );
+  }
   return <span>{label}</span>;
 }
 
@@ -64,10 +71,10 @@ function SummaryCards({ summary }) {
         <span className="mono" style={{ fontSize: 20, fontWeight: 700 }}>{summary.total_occurrences.toLocaleString()}</span>
       </SummaryTile>
       <SummaryTile label="Estimated impact">
-        <span className="mono" style={{ fontSize: 20, fontWeight: 700 }}>{fmt$M(summary.total_impact_usd)}</span>
+        <span className="mono" style={{ fontSize: 20, fontWeight: 700 }} title={summary.impact_basis}>{fmt$M(summary.total_impact_usd)}</span>
       </SummaryTile>
       <SummaryTile label="Controls affected">
-        <span className="mono" style={{ fontSize: 20, fontWeight: 700 }}>{summary.controls_affected}</span>
+        <span className="mono" style={{ fontSize: 20, fontWeight: 700 }}>{summary.controls_total.toLocaleString()}</span>
       </SummaryTile>
       <SummaryTile label="Risk mix">
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -175,7 +182,10 @@ function ExceptionsReportScreen() {
 
   const sortedRows = React.useMemo(() => {
     if (!report) return [];
-    return [...report.by_control].sort((a, b) => b.impact_usd - a.impact_usd);
+    // impact_usd is null for "not_computed" rows (the FAIR time budget ran
+    // out before reaching them) — sort those last rather than have a
+    // null/number comparison scatter them unpredictably through the list.
+    return [...report.by_control].sort((a, b) => (b.impact_usd ?? -Infinity) - (a.impact_usd ?? -Infinity));
   }, [report]);
 
   return (
@@ -207,17 +217,21 @@ function ExceptionsReportScreen() {
         </button>
       </div>
 
-      {error && (
-        <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4, marginBottom: 12 }}>{error}</div>
-      )}
-
-      {loading && !hasLoadedRef.current ? (
+      {error ? (
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4 }}>{error}</div>
+      ) : loading && !hasLoadedRef.current ? (
         <Empty>Running report…</Empty>
       ) : !report || report.summary.total_occurrences === 0 ? (
         <Empty icon="✓">No exceptions occurred in this period.</Empty>
       ) : (
         <>
           <SummaryCards summary={report.summary} />
+          {report.summary.controls_shown < report.summary.controls_total && (
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 10 }}>
+              Showing the top {report.summary.controls_shown.toLocaleString()} of {report.summary.controls_total.toLocaleString()} control
+              groups by occurrence count — the totals above cover every exception in the period; this table doesn't.
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 0.7fr 1fr 0.8fr", gap: 10, padding: "0 12px 8px", fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
             <div>Control</div><div>System</div><div>Process</div><div style={{ textAlign: "right" }}># Occ.</div><div>Impact</div><div>Risk</div>
           </div>

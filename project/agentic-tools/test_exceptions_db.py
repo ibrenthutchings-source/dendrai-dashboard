@@ -355,7 +355,19 @@ def test_report_grouped_filters_by_date_range(monkeypatch):
     db.list_exceptions_report_grouped("2026-08-01", "2026-08-31")
     sql, params = recorder[0]
     assert "ce.event_timestamp >= %s" in sql
-    assert params == ("2026-08-01", "2026-08-31")
+    assert params == ("2026-08-01", "2026-08-31", 200)
+
+
+def test_report_grouped_applies_a_real_limit_clause(monkeypatch):
+    """Load-bearing, not a nicety — a busy period can produce tens of
+    thousands of distinct control groups, each a candidate for an
+    unvectorized FAIR Monte Carlo simulation upstream."""
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[])])
+    db.list_exceptions_report_grouped("2026-08-01", "2026-08-31", limit=50)
+    sql, params = recorder[0]
+    assert "LIMIT %s" in sql
+    assert params == ("2026-08-01", "2026-08-31", 50)
 
 
 def test_report_grouped_decodes_worst_rating_and_literal_amount(monkeypatch):
@@ -410,3 +422,52 @@ def test_report_detail_omits_control_filter_when_not_given(monkeypatch):
     db.list_exceptions_report_detail("2026-08-01", "2026-08-31")
     sql, _ = recorder[0]
     assert "ce.control_id = %s" not in sql
+
+
+# ── count_exceptions_report_groups ───────────────────────────────────────────
+
+def test_count_report_groups_returns_the_distinct_count(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchone=(91503,))])
+    assert db.count_exceptions_report_groups("2026-07-30", "2026-08-29") == 91503
+    sql, params = recorder[0]
+    assert "COUNT(DISTINCT" in sql
+    assert params == ("2026-07-30", "2026-08-29")
+
+
+def test_count_report_groups_no_db_returns_zero(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: False)
+    assert db.count_exceptions_report_groups("2026-07-30", "2026-08-29") == 0
+
+
+# ── get_exceptions_report_totals ──────────────────────────────────────────────
+
+def test_report_totals_aggregates_across_all_exceptions(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [
+        _Call(fetchone=(243612, {"sap_hana": 100000, "oracle_fusion": 143612})),
+        _Call(fetchone=({"itgc": 243612},)),
+        _Call(fetchone=({"R": 200000, "unrated": 43612},)),
+    ])
+    result = db.get_exceptions_report_totals("2026-07-30", "2026-08-29")
+    assert result["total_occurrences"] == 243612
+    assert result["by_system"] == {"sap_hana": 100000, "oracle_fusion": 143612}
+    assert result["by_process"] == {"itgc": 243612}
+    assert result["by_risk_rating"] == {"R": 200000, "unrated": 43612}
+
+
+def test_report_totals_handles_no_rows_gracefully(monkeypatch):
+    recorder = []
+    _patch(monkeypatch, recorder, [
+        _Call(fetchone=(0, None)),
+        _Call(fetchone=(None,)),
+        _Call(fetchone=(None,)),
+    ])
+    result = db.get_exceptions_report_totals("2026-07-30", "2026-08-29")
+    assert result == {"total_occurrences": 0, "by_system": {}, "by_process": {}, "by_risk_rating": {}}
+
+
+def test_report_totals_no_db_returns_empty_shape(monkeypatch):
+    monkeypatch.setattr(db, "is_available", lambda: False)
+    result = db.get_exceptions_report_totals("2026-07-30", "2026-08-29")
+    assert result == {"total_occurrences": 0, "by_system": {}, "by_process": {}, "by_risk_rating": {}}
