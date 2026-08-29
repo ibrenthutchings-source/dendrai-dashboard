@@ -356,13 +356,22 @@ def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
 
 def get_journal_entries(base_url: Optional[str], credentials: dict, extra_config: dict,
                          since: Optional[datetime] = None, max_items: int = 200) -> dict:
-    """Fabricates a population of "Journal Entry Posted" events directly
-    (rather than pacing through pull_events()'s 1-3-cases-per-tick, which
-    exists to keep the adjudication feed realistically paced, not to size a
-    testable population) and normalizes them to the shared journal-entry
-    shape je_testing_tool.py's rule engine consumes: je_id, amount, currency,
-    account, gl_account_desc, description, preparer, approver, posted_at,
-    period_close_date, source_system.
+    """Fabricates fresh "Journal Entry Posted" events and normalizes them to
+    the shared journal-entry shape je_testing_tool.py's rule engine consumes:
+    je_id, amount, currency, account, gl_account_desc, description,
+    preparer, approver, posted_at, period_close_date, source_system.
+
+    Paced like every other synthetic feed in this module (_CASES_PER_TICK,
+    1-3 new cases) rather than a flat 200 per call — this function's only
+    real caller is je_testing_sweep.py's recurring 30-minute poll, not a
+    one-time "generate a test population" trigger (confirmed: no other
+    caller exists anywhere in this codebase), so a flat 200 every tick
+    compounded without bound. Confirmed against real data: one rule
+    (JE-WEEKEND-POSTING) alone had fired 19,000+ times in a single 30-day
+    window, producing a FAIR-estimated impact in the tens of billions —
+    obviously not a realistic monthly volume for any single control.
+    max_items still caps the (now much smaller) per-tick count, in case a
+    future caller passes something below _CASES_PER_TICK's usual range.
 
     Only meaningful for a connector whose extra_config.process is
     "record_to_report" — any other simulated process returns an empty
@@ -373,7 +382,7 @@ def get_journal_entries(base_url: Optional[str], credentials: dict, extra_config
 
     now = datetime.now(timezone.utc)
     rng = random.Random()
-    n_cases = min(max_items, 200)
+    n_cases = min(max_items, rng.randint(*_CASES_PER_TICK))
     normalized = []
     for _ in range(n_cases):
         events = _build_own_case(_RECORD_TO_REPORT, rng, now, "record_to_report")
