@@ -278,3 +278,64 @@ def test_score_exception_event_missing_owner_and_tier_still_scores(monkeypatch):
     assert captured["connector_id"] == 5
     assert captured["assigned_owner"] is None
     assert captured["risk_rating"] == "G"
+
+
+# ── _poll_one — synthetic-connector exception-scoring sample rate ───────────
+# Confirmed against real data: the synthetic simulator's 11 always-on
+# connectors, polled every 300s with every event unconditionally scored into
+# Exception Management, produced 90,000+ exceptions/month for a single rule
+# and a FAIR-estimated impact in the tens of billions. Telemetry ingestion
+# (_ingest_system_event, feeding Continuous Watch) stays unsampled — only
+# the exception-scoring half is rate-limited, and only for connector_type
+# "synthetic_transaction".
+
+def _poll_one_fixture(monkeypatch, connector_type, ingest_calls, score_calls):
+    monkeypatch.setattr(db, "get_poll_connector", lambda cid, full: {
+        "id": cid, "connector_type": connector_type, "display_name": "Test Connector",
+        "base_url": None, "credentials": {}, "extra_config": {"process": "order_to_cash"},
+        "last_poll_at": None,
+    })
+    monkeypatch.setattr(cp._ADAPTERS[connector_type], "pull_events", lambda *a, **kw: [
+        {"event_id": "e-1", "event_type": "poll_event", "actor": "sys", "action": "post",
+         "resource": "r-1", "severity": "INFO", "raw_payload": {}},
+    ])
+    monkeypatch.setattr(mcp_governance, "_ingest_system_event",
+                         lambda *a, **kw: ingest_calls.append(1) or 1)
+    monkeypatch.setattr(cp, "_score_exception_event", lambda *a, **kw: score_calls.append(1))
+    monkeypatch.setattr(db, "record_poll_result", lambda *a, **kw: None)
+    monkeypatch.setattr(cp.deploy_env, "IS_DEVELOPMENT", True)
+
+
+def test_synthetic_connector_exception_scoring_is_sampled_out_below_the_rate(monkeypatch):
+    ingest_calls, score_calls = [], []
+    _poll_one_fixture(monkeypatch, "synthetic_transaction", ingest_calls, score_calls)
+    monkeypatch.setattr(cp.random, "random", lambda: cp._SYNTHETIC_EXCEPTION_SAMPLE_RATE)  # not < rate
+
+    asyncio.run(cp._poll_one(1))
+
+    assert ingest_calls == [1]      # telemetry ingestion is never sampled
+    assert score_calls == []        # but exception scoring was skipped this draw
+
+
+def test_synthetic_connector_exception_scoring_fires_within_the_rate(monkeypatch):
+    ingest_calls, score_calls = [], []
+    _poll_one_fixture(monkeypatch, "synthetic_transaction", ingest_calls, score_calls)
+    monkeypatch.setattr(cp.random, "random", lambda: 0.0)  # always < any positive rate
+
+    asyncio.run(cp._poll_one(1))
+
+    assert ingest_calls == [1]
+    assert score_calls == [1]
+
+
+def test_real_connector_exception_scoring_is_never_sampled(monkeypatch):
+    """A real connector's anomaly must never be silently dropped — only the
+    synthetic simulator's fabricated volume is rate-limited."""
+    ingest_calls, score_calls = [], []
+    _poll_one_fixture(monkeypatch, "sailpoint", ingest_calls, score_calls)
+    monkeypatch.setattr(cp.random, "random", lambda: 1.0)  # would fail any sub-1.0 sample rate
+
+    asyncio.run(cp._poll_one(1))
+
+    assert ingest_calls == [1]
+    assert score_calls == [1]

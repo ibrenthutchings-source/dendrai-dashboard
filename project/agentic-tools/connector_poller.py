@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 from datetime import datetime, timedelta, timezone
 
 import db
@@ -58,6 +59,21 @@ logger = logging.getLogger(__name__)
 # in the UI, default 1800s/30min) governs how often it actually fires; this
 # is just how often we check "is anything due yet".
 _TICK_S = float(os.environ.get("CONNECTOR_POLLER_TICK_S", "60"))
+
+# The synthetic simulator's connectors are deliberately polled every 300s
+# (see api_server._seed_synthetic_connectors) so Continuous Watch's live
+# telemetry feed visibly gains new activity every few minutes — that part
+# is working as intended and untouched here. But every one of those events
+# was ALSO unconditionally scored into Exception Management
+# (exception_control_events), with no ceiling: confirmed against real data,
+# one rule alone had fired 19,000+ times in 30 days, and the platform's
+# real exception volume (11 always-on synthetic connectors x 288 ticks/day)
+# was 90,000+/month — producing a nonsensical, ever-growing $ aggregate.
+# Telemetry ingestion (the line above this constant's use, below) stays at
+# full rate; only the EXCEPTION-scoring half of a synthetic event is
+# sampled down to a volume that still shows realistic ongoing activity in
+# Exception Management without accumulating without bound.
+_SYNTHETIC_EXCEPTION_SAMPLE_RATE = 0.05
 
 _ADAPTERS = {
     "oracle_fusion": oracle_fusion_tool,
@@ -194,7 +210,16 @@ async def _poll_one(connector_id: int) -> None:
             if row_id is not None:
                 ingested += 1
             if deploy_env.IS_DEVELOPMENT:
-                await asyncio.to_thread(_score_exception_event, full, event, row_id)
+                # Real connectors: score every event, unsampled — a real
+                # anomaly is never something to skip. The synthetic
+                # simulator's own events are the ones sampled down, since
+                # those compound without bound at its 300s poll interval
+                # (see _SYNTHETIC_EXCEPTION_SAMPLE_RATE above) and every
+                # sampled-out event still reached system_telemetry above,
+                # so Continuous Watch's feed is unaffected either way.
+                if (full["connector_type"] != "synthetic_transaction"
+                        or random.random() < _SYNTHETIC_EXCEPTION_SAMPLE_RATE):
+                    await asyncio.to_thread(_score_exception_event, full, event, row_id)
         except Exception as exc:
             logger.warning("Connector %s: failed to ingest one event: %s", connector_id, exc)
 
