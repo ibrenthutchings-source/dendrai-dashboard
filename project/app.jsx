@@ -1230,6 +1230,15 @@ function App() {
     setHubFocus(tweaks.autoExpand ? "s1" : null);
     setSelectedRiskId(null);
     setRiskApprovals({});
+    // livefacts is only ever written by the Live-mode branch below
+    // (setLivefacts(extracted)/setLivefacts(null) on failure) — MCP mode
+    // (the default) never touches it at all, so without this reset it
+    // silently carries over whatever ticker's data was last fetched in Live
+    // mode, displayed as if it belonged to the ticker running right now
+    // (e.g. "Revenue (FY)" showing a previous company's figure). Reset here
+    // so every run starts from a clean slate regardless of which mode ran
+    // last, not just on an explicit Reset click.
+    setLivefacts(null);
     log("Loop started");
     try { await _runLoopBody(); } catch (err) {
       log(`Run error: ${err?.message || err}`);
