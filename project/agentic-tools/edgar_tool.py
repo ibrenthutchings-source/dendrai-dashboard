@@ -347,7 +347,18 @@ def fetch_xbrl_facts(cik: str) -> dict:
     """
     Pull structured financial metrics from the XBRL company facts endpoint.
     Returns a dict keyed by metric name.
+
+    Zero-pads cik to SEC's required 10 digits regardless of what the caller
+    passed in — get_company_info() already returns a padded CIK for a fresh
+    live lookup, but a CIK read back from companies.cik after a DB round
+    trip is not guaranteed to still have its leading zeros (confirmed: this
+    silently broke Board Intelligence's peer-benchmarking subject-history
+    line, which reads the saved CIK via db.get_sic_peers() — the API 404s on
+    an unpadded CIK, _get_safe swallows that into a plain None, and this
+    function's own `if r is None: return {}` makes the failure indistinguishable
+    from "no data," never raising or logging anything).
     """
+    cik = str(cik).strip().zfill(10)
     url = f"{DATA_BASE}/api/xbrl/companyfacts/CIK{cik}.json"
     r = _get_safe(url)
     if r is None:
