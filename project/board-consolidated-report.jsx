@@ -1,24 +1,33 @@
 /* ============================================================
    Board Intelligence — Consolidated Report.
-   A single board-ready packet combining three artifacts that already
-   exist elsewhere in the app, rather than computing anything new:
+   A single board-ready packet combining artifacts that already exist
+   elsewhere in the app, rather than computing anything new:
      1. Assess Risk Evidence Pack   (evidence-pack.jsx's EvidencePackModal)
      2. Audit Plan (Gantt)          (audit-scope.jsx's ScopeGantt)
-     3. Exception Management        (exceptions-report.jsx's
+     3. Persona Report              (rail.jsx's PersonaTab, locked to the
+                                      BOARD audience layer)
+     4. Exception Management        (exceptions-report.jsx's
                                       ExceptionPersonaBriefs, locked to the
                                       BOARD persona — "filtered for Board
                                       Level" means: only the Board-audience
                                       brief, not a risk-rating filter, per
                                       the scope decision behind this file)
-   Scoped to the currently-loaded ticker/run, same as every other Board
-   Intelligence screen.
+   Both AI briefs (3 and 4) auto-generate on load rather than waiting for a
+   "Generate with AI" click — a report meant to be handed to the board
+   should show up pre-assembled, not click-through. Scoped to the
+   currently-loaded ticker/run, same as every other Board Intelligence
+   screen.
    ============================================================ */
 
 import { lazyGlobal } from './src/lazy-screen.js';
 
 // app.jsx's lazyGlobal consts are local to app.jsx's own module scope and
 // aren't reachable from here — this file is its own chunk, so it makes its
-// own lazy references to the two chunks it borrows components from.
+// own lazy references to the code-split chunks it borrows components from.
+// rail.jsx (PersonaTab) is NOT code-split — src/main.jsx imports it eagerly
+// into the main bundle, same as components.jsx's Icon/Empty/SectionLabel —
+// so PersonaTab is referenced as a bare global below, no lazyGlobal/Suspense
+// needed for it.
 const ScopeGanttLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'ScopeGantt');
 const ExceptionPersonaBriefsLazy = lazyGlobal(() => import('./exceptions-report.jsx'), 'ExceptionPersonaBriefs');
 
@@ -71,12 +80,29 @@ function AuditPlanSection({ objectives, maps }) {
   );
 }
 
-// ---- Section 3: Exception Management, Board Level — fetches this
+// ---- Section 3: Persona Report, Board audience layer — reuses PersonaTab
+// exactly as the Risk Loop's own Persona Report modal renders it, locked to
+// BOARD and auto-generating on load so the brief is already sitting on
+// screen rather than behind a click. Owns its own `selected` state — this
+// is deliberately independent of the main app's tweaks.persona/selectedPersona
+// (the modal's own state), so opening this report never changes what the
+// Persona Report modal shows elsewhere, and vice versa.
+function RiskPersonaBoardSection({ ticker, runId, personas, risks, loopStats }) {
+  const [selected, setSelected] = React.useState("BOARD");
+  return (
+    <div className="stage-detail" style={{ marginTop: 20 }}>
+      <PersonaTab personas={personas} selected={selected} setSelected={setSelected}
+        ticker={ticker} risks={risks} loopStats={loopStats} runId={runId}
+        lockPersona="BOARD" autoGenerate={true} />
+    </div>
+  );
+}
+
+// ---- Section 4: Exception Management, Board Level — fetches this
 // period's exception report itself (same trailing-30-days default as the
 // Exception Report screen), then hands it to ExceptionPersonaBriefs locked
-// to BOARD. Whether a Board brief actually exists yet is exactly what that
-// component already shows (a filled persona-card if one's cached, or an
-// "click Generate" prompt if not) — no separate "has a brief" check needed.
+// to BOARD and set to auto-generate — same reasoning as the persona report
+// above, a board packet shouldn't need a click to fill in.
 function ExceptionBoardSection() {
   const [dateFrom] = React.useState(_daysAgoISO(30));
   const [dateTo] = React.useState(_todayISO());
@@ -106,14 +132,14 @@ function ExceptionBoardSection() {
         <Empty icon="✓">No exceptions occurred in this period.</Empty>
       ) : (
         <React.Suspense fallback={<Empty>Loading persona brief…</Empty>}>
-          <ExceptionPersonaBriefsLazy report={report} dateFrom={dateFrom} dateTo={dateTo} lockPersona="BOARD" />
+          <ExceptionPersonaBriefsLazy report={report} dateFrom={dateFrom} dateTo={dateTo} lockPersona="BOARD" autoGenerate={true} />
         </React.Suspense>
       )}
     </div>
   );
 }
 
-function BoardConsolidatedReportScreen({ ticker, runId, hasRun, objectives, maps, onOpenEvidencePack }) {
+function BoardConsolidatedReportScreen({ ticker, runId, hasRun, objectives, maps, personas, risks, loopStats, onOpenEvidencePack }) {
   return (
     <div className="scope-screen" data-screen-label="Consolidated Report">
       <div className="panel-head">
@@ -122,13 +148,15 @@ function BoardConsolidatedReportScreen({ ticker, runId, hasRun, objectives, maps
           <div className="panel-title mt-8">Board Report</div>
           <div className="panel-sub">
             One packet for the board and audit committee: the current risk-assessment evidence trail, the audit
-            plan, and any exception brief already prepared at Board level — scoped to {ticker || "the current entity"}.
+            plan, an AI-generated Board persona report, and any exception brief already prepared at Board
+            level — scoped to {ticker || "the current entity"}.
           </div>
         </div>
       </div>
 
       <EvidencePackCard ticker={ticker} runId={runId} hasRun={hasRun} onOpen={onOpenEvidencePack} />
       <AuditPlanSection objectives={objectives} maps={maps} />
+      <RiskPersonaBoardSection ticker={ticker} runId={runId} personas={personas} risks={risks} loopStats={loopStats} />
       <ExceptionBoardSection />
     </div>
   );

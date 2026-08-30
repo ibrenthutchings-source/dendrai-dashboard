@@ -173,7 +173,12 @@ const _EXCEPTION_PERSONAS = ["CAE", "CFO", "COO", "TECH_EXEC", "NONTECH_EXEC", "
 // only the BOARD brief (never lets a viewer wander into the CFO/COO/etc.
 // briefs from that screen). Omitted here on the Exception Report screen
 // itself, where all six personas stay selectable.
-function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null }) {
+// autoGenerate: fires the AI call once on mount rather than waiting for a
+// "Generate with AI" click — same reasoning as PersonaTab's identical flag
+// (rail.jsx): a board packet should show up pre-assembled, not require a
+// click-through. Defaults off, so this screen's own manual behavior is
+// unchanged.
+function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null, autoGenerate = false }) {
   const [selected, setSelected] = React.useState(lockPersona || "BOARD");
   const [briefs, setBriefs] = React.useState({});
   const [state, setState] = React.useState({ loading: false, error: null });
@@ -189,6 +194,11 @@ function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null }
       setState({ loading: false, error: e.message || "AI unavailable" });
     }
   }
+
+  React.useEffect(() => {
+    if (autoGenerate && !brief && !state.loading) generate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoGenerate, selected, dateFrom, dateTo]);
 
   return (
     <div className="stage-detail" style={{ marginTop: 20 }}>
@@ -238,7 +248,11 @@ function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null }
           )}
         </>
       ) : (
-        <Empty>Click "Generate with AI" to produce the {selected} brief for this period's exception report.</Empty>
+        <Empty>
+          {state.loading
+            ? `Generating the ${selected} brief for this period's exception report…`
+            : `Click "Generate with AI" to produce the ${selected} brief for this period's exception report.`}
+        </Empty>
       )}
     </div>
   );

@@ -2848,6 +2848,9 @@ function App() {
                 : savedAuditScope?.objectives?.length ? savedAuditScope.objectives
                 : (hasRun ? profile.objectives : [])}
               maps={railMaps}
+              personas={hasRun ? profile.personas : null}
+              risks={output.s2?.risks || (hasRun ? profile.risks : []) || []}
+              loopStats={output.s6 || output.s6?.loop || {}}
               onOpenEvidencePack={() => setEvidencePackOpen(true)} />
           </div>
           </ScreenAccessGate>

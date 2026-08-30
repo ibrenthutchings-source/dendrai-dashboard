@@ -951,7 +951,15 @@ const AUDIENCE_LAYERS = [
 ];
 
 // ---------- PERSONA ----------
-function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopStats = {}, runId }) {
+// lockPersona: hides both picker groups and holds the report on one persona
+// — used by the Board Intelligence consolidated report, which shows only
+// the Board brief (the caller still owns `selected`/`setSelected`; this
+// just stops the viewer wandering into another persona from that screen).
+// autoGenerate: fires the AI call once on mount instead of waiting for a
+// "Generate with AI" click — for a report meant to be handed to the board
+// pre-assembled, not clicked through. Both default off, so the existing
+// app.jsx Persona Report modal (manual pick, manual generate) is unchanged.
+function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopStats = {}, runId, lockPersona = null, autoGenerate = false }) {
   if (!personas) return <Empty>Persona reports populate after the loop completes.</Empty>;
   const names = Object.keys(personas);
   const layer = AUDIENCE_LAYERS.find(l => l.key === selected);
@@ -980,6 +988,11 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
     }
   }
 
+  useEffect(() => {
+    if (autoGenerate && aiAvailable && !aiBrief && !ai.loading) regenerate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoGenerate, selected, runId]);
+
   return (
     <>
       <SectionLabel right={aiAvailable ? (
@@ -988,23 +1001,27 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
           <Icon name="spark" size={10}/> {ai.loading ? "Generating…" : aiBrief ? "Regenerate" : "Generate with AI"}
         </button>
       ) : null}>Persona Report</SectionLabel>
-      <div className="persona-pick-group">
-        <div className="persona-pick-label">By function</div>
-        <div className="persona-pick">
-          {names.map(n => (
-            <button key={n} className={"pp" + (selected === n ? " active" : "")} onClick={() => setSelected(n)}>{n}</button>
-          ))}
-        </div>
-      </div>
-      <div className="persona-pick-group">
-        <div className="persona-pick-label">By audience layer <span style={{opacity: 0.6}}>· AI-generated</span></div>
-        <div className="persona-pick">
-          {AUDIENCE_LAYERS.map(l => (
-            <button key={l.key} className={"pp" + (selected === l.key ? " active" : "")}
-              onClick={() => setSelected(l.key)} title={l.sub}>{l.label}</button>
-          ))}
-        </div>
-      </div>
+      {!lockPersona && (
+        <>
+          <div className="persona-pick-group">
+            <div className="persona-pick-label">By function</div>
+            <div className="persona-pick">
+              {names.map(n => (
+                <button key={n} className={"pp" + (selected === n ? " active" : "")} onClick={() => setSelected(n)}>{n}</button>
+              ))}
+            </div>
+          </div>
+          <div className="persona-pick-group">
+            <div className="persona-pick-label">By audience layer <span style={{opacity: 0.6}}>· AI-generated</span></div>
+            <div className="persona-pick">
+              {AUDIENCE_LAYERS.map(l => (
+                <button key={l.key} className={"pp" + (selected === l.key ? " active" : "")}
+                  onClick={() => setSelected(l.key)} title={l.sub}>{l.label}</button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
       {ai.error && (
         <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", margin: "4px 0"}}>
           AI brief unavailable: {ai.error}
@@ -1037,8 +1054,10 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
         <div className="persona-card">
           <div className="kicker" style={{marginBottom: 6}}>{layer.label} ({layer.sub})</div>
           <div className="persona-summary">
-            Audience-layer briefs are AI-generated only — no static template.
-            Click "Generate with AI" above to produce the {layer.label.toLowerCase()} brief for this run.
+            {ai.loading
+              ? `Generating the ${layer.label.toLowerCase()} brief for this run…`
+              : <>Audience-layer briefs are AI-generated only — no static template.
+                 Click "Generate with AI" above to produce the {layer.label.toLowerCase()} brief for this run.</>}
           </div>
         </div>
       ) : (
