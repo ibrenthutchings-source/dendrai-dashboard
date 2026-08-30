@@ -39,6 +39,7 @@ const SoxScopePanelLazy = lazyGlobal(() => Promise.all([import('./sox-scope.jsx'
 const GovernanceViewLazy = lazyGlobal(() => import('./governance.jsx'), 'GovernanceView');
 const PostureTrendScreenLazy = lazyGlobal(() => import('./posture-trend.jsx'), 'PostureTrendPanel');
 const HelpScreenLazy = lazyGlobal(() => import('./help.jsx'), 'HelpScreen');
+const BoardConsolidatedReportScreenLazy = lazyGlobal(() => import('./board-consolidated-report.jsx'), 'BoardConsolidatedReportScreen');
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { err: null }; }
@@ -2831,6 +2832,23 @@ function App() {
               peerFetchError={govPeerError}
               lastRefresh={govLastRefresh}
               onRefresh={refreshGovData} />
+          </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Board Intelligence — Consolidated Report ---- */}
+          {activeScreen === "boardreport" && (
+          <ScreenAccessGate screenId="boardreport">
+          <div className="panel active">
+            <BoardConsolidatedReportScreenLazy
+              ticker={cfg.ticker}
+              runId={runIdRef.current}
+              hasRun={hasRun}
+              objectives={output.s3?.objectives?.length ? output.s3.objectives
+                : savedAuditScope?.objectives?.length ? savedAuditScope.objectives
+                : (hasRun ? profile.objectives : [])}
+              maps={railMaps}
+              onOpenEvidencePack={() => setEvidencePackOpen(true)} />
           </div>
           </ScreenAccessGate>
           )}

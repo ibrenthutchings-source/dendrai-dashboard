@@ -188,6 +188,14 @@ class PersonaRequest(BaseModel):
     loop_stats: Dict[str, Any] = {}
 
 
+class ExceptionBriefRequest(BaseModel):
+    persona: str = "CAE"
+    date_from: str
+    date_to: str
+    summary: Dict[str, Any] = {}
+    by_control: List[Dict[str, Any]] = []
+
+
 class ReportRequest(BaseModel):
     ticker: str
     run_id: Optional[int] = None
@@ -892,6 +900,103 @@ def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_
         input_hash=input_hash,
     )
     _embed_ai_summary(analysis_id, req.ticker, f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #4b — Exception Management persona brief (same mechanism as #4 above, fed
+# a period's Continuous Control Monitoring exception report instead of a
+# risk-loop register — see exceptions_endpoints.py's GET /exceptions/report,
+# whose summary/by_control response shape this endpoint's request mirrors
+# directly so the frontend can pass the report straight through unmodified.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EXCEPTION_PERSONA_SYSTEM = """You write role-tailored executive briefings from a Continuous \
+Control Monitoring exception report — every control exception across an organization's \
+business processes (order-to-cash, procure-to-pay, record-to-report, hire-to-retire, payroll, \
+vendor management, IAM, and others) for one reporting period, grouped by control with an \
+estimated dollar impact per group. Given a target persona and the report, write a brief that \
+speaks to that audience's priorities and vocabulary:
+
+- CAE: control environment adequacy — is this a systemic gap in one process or isolated \
+incidents, which controls most urgently need remediation, and what this implies for the \
+next audit plan.
+- CFO: financial-statement-relevant exceptions specifically (record-to-report, payroll, \
+vendor payments, revenue recognition) — dollar exposure and disclosure implications.
+- COO: operational process breakdowns (order-to-cash, procure-to-pay, inventory, \
+hire-to-retire) — what needs a process fix, not a one-off correction.
+- TECH_EXEC (Technical Executive — CTO / CIO / CISO): access-control and IAM exceptions, \
+SOD conflicts, and control automation gaps; technical vocabulary is appropriate here.
+- NONTECH_EXEC (Non-Technical Executive — CFO / COO / CEO): translate exceptions into \
+business, financial, and operational impact — no controls jargon.
+- BOARD (Board / Audit Committee): dollar-led governance framing, not a survey of every \
+control. Select only the highest-impact groups — material impact_usd and a worst_risk_rating \
+of R (or R and A together if R alone is too thin to say anything useful) — and frame this as \
+"is the control environment deteriorating, and does leadership need to act."
+
+Each control group's impact_usd is real model/report output, not your estimate — cite it by \
+name ("estimated impact of ~$XM"), and its impact_source tells you what kind of figure it is: \
+"transaction_amount" is an actual summed dollar total from real transactions, \
+"fair_estimate" is a FAIR (Factor Analysis of Information Risk) Monte Carlo estimate — say so \
+explicitly when citing one and never claim a precision the estimate doesn't have, \
+"transaction_amount_partial" means only some occurrences in that group had a captured amount, \
+and "not_computed" means no figure exists yet for that group — never invent one. \
+controls_total/controls_shown in the summary tell you whether the by-control list is complete \
+or a top-N slice of a larger population — say so if it's a slice, don't imply it's everything."""
+
+
+@router.post("/ai/exception-brief")
+def exception_brief(req: ExceptionBriefRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    persona = (req.persona or "CAE").upper()
+    controls_min = [
+        {"control_id": c.get("control_id"), "system_source": c.get("system_source"),
+         "process": c.get("process"), "occurrence_count": c.get("occurrence_count"),
+         "worst_risk_rating": c.get("worst_risk_rating"),
+         "impact_usd": c.get("impact_usd"), "impact_source": c.get("impact_source")}
+        for c in req.by_control
+    ]
+    user = (
+        f"Persona: {persona}\nPeriod: {req.date_from} to {req.date_to}\n\n"
+        f"Report summary:\n{json.dumps(req.summary, indent=2, default=str)}\n\n"
+        f"By-control breakdown:\n{json.dumps(controls_min, indent=2, default=str)}\n\n"
+        f"Write the {persona} brief."
+    )
+
+    # Same cost-reduction cache as persona_brief. subject_ref keys on
+    # persona + period (there's no run_id here — exception data isn't tied
+    # to a risk-loop run) so a different date range never collides with a
+    # cached brief for the same persona.
+    subject_ref = f"{persona}:{req.date_from}:{req.date_to}"
+    input_hash = hashlib.sha256((_EXCEPTION_PERSONA_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("exception_brief", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _EXCEPTION_PERSONA_SYSTEM, user, _PERSONA_SCHEMA, label="exception_persona",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "exception_brief", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=result.get("headline", "")[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    _embed_ai_summary(analysis_id, "", f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
     return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
 
 

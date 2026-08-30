@@ -106,6 +106,11 @@ const NAV_SECTIONS = [
       { id: "gov", govTab: "comp",      icon: "doc",     l: "Pay & Performance" },
       { id: "gov", govTab: "proposals", icon: "list",    l: "Shareholder Proposals" },
       { id: "gov", govTab: "peers",     icon: "table",   l: "Peer Lens" },
+      // Distinct screen id (not a govTab) — a standalone summary screen, not
+      // another tab of GovernanceView. Combines three other screens'
+      // artifacts (evidence pack, audit plan Gantt, exception management)
+      // rather than fetching anything new of its own.
+      { id: "boardreport", icon: "doc", l: "Consolidated Report" },
     ],
   },
   {

@@ -603,6 +603,15 @@ window.MCP = (function () {
     return _postAi('/ai/persona-brief', { ticker, run_id: runId, persona, risks, loop_stats: loopStats });
   }
 
+  /** #4b — Same role-tailored brief mechanism as aiPersonaBrief, fed a period's
+   *  Exception Report (exceptionsReport's own response shape passed straight
+   *  through) instead of a risk-loop register. */
+  function aiExceptionBrief(persona, dateFrom, dateTo, summary, byControl) {
+    return _postAi('/ai/exception-brief', {
+      persona, date_from: dateFrom, date_to: dateTo, summary, by_control: byControl,
+    });
+  }
+
   /** #4 — Full markdown audit report. Returns { markdown }. */
   function aiAuditReport(ticker, { risks = [], objectives = [], maps = [], loop = {} } = {}, runId = null) {
     return _postAi('/ai/audit-report', { ticker, run_id: runId, risks, objectives, maps, loop });
@@ -1104,6 +1113,7 @@ window.MCP = (function () {
     aiDraftRego,
     aiNarrative,
     aiPersonaBrief,
+    aiExceptionBrief,
     aiAuditReport,
     aiLoopCalibrate,
     agentInvestigate,

@@ -202,4 +202,4 @@ function AuditScopeScreen({ objectives, maps, risks, hasRun, savedRunAt }) {
   );
 }
 
-Object.assign(window, { AuditScopeScreen });
+Object.assign(window, { AuditScopeScreen, ScopeGantt });

@@ -69,6 +69,7 @@ const WORKFLOW_STAGES = [
       { screen: "gov", govTab: "comp", label: "Pay & Performance", desc: "Executive pay tested against actual company performance — flags misalignment between compensation and results." },
       { screen: "gov", govTab: "proposals", label: "Shareholder Proposals", desc: "Shareholder proposals and voting outcomes tracked as an early signal of investor pressure." },
       { screen: "gov", govTab: "peers", label: "Peer Lens", desc: "Benchmarks governance posture against SIC-matched peers — is this entity an outlier or the norm?" },
+      { screen: "boardreport", label: "Consolidated Report", desc: "One board-ready packet combining the Assess Risk evidence pack, the audit plan Gantt, and any exception management brief already prepared at Board level." },
     ],
   },
 ];

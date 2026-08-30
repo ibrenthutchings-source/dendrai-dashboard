@@ -156,6 +156,94 @@ function DrillDownModal({ controlId, dateFrom, dateTo, onClose }) {
   );
 }
 
+// Same six personas ai_endpoints.py's persona_brief already uses for a
+// risk-loop run (rail.jsx's PersonaTab) — reusing the exact vocabulary
+// rather than inventing a parallel one for exceptions.
+const _EXCEPTION_PERSONAS = ["CAE", "CFO", "COO", "TECH_EXEC", "NONTECH_EXEC", "BOARD"];
+
+// AI-generated, role-tailored narrative over the CURRENT report (same
+// mechanism as the risk loop's persona briefs — see rail.jsx's PersonaTab —
+// fed this period's exception data instead of a risk register). Briefs are
+// cached server-side per (persona, date_from, date_to), so the Board
+// Intelligence consolidated report can request the same BOARD brief and
+// get back whatever was already generated here instead of paying for a
+// second Claude call.
+// lockPersona: pins the brief to one persona and hides the by-function
+// picker — used by the Board Intelligence consolidated report, which shows
+// only the BOARD brief (never lets a viewer wander into the CFO/COO/etc.
+// briefs from that screen). Omitted here on the Exception Report screen
+// itself, where all six personas stay selectable.
+function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null }) {
+  const [selected, setSelected] = React.useState(lockPersona || "BOARD");
+  const [briefs, setBriefs] = React.useState({});
+  const [state, setState] = React.useState({ loading: false, error: null });
+  const brief = briefs[selected];
+
+  async function generate() {
+    setState({ loading: true, error: null });
+    try {
+      const res = await window.MCP.aiExceptionBrief(selected, dateFrom, dateTo, report.summary, report.by_control);
+      setBriefs(prev => ({ ...prev, [selected]: res }));
+      setState({ loading: false, error: null });
+    } catch (e) {
+      setState({ loading: false, error: e.message || "AI unavailable" });
+    }
+  }
+
+  return (
+    <div className="stage-detail" style={{ marginTop: 20 }}>
+      <SectionLabel right={
+        <button className="btn btn-sm" onClick={generate} disabled={state.loading}
+          title="Generate a role-tailored brief with Claude">
+          <Icon name="spark" size={10} /> {state.loading ? "Generating…" : brief ? "Regenerate" : "Generate with AI"}
+        </button>
+      }>Persona Brief</SectionLabel>
+      {!lockPersona && (
+        <div className="persona-pick-group">
+          <div className="persona-pick-label">By function</div>
+          <div className="persona-pick">
+            {_EXCEPTION_PERSONAS.map(p => (
+              <button key={p} className={"pp" + (selected === p ? " active" : "")} onClick={() => setSelected(p)}>{p}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {state.error && (
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", margin: "4px 0" }}>
+          AI brief unavailable: {state.error}
+        </div>
+      )}
+
+      {brief ? (
+        <>
+          <AiReviewBanner review={brief._review} />
+          <div className="persona-card">
+            <div className="kicker" style={{ marginBottom: 6, color: "var(--acc-ink)" }}>Headline · AI-generated</div>
+            <div className="persona-headline">{brief.headline}</div>
+          </div>
+          {(brief.sections || []).map((s, i) => (
+            <div className="persona-card" key={i}>
+              <div className="kicker" style={{ marginBottom: 6 }}>{s.title}</div>
+              <div className="persona-summary">{s.body}</div>
+            </div>
+          ))}
+          {(brief.callouts || []).length > 0 && (
+            <div className="persona-card">
+              <div className="kicker" style={{ marginBottom: 6 }}>Callouts</div>
+              <ul className="scen-list" style={{ fontSize: 11.5 }}>
+                {brief.callouts.map((c, i) => <li key={i}>{c}</li>)}
+              </ul>
+            </div>
+          )}
+        </>
+      ) : (
+        <Empty>Click "Generate with AI" to produce the {selected} brief for this period's exception report.</Empty>
+      )}
+    </div>
+  );
+}
+
 function ExceptionsReportScreen() {
   const [dateFrom, setDateFrom] = React.useState(_daysAgoISO(30));
   const [dateTo, setDateTo] = React.useState(_todayISO());
@@ -240,6 +328,7 @@ function ExceptionsReportScreen() {
               <ByControlRow key={`${row.control_id}-${row.system_source}-${row.process}`} row={row} onDrill={setDrillControl} />
             ))}
           </div>
+          <ExceptionPersonaBriefs report={report} dateFrom={dateFrom} dateTo={dateTo} />
         </>
       )}
 
@@ -248,4 +337,4 @@ function ExceptionsReportScreen() {
   );
 }
 
-Object.assign(window, { ExceptionsReportScreen });
+Object.assign(window, { ExceptionsReportScreen, ExceptionPersonaBriefs });
