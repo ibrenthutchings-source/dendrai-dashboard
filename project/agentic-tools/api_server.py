@@ -2353,6 +2353,13 @@ def edgar_peers(req: TickerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+# A saved peer set below this count of usable, enriched peers is treated as
+# starved and worth re-deriving — see the self-heal block in
+# edgar_peers_saved below.
+_MIN_USEFUL_SIC_PEERS = 3
+
+
 @app.get("/edgar/peers/{ticker}")
 def edgar_peers_saved(ticker: str):
     """
@@ -2366,9 +2373,39 @@ def edgar_peers_saved(ticker: str):
     saved = db.get_sic_peers(ticker)
     if not saved:
         raise HTTPException(status_code=404, detail="No saved peer data for this ticker")
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         peers = list(pool.map(_enrich_peer_financials, saved["peers"]))
-    saved["peers"] = [p for p in peers if _peer_has_data(p)]
+    peers = [p for p in peers if _peer_has_data(p)]
+
+    # Self-heal a starved peer set. fetch_sic_peers() used to return an
+    # alphabetically-first slice of EDGAR's full SIC roster — dominated by
+    # decades-defunct companies (confirmed live for SIC=3674: 13 of the
+    # first 15 had zero enrichable financial data) — before it was fixed to
+    # rank companies with a live ticker first. Any peer set SAVED before
+    # that fix is stuck starved forever under the old logic: this endpoint
+    # only re-enriches the identities already in sic_peers, it never
+    # re-derives them, so the fix alone did nothing for a ticker that had
+    # already been through /edgar/peers once. Re-run discovery once when
+    # the saved set is thin and only replace it if that actually does
+    # better — never a downgrade, and a no-op once a ticker has re-derived
+    # a healthy set (the new fetch_sic_peers ranking keeps producing one).
+    if len(peers) < _MIN_USEFUL_SIC_PEERS and saved.get("sic"):
+        fresh_identities = fetch_sic_peers(saved["sic"], max_peers=15)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            fresh_peers = list(pool.map(_enrich_peer_financials, fresh_identities))
+        fresh_peers = [p for p in fresh_peers if _peer_has_data(p)]
+        if len(fresh_peers) > len(peers):
+            peers = fresh_peers
+            company_id = db.upsert_company({
+                "ticker": ticker, "company_name": saved["company_name"],
+                "cik": saved.get("cik") or "", "sic": saved["sic"],
+                "sic_description": saved.get("sic_description", ""),
+            })
+            if company_id:
+                db.save_sic_peers(company_id, fresh_identities)
+
+    saved["peers"] = peers
     saved["peer_source"] = "saved SIC peers"
     saved["named_competitors"] = []
     try:
