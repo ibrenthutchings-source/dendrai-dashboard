@@ -101,7 +101,7 @@ function ByControlRow({ row, onDrill }) {
       <div style={{ fontSize: 11.5, color: "var(--ink-2)" }}>{row.process}</div>
       <div className="mono" style={{ fontSize: 11.5, textAlign: "right" }}>{row.occurrence_count}</div>
       <div className="mono" style={{ fontSize: 11.5 }}><ImpactCell row={row} /></div>
-      <div><RiskRatingPill rating={row.worst_risk_rating} /></div>
+      <div><RiskRatingPill rating={row.worst_risk_rating} score={row.worst_risk_score} /></div>
     </Clickable>
   );
 }

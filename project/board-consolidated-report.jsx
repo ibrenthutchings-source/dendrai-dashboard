@@ -521,7 +521,7 @@ function ExceptionCharts({ report }) {
         value: r.impact_usd,
         rating: RATING_META[r.worst_risk_rating] ? r.worst_risk_rating : "unrated",
         fill: _ratingMeta(r.worst_risk_rating).fill,
-        note: `${r.occurrence_count} occurrence${r.occurrence_count === 1 ? "" : "s"} in this period${
+        note: `${Number.isFinite(r.worst_risk_score) ? `Risk score ${fmt2(r.worst_risk_score)}/25 — ` : ""}${r.occurrence_count} occurrence${r.occurrence_count === 1 ? "" : "s"} in this period${
           r.impact_source === "fair_estimate" ? " · impact estimated via FAIR Monte Carlo, no transaction amount captured"
           : r.impact_source === "transaction_amount_partial" ? " · partial: sum of the occurrences that carried a transaction amount"
           : " · sum of the captured transaction amounts"}`,

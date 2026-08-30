@@ -207,7 +207,7 @@ function TriageQueueRow({ row, onResolved, onNavigate }) {
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 150, flexShrink: 0, alignItems: "flex-end" }}>
-          <RiskRatingPill rating={row.risk_rating} />
+          <RiskRatingPill rating={row.risk_rating} score={row.risk_score} />
           <ExcScoreBar label="Anomaly" value={row.anomaly_score} />
           <ExcScoreBar label="Uncertainty" value={row.uncertainty_score} />
         </div>

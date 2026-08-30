@@ -17,15 +17,20 @@ this near the decision boundary" — with a little jitter so same-severity
 events don't all score identically.
 
 risk_rating (R/A/G — same vocabulary management_action_plans.risk_rating /
-risk_scores.rag_status already use) is a SEPARATE signal from
-anomaly_score/uncertainty_score, deliberately: anomaly and uncertainty are
-mathematically coupled (uncertainty is a function of anomaly), so neither
-tells a reviewer anything uncertainty doesn't already encode. risk_rating
-instead combines severity with the connector's own risk_tier
-(poll_connectors.risk_tier — see connector_poller._score_exception_event,
-which has the full connector dict in hand at scoring time) via
-_RISK_RATING_MATRIX below, a real second input independent of the event's
-own severity alone.
+risk_scores.rag_status already use) and risk_score (0-25) are a SEPARATE
+signal from anomaly_score/uncertainty_score, deliberately: anomaly and
+uncertainty are mathematically coupled (uncertainty is a function of
+anomaly), so neither tells a reviewer anything uncertainty doesn't already
+encode. risk_rating/risk_score instead come from risk_rating_engine.
+score_exception(), the SAME canonical 0-25 / R-A-G methodology risk-engine.js
+uses for the Enterprise Risk Loop's own register — severity drives likelihood,
+the connector's own risk_tier (poll_connectors.risk_tier — see
+connector_poller._score_exception_event, which has the full connector dict
+in hand at scoring time) applies a real, independent modifier on top, and
+process drives impact via risk_rating_engine.PROCESS_CATEGORY. Before this,
+risk_rating came from a hand-tuned severity x tier lookup matrix with no
+numeric score at all — a disconnected methodology from Risk Assessment; see
+risk_rating_engine.py's module docstring for the full history.
 
 Called from connector_poller.py's per-event loop only when
 deploy_env.IS_DEVELOPMENT — every other environment's ingestion path never
@@ -36,6 +41,8 @@ from __future__ import annotations
 import random
 from typing import Optional
 
+import risk_rating_engine
+
 _SEVERITY_BASE = {
     "CRITICAL": 0.90, "HIGH": 0.80, "MEDIUM": 0.55, "WARN": 0.55,
     "WARNING": 0.55, "LOW": 0.20, "INFO": 0.12,
@@ -43,31 +50,6 @@ _SEVERITY_BASE = {
 _ANOMALY_THRESHOLD = 0.70
 _UNCERTAINTY_THRESHOLD = 0.50
 MODEL_VERSION = "exception-heuristic-v1"
-
-# connector risk_tier bucket -> severity bucket -> R/A/G. risk_tier values
-# from the AI System Inventory screen's classification editor
-# (ai-inventory.jsx / PUT /connectors/{id}/classification) are lowercase
-# ("critical"/"high"/"medium"/"low") — normalized to upper() before lookup so
-# this matches regardless of source casing. An unrecognized/unset tier is
-# treated as "MEDIUM" (the same default poll_connectors implicitly has before
-# anyone classifies it), never silently as the lowest-risk bucket.
-_TIER_BUCKET = {"CRITICAL": "HIGH", "HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}
-_SEVERITY_BUCKET = {
-    "CRITICAL": "HIGH", "HIGH": "HIGH",
-    "MEDIUM": "MEDIUM", "WARN": "MEDIUM", "WARNING": "MEDIUM",
-    "LOW": "LOW", "INFO": "LOW",
-}
-_RISK_RATING_MATRIX = {
-    ("HIGH", "HIGH"): "R", ("HIGH", "MEDIUM"): "R", ("HIGH", "LOW"): "A",
-    ("MEDIUM", "HIGH"): "R", ("MEDIUM", "MEDIUM"): "A", ("MEDIUM", "LOW"): "G",
-    ("LOW", "HIGH"): "A", ("LOW", "MEDIUM"): "G", ("LOW", "LOW"): "G",
-}
-
-
-def _risk_rating(severity: str, connector_risk_tier: Optional[str]) -> str:
-    tier_bucket = _TIER_BUCKET.get((connector_risk_tier or "").strip().upper(), "MEDIUM")
-    severity_bucket = _SEVERITY_BUCKET.get((severity or "INFO").upper(), "LOW")
-    return _RISK_RATING_MATRIX[(tier_bucket, severity_bucket)]
 
 
 def _numeric_features(raw_payload: Optional[dict]) -> dict:
@@ -86,24 +68,28 @@ def _numeric_features(raw_payload: Optional[dict]) -> dict:
 
 def score_event(event_type: str, severity: str, raw_payload: Optional[dict],
                  rng: Optional[random.Random] = None,
-                 connector_risk_tier: Optional[str] = None) -> dict:
+                 connector_risk_tier: Optional[str] = None,
+                 process: Optional[str] = None) -> dict:
     """Returns {features, anomaly_score, uncertainty_score,
-    requires_human_review, model_version, risk_rating}. `event_type` is
-    accepted for interface symmetry with the connector event shape and
-    future per-type tuning, though only `severity` drives anomaly/uncertainty
-    today. `connector_risk_tier` (poll_connectors.risk_tier — see this
-    module's docstring) drives risk_rating, a genuinely independent signal
-    from anomaly/uncertainty."""
+    requires_human_review, model_version, risk_rating, risk_score}.
+    `event_type` is accepted for interface symmetry with the connector event
+    shape and future per-type tuning, though only `severity` drives
+    anomaly/uncertainty today. `connector_risk_tier` and `process`
+    (poll_connectors.risk_tier / extra_config.process — see this module's
+    docstring) drive risk_rating/risk_score via risk_rating_engine.
+    score_exception, a genuinely independent signal from anomaly/uncertainty."""
     rng = rng or random
     base = _SEVERITY_BASE.get((severity or "INFO").upper(), 0.30)
     anomaly = min(1.0, max(0.0, base + rng.uniform(-0.08, 0.08)))
     uncertainty = min(1.0, max(0.0, 1.0 - 2.0 * abs(anomaly - 0.5) + rng.uniform(-0.05, 0.05)))
     requires_review = anomaly >= _ANOMALY_THRESHOLD or uncertainty >= _UNCERTAINTY_THRESHOLD
+    risk = risk_rating_engine.score_exception(severity, process=process, connector_risk_tier=connector_risk_tier)
     return {
         "features": _numeric_features(raw_payload),
         "anomaly_score": round(anomaly, 4),
         "uncertainty_score": round(uncertainty, 4),
         "requires_human_review": requires_review,
         "model_version": MODEL_VERSION,
-        "risk_rating": _risk_rating(severity, connector_risk_tier),
+        "risk_rating": risk["rag_status"],
+        "risk_score": risk["score"],
     }

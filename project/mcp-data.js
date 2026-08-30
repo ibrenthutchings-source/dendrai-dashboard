@@ -202,14 +202,22 @@ window.MCP = (function () {
       const mr = byIndex || byCategory;
       if (!mr) return tr;
 
-      // MCP server returns scores on 0-10 scale; scale to 0-25
-      const score = mr.score    != null ? +(mr.score * 2.5).toFixed(1) : tr.score;
-      const base  = mr.base_score != null ? +(mr.base_score * 2.5).toFixed(1) : tr.base;
+      // predictive_analytics_tool.compute_risk_scores now emits the same
+      // canonical 0-25 scale / R-A-G letters risk-engine.js itself uses
+      // (risk_rating_engine.py) — no rescale, no letter conversion needed.
+      // This used to scale mr.score *2.5 while taking mr.rag_status through
+      // _ragChar's OWN 0-10-native word check ("Red"/"Amber"/"Green"), so a
+      // predictive score of 6.0 rendered as "15.0" wearing an Amber badge —
+      // risk-engine.js's own ragOf(15.0) calls that Red. Score and rating on
+      // the same row disagreed. Backend now emits both pre-converted, so
+      // this is a straight passthrough.
+      const score = mr.score      != null ? mr.score      : tr.score;
+      const base  = mr.base_score != null ? mr.base_score : tr.base;
       return {
         ...tr,
         score,
         base,
-        rag:           _ragChar(mr.rag_status) || tr.rag,
+        rag:           mr.rag_status || tr.rag,
         velocity:      mr.velocity  ?? tr.velocity,
         ce:            mr.control_env || tr.ce,
         peerBenchmark: mr.peer_benchmark ?? tr.peerBenchmark,

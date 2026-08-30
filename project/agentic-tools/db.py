@@ -1583,6 +1583,13 @@ CREATE INDEX IF NOT EXISTS idx_exc_inferences_pending
 -- je_testing_sweep.py, which never sets it) simply have no risk_rating,
 -- sorting last rather than being coerced into a fake tier.
 ALTER TABLE exception_model_inferences ADD COLUMN IF NOT EXISTS risk_rating VARCHAR(8);
+-- risk_score: the 0-25 number risk_rating bands, from risk_rating_engine.
+-- score_exception (via exception_tool.score_event) — the same canonical
+-- impact x likelihood methodology risk-engine.js uses for the Enterprise
+-- Risk Loop's own register. Before this column existed, Exception
+-- Management had a letter with no number behind it at all. Nullable, same
+-- "legacy/JE-testing rows carry no score" discipline as risk_rating itself.
+ALTER TABLE exception_model_inferences ADD COLUMN IF NOT EXISTS risk_score NUMERIC(5,2);
 
 CREATE TABLE IF NOT EXISTS exception_auditor_triage (
     id                      BIGSERIAL    PRIMARY KEY,
@@ -11542,14 +11549,15 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                             raw_payload: Optional[dict] = None,
                             system_telemetry_id: Optional[int] = None,
                             connector_id: Optional[int] = None, assigned_owner: Optional[str] = None,
-                            risk_rating: Optional[str] = None) -> Optional[int]:
+                            risk_rating: Optional[str] = None,
+                            risk_score: Optional[float] = None) -> Optional[int]:
     """One exception_control_events row + its exception_model_inferences row,
     in a single connection — connector_poller.py's per-event scoring hook
     calls this for every polled event once deploy_env.IS_DEVELOPMENT, and
     je_testing_sweep.py calls it unconditionally for JE findings (leaving
-    connector_id/assigned_owner/risk_rating at their default None — JE
-    findings aren't connector-scored events and are excluded from every
-    Exception Management query anyway, see _EXCLUDE_JE_TESTING_SQL)."""
+    connector_id/assigned_owner/risk_rating/risk_score at their default
+    None — JE findings aren't connector-scored events and are excluded from
+    every Exception Management query anyway, see _EXCLUDE_JE_TESTING_SQL)."""
     raw_payload = _encrypt_raw_payload(raw_payload)
     def _do():
         with _conn() as conn:
@@ -11574,11 +11582,12 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                 cur.execute(
                     """
                     INSERT INTO exception_model_inferences
-                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review, risk_rating)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review,
+                         risk_rating, risk_score)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (event_id, model_version[:64], anomaly_score, uncertainty_score, requires_human_review,
-                     risk_rating),
+                     risk_rating, risk_score),
                 )
                 return event_id
     return _run(_do)
@@ -11623,7 +11632,8 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0,
                     SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
                            ce.point_in_time_features, ce.actor, ce.action, ce.event_type,
                            ce.raw_payload, ce.system_telemetry_id, ce.connector_id, ce.assigned_owner,
-                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.risk_rating, mi.scored_at
+                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.risk_rating,
+                           mi.risk_score, mi.scored_at
                     FROM exception_control_events ce
                     JOIN LATERAL (
                         SELECT * FROM exception_model_inferences m
@@ -11648,7 +11658,8 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0,
                         "inference_id": r[13], "model_version": r[14],
                         "anomaly_score": float(r[15]), "uncertainty_score": float(r[16]),
                         "risk_rating": r[17],
-                        "scored_at": r[18].isoformat() if r[18] else None,
+                        "risk_score": float(r[18]) if r[18] is not None else None,
+                        "scored_at": r[19].isoformat() if r[19] else None,
                     })
                 return out
     return _run(_do) or []
@@ -11692,6 +11703,7 @@ def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str]
                     f"""
                     SELECT ce.control_id, ce.system_source, COUNT(*) AS occurrence_count,
                            MIN({_RISK_RATING_ORDER_SQL}) AS worst_rating_order,
+                           MAX(mi.risk_score) AS worst_risk_score,
                            MIN(ce.event_timestamp) AS first_seen_at, MAX(ce.event_timestamp) AS last_seen_at,
                            (array_agg(ce.id ORDER BY ce.event_timestamp DESC))[1] AS sample_event_id,
                            (array_agg(ce.assigned_owner ORDER BY ce.event_timestamp DESC))[1] AS owner,
@@ -11718,6 +11730,8 @@ def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str]
                 for row in cur.fetchall():
                     d = dict(zip(cols, row))
                     d["worst_risk_rating"] = _rating_by_order.get(d.pop("worst_rating_order"))
+                    if d.get("worst_risk_score") is not None:
+                        d["worst_risk_score"] = float(d["worst_risk_score"])
                     for k in ("first_seen_at", "last_seen_at"):
                         if d.get(k):
                             d[k] = d[k].isoformat()
@@ -11756,6 +11770,7 @@ def list_exceptions_report_grouped(date_from: str, date_to: str, limit: int = 20
                     SELECT ce.control_id, ce.system_source, ce.process,
                            COUNT(*) AS occurrence_count,
                            MIN({_RISK_RATING_ORDER_SQL}) AS worst_rating_order,
+                           MAX(mi.risk_score) AS worst_risk_score,
                            MIN(ce.event_timestamp) AS first_seen_at, MAX(ce.event_timestamp) AS last_seen_at,
                            COALESCE(SUM((ce.point_in_time_features->>'amount')::numeric)
                                     FILTER (WHERE ce.point_in_time_features->>'amount' IS NOT NULL), 0) AS literal_amount_total,
@@ -11778,6 +11793,8 @@ def list_exceptions_report_grouped(date_from: str, date_to: str, limit: int = 20
                 for row in cur.fetchall():
                     d = dict(zip(cols, row))
                     d["worst_risk_rating"] = _rating_by_order.get(d.pop("worst_rating_order"))
+                    if d.get("worst_risk_score") is not None:
+                        d["worst_risk_score"] = float(d["worst_risk_score"])
                     for k in ("first_seen_at", "last_seen_at"):
                         if d.get(k):
                             d[k] = d[k].isoformat()

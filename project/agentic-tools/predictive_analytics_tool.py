@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import risk_rating_engine
+
 import requests
 
 try:
@@ -1400,10 +1402,18 @@ _INDUSTRY_ALIASES: dict[str, str] = {
 
 def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
     """
-    Compute industry-templated risk scores.
+    Compute industry-templated risk scores on the platform's canonical 0-25
+    scale (impact 0-5 x likelihood 0-5), banded R>=15/A>=9/G below — the same
+    methodology risk-engine.js's buildRisks() uses for the Enterprise Risk
+    Loop's own register (see risk_rating_engine.py). This function's own
+    industry templates and _risk_delta ratio rules are unchanged; only the
+    final scale/banding/vocabulary is now shared instead of this function's
+    previous independent 0-10 / Red-Amber-Green scheme (>=7.0/>=5.0), whose
+    disagreement with the rest of the platform was a real, visible bug — see
+    risk_rating_engine.py's module docstring for the concrete symptom.
 
     Returns dict with overall summary and per-risk details including score,
-    RAG status (Red ≥7.0, Amber ≥5.0, Green <5.0), velocity, and control env.
+    rag_status (letter — R/A/G, not a full word), velocity, and control env.
     """
     industry = _INDUSTRY_ALIASES.get(industry, industry)
     template = INDUSTRY_TEMPLATES.get(industry, INDUSTRY_TEMPLATES["Generic"])
@@ -1412,17 +1422,15 @@ def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
     for i, t in enumerate(template):
         base  = t["base"]
         delta = _risk_delta(ratios, t["rules"])
-        score = max(1.0, min(10.0, base + delta))
+        raw_score = max(1.0, min(10.0, base + delta))  # 0-10 intermediate, unchanged
 
-        if score >= 7.0:
-            rag = "Red"
-        elif score >= 5.0:
-            rag = "Amber"
-        else:
-            rag = "Green"
-
-        velocity = round(delta)          # integer −1 to +3 (clamped)
-        velocity = max(-1, min(3, velocity))
+        canonical = risk_rating_engine.score_from_raw10(raw_score, category=t["category"])
+        # Exact port of risk-engine.js buildRisks()'s `base25 = impact * (t.base / 2)`
+        # — the baseline is a plain multiply, NOT run through the likelihood
+        # clamp the live score gets, matching that asymmetry precisely so
+        # velocity_of() below means the same thing here as it does there.
+        base_score_25 = round(canonical["impact"] * (base / 2.0), 1)
+        velocity = risk_rating_engine.velocity_of(score=canonical["score"], base=base_score_25)
 
         # Stable per-industry ref — without this, save_risk_scores() writes
         # risk_ref=NULL for every row, and every risk collapses onto the same
@@ -1432,16 +1440,16 @@ def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
             "risk_ref":      f"R-{i+1:02d}",
             "name":          t["name"],
             "category":      t["category"],
-            "base_score":    round(base, 1),
+            "base_score":    base_score_25,
             "delta":         round(delta, 2),
-            "score":         round(score, 2),
-            "rag_status":    rag,
+            "score":         canonical["score"],
+            "rag_status":    canonical["rag_status"],
             "velocity":      velocity,
             "control_env":   t["ce"],
             "peer_benchmark": t["peer"],
         })
 
-    rag_counts = {"Red": 0, "Amber": 0, "Green": 0}
+    rag_counts = {"R": 0, "A": 0, "G": 0}
     for r in risks:
         rag_counts[r["rag_status"]] += 1
 
@@ -1469,7 +1477,7 @@ def compute_scenario_analysis(ratios: dict, risk_result: dict) -> dict:
     trend = ratios.get("revenue_growth") or 0.0
 
     rag = risk_result.get("rag_summary", {})
-    red_count = rag.get("Red", 0)
+    red_count = rag.get("R", 0)
 
     bear_rev_chg  = -0.18
     base_rev_chg  = trend
@@ -1520,13 +1528,17 @@ def compute_grey_swan(risk_result: dict, quarterly_revenue: Optional[float] = No
     """
     Plausible-but-underweighted escalation cascade.
 
-    Selects highest-velocity Amber risk as triggering event.
-    Projects 4-stage timeline: T+0 → T+30 → T+60 → T+90 days.
-    Score trajectory: base → +0.8 → +1.5 → +2.2 above starting score.
-    Impact ladder scales off quarterly revenue (or $500M proxy).
+    Selects highest-velocity Amber (rag_status "A") risk as triggering event.
+    Projects 4-stage timeline: T+0 → T+30 → T+60 → T+90 days. Score
+    trajectory: base → +escalation_step(1) → +escalation_step(2) →
+    +escalation_step(3) — risk_rating_engine's own velocity bands (the same
+    ones velocity_of()/risk-engine.js's velOf() read off a score-vs-baseline
+    delta), so each stage crosses exactly one more velocity level rather
+    than an arbitrary tuned constant. Impact ladder scales off quarterly
+    revenue (or $500M proxy).
     """
     risks = risk_result.get("risks", [])
-    amber_risks = [r for r in risks if r["rag_status"] == "Amber"]
+    amber_risks = [r for r in risks if r["rag_status"] == "A"]
 
     trigger = None
     if amber_risks:
@@ -1542,8 +1554,10 @@ def compute_grey_swan(risk_result: dict, quarterly_revenue: Optional[float] = No
     base_score = trigger["score"]
     rev_proxy  = quarterly_revenue if quarterly_revenue else 500_000_000
 
+    peak_delta = risk_rating_engine.escalation_step(3)
+
     def _impact(delta_score: float) -> str:
-        severity = delta_score / 2.2
+        severity = delta_score / peak_delta
         impact   = rev_proxy * severity * 0.15
         if impact > rev_proxy * 0.10:
             tier = "Severe"
@@ -1555,17 +1569,20 @@ def compute_grey_swan(risk_result: dict, quarterly_revenue: Optional[float] = No
             tier = "Low"
         return f"{tier} — indicative impact ~${impact/1e6:.0f}M"
 
+    stage_deltas = [risk_rating_engine.escalation_step(1),
+                    risk_rating_engine.escalation_step(2),
+                    risk_rating_engine.escalation_step(3)]
     stages = [
-        {"day": 0,  "label": "T+0  Trigger",    "score": round(base_score, 2),       "description": f"{trigger['name']} event confirmed — initial disclosure"},
-        {"day": 30, "label": "T+30 Escalation", "score": round(base_score + 0.8, 2), "description": "Regulatory inquiry / customer notifications commence"},
-        {"day": 60, "label": "T+60 Contagion",  "score": round(base_score + 1.5, 2), "description": "Secondary risk activation — supply chain / credit spread widening"},
-        {"day": 90, "label": "T+90 Resolution", "score": round(base_score + 2.2, 2), "description": "Full impact crystallised; remediation plan required"},
+        {"day": 0,  "label": "T+0  Trigger",    "score": round(base_score, 2),                     "description": f"{trigger['name']} event confirmed — initial disclosure"},
+        {"day": 30, "label": "T+30 Escalation", "score": round(base_score + stage_deltas[0], 2),   "description": "Regulatory inquiry / customer notifications commence"},
+        {"day": 60, "label": "T+60 Contagion",  "score": round(base_score + stage_deltas[1], 2),   "description": "Secondary risk activation — supply chain / credit spread widening"},
+        {"day": 90, "label": "T+90 Resolution", "score": round(base_score + stage_deltas[2], 2),   "description": "Full impact crystallised; remediation plan required"},
     ]
 
     for s in stages:
         delta = s["score"] - base_score
         s["impact_estimate"] = _impact(delta) if delta > 0 else "Baseline — monitoring phase"
-        s["rag_status"] = "Red" if s["score"] >= 7.0 else ("Amber" if s["score"] >= 5.0 else "Green")
+        s["rag_status"] = risk_rating_engine.rag_of(s["score"])
 
     return {
         "trigger_risk":      trigger["name"],
@@ -1574,8 +1591,8 @@ def compute_grey_swan(risk_result: dict, quarterly_revenue: Optional[float] = No
         "trigger_velocity":  trigger["velocity"],
         "quarterly_revenue_proxy": rev_proxy,
         "timeline":          stages,
-        "peak_score":        round(base_score + 2.2, 2),
-        "peak_rag":          "Red" if (base_score + 2.2) >= 7.0 else "Amber",
+        "peak_score":        round(base_score + peak_delta, 2),
+        "peak_rag":          risk_rating_engine.rag_of(base_score + peak_delta),
     }
 
 

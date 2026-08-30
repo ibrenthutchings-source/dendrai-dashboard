@@ -187,6 +187,7 @@ from cac_mcp_server import mcp as _cac_mcp
 from infrastructure_monitoring_mcp_server import mcp as _infrastructure_monitoring_mcp
 from fair_mcp_server import mcp as _fair_mcp
 from process_mining_mcp_server import mcp as _process_mining_mcp
+from risk_rating_mcp_server import mcp as _risk_rating_mcp
 
 try:
     from oracle_fusion_mcp_server import mcp as _oracle_mcp
@@ -1077,6 +1078,7 @@ _mount_mcp("/mcp/oracle",           "Oracle Fusion ERP data",                   
 _mount_mcp("/mcp/infrastructure-monitoring", "Infrastructure Monitoring: IaaS/OS/DB continuous audit", _infrastructure_monitoring_mcp)
 _mount_mcp("/mcp/fair",             "Risk Quantification: FAIR Monte Carlo loss modeling",      _fair_mcp)
 _mount_mcp("/mcp/process-mining",   "Process Mining: variant/conformance/cycle-time analysis",  _process_mining_mcp)
+_mount_mcp("/mcp/risk-rating",      "Canonical RAG risk scoring (0-25 scale, R/A/G) — pass any risk through the same methodology as the register", _risk_rating_mcp)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
