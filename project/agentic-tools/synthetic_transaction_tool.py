@@ -76,6 +76,18 @@ class SimStep:
     # so the violating case actually exercises that existing Rego rule
     # instead of just landing as a generic HIGH-severity event.
     violating_event_type: Optional[str] = None
+    # Payload key mcp_governance._detect_system_flags() checks for to route
+    # a violating case into Bronze/Silver/Gold/Council at all — confirmed
+    # this was the actual gap keeping synthetic violations invisible to the
+    # Council: HIGH severity alone was never flag-worthy (only CRITICAL is),
+    # and every other check there is an exact payload-key match set by
+    # whichever real tool the flag was written for (e.g.
+    # oracle_hcm_tool.py sets "terminated_employee_access_retained" —
+    # this module's own termination step only set "access_revoked", a
+    # different key the detector never looked for). None where no existing
+    # flag name is a genuine semantic match for this step — see
+    # _build_own_case's generic "policy_violation" fallback for those.
+    violating_flag: Optional[str] = None
 
 
 @dataclass
@@ -121,10 +133,12 @@ _HIRE_TO_RETIRE = ProcessDef("REQ", [
     SimStep("Pay Rate Change", "HCM_PAY_RATE_EVENT", (60, 400),
             lambda rng, rid, v: _detail(rng, rid, v, "employee", "new_annual_pay", (60000, 220000),
                                          extra={"pct_change": round(random.uniform(30, 60), 1) if v else round(random.uniform(2, 8), 1)}),
-            violating_event_type="UNAUTHORIZED_PAY_RATE_CHANGE"),
+            violating_event_type="UNAUTHORIZED_PAY_RATE_CHANGE",
+            violating_flag="unauthorized_pay_rate_change"),
     SimStep("Termination Processed", "HCM_TERMINATION_EVENT", (90, 900),
             lambda rng, rid, v: _detail(rng, rid, v, "employee", extra={"access_revoked": not v}),
-            violating_event_type="TERMINATED_EMPLOYEE_ACCESS_RETAINED"),
+            violating_event_type="TERMINATED_EMPLOYEE_ACCESS_RETAINED",
+            violating_flag="terminated_employee_access_retained"),
 ])
 
 # ── SailPoint — IAM ───────────────────────────────────────────────────────────
@@ -134,7 +148,8 @@ _IAM = ProcessDef("ACC", [
                                          extra={"entitlement": rng.choice(["AP_INVOICE_ENTRY", "PO_BUYER", "PRIV_DB_ADMIN", "FIN_CLOSE_APPROVER"])})),
     SimStep("Access Approved", "IAM_ACCESS_APPROVAL_EVENT", (0, 3),
             lambda rng, rid, v: _detail(rng, rid, v, "identity",
-                                         extra={"sod_conflict_detected": v})),
+                                         extra={"sod_conflict_detected": v}),
+            violating_flag="sod_violation"),
     SimStep("Access Provisioned", "IAM_ACCESS_PROVISIONED_EVENT", (0, 2),
             lambda rng, rid, v: _detail(rng, rid, v, "identity")),
     SimStep("Access Certified", "IAM_ACCESS_CERTIFICATION_EVENT", (60, 180),
@@ -216,14 +231,18 @@ _INVENTORY_MASTER = ProcessDef("SKU", [
 #    Customer/Vendor Master Change kinds) ─────────────────────────────────────
 _CUSTOMER_MASTER_FILE = ProcessDef("CUST", [
     SimStep("Customer Record Created", "CUST_MASTER_CREATE_EVENT", (0, 0),
-            lambda rng, rid, v: _detail(rng, rid, v, "cs_rep")),
+            lambda rng, rid, v: _detail(rng, rid, v, "cs_rep"),
+            violating_flag="customer_master_change"),
     SimStep("Customer Record Updated", "CUST_MASTER_UPDATE_EVENT", (0, 0),
             lambda rng, rid, v: _detail(rng, rid, v, "cs_rep",
-                                         extra={"field_changed": rng.choice(["billing_address", "payment_terms", "credit_limit", "tax_id"])})),
+                                         extra={"field_changed": rng.choice(["billing_address", "payment_terms", "credit_limit", "tax_id"])}),
+            violating_flag="customer_master_change"),
     SimStep("Customer Record Merged", "CUST_MASTER_MERGE_EVENT", (0, 0),
-            lambda rng, rid, v: _detail(rng, rid, v, "data_steward")),
+            lambda rng, rid, v: _detail(rng, rid, v, "data_steward"),
+            violating_flag="customer_master_change"),
     SimStep("Customer Record Deactivated", "CUST_MASTER_DEACTIVATE_EVENT", (0, 0),
-            lambda rng, rid, v: _detail(rng, rid, v, "cs_rep")),
+            lambda rng, rid, v: _detail(rng, rid, v, "cs_rep"),
+            violating_flag="customer_master_change"),
 ], standalone=True)
 
 _PROCESS_DEFS = {
@@ -271,6 +290,13 @@ def _build_own_case(pdef: ProcessDef, rng: random.Random, now: datetime, process
         detail["case_id"] = case_id
         detail["process_step"] = step.label
         detail["process"] = process_id
+        # Route into mcp_governance._detect_system_flags() — see SimStep.
+        # violating_flag's docstring. A step's own specific flag where one's
+        # a real match, else the generic "policy_violation" catch-all so no
+        # violating case is ever silently invisible to Bronze regardless of
+        # whether this process has a dedicated flag defined for it yet.
+        if violating:
+            detail[step.violating_flag or "policy_violation"] = True
         event_type = (step.violating_event_type if violating and step.violating_event_type else step.event_type)
         events.append(_event(
             event_type, detail.get("actor") or rng.choice(_ACTORS),
@@ -289,6 +315,8 @@ def _build_own_standalone(pdef: ProcessDef, rng: random.Random, now: datetime, p
     detail["case_id"] = case_id
     detail["process_step"] = step.label
     detail["process"] = process_id
+    if violating:
+        detail[step.violating_flag or "policy_violation"] = True
     when = now - timedelta(hours=rng.uniform(0, 72))
     event_type = (step.violating_event_type if violating and step.violating_event_type else step.event_type)
     return _event(
@@ -316,6 +344,14 @@ def _build_reused_case(steps: list, rng: random.Random, now: datetime, process_i
         detail = kind.build_violating(rng, rid) if violating else kind.build_clean(rng, rid)
         detail["case_id"] = case_id
         detail["process_step"] = label
+        # kind.flag is exactly the mcp_governance._detect_system_flags() key
+        # for this TxnKind (e.g. "revenue_recognition_event") — defined on
+        # the dataclass but never actually threaded into the payload until
+        # now, so every one of these 13 event kinds' violations was
+        # equally invisible to Bronze as synthetic_transaction_tool's own
+        # processes were.
+        if violating:
+            detail[kind.flag] = True
         detail["process"] = process_id
         events.append(_event(
             kind.event_type, rng.choice(_ACTORS), f"{kind.name}_{'violation' if violating else 'clean'}",
