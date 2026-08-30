@@ -642,13 +642,29 @@ def _cik_to_ticker_map() -> dict[str, str]:
 
 def fetch_sic_peers(sic: str, max_peers: int = 20) -> list[dict]:
     """
-    Return companies sharing the given SIC code by scraping EDGAR's browse page.
+    Return companies sharing the given SIC code by scraping EDGAR's browse page,
+    preferring companies that are still actively trading over long-defunct ones.
     Each entry: {cik, cik_plain, company_name, state, sic, ticker}.
+
+    EDGAR's browse-edgar company list for a SIC code is alphabetical across
+    EVERY company that has ever filed a matching form — type=10-K only
+    requires "filed a 10-K at some point," not "still files one." For
+    SIC=3674 (semiconductors), a plain first-N cut off that list is
+    dominated by decades-old delisted names (3DLABS, ACTEL CORP, AEROFLEX,
+    AGERE SYSTEMS, ...): confirmed live, 13 of the first 15 alphabetical
+    entries had zero enrichable financial data, leaving the peer-benchmarking
+    chart with 1-2 lines (or none) after _peer_has_data drops the rest — this
+    is the actual cause behind "no peers in the chart," not a data-fetch bug.
+    Fix: pull a much larger raw pool (EDGAR's max page size, 100, vs. the
+    max_peers-sized page fetched before) and rank companies with a live
+    ticker in SEC's company_tickers.json first — a delisted/defunct company
+    drops out of that file, so "has a current ticker" is a solid proxy for
+    "still an active filer" without a per-company submissions.json round trip.
     """
     url = (
         f"{EDGAR_BASE}/cgi-bin/browse-edgar"
         f"?action=getcompany&SIC={sic}&type=10-K"
-        f"&dateb=&owner=include&count={min(max_peers + 10, 100)}&search_text="
+        f"&dateb=&owner=include&count=100&search_text="
     )
     r = _get_safe(url)
     if r is None:
@@ -689,8 +705,22 @@ def fetch_sic_peers(sic: str, max_peers: int = 20) -> list[dict]:
 
     ticker_map = _cik_to_ticker_map()
     for p in peers:
-        p["ticker"] = ticker_map.get(p["cik_plain"], "")
+        # company_tickers.json keys its CIKs unpadded (e.g. "2488", not
+        # "0000002488") while cik_plain here is the zero-padded text EDGAR's
+        # browse page renders — normalize both to a bare int before the
+        # lookup, or every single match silently misses and p["ticker"] is
+        # always "" (this was the actual state of the code before: not one
+        # peer, including still-trading names like AMD, ever resolved a
+        # ticker here).
+        p["ticker"] = ticker_map.get(str(int(p["cik_plain"])), "")
         p["sic"] = sic
+
+    # Stable sort: live-ticker (active) companies first, defunct ones after,
+    # each group keeping its original alphabetical order. A SIC code with
+    # fewer than max_peers active filers still returns a full page rather
+    # than an artificially short list — the defunct tail just won't have
+    # usable financial data once _peer_has_data filters it downstream.
+    peers.sort(key=lambda p: 0 if p["ticker"] else 1)
 
     return peers[:max_peers]
 

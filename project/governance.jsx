@@ -5,7 +5,7 @@
    ============================================================ */
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ComposedChart, Area,
+  Tooltip, ResponsiveContainer, ComposedChart, Area, ReferenceLine,
 } from 'recharts';
 
 const GOV_TABS = [
@@ -81,6 +81,35 @@ function _percentile(sorted, p) {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 }
 
+// Same statistical forecasting engine (ARIMA/Prophet-like/Random Forest
+// ensemble, forecasting.js) the Pipeline's KPI ForecastChart runs — reused
+// here rather than a second forecasting method, so "the company is
+// projected to..." means the same thing on every screen. Annual ratio
+// series are short (2-6 points); below 3 points the ensemble has nothing
+// to fit against, so that series is left unforecast rather than showing a
+// number the model made up from one or two points.
+const _PEER_FORECAST_STEPS = 2;
+
+function _forecastValues(values) {
+  const F = window.FORECASTING;
+  if (!F || !values || values.length < 3) return null;
+  try {
+    return F.predictEnsemble(F.fitEnsemble(values), _PEER_FORECAST_STEPS);
+  } catch {
+    return null;
+  }
+}
+
+// Annual cadence assumed (this data is built from 10-K/20-F annual points —
+// see api_server.py's _build_ratio_history) — advances the year, keeps
+// month/day, so a non-calendar fiscal year-end still lands on the same date.
+function _addYearsIso(isoDate, years) {
+  const d = new Date(isoDate);
+  if (isNaN(d.getTime())) return null;
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  return d.toISOString().slice(0, 10);
+}
+
 function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
   // governance.jsx has no build-time import of components.jsx (cross-file
   // access here is always via window — see GovernanceView's RefreshBadge
@@ -143,14 +172,78 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
 
   const fmtV = v => Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "—";
 
+  // ---- Forecast, same ensemble engine + visual language as the Pipeline's
+  // KPI ForecastChart (charts.jsx) — a dashed continuation of each series'
+  // own line, a shaded band on the subject and on the peer-median aggregate,
+  // and a "FORECAST →" divider at the last actual period. One series' own
+  // history is what's forecast (own trend), not an interpolation against
+  // the others — same semantics as ComparableChart/MultiSeriesForecastChart
+  // already use for the Risk Loop's own peer-compare charts.
+  const forecastsByKey = {};
+  series.forEach(s => {
+    const vals = s.history.filter(h => Number.isFinite(h[metric])).map(h => h[metric]);
+    forecastsByKey[s.key] = _forecastValues(vals);
+  });
+  const lastPeriod = allPeriods[allPeriods.length - 1];
+  const forecastPeriods = [];
+  for (let i = 1; i <= _PEER_FORECAST_STEPS; i++) {
+    const p = _addYearsIso(lastPeriod, i);
+    if (p) forecastPeriods.push(p);
+  }
+  const hasForecast = forecastPeriods.length > 0 && series.some(s => forecastsByKey[s.key]);
+
+  if (hasForecast) {
+    const lastIdx = data.length - 1;
+    // Seed every series' forecast at the last actual point so the dashed
+    // line/band picks up with no gap — same anchoring trick ForecastChart
+    // uses for its own history->forecast join.
+    series.forEach(s => {
+      if (!forecastsByKey[s.key]) return;
+      const lastVal = data[lastIdx][s.key];
+      if (Number.isFinite(lastVal)) {
+        data[lastIdx][`${s.key}_base`] = lastVal;
+        if (s.key === "__subject__") data[lastIdx][`${s.key}_band`] = [lastVal, lastVal];
+      }
+    });
+    if (data[lastIdx].peerMedian != null) {
+      data[lastIdx].peerMedianFc = data[lastIdx].peerMedian;
+      data[lastIdx].peerRangeFc = data[lastIdx].peerRange;
+    }
+
+    forecastPeriods.forEach((period, i) => {
+      const row = { period };
+      series.forEach(s => {
+        const fc = forecastsByKey[s.key];
+        if (!fc) return;
+        row[`${s.key}_base`] = fc.base[i];
+        if (s.key === "__subject__") row[`${s.key}_band`] = [fc.lo[i], fc.hi[i]];
+      });
+      const peerFcVals = peerSeries
+        .map(s => forecastsByKey[s.key]?.base?.[i])
+        .filter(v => v != null && Number.isFinite(v))
+        .sort((a, b) => a - b);
+      if (peerFcVals.length >= 2) {
+        row.peerRangeFc = [_percentile(peerFcVals, 0.25), _percentile(peerFcVals, 0.75)];
+        row.peerMedianFc = _percentile(peerFcVals, 0.5);
+      }
+      data.push(row);
+    });
+  }
+
   function ChartTooltip({ active, payload, label }) {
     if (!active || !payload?.length) return null;
     const row = payload[0]?.payload;
+    const isFc = forecastPeriods.includes(label);
     const vals = series
-      .map(s => ({ name: s.name, color: s.color, value: payload.find(p => p.dataKey === s.key)?.value }))
+      .map(s => {
+        const actual = payload.find(p => p.dataKey === s.key)?.value;
+        const fc = payload.find(p => p.dataKey === `${s.key}_base`)?.value;
+        return { name: s.name, color: s.color, value: actual != null ? actual : fc, isFc: actual == null && fc != null };
+      })
       .filter(v => v.value != null && !hidden.has(v.name));
-    if (row?.peerMedian != null) {
-      vals.push({ name: `Peer median (n=${peerSeries.length})`, color: "var(--ink-3)", value: row.peerMedian });
+    const medVal = row?.peerMedian != null ? row.peerMedian : row?.peerMedianFc;
+    if (medVal != null) {
+      vals.push({ name: `Peer median (n=${peerSeries.length})`, color: "var(--ink-3)", value: medVal, isFc: row?.peerMedian == null });
     }
     if (!vals.length) return null;
     return (
@@ -159,11 +252,11 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
         padding: '6px 10px', fontSize: 11, fontFamily: 'Geist Mono, monospace',
         boxShadow: '0 2px 8px rgba(0,0,0,0.12)', pointerEvents: 'none', maxHeight: 240, overflowY: 'auto',
       }}>
-        <div style={{ color: 'var(--ink-3)', fontSize: 9, marginBottom: 4 }}>{label}</div>
+        <div style={{ color: 'var(--ink-3)', fontSize: 9, marginBottom: 4 }}>{label}{isFc ? ' · FORECAST' : ''}</div>
         {vals.map(v => (
           <div key={v.name} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color, flexShrink: 0 }}/>
-            <span style={{ color: 'var(--ink-2)', flex: 1, fontSize: 10, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name}</span>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color, flexShrink: 0, opacity: v.isFc ? 0.6 : 1 }}/>
+            <span style={{ color: 'var(--ink-2)', flex: 1, fontSize: 10, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: v.isFc ? 'italic' : 'normal' }}>{v.name}</span>
             <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{fmtV(v.value)}</span>
           </div>
         ))}
@@ -216,6 +309,37 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
               isAnimationActive={false}
               legendType="none"/>
           ))}
+
+          {hasForecast && (
+            <>
+              {/* Peer-median forecast band — same peer-aggregate concept as
+                  peerRange above, projected forward. */}
+              <Area dataKey="peerRangeFc" fill="var(--ink-4)" fillOpacity={0.12} stroke="none"
+                connectNulls isAnimationActive={false} legendType="none"/>
+              <Line type="monotone" dataKey="peerMedianFc" stroke="var(--ink-3)" strokeWidth={1.2}
+                strokeDasharray="2 2" opacity={0.7} dot={false} activeDot={{ r: 3, fill: "var(--ink-3)", strokeWidth: 0 }}
+                connectNulls isAnimationActive={false} legendType="none"/>
+              {/* Subject's own confidence band — the only individual series
+                  banded, same as ForecastChart (peer lines get a dashed
+                  continuation only, no band, matching how their actuals
+                  already carry no band either — only the aggregate does). */}
+              <Area dataKey="__subject___band" fill="var(--acc)" fillOpacity={0.18} stroke="none"
+                connectNulls isAnimationActive={false} legendType="none"/>
+              {series.map(s => forecastsByKey[s.key] && (
+                <Line key={`${s.key}-fc`} type="monotone" dataKey={`${s.key}_base`}
+                  stroke={s.color} strokeWidth={s.strokeWidth}
+                  strokeDasharray="5 4" opacity={0.85}
+                  dot={{ r: 3, fill: 'var(--bg)', stroke: s.color, strokeWidth: 1.6 }}
+                  activeDot={{ r: 5, fill: s.color, strokeWidth: 0 }}
+                  hide={hidden.has(s.name)}
+                  connectNulls
+                  isAnimationActive={false}
+                  legendType="none"/>
+              ))}
+              <ReferenceLine x={lastPeriod} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
+                label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }}/>
+            </>
+          )}
         </ComposedChart>
       </ResponsiveContainer>
       <div className="gov-peer-legend">
@@ -237,6 +361,16 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
           </button>
         ))}
       </div>
+      {hasForecast && (
+        <div className="mono" style={{ fontSize: 9, color: 'var(--ink-3)', padding: '4px 2px 0', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ display: 'inline-block', width: 14, borderBottom: '2px solid var(--ink-3)' }} /> Actual
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ display: 'inline-block', width: 14, borderBottom: '2px dashed var(--ink-3)' }} /> Forecast — {_PEER_FORECAST_STEPS}-year ensemble (ARIMA / Prophet-like / Random Forest), same engine as the Pipeline's KPI forecasts
+          </span>
+        </div>
+      )}
       {latestWithMedian && AuditorTakeaway && (() => {
         const subj = latestWithMedian["__subject__"];
         const med = latestWithMedian.peerMedian;
