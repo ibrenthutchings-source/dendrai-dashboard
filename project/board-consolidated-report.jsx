@@ -379,7 +379,10 @@ function RiskPersonaBoardSection({ ticker, runId, personas, risks, loopStats, ri
       const factors = (r.narrative || "").trim();
       return {
         key: r.id,
-        label: truncate(r.name.split("—")[0].trim(), 22),
+        // Truncation width is paired with the axisWidth this chart is given
+        // below — a label the axis band cannot hold gets clipped at the SVG
+        // edge, which eats the FIRST characters and is worse than truncating.
+        label: truncate(r.name.split("—")[0].trim(), 20),
         full: `${r.id} · ${r.name}`,
         value: r.score,
         rating: RATING_META[r.rag] ? r.rag : "unrated",
@@ -424,7 +427,7 @@ function RiskPersonaBoardSection({ ticker, runId, personas, risks, loopStats, ri
               sub={threshold != null
                 ? `Named, ranked by residual score out of 25. Anything right of the appetite line is above threshold — hover a bar for the factors behind its score.`
                 : "Named, ranked by residual score out of 25 — hover a bar for the factors behind its score."}>
-              <BoardBarChart data={topRisks} formatValue={v => fmt2(v)} axisWidth={150}
+              <BoardBarChart data={topRisks} formatValue={v => fmt2(v)} axisWidth={162}
                 referenceValue={threshold} referenceLabel={threshold != null ? `APPETITE ${fmt2(threshold)}` : undefined} />
               <RatingLegend
                 counts={topRisks.reduce((a, d) => { a[d.rating] = (a[d.rating] || 0) + 1; return a; }, {})}
@@ -576,7 +579,7 @@ function ExceptionCharts({ report }) {
           sub="Estimated dollar impact per control. Bar colour is that group's worst risk rating — see the legend.">
           {impactData.length ? (
             <>
-              <BoardBarChart data={impactData} formatValue={v => fmt$M(v)} axisWidth={112} />
+              <BoardBarChart data={impactData} formatValue={v => fmt$M(v)} axisWidth={130} />
               <RatingLegend
                 counts={impactData.reduce((a, d) => { a[d.rating] = (a[d.rating] || 0) + 1; return a; }, {})}
                 total={impactData.length} />

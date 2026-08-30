@@ -199,7 +199,11 @@ function fmt$M(n) {
   const abs = Math.abs(n);
   if (abs >= 1e9) return `$${(n/1e9).toFixed(1)}B`;
   if (abs >= 1e6) return `$${(n/1e6).toFixed(0)}M`;
-  return `$${n.toFixed(0)}`;
+  // Thousands-separated below $1M — a bare `$820000` is hard to read at a
+  // glance and reads especially badly as a chart's direct value label (the
+  // Board Report's cost-by-control bars). Same magnitude and precision as
+  // before, so no caller's number changes, only its grouping.
+  return `$${Math.round(n).toLocaleString("en-US")}`;
 }
 
 // ---- AI narrative review banner ----
