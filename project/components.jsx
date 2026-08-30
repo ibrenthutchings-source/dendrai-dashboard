@@ -228,6 +228,70 @@ function AiReviewBanner({ review }) {
   );
 }
 
+// ---- AI persona/exception brief body ----
+// The headline / sections / callouts render shared by rail.jsx's PersonaTab
+// (risk-loop persona briefs) and exceptions-report.jsx's
+// ExceptionPersonaBriefs (period exception briefs). Both AI endpoints return
+// the same { headline, sections: [{title, body}], callouts: [string] } shape,
+// and both files had a byte-identical copy of this markup before it moved
+// here.
+//
+// compact: charts-first mode, used by the Board Intelligence consolidated
+// report. The headline and the callouts stay on screen (short, scannable —
+// the parts a board member actually reads at a glance); the long prose
+// `sections` collapse into a closed <details> underneath, so the AI narrative
+// stays available and reviewable without being the first — or largest — thing
+// on the page. Defaults off, so every other screen renders exactly as before.
+function PersonaBriefBody({ brief, compact = false }) {
+  if (!brief) return null;
+  const sections = brief.sections || [];
+  const callouts = brief.callouts || [];
+
+  const sectionCards = sections.map((s, i) => (
+    <div className="persona-card" key={i}>
+      <div className="kicker" style={{ marginBottom: 6 }}>{s.title}</div>
+      <div className="persona-summary">{s.body}</div>
+    </div>
+  ));
+
+  const calloutCard = callouts.length > 0 ? (
+    <div className="persona-card">
+      <div className="kicker" style={{ marginBottom: 6 }}>Callouts</div>
+      <ul className="scen-list" style={{ fontSize: 11.5 }}>
+        {callouts.map((c, i) => <li key={i}>{c}</li>)}
+      </ul>
+    </div>
+  ) : null;
+
+  return (
+    <>
+      <AiReviewBanner review={brief._review} />
+      <div className="persona-card">
+        <div className="kicker" style={{ marginBottom: 6, color: "var(--acc-ink)" }}>Headline · AI-generated</div>
+        <div className="persona-headline">{brief.headline}</div>
+      </div>
+      {compact ? (
+        <>
+          {calloutCard}
+          {sections.length > 0 && (
+            <details className="board-narrative">
+              <summary>
+                Read the full narrative · {sections.length} section{sections.length === 1 ? "" : "s"}
+              </summary>
+              <div className="board-narrative-body">{sectionCards}</div>
+            </details>
+          )}
+        </>
+      ) : (
+        <>
+          {sectionCards}
+          {calloutCard}
+        </>
+      )}
+    </>
+  );
+}
+
 // ---- Empty state ----
 function Empty({ children, icon = "—" }) {
   return (
@@ -902,7 +966,7 @@ Object.assign(window, {
   scoreColor, scoreColorInk, ragFromScore,
   likelihoodFromCE, ceMultiplier, projectQuarters,
   clamp, fmt2, fmt$M,
-  Empty, SectionLabel, BBTermHeader, AiReviewBanner,
+  Empty, SectionLabel, BBTermHeader, AiReviewBanner, PersonaBriefBody,
   LiveBadge, RefreshBadge, usePolling,
   ScreenAccessGate, ScreenLoadingFallback,
   Modal, useEscapeToClose, ConfirmModal, Clickable,

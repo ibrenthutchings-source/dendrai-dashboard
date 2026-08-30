@@ -959,7 +959,10 @@ const AUDIENCE_LAYERS = [
 // "Generate with AI" click — for a report meant to be handed to the board
 // pre-assembled, not clicked through. Both default off, so the existing
 // app.jsx Persona Report modal (manual pick, manual generate) is unchanged.
-function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopStats = {}, runId, lockPersona = null, autoGenerate = false }) {
+// compact: charts-first rendering of the brief — headline + callouts stay
+// visible, the long prose sections collapse behind a toggle. See
+// components.jsx's PersonaBriefBody. Also default off.
+function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopStats = {}, runId, lockPersona = null, autoGenerate = false, compact = false }) {
   if (!personas) return <Empty>Persona reports populate after the loop completes.</Empty>;
   const names = Object.keys(personas);
   const layer = AUDIENCE_LAYERS.find(l => l.key === selected);
@@ -1029,27 +1032,7 @@ function PersonaTab({ personas, selected, setSelected, ticker, risks = [], loopS
       )}
 
       {aiBrief ? (
-        <>
-          <AiReviewBanner review={aiBrief._review} />
-          <div className="persona-card">
-            <div className="kicker" style={{marginBottom: 6, color: "var(--acc-ink)"}}>Headline · AI-generated</div>
-            <div className="persona-headline">{aiBrief.headline}</div>
-          </div>
-          {(aiBrief.sections || []).map((s, i) => (
-            <div className="persona-card" key={i}>
-              <div className="kicker" style={{marginBottom: 6}}>{s.title}</div>
-              <div className="persona-summary">{s.body}</div>
-            </div>
-          ))}
-          {(aiBrief.callouts || []).length > 0 && (
-            <div className="persona-card">
-              <div className="kicker" style={{marginBottom: 6}}>Callouts</div>
-              <ul className="scen-list" style={{fontSize: 11.5}}>
-                {aiBrief.callouts.map((c, i) => <li key={i}>{c}</li>)}
-              </ul>
-            </div>
-          )}
-        </>
+        <PersonaBriefBody brief={aiBrief} compact={compact} />
       ) : layer ? (
         <div className="persona-card">
           <div className="kicker" style={{marginBottom: 6}}>{layer.label} ({layer.sub})</div>

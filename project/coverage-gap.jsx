@@ -211,6 +211,11 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
                 <th style={{ textAlign:'left', padding:'4px 6px', color:'var(--ink-3)', fontWeight:500, fontSize:10 }}>Risk Name</th>
                 <th style={{ textAlign:'left', padding:'4px 6px', color:'var(--ink-3)', fontWeight:500, fontSize:10 }}>RAG</th>
                 <th style={{ textAlign:'left', padding:'4px 6px', color:'var(--ink-3)', fontWeight:500, fontSize:10 }}>Score</th>
+                {/* Velocity — signed rate of change on the score. Board readers
+                    need "which of these is accelerating", not just today's
+                    level; VelocityPill is the same red-up/green-down convention
+                    the Live Register's RiskTable already uses (rail.jsx). */}
+                <th style={{ textAlign:'left', padding:'4px 6px', color:'var(--ink-3)', fontWeight:500, fontSize:10 }}>Vel</th>
                 <th style={{ textAlign:'left', padding:'4px 6px', color:'var(--ink-3)', fontWeight:500, fontSize:10 }}>Audit Objective</th>
                 <th style={{ textAlign:'left', padding:'4px 6px', color:'var(--ink-3)', fontWeight:500, fontSize:10 }}>Aligned?</th>
               </tr>
@@ -226,6 +231,9 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
                     </span>
                   </td>
                   <td style={{ padding:'5px 6px', fontFamily:'var(--mono)' }}>{r.score.toFixed(1)}</td>
+                  <td style={{ padding:'5px 6px' }}>
+                    {r.velocity != null ? <VelocityPill v={r.velocity}/> : <span style={{ color:'var(--ink-4)' }}>—</span>}
+                  </td>
                   <td style={{ padding:'5px 6px', color:'var(--ink-3)', fontSize:10.5 }}>
                     {obj ? <span>{obj.id} — {obj.objective.slice(0,70)}{obj.objective.length > 70 ? '…' : ''}</span>
                          : <span style={{ color:'var(--ink-4)' }}>No objective — orphaned</span>}

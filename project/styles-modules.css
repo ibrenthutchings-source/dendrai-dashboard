@@ -3094,3 +3094,130 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
 [data-theme="dark"] .ai-chat-suggestion { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); }
 [data-theme="dark"] .ai-chat-suggestion:hover { background: var(--acc-soft); }
 
+
+/* ---------------- BOARD INTELLIGENCE — CONSOLIDATED REPORT ----------------
+   Charts-first board packet (board-consolidated-report.jsx). Everything here
+   is theme-token driven (no literal colors) so light/dark both work off the
+   :root / [data-theme="dark"] custom properties in styles.css.
+
+   Chart mark specs follow the data-viz house rules used for this screen:
+   thin marks (<=18px bars), a 2px SURFACE-COLOURED gap doing the separating
+   between touching fills (never a stroke around a mark), hairline SOLID
+   gridlines/axes one step off the surface, and direct value labels rather
+   than a second axis. -------------------------------------------------- */
+
+/* KPI row — stat tiles. A handful of headline numbers is a stat row, not a
+   grouped bar chart. */
+.board-stat-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));
+  gap: 10px; margin-bottom: 14px;
+}
+.board-stat {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-2); padding: 11px 13px; min-width: 0;
+}
+.board-stat-label {
+  font-family: "Geist Mono", monospace; font-size: 9.5px; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--ink-3); margin-bottom: 6px;
+}
+/* Proportional figures deliberately (no tabular-nums) — these are large
+   standalone values, not a column that has to align vertically. */
+.board-stat-value {
+  font-size: 21px; font-weight: 600; letter-spacing: -0.02em; color: var(--ink);
+  line-height: 1.1;
+}
+.board-stat-sub { font-size: 10px; color: var(--ink-3); margin-top: 4px; line-height: 1.4; }
+
+/* Chart cards — two-up on wide screens, stacking on narrow. min-width:0 is
+   load-bearing: without it a grid item refuses to shrink below its content
+   and Recharts' ResponsiveContainer measures a width wider than the column. */
+.board-chart-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: 12px; margin-bottom: 12px;
+}
+.board-chart-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-2); padding: 12px 14px 10px; min-width: 0;
+}
+.board-chart-title { font-size: 12px; font-weight: 600; color: var(--ink); }
+.board-chart-sub { font-size: 10px; color: var(--ink-3); margin: 3px 0 10px; line-height: 1.45; }
+
+/* Legend — always present for >= 2 classes, so identity is never colour-alone.
+   Swatch mirrors the mark (a rect for bar/area fills). */
+.board-legend {
+  display: flex; flex-wrap: wrap; gap: 12px; margin-top: 9px;
+  font-size: 10px; color: var(--ink-2);
+}
+.board-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.board-legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+/* Ordered-share bar (risk-rating mix) — part-to-whole on one row. Status
+   colours, and every segment carries a visible letter + count, because the
+   R/A/G scale sits inside the colour-vision-deficiency warn band: hue alone
+   must never carry the rating. */
+.board-share {
+  display: flex; width: 100%; height: 20px; border-radius: 4px;
+  background: var(--surface); gap: 2px; overflow: hidden;
+}
+.board-share-seg {
+  height: 100%; min-width: 3px; display: flex; align-items: center;
+  justify-content: center; overflow: visible;
+  font-family: "Geist Mono", monospace; font-size: 9.5px; font-weight: 700;
+}
+.board-share-seg:first-child { border-radius: 4px 0 0 4px; }
+.board-share-seg:last-child  { border-radius: 0 4px 4px 0; }
+
+/* Meter — a single ratio against a limit. Unfilled track is a lighter step
+   of the fill's own ramp so state reads across the whole bar. */
+.board-meter { height: 8px; border-radius: 999px; background: var(--acc-soft); overflow: hidden; margin-top: 8px; }
+.board-meter-fill { height: 100%; border-radius: 999px; background: var(--acc); }
+
+/* The embedded Coverage Gap Analysis report (coverage-gap.jsx) carries its own
+   page padding and panel head, written for a full screen. Inside the
+   consolidated packet it is a nested section, so pull that padding back and
+   let it use the packet's own width. */
+/* coverage-gap.jsx styles its mono cells with `var(--mono)`, which is not
+   defined in :root — harmless on its own screen, but here it would render the
+   IDs and scores in the body face right beside Geist Mono chart labels.
+   Supplied locally rather than globally so no other screen's look shifts. */
+.board-embed-report { --mono: "Geist Mono", monospace; }
+.board-embed-report > div { padding: 0 !important; max-width: none !important; }
+.board-embed-report .panel-head { padding-top: 0; }
+.board-embed-report .panel-title { font-size: 15px; }
+
+/* Chart tooltip — same chrome as the Governance peer chart's tooltip. */
+.board-tip {
+  background: var(--bg); border: 1px solid var(--line-strong); border-radius: 6px;
+  padding: 7px 10px; font-family: "Geist Mono", monospace; font-size: 10.5px;
+  box-shadow: var(--shadow); pointer-events: none; max-width: 260px;
+}
+.board-tip-cat { color: var(--ink-3); font-size: 9px; margin-bottom: 4px; line-height: 1.4; }
+.board-tip-val { color: var(--ink); font-weight: 700; font-size: 12px; }
+.board-tip-note {
+  color: var(--ink-2); font-family: inherit; font-size: 10px; line-height: 1.5;
+  margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--line);
+  white-space: normal;
+}
+
+/* Collapsed AI narrative — the briefs keep their value (human-reviewed,
+   server-cached) but stop dominating the page. */
+.board-narrative {
+  border: 1px solid var(--line); border-radius: var(--r-2);
+  background: var(--surface-2); margin-top: 4px; margin-bottom: 12px;
+}
+.board-narrative > summary {
+  cursor: pointer; list-style: none; padding: 9px 12px;
+  font-family: "Geist Mono", monospace; font-size: 9.5px; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--ink-3);
+  display: flex; align-items: center; gap: 7px;
+  transition: color .12s ease, background .12s ease;
+}
+.board-narrative > summary::-webkit-details-marker { display: none; }
+.board-narrative > summary::before {
+  content: "▸"; font-size: 9px; line-height: 1; transition: transform .12s ease; display: inline-block;
+}
+.board-narrative[open] > summary::before { transform: rotate(90deg); }
+.board-narrative > summary:hover { color: var(--ink); background: var(--hover); }
+.board-narrative > summary:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
+.board-narrative-body { padding: 0 12px 2px; }
+.board-narrative-body .persona-card { background: var(--surface); }

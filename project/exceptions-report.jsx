@@ -178,7 +178,10 @@ const _EXCEPTION_PERSONAS = ["CAE", "CFO", "COO", "TECH_EXEC", "NONTECH_EXEC", "
 // (rail.jsx): a board packet should show up pre-assembled, not require a
 // click-through. Defaults off, so this screen's own manual behavior is
 // unchanged.
-function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null, autoGenerate = false }) {
+// compact: charts-first rendering of the brief — headline + callouts stay
+// visible, the long prose sections collapse behind a toggle. See
+// components.jsx's PersonaBriefBody. Also default off.
+function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null, autoGenerate = false, compact = false }) {
   const [selected, setSelected] = React.useState(lockPersona || "BOARD");
   const [briefs, setBriefs] = React.useState({});
   const [state, setState] = React.useState({ loading: false, error: null });
@@ -226,27 +229,7 @@ function ExceptionPersonaBriefs({ report, dateFrom, dateTo, lockPersona = null, 
       )}
 
       {brief ? (
-        <>
-          <AiReviewBanner review={brief._review} />
-          <div className="persona-card">
-            <div className="kicker" style={{ marginBottom: 6, color: "var(--acc-ink)" }}>Headline · AI-generated</div>
-            <div className="persona-headline">{brief.headline}</div>
-          </div>
-          {(brief.sections || []).map((s, i) => (
-            <div className="persona-card" key={i}>
-              <div className="kicker" style={{ marginBottom: 6 }}>{s.title}</div>
-              <div className="persona-summary">{s.body}</div>
-            </div>
-          ))}
-          {(brief.callouts || []).length > 0 && (
-            <div className="persona-card">
-              <div className="kicker" style={{ marginBottom: 6 }}>Callouts</div>
-              <ul className="scen-list" style={{ fontSize: 11.5 }}>
-                {brief.callouts.map((c, i) => <li key={i}>{c}</li>)}
-              </ul>
-            </div>
-          )}
-        </>
+        <PersonaBriefBody brief={brief} compact={compact} />
       ) : (
         <Empty>
           {state.loading

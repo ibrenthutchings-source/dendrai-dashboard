@@ -2836,7 +2836,15 @@ function App() {
           </ScreenAccessGate>
           )}
 
-          {/* ---- Board Intelligence — Consolidated Report ---- */}
+          {/* ---- Board Intelligence — Consolidated Report ----
+               riskAppetite/appetiteThreshold drive the "above threshold" read on
+               the board risk profile: Stage 2's own appetite result when the run
+               produced one, with the same APPETITE_THRESHOLDS value every other
+               screen uses as the fallback for older runs.
+               rssSignals/events/ratios/industry exist because the consolidated
+               report embeds the Coverage Gap Analysis report — they mirror the
+               standalone "coverage" screen's props above exactly, so both render
+               the identical report. */}
           {activeScreen === "boardreport" && (
           <ScreenAccessGate screenId="boardreport">
           <div className="panel active">
@@ -2851,6 +2859,12 @@ function App() {
               personas={hasRun ? profile.personas : null}
               risks={output.s2?.risks || (hasRun ? profile.risks : []) || []}
               loopStats={output.s6 || output.s6?.loop || {}}
+              riskAppetite={output.s2?.riskAppetite || null}
+              appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
+              rssSignals={rssSignals}
+              events={events}
+              ratios={hasRun ? (profile.ratios || {}) : {}}
+              industry={hasRun ? profile.entity?.industry : cfg.industry}
               onOpenEvidencePack={() => setEvidencePackOpen(true)} />
           </div>
           </ScreenAccessGate>
