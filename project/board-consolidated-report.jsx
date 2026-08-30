@@ -32,8 +32,14 @@
 
    Data discipline: every chart on this screen is drawn from something the
    screen already had — the `risks` register, `objectives`/`maps`, and the
-   one exception-report fetch ExceptionBoardSection already made. No new
-   endpoints, no second network call.
+   one exception-report fetch this screen makes (passed down to
+   ExceptionBoardSection as props). No new endpoints, no second network call.
+
+   "Export to PowerPoint" (top-right of the header) builds a real .pptx
+   client-side — see export-pptx.js — from this same in-memory data, loaded
+   on demand via dynamic import so the pptxgenjs dependency never ships in
+   this screen's own bundle for the far more common case of just reading
+   the report on screen.
 
    ---- Chart design notes (why these forms, these colors) ----
    • Headline numbers are STAT TILES, not one-bar charts. A handful of
@@ -593,21 +599,12 @@ function ExceptionCharts({ report }) {
   );
 }
 
-function ExceptionBoardSection() {
-  const [dateFrom] = React.useState(_daysAgoISO(30));
-  const [dateTo] = React.useState(_todayISO());
-  const [report, setReport] = React.useState(null);
-  const [state, setState] = React.useState({ loading: true, error: null });
-
-  React.useEffect(() => {
-    let live = true;
-    setState({ loading: true, error: null });
-    window.MCP.exceptionsReport(dateFrom, dateTo)
-      .then(data => { if (live) { setReport(data); setState({ loading: false, error: null }); } })
-      .catch(e => { if (live) setState({ loading: false, error: e.message || "Exception report unavailable" }); });
-    return () => { live = false; };
-  }, [dateFrom, dateTo]);
-
+// dateFrom/dateTo/report/state are now owned by BoardConsolidatedReportScreen
+// (lifted up from this component) rather than fetched here — the PowerPoint
+// export button needs this exact period's exception data too, and lifting
+// the single fetch up is simpler and safer than a second independent fetch
+// or a callback threaded back down just to hand data upward.
+function ExceptionBoardSection({ dateFrom, dateTo, report, state }) {
   return (
     <div className="stage-detail" style={{ marginTop: 20 }}>
       <SectionLabel>Exception Management · Board Level</SectionLabel>
@@ -633,11 +630,72 @@ function ExceptionBoardSection() {
   );
 }
 
+// PowerPoint export — see export-pptx.js. Loaded on demand (dynamic import)
+// rather than a top-of-file import: pptxgenjs is a real chunk of weight for
+// a feature most visits to this screen never use, so it's kept out of this
+// screen's own bundle until the button is actually clicked.
+//
+// The two AI briefs are fetched here independently of RiskPersonaBoardSection/
+// ExceptionBoardSection's own on-screen copies rather than threaded up via a
+// callback — both endpoints are cached server-side by input hash (persona +
+// risk data / persona + period), and this screen already computes the exact
+// same inputs those components use, so this is a guaranteed cache hit (no
+// second AI spend) whenever a brief has already rendered on screen, and a
+// real (correct) generation on the rare case someone exports before either
+// section's autoGenerate has resolved.
+function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo }) {
+  const [state, setState] = React.useState({ busy: false, error: null });
+
+  const run = React.useCallback(async () => {
+    setState({ busy: true, error: null });
+    try {
+      const [boardPersonaBrief, boardExceptionBrief] = await Promise.all([
+        (hasRun && window.MCP?.aiPersonaBrief)
+          ? window.MCP.aiPersonaBrief(ticker || "", "BOARD", risks || [], loopStats || {}, runId || null).catch(() => null)
+          : Promise.resolve(null),
+        (excReport && window.MCP?.aiExceptionBrief)
+          ? window.MCP.aiExceptionBrief("BOARD", dateFrom, dateTo, excReport.summary, excReport.by_control).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const { exportConsolidatedReportPptx } = await import('./export-pptx.js');
+      await exportConsolidatedReportPptx({
+        ticker, hasRun, risks, objectives, maps, riskAppetite, appetiteThreshold,
+        exceptionReport: excReport, exceptionDateFrom: dateFrom, exceptionDateTo: dateTo,
+        boardPersonaBrief, boardExceptionBrief,
+      });
+      setState({ busy: false, error: null });
+    } catch (e) {
+      setState({ busy: false, error: e.message || "PowerPoint export failed" });
+    }
+  }, [ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo]);
+
+  return { ...state, run };
+}
+
 function BoardConsolidatedReportScreen({
   ticker, runId, hasRun, objectives, maps, personas, risks, loopStats,
   riskAppetite, appetiteThreshold, rssSignals, events, ratios, industry,
   onOpenEvidencePack,
 }) {
+  const [dateFrom] = React.useState(_daysAgoISO(30));
+  const [dateTo] = React.useState(_todayISO());
+  const [excReport, setExcReport] = React.useState(null);
+  const [excState, setExcState] = React.useState({ loading: true, error: null });
+
+  React.useEffect(() => {
+    let live = true;
+    setExcState({ loading: true, error: null });
+    window.MCP.exceptionsReport(dateFrom, dateTo)
+      .then(data => { if (live) { setExcReport(data); setExcState({ loading: false, error: null }); } })
+      .catch(e => { if (live) setExcState({ loading: false, error: e.message || "Exception report unavailable" }); });
+    return () => { live = false; };
+  }, [dateFrom, dateTo]);
+
+  const pptxExport = usePptxExport({
+    ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold,
+    excReport, dateFrom, dateTo,
+  });
+
   return (
     <div className="scope-screen" data-screen-label="Consolidated Report">
       <div className="panel-head">
@@ -651,6 +709,17 @@ function BoardConsolidatedReportScreen({
             Scoped to {ticker || "the current entity"}.
           </div>
         </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+          <button className="btn btn-sm btn-acc" onClick={pptxExport.run} disabled={!hasRun || pptxExport.busy}
+            title="Download this report as an editable PowerPoint deck — native charts and tables, not a screenshot.">
+            <Icon name="download" size={11} /> {pptxExport.busy ? "Exporting…" : "Export to PowerPoint"}
+          </button>
+          {pptxExport.error && (
+            <div className="mono" style={{ fontSize: 10, color: "var(--red-ink)", maxWidth: 260, textAlign: "right" }}>
+              {pptxExport.error}
+            </div>
+          )}
+        </div>
       </div>
 
       <EvidencePackCard ticker={ticker} hasRun={hasRun} risks={risks} objectives={objectives}
@@ -660,7 +729,7 @@ function BoardConsolidatedReportScreen({
         loopStats={loopStats} riskAppetite={riskAppetite} appetiteThreshold={appetiteThreshold} />
       <CoverageGapSection risks={risks} objectives={objectives} rssSignals={rssSignals}
         events={events} ratios={ratios} industry={industry} ticker={ticker} />
-      <ExceptionBoardSection />
+      <ExceptionBoardSection dateFrom={dateFrom} dateTo={dateTo} report={excReport} state={excState} />
     </div>
   );
 }
