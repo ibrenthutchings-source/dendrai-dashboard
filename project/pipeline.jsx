@@ -225,6 +225,11 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
     onAddObjective,
     peerData,
     peerCompareList,
+    peerCompareLoading,
+    peerCompareError,
+    onAddPeerCompare,
+    onRemovePeerCompare,
+    onClearPeerCompare,
   };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
@@ -250,9 +255,9 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
     onOpenMain: onOpenMainFlow,
   };
   // Coordinates zoom across every KPI time-series chart rendered anywhere in
-  // this tree — the Forecasts panel (ForecastChartsInline) and S1Body's
-  // detailed per-metric charts both live under this same Pipeline root
-  // regardless of which node is focused, so one provider here covers both.
+  // this tree — S1Body's Forecasts tab and its detailed per-metric charts
+  // all live under this same Pipeline root regardless of which node is
+  // focused, so one provider here covers all of them.
   // Falls back to a plain Fragment (each chart keeps its own independent
   // zoom) if charts.jsx hasn't loaded for some reason.
   const ZoomProvider = window.ChartZoomProvider || React.Fragment;
@@ -470,13 +475,13 @@ function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, fo
             <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
           </PipelinePanel>
         )}
+        {/* Revenue/margin mini-charts used to duplicate here what Stage 1's own
+            "Forecasts" tab already shows in full (with Monte Carlo commentary,
+            peer overlays, and the rest of the P&L/CF set) — dropped in favor
+            of that one home. Geography/segment data has no other home on this
+            screen, so it stays here. */}
         {stage.id === "s2" && status === "done" && forecasts && (
-          <PipelinePanel label="Forecasts">
-            <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
-              peerData={peerData}
-              peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
-              peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
-              onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}/>
+          <PipelinePanel label="Geography & Segment Data">
             <GeoSegmentKPISection ticker={pipelineTicker || ""}/>
           </PipelinePanel>
         )}
@@ -550,9 +555,8 @@ function ComparableChart({ history, forecast, unit, color, decimals, chartMetric
 }
 
 // [{ticker, history, forecast}] for a given chart metric key, one entry per
-// selected peer that has data for that metric — shared by every panel that
-// renders KPI charts (S1Body's detailed stage body, ForecastChartsInline's
-// always-visible summary) so "compare against peers" behaves identically in both.
+// selected peer that has data for that metric — used by S1Body's Forecasts
+// tab so "compare against peers" is available on every KPI chart there.
 function _peerSeriesListFor(peerCompareList, key) {
   return (peerCompareList || [])
     .filter(p => p.forecasts?.[key])
@@ -696,77 +700,6 @@ function GeoSegmentKPISection({ ticker }) {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
-                                 peerCompareLoading, peerCompareError, onAddPeerCompare, onRemovePeerCompare, onClearPeerCompare }) {
-  const [tick, setTick] = React.useState(0);
-  React.useEffect(() => {
-    if (!window.ForecastChart) {
-      const id = setTimeout(() => setTick(t => t + 1), 300);
-      return () => clearTimeout(id);
-    }
-  }, [tick]);
-
-  const FC = window.ForecastChart;
-  const picker = (
-    <PeerComparePicker
-      peerData={peerData}
-      peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
-      peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
-      onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
-    />
-  );
-  if (!forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>No forecast data — run the loop first.</div>;
-  if (!FC) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Loading chart engine…</div>;
-  const rev = forecasts.revenue;
-  const mg  = forecasts.margin;
-  const lastRev  = rev?.history?.slice(-1)[0]?.v;
-  const fcRev    = rev?.forecast?.slice(-1)[0]?.base;
-  const lastMg   = mg?.history?.slice(-1)[0]?.v;
-  const fcMg     = mg?.forecast?.slice(-1)[0]?.base;
-  const revDelta = lastRev && fcRev ? ((fcRev - lastRev) / lastRev * 100) : null;
-  const mgDelta  = lastMg != null && fcMg != null ? (fcMg - lastMg) * 100 : null;
-  return (
-    <div style={{display:"flex", flexDirection:"column", gap:18}}>
-      {rev?.history?.length > 0 && (
-        <div>
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue Growth Risk ($M)</div>
-            {revDelta != null && (
-              <div style={{fontSize:10, fontFamily:"var(--mono)", color: revDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {revDelta >= 0 ? "▲" : "▼"}{Math.abs(revDelta).toFixed(1)}% · 4Q forecast ${fcRev?.toFixed(2)}M
-              </div>
-            )}
-          </div>
-          {/* Peer selector lives on this chart specifically (it's the primary
-              KPI users compare against peers on) but the selection is shared
-              app-wide state, so picking a peer here also overlays it on the
-              margin chart, the M-Score/Z-Score gauges, and S1Body's detail view. */}
-          {picker}
-          <FCWithMetrics history={rev.history} forecast={rev.forecast} unit="$M" color="var(--acc)" peers={_peerSeriesListFor(peerCompareList, 'revenue')}/>
-        </div>
-      )}
-      {mg?.history?.length > 0 && (
-        <div>
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Margin Compression Risk (%)</div>
-            {mgDelta != null && (
-              <div style={{fontSize:10, fontFamily:"var(--mono)", color: mgDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps · 4Q forecast {fcMg?.toFixed(2)}%
-              </div>
-            )}
-          </div>
-          <FCWithMetrics history={mg.history} forecast={mg.forecast} unit="%" color="var(--violet)" peers={_peerSeriesListFor(peerCompareList, 'margin')}/>
-        </div>
-      )}
-      {livefacts && (
-        <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)"}}>
-          Source: EDGAR XBRL — {livefacts.entity} · {livefacts.cik}
-        </div>
-      )}
     </div>
   );
 }
@@ -1230,7 +1163,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onAddPeerCompare={s1Extra?.onAddPeerCompare} onRemovePeerCompare={s1Extra?.onRemovePeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -1341,10 +1274,11 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
 }
 
 function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null,
-                  peerCompareList = [] }) {
-  // The picker control itself lives in the always-visible "Forecasts" panel
-  // (ForecastChartsInline) so it's impossible to miss — this stage body only
-  // consumes the resulting peerCompareList, via the same _peerSeriesListFor helper.
+                  peerCompareList = [], peerCompareLoading = false, peerCompareError = null,
+                  onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null }) {
+  // The picker control lives at the top of the Forecasts tab below, so it's
+  // visible before any chart that can use it — every KPI chart in that tab
+  // consumes the resulting peerCompareList via the same _peerSeriesListFor helper.
   const peerSeries = (key) => _peerSeriesListFor(peerCompareList, key);
   const gaugePeers = [
     ...(peerData?.peers || []),
@@ -1632,6 +1566,15 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
       </>}
 
       {activeTab === "forecasts" && <>
+      {/* Peer selector for every KPI chart below — the selection is shared
+          app-wide state, so picking a peer here also overlays it on every
+          chart in this tab (and on the M-Score/Z-Score gauges above). */}
+      <PeerComparePicker
+        peerData={peerData}
+        peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+        peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+        onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
+      />
       {/* Revenue forecast chart */}
       {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
         const FC = window.ForecastChart;
@@ -1782,6 +1725,47 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
           </div>
         );
       })()}
+
+      {/* Dynamically-detected material accounts — industry-template
+          (manufacturing/financial_services/saas) + materiality-ratio based
+          (material_accounts_tool.py), beyond the fixed P&L/CF set above.
+          Sub-accounts (e.g. a manufacturer's inventory components) render
+          grouped under their parent's header instead of as flat,
+          unrelated-looking siblings. */}
+      {(forecasts?.materialAccounts || []).length > 0 && (() => {
+        const accounts = forecasts.materialAccounts;
+        const byParent = {};
+        const standalone = [];
+        accounts.forEach(a => (a.parent ? (byParent[a.parent] || (byParent[a.parent] = [])).push(a) : standalone.push(a)));
+        const baseLabel = (a) => a.baseMetric === "TotalAssets" ? "total assets" : "revenue";
+        const renderChart = (a) => {
+          const lastF = a.forecast?.slice(-1)[0]?.base;
+          return (
+            <div className="stage-detail" key={a.metric}>
+              <h5>{a.label || a.metric}</h5>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+                {a.ratio != null && `${(a.ratio * 100).toFixed(1)}% of ${baseLabel(a)}`}
+                {lastF != null && ` · 4Q forecast $${lastF.toFixed(2)}M`}
+                {a.source === "uploaded" && " · from an uploaded financial statement"}
+              </div>
+              <FCWithMetrics history={a.history} forecast={a.forecast} unit={a.unit || "$M"} decimals={2} color="var(--violet)" peers={[]}/>
+            </div>
+          );
+        };
+        return (
+          <>
+            {standalone.map(renderChart)}
+            {Object.entries(byParent).map(([parentMetric, kids]) => (
+              <div key={parentMetric} style={{border:"1px solid var(--line)", borderRadius:8, padding:"4px 8px 0", marginBottom:10}}>
+                <div className="mono" style={{fontSize:10, color:"var(--ink-4)", padding:"4px 4px 0"}}>
+                  {parentMetric} breakdown
+                </div>
+                {kids.map(renderChart)}
+              </div>
+            ))}
+          </>
+        );
+      })()}
       </>}
 
       {activeTab === "narrative" && aiAvailable && (
@@ -1883,7 +1867,11 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
   const S2_TABS = [
     { id: "risks", label: "Risk Register" },
     { id: "methodology", label: "Scoring & Methodology" },
-    { id: "forecast", label: "Forecast" },
+    // Labeled distinctly from Stage 1's "Forecasts" tab — this one projects
+    // the residual RISK SCORE forward (velocity-dampened), not a financial
+    // line item. Sharing the word "Forecast" with Stage 1 is what made this
+    // read as a duplicate.
+    { id: "forecast", label: "Risk Score Forecast" },
   ];
   const [activeTab, setActiveTab] = React.useState("risks");
 

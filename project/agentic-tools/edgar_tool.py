@@ -81,6 +81,35 @@ XBRL_METRICS = {
     "InterestExpense": ["InterestExpense"],
     "Inventory": ["InventoryNet"],
     "AccountsReceivable": ["AccountsReceivableNetCurrent"],
+    "COGS": ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"],
+
+    # ── Industry-template accounts (material_accounts_tool.py) ─────────────
+    # Not every filer discloses these — fetch_xbrl_facts() below already
+    # skips any tag missing from a filer's own us-gaap facts, same as every
+    # metric above, so listing them here costs nothing for a filer that
+    # doesn't use them. No new network call: fetch_xbrl_facts() already
+    # pulls the filer's FULL companyfacts payload and only the whitelist
+    # here determines what's kept.
+
+    # Manufacturing — inventory sub-components. Falls back to the flat
+    # "Inventory" (InventoryNet) above when a filer doesn't break these out;
+    # material_accounts_tool.py treats these three as children of Inventory.
+    "InventoryRawMaterials": ["InventoryRawMaterialsNetOfReserves", "InventoryRawMaterials"],
+    "InventoryWorkInProcess": ["InventoryWorkInProcessNetOfReserves", "InventoryWorkInProcess"],
+    "InventoryFinishedGoods": ["InventoryFinishedGoodsNetOfReserves", "InventoryFinishedGoods"],
+    "PPEGross": ["PropertyPlantAndEquipmentGross"],
+    "AccumulatedDepreciation": ["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
+
+    # Financial services
+    "LoansReceivable": ["LoansAndLeasesReceivableNetReportedAmount", "NotesReceivableNet"],
+    "AllowanceForLoanLosses": ["AllowanceForLoanAndLeaseLosses", "FinancingReceivableAllowanceForCreditLosses"],
+    "InterestIncome": ["InterestAndDividendIncomeOperating", "InterestAndFeeIncomeLoansAndLeases"],
+    "Deposits": ["Deposits", "InterestBearingDepositLiabilities"],
+
+    # SaaS / software
+    "DeferredRevenueCurrent": ["DeferredRevenueCurrent", "ContractWithCustomerLiabilityCurrent"],
+    "DeferredRevenueNoncurrent": ["DeferredRevenueNoncurrent", "ContractWithCustomerLiabilityNoncurrent"],
+    "CapitalizedSoftware": ["CapitalizedComputerSoftwareNet"],
 }
 
 # ── Utilities ─────────────────────────────────────────────────────────────────

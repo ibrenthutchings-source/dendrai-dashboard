@@ -147,6 +147,19 @@ SOX_ACCOUNTS = [
     {"id": "deferred_revenue",         "name": "Deferred Revenue",                 "always_scope": False, "risk_categories": ["Financial", "Strategic"]},
 ]
 
+# Sub-accounts material_accounts_tool.py can detect beyond the fixed list
+# above (e.g. a manufacturer's inventory broken into raw materials/WIP/
+# finished goods). Not part of SOX_ACCOUNTS itself — most filers don't
+# disclose this level of detail, so these are only added to a scoping run
+# when detect_material_accounts() actually finds real data for one (see
+# scope_accounts()'s real_balances param below). Each inherits its parent
+# account's risk-category linkage rather than defining its own.
+_DYNAMIC_SUB_ACCOUNTS = {
+    "inventory_raw_materials":   {"name": "Inventory — Raw Materials",   "parent": "inventory"},
+    "inventory_work_in_process": {"name": "Inventory — Work in Process", "parent": "inventory"},
+    "inventory_finished_goods":  {"name": "Inventory — Finished Goods",  "parent": "inventory"},
+}
+
 # Default system-type → linked SOX processes
 SYSTEM_TYPE_PROCESSES = {
     "erp":         ["financial_close", "procure_to_pay", "order_to_cash", "inventory_cost", "fixed_assets"],
@@ -298,7 +311,12 @@ def compute_materiality(
 # ── Account Scoping ────────────────────────────────────────────────────────────
 
 def _estimate_account_balance(account_id: str, projections: dict, ratios: dict) -> Optional[float]:
-    """Rough balance estimate for an account from projected financials."""
+    """Rough, 100%-heuristic balance estimate for an account from projected
+    financials (e.g. inventory ~= 15% of revenue) — used only as a fallback
+    by scope_accounts() when no real detected balance exists for that
+    account (see the real_balances param there, sourced from
+    material_accounts_tool.detect_material_accounts()). Never itself reads
+    an actual filed or uploaded value."""
     rev = projections.get("revenue_fy") or 0
     gm  = projections.get("gross_profit_fy")
     assets = projections.get("assets_now")
@@ -327,6 +345,7 @@ def scope_accounts(
     risk_scores: dict,
     segments: Optional[list] = None,
     account_overrides: Optional[dict] = None,
+    real_balances: Optional[dict] = None,
 ) -> list:
     """
     Decide which accounts are in scope.
@@ -342,8 +361,20 @@ def scope_accounts(
     manual_in_scope, manual_priority}} — user-supplied detail/overrides
     (see db.get_sox_account_details). manual_in_scope, when not None,
     replaces the computed in-scope decision.
+
+    real_balances: optional {account_id: dollar_value} — actual filed XBRL
+    or uploaded balances (material_accounts_tool.detect_material_accounts()
+    + real_balances_for_sox()), preferred over _estimate_account_balance()'s
+    heuristic for any account id present here. Also carries dynamically-
+    detected sub-account ids (_DYNAMIC_SUB_ACCOUNTS, e.g.
+    "inventory_raw_materials") not in the fixed SOX_ACCOUNTS list — each is
+    appended to the scored account list, inheriting its parent's
+    risk_categories, only when real_balances actually has a value for it
+    (a sub-account with no real data is never scored on a fabricated
+    estimate — there is no heuristic fallback for these).
     """
     account_overrides = account_overrides or {}
+    real_balances = real_balances or {}
     pm   = materiality.get("performance_materiality")
     trivial = materiality.get("trivial_threshold")
     risks = risk_scores.get("risks", [])
@@ -363,9 +394,29 @@ def scope_accounts(
         for kw in (r.get("name", "") + " " + r.get("category", "")).lower().split():
             risk_by_keyword.setdefault(kw, []).append(r)
 
+    # Extend the fixed catalogue with any dynamically-detected sub-account
+    # that has a real balance to score — never conjured from a heuristic,
+    # since _DYNAMIC_SUB_ACCOUNTS has no entry in _estimate_account_balance().
+    accounts_to_score = list(SOX_ACCOUNTS)
+    for sub_id, sub_meta in _DYNAMIC_SUB_ACCOUNTS.items():
+        if sub_id in real_balances:
+            parent = next((a for a in SOX_ACCOUNTS if a["id"] == sub_meta["parent"]), None)
+            accounts_to_score.append({
+                "id": sub_id, "name": sub_meta["name"], "always_scope": False,
+                "risk_categories": parent["risk_categories"] if parent else [],
+            })
+
     result = []
-    for acc in SOX_ACCOUNTS:
-        bal = _estimate_account_balance(acc["id"], projections, ratios)
+    for acc in accounts_to_score:
+        # A real detected balance (filed XBRL or an uploaded override, via
+        # material_accounts_tool.py) always beats the heuristic estimate —
+        # the heuristic is a fallback for when no real data exists, not a
+        # default to prefer.
+        bal = real_balances.get(acc["id"])
+        balance_source = "real" if bal is not None else None
+        if bal is None:
+            bal = _estimate_account_balance(acc["id"], projections, ratios)
+            balance_source = "estimated" if bal is not None else None
 
         # Risk linkage for this account
         linked_risk_cats = acc["risk_categories"]
@@ -422,6 +473,7 @@ def scope_accounts(
             "account_id":      acc["id"],
             "account_name":    acc["name"],
             "balance_estimate": round(bal) if bal else None,
+            "balance_source":  balance_source,
             "in_scope":        in_scope,
             "priority":        priority,
             "rag_linkage":     worst_rag,
@@ -734,9 +786,14 @@ def run_sox_scoping(
     trigger_reason: Optional[str] = None,
     account_overrides: Optional[dict] = None,
     process_overrides: Optional[dict] = None,
+    real_balances: Optional[dict] = None,
 ) -> dict:
     """
     Full SOX scoping run.
+
+    real_balances: see scope_accounts() — actual detected balances
+    (material_accounts_tool.py) to prefer over the heuristic estimate,
+    passed straight through.
 
     Returns structured dict ready for JSON serialisation and DB persistence.
     """
@@ -747,7 +804,7 @@ def run_sox_scoping(
     mat = compute_materiality(projections, materiality_pct, performance_mat_pct)
 
     # 3. Account scoping
-    accounts = scope_accounts(mat, projections, ratios, risk_scores, segments, account_overrides)
+    accounts = scope_accounts(mat, projections, ratios, risk_scores, segments, account_overrides, real_balances)
 
     # 4. Segment coverage (computed before process scoping — segment_reporting's
     #    derived estimated_exposure sums in-scope segment revenue from this)

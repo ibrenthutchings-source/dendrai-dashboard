@@ -330,6 +330,34 @@ window.MCP = (function () {
     return _post('/edgar/peers', { ticker });
   }
 
+  /**
+   * Dynamically-detected material accounts for this filer — industry-
+   * template (manufacturing/financial_services/saas) plus a materiality-
+   * ratio cutoff, see material_accounts_tool.py — rather than the fixed
+   * revenue/margin/eps/etc. set every ticker gets today.
+   * Returns { ticker, sic, accounts: [{metric, label, ratio, is_material,
+   * parent, source, ...}] }.
+   */
+  async function fetchMaterialAccounts(ticker) {
+    return _get(`/material-accounts/${encodeURIComponent(ticker)}`);
+  }
+
+  /**
+   * Forecast every detected material account, capped server-side (see
+   * material_accounts_tool.py's _MAX_FORECAST_ACCOUNTS) — same generic
+   * ensemble engine every other KPI forecast already uses. Returns
+   * { ticker, accounts, forecasts: { [metric]: { forecast: {history,
+   * forecasts,...}, backtest? } } } — each per-metric bundle is the same
+   * shape as fetchFullAnalysis()'s own `.forecast`, so the same adapter
+   * logic (see app.jsx's revenue/margin handling) applies to any metric.
+   */
+  async function forecastMaterialAccounts(ticker, opts = {}) {
+    return _post(`/material-accounts/${encodeURIComponent(ticker)}/forecast`, {
+      horizon: opts.horizon ?? 4,
+      macro_info: opts.macroInfo ?? null,
+    });
+  }
+
   // ── Manual financials — private companies + monthly/quarterly supplements ──
 
   /**
@@ -1102,6 +1130,8 @@ window.MCP = (function () {
     fetch8kEvents,
     fetchProxyData,
     fetchPeerBenchmarks,
+    fetchMaterialAccounts,
+    forecastMaterialAccounts,
     createPrivateCompany,
     uploadFinancials,
     commitFinancials,

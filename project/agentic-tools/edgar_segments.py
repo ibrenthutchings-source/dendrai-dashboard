@@ -130,10 +130,25 @@ def _clean_member_name(member: str) -> str:
     return name
 
 
-def extract_segments_from_xml(xml_text: str) -> dict[str, Any]:
+def extract_segments_from_xml(xml_text: str, tags: Optional[list[str]] = None) -> dict[str, Any]:
     """Pure function over an already-fetched instance document — the part
     covered by the regression test against ON Semi's known-good figures,
-    with no network access needed to re-run it."""
+    with no network access needed to re-run it.
+
+    `tags`: candidate us-gaap tag names to match, tried in the order given
+    (mirrors edgar_tool.XBRL_METRICS's "first working tag wins" convention).
+    Defaults to `_REVENUE_TAGS` for backward compatibility — every existing
+    caller (fetch_segments/persist_segments/fetch_segment_history, all
+    revenue-only today) is unaffected by this parameter's addition.
+
+    The output shape keeps calling its value fields "revenue"/
+    "consolidated_revenue" regardless of which tags were matched (the
+    original callers, and the sox_financial_segments schema they persist
+    to, are all revenue-keyed) — a caller walking this for a different
+    account (material_accounts_tool.py) reads those same fields knowing
+    they hold that account's value, not literal revenue.
+    """
+    tags = tags or _REVENUE_TAGS
     root = ET.fromstring(xml_text)
 
     # contextRef -> (axis_type, member, start, end), restricted to contexts
@@ -171,7 +186,7 @@ def extract_segments_from_xml(xml_text: str) -> dict[str, Any]:
 
     for el in root.iter():
         tag = el.tag.split("}")[-1]
-        if tag not in _REVENUE_TAGS or not el.text:
+        if tag not in tags or not el.text:
             continue
         cid = el.get("contextRef")
         try:

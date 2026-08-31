@@ -1541,27 +1541,11 @@ def get_company_cik(ticker: str):
 # duplicated inline. The frontend fetches on startup and falls back to its
 # hardcoded values if the backend is unavailable.
 
-_SIC_RANGES = [
-    (lambda n: n == 3674 or (3672 <= n <= 3679) or n in (3559, 3577), "Semiconductors"),
-    (lambda n: n in (3711, 3714, 3716, 3519),                          "Automotive OEM"),
-    (lambda n: 7370 <= n <= 7379,                                       "Software & Cloud"),
-    (lambda n: 6020 <= n <= 6199,                                       "Financial Services"),
-    (lambda n: (2830 <= n <= 2836) or (8010 <= n <= 8099),             "Healthcare & Pharma"),
-    (lambda n: 5200 <= n <= 5999,                                       "Retail & Consumer"),
-    (lambda n: (1300 <= n <= 1382) or n == 2911,                       "Energy & Resources"),
-    (lambda n: 4911 <= n <= 4939,                                       "Utilities"),
-    (lambda n: 2000 <= n <= 3999,                                       "Industrial & Manufacturing"),
-]
-
-def _classify_sic(sic: str) -> str:
-    try:
-        n = int(sic)
-    except (ValueError, TypeError):
-        return "Generic"
-    for pred, industry in _SIC_RANGES:
-        if pred(n):
-            return industry
-    return "Generic"
+# Moved to sic_industry.py (single source of truth — also used by
+# material_accounts_tool.py, which can't import this FastAPI app module
+# without a circular import). Kept as a thin alias here so every existing
+# call site below (_classify_sic(sic)) is unaffected.
+from sic_industry import classify_sic as _classify_sic  # noqa: E402
 
 
 @app.get("/rss/feeds")
@@ -2441,6 +2425,85 @@ def edgar_peers_saved(ticker: str):
     except Exception:
         saved["subject_history"] = []
     return saved
+
+
+def _material_accounts_context(ticker: str):
+    """Shared setup for both /material-accounts endpoints below: resolve the
+    filer, pull its filed XBRL, and layer in any Mission Control uploads
+    (which win over the filed value for the same metric — see
+    material_accounts_tool.detect_material_accounts's uploaded_xbrl param).
+    Returns (meta, sic, xbrl, accounts, company_id) — company_id is None
+    when the DB isn't configured, which forecast_material_accounts already
+    treats as "no manually-uploaded monthly detail available", not an error.
+    """
+    import material_accounts_tool
+
+    meta, sub = get_company_info(ticker)
+    sic = meta.get("sic", "")
+    xbrl = fetch_xbrl_facts(meta["cik"]) or {}
+
+    uploaded_xbrl: dict = {}
+    company_id = None
+    if db.is_available():
+        company_id = db.upsert_company({
+            "ticker": ticker, "company_name": meta["company_name"],
+            "cik": meta.get("cik", ""), "sic": sic,
+            "sic_description": meta.get("sic_description", ""),
+        })
+        if company_id:
+            uploaded_xbrl = db.get_manual_financials(company_id, granularity=["annual", "quarterly"]) or {}
+
+    accounts = material_accounts_tool.detect_material_accounts(xbrl, sic, uploaded_xbrl)
+    return meta, sic, xbrl, accounts, company_id
+
+
+@app.get("/material-accounts/{ticker}")
+def material_accounts(ticker: str):
+    """
+    Dynamically detect which financial-statement accounts are material for
+    this filer — industry-template (manufacturing/financial_services/saas)
+    plus a materiality-ratio cutoff, see material_accounts_tool.py — rather
+    than the fixed revenue/margin/eps/etc. set every ticker gets today.
+    """
+    try:
+        meta, sic, _xbrl, accounts, _company_id = _material_accounts_context(ticker)
+        return {
+            "ticker": ticker.upper(), "company_name": meta["company_name"],
+            "sic": sic, "sic_description": meta.get("sic_description", ""),
+            "accounts": accounts,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class MaterialAccountsForecastRequest(BaseModel):
+    horizon: int = 4
+    macro_info: Optional[dict] = None
+
+
+@app.post("/material-accounts/{ticker}/forecast")
+def material_accounts_forecast(ticker: str, req: MaterialAccountsForecastRequest = MaterialAccountsForecastRequest()):
+    """
+    Forecast every detected material account, capped at
+    material_accounts_tool._MAX_FORECAST_ACCOUNTS — the same lesson as the
+    2026-08-30 peer-enrichment OOM incident applied to a new fan-out point.
+    Uses the same generic ensemble forecasting engine
+    (predictive_analytics_tool.run_forecast_backtest) every other KPI chart
+    already relies on; no new modeling code.
+    """
+    import material_accounts_tool
+    try:
+        _meta, _sic, xbrl, accounts, company_id = _material_accounts_context(ticker)
+        forecasts = material_accounts_tool.forecast_material_accounts(
+            xbrl, req.macro_info, accounts, horizon=req.horizon, company_id=company_id,
+        )
+        return {"ticker": ticker.upper(), "accounts": accounts, "forecasts": forecasts}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/edgar/proxy")

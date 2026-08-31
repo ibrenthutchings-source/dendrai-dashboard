@@ -1416,6 +1416,49 @@ function App() {
           templateProfile.forecasts.financialRiskPipeline = mcpResult.financial_risk_pipeline;
         }
 
+        // Dynamically-detected material accounts — industry-template
+        // (manufacturing/financial_services/saas) + materiality-ratio based,
+        // see material_accounts_tool.py — beyond the fixed revenue/margin/
+        // eps/etc. set built above. Best-effort and never fatal to the run:
+        // everything above has already succeeded by this point.
+        try {
+          const matResult = await MCP.fetchMaterialAccounts(cfg.ticker);
+          const materialAccts = (matResult?.accounts || []).filter(a => a.is_material);
+          if (materialAccts.length) {
+            const fcResult = await MCP.forecastMaterialAccounts(cfg.ticker);
+            const bundles = fcResult?.forecasts || {};
+            const { fcLabels: fcLabelsMA } = RISK_ENGINE.quarterBoundaries();
+            const _toQLma = (d) => { if (!d) return null; const [y,m] = d.slice(0,7).split('-').map(Number); return `Q${Math.ceil(m/3)}-${String(y).slice(-2)}`; };
+            templateProfile.forecasts.materialAccounts = materialAccts.map(acc => {
+              const bundle = bundles[acc.metric]?.forecast;
+              const history = (bundle?.history || []).slice(-20).map(p => ({
+                q: _toQLma(p.quarter_end) || p.quarter_end,
+                v: +(p.value / 1e6).toFixed(2),
+              }));
+              const forecast = bundle?.forecasts?.length
+                ? bundle.forecasts.map((f, i) => ({
+                    q:    fcLabelsMA[i] || `H${i + 1}`,
+                    base: +(f.point / 1e6).toFixed(2),
+                    lo:   +(f.ci_lower / 1e6).toFixed(2),
+                    hi:   +(f.ci_upper / 1e6).toFixed(2),
+                  }))
+                : [];
+              return {
+                metric: acc.metric, label: acc.label, parent: acc.parent,
+                ratio: acc.ratio, industryGroup: acc.industry_group, source: acc.source,
+                baseMetric: acc.base_metric, unit: "$M", history, forecast,
+              };
+            })
+            // An account with fewer than 8 quarters of history (or none at
+            // all) comes back with an empty history/forecast from
+            // run_forecast_backtest — dropped here rather than shown as an
+            // empty chart.
+            .filter(a => a.history.length > 0);
+          }
+        } catch (matErr) {
+          log(`Material-account detection skipped: ${matErr.message}`);
+        }
+
         // Same placeholder problem as mscore/zscore above — templateProfile.ratios
         // is {} (buildProfile was called with fin=null), which silently breaks any
         // consumer keyed on it (e.g. Coverage Gap Analysis's quant-model-gap check).
