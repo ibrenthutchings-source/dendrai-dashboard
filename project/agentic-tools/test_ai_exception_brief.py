@@ -133,3 +133,122 @@ def test_different_periods_do_not_share_a_cache_key(client, monkeypatch):
     client.post("/ai/exception-brief", json=req2)
 
     assert captured_subject_refs[0] != captured_subject_refs[1]
+
+
+# ── Cache-key fingerprint: coarse enough to survive routine drift ──────────
+#
+# connector_poller.py ingests new synthetic exception events continuously,
+# so total_occurrences/impact_usd drift by a handful of events between
+# almost any two page loads even when the period's overall picture hasn't
+# meaningfully changed. Hashing off _exception_report_fingerprint (rounded)
+# rather than the raw `user` message is what makes "cache until changes are
+# detected" actually hold in practice — these tests are the proof.
+
+def _captured_hashes(monkeypatch):
+    hashes = []
+    def _fake_get_cached(kind, run_id, subject_ref, input_hash):
+        hashes.append(input_hash)
+        return None
+    monkeypatch.setattr(ae.db, "get_cached_ai_analysis", _fake_get_cached)
+    monkeypatch.setattr(ae.claude_client, "complete_json", lambda *a, **kw: {"headline": "x", "sections": [], "callouts": []})
+    return hashes
+
+
+def test_cache_key_is_stable_under_routine_occurrence_drift(client, monkeypatch):
+    """A couple more synthetic events landing between two page loads must
+    NOT change the cache key — this is exactly the drift that made the
+    exception brief regenerate on almost every visit before the fingerprint
+    was rounded. round(42/5)*5 == round(40/5)*5 == 40 — same bucket."""
+    hashes = _captured_hashes(monkeypatch)
+    req1 = _req()
+    req2 = _req(); req2["summary"]["total_occurrences"] = 40  # was 42 — same nearest-5 bucket
+
+    client.post("/ai/exception-brief", json=req1)
+    client.post("/ai/exception-brief", json=req2)
+
+    assert hashes[0] == hashes[1]
+
+
+def test_cache_key_is_stable_under_routine_impact_drift(client, monkeypatch):
+    hashes = _captured_hashes(monkeypatch)
+    req1 = _req()
+    req2 = _req(); req2["summary"]["total_impact_usd"] = 185120.0  # was 185000.0 — rounds to the same $500 bucket
+
+    client.post("/ai/exception-brief", json=req1)
+    client.post("/ai/exception-brief", json=req2)
+
+    assert hashes[0] == hashes[1]
+
+
+def test_cache_key_is_stable_under_routine_per_control_occurrence_drift(client, monkeypatch):
+    hashes = _captured_hashes(monkeypatch)
+    req1 = _req()
+    req2 = _req(); req2["by_control"][0]["occurrence_count"] = 11  # was 12 — same nearest-5 bucket
+
+    client.post("/ai/exception-brief", json=req1)
+    client.post("/ai/exception-brief", json=req2)
+
+    assert hashes[0] == hashes[1]
+
+
+def test_cache_key_changes_when_a_controls_rating_worsens(client, monkeypatch):
+    """A control's worst_risk_rating actually changing (e.g. A -> R) is a
+    real, board-relevant shift — must still bust the cache."""
+    hashes = _captured_hashes(monkeypatch)
+    req1 = _req()
+    req2 = _req(); req2["by_control"][0]["worst_risk_rating"] = "A"  # was "R"
+
+    client.post("/ai/exception-brief", json=req1)
+    client.post("/ai/exception-brief", json=req2)
+
+    assert hashes[0] != hashes[1]
+
+
+def test_cache_key_changes_when_total_impact_moves_meaningfully(client, monkeypatch):
+    hashes = _captured_hashes(monkeypatch)
+    req1 = _req()
+    req2 = _req(); req2["summary"]["total_impact_usd"] = 400000.0  # a real jump, not routine drift
+
+    client.post("/ai/exception-brief", json=req1)
+    client.post("/ai/exception-brief", json=req2)
+
+    assert hashes[0] != hashes[1]
+
+
+def test_cache_key_changes_when_a_new_control_appears(client, monkeypatch):
+    hashes = _captured_hashes(monkeypatch)
+    req1 = _req()
+    req2 = _req()
+    req2["by_control"].append({
+        "control_id": "SOD-AP-APPROVE", "system_source": "oracle_fusion", "process": "procure_to_pay",
+        "occurrence_count": 5, "worst_risk_rating": "A", "impact_usd": 20000.0, "impact_source": "fair_estimate",
+    })
+
+    client.post("/ai/exception-brief", json=req1)
+    client.post("/ai/exception-brief", json=req2)
+
+    assert hashes[0] != hashes[1]
+
+
+class TestExceptionReportFingerprint:
+    """Direct unit coverage of the fingerprint helper, independent of the
+    HTTP layer."""
+
+    def test_round_to_passes_through_none(self):
+        assert ae._round_to(None, 5) is None
+
+    def test_round_to_rounds_to_nearest_multiple(self):
+        assert ae._round_to(42, 5) == 40
+        assert ae._round_to(43, 5) == 45
+        assert ae._round_to(185120.0, 500) == 185000.0
+
+    def test_fingerprint_is_order_independent_for_controls(self):
+        """Two by_control lists with the same members in a different order
+        (a plausible SQL result-ordering difference between two identical
+        requests) must produce the same fingerprint."""
+        summary = {"total_occurrences": 42, "total_impact_usd": 185000.0, "by_risk_rating": {"R": 10}}
+        a = {"control_id": "A", "worst_risk_rating": "R", "occurrence_count": 12}
+        b = {"control_id": "B", "worst_risk_rating": "A", "occurrence_count": 5}
+        fp1 = ae._exception_report_fingerprint("BOARD", "2026-08-01", "2026-08-31", summary, [a, b])
+        fp2 = ae._exception_report_fingerprint("BOARD", "2026-08-01", "2026-08-31", summary, [b, a])
+        assert fp1 == fp2
