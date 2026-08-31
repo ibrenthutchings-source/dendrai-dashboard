@@ -169,7 +169,12 @@ _JE_DESCRIPTIONS = ["Vendor invoice accrual", "Monthly payroll accrual", "Invent
 
 _RECORD_TO_REPORT = ProcessDef("JE", [
     SimStep("Journal Entry Posted", "R2R_JOURNAL_ENTRY_EVENT", (0, 0),
-            lambda rng, rid, v: _detail(rng, rid, v, "preparer", "je_amount", (5000, 2000000),
+            # Capped under $1M — a synthetic JE this large read as an
+            # unrealistic single entry for the "everyday journal noise" this
+            # simulator is meant to produce, not a legitimate top-side/
+            # consolidating entry (that's what TOP_SIDE_PROXY_THRESHOLD in
+            # je_testing_tool.py separately flags for real, on real data).
+            lambda rng, rid, v: _detail(rng, rid, v, "preparer", "je_amount", (5000, 999_999),
                                          extra={"account": rng.choice(_JE_ACCOUNTS),
                                                 "description": rng.choice(_JE_DESCRIPTIONS)})),
     SimStep("Account Reconciled", "R2R_RECONCILIATION_EVENT", (3, 20),
