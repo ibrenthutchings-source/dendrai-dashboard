@@ -33,8 +33,11 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -42,6 +45,7 @@ from pydantic import BaseModel
 import db
 from sox_scoping_tool import run_sox_scoping
 from auth_endpoints import require_screen_permission
+from edgar_tool import get_company_info, fetch_xbrl_facts
 
 # Router-level: SOX Scoping backs the "SOX Control Pulse" screen (nav id
 # "sox") — see auth_endpoints.require_screen_permission's docstring.
@@ -191,6 +195,23 @@ def compute_sox_scope(req: SoxScopeRequest):
     account_overrides = db.get_sox_account_details(company_id) if db_ok else {}
     process_overrides = db.get_sox_process_details(company_id) if db_ok else {}
 
+    # Real detected balances (material_accounts_tool.py) to prefer over
+    # sox_scoping_tool's heuristic estimates — a single XBRL fetch for this
+    # one ticker (user-triggered re-scope, not a peer fan-out), best-effort:
+    # a failure here just falls back to the heuristic, same as before this
+    # feature existed.
+    real_balances = None
+    try:
+        import material_accounts_tool
+        meta, _sub = get_company_info(req.ticker)
+        subj_xbrl = fetch_xbrl_facts(meta["cik"]) or {}
+        uploaded_xbrl = db.get_manual_financials(company_id, granularity=["annual", "quarterly"]) if db_ok else {}
+        mat_accounts = material_accounts_tool.detect_material_accounts(
+            subj_xbrl, meta.get("sic", ""), uploaded_xbrl)
+        real_balances = material_accounts_tool.real_balances_for_sox(mat_accounts)
+    except Exception as _mat_err:
+        logger.warning("Material-account balance detection failed for SOX scoping (non-fatal, falling back to heuristic estimates): %s", _mat_err)
+
     result = run_sox_scoping(
         run_id=req.run_id,
         forecast=req.forecast,
@@ -204,6 +225,7 @@ def compute_sox_scope(req: SoxScopeRequest):
         trigger_reason=req.trigger_reason,
         account_overrides=account_overrides,
         process_overrides=process_overrides,
+        real_balances=real_balances,
     )
 
     if db_ok and req.run_id is not None:

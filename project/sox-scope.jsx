@@ -207,7 +207,10 @@ function AccountsTable({ accounts, ticker, onUpdate }) {
           <span style={{width: 6, height: 6, borderRadius: "50%", background: rag.ink || "var(--ink-4)", flexShrink: 0}}/>
           <span style={{flex: 1, fontSize: 11.5, color: "var(--ink)", fontWeight: 500}}>{acc.account_name}</span>
           {acc.balance_estimate && (
-            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{fmtM(acc.balance_estimate)}</span>
+            <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}
+                  title={acc.balance_source === "estimated" ? "Heuristic estimate — no filed or uploaded figure available for this account" : "Filed XBRL or uploaded figure"}>
+              {fmtM(acc.balance_estimate)}{acc.balance_source === "estimated" ? "*" : ""}
+            </span>
           )}
           {acc.manual_override && <Pill ink="var(--acc-ink, var(--ink-2))" soft="var(--acc-soft)" size={9}>MANUAL</Pill>}
           {acc.priority && <Pill ink={COV_COLORS[acc.priority]?.ink} soft={COV_COLORS[acc.priority]?.soft} size={10}>{acc.priority}</Pill>}
