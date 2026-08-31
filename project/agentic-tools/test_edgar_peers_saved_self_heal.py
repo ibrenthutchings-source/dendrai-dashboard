@@ -142,3 +142,67 @@ class TestEdgarPeersSavedSelfHeal:
                 assert False, "expected HTTPException"
             except Exception as e:
                 assert getattr(e, "status_code", None) == 503
+
+
+class TestPeerEnrichmentConcurrencyIsBounded:
+    """Regression coverage for the 2026-08-30 development OOM incident:
+    fetch_sic_peers now ranks real, active (often large-cap) companies first
+    (see test_edgar_sic_peers.py), so a peer's XBRL companyfacts document is
+    typically several MB raw / 15-20MB parsed — confirmed by direct
+    measurement against real SEC data, not estimated. At the old
+    max_workers=8, one /edgar/peers call could hold 8 of these in memory
+    concurrently; the exact same page load can also trigger
+    edgar_peers_saved's self-heal path, doubling that. _PEER_ENRICH_MAX_WORKERS
+    is the single shared bound for every peer-enrichment thread pool in this
+    file — these tests guard against a future edit silently widening it back
+    out (a hardcoded max_workers=8 creeping back into just one call site, or
+    the constant itself being bumped without re-deriving the memory budget)."""
+
+    def test_the_shared_constant_is_small(self):
+        # Not a specific number, deliberately — just "small enough that this
+        # was clearly sized against a memory budget, not defaulted." Anyone
+        # changing it should update the comment above it, not just the value.
+        assert 1 <= api_server._PEER_ENRICH_MAX_WORKERS <= 4
+
+    def _spy_on_thread_pool(self, monkeypatch):
+        """Wrap the real ThreadPoolExecutor so pool.map still works, but
+        record every max_workers it was constructed with."""
+        real_executor = api_server.concurrent.futures.ThreadPoolExecutor
+        calls = []
+
+        def _spy(*args, **kwargs):
+            calls.append(kwargs.get("max_workers", args[0] if args else None))
+            return real_executor(*args, **kwargs)
+
+        monkeypatch.setattr(api_server.concurrent.futures, "ThreadPoolExecutor", _spy)
+        return calls
+
+    def test_edgar_peers_saved_self_heal_uses_the_bounded_pool(self, monkeypatch):
+        calls = self._spy_on_thread_pool(monkeypatch)
+        saved = _saved(n_peers=1)  # thin -> triggers both enrichment passes
+        patches = _base_patches(
+            saved,
+            lambda p: _peer_without_data(p["ticker"]),
+            fetch_sic_peers_return=[{"ticker": "F0", "cik": "20", "company_name": "Fresh 0"}],
+        )
+        _, started = _apply(patches)
+        try:
+            api_server.edgar_peers_saved("ON")
+        finally:
+            _stop(patches)
+
+        assert calls, "ThreadPoolExecutor was never constructed"
+        assert all(c == api_server._PEER_ENRICH_MAX_WORKERS for c in calls)
+
+    def test_edgar_peers_live_endpoint_uses_the_bounded_pool(self, monkeypatch):
+        calls = self._spy_on_thread_pool(monkeypatch)
+        with patch.object(api_server, "get_company_info", return_value=({"cik": "1", "cik_plain": "1", "company_name": "ON Semi", "sic": "3674"}, {})), \
+             patch.object(api_server.peer_intel, "extract_competitor_names", return_value=[]), \
+             patch.object(api_server, "fetch_sic_peers", return_value=[{"ticker": "F0", "cik": "20", "company_name": "Fresh 0"}]), \
+             patch.object(api_server, "_enrich_peer_financials", side_effect=lambda p: {**p, "gross_margin": 0.4}), \
+             patch.object(api_server, "fetch_xbrl_facts", return_value=None), \
+             patch.object(api_server.db, "is_available", return_value=False):
+            api_server.edgar_peers(api_server.TickerRequest(ticker="ON"))
+
+        assert calls, "ThreadPoolExecutor was never constructed"
+        assert all(c == api_server._PEER_ENRICH_MAX_WORKERS for c in calls)

@@ -945,6 +945,54 @@ controls_total/controls_shown in the summary tell you whether the by-control lis
 or a top-N slice of a larger population — say so if it's a slice, don't imply it's everything."""
 
 
+def _round_to(v, step):
+    """Round a number to the nearest multiple of `step`; passes through
+    None. Used only for building a coarse cache-key fingerprint — never for
+    anything a human or the model actually sees."""
+    if v is None:
+        return None
+    try:
+        return round(float(v) / step) * step
+    except (TypeError, ValueError):
+        return None
+
+
+def _exception_report_fingerprint(persona: str, date_from: str, date_to: str,
+                                   summary: dict, controls_min: list) -> dict:
+    """A coarsened snapshot of the exception report, used ONLY to build the
+    cache-key hash below — never sent to the model (the `user` message right
+    after this uses the exact figures, always).
+
+    Without this, the exception brief's cache was effectively useless on a
+    live system: connector_poller.py ingests new synthetic exception events
+    continuously (every ~60s tick), so total_occurrences/impact_usd drift by
+    a handful of events between almost any two page loads even when the
+    period's overall picture hasn't meaningfully changed — hashing the EXACT
+    figures meant a fresh, paid Claude call on nearly every visit, not "cache
+    until changes are detected." (persona_brief's equivalent cache doesn't
+    have this problem: risk-engine.js's register only changes when a new
+    Enterprise Risk Loop run completes, a deliberate user action, not a
+    continuous background process.)
+
+    Rounding occurrence counts/dollar figures to a coarse grain means the
+    fingerprint — and therefore the cache key — only changes when the
+    report's shape shifts by an amount a board reader would actually
+    notice: a control's rating changing, a new control appearing, or a
+    real move in the totals, not routine background drift.
+    """
+    controls_fp = sorted(
+        (c.get("control_id"), c.get("worst_risk_rating"), _round_to(c.get("occurrence_count"), 5))
+        for c in controls_min
+    )
+    return {
+        "persona": persona, "date_from": date_from, "date_to": date_to,
+        "total_occurrences": _round_to(summary.get("total_occurrences"), 5),
+        "total_impact_usd": _round_to(summary.get("total_impact_usd"), 500),
+        "by_risk_rating": {k: _round_to(v, 5) for k, v in (summary.get("by_risk_rating") or {}).items()},
+        "controls": controls_fp,
+    }
+
+
 @router.post("/ai/exception-brief")
 def exception_brief(req: ExceptionBriefRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
@@ -963,12 +1011,18 @@ def exception_brief(req: ExceptionBriefRequest, current_user: dict = Depends(get
         f"Write the {persona} brief."
     )
 
-    # Same cost-reduction cache as persona_brief. subject_ref keys on
-    # persona + period (there's no run_id here — exception data isn't tied
-    # to a risk-loop run) so a different date range never collides with a
-    # cached brief for the same persona.
+    # Same cost-reduction cache as persona_brief, but hashed off a coarsened
+    # fingerprint rather than the `user` message above — see
+    # _exception_report_fingerprint's docstring for why that distinction
+    # matters here specifically. subject_ref keys on persona + period
+    # (there's no run_id here — exception data isn't tied to a risk-loop
+    # run) so a different date range never collides with a cached brief for
+    # the same persona.
     subject_ref = f"{persona}:{req.date_from}:{req.date_to}"
-    input_hash = hashlib.sha256((_EXCEPTION_PERSONA_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    fingerprint = _exception_report_fingerprint(persona, req.date_from, req.date_to, req.summary, controls_min)
+    input_hash = hashlib.sha256(
+        (_EXCEPTION_PERSONA_SYSTEM + "\n---\n" + json.dumps(fingerprint, sort_keys=True, default=str)).encode("utf-8")
+    ).hexdigest()[:32]
     cached = db.get_cached_ai_analysis("exception_brief", None, subject_ref, input_hash)
     if cached is not None:
         return {

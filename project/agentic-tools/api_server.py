@@ -2183,6 +2183,25 @@ def _build_ratio_history(xbrl: dict, max_years: int = 6) -> list:
 _PEER_ENRICH_CACHE_TTL = 6 * 3600
 _PEER_ENRICH_FIELDS = ("gross_margin", "rd_intensity", "revenue_growth", "history", "m_score", "z_score")
 _peer_enrich_cache: Dict[str, tuple] = {}  # cik -> (expires_at, fields_dict)
+
+# Peer enrichment concurrency — bounds peak memory, not just wall-clock time.
+# Confirmed live (2026-08-30 development OOM incident): fetch_sic_peers now
+# ranks currently-active companies first (the peer-benchmarking data fix),
+# which means a "peer" is now typically a real large-cap filer instead of
+# the decades-defunct shell companies the old ranking mostly returned. A
+# large-cap's companyfacts.json measured 3.5-4.5MB raw over the wire and
+# ~4.4x that (15-20MB) once parsed into Python objects. At max_workers=8,
+# a single /edgar/peers call could hold 8 of these in memory at once — and
+# the SAME page load can trigger this twice (the live POST /edgar/peers call
+# and GET /edgar/peers/{ticker}'s self-heal re-enrichment), so a genuinely
+# unbounded amount of large-cap XBRL data could be in flight simultaneously
+# for one user action. This is what actually OOM-killed the backend that
+# night, not anything in the same deploy's unrelated risk-scoring work
+# (confirmed by measurement, not guessed at — see the incident notes).
+# 3 concurrent fetches keeps enrichment reasonably fast without the
+# unbounded blow-up; it does not fix the per-document size, which is
+# capped by what SEC's bulk companyfacts endpoint returns.
+_PEER_ENRICH_MAX_WORKERS = 3
 _peer_enrich_lock = threading.Lock()
 
 
@@ -2234,6 +2253,12 @@ def _enrich_peer_financials(peer: dict) -> dict:
         peer["rd_intensity"]   = (rd  / rev) if rev and rd  is not None else None
         peer["revenue_growth"] = ((rev - rev_prev) / rev_prev) if rev and rev_prev else None
         peer["history"]        = _build_ratio_history(xbrl)
+        # Done with the full parsed document (15-20MB in memory for a
+        # large-cap peer, see _PEER_ENRICH_MAX_WORKERS above) — only the
+        # small extracted ratios below are kept. Drop the reference now
+        # rather than waiting for the function to return, since this thread
+        # may sit in the pool a while longer processing the next peer.
+        del xbrl
 
         # Simplified Beneish M-score (same 3-of-8-variable formula as risk-engine.js's
         # computeRatios(), with GMI/AQI/DEPI/SGAI/LVGI held at their neutral defaults)
@@ -2314,7 +2339,7 @@ def edgar_peers(req: TickerRequest):
             peer_source = "SIC peers"
             peers = fetch_sic_peers(sic, max_peers=15)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
             peers = list(pool.map(_enrich_peer_financials, peers))
 
         # 3) Remove all companies that have no data.
@@ -2376,7 +2401,7 @@ def edgar_peers_saved(ticker: str):
     if not saved:
         raise HTTPException(status_code=404, detail="No saved peer data for this ticker")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
         peers = list(pool.map(_enrich_peer_financials, saved["peers"]))
     peers = [p for p in peers if _peer_has_data(p)]
 
@@ -2394,7 +2419,7 @@ def edgar_peers_saved(ticker: str):
     # a healthy set (the new fetch_sic_peers ranking keeps producing one).
     if len(peers) < _MIN_USEFUL_SIC_PEERS and saved.get("sic"):
         fresh_identities = fetch_sic_peers(saved["sic"], max_peers=15)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
             fresh_peers = list(pool.map(_enrich_peer_financials, fresh_identities))
         fresh_peers = [p for p in fresh_peers if _peer_has_data(p)]
         if len(fresh_peers) > len(peers):
