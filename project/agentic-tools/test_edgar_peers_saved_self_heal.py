@@ -41,10 +41,18 @@ def _peer_without_data(ticker):
 
 def _base_patches(saved, enrich_side_effect, fetch_sic_peers_return=None):
     """Common patch set; each test overrides what it needs to assert on."""
+    # _enrich_peer_financials now takes an optional subject_sic second
+    # arg (material-account detection scored against the SUBJECT's
+    # industry) — every test here supplies a single-arg side_effect, so
+    # swallow that second positional arg here rather than changing every
+    # test's lambda.
+    def _enrich_wrapper(peer, subject_sic=""):
+        return enrich_side_effect(peer)
+
     return [
         patch.object(api_server.db, "is_available", return_value=True),
         patch.object(api_server.db, "get_sic_peers", return_value=saved),
-        patch.object(api_server, "_enrich_peer_financials", side_effect=enrich_side_effect),
+        patch.object(api_server, "_enrich_peer_financials", side_effect=_enrich_wrapper),
         patch.object(api_server, "fetch_sic_peers", return_value=fetch_sic_peers_return or []),
         patch.object(api_server, "fetch_xbrl_facts", return_value=None),
         patch.object(api_server.db, "upsert_company", return_value=42),
@@ -199,7 +207,7 @@ class TestPeerEnrichmentConcurrencyIsBounded:
         with patch.object(api_server, "get_company_info", return_value=({"cik": "1", "cik_plain": "1", "company_name": "ON Semi", "sic": "3674"}, {})), \
              patch.object(api_server.peer_intel, "extract_competitor_names", return_value=[]), \
              patch.object(api_server, "fetch_sic_peers", return_value=[{"ticker": "F0", "cik": "20", "company_name": "Fresh 0"}]), \
-             patch.object(api_server, "_enrich_peer_financials", side_effect=lambda p: {**p, "gross_margin": 0.4}), \
+             patch.object(api_server, "_enrich_peer_financials", side_effect=lambda p, subject_sic="": {**p, "gross_margin": 0.4}), \
              patch.object(api_server, "fetch_xbrl_facts", return_value=None), \
              patch.object(api_server.db, "is_available", return_value=False):
             api_server.edgar_peers(api_server.TickerRequest(ticker="ON"))

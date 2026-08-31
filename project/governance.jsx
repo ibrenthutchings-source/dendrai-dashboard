@@ -439,6 +439,64 @@ function PeerTable({ peers, sic, sic_description, ticker, peerSource, namedCompe
   );
 }
 
+// Material-account comparison across peers — the accounts detected as
+// material for the SUBJECT's industry template (manufacturing/
+// financial_services/saas, see material_accounts_tool.py), scored the same
+// way for every peer so they're directly comparable. Populated server-side
+// as peers[i].material_accounts by api_server.py's _enrich_peer_financials
+// — nothing to fetch here, this is presentational only, same as PeerTable.
+function PeerMaterialAccountsTable({ peers, ticker }) {
+  const withAccounts = (peers || []).filter(p => p.material_accounts?.length);
+  if (!withAccounts.length) return null;
+
+  // Union of metrics across all peers, ordered by how many peers actually
+  // have data for each (most-covered first) — a metric only one peer
+  // discloses sinks to the bottom rather than crowding out ones every peer
+  // reports.
+  const byMetric = {};
+  withAccounts.forEach(p => {
+    p.material_accounts.forEach(a => {
+      const bucket = byMetric[a.metric] || (byMetric[a.metric] = { label: a.label || a.metric, count: 0 });
+      bucket.count += 1;
+    });
+  });
+  const metrics = Object.entries(byMetric).sort((a, b) => b[1].count - a[1].count).map(([m]) => m);
+
+  return (
+    <div>
+      <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", margin: "0 0 10px", lineHeight: 1.5}}>
+        Accounts the subject's own industry template flags as material (≥5% of revenue or total assets) — every peer
+        below is scored on the same line items, not each peer's own largest accounts.
+      </div>
+      <table className="gov-table">
+        <thead>
+          <tr>
+            <th>Account</th>
+            {withAccounts.map((p, i) => (
+              <th key={i} style={{width: 90, textAlign: "right"}}>{p.ticker || "—"}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {metrics.map(metric => (
+            <tr key={metric}>
+              <td>{byMetric[metric].label}</td>
+              {withAccounts.map((p, i) => {
+                const acc = p.material_accounts.find(a => a.metric === metric);
+                return (
+                  <td key={i} className="mono" style={{textAlign: "right"}}>
+                    {acc?.ratio != null ? `${(acc.ratio * 100).toFixed(1)}%` : "—"}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── Filing selector ──────────────────────────────────────────────────────────
 function FilingPicker({ filings, selected, onSelect }) {
   if (!filings?.length) return null;
@@ -689,6 +747,12 @@ function GovernanceView({ data, peerData, ticker, loading, activeTab, onTabChang
                 peerSource={peerData?.peer_source}
                 namedCompetitors={peerData?.named_competitors}
                 ticker={ticker}/>
+              {(peerData?.peers || []).some(p => p.material_accounts?.length) && (
+                <>
+                  <div className="gov-section-hd" style={{marginTop: 16}}>Material Accounts</div>
+                  <PeerMaterialAccountsTable peers={peerData?.peers} ticker={ticker}/>
+                </>
+              )}
             </div>
           )}
         </div>

@@ -107,6 +107,7 @@ from edgar_tool import (
     annotate_8k,
     has_material_item,
     classify_8k_event,
+    XBRL_METRICS,
 )
 from rss_tool import run_rss_analysis
 from rss_ingest_service import (
@@ -1425,6 +1426,28 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
                     segments = db.get_sox_segments(company_id, fiscal_year)
                     mat_pct  = sox_cfg["materiality_pct"]  if sox_cfg else 5.0
                     perf_pct = sox_cfg["performance_mat_pct"] if sox_cfg else 75.0
+
+                    # Real detected balances (material_accounts_tool.py) to
+                    # prefer over sox_scoping_tool's heuristic estimates —
+                    # a single extra XBRL fetch for the SUBJECT only (not a
+                    # peer fan-out, so none of the OOM-bounding concerns
+                    # that apply to peer enrichment apply here). Best-effort:
+                    # a failure here just means scoping falls back to the
+                    # heuristic, same as before this feature existed.
+                    real_balances = None
+                    try:
+                        import material_accounts_tool
+                        subj_cik = result.get("cik", "")
+                        if subj_cik:
+                            subj_xbrl = fetch_xbrl_facts(subj_cik) or {}
+                            uploaded_xbrl = db.get_manual_financials(
+                                company_id, granularity=["annual", "quarterly"]) or {}
+                            mat_accounts = material_accounts_tool.detect_material_accounts(
+                                subj_xbrl, result.get("sic", ""), uploaded_xbrl)
+                            real_balances = material_accounts_tool.real_balances_for_sox(mat_accounts)
+                    except Exception as _mat_err:
+                        logger.warning("Material-account balance detection failed for SOX scoping (non-fatal, falling back to heuristic estimates): %s", _mat_err)
+
                     sox_result = run_sox_scoping(
                         run_id=run_id,
                         forecast=forecast_data,
@@ -1436,6 +1459,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
                         materiality_pct=mat_pct,
                         performance_mat_pct=perf_pct,
                         trigger_reason="auto_rescope_on_new_run",
+                        real_balances=real_balances,
                     )
                     db.save_sox_scoping_result(run_id, company_id, sox_result)
                     prev_run_id = prev_scope.get("run_id") if prev_scope else None
@@ -2165,7 +2189,13 @@ def _build_ratio_history(xbrl: dict, max_years: int = 6) -> list:
 # 10-K data, not intraday) purely to bound memory growth over a long-running
 # process, not because the data goes stale quickly.
 _PEER_ENRICH_CACHE_TTL = 6 * 3600
-_PEER_ENRICH_FIELDS = ("gross_margin", "rd_intensity", "revenue_growth", "history", "m_score", "z_score")
+# "_flat_metrics" is cached (subject-independent — a peer's own latest XBRL
+# values don't depend on who's comparing against it) but deliberately not
+# exposed on the peer dict returned to callers; "material_accounts" is
+# NEVER cached here — see _attach_peer_material_accounts, it's derived
+# fresh per call from the subject's own industry template, which differs
+# request to request even for the same cached peer.
+_PEER_ENRICH_FIELDS = ("gross_margin", "rd_intensity", "revenue_growth", "history", "m_score", "z_score", "_flat_metrics")
 _peer_enrich_cache: Dict[str, tuple] = {}  # cik -> (expires_at, fields_dict)
 
 # Peer enrichment concurrency — bounds peak memory, not just wall-clock time.
@@ -2189,12 +2219,36 @@ _PEER_ENRICH_MAX_WORKERS = 3
 _peer_enrich_lock = threading.Lock()
 
 
-def _enrich_peer_financials(peer: dict) -> dict:
+def _attach_peer_material_accounts(peer: dict, flat_metrics: dict, subject_sic: str) -> None:
+    """Material-account ratios for this peer, scored against the SUBJECT
+    company's industry template (not the peer's own) — so every peer in a
+    comparison is measured on the same line items rather than each peer
+    picking its own set. Never cached (see _PEER_ENRICH_FIELDS) — the same
+    peer compared against a different subject's industry gets a different
+    template, and flat_metrics (cheap: a handful of floats) makes
+    recomputing this free even on a cache hit for the base fields.
+    """
+    if not flat_metrics or not subject_sic:
+        return
+    import material_accounts_tool
+    synthetic_xbrl = {m: {"label": m, "data_points": [{"val": v}]} for m, v in flat_metrics.items()}
+    try:
+        peer["material_accounts"] = [
+            a for a in material_accounts_tool.detect_material_accounts(synthetic_xbrl, subject_sic)
+            if a["is_material"]
+        ]
+    except Exception:
+        pass
+
+
+def _enrich_peer_financials(peer: dict, subject_sic: str = "") -> dict:
     """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity,
     revenue_growth, a simplified Beneish M-score and Altman Z''-Score for
-    cross-peer benchmarking, and a multi-year `history` series for the
-    peer-benchmarking time series chart. Cached by CIK — see
-    _peer_enrich_cache above."""
+    cross-peer benchmarking, a multi-year `history` series for the
+    peer-benchmarking time series chart, and (when `subject_sic` is given)
+    material-account ratios scored against the SUBJECT's industry template.
+    Base fields are cached by CIK — see _peer_enrich_cache above; material
+    accounts are always recomputed per call (see _attach_peer_material_accounts)."""
     cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
     if not cik or cik == "0000000000":
         return peer
@@ -2204,6 +2258,7 @@ def _enrich_peer_financials(peer: dict) -> dict:
         hit = _peer_enrich_cache.get(cik)
     if hit and hit[0] > now:
         peer.update(hit[1])
+        _attach_peer_material_accounts(peer, peer.pop("_flat_metrics", None) or {}, subject_sic)
         return peer
 
     try:
@@ -2237,11 +2292,25 @@ def _enrich_peer_financials(peer: dict) -> dict:
         peer["rd_intensity"]   = (rd  / rev) if rev and rd  is not None else None
         peer["revenue_growth"] = ((rev - rev_prev) / rev_prev) if rev and rev_prev else None
         peer["history"]        = _build_ratio_history(xbrl)
+
+        # A cheap, small snapshot of every whitelisted XBRL metric's latest
+        # value (a few dozen floats) — kept and cached below (unlike the
+        # full parsed document) so a LATER request for this same peer under
+        # a DIFFERENT subject's industry template can still detect material
+        # accounts for it without re-fetching/re-parsing its XBRL.
+        flat_metrics = {}
+        for metric in XBRL_METRICS:
+            v, _ = latest_two_annual(metric)
+            if v is not None:
+                flat_metrics[metric] = v
+        peer["_flat_metrics"] = flat_metrics
+
         # Done with the full parsed document (15-20MB in memory for a
         # large-cap peer, see _PEER_ENRICH_MAX_WORKERS above) — only the
-        # small extracted ratios below are kept. Drop the reference now
-        # rather than waiting for the function to return, since this thread
-        # may sit in the pool a while longer processing the next peer.
+        # small extracted ratios above (and flat_metrics, just extracted)
+        # are kept. Drop the reference now rather than waiting for the
+        # function to return, since this thread may sit in the pool a while
+        # longer processing the next peer.
         del xbrl
 
         # Simplified Beneish M-score (same 3-of-8-variable formula as risk-engine.js's
@@ -2280,6 +2349,9 @@ def _enrich_peer_financials(peer: dict) -> dict:
     if fields:
         with _peer_enrich_lock:
             _peer_enrich_cache[cik] = (now + _PEER_ENRICH_CACHE_TTL, fields)
+
+    # _flat_metrics is cache/internal-only — never returned to a caller.
+    _attach_peer_material_accounts(peer, peer.pop("_flat_metrics", None) or {}, subject_sic)
     return peer
 
 
@@ -2324,7 +2396,7 @@ def edgar_peers(req: TickerRequest):
             peers = fetch_sic_peers(sic, max_peers=15)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
-            peers = list(pool.map(_enrich_peer_financials, peers))
+            peers = list(pool.map(lambda p: _enrich_peer_financials(p, sic), peers))
 
         # 3) Remove all companies that have no data.
         peers = [p for p in peers if _peer_has_data(p)]
@@ -2386,7 +2458,7 @@ def edgar_peers_saved(ticker: str):
         raise HTTPException(status_code=404, detail="No saved peer data for this ticker")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
-        peers = list(pool.map(_enrich_peer_financials, saved["peers"]))
+        peers = list(pool.map(lambda p: _enrich_peer_financials(p, saved.get("sic") or ""), saved["peers"]))
     peers = [p for p in peers if _peer_has_data(p)]
 
     # Self-heal a starved peer set. fetch_sic_peers() used to return an
@@ -2404,7 +2476,7 @@ def edgar_peers_saved(ticker: str):
     if len(peers) < _MIN_USEFUL_SIC_PEERS and saved.get("sic"):
         fresh_identities = fetch_sic_peers(saved["sic"], max_peers=15)
         with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
-            fresh_peers = list(pool.map(_enrich_peer_financials, fresh_identities))
+            fresh_peers = list(pool.map(lambda p: _enrich_peer_financials(p, saved["sic"]), fresh_identities))
         fresh_peers = [p for p in fresh_peers if _peer_has_data(p)]
         if len(fresh_peers) > len(peers):
             peers = fresh_peers
