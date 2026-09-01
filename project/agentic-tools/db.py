@@ -2423,6 +2423,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_system_registry_name
 CREATE INDEX IF NOT EXISTS idx_ai_system_registry_assessment_expiry
     ON observability.ai_system_registry (assessment_expires_at) WHERE status = 'CURRENT';
 
+-- Passive shadow-AI detection: candidates surfaced by mcp_governance.py's
+-- _extract_ai_tool_name (an AI-vendor/tool keyword match in some connector
+-- event's payload, e.g. an IAM entitlement literally named
+-- "OPENAI_ENTERPRISE_ACCESS") — a machine-generated proposal, never
+-- auto-promoted into ai_system_registry above. A human resolves it either
+-- by registering the system (PUT /ai-governance, which auto-resolves any
+-- pending candidate whose detected_name matches — see
+-- resolve_ai_shadow_candidate_by_name) or by dismissing it outright.
+CREATE TABLE IF NOT EXISTS observability.ai_shadow_candidates (
+    id                  BIGSERIAL    PRIMARY KEY,
+    detected_name       VARCHAR(256) NOT NULL,   -- e.g. "OpenAI" — the display name, not the raw entitlement
+    source_detail       VARCHAR(256),            -- the raw matched string (entitlement/resource) for audit trail
+    first_detected_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    occurrence_count    INT          NOT NULL DEFAULT 1,
+    last_actor          VARCHAR(128),
+    status              VARCHAR(16)  NOT NULL DEFAULT 'pending',  -- pending | accepted | dismissed
+    linked_system_id    BIGINT REFERENCES observability.ai_system_registry(id),
+    reviewed_by         VARCHAR(128),
+    reviewed_at         TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_shadow_candidates_name
+    ON observability.ai_shadow_candidates (lower(detected_name));
+
 -- DevOps Monitoring: pipeline provenance/attestation metadata (SLSA-adjacent).
 -- Stores what a CI run claims about itself — OIDC identity claims, SLSA
 -- provenance statement, a hash (never the raw values) of its environment
@@ -14461,6 +14485,120 @@ def expire_overdue_ai_assessments() -> list:
                     rows.append(d)
                 return rows
     return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Passive shadow-AI detection (observability.ai_shadow_candidates)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_ai_shadow_candidate(detected_name: str, source_detail: Optional[str],
+                                actor: Optional[str]) -> Optional[int]:
+    """Record (or bump) a passively-detected AI tool candidate.
+
+    Returns None without writing anything in two cases, both deliberate:
+      - `detected_name` already matches a REGISTERED system (case-
+        insensitive) — nothing to propose, it's already attested.
+      - The existing candidate row for this name has already been
+        `accepted`/`dismissed` — a resolved candidate must never silently
+        flip back to `pending` just because the same entitlement fired
+        again; a human already made a decision about it.
+    Otherwise inserts a fresh `pending` row, or bumps last_seen_at/
+    occurrence_count/last_actor on an existing `pending` one.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM observability.ai_system_registry WHERE lower(system_name) = lower(%s)",
+                    (detected_name,),
+                )
+                if cur.fetchone():
+                    return None
+                cur.execute(
+                    """
+                    INSERT INTO observability.ai_shadow_candidates
+                        (detected_name, source_detail, last_actor)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (lower(detected_name)) DO UPDATE SET
+                        last_seen_at     = NOW(),
+                        occurrence_count = observability.ai_shadow_candidates.occurrence_count + 1,
+                        last_actor       = EXCLUDED.last_actor,
+                        source_detail    = EXCLUDED.source_detail
+                    WHERE observability.ai_shadow_candidates.status = 'pending'
+                    RETURNING id
+                    """,
+                    (detected_name, source_detail, actor),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_ai_shadow_candidates(status: str = "pending") -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, detected_name, source_detail, first_detected_at, last_seen_at,
+                           occurrence_count, last_actor, status, linked_system_id,
+                           reviewed_by, reviewed_at
+                    FROM observability.ai_shadow_candidates
+                    WHERE status = %s
+                    ORDER BY last_seen_at DESC
+                    """,
+                    (status,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("first_detected_at", "last_seen_at", "reviewed_at"):
+                        if d.get(k) is not None:
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def dismiss_ai_shadow_candidate(candidate_id: int, reviewed_by: Optional[str]) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.ai_shadow_candidates
+                    SET status = 'dismissed', reviewed_by = %s, reviewed_at = NOW()
+                    WHERE id = %s AND status = 'pending'
+                    RETURNING id
+                    """,
+                    (reviewed_by, candidate_id),
+                )
+                return cur.fetchone() is not None
+    return _run(_do, default=False)
+
+
+def resolve_ai_shadow_candidate_by_name(detected_name: str, linked_system_id: Optional[int],
+                                         reviewed_by: Optional[str]) -> None:
+    """Auto-resolve a pending candidate to 'accepted' when the register is
+    saved with a matching system_name — registering the system IS the
+    acceptance, no separate accept action needed. Best-effort: _run() below
+    already never raises (returns None on any failure), which is exactly
+    the "must never fail because this side-step did" contract the caller
+    (ai_governance_endpoints.py's register save) needs."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.ai_shadow_candidates
+                    SET status = 'accepted', linked_system_id = %s,
+                        reviewed_by = %s, reviewed_at = NOW()
+                    WHERE lower(detected_name) = lower(%s) AND status = 'pending'
+                    """,
+                    (linked_system_id, reviewed_by, detected_name),
+                )
+    _run(_do)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

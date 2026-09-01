@@ -165,6 +165,79 @@ def test_upsert_survives_ingestion_failure_and_still_returns_id(client, monkeypa
     assert r.json() == {"id": 42}
 
 
+def test_upsert_auto_resolves_a_matching_pending_candidate(client, monkeypatch):
+    """Registering the system IS the acceptance of any matching
+    passively-detected candidate — see the endpoint's own comment."""
+    monkeypatch.setattr(age.db, "upsert_ai_system", lambda **kw: 42)
+    resolved = []
+    monkeypatch.setattr(age.db, "resolve_ai_shadow_candidate_by_name",
+                         lambda name, sid, user: resolved.append((name, sid, user)))
+
+    r = client.put("/ai-governance", json=_UPSERT_BODY)
+
+    assert r.status_code == 200
+    assert resolved == [("Vendor Scoring Model", 42, "tester")]
+
+
+# ── GET/POST /ai-governance/shadow-candidates ───────────────────────────────
+
+def _candidate(**over) -> dict:
+    base = {
+        "id": 7, "detected_name": "OpenAI", "source_detail": "OPENAI_ENTERPRISE_ACCESS",
+        "first_detected_at": "2026-08-01T00:00:00Z", "last_seen_at": "2026-08-15T00:00:00Z",
+        "occurrence_count": 3, "last_actor": "jsmith@acme-corp.com", "status": "pending",
+        "linked_system_id": None, "reviewed_by": None, "reviewed_at": None,
+    }
+    base.update(over)
+    return base
+
+
+def test_list_candidates_returns_503_when_db_unavailable(client, monkeypatch):
+    monkeypatch.setattr(age.db, "is_available", lambda: False)
+    r = client.get("/ai-governance/shadow-candidates")
+    assert r.status_code == 503
+
+
+def test_list_candidates_defaults_to_pending_status(client, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(age.db, "list_ai_shadow_candidates",
+                         lambda status="pending": captured.setdefault("status", status) and [_candidate()])
+    r = client.get("/ai-governance/shadow-candidates")
+    assert r.status_code == 200
+    assert captured["status"] == "pending"
+    assert r.json() == {"candidates": [_candidate()]}
+
+
+def test_list_candidates_forwards_status_query_param(client, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(age.db, "list_ai_shadow_candidates",
+                         lambda status="pending": captured.setdefault("status", status) and [])
+    client.get("/ai-governance/shadow-candidates?status=dismissed")
+    assert captured["status"] == "dismissed"
+
+
+def test_dismiss_candidate_returns_503_when_db_unavailable(client, monkeypatch):
+    monkeypatch.setattr(age.db, "is_available", lambda: False)
+    r = client.post("/ai-governance/shadow-candidates/7/dismiss")
+    assert r.status_code == 503
+
+
+def test_dismiss_candidate_returns_404_when_not_found_or_already_resolved(client, monkeypatch):
+    monkeypatch.setattr(age.db, "dismiss_ai_shadow_candidate", lambda cid, user: False)
+    r = client.post("/ai-governance/shadow-candidates/7/dismiss")
+    assert r.status_code == 404
+
+
+def test_dismiss_candidate_happy_path(client, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(age.db, "dismiss_ai_shadow_candidate",
+                         lambda cid, user: captured.update(cid=cid, user=user) or True)
+    r = client.post("/ai-governance/shadow-candidates/7/dismiss")
+    assert r.status_code == 200
+    assert r.json() == {"dismissed": True}
+    assert captured == {"cid": 7, "user": "tester"}
+
+
 # ── POST /ai-governance/behavioral-audit ────────────────────────────────────
 
 _AUDIT_BODY = {

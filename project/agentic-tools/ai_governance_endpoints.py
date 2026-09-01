@@ -109,6 +109,12 @@ async def upsert_ai_system(req: AiSystemRequest,
     if not system_id:
         raise HTTPException(status_code=500, detail="Failed to save AI system profile")
 
+    # Registering the system IS the acceptance of any matching passively-
+    # detected candidate — no separate accept action needed (see
+    # GET/POST /ai-governance/shadow-candidates below). Best-effort:
+    # db.resolve_ai_shadow_candidate_by_name never raises.
+    db.resolve_ai_shadow_candidate_by_name(req.system_name, system_id, current_user.get("username"))
+
     if req.requires_human_oversight and not req.human_oversight_defined:
         try:
             flags = mcp_governance._detect_system_flags({
@@ -134,6 +140,34 @@ async def upsert_ai_system(req: AiSystemRequest,
             logger.warning("ai_governance_endpoints: failed to raise oversight-missing finding for %s: %s", req.system_name, exc)
 
     return {"id": system_id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Passive shadow-AI detection — candidates surfaced by
+# mcp_governance._extract_ai_tool_name (an AI-vendor/tool keyword match in
+# some connector event's payload, e.g. an IAM entitlement literally named
+# "OPENAI_ENTERPRISE_ACCESS"). Never auto-promoted into the register above —
+# a human either registers the system (which auto-resolves the matching
+# candidate, see upsert_ai_system's PUT handler) or dismisses it here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/shadow-candidates")
+async def list_shadow_candidates(status: str = "pending",
+                                  current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"candidates": db.list_ai_shadow_candidates(status=status)}
+
+
+@router.post("/shadow-candidates/{candidate_id}/dismiss")
+async def dismiss_shadow_candidate(candidate_id: int,
+                                    current_user: dict = Depends(require_screen_permission(_SCREEN_ID, edit=True))):
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    ok = db.dismiss_ai_shadow_candidate(candidate_id, current_user.get("username"))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Candidate not found or already resolved")
+    return {"dismissed": True}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -54,6 +54,15 @@ _ACTORS = [
 _VIOLATION_RATE = 0.12
 _CASES_PER_TICK = (1, 3)  # min, max new cases/standalone events fabricated per poll
 
+# How often an IAM "Access Requested" event's entitlement is an AI-tool name
+# instead of an ERP role — gives mcp_governance.py's passive shadow-AI
+# detection (_extract_ai_tool_name) something to actually find without
+# waiting on a real SailPoint/IAM integration. Same probabilistic-injection
+# idiom as _VIOLATION_RATE above.
+_AI_ENTITLEMENT_RATE = 0.15
+_AI_ENTITLEMENTS = ["OPENAI_ENTERPRISE_ACCESS", "GITHUB_COPILOT_SEAT",
+                     "ANTHROPIC_CLAUDE_API", "MIDJOURNEY_TEAM_SEAT"]
+
 # process_mining_tool.PROCESS_TEMPLATES ids these reuse verbatim — kept as a
 # separate import-free constant (not importing process_mining_tool here) so
 # this adapter has no dependency beyond the synthetic generator it borrows from.
@@ -106,6 +115,17 @@ def _case_id(rng: random.Random) -> str:
     return f"{rng.getrandbits(40):010x}"
 
 
+_ERP_ENTITLEMENTS = ["AP_INVOICE_ENTRY", "PO_BUYER", "PRIV_DB_ADMIN", "FIN_CLOSE_APPROVER"]
+
+
+def _iam_entitlement(rng: random.Random) -> str:
+    """An ERP-role entitlement name, or (at _AI_ENTITLEMENT_RATE) an
+    AI-tool one — see _AI_ENTITLEMENT_RATE above."""
+    if rng.random() < _AI_ENTITLEMENT_RATE:
+        return rng.choice(_AI_ENTITLEMENTS)
+    return rng.choice(_ERP_ENTITLEMENTS)
+
+
 def _detail(rng: random.Random, rid: str, violating: bool, actor_field: str = "actor",
             amount_field: Optional[str] = None, amount_range: tuple = (1000, 90000),
             extra: Optional[dict] = None) -> dict:
@@ -145,7 +165,7 @@ _HIRE_TO_RETIRE = ProcessDef("REQ", [
 _IAM = ProcessDef("ACC", [
     SimStep("Access Requested", "IAM_ACCESS_REQUEST_EVENT", (0, 0),
             lambda rng, rid, v: _detail(rng, rid, v, "identity",
-                                         extra={"entitlement": rng.choice(["AP_INVOICE_ENTRY", "PO_BUYER", "PRIV_DB_ADMIN", "FIN_CLOSE_APPROVER"])})),
+                                         extra={"entitlement": _iam_entitlement(rng)})),
     SimStep("Access Approved", "IAM_ACCESS_APPROVAL_EVENT", (0, 3),
             lambda rng, rid, v: _detail(rng, rid, v, "identity",
                                          extra={"sod_conflict_detected": v}),

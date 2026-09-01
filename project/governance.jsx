@@ -5,7 +5,7 @@
    ============================================================ */
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ComposedChart, Area, ReferenceLine,
+  Tooltip, ResponsiveContainer, ComposedChart, Area, ReferenceLine, Brush,
 } from 'recharts';
 
 const GOV_TABS = [
@@ -116,6 +116,16 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
   // below for the established pattern); a bare <AuditorTakeaway> JSX tag
   // would throw ReferenceError the same way evidence-pack.jsx's Row did.
   const AuditorTakeaway = window.AuditorTakeaway;
+  // Same zoom/pan infrastructure Assess Risk's KPI charts use (charts.jsx,
+  // loaded eagerly in src/main.jsx before this lazy-loaded screen can ever
+  // render, so these are always present by the time this component mounts).
+  // No ChartZoomProvider ancestor here — this screen has only the one chart,
+  // so useChartZoom's documented no-provider fallback (independent local
+  // zoom state, not synced/persisted) is exactly the right fit, unlike
+  // Assess Risk's many-charts-in-one-provider case.
+  const useChartZoom = window.useChartZoom;
+  const useMountedAfterPaint = window.useMountedAfterPaint;
+  const ZoomControls = window.ZoomControls;
   const [metric, setMetric] = useState("gross_margin");
   // Individual peer lines start hidden — with up to 15 peers, N overlapping
   // lines reads as spaghetti, not signal. The percentile band (below) answers
@@ -144,8 +154,12 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
 
   const peerSeries = useMemo(() => series.filter(s => s.key !== "__subject__"), [series]);
 
-  if (!series.length) return null;
-
+  // Rules of Hooks: useChartZoom/useMountedAfterPaint below must be called
+  // unconditionally on every render, so the "nothing to chart yet" bail-out
+  // moves to AFTER them (see below) rather than sitting here as it used to —
+  // every computation between here and that bail-out is plain data-shaping
+  // (no hooks) and already degrades to empty results on an empty `series`,
+  // so nothing here needs series.length to be checked first.
   const allPeriods = Array.from(new Set(series.flatMap(s => s.history.map(h => h.period)))).sort();
   const data = allPeriods.map(period => {
     const row = { period };
@@ -230,6 +244,26 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
     });
   }
 
+  // `data` is now final (the hasForecast block above may have pushed
+  // forecast rows onto it via mutation) — its length is what
+  // ComposedChart/Brush below actually render, so it's the right
+  // dataLength for the zoom hook. Reading data.length any earlier (before
+  // those pushes) would silently clip the default, unzoomed Brush window
+  // to exclude the forecast rows even before a user ever zooms.
+  const zoom = useChartZoom(data.length);
+  const mounted = useMountedAfterPaint();
+  // Same threshold as Assess Risk's KPI charts (charts.jsx's ZOOM_MIN_POINTS)
+  // — not worth showing zoom controls on a handful of points.
+  const showZoom = data.length >= (window.ZOOM_MIN_POINTS ?? 9);
+  // Recharts can't resolve a categorical ReferenceLine's x={lastPeriod}
+  // against a domain the Brush has scrolled/zoomed past — same NaN-
+  // coordinate hazard ForecastChart's own splitVisible guards against.
+  // Only meaningful once zoom can actually move the window (showZoom).
+  const lastPeriodIndex = allPeriods.length - 1;
+  const dividerVisible = !showZoom || (zoom.startIndex <= lastPeriodIndex && lastPeriodIndex <= zoom.endIndex);
+
+  if (!series.length) return null;
+
   function ChartTooltip({ active, payload, label }) {
     if (!active || !payload?.length) return null;
     const row = payload[0]?.payload;
@@ -283,6 +317,7 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
           </button>
         ))}
       </div>
+      {showZoom && ZoomControls && <ZoomControls zoom={zoom} color="var(--acc)"/>}
       <ResponsiveContainer width="100%" height={240}>
         <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false}/>
@@ -336,9 +371,23 @@ function PeerTimeSeriesChart({ peers, subjectHistory, ticker }) {
                   isAnimationActive={false}
                   legendType="none"/>
               ))}
-              <ReferenceLine x={lastPeriod} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
-                label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }}/>
+              {dividerVisible && (
+                <ReferenceLine x={lastPeriod} stroke="var(--line-strong)" strokeDasharray="3 3" strokeWidth={0.8}
+                  label={{ value: 'FORECAST →', position: 'insideTopRight', fontSize: 8.5, fontFamily: 'Geist Mono, monospace', fill: 'var(--ink-3)', dy: -4 }}/>
+              )}
             </>
+          )}
+
+          {/* Zoom/pan — same mechanism as Assess Risk's KPI charts
+              (charts.jsx's ForecastChart): drag either handle, or use the
+              +/− controls above. Gated on `mounted` (useMountedAfterPaint)
+              to avoid Recharts' transient NaN traveller coordinates against
+              an unmeasured ResponsiveContainer on the very first paint. */}
+          {showZoom && mounted && (
+            <Brush dataKey="period" height={20} travellerWidth={8}
+              startIndex={zoom.startIndex} endIndex={zoom.endIndex} onChange={zoom.onBrushChange}
+              stroke="var(--acc)" fill="var(--surface-2, var(--surface))"
+              tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}/>
           )}
         </ComposedChart>
       </ResponsiveContainer>

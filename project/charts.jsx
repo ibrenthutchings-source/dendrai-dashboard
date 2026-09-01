@@ -1546,4 +1546,14 @@ function RiskFlowSankey({ risks, maps, flowMeta, objectives = [], gate2Reduction
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
-Object.assign(window, { Heatmap, SeverityMatrix, ForecastChart, MultiSeriesForecastChart, MScoreGauge, ZScoreGauge, RiskFlowSankey, truncate, ChartZoomProvider });
+// useChartZoom/ZoomControls/useMountedAfterPaint/ZOOM_MIN_POINTS exported so
+// other chart-bearing files with no build-time import of this one (e.g.
+// governance.jsx's Peer Benchmarking time-series chart) can add the same
+// zoom/pan UX without reimplementing it — see governance.jsx's
+// PeerTimeSeriesChart for a caller with no ChartZoomProvider ancestor (falls
+// back to independent local-only zoom state per useChartZoom's own docs).
+Object.assign(window, {
+  Heatmap, SeverityMatrix, ForecastChart, MultiSeriesForecastChart, MScoreGauge, ZScoreGauge,
+  RiskFlowSankey, truncate, ChartZoomProvider, useChartZoom, ZoomControls, useMountedAfterPaint,
+  ZOOM_MIN_POINTS,
+});

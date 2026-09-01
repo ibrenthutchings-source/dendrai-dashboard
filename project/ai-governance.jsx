@@ -562,6 +562,12 @@ function AiGovernanceScreen() {
   const [lastVerdicts, setLastVerdicts] = React.useState({});
   // null = form hidden; {} = registering a new system; {...row} = editing one.
   const [formSystem, setFormSystem] = React.useState(null);
+  // Passively-detected candidates (mcp_governance.py's shadow-AI keyword
+  // match, e.g. an IAM entitlement named "OPENAI_ENTERPRISE_ACCESS") —
+  // never auto-promoted into `systems` above; a human registers or
+  // dismisses each one below.
+  const [candidates, setCandidates] = React.useState(null);
+  const [candidateBusy, setCandidateBusy] = React.useState(null);
 
   const load = React.useCallback(() => {
     return fetch(`${_aiGovBase()}/ai-governance`, { credentials: "include" })
@@ -574,9 +580,29 @@ function AiGovernanceScreen() {
       .finally(() => setLoading(false));
   }, []);
 
-  React.useEffect(() => { load(); }, [load]);
+  const loadCandidates = React.useCallback(() => {
+    return fetch(`${_aiGovBase()}/ai-governance/shadow-candidates`, { credentials: "include" })
+      .then(res => (res.ok ? res.json() : { candidates: [] }))
+      .then(d => setCandidates(d.candidates || []))
+      .catch(() => setCandidates([]));
+  }, []);
+
+  React.useEffect(() => { load(); loadCandidates(); }, [load, loadCandidates]);
+
+  async function dismissCandidate(id) {
+    setCandidateBusy(id);
+    try {
+      await fetch(`${_aiGovBase()}/ai-governance/shadow-candidates/${id}/dismiss`, {
+        method: "POST", credentials: "include",
+      });
+      await loadCandidates();
+    } finally {
+      setCandidateBusy(null);
+    }
+  }
 
   const rows = systems || [];
+  const pendingCandidates = candidates || [];
   const expired = rows.filter(r => r.status === "EXPIRED").length;
   const oversightGaps = rows.filter(r => r.requires_human_oversight && !r.human_oversight_defined).length;
   const contradicted = Object.values(lastVerdicts).filter(v => v === "ESCALATE").length;
@@ -607,6 +633,9 @@ function AiGovernanceScreen() {
         <>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
             <GovTile label="Systems registered" value={rows.length} sub="Manual attestation register" />
+            <GovTile label="Detected, pending review" value={pendingCandidates.length}
+              tone={pendingCandidates.length > 0 ? "warn" : "neutral"}
+              sub="Passively detected, not yet registered" />
             <GovTile label="Oversight gaps" value={oversightGaps} tone={oversightGaps > 0 ? "bad" : "good"}
               sub={oversightGaps > 0 ? "Required but not defined (AI-06)" : "All required oversight defined"} />
             <GovTile label="Expired assessments" value={expired} tone={expired > 0 ? "warn" : "good"}
@@ -615,11 +644,49 @@ function AiGovernanceScreen() {
               sub="Attested as governed, failed its audit" />
           </div>
 
+          {pendingCandidates.length > 0 && (
+            <div style={{ border: "1px solid var(--amber-ink, var(--line))", borderRadius: 6, marginBottom: 20, overflow: "hidden" }}>
+              <div style={{ padding: "8px 12px", background: "var(--amber-soft)", fontSize: 11, fontWeight: 600, color: "var(--amber-ink)" }}>
+                Detected AI tools — passively observed, not yet registered
+              </div>
+              <div style={{ padding: "6px 12px 2px", fontSize: 10.5, color: "var(--ink-3)" }}>
+                Surfaced from IAM entitlement activity that named an AI vendor/tool (e.g. an access request for
+                &quot;OPENAI_ENTERPRISE_ACCESS&quot;) — never auto-registered. Register it to record a real attestation,
+                or dismiss it if it's not actually in use.
+              </div>
+              <div style={{ padding: "4px 12px 10px" }}>
+                {pendingCandidates.map(c => (
+                  <div key={c.id} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "8px 0",
+                    borderTop: "1px solid var(--line)",
+                  }}>
+                    <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)" }}>{c.detected_name}</div>
+                      <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>
+                        {c.source_detail || "—"} · {c.occurrence_count}× · last seen {new Date(c.last_seen_at).toLocaleDateString()}
+                        {c.last_actor ? ` · ${c.last_actor}` : ""}
+                      </div>
+                    </div>
+                    <button className="btn btn-sm" disabled={candidateBusy === c.id}
+                      onClick={() => setFormSystem({ system_name: c.detected_name, vendor: c.detected_name })}>
+                      Register
+                    </button>
+                    <button className="btn btn-sm" disabled={candidateBusy === c.id}
+                      style={{ color: "var(--ink-3)" }}
+                      onClick={() => dismissCandidate(c.id)}>
+                      Dismiss
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {formSystem && (
             <AiSystemForm
               initial={formSystem}
               onCancel={() => setFormSystem(null)}
-              onSaved={() => { setFormSystem(null); load(); }}
+              onSaved={() => { setFormSystem(null); load(); loadCandidates(); }}
             />
           )}
 
@@ -633,9 +700,10 @@ function AiGovernanceScreen() {
 
           {!rows.length ? (
             <Empty icon="🗂️">
-              No AI systems registered yet. The register is a manual attestation — there is no
-              connector that can discover shadow AI usage for you. Use &quot;+ Add system&quot; above
-              to record the first one.
+              No AI systems registered yet. The register itself is a manual attestation — passive
+              detection above will surface candidates here as IAM entitlement activity naming an AI
+              vendor/tool is observed, but only a human decision (Register or Dismiss) ever creates a
+              row. Use &quot;+ Add system&quot; to record one directly in the meantime.
             </Empty>
           ) : (
             <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>

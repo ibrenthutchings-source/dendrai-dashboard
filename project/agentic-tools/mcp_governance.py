@@ -1917,6 +1917,43 @@ _PRIVILEGED_RESOURCE_KW = {"admin", "root", "superuser", "privileged", "elevated
 _SENSITIVE_RESOURCE_KW  = {"financial", "payroll", "pii", "ssn", "credit", "audit_log", "compliance", "salary"}
 _SOD_KW                 = {"sod", "segregation", "conflict", "violation", "dual_control", "incompatible"}
 
+# Passive shadow-AI detection: unlike every flag above (a producer sets an
+# explicit boolean because it already knows what happened), this is genuine
+# content inspection — nothing upstream (an IAM/SailPoint entitlement
+# request, say) knows or declares "this is an AI tool." An entitlement named
+# e.g. "OPENAI_ENTERPRISE_ACCESS" is a realistic real-world discovery signal
+# (enterprises provision SaaS/AI tool access through their identity system),
+# so a keyword hit here means "an AI vendor/tool name appeared in this
+# event's payload or resource," not "a flag the producer set."
+_AI_TOOL_KW = {"openai", "chatgpt", "anthropic", "claude", "copilot", "gemini", "midjourney", "genai", "generative_ai"}
+_AI_TOOL_DISPLAY_NAMES = {
+    "openai": "OpenAI", "chatgpt": "OpenAI",
+    "anthropic": "Anthropic Claude", "claude": "Anthropic Claude",
+    "copilot": "GitHub Copilot",
+    "gemini": "Google Gemini",
+    "midjourney": "Midjourney",
+    "genai": "Unidentified generative-AI tool", "generative_ai": "Unidentified generative-AI tool",
+}
+
+
+def _extract_ai_tool_name(payload: dict, resource: str) -> Optional[str]:
+    """First AI-vendor/tool keyword match in `payload`'s string fields or
+    `resource`, mapped to a human-readable display name — or None. Reuses
+    the same per-field string scan as _payload_keyword_hit, but needs to
+    know WHICH keyword matched (to look up a display name), not just
+    whether one did, so it can't call that helper directly."""
+    resource = (resource or "").lower()
+    for kw in _AI_TOOL_KW:
+        if kw in resource:
+            return _AI_TOOL_DISPLAY_NAMES[kw]
+    for v in payload.values():
+        if isinstance(v, str):
+            v_lower = v.lower()
+            for kw in _AI_TOOL_KW:
+                if kw in v_lower:
+                    return _AI_TOOL_DISPLAY_NAMES[kw]
+    return None
+
 
 def _payload_keyword_hit(payload: dict, keywords: set[str]) -> bool:
     """True if some payload field signals one of `keywords` — a free-text
@@ -2042,6 +2079,12 @@ def _detect_system_flags(event: dict) -> list[str]:
         flags.add("inventory_putaway_event")
     if payload.get("goods_shipment_event"):
         flags.add("goods_shipment_event")
+    # Passive shadow-AI detection — see _AI_TOOL_KW above. `resource` here
+    # is already the lowercased local from the top of this function;
+    # _extract_ai_tool_name lowercases defensively too, so passing it
+    # twice-lowercased is harmless.
+    if _extract_ai_tool_name(payload, resource):
+        flags.add("shadow_ai_tool_detected")
     return sorted(flags)
 
 
@@ -2221,6 +2264,12 @@ def _ingest_system_event(
         import json as _json
         if created_at is None:
             created_at = datetime.now(timezone.utc)
+        # Captured before _encrypt_sensitive_details reassigns raw_payload
+        # below — the passive shadow-AI-candidate hook after the insert
+        # needs the PLAINTEXT payload (this is the one place in the whole
+        # pipeline that ever holds it), not the encrypted blob that gets
+        # written to the DB.
+        plaintext_payload = raw_payload
         if raw_payload:
             raw_payload = _encrypt_sensitive_details(raw_payload)
         with db.get_conn() as conn:
@@ -2251,7 +2300,22 @@ def _ingest_system_event(
                 )
                 row = cur.fetchone()
             conn.commit()
-        return row[0] if row else None
+        new_id = row[0] if row else None
+
+        # Passive shadow-AI detection: a genuinely new row (not a dedup
+        # no-op) carrying the flag means an AI-vendor/tool keyword matched
+        # somewhere in this event — propose it for AI Governance review.
+        # Own try/except: a failure here must never make the primary
+        # telemetry insert above look like it failed too.
+        if new_id is not None and "shadow_ai_tool_detected" in (risk_flags or []):
+            try:
+                tool_name = _extract_ai_tool_name(plaintext_payload or {}, resource or "")
+                if tool_name:
+                    db.upsert_ai_shadow_candidate(tool_name, (plaintext_payload or {}).get("entitlement") or resource, actor)
+            except Exception as exc:
+                logger.warning("shadow-AI candidate upsert failed (non-fatal): %s", exc)
+
+        return new_id
     except Exception as exc:
         logger.warning("_ingest_system_event error: %s", exc)
         return None
