@@ -1388,7 +1388,28 @@ function stepColor(label, theme) {
   return _stepColorCache.get(label);
 }
 
-function buildCaseDfgGraph(events) {
+// Mirrors process_mining_tool.py's classify_case_process: which
+// PROCESS_TEMPLATES id a case's step SET best matches, by Jaccard overlap
+// (order is irrelevant here — that's conformance checking's job, not this
+// filter's). `processes` is the {id, label, steps}[] list GET
+// /process-mining/processes returns — kept in sync with the server's own
+// PROCESS_TEMPLATES rather than duplicating that dict client-side.
+function classifyCaseProcess(stepLabels, processes) {
+  const stepSet = new Set(stepLabels);
+  if (!stepSet.size || !processes?.length) return null;
+  let bestId = null, bestScore = 0;
+  for (const p of processes) {
+    const tmplSet = new Set(p.steps);
+    const overlap = [...stepSet].filter(s => tmplSet.has(s));
+    if (!overlap.length) continue;
+    const union = new Set([...stepSet, ...tmplSet]);
+    const jaccard = overlap.length / union.size;
+    if (jaccard > bestScore) { bestScore = jaccard; bestId = p.id; }
+  }
+  return bestId;
+}
+
+function buildCaseDfgGraph(events, process, processes) {
   const byCase = new Map();
   events.forEach(e => {
     if (!e.case_id) return;
@@ -1410,8 +1431,14 @@ function buildCaseDfgGraph(events) {
     edgeCount.set(k, (edgeCount.get(k) || 0) + 1);
   }
 
+  let caseCount = 0;
   byCase.forEach(stepsRaw => {
     const steps = [...stepsRaw].sort((a, b) => new Date(a.adjudicated_at) - new Date(b.adjudicated_at));
+    if (process) {
+      const stepLabels = steps.map(s => s.process_step || "Unknown step");
+      if (classifyCaseProcess(stepLabels, processes) !== process) return;
+    }
+    caseCount += 1;
     let prevId = node(CASE_FLOW_START);
     steps.forEach(s => {
       const id = node(s.process_step || "Unknown step");
@@ -1420,13 +1447,14 @@ function buildCaseDfgGraph(events) {
     });
     edge(prevId, node(CASE_FLOW_END));
   });
+  if (!caseCount) return null;
 
   const nodes = [...nodeMeta.values()];
   const edges = [...edgeCount.entries()].map(([k, value]) => {
     const [source, target] = k.split("|");
     return { source, target, value };
   });
-  return { nodes, edges, caseCount: byCase.size };
+  return { nodes, edges, caseCount };
 }
 
 export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
@@ -1436,9 +1464,11 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
   const zoomApiRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
   const [expanded, setExpanded] = useState(false);
+  const [process, setProcess] = useState(null);
+  const processes = useProcessList();
   const paneHeight = expanded ? 900 : 520;
 
-  const graph = useMemo(() => buildCaseDfgGraph(rawEvents), [rawEvents]);
+  const graph = useMemo(() => buildCaseDfgGraph(rawEvents, process, processes), [rawEvents, process, processes]);
   const hasData = !!graph && graph.nodes.length > 0;
 
   useEffect(() => {
@@ -1448,8 +1478,10 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     const reducedMotion = window.matchMedia
       ? window.matchMedia("(prefers-reduced-motion: reduce)").matches : false;
 
+    // TB (top-to-bottom) rather than LR — the graph rotated 90° clockwise,
+    // so ▶ Start sits at top and ■ End at bottom instead of left/right.
     const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: "LR", nodesep: 14, ranksep: 90, marginx: 10, marginy: 10 });
+    g.setGraph({ rankdir: "TB", nodesep: 14, ranksep: 90, marginx: 10, marginy: 10 });
     g.setDefaultEdgeLabel(() => ({}));
     graph.nodes.forEach(n => {
       const w = Math.min(200, Math.max(70, n.label.length * 6.6 + 24));
@@ -1564,9 +1596,14 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
         ? `${graph.caseCount} tracked transaction${graph.caseCount !== 1 ? "s" : ""} in the last ${days} days — real step-to-step sequences, not a categorical breakdown. Populated today by the O2C/P2P/Inventory Cycle synthetic generator; a real ERP connector emitting case_id/process_step would appear here the same way. Scroll to zoom, drag to pan.`
         : `Real transaction lifecycles over the last ${days} days, traced step by step — needs events carrying a case_id (see generate_o2c_p2p_synthetic_log.py).`}
       error={error && !hasData ? error : null}
-      empty={!loading && !hasData && !error ? `No case-tracked transactions in the last ${days} days yet — run generate_o2c_p2p_synthetic_log.py to populate this view, or wait for a real case-tracked producer.` : null}
+      empty={!loading && !hasData && !error
+        ? (process
+          ? `No cases classified into this process in the last ${days} days — try "All processes" or a different one.`
+          : `No case-tracked transactions in the last ${days} days yet — run generate_o2c_p2p_synthetic_log.py to populate this view, or wait for a real case-tracked producer.`)
+        : null}
       loading={loading && !hasData}
       height={paneHeight}
+      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
