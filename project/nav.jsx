@@ -32,7 +32,7 @@ const NAV_SECTIONS = [
       // the UI — visible only where it was safe to poke at directly. Now
       // that AiSystemForm exists, it's a normal screen-permission-gated item
       // like everything else in this list.
-      { id: "ai_governance", icon: "shield", l: "AI Governance" },
+      //{ id: "ai_governance", icon: "shield", l: "AI Governance" },
       { id: "posturetrend", icon: "trend", l: "Risk Posture" },
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping", divider: "Scoping" },

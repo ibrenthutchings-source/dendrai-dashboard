@@ -17,7 +17,7 @@ const WORKFLOW_STAGES = [
     items: [
       { screen: "pipeline", label: "Assess Risk", desc: "The predictive-risk engine — a six-stage AI loop turns live EDGAR filings into scored, forecasted risks with Beneish M-Score and Altman Z''-Score distress flags." },
       { screen: "aiinventory", label: "AI System Ledger", desc: "The EU AI Act-style register — every AI system in use, classified by risk tier and mapped to its governance obligations." },
-      { screen: "ai_governance", label: "AI Governance", desc: "A behavioral audit that tests whether an AI system's attested controls — human review, a current assessment — actually hold up, not just whether they were claimed." },
+      //{ screen: "ai_governance", label: "AI Governance", desc: "A behavioral audit that tests whether an AI system's attested controls — human review, a current assessment — actually hold up, not just whether they were claimed." },
       { screen: "posturetrend", label: "Risk Posture", desc: "Point-in-time risk snapshots charted run over run, so you can see whether the entity is genuinely improving or quietly deteriorating." },
       { screen: "rrreview", label: "Risk & Control Ledger", desc: "The living risk register with its control mappings — Save All generates reviewed Risk-as-Code and Controls-as-Code together, with the relationship between them embedded in both artifacts." },
       { screen: "sox", label: "SOX Scoping", desc: "AI-scoped ICFR — materiality and risk drive which accounts and systems fall in scope, not a static checklist." },
