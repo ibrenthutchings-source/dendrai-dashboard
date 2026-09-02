@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from xml.etree import ElementTree as ET
 
-from edgar_tool import get_company_info, parse_filings, _filing_index, _get_safe, EDGAR_BASE
+from edgar_tool import get_company_info, parse_filings, _filing_index, _get_safe, EDGAR_BASE, fetch_xbrl_facts
 
 # ── XBRL namespaces ──────────────────────────────────────────────────────────
 _NS = {
@@ -234,6 +234,172 @@ def extract_segments_from_xml(xml_text: str, tags: Optional[list[str]] = None) -
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Financial enrichment — gross profit / operating income / net income /
+# assets / margins per segment member, filed when the filer reports it
+# dimensionally, else estimated as consolidated_value * revenue_pct. Closes
+# the gap sox-scope.jsx's Segments tab used to leave entirely to manual
+# entry: revenue/revenue_pct come from extract_segments_from_xml above, and
+# only a filer's own consolidated Revenue could ever be looked up
+# automatically — every other financial field was a blank text box.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Reuses edgar_tool.XBRL_METRICS's own tag choices for these concepts so a
+# segment-level figure and its consolidated counterpart are always read off
+# the same taxonomy tag.
+_DERIVED_METRIC_TAGS = {
+    "gross_profit":     ["GrossProfit"],
+    "operating_income": ["OperatingIncomeLoss"],
+    "net_income":       ["NetIncomeLoss"],
+    "assets":           ["Assets"],
+}
+# fetch_xbrl_facts' own metric-name keys for the same four concepts, for
+# reading the CONSOLIDATED (default-member, no dimension) figure to
+# allocate from when a segment doesn't report a metric dimensionally.
+_CONSOLIDATED_METRIC_NAMES = {
+    "gross_profit": "GrossProfit", "operating_income": "OperatingIncome",
+    "net_income": "NetIncome", "assets": "TotalAssets",
+}
+
+
+def _filed_member_values(xml_text: str, axis_type: str, period_start: str, period_end: str,
+                          field: str) -> dict[str, float]:
+    """{member: value} for one derived metric (gross_profit/operating_income/
+    net_income/assets), restricted to the same (axis_type, period) as an
+    already-extracted revenue breakdown — a filer that reports segment
+    operating income the same way it reports segment revenue (common under
+    ASC 280's "measure of segment profit or loss" requirement) shows up
+    here instead of being estimated below. Re-walks the same xml_text
+    extract_segments_from_xml already parsed for revenue — one extra pass
+    per metric, not a second fetch."""
+    extracted = extract_segments_from_xml(xml_text, tags=_DERIVED_METRIC_TAGS[field])
+    for b in extracted["breakdowns"]:
+        if b["segment_type"] == axis_type and b["period_start"] == period_start and b["period_end"] == period_end:
+            return {m["segment_name"]: m["revenue"] for m in b["members"]}
+    return {}
+
+
+def _consolidated_value_for_period(xbrl_facts: dict, metric: str, period_end: str,
+                                    period_start: str = "") -> Optional[float]:
+    """The consolidated (default-member) data point matching a segment
+    breakdown's own period — the fiscal window a % allocation needs to
+    allocate FROM, not just "whichever value fetch_xbrl_facts happened to
+    return most recently." Assets is an instant (balance-sheet) fact with
+    no start date; the flow metrics (gross profit/operating income/net
+    income) are matched on both start and end so a quarterly segment figure
+    is never allocated against an annual or YTD consolidated total."""
+    points = (xbrl_facts.get(metric) or {}).get("data_points") or []
+    for p in points:
+        if p.get("end") != period_end:
+            continue
+        if period_start and p.get("start") and p.get("start") != period_start:
+            continue
+        return p.get("val")
+    return None
+
+
+def _compute_margins(revenue: Optional[float], gross_profit: Optional[float],
+                      operating_income: Optional[float], net_income: Optional[float]) -> dict[str, Optional[float]]:
+    """Pure ratio math on whatever revenue/gross_profit/operating_income/
+    net_income ended up populated, filed or estimated alike — margins are
+    never independently sourced or estimated, only ever derived from those
+    four."""
+    def pct(numerator):
+        return round(numerator / revenue * 100, 2) if revenue and numerator is not None else None
+    return {
+        "gross_margin_pct": pct(gross_profit),
+        "op_margin_pct": pct(operating_income),
+        "net_margin_pct": pct(net_income),
+    }
+
+
+def enrich_breakdown_financials(xml_text: str, breakdown: dict, xbrl_facts: dict) -> dict:
+    """Fills each member of an already-extracted, reconciled revenue
+    breakdown with gross_profit/operating_income/net_income/assets and the
+    three margin ratios. Mutates and returns `breakdown`.
+
+    Each of the four derived fields is filed (read dimensionally off the
+    same filing) when the filer reports it that way, else estimated as
+    consolidated_value * (that member's own revenue_pct) — the standard
+    allocation convention an audit workpaper uses when a filer doesn't
+    break a figure out by segment. Each member's `financials_source` is
+    'filed' (every derived field that resolved was filed), 'estimated'
+    (none were), 'mixed' (some of each), or 'unavailable' (neither this
+    filing nor its consolidated facts had the underlying figure at all —
+    left null, never a fabricated 0)."""
+    axis_type, start, end = breakdown["segment_type"], breakdown["period_start"], breakdown["period_end"]
+    filed_by_field = {
+        field: _filed_member_values(xml_text, axis_type, start, end, field)
+        for field in _DERIVED_METRIC_TAGS
+    }
+    for m in breakdown["members"]:
+        name = m["segment_name"]
+        sources = set()
+        for field in _DERIVED_METRIC_TAGS:
+            filed_val = filed_by_field[field].get(name)
+            if filed_val is not None:
+                m[field] = filed_val
+                sources.add("filed")
+                continue
+            consolidated = _consolidated_value_for_period(
+                xbrl_facts, _CONSOLIDATED_METRIC_NAMES[field], end,
+                start if field != "assets" else "",
+            )
+            if consolidated is not None and m.get("revenue_pct") is not None:
+                m[field] = round(consolidated * m["revenue_pct"] / 100, 2)
+                sources.add("estimated")
+            else:
+                m[field] = None
+        m["financials_source"] = (
+            "filed" if sources == {"filed"} else
+            "estimated" if sources == {"estimated"} else
+            "mixed" if sources else "unavailable"
+        )
+        m.update(_compute_margins(m.get("revenue"), m.get("gross_profit"), m.get("operating_income"), m.get("net_income")))
+    return breakdown
+
+
+def estimate_segment_financials(ticker: str, revenue_pct: float) -> dict[str, Any]:
+    """Percentage-of-consolidated estimate for a segment that ISN'T broken
+    out anywhere in the filer's own XBRL — e.g. an internally-defined
+    business unit an auditor is scoping by hand, with nothing for
+    enrich_breakdown_financials above to key off. Allocates the company's
+    most recently reported consolidated Revenue/GrossProfit/OperatingIncome/
+    NetIncome/TotalAssets by `revenue_pct`, then derives the three margin
+    ratios from the result — the manual-entry-form equivalent of what
+    enrich_breakdown_financials does for a filed breakdown. Always
+    source='estimated'; never a substitute for real filed dimensional data
+    when persist_segments below finds it."""
+    try:
+        meta, _ = get_company_info(ticker)
+    except ValueError as e:
+        return {"estimated": False, "reason": str(e)}
+
+    facts = fetch_xbrl_facts(meta["cik_plain"])
+    if not facts or "Revenue" not in facts:
+        return {"estimated": False, "reason": "No consolidated XBRL facts available for this ticker"}
+
+    pct = revenue_pct / 100.0
+    values: dict[str, Optional[float]] = {}
+    basis: dict[str, dict] = {}
+    for field, metric in {"revenue": "Revenue", **_CONSOLIDATED_METRIC_NAMES}.items():
+        points = (facts.get(metric) or {}).get("data_points") or []
+        point = points[0] if points else None  # fetch_xbrl_facts sorts newest-`end`-first
+        if point is None or point.get("val") is None:
+            values[field] = None
+            continue
+        values[field] = round(point["val"] * pct, 2)
+        basis[field] = {"consolidated_value": point["val"], "period_end": point.get("end"), "form": point.get("form")}
+
+    result = {
+        "estimated": True, "ticker": ticker.upper(), "revenue_pct": revenue_pct,
+        "source": "estimated", "basis": basis, **values,
+    }
+    result.update(_compute_margins(values.get("revenue"), values.get("gross_profit"),
+                                    values.get("operating_income"), values.get("net_income")))
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # End-to-end: ticker -> latest filing -> extraction
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -283,6 +449,19 @@ def fetch_segments(ticker: str, form_types: Optional[set[str]] = None) -> dict[s
     result = {**base, **extract_segments_from_xml(xml_text)}
     if not result["extracted"]:
         result["reason"] = "No dimensional segment/geography revenue facts found in this filing"
+        return result
+
+    # gross_profit/operating_income/net_income/assets/margins per member —
+    # filed dimensionally when reported, else allocated from the
+    # consolidated figure by revenue_pct. Best-effort: a companyfacts fetch
+    # failure here must not blank out the revenue breakdown this call
+    # already successfully extracted.
+    try:
+        xbrl_facts = fetch_xbrl_facts(cik) or {}
+    except Exception:
+        xbrl_facts = {}
+    for b in result["breakdowns"]:
+        enrich_breakdown_financials(xml_text, b, xbrl_facts)
     return result
 
 
@@ -340,15 +519,35 @@ def persist_segments(ticker: str, form_types: Optional[set[str]] = None) -> dict
             })
             continue
         for m in b["members"]:
+            # 'filed' only if every derived financial field that resolved
+            # at all came straight off this filing's own dimensional facts;
+            # a member with anything allocated by revenue_pct (or nothing
+            # resolvable at all) is 'filed+estimated' — the revenue/
+            # revenue_pct themselves are always filed at this point (only
+            # reconciled breakdowns reach this loop), but a reviewer must
+            # still be able to tell that gross_profit/operating_income/
+            # net_income/assets weren't all independently verified figures.
+            fin_source = m.get("financials_source")
+            row_source = "filed" if fin_source == "filed" else "filed+estimated"
             db.upsert_sox_segment(company_id, None, {
                 "fiscal_year": result["fiscal_year"],
                 "segment_type": axis,
                 "segment_name": m["segment_name"],
                 "revenue": m["revenue"],
                 "revenue_pct": m["revenue_pct"],
-                "source": "filed",
+                "gross_profit": m.get("gross_profit"),
+                "operating_income": m.get("operating_income"),
+                "net_income": m.get("net_income"),
+                "assets": m.get("assets"),
+                "gross_margin_pct": m.get("gross_margin_pct"),
+                "op_margin_pct": m.get("op_margin_pct"),
+                "net_margin_pct": m.get("net_margin_pct"),
+                "source": row_source,
             })
-            result["persisted"].append({"segment_type": axis, "segment_name": m["segment_name"]})
+            result["persisted"].append({
+                "segment_type": axis, "segment_name": m["segment_name"],
+                "financials_source": fin_source,
+            })
 
     return result
 

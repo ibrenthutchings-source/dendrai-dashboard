@@ -821,12 +821,33 @@ function SystemsPanel({ systems, ticker, onAdd, onRemove }) {
 }
 
 
-// ── Geography / segment data manager (DB-backed, edit + save) ────────────────
+// ── Segment data manager (DB-backed, edit + save) ─────────────────────────────
 
 const SEGMENT_TYPE_LABELS = {
   geography: "Geography", business_segment: "Business Segment", product_line: "Product Line",
 };
 const SEGMENT_TYPES = Object.entries(SEGMENT_TYPE_LABELS).map(([v, l]) => ({ value: v, label: l }));
+
+// Provenance pill for a saved segment row — mirrors the balance_source ===
+// "estimated" convention already used elsewhere on this screen (Accounts
+// tab). 'filed': every derived financial field was read straight off the
+// filing. 'filed+estimated': revenue is filed but gross_profit/operating_
+// income/net_income/assets/margins are partly or wholly allocated by
+// revenue_pct (edgar_segments.persist_segments). 'manual'/anything else:
+// entered by hand.
+const _SEGMENT_SOURCE_META = {
+  filed:            { label: "Filed",     title: "Every financial field on this row was read directly off the filer's own XBRL.", color: "var(--green-ink)" },
+  "filed+estimated": { label: "Filed+est.", title: "Revenue is filed; gross profit / operating income / net income / assets weren't all broken out by the filer, so some are allocated from consolidated totals by revenue %.", color: "var(--amber-ink)" },
+};
+function SegmentSourceBadge({ source }) {
+  const meta = _SEGMENT_SOURCE_META[source] || { label: "Manual", title: "Entered by hand.", color: "var(--ink-4)" };
+  return (
+    <span className="mono" title={meta.title} style={{
+      fontSize: 9, padding: "1px 6px", borderRadius: 999, border: `1px solid ${meta.color}`,
+      color: meta.color, flexShrink: 0,
+    }}>{meta.label}</span>
+  );
+}
 
 const EMPTY_SEGMENT_FORM = {
   segment_name: "", segment_type: "geography",
@@ -865,9 +886,54 @@ function segToForm(seg) {
   };
 }
 
-function SegmentFieldGrid({ form, setForm }) {
+// Auto-fills gross_profit/operating_income/net_income/assets + all three
+// margins from POST /sox/segments/{ticker}/estimate-financials — the
+// percentage-of-consolidated allocation edgar_segments.estimate_segment_
+// financials computes for a segment with no filed breakdown of its own
+// (import-xbrl, on SegmentsManager's toolbar, is the filed-data path; this
+// is the fallback for a segment an auditor is defining by hand). Requires
+// revenue_pct — that's the % being allocated by — so the button stays
+// disabled until one is entered.
+function useFinancialsEstimate(ticker, form, setForm) {
+  const [estimating, setEstimating] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  async function run() {
+    const pct = Number(form.revenue_pct);
+    if (!ticker || !form.revenue_pct || Number.isNaN(pct)) {
+      setError("Enter Revenue % of total first.");
+      return;
+    }
+    setEstimating(true); setError(null);
+    try {
+      const res = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/estimate-financials?revenue_pct=${pct}`,
+        { method: "POST", credentials: "include" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Estimate failed");
+      if (data.estimated === false) throw new Error(data.reason || "No consolidated data available for this ticker");
+      const str = v => (v == null ? "" : String(v));
+      setForm(f => ({
+        ...f,
+        revenue: f.revenue || str(data.revenue),
+        gross_profit: str(data.gross_profit), operating_income: str(data.operating_income),
+        net_income: str(data.net_income), assets: str(data.assets),
+        gross_margin_pct: str(data.gross_margin_pct), op_margin_pct: str(data.op_margin_pct),
+        net_margin_pct: str(data.net_margin_pct),
+      }));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setEstimating(false);
+    }
+  }
+
+  return { run, estimating, error };
+}
+
+function SegmentFieldGrid({ form, setForm, ticker }) {
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
   const inputStyle = {fontSize: 11, padding: "4px 8px", border: "1px solid var(--line)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)"};
+  const estimate = useFinancialsEstimate(ticker, form, setForm);
   return (
     <>
       <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
@@ -882,6 +948,14 @@ function SegmentFieldGrid({ form, setForm }) {
         <input placeholder="Revenue % of total" value={form.revenue_pct} onChange={set("revenue_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
         <input placeholder="Rev. growth YoY %" value={form.rev_growth_yoy_pct} onChange={set("rev_growth_yoy_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
       </div>
+      <div style={{display: "flex", gap: 8, alignItems: "center", marginBottom: 8}}>
+        <button type="button" className="btn btn-sm" style={{fontSize: 10, padding: "3px 10px"}}
+          onClick={estimate.run} disabled={estimate.estimating}
+          title="Fill gross profit / operating income / net income / assets / margins below by allocating this ticker's most recent consolidated figures by Revenue % of total.">
+          {estimate.estimating ? "Calculating…" : "Calculate from % of consolidated"}
+        </button>
+        {estimate.error && <span style={{fontSize: 10, color: "var(--red-ink)"}}>{estimate.error}</span>}
+      </div>
       <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8}}>
         <input placeholder="Gross profit $" value={form.gross_profit} onChange={set("gross_profit")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
         <input placeholder="Operating income $" value={form.operating_income} onChange={set("operating_income")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
@@ -892,6 +966,9 @@ function SegmentFieldGrid({ form, setForm }) {
         <input placeholder="Gross margin %" value={form.gross_margin_pct} onChange={set("gross_margin_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
         <input placeholder="Op. margin %" value={form.op_margin_pct} onChange={set("op_margin_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
         <input placeholder="Net margin %" value={form.net_margin_pct} onChange={set("net_margin_pct")} style={{...inputStyle, flex: 1, minWidth: 100}}/>
+      </div>
+      <div style={{fontSize: 9.5, color: "var(--ink-4)", marginBottom: 8}}>
+        Figures filled by "Calculate from %" are estimates (consolidated × Revenue %), not filed data — review before saving.
       </div>
     </>
   );
@@ -907,6 +984,8 @@ function SegmentsManager({ ticker, fiscalYear }) {
   const [editingId, setEditingId] = React.useState(null);
   const [editForm, setEditForm]   = React.useState(EMPTY_SEGMENT_FORM);
   const [confirmDelete, setConfirmDelete] = React.useState(null);
+  const [importing, setImporting] = React.useState(false);
+  const [importResult, setImportResult] = React.useState(null);
 
   const reload = React.useCallback(async () => {
     if (!ticker || !fiscalYear) return;
@@ -975,23 +1054,61 @@ function SegmentsManager({ ticker, fiscalYear }) {
     }
   }
 
+  // Pulls segment/geography revenue straight off the company's latest
+  // 10-K/10-Q XBRL (edgar_segments.py) — filed dimensionally when the
+  // filer reports it that way, otherwise allocated from consolidated
+  // totals by revenue_pct (source 'filed' vs 'filed+estimated' on each
+  // resulting row — see the badge in the list below). Only reconciled
+  // breakdowns are written; anything skipped is reported here, not silently
+  // dropped.
+  async function handleImportXbrl() {
+    setImporting(true); setError(null); setImportResult(null);
+    try {
+      const res = await fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/import-xbrl`,
+        { method: "POST", credentials: "include" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Import failed");
+      setImportResult(data);
+      if (data.persisted?.length) await reload();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <div style={{background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "12px 16px", marginBottom: 12}}>
-      <div style={{display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10}}>
-        <SectionHead title="GEOGRAPHY & SEGMENT DATA" count={segments.length || null} countColor="var(--acc-soft)"/>
-        <button className="btn btn-sm" style={{fontSize: 10, padding: "3px 10px"}} onClick={() => setShowForm(s => !s)}>
-          <Icon name="plus" size={10}/> Add segment
-        </button>
+      <div style={{display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8, flexWrap: "wrap"}}>
+        <SectionHead title="SEGMENT DATA" count={segments.length || null} countColor="var(--acc-soft)"/>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" style={{fontSize: 10, padding: "3px 10px"}} onClick={handleImportXbrl} disabled={importing || !ticker}
+            title="Auto-fill segment/geography revenue (and, where filed, gross profit) from the latest 10-K/10-Q XBRL.">
+            {importing ? "Importing…" : "⇩ Import from filings"}
+          </button>
+          <button className="btn btn-sm" style={{fontSize: 10, padding: "3px 10px"}} onClick={() => setShowForm(s => !s)}>
+            <Icon name="plus" size={10}/> Add segment
+          </button>
+        </div>
       </div>
 
       {error && (
         <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", background: "var(--red-soft)", padding: "6px 10px", borderRadius: 4, marginBottom: 10}}>{error}</div>
       )}
 
+      {importResult && (
+        <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", padding: "6px 10px", borderRadius: 4, marginBottom: 10}}>
+          {importResult.extracted === false
+            ? `Nothing imported — ${importResult.reason || "no dimensional segment data found"}.`
+            : `Imported ${importResult.persisted?.length || 0} segment${importResult.persisted?.length === 1 ? "" : "s"} from ${importResult.source_form || "the latest filing"}` +
+              (importResult.skipped?.length ? `; ${importResult.skipped.length} skipped (${importResult.skipped.map(s => s.reason).join("; ")}).` : ".")}
+        </div>
+      )}
+
       {showForm && (
         <div style={{background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", borderRadius: 6, padding: "12px 14px", marginBottom: 12}}>
           <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", marginBottom: 8}}>NEW SEGMENT · {fiscalYear}</div>
-          <SegmentFieldGrid form={addForm} setForm={setAddForm}/>
+          <SegmentFieldGrid form={addForm} setForm={setAddForm} ticker={ticker}/>
           <div style={{display: "flex", gap: 8}}>
             <button className="btn btn-sm btn-approve" onClick={handleAdd} disabled={saving}>{saving ? "Saving…" : "Save segment"}</button>
             <button className="btn btn-sm" onClick={() => setShowForm(false)}>Cancel</button>
@@ -1003,7 +1120,8 @@ function SegmentsManager({ ticker, fiscalYear }) {
 
       {!loading && segments.length === 0 && !showForm && (
         <div style={{fontSize: 11, color: "var(--ink-4)", padding: "8px 0"}}>
-          No geography or segment data on file for {fiscalYear}. Click "Add segment" to enter revenue and financial breakdowns.
+          No segment data on file for {fiscalYear}. Click "Import from filings" to auto-fill from the latest 10-K/10-Q,
+          or "Add segment" to enter one by hand.
         </div>
       )}
 
@@ -1019,6 +1137,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
                 <div style={{flex: 1, minWidth: 0}}>
                   <span style={{fontSize: 11.5, fontWeight: 500, color: "var(--ink)"}}>{seg.segment_name}</span>
                 </div>
+                <SegmentSourceBadge source={seg.source}/>
                 <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{fmtM(seg.revenue)}</span>
                 <span className="mono" style={{fontSize: 10, color: "var(--ink-4)", minWidth: 44, textAlign: "right"}}>{seg.revenue_pct != null ? `${seg.revenue_pct.toFixed(1)}%` : "—"}</span>
                 <button className="btn btn-sm" style={{padding: "2px 7px", fontSize: 9}}
@@ -1030,7 +1149,7 @@ function SegmentsManager({ ticker, fiscalYear }) {
               </div>
             ) : (
               <div style={{background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px"}}>
-                <SegmentFieldGrid form={editForm} setForm={setEditForm}/>
+                <SegmentFieldGrid form={editForm} setForm={setEditForm} ticker={ticker}/>
                 <div style={{display: "flex", gap: 8}}>
                   <button className="btn btn-sm btn-approve" onClick={() => handleSaveEdit(seg)} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                   <button className="btn btn-sm" onClick={() => setEditingId(null)}>Cancel</button>
@@ -1569,7 +1688,7 @@ function SoxScopePanel({
     { id: "accounts",  label: "Accounts" },
     { id: "processes", label: "Processes" },
     { id: "systems",   label: "Systems" },
-    ...(displayScope ? [{ id: "segments", label: "Geography" }] : []),
+    ...(displayScope ? [{ id: "segments", label: "Segments" }] : []),
   ];
 
   return (

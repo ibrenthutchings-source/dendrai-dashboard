@@ -21,7 +21,8 @@ Endpoints:
     POST /sox/hitl/coverage-approvals         Gate S2 — per-process coverage HITL decisions
     GET  /sox/hitl/gate-status/{run_id}       Gate S1/S2 status for a run
     POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
-    POST /sox/segments/{ticker}/import-xbrl   Auto-ingest segment/geography revenue from the latest 10-K/10-Q XBRL
+    POST /sox/segments/{ticker}/import-xbrl   Auto-ingest segment/geography financials from the latest 10-K/10-Q XBRL
+    POST /sox/segments/{ticker}/estimate-financials  % -of-consolidated estimate for a hand-defined segment
     GET  /sox/segments/{ticker}/latest        Most recent fiscal year's segments, no fy lookup required
     GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
     DELETE /sox/segments/{ticker}/{id}        Delete a geography/segment financial record
@@ -471,14 +472,35 @@ def import_xbrl_segments(ticker: str):
     above describes; that auto-ingestion didn't actually exist until now.
 
     Only breakdowns that reconcile to the filing's own consolidated revenue
-    (within tolerance) are written, tagged source='filed' so they're never
-    confused with a manually-entered row. Unreconciled or unextractable
-    breakdowns are reported in the response but not persisted — see
-    edgar_segments.persist_segments's docstring for why.
+    (within tolerance) are written, tagged source='filed' (every derived
+    financial field was itself filed dimensionally) or 'filed+estimated'
+    (revenue is filed; gross_profit/operating_income/net_income/assets/
+    margins were partly or wholly allocated from consolidated totals by
+    revenue_pct — see edgar_segments.enrich_breakdown_financials) so a
+    manually-entered row is never confused with either. Unreconciled or
+    unextractable breakdowns are reported in the response but not
+    persisted — see edgar_segments.persist_segments's docstring for why.
     """
     import edgar_segments
     result = edgar_segments.persist_segments(ticker)
     return result
+
+
+@router.post("/segments/{ticker}/estimate-financials")
+def estimate_sox_segment_financials(ticker: str, revenue_pct: float = Query(..., ge=0, le=100)):
+    """
+    Percentage-of-consolidated estimate for a segment/geography an auditor
+    is defining by hand (an internal business unit, say) that has no filed
+    XBRL breakdown for import-xbrl above to pick up — allocates the
+    company's most recently reported consolidated Revenue/GrossProfit/
+    OperatingIncome/NetIncome/TotalAssets by `revenue_pct` and derives the
+    three margin ratios, so the Add/Edit segment form's financial fields
+    are a reviewable starting point instead of eight blank text boxes.
+    Always source='estimated'; never persisted by this endpoint — the
+    caller still saves via POST /segments/{ticker} once satisfied.
+    """
+    import edgar_segments
+    return edgar_segments.estimate_segment_financials(ticker, revenue_pct)
 
 
 @router.get("/segments/{ticker}/latest")

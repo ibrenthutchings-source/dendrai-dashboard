@@ -17,6 +17,7 @@ since it depends on EDGAR's live rate limits and current filings.
 
 from __future__ import annotations
 
+import copy
 import os
 from unittest.mock import patch
 
@@ -161,12 +162,14 @@ class TestMultiAxisContextsExcluded:
 
 class TestPersistSegments:
     """persist_segments() orchestration — mocked db/network, no live calls.
-    Verifies the three honesty rules that matter most here: unreconciled
+    Verifies the honesty rules that matter most here: unreconciled
     breakdowns are never written, only the latest period per axis is
     written (the table isn't a time series), and persisted rows are
-    stamped source='filed' so they're never mistaken for a manual entry."""
+    stamped source='filed' or 'filed+estimated' (never bare 'filed' unless
+    every derived financial field really was filed dimensionally) so
+    neither is ever mistaken for a manual entry or for each other."""
 
-    def _fake_result(self, *, reconciled_current=True, reconciled_prior=True):
+    def _fake_result(self, *, reconciled_current=True, reconciled_prior=True, financials_source="filed"):
         return {
             "extracted": True,
             "ticker": "ON",
@@ -177,8 +180,10 @@ class TestPersistSegments:
                     "period_start": "2026-04-04", "period_end": "2026-07-03",
                     "reconciled": reconciled_current,
                     "members": [
-                        {"segment_name": "PowerSolutionsGroup", "revenue": 829_000_000.0, "revenue_pct": 51.7},
-                        {"segment_name": "AnalogMixedSignalGroup", "revenue": 545_700_000.0, "revenue_pct": 34.0},
+                        {"segment_name": "PowerSolutionsGroup", "revenue": 829_000_000.0, "revenue_pct": 51.7,
+                         "financials_source": financials_source},
+                        {"segment_name": "AnalogMixedSignalGroup", "revenue": 545_700_000.0, "revenue_pct": 34.0,
+                         "financials_source": financials_source},
                     ],
                 },
                 {
@@ -188,7 +193,8 @@ class TestPersistSegments:
                     "period_start": "2025-04-05", "period_end": "2025-07-04",
                     "reconciled": reconciled_prior,
                     "members": [
-                        {"segment_name": "PowerSolutionsGroup", "revenue": 698_200_000.0, "revenue_pct": 47.5},
+                        {"segment_name": "PowerSolutionsGroup", "revenue": 698_200_000.0, "revenue_pct": 47.5,
+                         "financials_source": financials_source},
                     ],
                 },
             ],
@@ -208,8 +214,8 @@ class TestPersistSegments:
         assert 698_200_000.0 not in periods_seen  # prior-year PSG revenue must be excluded
         assert len(result["persisted"]) == 2
 
-    def test_stamps_source_as_filed(self):
-        with patch.object(es, "fetch_segments", return_value=self._fake_result()), \
+    def test_stamps_source_as_filed_when_every_derived_field_was_filed(self):
+        with patch.object(es, "fetch_segments", return_value=self._fake_result(financials_source="filed")), \
              patch.object(es, "get_company_info", return_value=({"cik": "0001097864", "ticker": "ON"}, {})), \
              patch("db.is_available", return_value=True), \
              patch("db.upsert_company", return_value=42), \
@@ -218,6 +224,23 @@ class TestPersistSegments:
 
         for call in mock_upsert.call_args_list:
             assert call.args[2]["source"] == "filed"
+
+    def test_stamps_source_as_filed_plus_estimated_when_a_field_was_allocated(self):
+        """Revenue/revenue_pct are always filed at this point (only
+        reconciled breakdowns reach persist_segments' write loop), but
+        gross_profit/operating_income/net_income/assets are commonly
+        allocated by revenue_pct rather than filed dimensionally — the row
+        must say so, not claim 'filed' for figures that weren't."""
+        for fin_source in ("estimated", "mixed", None):
+            with patch.object(es, "fetch_segments", return_value=self._fake_result(financials_source=fin_source)), \
+                 patch.object(es, "get_company_info", return_value=({"cik": "0001097864", "ticker": "ON"}, {})), \
+                 patch("db.is_available", return_value=True), \
+                 patch("db.upsert_company", return_value=42), \
+                 patch("db.upsert_sox_segment") as mock_upsert:
+                es.persist_segments("ON")
+
+            for call in mock_upsert.call_args_list:
+                assert call.args[2]["source"] == "filed+estimated"
 
     def test_unreconciled_breakdown_is_skipped_not_written(self):
         with patch.object(es, "fetch_segments", return_value=self._fake_result(reconciled_current=False)), \
@@ -292,3 +315,162 @@ class TestMemberNameCleaning:
 
     def test_no_member_suffix_left_alone(self):
         assert es._clean_member_name("us-gaap:NonUsMember") == "NonUs"
+
+
+# ── Financial enrichment: gross_profit/operating_income/net_income/assets/
+# margins per segment member — filed dimensionally when reported, else
+# estimated as consolidated_value * revenue_pct. See edgar_segments.py's
+# "Financial enrichment" section. ──────────────────────────────────────────
+
+class TestComputeMargins:
+    def test_computes_all_three_when_every_input_present(self):
+        m = es._compute_margins(revenue=1000.0, gross_profit=400.0, operating_income=200.0, net_income=100.0)
+        assert m == {"gross_margin_pct": 40.0, "op_margin_pct": 20.0, "net_margin_pct": 10.0}
+
+    def test_none_for_a_missing_numerator_not_zero(self):
+        m = es._compute_margins(revenue=1000.0, gross_profit=None, operating_income=200.0, net_income=None)
+        assert m == {"gross_margin_pct": None, "op_margin_pct": 20.0, "net_margin_pct": None}
+
+    def test_none_when_revenue_is_zero_or_missing(self):
+        assert es._compute_margins(revenue=None, gross_profit=400.0, operating_income=None, net_income=None) == {
+            "gross_margin_pct": None, "op_margin_pct": None, "net_margin_pct": None,
+        }
+        assert es._compute_margins(revenue=0, gross_profit=400.0, operating_income=None, net_income=None) == {
+            "gross_margin_pct": None, "op_margin_pct": None, "net_margin_pct": None,
+        }
+
+
+class TestConsolidatedValueForPeriod:
+    _FACTS = {
+        "GrossProfit": {"data_points": [
+            {"start": "2026-04-04", "end": "2026-07-03", "val": 900_000_000.0},
+            {"start": "2025-04-05", "end": "2025-07-04", "val": 800_000_000.0},
+        ]},
+        "TotalAssets": {"data_points": [
+            {"end": "2026-07-03", "val": 12_000_000_000.0},  # instant fact, no start
+        ]},
+    }
+
+    def test_matches_flow_metric_on_start_and_end(self):
+        v = es._consolidated_value_for_period(self._FACTS, "GrossProfit", "2026-07-03", "2026-04-04")
+        assert v == 900_000_000.0
+
+    def test_does_not_cross_match_a_different_periods_start(self):
+        """A quarterly segment figure must never be allocated against an
+        annual/YTD consolidated total that happens to share an end date."""
+        facts = {"GrossProfit": {"data_points": [
+            {"start": "2026-01-01", "end": "2026-07-03", "val": 1_700_000_000.0},  # YTD, same end
+        ]}}
+        assert es._consolidated_value_for_period(facts, "GrossProfit", "2026-07-03", "2026-04-04") is None
+
+    def test_instant_metric_matches_on_end_only(self):
+        v = es._consolidated_value_for_period(self._FACTS, "TotalAssets", "2026-07-03")
+        assert v == 12_000_000_000.0
+
+    def test_none_when_metric_absent(self):
+        assert es._consolidated_value_for_period({}, "NetIncome", "2026-07-03", "2026-04-04") is None
+
+    def test_none_when_no_point_matches_the_period(self):
+        v = es._consolidated_value_for_period(self._FACTS, "GrossProfit", "2099-01-01", "2098-10-01")
+        assert v is None
+
+
+class TestEnrichBreakdownFinancials:
+    """Exercises the fallback (percentage-of-consolidated) path against the
+    real ON Semi fixture. ON Semi's own 10-Q, it turns out, DOES report
+    segment gross profit dimensionally (PowerSolutionsGroup $230.3M —
+    confirmed via es._filed_member_values against this same fixture) but
+    not operating income, net income, or assets — a realistic mixed case,
+    not a contrived one: 'filed' and 'estimated' fields side by side on the
+    same member."""
+
+    _PSG_FILED_GROSS_PROFIT = 230_300_000.0  # as filed, confirmed above — never allocated
+
+    def _consolidated_facts(self):
+        return {
+            "GrossProfit": {"data_points": [{"start": "2026-04-04", "end": "2026-07-03", "val": 900_000_000.0}]},
+            "OperatingIncome": {"data_points": [{"start": "2026-04-04", "end": "2026-07-03", "val": 300_000_000.0}]},
+            "NetIncome": {"data_points": [{"start": "2026-04-04", "end": "2026-07-03", "val": 250_000_000.0}]},
+            "TotalAssets": {"data_points": [{"end": "2026-07-03", "val": 10_000_000_000.0}]},
+        }
+
+    def test_prefers_the_filed_figure_over_allocating_by_percentage(self, on_semi_xml, on_semi_result):
+        # Deep-copied: enrich_breakdown_financials mutates its `breakdown`
+        # arg in place, and on_semi_result is a module-scoped fixture
+        # shared with every other test class in this file.
+        b = copy.deepcopy(_breakdown(on_semi_result, "business_segment", "2026-04-04", "2026-07-03"))
+        es.enrich_breakdown_financials(on_semi_xml, b, self._consolidated_facts())
+        m = _member(b, "PowerSolutionsGroup")
+        # Filed: exactly the filed figure, NOT 900M * 51.7%.
+        assert m["gross_profit"] == self._PSG_FILED_GROSS_PROFIT
+        # Not filed for this axis in this filing: allocated by revenue_pct.
+        assert m["operating_income"] == pytest.approx(300_000_000.0 * 0.517, rel=1e-3)
+        assert m["net_income"] == pytest.approx(250_000_000.0 * 0.517, rel=1e-3)
+        assert m["assets"] == pytest.approx(10_000_000_000.0 * 0.517, rel=1e-3)
+        assert m["financials_source"] == "mixed"
+
+    def test_margins_are_derived_from_the_resulting_dollar_figures(self, on_semi_xml, on_semi_result):
+        b = copy.deepcopy(_breakdown(on_semi_result, "business_segment", "2026-04-04", "2026-07-03"))
+        es.enrich_breakdown_financials(on_semi_xml, b, self._consolidated_facts())
+        m = _member(b, "PowerSolutionsGroup")
+        assert m["gross_margin_pct"] == pytest.approx(m["gross_profit"] / m["revenue"] * 100, abs=0.01)
+        assert m["op_margin_pct"] == pytest.approx(m["operating_income"] / m["revenue"] * 100, abs=0.01)
+        assert m["net_margin_pct"] == pytest.approx(m["net_income"] / m["revenue"] * 100, abs=0.01)
+
+    def test_a_filed_field_survives_even_with_zero_consolidated_data(self, on_semi_xml, on_semi_result):
+        """gross_profit doesn't need fetch_xbrl_facts at all — it was read
+        straight off this same filing. Only the fields with nothing filed
+        (operating_income/net_income/assets) depend on consolidated data,
+        and those alone go null when none is available."""
+        b = copy.deepcopy(_breakdown(on_semi_result, "business_segment", "2026-04-04", "2026-07-03"))
+        es.enrich_breakdown_financials(on_semi_xml, b, {})
+        m = _member(b, "PowerSolutionsGroup")
+        assert m["gross_profit"] == self._PSG_FILED_GROSS_PROFIT
+        assert m["operating_income"] is None
+        assert m["net_income"] is None
+        assert m["assets"] is None
+        assert m["financials_source"] == "filed"  # the only field that resolved at all was filed
+        assert m["gross_margin_pct"] == pytest.approx(self._PSG_FILED_GROSS_PROFIT / m["revenue"] * 100, abs=0.01)
+        assert m["op_margin_pct"] is None
+
+
+class TestEstimateSegmentFinancials:
+    def test_allocates_by_revenue_pct_and_derives_margins(self):
+        facts = {
+            "Revenue":        {"data_points": [{"val": 1_600_000_000.0, "end": "2026-07-03", "form": "10-Q"}]},
+            "GrossProfit":    {"data_points": [{"val": 900_000_000.0, "end": "2026-07-03", "form": "10-Q"}]},
+            "OperatingIncome": {"data_points": [{"val": 300_000_000.0, "end": "2026-07-03", "form": "10-Q"}]},
+            "NetIncome":      {"data_points": [{"val": 250_000_000.0, "end": "2026-07-03", "form": "10-Q"}]},
+            "TotalAssets":    {"data_points": [{"val": 10_000_000_000.0, "end": "2026-07-03", "form": "10-Q"}]},
+        }
+        with patch.object(es, "get_company_info", return_value=({"cik_plain": "1097864"}, {})), \
+             patch.object(es, "fetch_xbrl_facts", return_value=facts):
+            result = es.estimate_segment_financials("ON", revenue_pct=25.0)
+
+        assert result["estimated"] is True
+        assert result["source"] == "estimated"
+        assert result["revenue"] == pytest.approx(400_000_000.0)
+        assert result["gross_profit"] == pytest.approx(225_000_000.0)
+        assert result["gross_margin_pct"] == pytest.approx(56.25, rel=1e-3)
+        assert result["basis"]["gross_profit"]["consolidated_value"] == 900_000_000.0
+
+    def test_unknown_ticker_reports_honest_failure(self):
+        with patch.object(es, "get_company_info", side_effect=ValueError("Ticker not found")):
+            result = es.estimate_segment_financials("NOPE", revenue_pct=10.0)
+        assert result["estimated"] is False
+        assert "not found" in result["reason"]
+
+    def test_no_consolidated_facts_reports_honest_failure(self):
+        with patch.object(es, "get_company_info", return_value=({"cik_plain": "1097864"}, {})), \
+             patch.object(es, "fetch_xbrl_facts", return_value={}):
+            result = es.estimate_segment_financials("ON", revenue_pct=10.0)
+        assert result["estimated"] is False
+
+    def test_missing_individual_metric_stays_null_not_zero(self):
+        facts = {"Revenue": {"data_points": [{"val": 1_600_000_000.0, "end": "2026-07-03", "form": "10-Q"}]}}
+        with patch.object(es, "get_company_info", return_value=({"cik_plain": "1097864"}, {})), \
+             patch.object(es, "fetch_xbrl_facts", return_value=facts):
+            result = es.estimate_segment_financials("ON", revenue_pct=25.0)
+        assert result["revenue"] == pytest.approx(400_000_000.0)
+        assert result["gross_profit"] is None
+        assert result["gross_margin_pct"] is None
