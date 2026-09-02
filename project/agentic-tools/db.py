@@ -287,7 +287,7 @@ CREATE TABLE IF NOT EXISTS risk_loop_runs (
     industry         VARCHAR(64),
     appetite_level   VARCHAR(8),
     persona          VARCHAR(64),
-    data_mode        VARCHAR(8),
+    data_mode        VARCHAR(16),
     signal_set       TEXT[],
     forecast_metric  VARCHAR(64),
     forecast_horizon INT,
@@ -1792,6 +1792,14 @@ ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(32) N
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_incident_id INT REFERENCES model_health_drift_incidents(id);
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_triggered_at TIMESTAMPTZ;
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_summary      JSONB;
+-- create_risk_loop_run's config["data_mode"] is 'mcp' (3 chars) for an
+-- organic pipeline run, but reoptimization_tool.py passes 'reoptimize' (10
+-- chars) — always exceeded the original VARCHAR(8), so every drift-
+-- triggered or manual-review re-optimization failed its INSERT
+-- unconditionally ("value too long for type character varying(8)"). Widen
+-- for databases created before this fix, same shape as pac_processes.source
+-- above.
+ALTER TABLE risk_loop_runs ALTER COLUMN data_mode TYPE VARCHAR(16);
 
 -- cem_events.exposure / cem_event_templates.exposure is VARCHAR(64) and
 -- always was — it holds "$12-18M" and "Regulatory" and "Material
@@ -9987,19 +9995,33 @@ def get_recent_adjudications_for_domain_summary(days: int = 30, limit: int = 500
     against an unbounded response on a `days` window far larger than this
     platform's actual event volume today (a few hundred/month) — raise it
     if that volume genuinely grows.
+
+    The inner ORDER BY is DESC (most recent first) so LIMIT keeps the latest
+    `limit` rows in the window, then the outer query re-sorts them ascending
+    for the caller. Capping an ascending scan directly would instead keep
+    the OLDEST `limit` rows and silently drop everything more recent once a
+    window's true volume exceeds `limit` — harmless at a small `days` value
+    where the whole window fits under the cap, but for a wider window (30d/
+    90d) it means the chart's "detail" (per-domain color/volume breakdown)
+    thins out or vanishes for anything but the earliest few days, even
+    though that's exactly the opposite of what a bounded response should
+    prioritize keeping.
     """
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, adjudicated_at, final_verdict, risk_tier, source_system,
-                           target_tool, server_name, requires_human_review, policy_violations,
-                           case_id, process_step
-                    FROM observability.adjudicated_tool_calls
-                    WHERE adjudicated_at > NOW() - (%s || ' days')::interval
+                    SELECT * FROM (
+                        SELECT id, adjudicated_at, final_verdict, risk_tier, source_system,
+                               target_tool, server_name, requires_human_review, policy_violations,
+                               case_id, process_step
+                        FROM observability.adjudicated_tool_calls
+                        WHERE adjudicated_at > NOW() - (%s || ' days')::interval
+                        ORDER BY adjudicated_at DESC
+                        LIMIT %s
+                    ) recent
                     ORDER BY adjudicated_at
-                    LIMIT %s
                     """,
                     (days, limit),
                 )
@@ -10039,21 +10061,29 @@ def get_recent_unreviewed_system_events(days: int = 30, limit: int = 5000) -> li
 
     id is offset by 10_000_000_000 to guarantee no collision with
     adjudicated_tool_calls' own BIGSERIAL ids when both lists are merged and
-    used as a single id-keyed collection client-side."""
+    used as a single id-keyed collection client-side.
+
+    Same DESC-then-re-sort shape as get_recent_adjudications_for_domain_
+    summary's LIMIT, for the same reason: keep the most recent `limit` rows
+    in the window rather than silently keeping the oldest ones and dropping
+    everything more recent once true volume exceeds `limit`."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT st.id, st.created_at, st.system_type, st.resource, st.server_name,
-                           st.raw_payload
-                    FROM observability.system_telemetry st
-                    LEFT JOIN observability.adjudicated_tool_calls atc
-                        ON atc.system_telemetry_id = st.id
-                    WHERE st.created_at > NOW() - (%s || ' days')::interval
-                      AND atc.id IS NULL
-                    ORDER BY st.created_at
-                    LIMIT %s
+                    SELECT * FROM (
+                        SELECT st.id, st.created_at, st.system_type, st.resource, st.server_name,
+                               st.raw_payload
+                        FROM observability.system_telemetry st
+                        LEFT JOIN observability.adjudicated_tool_calls atc
+                            ON atc.system_telemetry_id = st.id
+                        WHERE st.created_at > NOW() - (%s || ' days')::interval
+                          AND atc.id IS NULL
+                        ORDER BY st.created_at DESC
+                        LIMIT %s
+                    ) recent
+                    ORDER BY created_at
                     """,
                     (days, limit),
                 )
