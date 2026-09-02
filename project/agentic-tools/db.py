@@ -11962,6 +11962,39 @@ def list_exceptions_report_detail(date_from: str, date_to: str, control_id: Opti
     return _run(_do) or []
 
 
+def list_pending_exception_ids_for_group(control_id: str, system_source: str, scope: str = "exception") -> list:
+    """event_ids of every currently-pending event for one (control_id,
+    system_source) pair — the exact same predicate list_pending_exceptions_grouped
+    counts under that pair's occurrence_count, queried directly rather than
+    filtered out of a globally-limited list_pending_exceptions() page.
+    Feeding bulk_submit_exception_triage from a top-N global fetch instead of
+    this would silently under-resolve (or 404) any group whose events don't
+    happen to land within that page once total pending volume exceeds N —
+    real at this app's scale (see exceptions_endpoints.py's bulk-triage
+    route). No LIMIT: a single (control_id, system_source) pair's pending
+    count is bounded by real event volume for that pair, not by queue depth."""
+    def _do():
+        scope_sql = "ce.event_type = 'JOURNAL_ENTRY'" if scope == "je_testing" else _EXCLUDE_JE_TESTING_SQL
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ce.id
+                    FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {scope_sql}
+                          AND ce.control_id = %s AND ce.system_source = %s
+                    """,
+                    (control_id, system_source),
+                )
+                return [r[0] for r in cur.fetchall()]
+    return _run(_do) or []
+
+
 def bulk_submit_exception_triage(event_ids: list, auditor: str, resolution_label: str,
                                   justification_notes: Optional[str]) -> int:
     """Applies one auditor resolution to every event_id in one batch — the

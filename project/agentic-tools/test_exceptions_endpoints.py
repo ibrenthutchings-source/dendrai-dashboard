@@ -91,9 +91,7 @@ def test_bulk_triage_requires_notes_for_gated_label(client):
 
 
 def test_bulk_triage_404_when_nothing_pending_for_the_pair(client, monkeypatch):
-    monkeypatch.setattr(ee.db, "list_pending_exceptions", lambda limit=1000: [
-        {"event_id": 1, "control_id": "ctrl-OTHER", "system_source": "sap_hana"},
-    ])
+    monkeypatch.setattr(ee.db, "list_pending_exception_ids_for_group", lambda control_id, system_source: [])
     r = client.post("/exceptions/bulk-triage", json={
         "control_id": "ctrl-1", "system_source": "sap_hana", "resolution_label": "BENIGN_OPERATIONAL_NOISE",
     })
@@ -101,12 +99,16 @@ def test_bulk_triage_404_when_nothing_pending_for_the_pair(client, monkeypatch):
 
 
 def test_bulk_triage_happy_path_resolves_matching_events_only(client, monkeypatch):
-    monkeypatch.setattr(ee.db, "list_pending_exceptions", lambda limit=1000: [
-        {"event_id": 1, "control_id": "ctrl-1", "system_source": "sap_hana"},
-        {"event_id": 2, "control_id": "ctrl-1", "system_source": "sap_hana"},
-        {"event_id": 3, "control_id": "ctrl-1", "system_source": "oracle_fusion"},  # different system_source
-        {"event_id": 4, "control_id": "ctrl-OTHER", "system_source": "sap_hana"},   # different control_id
-    ])
+    # Regression: this must query the (control_id, system_source) pair
+    # directly rather than pull a globally-limited pending page and filter
+    # in Python — a group whose events sit outside that page (real once
+    # total pending volume exceeds the page size) would otherwise 404 or
+    # under-resolve even though it plainly has pending events.
+    captured_query = {}
+    def _fake_ids(control_id, system_source):
+        captured_query.update(control_id=control_id, system_source=system_source)
+        return [1, 2]
+    monkeypatch.setattr(ee.db, "list_pending_exception_ids_for_group", _fake_ids)
     captured = {}
     def _fake_bulk(event_ids, auditor, resolution_label, notes):
         captured.update(event_ids=event_ids, auditor=auditor, resolution_label=resolution_label, notes=notes)
@@ -121,6 +123,7 @@ def test_bulk_triage_happy_path_resolves_matching_events_only(client, monkeypatc
     assert r.status_code == 200
     body = r.json()
     assert body["resolved_count"] == 2
+    assert captured_query == {"control_id": "ctrl-1", "system_source": "sap_hana"}
     assert sorted(captured["event_ids"]) == [1, 2]
     assert captured["auditor"] == "Test Reviewer"
 
