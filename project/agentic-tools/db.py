@@ -3874,31 +3874,29 @@ def complete_risk_loop_run(run_id: int, on_error=None) -> None:
     _run(_do, on_error=on_error)
 
 
-def list_active_tickers(days: int = 90, limit: int = 15) -> list[str]:
-    """Tickers (public or private — PVT-* tickers included, no special-casing)
-    with a completed run in the last `days` days, oldest-last-run-first. Used
-    by reoptimization_tool.run_reoptimization_sweep to pick which tickers get
-    re-optimized on a drift trigger — drift signals themselves aren't
-    ticker-scoped (see drift_tool.py), so there's no "affected tickers" list
-    to derive; sweeping the actively-tracked set, oldest-stale-first, means
-    repeated triggers cycle through different tickers instead of always
-    hitting the same top N."""
-    def _do():
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT ticker, MAX(run_at) AS last_run
-                    FROM risk_loop_runs
-                    WHERE run_at > NOW() - (%s || ' days')::interval
-                    GROUP BY ticker
-                    ORDER BY last_run ASC
-                    LIMIT %s
-                    """,
-                    (days, limit),
-                )
-                return [r[0] for r in cur.fetchall()]
-    return _run(_do) or []
+def get_target_ticker() -> Optional[str]:
+    """The one company Model Health's re-optimization loop should ever
+    re-evaluate: Mission Control's currently-configured entity (app.jsx's
+    `cfg.ticker`, persisted via PUT /config/pipeline into
+    app_config['pipeline_config'].cfg.ticker — see get_pipeline_config/
+    save_pipeline_config in api_server.py). None if no pipeline config has
+    been saved yet.
+
+    Deliberately NOT "every ticker with a completed risk_loop_runs row" (a
+    prior version of this function, list_active_tickers, swept exactly
+    that) — SIC peer/benchmark tickers (sic_peers; pulled in only as an
+    enrichment signal for the target company's own analysis, via cfg's
+    "peers" signal_set entry) can end up with their own completed runs from
+    peer-comps backtests or one-off demo/seed activity without ever being a
+    tracked subject in their own right. Sweeping that whole set re-optimized
+    (and, before the risk_loop_runs.data_mode VARCHAR(16) widening above,
+    outright failed to persist for) every peer alongside the real target
+    company on every drift trigger — real signal diluted by noise, not a
+    correctness bug alone."""
+    config = get_app_config("pipeline_config")
+    ticker = ((config or {}).get("cfg") or {}).get("ticker")
+    ticker = (ticker or "").strip().upper()
+    return ticker or None
 
 
 def get_latest_run_meta(ticker: str) -> Optional[dict]:

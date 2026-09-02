@@ -8,14 +8,22 @@ drift_tool.py / api_server.py's model_health_drift_watch), this module
 re-runs the forecast/backtest layer — which re-derives FRED correlations
 (get_macro_leading_indicators re-tests the full series catalog fresh on every
 call, no caching) and re-optimizes ensemble weights via inverse-MAPE
-(walk_forward_backtest) — for every actively-tracked ticker/company,
-including private companies.
+(walk_forward_backtest) — for the target company (private included, if
+that's what's configured).
 
 Drift signals themselves are not ticker-scoped (compute_ratio_drift pools
 across the whole population; compute_fred_regime_drift has no ticker
 dimension at all — see drift_tool.py), so there is no "affected tickers"
-list to derive. Re-optimization instead sweeps the actively-tracked set
-(a completed run in the last 90 days), oldest-stale-first, capped per call.
+list to derive from the drift signal itself either way. Re-optimization
+targets db.get_target_ticker() — Mission Control's currently-configured
+entity (app.jsx's cfg.ticker) — and nothing else: SIC peer/benchmark
+tickers (sic_peers) that happen to have their own completed risk_loop_runs
+rows from peer-comps backtests or demo/seed activity are never swept just
+because they're sitting in the same table. A prior version of this module
+swept every ticker with *any* completed run in the last 90 days
+(db.list_active_tickers) — real signal diluted by peer noise, and (before
+risk_loop_runs.data_mode's VARCHAR(16) widening) an outright failure for
+every one of them.
 
 Two callers:
   - api_server.py's _check_model_health_drift_once, automatically, on a NEW
@@ -33,9 +41,6 @@ import db
 import predictive_analytics_tool as pat
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_MAX_TICKERS = int(os.environ.get("MODEL_HEALTH_REOPTIMIZE_MAX_TICKERS", "15"))
-DEFAULT_ACTIVE_WINDOW_DAYS = 90
 
 # "Selected" mirrors get_macro_leading_indicators' own min_r=0.60 — the bar an
 # indicator actually has to clear to feed run_forecast_backtest's FRED feature
@@ -235,12 +240,24 @@ def run_reoptimization_sweep(
     trigger_incident_id: int = None,
     max_tickers: int = None,
 ) -> dict:
-    """Sweep the actively-tracked ticker set, re-optimizing each independently.
-    Mirrors connector_poller.py's due-item dispatch pattern — one ticker's
-    EDGAR/FRED failure must not abort the sweep. Returns
-    {trigger_reason, tickers_attempted, succeeded, failed, results: [...]}."""
-    max_tickers = max_tickers or DEFAULT_MAX_TICKERS
-    tickers = db.list_active_tickers(days=DEFAULT_ACTIVE_WINDOW_DAYS, limit=max_tickers)
+    """Re-optimize the target company — Mission Control's currently-
+    configured entity (db.get_target_ticker()), never a swept set of
+    tickers. `max_tickers` is accepted (not removed — api_server.py's two
+    callers both pass it) but has no effect now that there is exactly one
+    possible target; kept only so neither call site needs to change.
+    Returns {trigger_reason, tickers_attempted, succeeded, failed,
+    results: [...]} — the same shape as the old multi-ticker sweep, so
+    Model Health's UI (reoptimize_summary.succeeded/tickers_attempted)
+    doesn't need to change either, just now with tickers_attempted always
+    0 or 1."""
+    target = db.get_target_ticker()
+    if not target:
+        logger.info(
+            "Re-optimization sweep (%s): no Mission Control target company configured (pipeline_config.cfg.ticker) — nothing to do",
+            trigger_reason,
+        )
+        return {"trigger_reason": trigger_reason, "tickers_attempted": 0, "succeeded": 0, "failed": 0, "results": []}
+    tickers = [target]
 
     results = []
     for ticker in tickers:

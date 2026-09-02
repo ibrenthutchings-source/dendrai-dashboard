@@ -3388,14 +3388,14 @@ def _check_model_health_drift_once() -> list[dict]:
             entry.get("n_baseline"), entry.get("n_current"), detail=entry,
         )
         # Close the loop: a ratio or FRED-regime drift means the forecast
-        # layer (FRED correlations + ensemble weights) may be stale for every
-        # actively-tracked ticker, not just whichever one happened to be
-        # open in the UI — see reoptimization_tool.py's docstring for why
-        # this sweeps the tracked set rather than a computed "affected"
-        # subset (neither drift signal is ticker-scoped). ai_acceptance
-        # drift is a governance-process signal, not a forecasting one, so it
-        # doesn't trigger this. Best-effort: a re-optimization failure must
-        # never break the drift-check loop itself.
+        # layer (FRED correlations + ensemble weights) may be stale for the
+        # target company — Mission Control's currently-configured entity
+        # (db.get_target_ticker()), not a swept set of tickers — since
+        # neither drift signal is ticker-scoped to begin with; see
+        # reoptimization_tool.py's docstring. ai_acceptance drift is a
+        # governance-process signal, not a forecasting one, so it doesn't
+        # trigger this. Best-effort: a re-optimization failure must never
+        # break the drift-check loop itself.
         reoptimize_summary = None
         if (
             incident_id
@@ -3581,12 +3581,14 @@ def run_model_health_review(
     body: Dict[str, Any] = Body(default={}),
     current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
 ):
-    """User-initiated version of the same sweep model_health_drift_watch runs
-    automatically on drift — re-derives FRED correlations and re-optimizes
-    ensemble weights (walk-forward backtest MAPE/RMSE/R²) for every
-    actively-tracked ticker/company, without waiting for the next drift flag
-    or the 6h background check. Synchronous — bounded by max_tickers, same
-    cost profile as the existing synchronous /predictive/full-analysis call.
+    """User-initiated version of the same re-optimization
+    model_health_drift_watch runs automatically on drift — re-derives FRED
+    correlations and re-optimizes ensemble weights (walk-forward backtest
+    MAPE/RMSE/R²) for the target company (Mission Control's currently-
+    configured entity, db.get_target_ticker()), without waiting for the
+    next drift flag or the 6h background check. Synchronous — same cost
+    profile as the existing synchronous /predictive/full-analysis call, just
+    for one company.
     """
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")
