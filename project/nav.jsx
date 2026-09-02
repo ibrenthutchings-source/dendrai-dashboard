@@ -40,7 +40,7 @@ const NAV_SECTIONS = [
       // id deliberately matches evidence_quality_endpoints.py's _SCREEN_ID —
       // see evidence_quality_tool.py's module docstring for the deterministic
       // stale/unsigned/period-mismatch checks this screen surfaces.
-      { id: "evidencequality", icon: "check", l: "PBC Evidence Log" },
+      //{ id: "evidencequality", icon: "check", l: "PBC Evidence Log" },
     ],
   },
    {
@@ -78,7 +78,7 @@ const NAV_SECTIONS = [
       { id: "notifs",   icon: "bolt",      l: "Notifications", countKey: "notifs", pulseKey: "notifsPulse" },
       { id: "continuousmonitoring", icon: "compass", l: "Continuous Watch", divider: "Watch" },
       { id: "controls",  icon: "alert",    l: "Controls Monitor", countKey: "controls", pulseKey: "controlsPulse" },
-      { id: "exceptions", icon: "alert",   l: "Exception Management", devOnly: true },
+      //{ id: "exceptions", icon: "alert",   l: "Exception Management", devOnly: true },
       // Board/executive period reporting over the same exception data —
       // deliberately its own screen (a summary-then-drill-down report is a
       // different job than the operational triage queue above) but gated by
@@ -93,8 +93,8 @@ const NAV_SECTIONS = [
       // (infrastructure-monitoring.jsx) was fully built but had no nav path
       // to it at all. Folded in here rather than restored as its own
       // section, so fixing "unreachable" doesn't also add a 7th section.
-      { id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring", divider: "Infrastructure" },
-      { id: "riskquant", icon: "trend",    l: "Risk Quantification", divider: "Analytics" },
+      //{ id: "infrastructuremonitoring", icon: "shield", l: "Infrastructure Monitoring", divider: "Infrastructure" },
+      //{ id: "riskquant", icon: "trend",    l: "Risk Quantification", divider: "Analytics" },
       { id: "modelhealth", icon: "trend", l: "Model Vitals" },
     ],
   },
