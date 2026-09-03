@@ -53,32 +53,17 @@ const rssProxyPlugin = {
 
 export default defineConfig({
   build: {
-    rollupOptions: {
-      output: {
-        // Two narrower fixes were tried first and both failed, which is
-        // itself the diagnostic signal: attempt 1 isolated recharts into
-        // its own chunk — crash persisted at the same index-*.js:149.
-        // Attempt 2 put ALL of node_modules into one vendor chunk — crash
-        // STILL persisted, same index-*.js:149 call site, just a fresh
-        // content hash and a fresh minified variable name ('gn' instead of
-        // '_n'). Both traces show the TDZ variable being read *inside the
-        // main index chunk*, reached via a callback *from* the vendor
-        // chunk — i.e. the bug isn't about which package sits in which
-        // chunk, it's that a chunk boundary exists at all between two
-        // modules that Rollup's linker doesn't fully order-correctly across
-        // when there's a real circular reference in the graph (a known
-        // Rollup/Vite bug class for circular-dependency libraries —
-        // vitejs/vite discussions #9686, #16700). manualChunks reassigns
-        // WHICH chunk a module lives in; it can never fix a linking bug
-        // that happens AT the boundary itself. The only way to eliminate a
-        // chunk boundary is to not have one, so: no manualChunks, and
-        // inlineDynamicImports collapses the lazy-loaded screens (see
-        // src/lazy-screen.js) into the same single output file too —
-        // costs the lazy-loading perf benefit, buys "there is no cross-
-        // chunk link for this circular graph to get wrong."
-        codeSplitting: false,
-      },
-    },
+    // NOTE on history: the post-login "Cannot access '<var>' before
+    // initialization" crash was chased through two manualChunks attempts
+    // (recharts-only vendor chunk, then all-of-node_modules vendor chunk)
+    // and even a codeSplitting:false single-file build — none of it helped,
+    // because the bug was never in the build config. Decoding a production
+    // sourcemap traced the throw site straight to app.jsx: a `useState`
+    // declaration (`manualAudits`) sat ~100 lines below a `useEffect` whose
+    // dependency array already referenced it — a plain same-render TDZ
+    // ReferenceError, evaluated fresh on every render regardless of how the
+    // output was chunked. Fixed by moving that declaration above the
+    // effect (see app.jsx). Build config is back to defaults.
   },
   plugins: [
     react({ jsxRuntime: 'classic' }),

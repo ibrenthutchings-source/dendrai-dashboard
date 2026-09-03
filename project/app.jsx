@@ -700,6 +700,20 @@ function App() {
   const [profile, setProfile] = useState(() => RISK_ENGINE.buildProfile("ON", null, "3674", "Semiconductors"));
   const profileRef = useRef(profile);
 
+  // ---- Manual audit plan entries ----
+  // Same TDZ reason as `profile` above: also declared here, ahead of its
+  // usual spot near addManualAudit/removeManualAudit below, because the
+  // persistence effect's dependency array (and payload) reference it. This
+  // was the actual cause of the post-login "Cannot access '<var>' before
+  // initialization" crash — a real bug in this file, not a Vite/Rollup
+  // chunk-splitting issue (confirmed by decoding a production sourcemap:
+  // the throw site mapped directly to the dependency array below, at the
+  // point it read `manualAudits` — declared, at the time, ~100 lines further
+  // down in this same function body). manualAuditsRef itself was already
+  // declared early (see above near loopLogRef) — only this useState call
+  // was misplaced.
+  const [manualAudits, setManualAudits] = useState([]);
+
   // ---- Last loop persistence — DB primary, localStorage fallback ----
   useEffect(() => {
     (async () => {
@@ -875,8 +889,6 @@ function App() {
     setLoopLog(loopLogRef.current);
   }, []);
 
-  // ---- Manual audit plan entries ----
-  const [manualAudits, setManualAudits] = useState([]);
   const addManualAudit = useCallback((audit) => {
     setManualAudits(prev => {
       const next = [...prev, audit];
