@@ -109,3 +109,68 @@ class TestRunSoxScopingThreadsRealBalances:
         inv = next(a for a in out["accounts_in_scope"] if a["account_id"] == "inventory")
         assert inv["balance_estimate"] == 12345
         assert inv["balance_source"] == "real"
+
+
+def _segments():
+    return [
+        {"segment_name": "US", "segment_type": "geography", "revenue": 6000.0},
+        {"segment_name": "EMEA", "segment_type": "geography", "revenue": 4000.0},
+        {"segment_name": "Hardware", "segment_type": "business_segment", "revenue": 5000.0},
+        {"segment_name": "Software", "segment_type": "product_line", "revenue": 5000.0},
+    ]
+
+
+class TestDefaultGeographyAndSegmentTagging:
+    """A significant account should come pre-tagged with the entity's known
+    geography/business-segment breakdown rather than sitting blank until an
+    auditor hand-types it per account — there's no per-account mapping data
+    source, so every in-scope account defaults to the full reported spread."""
+
+    def test_always_in_scope_account_gets_full_geo_and_segment_defaults(self):
+        result = sst.scope_accounts(_materiality(), _projections(), _ratios(), _risk_scores(),
+                                     segments=_segments())
+        rev = next(a for a in result if a["account_id"] == "revenue")
+        assert rev["in_scope"] is True
+        assert rev["geography"] == ["EMEA", "US"]
+        # business_segment + product_line both count as "segments" (only
+        # segment_type == "geography" is split out separately).
+        assert rev["segments"] == ["Hardware", "Software"]
+
+    def test_out_of_scope_account_gets_no_default_tags(self):
+        # Performance materiality far above every account's balance, and
+        # trivial low enough that nothing hits the "clearly inconsequential"
+        # branch either — everything not always_scope falls to the plain
+        # "below performance materiality; no elevated risk linkage" branch.
+        result = sst.scope_accounts(_materiality(performance=9_999_999.0, trivial=1.0),
+                                     _projections(), _ratios(), _risk_scores(),
+                                     segments=_segments())
+        goodwill = next(a for a in result if a["account_id"] == "goodwill")
+        assert goodwill["in_scope"] is False
+        assert goodwill["geography"] == []
+        assert goodwill["segments"] == []
+
+    def test_no_segment_data_yields_empty_defaults(self):
+        result = sst.scope_accounts(_materiality(), _projections(), _ratios(), _risk_scores(),
+                                     segments=None)
+        rev = next(a for a in result if a["account_id"] == "revenue")
+        assert rev["geography"] == []
+        assert rev["segments"] == []
+
+    def test_saved_detail_record_wins_over_default_even_when_cleared(self):
+        # account_overrides carries an actual saved record (not None) for
+        # "revenue" with both fields cleared out — that's a deliberate
+        # auditor choice and must not be silently re-filled by the default.
+        result = sst.scope_accounts(_materiality(), _projections(), _ratios(), _risk_scores(),
+                                     segments=_segments(),
+                                     account_overrides={"revenue": {"geography": [], "segments": []}})
+        rev = next(a for a in result if a["account_id"] == "revenue")
+        assert rev["geography"] == []
+        assert rev["segments"] == []
+
+    def test_saved_detail_record_with_values_still_wins_over_default(self):
+        result = sst.scope_accounts(_materiality(), _projections(), _ratios(), _risk_scores(),
+                                     segments=_segments(),
+                                     account_overrides={"revenue": {"geography": ["APAC"], "segments": ["Services"]}})
+        rev = next(a for a in result if a["account_id"] == "revenue")
+        assert rev["geography"] == ["APAC"]
+        assert rev["segments"] == ["Services"]
