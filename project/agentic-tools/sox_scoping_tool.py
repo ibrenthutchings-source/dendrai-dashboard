@@ -379,6 +379,23 @@ def scope_accounts(
     trivial = materiality.get("trivial_threshold")
     risks = risk_scores.get("risks", [])
 
+    # Default geography/segment tags for every significant account — there's
+    # no per-account mapping data source (no filing ties "Revenue" to
+    # specific geographies), so every in-scope account is tagged with the
+    # entity's full reported geography/business-segment breakdown (see
+    # SegmentsManager/edgar_segments.py) by default: a significant account
+    # generally does touch every location and business line the company
+    # reports revenue in, and this is what feeds the "scope by business
+    # unit & geography" treemap on this screen, which was otherwise always
+    # empty (nothing to tag it with) until an auditor hand-typed it per
+    # account. An auditor can still narrow any single account's tags via
+    # "Edit detail" — see the `override is not None` branch below, which
+    # only kicks in once a detail record actually exists for that account.
+    all_geo_names = sorted({s["segment_name"] for s in (segments or [])
+                             if s.get("segment_type") == "geography" and s.get("segment_name")})
+    all_biz_names = sorted({s["segment_name"] for s in (segments or [])
+                             if s.get("segment_type") != "geography" and s.get("segment_name")})
+
     # Build category → max RAG colour lookup
     cat_rag: dict[str, str] = {}
     for r in risks:
@@ -469,6 +486,23 @@ def scope_accounts(
         elif override and override.get("manual_priority") and in_scope:
             priority = override["manual_priority"]
 
+        # `override is not None` means an auditor has saved a detail record
+        # for this specific account before (even one with fields since
+        # cleared) — that's a deliberate choice and wins outright. Nothing
+        # saved yet gets the entity-wide segment/geography default instead
+        # of sitting blank, but only once the account is actually
+        # significant (in scope) — an out-of-scope account has no reason to
+        # carry tags at all.
+        if override is not None:
+            geography = override.get("geography") or []
+            acc_segments = override.get("segments") or []
+        elif in_scope:
+            geography = list(all_geo_names)
+            acc_segments = list(all_biz_names)
+        else:
+            geography = []
+            acc_segments = []
+
         result.append({
             "account_id":      acc["id"],
             "account_name":    acc["name"],
@@ -479,8 +513,8 @@ def scope_accounts(
             "rag_linkage":     worst_rag,
             "linked_risks":    linked_risks[:4],
             "rationale":       rationale,
-            "geography":       (override or {}).get("geography") or [],
-            "segments":        (override or {}).get("segments") or [],
+            "geography":       geography,
+            "segments":        acc_segments,
             "notes":           (override or {}).get("notes"),
             "manual_override": manual_override,
         })
