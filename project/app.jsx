@@ -814,7 +814,20 @@ function App() {
         window.showToast?.("Couldn't sync this run's state to the server — saved locally, will retry.", { tone: "warn" });
       }
     });
-  }, [hasRun, output, profile]);
+    // Every field the payload above actually reads must be a dependency —
+    // otherwise a change to e.g. gateState/stageState alone (opening Gate 1,
+    // dispositioning a risk row) never re-fires this effect, and the
+    // persisted snapshot silently falls behind until output/profile/hasRun
+    // next change for an unrelated reason. A page refresh (or a fresh /
+    // second browser tab loading the same ticker) in that window restores
+    // the STALE snapshot — e.g. gateState still {g1:null} even though the
+    // live session already has Gate 1 open and pending — which looks
+    // exactly like "the gate never triggered" with no banner to click,
+    // even though the run genuinely is sitting at that gate. cfg.ticker is
+    // the one deliberate omission (see the runTicker comment above); every
+    // other field in `payload` needs to be here.
+  }, [hasRun, output, profile, stageState, gateState, loopLog, livefacts,
+      perRiskAppetite, riskApprovals, scopeApprovals, manualAudits, narrativeResult, hubFocus]);
 
   const auth = window.useAuth ? window.useAuth() : null;
   const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
