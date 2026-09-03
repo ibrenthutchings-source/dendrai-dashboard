@@ -55,28 +55,28 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        // Isolating just recharts into its own chunk (first attempt) wasn't
-        // enough: the crash persisted, just shifted to the SAME line/column
-        // of the main entry chunk (index-*.js:149) — meaning recharts isn't
-        // circularly referencing itself across the chunk boundary, it's
-        // circularly referencing some OTHER third-party dependency that
-        // Rollup's default splitting still leaves divided between the main
-        // entry and a separate vendor chunk (a d3-* package recharts uses
-        // internally, most likely, but not confirmed without a sourcemap).
-        // Rather than keep guessing which pair of packages is involved,
-        // put ALL of node_modules in one vendor chunk — the general,
-        // reliable fix for this class of Vite/Rollup bug (circular-
-        // dependency libraries split across a chunk boundary producing a
-        // production-only, minification-order-dependent "Cannot access
-        // '<var>' before initialization" — see vitejs/vite discussions
-        // #9686, #16700) when the exact offending pair isn't known. Costs
-        // one larger vendor chunk instead of several smaller ones; buys
-        // "no two vendor packages are ever split across chunks relative to
-        // each other or to the main entry," which is what actually matters
-        // here.
-        manualChunks(id) {
-          if (id.includes('node_modules')) return 'vendor';
-        },
+        // Two narrower fixes were tried first and both failed, which is
+        // itself the diagnostic signal: attempt 1 isolated recharts into
+        // its own chunk — crash persisted at the same index-*.js:149.
+        // Attempt 2 put ALL of node_modules into one vendor chunk — crash
+        // STILL persisted, same index-*.js:149 call site, just a fresh
+        // content hash and a fresh minified variable name ('gn' instead of
+        // '_n'). Both traces show the TDZ variable being read *inside the
+        // main index chunk*, reached via a callback *from* the vendor
+        // chunk — i.e. the bug isn't about which package sits in which
+        // chunk, it's that a chunk boundary exists at all between two
+        // modules that Rollup's linker doesn't fully order-correctly across
+        // when there's a real circular reference in the graph (a known
+        // Rollup/Vite bug class for circular-dependency libraries —
+        // vitejs/vite discussions #9686, #16700). manualChunks reassigns
+        // WHICH chunk a module lives in; it can never fix a linking bug
+        // that happens AT the boundary itself. The only way to eliminate a
+        // chunk boundary is to not have one, so: no manualChunks, and
+        // inlineDynamicImports collapses the lazy-loaded screens (see
+        // src/lazy-screen.js) into the same single output file too —
+        // costs the lazy-loading perf benefit, buys "there is no cross-
+        // chunk link for this circular graph to get wrong."
+        codeSplitting: false,
       },
     },
   },
