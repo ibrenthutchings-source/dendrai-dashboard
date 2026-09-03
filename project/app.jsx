@@ -298,6 +298,14 @@ function App() {
 
   // ---- Pipeline run state ----
   const [running, setRunning] = useState(false);
+  // Mirrors `running` for the mount-time restore effect below, which needs
+  // the CURRENT value inside a stale closure captured once at mount (a
+  // `[]`-dep effect's `running` reference is permanently `false`, its value
+  // when the effect was created — reading state directly there can never
+  // see a run that started after mount, which is exactly the race this
+  // exists to catch).
+  const runningRef = useRef(false);
+  useEffect(() => { runningRef.current = running; }, [running]);
   const [hasRun, setHasRun] = useState(false);
   const [stageState, setStageState] = useState({}); // id -> idle/running/done/waiting
   const [gateState, setGateState] = useState({ g1: null, g2: null }); // null / "pending" / "approved" / "overridden"
@@ -771,12 +779,26 @@ function App() {
       try {
         const res = await fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(ticker)}`);
         if (res.ok) {
-          applyLoop(await res.json());
+          const body = await res.json();
+          // A live run (runLoop()/rerunFromS3()) can start and reach a gate
+          // — setting e.g. gateState.g1 = "pending" — before this mount-time
+          // fetch resolves, especially on a slow connection or a user who
+          // clicks Run immediately on page load. Applying a stale snapshot
+          // at that point clobbers the live gate state right back to
+          // whatever was last saved (often null, or an already-resolved
+          // gate from a prior run), which silently swaps Gate 1's per-risk
+          // review table for the plain "not pending" banner with no way to
+          // confirm — looking exactly like the loop is "stuck" post-Gate-1
+          // with nothing left to click. If a run is already live by the
+          // time this resolves, its own state is authoritative — skip.
+          if (runningRef.current) return;
+          applyLoop(body);
           return;
         }
       } catch {}
       // Fallback to localStorage when API is unavailable
       try {
+        if (runningRef.current) return;
         const raw = localStorage.getItem(`dendrai.lastLoop:${ticker}`);
         if (raw) applyLoop(JSON.parse(raw));
       } catch {}
