@@ -174,3 +174,58 @@ class TestDefaultGeographyAndSegmentTagging:
         rev = next(a for a in result if a["account_id"] == "revenue")
         assert rev["geography"] == ["APAC"]
         assert rev["segments"] == ["Services"]
+
+
+class TestScopeSegmentsOverrides:
+    """Gate S1's per-segment HITL approval (sox-hitl.jsx) adjusts a segment's
+    computed in-scope decision via segment_overrides, keyed by segment_key —
+    mirroring scope_accounts' account_overrides pattern exactly."""
+
+    def test_segment_key_is_type_colon_name(self):
+        result = sst.scope_segments(_segments(), _materiality())
+        us = next(s for s in result if s["segment_name"] == "US")
+        assert us["segment_key"] == "geography:US"
+        hw = next(s for s in result if s["segment_name"] == "Hardware")
+        assert hw["segment_key"] == "business_segment:Hardware"
+
+    def test_no_overrides_leaves_computed_decision_alone(self):
+        result = sst.scope_segments(_segments(), _materiality(performance=9_999_999.0))
+        us = next(s for s in result if s["segment_name"] == "US")
+        assert us["manual_override"] is False
+
+    def test_override_forces_out_of_scope(self):
+        # US is a large enough segment to compute in-scope by default.
+        result = sst.scope_segments(_segments(), _materiality(),
+                                     segment_overrides={"geography:US": {"manual_in_scope": False, "notes": "n/a"}})
+        us = next(s for s in result if s["segment_name"] == "US")
+        assert us["in_scope"] is False
+        assert us["manual_override"] is True
+        assert "Manually overridden by user" in us["rationale"]
+        assert us["notes"] == "n/a"
+
+    def test_override_forces_in_scope(self):
+        # Performance materiality set so high nothing computes in-scope on its own.
+        result = sst.scope_segments(_segments(), _materiality(performance=9_999_999.0),
+                                     segment_overrides={"business_segment:Hardware": {"manual_in_scope": True}})
+        hw = next(s for s in result if s["segment_name"] == "Hardware")
+        assert hw["in_scope"] is True
+        assert hw["manual_override"] is True
+
+    def test_unaffected_segments_keep_computed_decision(self):
+        result = sst.scope_segments(_segments(), _materiality(),
+                                     segment_overrides={"geography:US": {"manual_in_scope": False}})
+        emea = next(s for s in result if s["segment_name"] == "EMEA")
+        assert emea["manual_override"] is False
+
+    def test_run_sox_scoping_threads_segment_overrides(self):
+        out = sst.run_sox_scoping(
+            run_id=None,
+            forecast={"forecasts": []},
+            risk_scores=_risk_scores(),
+            ratios=_ratios(),
+            segments=_segments(),
+            segment_overrides={"geography:US": {"manual_in_scope": False}},
+        )
+        us = next(s for s in out["segments_coverage"] if s["segment_name"] == "US")
+        assert us["in_scope"] is False
+        assert us["manual_override"] is True

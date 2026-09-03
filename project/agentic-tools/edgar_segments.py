@@ -27,6 +27,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 from xml.etree import ElementTree as ET
 
@@ -39,14 +40,28 @@ _NS = {
 }
 _EXPLICIT_MEMBER_TAG = "{http://xbrl.org/2006/xbrldi}explicitMember"
 
-# The two dimensional axes this module understands. These are the standard
-# US-GAAP/SRT taxonomy axes essentially every filer with reportable segments
-# uses under ASC 280 — extend here if a real filing needs a third, not by
-# guessing at a filer-specific extension axis.
+# The geography axis: essentially every filer with reportable geographic
+# segments uses this exact standard SRT taxonomy element under ASC 280.
 _SEGMENT_AXES = {
-    "us-gaap:StatementBusinessSegmentsAxis": "business_segment",
-    "srt:StatementGeographicalAxis":         "geography",
+    "srt:StatementGeographicalAxis": "geography",
 }
+
+# Business/operating segment axes are NOT standardized the way geography is —
+# unlike srt:StatementGeographicalAxis, filers routinely define their own
+# extension axis for it (e.g. "ibm:ReportableSegmentsAxis",
+# "aapl:SegmentAxis"), or reuse the us-gaap element's local name under a
+# filer-specific prefix. Matching only the one literal
+# "us-gaap:StatementBusinessSegmentsAxis" QName silently misses most real
+# filings — geography would populate while business-unit segments stayed
+# empty for the exact same company, which is what this pattern match fixes.
+# Matched on the LOCAL name only (prefix ignored) against known-good
+# suffixes; "geographical"/"geographic" is excluded so a filer's own
+# geography extension axis (if any) doesn't get double-classified here —
+# the exact SRT match above already owns that case.
+_BUSINESS_SEGMENT_AXIS_PATTERN = re.compile(
+    r"(?i)^(?:reportable|operating|business|statement.?business)?segments?axis$"
+)
+_GEOGRAPHIC_AXIS_LOCAL_NAME = re.compile(r"(?i)geograph")
 
 # Ordered by taxonomy era, not by a "nicer" number — Excluding/Including
 # AssessedTax are the ASC 606 (post-2018) tags most current filers use;
@@ -96,16 +111,34 @@ def _fetch_instance_xml(cik: str, accession_number: str, doc_name: str) -> Optio
 # Pure parsing — no network access, directly unit-testable
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _axis_type(axis: str) -> Optional[str]:
+    """Classify a dimension QName as "geography", "business_segment", or
+    None (not a segment axis this module tracks). Geography is matched by
+    the one standard SRT element every filer uses; business/operating
+    segments have no equivalent standard, so any filer-specific axis whose
+    local name looks like a segment axis (see _BUSINESS_SEGMENT_AXIS_PATTERN)
+    is treated as one, unless it's actually a geography axis under a
+    non-standard name."""
+    if axis in _SEGMENT_AXES:
+        return _SEGMENT_AXES[axis]
+    local = axis.split(":")[-1]
+    if _GEOGRAPHIC_AXIS_LOCAL_NAME.search(local):
+        return None  # would-be geography axis under a name the SRT match missed — don't misclassify as business_segment
+    if _BUSINESS_SEGMENT_AXIS_PATTERN.match(local):
+        return "business_segment"
+    return None
+
+
 def _context_dims(context_el: ET.Element) -> dict[str, str]:
-    """{axis_type: member} for a context — restricted to the two axes this
-    module understands. Uses .iter() rather than a fixed entity/segment
-    path: some filers nest dimensional members differently, and .iter()
-    finds explicitMember regardless of the exact ancestor chain."""
+    """{axis_type: member} for a context — restricted to the axes this
+    module understands (see _axis_type). Uses .iter() rather than a fixed
+    entity/segment path: some filers nest dimensional members differently,
+    and .iter() finds explicitMember regardless of the exact ancestor chain."""
     dims: dict[str, str] = {}
     for m in context_el.iter(_EXPLICIT_MEMBER_TAG):
-        axis = m.get("dimension", "")
-        if axis in _SEGMENT_AXES:
-            dims[_SEGMENT_AXES[axis]] = (m.text or "").strip()
+        axis_type = _axis_type(m.get("dimension", ""))
+        if axis_type:
+            dims[axis_type] = (m.text or "").strip()
     return dims
 
 

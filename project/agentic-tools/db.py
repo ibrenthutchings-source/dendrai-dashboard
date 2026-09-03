@@ -926,6 +926,25 @@ CREATE TABLE IF NOT EXISTS sox_process_details (
 );
 CREATE INDEX IF NOT EXISTS idx_sox_proc_details_co ON sox_process_details (company_id);
 
+-- User-editable override records for individual SOX segments/geographies —
+-- keyed by segment_key ("{segment_type}:{segment_name}", e.g.
+-- "geography:US"), since scope_segments()'s computed rows have no numeric
+-- id of their own to key against (unlike accounts/processes, which key off
+-- a fixed catalogue id). manual_in_scope lets an auditor override a
+-- segment's computed materiality decision, mirroring sox_account_details —
+-- this is what Gate S1's per-segment approval (sox-hitl.jsx) adjusts.
+CREATE TABLE IF NOT EXISTS sox_segment_details (
+    id               SERIAL PRIMARY KEY,
+    company_id       INT NOT NULL REFERENCES companies(id),
+    segment_key      VARCHAR(160) NOT NULL,
+    notes            TEXT,
+    manual_in_scope  BOOLEAN,
+    updated_by       VARCHAR(128),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, segment_key)
+);
+CREATE INDEX IF NOT EXISTS idx_sox_seg_details_co ON sox_segment_details (company_id);
+
 -- Risks-as-Code artifacts: OSCAL and COSO ERM / ISO 31000 outputs per run
 CREATE TABLE IF NOT EXISTS risks_as_code_artifacts (
     id           BIGSERIAL    PRIMARY KEY,
@@ -6832,6 +6851,56 @@ def get_sox_process_details(company_id: int) -> dict:
                         "geography": r[1] or [], "segments": r[2] or [], "notes": r[3],
                         "manual_coverage_level": r[4], "estimated_exposure": float(r[5]) if r[5] is not None else None,
                         "updated_at": r[6].isoformat() if r[6] else None,
+                    }
+                    for r in cur.fetchall()
+                }
+    return _run(_do) or {}
+
+
+def upsert_sox_segment_detail(company_id: int, segment_key: str, detail: dict) -> Optional[int]:
+    """Add or update a user-supplied override for a SOX segment/geography's
+    computed in-scope decision — segment_key is "{segment_type}:{segment_name}"
+    (see sox_scoping_tool.scope_segments), not a numeric row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_segment_details
+                        (company_id, segment_key, notes, manual_in_scope, updated_by)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (company_id, segment_key) DO UPDATE SET
+                        notes           = EXCLUDED.notes,
+                        manual_in_scope = EXCLUDED.manual_in_scope,
+                        updated_by      = EXCLUDED.updated_by,
+                        updated_at      = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        company_id, segment_key,
+                        detail.get("notes"),
+                        detail.get("manual_in_scope"),
+                        detail.get("updated_by"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_sox_segment_details(company_id: int) -> dict:
+    """All segment detail/override rows for a company, keyed by segment_key."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT segment_key, notes, manual_in_scope, updated_at "
+                    "FROM sox_segment_details WHERE company_id = %s",
+                    (company_id,),
+                )
+                return {
+                    r[0]: {
+                        "notes": r[1], "manual_in_scope": r[2],
+                        "updated_at": r[3].isoformat() if r[3] else None,
                     }
                     for r in cur.fetchall()
                 }

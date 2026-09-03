@@ -726,6 +726,7 @@ def scope_segments(
     segments: list,
     materiality: dict,
     risk_scores: Optional[dict] = None,
+    segment_overrides: Optional[dict] = None,
 ) -> list:
     """
     Determine which geographic / business segments fall within SOX scope.
@@ -735,9 +736,18 @@ def scope_segments(
       - Segment revenue > performance materiality → in scope
       - Segment represents > 15% of total consolidated revenue → in scope
       - Segment linked to RED risk → qualitative in scope
+
+    segment_overrides: optional {segment_key: {manual_in_scope, notes,
+    updated_by}} (see db.get_sox_segment_details) — segment_key is
+    "{segment_type}:{segment_name}", since a segment has no numeric
+    catalogue id the way SOX_ACCOUNTS/SOX_PROCESSES entries do.
+    manual_in_scope, when not None, replaces the computed in-scope decision
+    — this is what Gate S1's per-segment HITL approval (sox-hitl.jsx)
+    adjusts, mirroring scope_accounts' account_overrides.
     """
     if not segments:
         return []
+    segment_overrides = segment_overrides or {}
 
     pm     = materiality.get("performance_materiality")
     risks  = (risk_scores or {}).get("risks", [])
@@ -772,13 +782,27 @@ def scope_segments(
             in_scope = False
             rationale = "Immaterial — below quantitative and qualitative thresholds"
 
+        segment_type = seg.get("segment_type", "geography")
+        segment_name = seg.get("segment_name", "")
+        segment_key = f"{segment_type}:{segment_name}"
+
+        override = segment_overrides.get(segment_key)
+        manual_override = False
+        if override and override.get("manual_in_scope") is not None:
+            manual_override = True
+            in_scope = override["manual_in_scope"]
+            rationale = f"Manually overridden by user — {rationale}"
+
         result.append({
-            "segment_name":  seg.get("segment_name", ""),
-            "segment_type":  seg.get("segment_type", "geography"),
+            "segment_key":   segment_key,
+            "segment_name":  segment_name,
+            "segment_type":  segment_type,
             "revenue":       rev,
             "revenue_pct":   rev_pct,
             "in_scope":      in_scope,
             "rationale":     rationale,
+            "manual_override": manual_override,
+            "notes":         (override or {}).get("notes"),
         })
 
     # Sort: in-scope first, then by revenue descending
@@ -821,6 +845,7 @@ def run_sox_scoping(
     account_overrides: Optional[dict] = None,
     process_overrides: Optional[dict] = None,
     real_balances: Optional[dict] = None,
+    segment_overrides: Optional[dict] = None,
 ) -> dict:
     """
     Full SOX scoping run.
@@ -842,7 +867,7 @@ def run_sox_scoping(
 
     # 4. Segment coverage (computed before process scoping — segment_reporting's
     #    derived estimated_exposure sums in-scope segment revenue from this)
-    seg_coverage = scope_segments(segments or [], mat, risk_scores)
+    seg_coverage = scope_segments(segments or [], mat, risk_scores, segment_overrides)
 
     # 5. Process scoping
     processes = scope_processes(risk_scores, accounts, process_overrides, seg_coverage)

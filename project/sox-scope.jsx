@@ -1392,10 +1392,13 @@ function SoxScopePanel({
   const [gateState, setGateState] = React.useState({ g1: null, g2: null }); // null / "pending" / "approved" / "overridden"
   const [materialityApproval, setMaterialityApproval] = React.useState({ status: "pending" });
   const [accountApprovals, setAccountApprovals] = React.useState({});
+  const [segmentApprovals, setSegmentApprovals] = React.useState({});
   const [processApprovals, setProcessApprovals] = React.useState({});
   const [adjustMatOpen, setAdjustMatOpen] = React.useState(false);
   const [adjustAccountId, setAdjustAccountId] = React.useState(null);
   const [adjustAccountOpen, setAdjustAccountOpen] = React.useState(false);
+  const [adjustSegmentKey, setAdjustSegmentKey] = React.useState(null);
+  const [adjustSegmentOpen, setAdjustSegmentOpen] = React.useState(false);
   const [adjustProcessId, setAdjustProcessId] = React.useState(null);
   const [adjustProcessOpen, setAdjustProcessOpen] = React.useState(false);
   const [overrideOpen, setOverrideOpen] = React.useState(false);
@@ -1438,6 +1441,21 @@ function SoxScopePanel({
     });
     setAccountApprovals(initAcc);
 
+    // Every segment/geography scope_segments() flagged significant
+    // (in_scope) goes through the same per-item HITL as accounts — see
+    // sox-hitl.jsx's SegmentApprovalRow. Keyed by segment_key
+    // ("{segment_type}:{segment_name}"), not a numeric id, since a segment
+    // has none of its own.
+    let allSegResolved = true;
+    const initSeg = {};
+    (data.segments_coverage || []).filter(s => s.in_scope).forEach(s => {
+      const t = byKey[`sox_segment:${s.segment_key}`];
+      const approval = t ? taskToApproval(t) : { status: "pending" };
+      initSeg[s.segment_key] = { ...approval, segment_name: s.segment_name };
+      if (!isResolvedStatus(approval.status)) allSegResolved = false;
+    });
+    setSegmentApprovals(initSeg);
+
     let allProcResolved = true;
     const initProc = {};
     (data.processes_in_scope || []).forEach(p => {
@@ -1448,7 +1466,7 @@ function SoxScopePanel({
     });
     setProcessApprovals(initProc);
 
-    const g1Done = isResolvedStatus((matTask ? taskToApproval(matTask) : { status: "pending" }).status) && allAccResolved;
+    const g1Done = isResolvedStatus((matTask ? taskToApproval(matTask) : { status: "pending" }).status) && allAccResolved && allSegResolved;
     setGateState({
       g1: g1Done ? "approved" : (hitlSox.accounts ? "pending" : "approved"),
       g2: (g1Done && allProcResolved) ? "approved" : (g1Done ? (hitlSox.coverage ? "pending" : "approved") : null),
@@ -1596,6 +1614,31 @@ function SoxScopePanel({
     return next;
   });
 
+  // ---- Gate S1 handlers (significant segments/geographies) ----
+  const approveSegment = (key) => {
+    setSegmentApprovals(prev => ({ ...prev, [key]: { ...(prev[key] || {}), status: "approved" } }));
+    const seg = (displayScope?.segments_coverage || []).find(s => s.segment_key === key);
+    submitSoxApprovalTask("sox_segment", key, seg?.segment_name, "approved", null, null);
+  };
+  const openAdjustSegment = (key) => { setAdjustSegmentKey(key); setAdjustSegmentOpen(true); };
+  const submitSegmentAdjustment = async (payload) => {
+    const key = adjustSegmentKey;
+    if (!key) return;
+    const seg = (displayScope?.segments_coverage || []).find(s => s.segment_key === key);
+    const adjustments = { in_scope: payload.in_scope };
+    const task = await submitSoxApprovalTask("sox_segment", key, seg?.segment_name, "adjusted", adjustments, payload.rationale);
+    setSegmentApprovals(prev => ({
+      ...prev,
+      [key]: {
+        status: task?.status || "submitted",
+        adjustments, rationale: payload.rationale, adjustedBy: auditorName, adjustedAt: Date.now(),
+        managerName: task?.manager_name || null, segment_name: seg?.segment_name,
+      },
+    }));
+    setAdjustSegmentOpen(false);
+    setAdjustSegmentKey(null);
+  };
+
   function confirmGate1() {
     setLocalScope(prev => {
       if (!prev) return prev;
@@ -1606,7 +1649,14 @@ function SoxScopePanel({
         }
         return a;
       });
-      return { ...prev, accounts_in_scope: merged };
+      const mergedSegments = (prev.segments_coverage || []).map(s => {
+        const ap = segmentApprovals[s.segment_key];
+        if (ap && isResolvedStatus(ap.status) && ap.status !== "approved" && ap.adjustments) {
+          return { ...s, in_scope: ap.adjustments.in_scope, manual_override: true };
+        }
+        return s;
+      });
+      return { ...prev, accounts_in_scope: merged, segments_coverage: mergedSegments };
     });
     setGateState(prev => ({ ...prev, g1: "approved", g2: hitlSox.coverage ? "pending" : "approved" }));
   }
@@ -1760,10 +1810,13 @@ function SoxScopePanel({
               gateState.g1 === "pending" ? (
                 <SoxGate1Review
                   scope={displayScope} accounts={displayScope.accounts_in_scope || []}
+                  segments={(displayScope.segments_coverage || []).filter(s => s.in_scope)}
                   materialityApproval={materialityApproval} accountApprovals={accountApprovals}
+                  segmentApprovals={segmentApprovals}
                   onApproveMateriality={approveMaterial} onAdjustMateriality={() => setAdjustMatOpen(true)}
                   onApproveAccount={approveAccount} onAdjustAccount={openAdjustAccount}
                   onApproveAllAccounts={approveAllRemainingAccounts}
+                  onApproveSegment={approveSegment} onAdjustSegment={openAdjustSegment}
                   onSubmit={confirmGate1}
                   onOverrideGate={() => requestOverrideGate(1)}
                 />
@@ -1838,6 +1891,12 @@ function SoxScopePanel({
         acc={(displayScope?.accounts_in_scope || []).find(a => a.account_id === adjustAccountId) || null}
         ticker={ticker || ""}
         onClose={() => setAdjustAccountOpen(false)} onSubmit={submitAccountAdjustment}
+      />
+      <AdjustSegmentModal
+        open={adjustSegmentOpen}
+        seg={(displayScope?.segments_coverage || []).find(s => s.segment_key === adjustSegmentKey) || null}
+        ticker={ticker || ""}
+        onClose={() => setAdjustSegmentOpen(false)} onSubmit={submitSegmentAdjustment}
       />
       <AdjustProcessModal
         open={adjustProcessOpen}

@@ -160,6 +160,59 @@ class TestMultiAxisContextsExcluded:
         assert multi_axis_count > 0
 
 
+class TestFilerSpecificBusinessSegmentAxis:
+    """Unlike geography (one universal SRT element every filer uses),
+    business/operating segment reporting has no standardized axis — real
+    filers routinely define their own extension (e.g. "ibm:SegmentAxis",
+    "aapl:ReportableSegmentsAxis") rather than the one literal
+    us-gaap:StatementBusinessSegmentsAxis QName. Matching only that exact
+    string meant geography populated for a company while its business-unit
+    segments silently stayed empty. _axis_type()/_context_dims() must
+    recognize any axis whose local name looks like a segment axis,
+    regardless of its namespace prefix."""
+
+    def test_custom_prefixed_axis_with_standard_local_name_is_business_segment(self):
+        assert es._axis_type("ibm:StatementBusinessSegmentsAxis") == "business_segment"
+
+    def test_entirely_custom_segment_axis_name_is_business_segment(self):
+        assert es._axis_type("ibm:ReportableSegmentsAxis") == "business_segment"
+        assert es._axis_type("aapl:SegmentAxis") == "business_segment"
+
+    def test_exact_standard_qnames_still_match(self):
+        assert es._axis_type("us-gaap:StatementBusinessSegmentsAxis") == "business_segment"
+        assert es._axis_type("srt:StatementGeographicalAxis") == "geography"
+
+    def test_unrelated_custom_axis_is_not_misclassified(self):
+        assert es._axis_type("us-gaap:ConsolidationItemsAxis") is None
+        assert es._axis_type("us-gaap:ProductOrServiceAxis") is None
+        assert es._axis_type("us-gaap:DisposalGroupClassificationAxis") is None
+
+    def test_custom_geography_named_axis_not_misclassified_as_business_segment(self):
+        # A filer-specific geography axis under a non-standard name should
+        # never fall through to the business_segment pattern.
+        assert es._axis_type("ibm:GeographicSegmentsAxis") is None
+
+    def test_context_dims_extracts_custom_axis_via_iter(self):
+        xml = """<?xml version="1.0"?>
+<xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+      xmlns:ibm="http://www.ibm.com/xbrl">
+  <xbrli:context id="c1">
+    <xbrli:entity><xbrli:identifier>0000000000</xbrli:identifier>
+      <xbrli:segment>
+        <xbrldi:explicitMember dimension="ibm:ReportableSegmentsAxis">ibm:SoftwareMember</xbrldi:explicitMember>
+      </xbrli:segment>
+    </xbrli:entity>
+    <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-03-31</xbrli:endDate></xbrli:period>
+  </xbrli:context>
+</xbrl>"""
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(xml)
+        ctx = root.find("xbrli:context", es._NS)
+        dims = es._context_dims(ctx)
+        assert dims == {"business_segment": "ibm:SoftwareMember"}
+
+
 class TestPersistSegments:
     """persist_segments() orchestration — mocked db/network, no live calls.
     Verifies the honesty rules that matter most here: unreconciled
