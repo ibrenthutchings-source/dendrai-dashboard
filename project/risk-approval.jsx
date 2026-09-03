@@ -37,7 +37,13 @@ function RiskApprovalReview({
   onOverrideGate,
   onAddRisk,
 }) {
-  if (!risks || risks.length === 0) return null;
+  // A genuinely empty risk list (0 risks generated for this run) must still
+  // render the Confirm/Override footer below — allResolved is trivially
+  // true for 0 === 0, so there's nothing blocking the gate from passing,
+  // but an early `return null` here used to hide the ONLY buttons that
+  // could ever resolve it, leaving Gate 1 permanently stuck on "awaiting
+  // your review" with nothing on screen to click.
+  risks = risks || [];
   const [expandedId, setExpandedId] = React.useState(null);
   const total = risks.length;
   const decided = risks.filter(r => {
@@ -63,7 +69,7 @@ function RiskApprovalReview({
         </div>
         <div className="rar-head-r">
           <div className="rar-prog">
-            <div className="rar-prog-track"><div className="rar-prog-fill" style={{width: `${(decided/total)*100}%`}}/></div>
+            <div className="rar-prog-track"><div className="rar-prog-fill" style={{width: `${total ? (decided/total)*100 : 100}%`}}/></div>
             <div className="rar-prog-meta">
               <span className="mono"><b style={{color:"var(--ink)",fontWeight:500}}>{decided}</b> / {total} resolved</span>
               {submittedCount > 0 && <span className="mono muted">· {submittedCount} adjusted</span>}
@@ -74,6 +80,11 @@ function RiskApprovalReview({
         </div>
       </div>
 
+      {total === 0 ? (
+        <div style={{padding: "18px 4px", fontSize: 12, color: "var(--ink-3)"}}>
+          No risks were generated for this run — nothing to review. Confirm below to continue, or add a risk manually first.
+        </div>
+      ) : (
       <div className="rar-table-wrap">
         <div className="rar-thead">
           <div className="rar-th rar-th-name">Risk</div>
@@ -99,6 +110,7 @@ function RiskApprovalReview({
           ))}
         </div>
       </div>
+      )}
 
       <div className="rar-foot">
         <button className="btn btn-sm" onClick={onOverrideGate}>
