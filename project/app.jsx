@@ -2999,7 +2999,7 @@ function App() {
             <div className="pm-body">
               <PersonaTab personas={hasRun ? profile.personas : null} selected={selectedPersona} setSelected={setSelectedPersona}
                 ticker={cfg.ticker} risks={output.s2?.risks || profile.risks || []}
-                loopStats={output.s6 || loop || {}} runId={runIdRef.current}/>
+                loopStats={output.s6 || {}} runId={runIdRef.current}/>
             </div>
           </div>
         </div>
