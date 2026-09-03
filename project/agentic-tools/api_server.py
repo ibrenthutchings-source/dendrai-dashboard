@@ -2820,6 +2820,20 @@ class DigestCheckRequest(BaseModel):
     ticker: str
 
 
+def _fmt_score(x: Optional[float]) -> str:
+    """avg_score can be NULL — a completed run with zero risks scored, or one
+    whose risk-score sync hasn't landed yet. `f"{x:.2f}"` raises TypeError on
+    None rather than producing "None", which previously took the whole
+    process down (an unhandled exception inside nested BaseHTTPMiddleware
+    dispatch layers crashed the single shared uvicorn worker, 502ing every
+    other endpoint too — not just this one)."""
+    return f"{x:.2f}" if x is not None else "n/a"
+
+
+def _fmt_delta(x: Optional[float]) -> str:
+    return f"{x:+.2f}" if x is not None else "n/a"
+
+
 def _build_digest_payload(ticker: str, from_row: Optional[dict], to_row: dict) -> dict:
     to_score = to_row.get("avg_score")
     from_score = from_row.get("avg_score") if from_row else None
@@ -2828,7 +2842,7 @@ def _build_digest_payload(ticker: str, from_row: Optional[dict], to_row: dict) -
     if not from_row:
         headline = (
             f"{ticker}: first posture snapshot — avg score "
-            f"{to_score:.2f} · {to_row['red_count']}R/{to_row['amber_count']}A/{to_row['green_count']}G "
+            f"{_fmt_score(to_score)} · {to_row['red_count']}R/{to_row['amber_count']}A/{to_row['green_count']}G "
             f"across {to_row['risk_count']} risks."
         )
         red_delta = amber_delta = green_delta = risk_count_delta = None
@@ -2842,8 +2856,8 @@ def _build_digest_payload(ticker: str, from_row: Optional[dict], to_row: dict) -
                     ((red_delta, "RED"), (amber_delta, "AMBER"), (green_delta, "GREEN")) if d]
         rag_note = ", ".join(rag_bits) if rag_bits else "no RAG band changes"
         headline = (
-            f"{ticker}: posture {direction} — avg score {from_score:.2f} -> {to_score:.2f} "
-            f"({score_delta:+.2f}). {rag_note}."
+            f"{ticker}: posture {direction} — avg score {_fmt_score(from_score)} -> {_fmt_score(to_score)} "
+            f"({_fmt_delta(score_delta)}). {rag_note}."
         )
 
     return {
