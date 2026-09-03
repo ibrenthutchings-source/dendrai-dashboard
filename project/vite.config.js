@@ -52,6 +52,33 @@ const rssProxyPlugin = {
 };
 
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      output: {
+        // Recharts 3.x is imported both eagerly (from the main entry) and
+        // from several lazily-loaded screen chunks (charts.jsx, governance.jsx,
+        // scenario-analysis.jsx, posture-trend.jsx, token-usage.jsx,
+        // board-consolidated-report.jsx). Left to Rollup's default automatic
+        // splitting, its own internal modules (v3 rewrote these around React
+        // Context, with real circular references between them) get divided
+        // across the main chunk and an auto-extracted shared chunk
+        // (observed in production as "CartesianChart-*.js") along a
+        // different boundary than recharts' own module graph expects —
+        // production-only (rollup's output ordering, not present in dev's
+        // unbundled ESM serving) "Uncaught ReferenceError: Cannot access
+        // '<var>' before initialization", right after login, from inside
+        // recharts' own code. A known class of Vite/Rollup bug with
+        // circular-dependency libraries split across chunk boundaries (see
+        // vitejs/vite discussions #9686, #16700). Forcing all of recharts
+        // into one dedicated chunk means its internal module graph is
+        // always evaluated together, in the order recharts itself expects,
+        // regardless of which screen chunk pulls it in first.
+        manualChunks(id) {
+          if (id.includes('node_modules/recharts')) return 'recharts-vendor';
+        },
+      },
+    },
+  },
   plugins: [
     react({ jsxRuntime: 'classic' }),
     AutoImport({
