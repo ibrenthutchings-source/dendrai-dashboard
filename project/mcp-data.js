@@ -943,10 +943,19 @@ window.MCP = (function () {
   }
 
   /** Draft a first-draft walkthrough narrative from an interview transcript
-   * + real process-mining stats for the same process. Never persisted —
-   * the caller pastes/edits the returned text into their own workpaper. */
+   * + real Case Flow/Variants/CaC/PaC evidence for the same process. Not
+   * persisted by this call alone — review/edit, then submit it through the
+   * same HITL gate every other Assess Risk item uses (prepareApprovalTask
+   * with gateType: 'walkthrough_narrative'). */
   async function draftWalkthroughNarrative(process, transcript, days = 90) {
     return _post('/process-mining/walkthrough-narrative', { process, transcript, days });
+  }
+
+  /** HITL status of every walkthrough narrative submitted for one process
+   * (gate_type='walkthrough_narrative', run_id always NULL — see
+   * db.get_approval_tasks_by_item_ref), newest first. */
+  async function getWalkthroughNarrativeHistory(process) {
+    return _get(`/process-mining/walkthrough-narrative/history?process=${encodeURIComponent(process)}`);
   }
 
   // ── Journal Entry Testing — je_testing_endpoints.py ───────────────────────────
@@ -1193,6 +1202,7 @@ window.MCP = (function () {
     pmRework,
     pmCases,
     draftWalkthroughNarrative,
+    getWalkthroughNarrativeHistory,
     // Journal Entry Testing
     jeTestingSummary,
     jeTestingFindings,

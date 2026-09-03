@@ -2141,20 +2141,45 @@ function WalkthroughStatsSummary({ theme, stats }) {
   );
 }
 
-function WalkthroughSection({ theme, label, text, highlight }) {
+// Editable once drafted — the preparer reviews/corrects the AI draft before
+// submitting it through the HITL gate below, same "AI proposes, human
+// disposes" shape as every other gate (RiskRow/ObjectiveRow's Adjust flow).
+function WalkthroughSection({ theme, label, value, onChange, highlight }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div className="mono" style={{ fontSize: 9.5, color: theme["ink-4"], letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>
         {label}
       </div>
-      <div style={{
-        fontSize: 12, lineHeight: 1.55, color: theme.ink, whiteSpace: "pre-wrap",
-        padding: highlight ? "8px 10px" : 0, borderRadius: 6,
-        background: highlight ? theme["surface-2"] : "transparent",
-        border: highlight ? `1px solid ${theme.line}` : "none",
-      }}>
-        {text}
-      </div>
+      <textarea value={value} onChange={e => onChange(e.target.value)}
+        className="mono" style={{
+          width: "100%", minHeight: 90, fontSize: 12, lineHeight: 1.55, color: theme.ink,
+          padding: "8px 10px", borderRadius: 6, resize: "vertical", boxSizing: "border-box",
+          background: highlight ? theme["surface-2"] : theme.surface,
+          border: `1px solid ${highlight ? theme["line-strong"] || theme.line : theme.line}`,
+        }} />
+    </div>
+  );
+}
+
+const _WALKTHROUGH_GATE_STATUS_LABEL = {
+  pending: "Pending", approved: "Approved — final", submitted: "Awaiting manager review",
+  manager_approved: "Manager-approved — final", rejected: "Rejected — needs revision",
+};
+const _WALKTHROUGH_GATE_STATUS_COLOR = (theme, status) =>
+  status === "approved" || status === "manager_approved" ? theme["green-ink"]
+    : status === "rejected" ? theme["red-ink"]
+    : theme["amber-ink"];
+
+function WalkthroughHistoryRow({ theme, task }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${theme.line}`, fontSize: 11 }}>
+      <span className="mono" style={{ fontWeight: 700, color: _WALKTHROUGH_GATE_STATUS_COLOR(theme, task.status), minWidth: 150 }}>
+        {_WALKTHROUGH_GATE_STATUS_LABEL[task.status] || task.status}
+      </span>
+      <span style={{ color: theme["ink-3"] }}>{task.item_label}</span>
+      <span style={{ marginLeft: "auto", color: theme["ink-4"], fontSize: 10 }}>
+        {task.prepared_by_name} · {task.prepared_at ? new Date(task.prepared_at).toLocaleString() : "—"}
+      </span>
     </div>
   );
 }
@@ -2167,14 +2192,39 @@ export function WalkthroughNarrativeView({ theme }) {
   const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [aiDraft, setAiDraft] = useState(null); // the untouched AI draft, for ai_accepted + a "revert" affordance
+  const [edited, setEdited] = useState(null);   // { process_description, key_controls, system_evidence, open_questions }
+  const [rationale, setRationale] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const loadHistory = useCallback(async (proc) => {
+    if (!proc) { setHistory([]); return; }
+    setHistoryLoading(true);
+    try {
+      const res = await window.MCP.getWalkthroughNarrativeHistory(proc);
+      setHistory(res.tasks || []);
+    } catch {
+      // Best-effort — history is context, not blocking; the draft/submit flow works regardless.
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadHistory(process); }, [process, loadHistory]);
 
   async function draft() {
     if (!process) { setError("Select a process first."); return; }
     if (!transcript.trim()) { setError("Paste the interview transcript first."); return; }
-    setDrafting(true); setError(null);
+    setDrafting(true); setError(null); setSubmitError(null);
     try {
       const res = await window.MCP.draftWalkthroughNarrative(process, transcript, days);
       setResult(res);
+      setAiDraft(res.narrative);
+      setEdited(res.narrative);
+      setRationale("");
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -2182,10 +2232,39 @@ export function WalkthroughNarrativeView({ theme }) {
     }
   }
 
+  function setField(key, value) {
+    setEdited(prev => ({ ...prev, [key]: value }));
+  }
+
+  const wasEdited = edited && aiDraft && Object.keys(aiDraft).some(k => edited[k] !== aiDraft[k]);
+
+  async function submit() {
+    setSubmitting(true); setSubmitError(null);
+    try {
+      const processLabel = processes.find(p => p.id === process)?.label || process;
+      await window.MCP.prepareApprovalTask({
+        runId: null,
+        gateType: "walkthrough_narrative",
+        itemRef: process,
+        itemLabel: `${processLabel} walkthrough — ${new Date().toLocaleDateString()}`,
+        disposition: wasEdited ? "adjusted" : "approved",
+        adjustments: edited,
+        rationale: rationale.trim() || null,
+        aiSuggested: aiDraft,
+      });
+      setResult(null); setAiDraft(null); setEdited(null); setRationale(""); setTranscript("");
+      await loadHistory(process);
+    } catch (e) {
+      setSubmitError(e.message || String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
-    <VizFrame theme={theme} height={720}
-      kicker="Process mining · Walkthrough narrative — first draft for a human to correct"
-      sub="Combines a process interview transcript with real process-mining statistics for the same process, explicitly prompted to call out where the two disagree. Never published or persisted on its own — paste/edit the result into your actual workpaper."
+    <VizFrame theme={theme} height={820}
+      kicker="Process mining · Walkthrough narrative — AI draft, human sign-off"
+      sub="Grounded in real Case Flow, Variants, Controls-as-Code, and Policy-as-Code evidence for this process, alongside the interview transcript — explicitly prompted to call out where they disagree. Review and correct the draft, then submit it through the same preparer → manager HITL gate every Assess Risk item uses (see Approval Inbox)."
       controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
       error={error} loading={false} empty={null}>
       <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
@@ -2207,13 +2286,52 @@ export function WalkthroughNarrativeView({ theme }) {
           </button>
         </div>
 
-        {result && (
+        {result && edited && (
           <div style={{ marginTop: 16 }}>
             <WalkthroughStatsSummary theme={theme} stats={result.supporting_stats} />
-            <WalkthroughSection theme={theme} label="Process description" text={result.narrative.process_description} />
-            <WalkthroughSection theme={theme} label="Key controls" text={result.narrative.key_controls} />
-            <WalkthroughSection theme={theme} label="System evidence" text={result.narrative.system_evidence} highlight />
-            <WalkthroughSection theme={theme} label="Open questions" text={result.narrative.open_questions} />
+            <WalkthroughSection theme={theme} label="Process description"
+              value={edited.process_description} onChange={v => setField("process_description", v)} />
+            <WalkthroughSection theme={theme} label="Key controls"
+              value={edited.key_controls} onChange={v => setField("key_controls", v)} />
+            <WalkthroughSection theme={theme} label="System evidence" highlight
+              value={edited.system_evidence} onChange={v => setField("system_evidence", v)} />
+            <WalkthroughSection theme={theme} label="Open questions"
+              value={edited.open_questions} onChange={v => setField("open_questions", v)} />
+
+            <div style={{ marginBottom: 10 }}>
+              <div className="mono" style={{ fontSize: 9.5, color: theme["ink-4"], letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>
+                Rationale <span style={{ textTransform: "none", letterSpacing: 0 }}>(required if you edited the draft)</span>
+              </div>
+              <textarea value={rationale} onChange={e => setRationale(e.target.value)}
+                placeholder="Why you changed the AI's draft, for the audit trail…"
+                className="code-input" style={{ width: "100%", height: 50, fontSize: 11.5 }} />
+            </div>
+
+            {submitError && (
+              <div className="mono" style={{ fontSize: 10.5, color: theme["red-ink"], marginBottom: 8 }}>{submitError}</div>
+            )}
+            <button type="button" className="btn btn-sm btn-acc" disabled={submitting || (wasEdited && !rationale.trim())}
+              onClick={submit}>
+              {submitting ? "Submitting…" : wasEdited ? "Submit for manager review" : "Confirm — no manager review needed"}
+            </button>
+            <span style={{ fontSize: 10, color: theme["ink-4"], marginLeft: 8 }}>
+              {wasEdited
+                ? "Edited from the AI draft — routes to your manager, same as any other Assess Risk adjustment."
+                : "Kept as AI drafted it — finalizes immediately, nothing further to review."}
+            </span>
+          </div>
+        )}
+
+        {(history.length > 0 || historyLoading) && (
+          <div style={{ marginTop: 24, paddingTop: 14, borderTop: `1px solid ${theme.line}` }}>
+            <div className="mono" style={{ fontSize: 9.5, color: theme["ink-4"], letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+              Submitted walkthroughs for this process
+            </div>
+            {historyLoading && !history.length ? (
+              <div style={{ fontSize: 11, color: theme["ink-4"] }}>Loading…</div>
+            ) : (
+              history.map(t => <WalkthroughHistoryRow key={t.id} theme={theme} task={t} />)
+            )}
           </div>
         )}
       </div>

@@ -5038,7 +5038,7 @@ def get_approval_task(task_id: int) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, run_id, gate_type, item_ref, item_label, manager_id, status,
+                    SELECT id, run_id, gate_type, item_ref, item_label, manager_id, manager_name, status,
                            disposition, adjustments, rationale, prepared_by_name, execution_result
                     FROM approval_tasks WHERE id = %s
                     """,
@@ -5050,8 +5050,20 @@ def get_approval_task(task_id: int) -> Optional[dict]:
     return _run(_do)
 
 
-def get_approval_inbox(manager_id: int) -> list:
-    """Items awaiting this user's review, newest-submitted first.
+def get_approval_inbox(manager_id: Optional[int], all_pending: bool = False) -> list:
+    """Items awaiting review, newest-submitted first — every manager's own
+    assigned items by default, or (all_pending=True, admin-only at the API
+    layer — see approvals_endpoints.get_inbox) every submitted item
+    org-wide regardless of who it's assigned to.
+
+    Exists because a 'submitted' item is otherwise a dead end the moment
+    its assigned manager_id belongs to an account nobody actually uses —
+    common in a small team or a single-admin deployment where a preparer's
+    manager was set (even correctly) to a colleague who never logs in to
+    clear their inbox. all_pending gives an admin visibility into every
+    such orphaned item so approvals_endpoints.review_item's admin-override
+    path (any admin may decide ANY submitted item, not just ones they're
+    the assigned manager_id for) has something to act on.
 
     LEFT JOIN (not INNER) — devops_scm_exception tasks have run_id=NULL (no
     risk_loop_runs association; see approval_tasks.run_id's DROP NOT NULL
@@ -5060,17 +5072,19 @@ def get_approval_inbox(manager_id: int) -> list:
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
+                where = "t.status = 'submitted'" if all_pending else "t.manager_id = %s AND t.status = 'submitted'"
+                params = () if all_pending else (manager_id,)
                 cur.execute(
-                    """
+                    f"""
                     SELECT t.id, t.run_id, t.gate_type, t.item_ref, t.item_label, t.disposition,
                            t.adjustments, t.rationale, t.prepared_by_name, t.prepared_at, r.ticker,
-                           t.ai_suggested, t.ai_accepted
+                           t.ai_suggested, t.ai_accepted, t.manager_id, t.manager_name
                     FROM approval_tasks t
                     LEFT JOIN risk_loop_runs r ON r.id = t.run_id
-                    WHERE t.manager_id = %s AND t.status = 'submitted'
+                    WHERE {where}
                     ORDER BY t.prepared_at DESC
                     """,
-                    (manager_id,),
+                    params,
                 )
                 cols = [d[0] for d in cur.description]
                 rows = []
@@ -5098,6 +5112,44 @@ def get_approval_tasks_for_run(run_id: int, gate_type: Optional[str] = None) -> 
                     q += " AND gate_type = %s"
                     params.append(gate_type)
                 cur.execute(q, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("prepared_at", "reviewed_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_approval_tasks_by_item_ref(gate_type: str, item_ref: str) -> list:
+    """Every approval_tasks row for one (gate_type, item_ref) pair, newest
+    first — the get_approval_tasks_for_run equivalent for a gate type that
+    isn't tied to a risk_loop_run (run_id IS NULL; same precedent as
+    concept_link/devops_scm_exception — see approval_tasks.run_id's DROP
+    NOT NULL migration above). Used by process_mining_endpoints.py's
+    walkthrough-narrative/history: since each drafted walkthrough is
+    submitted as its own new row rather than upserted (real history worth
+    keeping, not a single mutable "current" narrative — see
+    upsert_approval_task's NULL-run_id behavior note above), this is how a
+    reviewer sees every past submission for one process, not just the
+    latest."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, gate_type, item_ref, item_label, status, disposition, adjustments,
+                           rationale, prepared_by, prepared_by_name, prepared_at, manager_id, manager_name,
+                           reviewed_by, reviewed_by_name, reviewed_at, review_comment, ai_suggested, ai_accepted
+                    FROM approval_tasks
+                    WHERE run_id IS NULL AND gate_type = %s AND item_ref = %s
+                    ORDER BY prepared_at DESC
+                    """,
+                    (gate_type, item_ref),
+                )
                 cols = [d[0] for d in cur.description]
                 rows = []
                 for row in cur.fetchall():

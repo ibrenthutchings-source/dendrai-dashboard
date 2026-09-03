@@ -50,7 +50,7 @@ router = APIRouter(prefix="/approvals", tags=["Approval Workflow"])
 class PrepareRequest(BaseModel):
     # None only for gate_type='devops_scm_exception' — no risk_loop_runs association.
     run_id: Optional[int] = None
-    gate_type: str            # 'risk' | 'objective' | 'sox_materiality' | 'sox_account' | 'sox_process' | 'devops_scm_exception'
+    gate_type: str            # 'risk' | 'objective' | 'sox_materiality' | 'sox_account' | 'sox_process' | 'devops_scm_exception' | 'walkthrough_narrative'
     item_ref: str
     item_label: Optional[str] = None
     disposition: str          # 'approved' | 'adjusted'
@@ -117,7 +117,20 @@ def prepare_item(req: PrepareRequest, current_user: dict = Depends(require_scree
 
 @router.post("/review")
 def review_item(req: ReviewRequest, current_user: dict = Depends(require_screen_permission("approvals", edit=True))):
-    """Manager decision on a submitted item. 403s if the caller isn't the assigned manager."""
+    """Manager decision on a submitted item. 403s if the caller isn't the
+    assigned manager AND isn't an admin.
+
+    The admin exception exists because 'assigned manager_id' can otherwise
+    be a genuine dead end: a preparer's manager was set to an account
+    nobody actually uses day to day (common in a small team, or when the
+    org chart in User Config doesn't match who's really reviewing), and
+    with no escape hatch that item sits 'submitted' forever — visible in
+    the assigned manager's own inbox, reachable by no one. An admin
+    reviewing on someone else's behalf is recorded as exactly that: the
+    comment is stamped with the real reviewer's name and the fact that it
+    wasn't the assigned manager, so the audit trail stays honest about who
+    actually decided it — see reviewed_by/reviewed_by_name below, which
+    still record the admin, never a forged identity."""
     if req.decision not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="decision must be 'approved' or 'rejected'")
     if not db.is_available():
@@ -126,17 +139,24 @@ def review_item(req: ReviewRequest, current_user: dict = Depends(require_screen_
     task = db.get_approval_task(req.task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Approval task not found")
-    if task.get("manager_id") != current_user["id"]:
+    is_assigned_manager = task.get("manager_id") == current_user["id"]
+    is_admin_override = not is_assigned_manager and current_user.get("role") == "admin"
+    if not is_assigned_manager and not is_admin_override:
         raise HTTPException(status_code=403, detail="You are not the assigned reviewer for this item")
     if task.get("status") != "submitted":
         raise HTTPException(status_code=409, detail=f"Item is not awaiting review (status: {task.get('status')})")
+
+    comment = req.comment
+    if is_admin_override:
+        note = f"[Admin override — {task.get('manager_name') or 'the assigned manager'} never reviewed this]"
+        comment = f"{note} {comment}".strip() if comment else note
 
     updated = db.review_approval_task(
         task_id=req.task_id,
         reviewer_id=current_user["id"],
         reviewer_name=_display_name(current_user),
         decision=req.decision,
-        comment=req.comment,
+        comment=comment,
     )
     if not updated:
         raise HTTPException(status_code=409, detail="Item was already reviewed")
@@ -279,11 +299,20 @@ def retry_remediation(task_id: int, current_user: dict = Depends(require_screen_
 
 
 @router.get("/inbox")
-def get_inbox(current_user: dict = Depends(require_screen_permission("approvals"))):
-    """Items currently awaiting the logged-in user's review, across all gate types."""
+def get_inbox(all_pending: bool = Query(default=False),
+              current_user: dict = Depends(require_screen_permission("approvals"))):
+    """Items currently awaiting the logged-in user's review, across all gate
+    types. all_pending=true (silently ignored for a non-admin — never a
+    403, just the same personal inbox) additionally returns every submitted
+    item org-wide regardless of assigned manager_id — the admin escape
+    hatch for an item stuck because its assigned manager never logs in to
+    clear it (a real dead end in a small team / single-admin deployment
+    otherwise: see review_item's admin-override branch below, which is what
+    actually lets an admin act on one of these)."""
     if not db.is_available():
         return {"items": []}
-    return {"items": db.get_approval_inbox(current_user["id"])}
+    is_admin = current_user.get("role") == "admin"
+    return {"items": db.get_approval_inbox(current_user["id"], all_pending=all_pending and is_admin)}
 
 
 @router.get("/status/{run_id}")
