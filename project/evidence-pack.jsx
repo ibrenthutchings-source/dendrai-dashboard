@@ -30,6 +30,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
   const [state, setState] = useState({ loading: false, error: null, data: null });
   const [runList, setRunList] = useState({ loading: false, error: null, runs: [] });
   const [selectedRunId, setSelectedRunId] = useState(runId);
+  const [sendOpen, setSendOpen] = useState(false);
 
   // Reset to the run the caller opened with each time the modal is (re)opened
   // or the underlying ticker/run changes — otherwise a stale pick from a
@@ -102,6 +103,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
         {d ? `${d.risk_scores?.length || 0} risks · ${d.approval_tasks?.length || 0} sign-offs · ${d.adjudications_meta?.total || 0} adjudications` : ""}
       </span>
       <div style={{ display: "flex", gap: 6 }}>
+        <button className="btn btn-sm" onClick={() => setSendOpen(true)} disabled={!d}><Icon name="satellite" size={11}/> Send to…</button>
         <button className="btn btn-sm" onClick={downloadJson} disabled={!d}><Icon name="download" size={11}/> Download JSON</button>
         <button className="btn btn-sm" onClick={() => window.print()} disabled={!d}><Icon name="download" size={11}/> Print / PDF</button>
         <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
@@ -110,6 +112,9 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
   );
 
   return (
+    <>
+    <SendReportModal open={sendOpen} onClose={() => setSendOpen(false)}
+      artifactType="evidence_pack" payload={d} runId={selectedRunId} ticker={ticker} />
     <Modal open={open} onClose={onClose} title="Audit Evidence Pack" width={920}
       titleSub={`${ticker ? `${ticker} · ` : ""}Run ${selectedRunId}`}
       banner={runBanner} foot={modalFoot}>
@@ -337,6 +342,7 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
             </>
           )}
     </Modal>
+    </>
   );
 }
 

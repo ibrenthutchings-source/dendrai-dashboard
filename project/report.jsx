@@ -6,6 +6,7 @@ function ReportModal({ open, onClose, payload }) {
   // Hooks must run unconditionally — declare before the early return.
   const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null, _review: null });
   React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null, _review: null }); }, [payload?.ts]);
+  const [sendOpen, setSendOpen] = React.useState(false);
 
   if (!open || !payload) return null;
   const {
@@ -51,6 +52,7 @@ function ReportModal({ open, onClose, payload }) {
             <Icon name="spark" size={11}/> {aiReport.loading ? "Generating…" : aiReport.markdown ? "Regenerate AI report" : "Generate AI report"}
           </button>
         )}
+        <button className="btn btn-sm" onClick={() => setSendOpen(true)}><Icon name="satellite" size={11}/> Send to…</button>
         <button className="btn btn-sm" onClick={() => window.print()}><Icon name="download" size={11}/> Print / PDF</button>
         <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
       </div>
@@ -58,6 +60,9 @@ function ReportModal({ open, onClose, payload }) {
   );
 
   return (
+    <>
+    <SendReportModal open={sendOpen} onClose={() => setSendOpen(false)}
+      artifactType="loop_report" payload={payload} runId={runId} ticker={ticker} />
     <Modal open={open} onClose={onClose} title="Loop Report"
       titleSub={`Generated ${new Date(ts).toLocaleString()}`} width={920} foot={modalFoot}>
           <div className="rep-h1">{entity}</div>
@@ -503,6 +508,7 @@ function ReportModal({ open, onClose, payload }) {
             </div>
           </div>
     </Modal>
+    </>
   );
 }
 

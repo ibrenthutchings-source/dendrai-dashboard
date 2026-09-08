@@ -196,6 +196,13 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/evidence-pack/, '/evidence-pack'),
       },
+      // report_delivery_endpoints.router declares prefix="/report-delivery" —
+      // same gap, different router.
+      '/api/report-delivery': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/report-delivery/, '/report-delivery'),
+      },
     },
   },
   // vite preview (port 4173) needs its own proxy block — server.proxy is dev-only
@@ -260,6 +267,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/evidence-pack/, '/evidence-pack'),
+      },
+      '/api/report-delivery': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/report-delivery/, '/report-delivery'),
       },
       '/auth/': {
         target: 'http://127.0.0.1:8001',

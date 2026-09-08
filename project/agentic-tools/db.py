@@ -2767,6 +2767,75 @@ CREATE TABLE IF NOT EXISTS observability.osv_cache (
     queried_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (ecosystem, package_name, version)
 );
+
+-- Report delivery destinations: where a Loop Report or Audit Evidence Pack
+-- can be pushed, instead of only being printed or downloaded by hand. This is
+-- the pull-model inverse of monitored_systems (which authenticates TO us with
+-- an ingest_api_key we issue) and shares poll_connectors' posture instead: WE
+-- authenticate to THEM, so we hold THEIR credential, Fernet-encrypted with
+-- CONNECTOR_ENCRYPTION_KEY (see encrypt_credentials/decrypt_credentials).
+-- Kept separate from poll_connectors because the direction of data flow is the
+-- opposite one — poll_connectors pull evidence in on a timer, these push a
+-- finished artifact out on user action — and nothing about a poll interval,
+-- SoD sync, or identity-graph edge applies here.
+--
+-- artifact_types is an array, not a single column, because the common real
+-- configuration is one GRC/ITSM endpoint that accepts both artifacts; forcing
+-- two near-identical rows for that would make the audit trail read as two
+-- unrelated destinations.
+CREATE TABLE IF NOT EXISTS observability.report_destinations (
+    id               BIGSERIAL    PRIMARY KEY,
+    display_name     VARCHAR(128) NOT NULL,
+    description      TEXT,
+    artifact_types   TEXT[]       NOT NULL DEFAULT '{loop_report,evidence_pack}',
+    url              TEXT         NOT NULL,
+    http_method      VARCHAR(8)   NOT NULL DEFAULT 'POST',
+    auth_type        VARCHAR(24)  NOT NULL DEFAULT 'none',  -- none | bearer | api_key | basic | hmac
+    credentials_enc  BYTEA,                                 -- Fernet-encrypted JSON blob; NULL when auth_type='none'
+    headers          JSONB,                                 -- extra static headers, merged under the auth header
+    payload_format   VARCHAR(24)  NOT NULL DEFAULT 'dendrai', -- dendrai | raw | slack | msteams
+    active           BOOLEAN      NOT NULL DEFAULT TRUE,
+    -- Last-attempt summary, denormalised onto the row so the destination list
+    -- can show health without a per-row join into report_deliveries. The
+    -- deliveries table stays the authoritative history; these three are a cache.
+    last_status      VARCHAR(16),   -- ok | error | never_sent
+    last_sent_at     TIMESTAMPTZ,
+    last_error       TEXT,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by       VARCHAR(128)
+);
+CREATE INDEX IF NOT EXISTS idx_report_destinations_active
+    ON observability.report_destinations (active);
+
+-- Every send attempt, successful or not. This exists because the artifacts
+-- being sent ARE audit evidence: "who sent this run's evidence pack, to which
+-- external system, when, and did it land" is itself an auditable fact, and a
+-- fire-and-forget POST would destroy it. content_sha256 is over the exact
+-- bytes transmitted, so a dispute about what an external system received is
+-- answerable without having stored a second copy of the payload here.
+CREATE TABLE IF NOT EXISTS observability.report_deliveries (
+    id              BIGSERIAL    PRIMARY KEY,
+    destination_id  BIGINT       REFERENCES observability.report_destinations(id) ON DELETE SET NULL,
+    destination_name VARCHAR(128),  -- denormalised: survives destination deletion
+    artifact_type   VARCHAR(32)  NOT NULL,  -- loop_report | evidence_pack | test
+    run_id          BIGINT,
+    ticker          VARCHAR(16),
+    url             TEXT,
+    status          VARCHAR(16)  NOT NULL,  -- ok | error
+    http_status     INTEGER,
+    error           TEXT,
+    response_excerpt TEXT,
+    content_sha256  CHAR(64),
+    content_bytes   INTEGER,
+    duration_ms     INTEGER,
+    sent_by         VARCHAR(128),
+    sent_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_deliveries_dest
+    ON observability.report_deliveries (destination_id, sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_deliveries_run
+    ON observability.report_deliveries (run_id) WHERE run_id IS NOT NULL;
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -13084,6 +13153,203 @@ def record_poll_result(connector_id: int, status: str, error: Optional[str] = No
                     (status, error, connector_id),
                 )
     _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Report delivery: push a Loop Report / Evidence Pack to an external webhook
+# or API endpoint (observability.report_destinations / .report_deliveries).
+# Credentials are Fernet-encrypted the same way poll_connectors' are — see
+# encrypt_credentials/decrypt_credentials above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_report_destination(display_name: str, url: str, *, description: Optional[str] = None,
+                               artifact_types: Optional[list] = None, http_method: str = "POST",
+                               auth_type: str = "none", credentials: Optional[dict] = None,
+                               headers: Optional[dict] = None, payload_format: str = "dendrai",
+                               created_by: Optional[str] = None) -> Optional[int]:
+    """Create a report delivery destination. `credentials` is a plain dict —
+    encrypted here before storage, same as create_poll_connector."""
+    enc = encrypt_credentials(credentials) if credentials else None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.report_destinations
+                        (display_name, description, artifact_types, url, http_method,
+                         auth_type, credentials_enc, headers, payload_format, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (display_name, description, artifact_types or ["loop_report", "evidence_pack"],
+                     url, http_method.upper(), auth_type, enc,
+                     Json(headers) if headers else None, payload_format, created_by),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_report_destinations(active_only: bool = False) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, display_name, description, artifact_types, url, http_method,
+                           auth_type, headers, payload_format, active,
+                           last_status, last_sent_at, last_error, created_at, updated_at, created_by
+                    FROM observability.report_destinations
+                    """ + ("WHERE active" if active_only else "") + """
+                    ORDER BY display_name
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _run(_do, default=[]) or []
+
+
+def get_report_destination(destination_id: int, include_credentials: bool = False) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                fields = "id, display_name, description, artifact_types, url, http_method, auth_type, headers, payload_format, active, last_status, last_sent_at, last_error, created_at, updated_at, created_by"
+                if include_credentials:
+                    fields += ", credentials_enc"
+                cur.execute(f"SELECT {fields} FROM observability.report_destinations WHERE id = %s", (destination_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                result = dict(zip(cols, row))
+                if include_credentials:
+                    enc = result.pop("credentials_enc", None)
+                    result["credentials"] = decrypt_credentials(enc) if enc else None
+                return result
+    return _run(_do)
+
+
+def update_report_destination(destination_id: int, *, display_name: Optional[str] = None,
+                               description: Optional[str] = None, artifact_types: Optional[list] = None,
+                               url: Optional[str] = None, http_method: Optional[str] = None,
+                               auth_type: Optional[str] = None, credentials: Optional[dict] = None,
+                               headers: Optional[dict] = None, payload_format: Optional[str] = None,
+                               active: Optional[bool] = None) -> bool:
+    """Partial update — only columns whose kwarg was actually passed are
+    touched. `credentials`, when given, is re-encrypted and replaces the
+    stored blob; pass None (the default, meaning "not given") to leave the
+    existing credential untouched, same convention as update_poll_connector."""
+    sets, vals = [], []
+    for col, val in (
+        ("display_name", display_name), ("description", description),
+        ("artifact_types", artifact_types), ("url", url),
+        ("http_method", http_method.upper() if http_method else None),
+        ("auth_type", auth_type), ("payload_format", payload_format), ("active", active),
+    ):
+        if val is not None:
+            sets.append(f"{col} = %s")
+            vals.append(val)
+    if headers is not None:
+        sets.append("headers = %s")
+        vals.append(Json(headers))
+    if credentials is not None:
+        sets.append("credentials_enc = %s")
+        vals.append(encrypt_credentials(credentials))
+    if not sets:
+        return False
+    sets.append("updated_at = NOW()")
+    vals.append(destination_id)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE observability.report_destinations SET {', '.join(sets)} WHERE id = %s",
+                    tuple(vals),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def delete_report_destination(destination_id: int) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM observability.report_destinations WHERE id = %s", (destination_id,))
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def record_report_delivery(*, destination_id: Optional[int], destination_name: Optional[str],
+                            artifact_type: str, status: str, url: Optional[str] = None,
+                            run_id: Optional[int] = None, ticker: Optional[str] = None,
+                            http_status: Optional[int] = None, error: Optional[str] = None,
+                            response_excerpt: Optional[str] = None, content_sha256: Optional[str] = None,
+                            content_bytes: Optional[int] = None, duration_ms: Optional[int] = None,
+                            sent_by: Optional[str] = None) -> Optional[int]:
+    """Log one delivery attempt and, on success, refresh the destination's
+    denormalised last_status/last_sent_at/last_error cache. Logged even when
+    destination_id is None (an ad-hoc one-off send never saved as a
+    destination) — destination_name still identifies the target for the
+    audit trail."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.report_deliveries
+                        (destination_id, destination_name, artifact_type, run_id, ticker, url,
+                         status, http_status, error, response_excerpt, content_sha256,
+                         content_bytes, duration_ms, sent_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (destination_id, destination_name, artifact_type, run_id, ticker, url,
+                     status, http_status, error, response_excerpt, content_sha256,
+                     content_bytes, duration_ms, sent_by),
+                )
+                row = cur.fetchone()
+                if destination_id is not None:
+                    cur.execute(
+                        """
+                        UPDATE observability.report_destinations
+                        SET last_status = %s, last_sent_at = NOW(), last_error = %s
+                        WHERE id = %s
+                        """,
+                        (status, error, destination_id),
+                    )
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_report_deliveries(destination_id: Optional[int] = None, run_id: Optional[int] = None,
+                            limit: int = 50) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                where, vals = [], []
+                if destination_id is not None:
+                    where.append("destination_id = %s")
+                    vals.append(destination_id)
+                if run_id is not None:
+                    where.append("run_id = %s")
+                    vals.append(run_id)
+                clause = ("WHERE " + " AND ".join(where)) if where else ""
+                vals.append(limit)
+                cur.execute(
+                    f"""
+                    SELECT id, destination_id, destination_name, artifact_type, run_id, ticker, url,
+                           status, http_status, error, content_sha256, content_bytes, duration_ms,
+                           sent_by, sent_at
+                    FROM observability.report_deliveries
+                    {clause}
+                    ORDER BY sent_at DESC
+                    LIMIT %s
+                    """,
+                    tuple(vals),
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _run(_do, default=[]) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

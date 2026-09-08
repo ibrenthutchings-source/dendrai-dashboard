@@ -137,6 +137,7 @@ import pac_policy_docs
 import approvals_endpoints
 import remediation_endpoints
 import evidence_pack_endpoints
+import report_delivery_endpoints
 import evidence_endpoints
 import itsm_endpoints
 import map_endpoints
@@ -989,6 +990,10 @@ app.include_router(remediation_endpoints.router)
 
 # Audit Evidence Pack: one-shot assembly of everything defensible about a run.
 app.include_router(evidence_pack_endpoints.router)
+
+# Report Delivery: push a Loop Report / Evidence Pack to an external
+# webhook or API destination on user action from the Assess Risk screen.
+app.include_router(report_delivery_endpoints.router)
 
 # DevOps Monitoring: SARIF/SAST evidence ingestion (tamper-evident, hash-chained).
 app.include_router(evidence_endpoints.router)
