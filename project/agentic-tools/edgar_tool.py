@@ -133,6 +133,40 @@ def _get_safe(url: str, **kw) -> Optional[requests.Response]:
         return None
 
 
+# A DEF 14A or 10-K primary document is routinely 5-20 MB of HTML. BeautifulSoup
+# + lxml build a parse tree roughly 10-30x the source size, so parsing a whole
+# large filing inside a request worker spikes memory well past the container
+# limit and the process is OOM-killed with no traceback (the 2026-09-10
+# /edgar/proxy incident: crashed the API every Risk Loop run). The governance /
+# risk sections we actually keep sit near the front of the document and every
+# _extract_section() call already caps its own output at 40-50K chars, so
+# reading only the first few MB costs nothing downstream.
+_MAX_FILING_BYTES = 5_000_000
+
+
+def _get_text_capped(url: str, max_bytes: int = _MAX_FILING_BYTES) -> Optional[str]:
+    """GET a potentially very large document, decoding at most ``max_bytes`` of
+    it. Returns decoded text, or None on any failure (same contract as
+    ``_get_safe``)."""
+    try:
+        _sleep()
+        with requests.get(url, headers=HEADERS, timeout=30, stream=True) as resp:
+            resp.raise_for_status()
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= max_bytes:
+                    break
+            enc = resp.encoding or resp.apparent_encoding or "utf-8"
+        return b"".join(chunks).decode(enc, errors="replace")
+    except Exception:
+        return None
+
+
 def _strip_html(raw: str) -> str:
     """Return plain text from an HTML string, with paragraph structure preserved.
 
@@ -144,6 +178,11 @@ def _strip_html(raw: str) -> str:
     block-level tags get a paragraph break; everything else is joined with
     spaces so sentences stay whole.
     """
+    # Defensive cap: callers should already bound the download (_get_text_capped),
+    # but never hand an unbounded string to the parser — that is the OOM path.
+    if len(raw) > _MAX_FILING_BYTES:
+        raw = raw[:_MAX_FILING_BYTES]
+
     if _BS4:
         soup = BeautifulSoup(raw, "lxml")
         for tag in soup(["script", "style", "table"]):
@@ -359,13 +398,11 @@ def fetch_filing_text(cik: str, filing: dict) -> str:
     acc_clean = acc.replace("-", "")
     url = f"{EDGAR_BASE}/Archives/edgar/data/{cik_int}/{acc_clean}/{doc_name}"
 
-    r = _get_safe(url)
-    if r is None:
+    raw = _get_text_capped(url)
+    if raw is None:
         return ""
 
-    ct = r.headers.get("Content-Type", "")
-    raw = r.text
-    if "html" in ct or raw.lstrip().startswith("<") or doc_name.lower().endswith((".htm", ".html")):
+    if raw.lstrip()[:1] == "<" or doc_name.lower().endswith((".htm", ".html")):
         return _strip_html(raw)
     return raw
 
