@@ -48,4 +48,27 @@ fi
 echo "DIAGNOSTIC: running nginx -t"
 nginx -t
 
-exec nginx -g 'daemon off;'
+# Run nginx alongside uvicorn (not `exec`) so this script stays PID 1 and can
+# supervise both. Previously `exec nginx` handed PID 1 to nginx: if uvicorn
+# later crashed, nginx kept serving the static SPA and 502ing every /api
+# request, the container never exited, and Railway's ON_FAILURE restart policy
+# never fired — so the API stayed down until someone redeployed by hand.
+nginx -g 'daemon off;' &
+NGINX_PID=$!
+echo "nginx started (PID ${NGINX_PID})"
+
+# Poll both processes; the moment either exits, bring the whole container down
+# so Railway restarts it cleanly.
+while kill -0 "${UVICORN_PID}" 2>/dev/null && kill -0 "${NGINX_PID}" 2>/dev/null; do
+  sleep 5
+done
+
+if ! kill -0 "${UVICORN_PID}" 2>/dev/null; then
+  echo "FATAL: uvicorn (PID ${UVICORN_PID}) exited — stopping nginx so the container restarts"
+  kill "${NGINX_PID}" 2>/dev/null || true
+else
+  echo "FATAL: nginx (PID ${NGINX_PID}) exited — stopping uvicorn so the container restarts"
+  kill "${UVICORN_PID}" 2>/dev/null || true
+fi
+wait 2>/dev/null || true
+exit 1
