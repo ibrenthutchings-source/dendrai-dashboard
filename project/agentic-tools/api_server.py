@@ -69,6 +69,7 @@ import argparse
 import asyncio
 import concurrent.futures
 import contextvars
+import functools
 import logging
 import os
 import threading
@@ -225,6 +226,47 @@ import auth_endpoints
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# ── Heavy-endpoint concurrency limiter ────────────────────────────────────────
+# A single Risk Loop run fires ~8 analytics/EDGAR endpoints at once, several of
+# which hold multi-MB filing HTML or large dataframes in memory for the length
+# of the call. Run all at the same time in the threadpool they spike memory past
+# the container limit and the worker is OOM-killed — no traceback, the whole
+# process dies and every request 502s until it restarts. Cap how many run
+# concurrently; queue the rest briefly, then shed load with 503 rather than take
+# the process down. Tunable via env; 0 disables the limiter entirely.
+_HEAVY_LIMIT = int(os.environ.get("HEAVY_ENDPOINT_CONCURRENCY", "3"))
+_HEAVY_QUEUE_TIMEOUT = float(os.environ.get("HEAVY_ENDPOINT_QUEUE_TIMEOUT", "90"))
+_heavy_semaphore = threading.BoundedSemaphore(_HEAVY_LIMIT) if _HEAVY_LIMIT > 0 else None
+
+
+def _heavy_endpoint(fn):
+    """Serialise memory-heavy sync endpoints through a bounded semaphore.
+
+    FastAPI resolves the wrapped function's signature via ``__wrapped__`` (set
+    by functools.wraps), so request-body parsing and dependency injection are
+    unaffected. Apply it *below* ``@app.post(...)`` in source order.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if _heavy_semaphore is None:
+            return fn(*args, **kwargs)
+        if not _heavy_semaphore.acquire(timeout=_HEAVY_QUEUE_TIMEOUT):
+            logger.warning(
+                "heavy endpoint %s shed load — all %d slots busy for %ss",
+                fn.__name__, _HEAVY_LIMIT, _HEAVY_QUEUE_TIMEOUT,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Server busy running analytics — too many heavy requests "
+                       "in flight. Retry in a few seconds.",
+            )
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _heavy_semaphore.release()
+    return wrapper
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -1690,6 +1732,7 @@ def industry_from_sic(sic: str = Query(..., description="SIC code as string (e.g
 # ── Tool endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/predictive/full-analysis")
+@_heavy_endpoint
 def predictive_full_analysis(req: FullAnalysisRequest):
     """
     Run all 10 Dendrai Intelligenza predictive analytics models and persist
@@ -1740,6 +1783,7 @@ def sync_risk_scores(run_id: int, req: SyncRiskScoresRequest):
 
 
 @app.post("/edgar/financials")
+@_heavy_endpoint
 def edgar_financials(req: TickerRequest):
     """Return XBRL financial time-series and save to normalized DB tables."""
     try:
@@ -1870,6 +1914,7 @@ def commit_financials(req: CommitFinancialsRequest):
 
 
 @app.post("/edgar/risk-factors")
+@_heavy_endpoint
 def edgar_risk_factors_endpoint(req: RiskFactorsRequest):
     """Return Item 1A Risk Factors and save to edgar_risk_factor_filings."""
     try:
@@ -1941,6 +1986,7 @@ def rss_news(req: RssRequest):
 
 
 @app.post("/rss/ingest")
+@_heavy_endpoint
 def rss_ingest(req: RssIngestRequest):
     """
     Fetch and grade the compliance/regulatory RSS feeds registered in the dashboard
@@ -2003,6 +2049,7 @@ _8K_CLASSIFY_MAX_PER_CALL = 10  # bounds per-request latency/LLM cost — see co
 
 
 @app.post("/edgar/8k-events")
+@_heavy_endpoint
 def edgar_8k_events(req: TickerRequest):
     """
     Return annotated 8-K events and save to edgar_8k_events. Filings whose
@@ -2372,6 +2419,7 @@ def _peer_has_data(peer: dict) -> bool:
 
 
 @app.post("/edgar/peers")
+@_heavy_endpoint
 def edgar_peers(req: TickerRequest):
     """
     Peer intelligence. Primary source is the competitors the company names in its
@@ -2561,6 +2609,7 @@ class MaterialAccountsForecastRequest(BaseModel):
 
 
 @app.post("/material-accounts/{ticker}/forecast")
+@_heavy_endpoint
 def material_accounts_forecast(ticker: str, req: MaterialAccountsForecastRequest = MaterialAccountsForecastRequest()):
     """
     Forecast every detected material account, capped at
@@ -2584,6 +2633,7 @@ def material_accounts_forecast(ticker: str, req: MaterialAccountsForecastRequest
 
 
 @app.post("/edgar/proxy")
+@_heavy_endpoint
 def edgar_proxy(req: RiskFactorsRequest):
     """Return DEF 14A proxy governance sections and save to edgar_proxy_filings."""
     try:
