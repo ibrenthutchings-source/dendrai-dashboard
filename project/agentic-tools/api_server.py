@@ -227,6 +227,22 @@ import auth_endpoints
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+try:
+    import resource as _resource  # POSIX only — absent on Windows (local dev)
+except ImportError:
+    _resource = None
+
+
+def _rss_mb() -> Optional[float]:
+    """This process's peak resident set size in MB so far, or None on
+    platforms without the `resource` module (Windows). Used to instrument
+    memory-heavy endpoints with log lines that are flushed immediately —
+    unlike a return value, they survive the process being OOM-killed before
+    the request completes (see the 2026-09 /edgar/proxy OOM incidents)."""
+    if _resource is None:
+        return None
+    return _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss / 1024.0  # Linux ru_maxrss is in KB
+
 
 # ── Heavy-endpoint concurrency limiter ────────────────────────────────────────
 # A single Risk Loop run fires ~8 analytics/EDGAR endpoints at once, several of
@@ -2636,9 +2652,18 @@ def material_accounts_forecast(ticker: str, req: MaterialAccountsForecastRequest
 @_heavy_endpoint
 def edgar_proxy(req: RiskFactorsRequest):
     """Return DEF 14A proxy governance sections and save to edgar_proxy_filings."""
+    # MEMPROBE: this endpoint has OOM-killed the process three times
+    # (2026-09-10, 2026-09-16) even after capping the downloaded HTML at
+    # 5MB — with no traceback (SIGKILL gives none), so these log lines are
+    # the only way to see which step and how much RSS was in use right
+    # before death. Remove once the real ceiling is found; see _rss_mb().
+    logger.warning("MEMPROBE edgar_proxy start ticker=%s max_filings=%s rss_mb=%s",
+                    req.ticker, req.max_filings, _rss_mb())
     try:
         meta, sub = get_company_info(req.ticker)
         filings = parse_filings(sub, {"DEF 14A"})["DEF 14A"][: req.max_filings]
+        logger.warning("MEMPROBE edgar_proxy after_parse_filings n_filings=%s rss_mb=%s",
+                        len(filings), _rss_mb())
         results = []
         company_id = None
 
@@ -2652,13 +2677,18 @@ def edgar_proxy(req: RiskFactorsRequest):
 
         for f in filings:
             text = fetch_filing_text(meta["cik"], f)
+            logger.warning("MEMPROBE edgar_proxy after_fetch accession=%s text_chars=%s rss_mb=%s",
+                            f.get("accession_number"), len(text) if text else 0, _rss_mb())
             sections = extract_proxy_sections(text) if text else {}
+            del text
             truncated = {k: v[:8_000] for k, v in sections.items()}
             results.append({
                 "filing_date": f["date"],
                 "accession_number": f["accession_number"],
                 "sections": truncated,
             })
+            logger.warning("MEMPROBE edgar_proxy after_extract accession=%s rss_mb=%s",
+                            f.get("accession_number"), _rss_mb())
             if company_id:
                 proxy_id = db.save_edgar_proxy(
                     company_id,
@@ -2667,6 +2697,8 @@ def edgar_proxy(req: RiskFactorsRequest):
                     sections,
                 )
                 _embed_proxy_sections(company_id, proxy_id, sections)
+                logger.warning("MEMPROBE edgar_proxy after_embed accession=%s rss_mb=%s",
+                                f.get("accession_number"), _rss_mb())
 
         result = {
             "ticker": req.ticker.upper(),
