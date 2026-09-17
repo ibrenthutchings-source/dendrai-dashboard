@@ -759,6 +759,167 @@ function PipelinePanel({ label, defaultOpen = true, children }) {
   );
 }
 
+// Beneish M-Score / Altman Z''-Score gauges + Financial Risk Pipeline cards —
+// extracted out of S1Body's "Fraud & Distress Signals" tab so Gate 1's review
+// screen can show the same content inline instead of forcing the reviewer
+// back to Loop overview -> Stage 1 -> this tab to see it (see GateCanvas).
+function FraudDistressPanel({ forecasts, peerData = null, peerCompareList = [], onAddObjective }) {
+  const gaugePeers = [
+    ...(peerData?.peers || []),
+    ...peerCompareList.map(p => ({ ticker: p.ticker, z_score: p.zscore, m_score: p.mscore })),
+  ];
+  return (
+    <>
+      {/* Beneish M-Score gauge */}
+      {forecasts?.mscore != null && (() => {
+        const MSG = window.MScoreGauge;
+        const ms = forecasts.mscore;
+        if (!MSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Earnings Manipulation Risk — is revenue recognition or accruals quality deteriorating? (pairs with Z''-Score below)</h5>
+            <MSG m={ms.m} peers={gaugePeers}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>M = {ms.m?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: ms.m > -1.78 ? "var(--red-soft)" : ms.m > -2.22 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      ms.m > -1.78 ? "var(--red-ink)"  : ms.m > -2.22 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{ms.band || (ms.m > -1.78 ? "ELEVATED" : ms.m > -2.22 ? "GRAY ZONE" : "NORMAL")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≥ −1.78 · ELEVATED</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>−2.22 to −1.78 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>≤ −2.22 · NORMAL</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
+              </div>
+            </div>
+            {(() => {
+              const tone = ms.m > -1.78 ? "red" : ms.m > -2.22 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Review revenue recognition and accruals quality — Beneish M-Score (${ms.m.toFixed(2)}) is ${tone === "red" ? "above the likely-manipulator threshold (-1.78)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {ms.m > -1.78 ? "Score exceeds the likely-manipulator threshold — accruals and revenue recognition warrant IA review this cycle."
+                    : ms.m > -2.22 ? "Gray zone — worth a lighter-touch accruals monitoring pass, not necessarily a full scope item."
+                    : "Within normal range — no elevated financial-reporting risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Altman Z''-Score gauge */}
+      {forecasts?.zscore != null && (() => {
+        const ZSG = window.ZScoreGauge;
+        const zs = forecasts.zscore;
+        if (!ZSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Solvency Risk — is the balance sheet strong enough to avoid distress? (pairs with M-Score above)</h5>
+            <ZSG z={zs.z} peers={gaugePeers}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>Z'' = {zs.z?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: zs.z <= 1.1 ? "var(--red-soft)" : zs.z <= 2.6 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      zs.z <= 1.1 ? "var(--red-ink)"  : zs.z <= 2.6 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{zs.band || (zs.z <= 1.1 ? "DISTRESS" : zs.z <= 2.6 ? "GRAY ZONE" : "SAFE")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≤ 1.10 · DISTRESS</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>1.10 to 2.60 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>&gt; 2.60 · SAFE</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                General/non-manufacturer variant (book equity, no market-cap dependency): working capital, retained earnings, and EBIT relative to total assets, plus book equity to total liabilities — computed from EDGAR 10-K.
+              </div>
+            </div>
+            {(() => {
+              const tone = zs.z <= 1.1 ? "red" : zs.z <= 2.6 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Assess going-concern risk and covenant headroom — Altman Z''-Score (${zs.z.toFixed(2)}) is ${tone === "red" ? "in the distress zone (≤1.10)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {zs.z <= 1.1 ? "Distress zone — going-concern assessment and covenant headroom warrant IA review this cycle."
+                    : zs.z <= 2.6 ? "Gray zone — worth a liquidity/solvency monitoring pass, not necessarily a full scope item."
+                    : "Within safe range — no elevated solvency risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Financial Risk Pipeline — JE velocity / liquidity shift / inventory divergence */}
+      {forecasts?.financialRiskPipeline && (() => {
+        const frp = forecasts.financialRiskPipeline;
+        const cards = [
+          { key: "je_velocity", label: "Manual JE Velocity", data: frp.je_velocity, flag: "anomaly",
+            detail: d => `z = ${d.z_score}σ (${d.recent_daily_rate}/day vs. baseline ${d.baseline_daily_mean}/day)` },
+          { key: "liquidity_shift", label: "Liquidity Shift", data: frp.liquidity_shift, flag: "shift_detected",
+            detail: d => `worst QoQ z = ${d.worst_z_score}σ` },
+          { key: "inventory_divergence", label: "Inventory/Sales Divergence", data: frp.inventory_divergence, flag: "divergence_detected",
+            detail: d => `QoQ ratio z = ${d.z_score}σ` },
+        ].filter(c => c.data && c.data.interpretation !== "insufficient_data" && c.data.interpretation !== "insufficient_baseline");
+
+        if (!cards.length) return null;
+
+        return (
+          <div className="stage-detail">
+            <h5>Financial Risk Pipeline — journal-entry velocity, liquidity, and inventory signals beyond the point-in-time Z/M-Score snapshot above</h5>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, marginTop: 8 }}>
+              {cards.map(c => {
+                const flagged = !!c.data[c.flag];
+                const tone = flagged ? (c.data.rag_status === "Red" ? "red" : "amber") : "green";
+                return (
+                  <div key={c.key} style={{
+                    padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line)",
+                    background: tone === "red" ? "var(--red-soft)" : tone === "amber" ? "var(--amber-soft)" : "var(--surface-2,var(--surface))",
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: tone === "red" ? "var(--red-ink)" : tone === "amber" ? "var(--amber-ink)" : "var(--ink-2)" }}>
+                      {c.label}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 2 }}>
+                      {flagged ? "Flagged — " : "Normal — "}{c.detail(c.data)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {cards.some(c => c.data[c.flag]) && onAddObjective && (
+              <AuditorTakeaway
+                tone="amber"
+                actionLabel="Add to scope"
+                onAction={() => onAddObjective(
+                  `Review ${cards.filter(c => c.data[c.flag]).map(c => c.label.toLowerCase()).join(", ")} — Financial Risk Pipeline flagged a statistically significant deviation from historical baseline.`
+                )}
+              >
+                One or more Financial Risk Pipeline checks flagged a deviation beyond the company's own historical noise — worth a targeted review this cycle.
+              </AuditorTakeaway>
+            )}
+          </div>
+        );
+      })()}
+    </>
+  );
+}
+
 function HITLGate({ num, state, onApprove, onOverride }) {
   const title = num === 1 ? "Human Review · Risk Assessment" : "Human Review · Audit Scope";
   const desc  = num === 1 ? "Validate AI risk scores before scoping audit." : "Confirm scope and resource allocation before fieldwork.";
