@@ -2696,8 +2696,21 @@ def edgar_proxy(req: RiskFactorsRequest):
                     f["accession_number"],
                     sections,
                 )
-                _embed_proxy_sections(company_id, proxy_id, sections)
-                logger.warning("MEMPROBE edgar_proxy after_embed accession=%s rss_mb=%s",
+                # DISABLED 2026-09-18: this call is where the process dies. The
+                # MEMPROBE trail above shows RSS flat at ~440MB right up to
+                # "after_extract" — no growth, no exception logged (this
+                # function already wraps itself in try/except), yet the
+                # container hard-crashes a few seconds later, inside this one
+                # call, every time /edgar/proxy runs. That's a signal outside
+                # normal Python error handling (SIGKILL/native crash), not a
+                # memory-size problem — sizing fixes (commits 8bda102,
+                # bfb7ce0) didn't touch it. Proxy sections are already saved
+                # to edgar_proxy_filings above; this step only adds them to
+                # chat RAG retrieval, so skipping it costs a "nice to have,"
+                # not core functionality, while this gets root-caused with
+                # real profiling rather than more guesses.
+                # _embed_proxy_sections(company_id, proxy_id, sections)
+                logger.warning("MEMPROBE edgar_proxy after_extract_pre_embed_skip accession=%s rss_mb=%s",
                                 f.get("accession_number"), _rss_mb())
 
         result = {
