@@ -29,14 +29,12 @@ import requests
 
 # ── Feed Registry (mirrors rss-engine.js FEEDS) ───────────────────────────────
 FEEDS: list[dict] = [
-    {
-        "id": "bis",
-        "name": "BIS Export Controls",
-        "url": "https://www.bis.doc.gov/index.php/2013-01-17-21-19-53/2013-01-17-21-20-34.xml",
-        "domains": ["Trade Compliance"],
-        "risks": ["R-02"],
-        "weight": 1.5,
-    },
+    # bis, epa, and nis2 were removed 2026-09-19 — all three source sites now
+    # block non-browser requests (EPA and ENISA return an AWS WAF/bot-protection
+    # challenge; BIS moved to bis.gov, which dropped RSS entirely). None of
+    # these are fixable by swapping the URL; they'd need real headless-browser
+    # fetching, which this proxy doesn't do. See git history for the removed
+    # entries if that capability is ever added.
     {
         "id": "cisa",
         "name": "CISA ICS Advisories",
@@ -64,20 +62,10 @@ FEEDS: list[dict] = [
         "risks": ["R-09"],
         "weight": 0.9,
     },
-    {
-        "id": "epa",
-        "name": "EPA Climate Enforcement",
-        "url": "https://www.epa.gov/newsreleases/search/rss",
-        "domains": ["ESG"],
-        "risks": ["R-07"],
-        "weight": 0.8,
-        "companyGated": True,  # enforcement-action feed covering every regulated company —
-                                # without gating, any company's ESG violation shows up in every other company's feed
-    },
-    # Four feeds for regulatory_change_tool.py's horizon-scanning path
+    # Three feeds for regulatory_change_tool.py's horizon-scanning path
     # (regulatory_change_endpoints.py) — not company-gated, since a new EU AI
-    # Act obligation or a DORA/NIS2 supervisory update applies regardless of
-    # which company is the active ticker, same reasoning as bis/cisa/fed above.
+    # Act obligation or a DORA supervisory update applies regardless of which
+    # company is the active ticker, same reasoning as cisa/fed above.
     {
         "id": "eu_ai_act",
         "name": "EU AI Act",
@@ -91,14 +79,6 @@ FEEDS: list[dict] = [
         "name": "EU DORA (Digital Operational Resilience Act)",
         "url": "https://www.esma.europa.eu/rss.xml",
         "domains": ["Regulatory", "Cybersecurity"],
-        "risks": ["R-04", "R-05"],
-        "weight": 1.2,
-    },
-    {
-        "id": "nis2",
-        "name": "EU NIS2 Directive",
-        "url": "https://www.enisa.europa.eu/media/news-items/news-rss",
-        "domains": ["Cybersecurity", "Regulatory"],
         "risks": ["R-04", "R-05"],
         "weight": 1.2,
     },

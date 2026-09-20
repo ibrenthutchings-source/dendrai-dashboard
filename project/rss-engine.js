@@ -17,16 +17,13 @@
 window.RSS_ENGINE = (function () {
 
   // ── Feed registry ─────────────────────────────────────────
+  // bis and epa were removed 2026-09-19 — both source sites now block
+  // non-browser requests (bis.gov dropped RSS entirely; EPA's feed builder
+  // is behind an AWS WAF bot-challenge, same as the federalregister.gov
+  // fallback below used to hit). Not fixable by URL swap; see
+  // rss_ingest_service.py's FEEDS for the full writeup. This is only the
+  // fallback used when the live /api/mcp/rss/feeds fetch fails.
   const FEEDS = [
-    {
-      id: "bis",
-      name: "BIS Export Controls",
-      url: "https://www.bis.doc.gov/index.php/2013-01-17-21-19-53/2013-01-17-21-20-34.xml",
-      domains: ["Trade Compliance"],
-      risks: ["R-02"],
-      weight: 1.5,
-      icon: "shield",
-    },
     {
       id: "cisa",
       name: "CISA ICS Advisories",
@@ -57,17 +54,6 @@ window.RSS_ENGINE = (function () {
       risks: ["R-09"],
       weight: 0.9,
       icon: "trend",
-    },
-    {
-      id: "epa",
-      name: "EPA Climate Enforcement",
-      url: "https://www.federalregister.gov/agencies/environmental-protection-agency.rss",
-      domains: ["ESG"],
-      risks: ["R-07"],
-      weight: 0.8,
-      icon: "compass",
-      companyGated: true,  // this is an enforcement-action feed covering every regulated company —
-                            // without gating, any company's ESG violation shows up in every other company's feed
     },
   ];
 

@@ -52,11 +52,13 @@ logger = logging.getLogger("ubo.regulatory_change")
 router = APIRouter(prefix="/regulatory-change", tags=["Regulatory Change Management"],
                     dependencies=[Depends(require_screen_permission("regchange"))])
 
-# Feeds this scan targets — the four horizon-scanning-oriented feeds added to
+# Feeds this scan targets — the horizon-scanning-oriented feeds added to
 # rss_ingest_service.FEEDS alongside this feature, not the pre-existing
-# company-gated ones (BIS/CISA/SEC/Fed/EPA), which already have their own
-# per-article scoring path and aren't naturally "one text to version."
-_SCAN_FEED_IDS = ("eu_ai_act", "dora", "nis2", "state_privacy")
+# company-gated ones (CISA/SEC/Fed), which already have their own per-article
+# scoring path and aren't naturally "one text to version." nis2 was removed
+# 2026-09-19 (ENISA now blocks non-browser requests) — see rss_ingest_service
+# for the writeup; drop it from here too if it's ever restored.
+_SCAN_FEED_IDS = ("eu_ai_act", "dora", "state_privacy")
 
 _MAX_ENTRIES_PER_SNAPSHOT = 20
 
