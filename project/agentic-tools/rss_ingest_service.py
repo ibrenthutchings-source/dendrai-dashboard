@@ -105,7 +105,9 @@ FEEDS: list[dict] = [
     {
         "id": "state_privacy",
         "name": "US State Privacy Enforcement",
-        "url": "https://oag.ca.gov/news/rss.xml",
+        # oag.ca.gov redesigned their site; /news/rss.xml 404s now. Verified
+        # working 2026-09-19: /news/feed (application/rss+xml, real entries).
+        "url": "https://oag.ca.gov/news/feed",
         "domains": ["Regulatory"],
         "risks": ["R-05"],
         "weight": 1.0,
