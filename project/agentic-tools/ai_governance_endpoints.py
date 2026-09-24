@@ -228,6 +228,15 @@ async def behavioral_audit(
 
     report = run_behavioral_audit(req.system_name, req.events)
 
+    # Persist every outcome, CLEAR and INSUFFICIENT_DATA included — the
+    # finding-ingestion below only fires for verdicts needing review, which
+    # would leave a clean or untestable audit with no record at all.
+    try:
+        db.record_ai_behavioral_audit(
+            req.system_name, report["overall_verdict"], report["events_examined"])
+    except Exception as exc:
+        logger.warning("ai_governance_endpoints: failed to persist audit outcome for %s: %s", req.system_name, exc)
+
     if report["requires_human_review"]:
         try:
             verdict = report["overall_verdict"]

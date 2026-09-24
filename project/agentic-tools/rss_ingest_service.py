@@ -88,9 +88,75 @@ FEEDS: list[dict] = [
         # oag.ca.gov redesigned their site; /news/rss.xml 404s now. Verified
         # working 2026-09-19: /news/feed (application/rss+xml, real entries).
         "url": "https://oag.ca.gov/news/feed",
-        "domains": ["Regulatory"],
+        "domains": ["Regulatory", "Privacy"],
         "risks": ["R-05"],
         "weight": 1.0,
+    },
+    # Regulator feeds added 2026-09-24 so the Disclosure Risk layer
+    # (disclosure-risk.js) has signal for the domains it tracks — SEC
+    # enforcement/rulemaking, AI, privacy and climate disclosure. Each URL was
+    # verified to return real RSS entries with this proxy's User-Agent.
+    # Not company-gated (same reasoning as eu_ai_act/dora above): a new SEC
+    # rule or DPA fine matters regardless of which ticker is active. Not in
+    # regulatory_change_endpoints._SCAN_FEED_IDS, so the text-diff scanner is
+    # unaffected. Feeds that still don't work and were tried: EFRAG, IFRS/ISSB,
+    # GRI, ICO, PCAOB (404) and CDP/SASB (unreachable) — no dedicated ESG
+    # standard-setter feed exists, hence SEC statements + CARB for ESG.
+    {
+        "id": "sec_press",
+        "name": "SEC Press Releases",
+        "url": "https://www.sec.gov/news/pressreleases.rss",
+        "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "sec_statements",
+        "name": "SEC Statements",
+        "url": "https://www.sec.gov/news/statements.rss",
+        "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "ftc",
+        "name": "FTC Consumer Protection",
+        "url": "https://www.ftc.gov/feeds/press-release-consumer-protection.xml",
+        # No "Regulatory": generic enforcement wording (fine/penalty/guidance)
+        # made every consumer-fraud release score Red. Only AI/privacy items
+        # are disclosure signals here.
+        "domains": ["AI", "Privacy"],
+        "risks": ["R-05"],
+        "weight": 1.0,
+    },
+    {
+        "id": "edpb",
+        "name": "EDPB / EU Data Protection Authorities",
+        "url": "https://www.edpb.europa.eu/feed/news_en",
+        "domains": ["Privacy"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "ai_act_tracker",
+        "name": "EU AI Act Tracker",
+        # Independent implementation tracker (Future of Life Institute), not an
+        # official EU source — used because the official digital-strategy feed
+        # above is a general site feed dominated by non-AI-Act items.
+        "url": "https://artificialintelligenceact.eu/feed/",
+        "domains": ["AI", "Regulatory"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "carb",
+        "name": "California Air Resources Board (SB 253/261 climate disclosure)",
+        "url": "https://ww2.arb.ca.gov/rss.xml",
+        "domains": ["ESG"],
+        "risks": ["R-05"],
+        # Low weight: CARB's feed is mostly air-quality/programme news; only
+        # climate-disclosure items (SB 253/261) are signals.
+        "weight": 0.5,
     },
 ]
 
@@ -129,6 +195,21 @@ DOMAIN_VOCAB: dict[str, list[str]] = {
         "climate", "esg", "water stress", "sec disclosure", "scope 3",
         "carbon", "emission", "sustainability", "drought", "physical risk",
         "transition risk", "tcfd", "arizona", "fab water",
+        "climate-related disclosure", "climate disclosure", "sb 253", "sb 261",
+        "csrd", "esrs", "issb", "greenwashing", "sustainability reporting",
+        "greenhouse gas", "ghg",
+    ],
+    # Substring matching (see score_relevance), so no short tokens like "ai"
+    # — they'd match inside "said"/"maintain". Multi-word terms only.
+    "AI": [
+        "artificial intelligence", "machine learning", "generative ai", "ai washing",
+        "ai act", "high-risk ai", "foundation model", "large language model",
+        "algorithmic", "automated decision", "ai system", "chatbot", "deepfake",
+    ],
+    "Privacy": [
+        "gdpr", "ccpa", "cpra", "hipaa", "privacy", "data protection",
+        "personal data", "data subject", "biometric", "breach notification",
+        "children's data",
     ],
     "Supply": [
         "conflict minerals", "rmap", "dodd-frank", "cobalt", "tantalum",
@@ -146,6 +227,8 @@ DOMAIN_VOCAB: dict[str, list[str]] = {
         "operational resilience", "incident reporting", "third-party risk",
         "critical entity", "data protection", "privacy law", "consumer protection",
         "penalty", "fine", "guidance", "technical standard", "implementing act",
+        "sec charges", "cybersecurity disclosure", "material cybersecurity incident",
+        "disclosure controls", "misleading statements", "proposes rescission",
     ],
 }
 
@@ -170,6 +253,8 @@ DOMAIN_RISK_CATS: dict[str, list[str]] = {
     "Regulatory":          ["compliance", "legal", "regulatory", "esg"],
     "Environmental":       ["esg", "environmental", "climate", "sustainability"],
     "ESG":                 ["esg", "environmental", "climate", "sustainability"],
+    "AI":                  ["ai ", "artificial", "algorithm", "regulatory", "compliance", "technology"],
+    "Privacy":             ["privacy", "data protection", "cybersecurity", "compliance", "regulatory"],
     "Competitive":         ["competitive", "market", "commercial", "operational"],
     "Operational":         ["operational", "operations"],
 }

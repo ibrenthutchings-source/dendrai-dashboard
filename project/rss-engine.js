@@ -115,6 +115,21 @@ window.RSS_ENGINE = (function () {
       "climate", "esg", "water stress", "sec disclosure", "scope 3",
       "carbon", "emission", "sustainability", "drought", "physical risk",
       "transition risk", "tcfd", "arizona", "fab water",
+      "climate-related disclosure", "climate disclosure", "sb 253", "sb 261",
+      "csrd", "esrs", "issb", "greenwashing", "sustainability reporting",
+      "greenhouse gas", "ghg",
+    ],
+    // Substring matching (see scoreRelevance): multi-word terms only, since
+    // a short token like "ai" would match inside "said"/"maintain".
+    "AI": [
+      "artificial intelligence", "machine learning", "generative ai", "ai washing",
+      "ai act", "high-risk ai", "foundation model", "large language model",
+      "algorithmic", "automated decision", "ai system", "chatbot", "deepfake",
+    ],
+    "Privacy": [
+      "gdpr", "ccpa", "cpra", "hipaa", "privacy", "data protection",
+      "personal data", "data subject", "biometric", "breach notification",
+      "children's data",
     ],
     "Supply": [
       "conflict minerals", "rmap", "dodd-frank", "cobalt", "tantalum",
@@ -140,6 +155,8 @@ window.RSS_ENGINE = (function () {
     'Regulatory':          ['compliance', 'legal', 'regulatory', 'esg'],
     'Environmental':       ['esg', 'environmental', 'climate', 'sustainability'],
     'ESG':                 ['esg', 'environmental', 'climate', 'sustainability'],
+    'AI':                  ['ai ', 'artificial', 'algorithm', 'regulatory', 'compliance', 'technology'],
+    'Privacy':             ['privacy', 'data protection', 'cybersecurity', 'compliance', 'regulatory'],
     'Competitive':         ['competitive', 'market', 'commercial', 'operational'],
     'Operational':         ['operational', 'operations'],
   };

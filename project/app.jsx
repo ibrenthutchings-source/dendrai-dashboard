@@ -1257,6 +1257,14 @@ function App() {
     }
     log(`Stage ${id.toUpperCase()} starting`);
     await t(durationMs);
+    // Stamp when each risk was assessed — the Disclosure Risk layer
+    // (disclosure-risk.js) needs this to flag stale assessments. A risk that
+    // already carries assessedAt (e.g. carried over from a restored session)
+    // keeps its original date rather than being refreshed by a re-render.
+    if (id === "s2" && Array.isArray(payload?.risks)) {
+      const now = new Date().toISOString();
+      payload = { ...payload, risks: payload.risks.map(r => r && !r.assessedAt ? { ...r, assessedAt: now } : r) };
+    }
     setOutput((prev) => ({ ...prev, [id]: payload }));
     setStageState((prev) => ({ ...prev, [id]: "done" }));
     log(`Stage ${id.toUpperCase()} complete`);

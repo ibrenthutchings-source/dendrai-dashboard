@@ -2450,6 +2450,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_system_registry_name
 CREATE INDEX IF NOT EXISTS idx_ai_system_registry_assessment_expiry
     ON observability.ai_system_registry (assessment_expires_at) WHERE status = 'CURRENT';
 
+-- Latest behavioural-audit outcome per system (POST /ai-governance/behavioral-audit).
+-- Persisted so "does the attested oversight actually work?" is answerable
+-- later (Disclosure Risk / AI confidence) instead of living only in a
+-- transient telemetry event. INSUFFICIENT_DATA is stored as-is: "could not
+-- test" is a different fact from CLEAR and must not be collapsed into it.
+-- NULL last_audit_at means never audited.
+ALTER TABLE observability.ai_system_registry ADD COLUMN IF NOT EXISTS last_audit_verdict VARCHAR(24);  -- CLEAR | MONITOR | ESCALATE | INSUFFICIENT_DATA
+ALTER TABLE observability.ai_system_registry ADD COLUMN IF NOT EXISTS last_audit_at      TIMESTAMPTZ;
+ALTER TABLE observability.ai_system_registry ADD COLUMN IF NOT EXISTS last_audit_events  INT;
+
 -- Passive shadow-AI detection: candidates surfaced by mcp_governance.py's
 -- _extract_ai_tool_name (an AI-vendor/tool keyword match in some connector
 -- event's payload, e.g. an IAM entitlement literally named
@@ -14891,6 +14901,7 @@ def list_ai_systems(high_risk_only: bool = False) -> list:
                     SELECT id, system_name, vendor, business_owner, risk_tier,
                            requires_human_oversight, human_oversight_defined,
                            last_assessment_date, assessment_expires_at, status,
+                           last_audit_verdict, last_audit_at, last_audit_events,
                            created_at, updated_at
                     FROM observability.ai_system_registry
                     WHERE (%s = FALSE OR risk_tier = 'HIGH')
@@ -14902,12 +14913,33 @@ def list_ai_systems(high_risk_only: bool = False) -> list:
                 rows = []
                 for r in cur.fetchall():
                     d = dict(zip(cols, r))
-                    for k in ("last_assessment_date", "assessment_expires_at", "created_at", "updated_at"):
+                    for k in ("last_assessment_date", "assessment_expires_at", "last_audit_at", "created_at", "updated_at"):
                         if d.get(k) is not None:
                             d[k] = d[k].isoformat()
                     rows.append(d)
                 return rows
     return _run(_do) or []
+
+
+def record_ai_behavioral_audit(system_name: str, verdict: str, events_examined: int) -> bool:
+    """Persist the latest behavioural-audit outcome on the system's registry
+    row. Separate from upsert_ai_system so re-saving a profile (which never
+    carries audit data) can't wipe the audit evidence. Returns False when the
+    system isn't registered."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.ai_system_registry
+                    SET last_audit_verdict = %s, last_audit_at = NOW(),
+                        last_audit_events = %s, updated_at = NOW()
+                    WHERE system_name = %s
+                    """,
+                    (verdict, events_examined, system_name),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do))
 
 
 def expire_overdue_ai_assessments() -> list:
