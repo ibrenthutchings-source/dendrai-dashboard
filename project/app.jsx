@@ -929,6 +929,17 @@ function App() {
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
 
+  // TEMPORARY (redact-mode.js): tell the screen-recording redactor which
+  // company to hide and which screen is showing — it stays off on Setup
+  // ("config"), where the real company has to be selectable.
+  useEffect(() => {
+    window.DENDRAI_REDACT?.update({
+      tickers: [cfg.ticker],
+      names: [profile?.entity?.name],
+      screen: activeScreen,
+    });
+  }, [cfg.ticker, profile?.entity?.name, activeScreen]);
+
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
     gateResRef.current[n] = res;

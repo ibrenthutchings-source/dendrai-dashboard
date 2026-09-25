@@ -31,6 +31,7 @@ import '../nav.jsx'
 import '../ai-chat-panel.jsx'
 import '../auth.jsx'
 import '../tweaks.jsx'
+import '../redact-mode.js'   // TEMPORARY — screen-recording aid; see file header
 
 // The remaining screen-level files (scenarios, scenario-analysis, flow,
 // governance, config-screen, ubo-config, audit-scope, code-screens,
