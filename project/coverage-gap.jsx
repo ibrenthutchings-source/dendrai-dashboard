@@ -188,8 +188,13 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
     [risks, rssSignals, events, aiInventory, aiGovernance]);
 
   // ── 5. Overall verdict ───────────────────────────────────────
-  const totalGaps  = orphanedCount + uncoveredSignals.length + quantOnly.length;
-  const totalFlags = calibFlags.length;
+  // Disclosure findings count toward the verdict: a "missed" risk is a gap
+  // (nothing in the register covers a domain with a reporting duty);
+  // "misaligned"/"stale" are alerts (a risk exists but is reported
+  // inconsistently or has lapsed). Otherwise the board report could say
+  // COMPLETE while this same panel lists regulatory exposure.
+  const totalGaps  = orphanedCount + uncoveredSignals.length + quantOnly.length + (disclosure?.missed || 0);
+  const totalFlags = calibFlags.length + (disclosure ? disclosure.misaligned + disclosure.stale : 0);
   const verdict    = totalGaps === 0 && totalFlags === 0 ? 'COMPLETE' : totalGaps === 0 ? 'PARTIAL' : 'INCOMPLETE';
   const verdictColor = verdict === 'COMPLETE' ? 'var(--green-ink)' : verdict === 'PARTIAL' ? 'var(--amber-ink)' : 'var(--red-ink)';
 
@@ -450,6 +455,19 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
                 <span>Review <b>{f.riskId}</b> register score — consider re-calibration if no entity-specific evidence supports elevated rating.</span>
               </div>
             ))}
+            {(disclosure?.findings || []).slice(0, 5).map((f, i) => (
+              <div key={`d${i}`} style={{ display:'flex', gap:8, fontSize:11, alignItems:'flex-start' }}>
+                <span style={{ color: f.kind === 'missed' ? 'var(--red-ink)' : 'var(--amber-ink)', fontWeight:700, flexShrink:0 }}>
+                  {f.kind === 'missed' ? '➕' : '⚠'}
+                </span>
+                <span><b>{f.obligation.label}</b> ({f.kind}, exposure {f.exposure}) — {f.evidence}.</span>
+              </div>
+            ))}
+            {disclosure && disclosure.findings.length > 5 && (
+              <div style={{ fontSize:10.5, color:'var(--ink-3)', paddingLeft:22 }}>
+                + {disclosure.findings.length - 5} more in section 5.
+              </div>
+            )}
             {orphanedCount > 0 && (
               <div style={{ display:'flex', gap:8, fontSize:11, alignItems:'flex-start' }}>
                 <span style={{ color:'var(--amber-ink)', fontWeight:700, flexShrink:0 }}>⚠</span>
