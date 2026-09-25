@@ -50,7 +50,7 @@ window.DISCLOSURE_RISK = (function () {
       label: "ESG / Climate",
       consequence: 2,
       regulators: ["SEC", "EU (CSRD/ESRS)", "California (SB 253/261)"],
-      duties: "Climate-related risk disclosure (Reg S-K / ISSB / ESRS), emissions reporting, avoidance of greenwashing",
+      duties: "Climate-related disclosure (SEC rules and guidance, ISSB, EU ESRS, California SB 253/261), GHG emissions reporting, and avoiding misleading sustainability claims (greenwashing)",
       categories: ["esg", "environmental", "climate", "sustainability"],
       signalDomains: ["ESG", "Environmental"],
       filingKeywords: ["climate", "emission", "sustainability", "environmental"],

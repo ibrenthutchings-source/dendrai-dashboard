@@ -365,9 +365,17 @@ function buildRiskProfileSlides(pptx, { risks, riskAppetite, appetiteThreshold }
   return { slides, topRisks };
 }
 
-function buildCoverageGapSlide(pptx, { risks, objectives }) {
+const VERDICT_HEX = { COMPLETE: COLOR.green, PARTIAL: COLOR.amber, INCOMPLETE: COLOR.red };
+const KIND_LABEL = { missed: 'Missed', misaligned: 'Misaligned', stale: 'Stale' };
+
+// `coverage` is the object CoverageGapPanel's own useCoverageAnalysis hook
+// returns (passed through board-consolidated-report.jsx), so this slide's
+// verdict and counts are the on-screen ones — never a recomputation. When it
+// is absent (older caller), fall back to the register→scope summary alone.
+function buildCoverageGapSlide(pptx, { risks, objectives, coverage }) {
   const slide = newSlide(pptx);
-  addHeader(slide, 'Quality Assurance', 'Coverage Gap Analysis', 'Active risk register cross-referenced against the audit scope.');
+  addHeader(slide, 'Quality Assurance', 'Coverage Gap Analysis',
+    'Is every risk identified, in scope, and reported consistently with the company’s filings?');
   const riskList = risks || [], objList = objectives || [];
   if (!riskList.length) {
     slide.addText('Coverage analysis populates once the risk register exists.', {
@@ -375,19 +383,99 @@ function buildCoverageGapSlide(pptx, { risks, objectives }) {
     });
     return slide;
   }
-  const covered = riskList.filter(r => objList.some(o => o.linked_risk === r.id));
-  const orphaned = riskList.length - covered.length;
-  const verdict = orphaned === 0 ? 'COMPLETE' : 'GAPS FOUND';
-  addStatRow(slide, 1.6, [
-    { label: 'Register → Scope', value: `${covered.length}/${riskList.length}`, sub: 'Risks mapped to an audit objective' },
-    { label: 'Orphaned risks', value: fmtInt(orphaned), color: orphaned ? COLOR.amber : COLOR.green, sub: 'No linked audit objective' },
-    { label: 'Verdict', value: verdict, color: orphaned ? COLOR.amber : COLOR.green, sub: 'Register-to-scope alignment only' },
+
+  if (!coverage) {
+    const covered = riskList.filter(r => objList.some(o => o.linked_risk === r.id));
+    const orphaned = riskList.length - covered.length;
+    addStatRow(slide, 1.6, [
+      { label: 'Register → Scope', value: `${covered.length}/${riskList.length}`, sub: 'Risks mapped to an audit objective' },
+      { label: 'Orphaned risks', value: fmtInt(orphaned), color: orphaned ? COLOR.amber : COLOR.green, sub: 'No linked audit objective' },
+    ]);
+    return slide;
+  }
+
+  const d = coverage.disclosure;
+  addStatRow(slide, 1.5, [
+    { label: 'Register → Scope', value: `${coverage.coveredCount}/${riskList.length}`,
+      sub: `${coverage.orphanedCount} orphaned risk${coverage.orphanedCount !== 1 ? 's' : ''}`,
+      color: coverage.orphanedCount ? COLOR.amber : COLOR.green },
+    { label: 'Signal & quant gaps', value: fmtInt(coverage.quantOnly.length + coverage.uncoveredSignals.length),
+      sub: `${coverage.quantOnly.length} quant-model · ${coverage.uncoveredSignals.length} 8-K uncovered`,
+      color: (coverage.quantOnly.length + coverage.uncoveredSignals.length) ? COLOR.amber : COLOR.green },
+    { label: 'Disclosure exposure', value: d ? fmt2(d.totalExposure) : '—',
+      sub: d ? `${d.missed} missed · ${d.misaligned} misaligned · ${d.stale} stale` : 'Not assessed',
+      color: !d || !d.findings.length ? COLOR.green : d.totalExposure >= 6 ? COLOR.red : COLOR.amber },
+    { label: 'Verdict', value: coverage.verdict,
+      sub: `${coverage.totalGaps} gap${coverage.totalGaps !== 1 ? 's' : ''}, ${coverage.totalFlags} alert${coverage.totalFlags !== 1 ? 's' : ''}`,
+      color: VERDICT_HEX[coverage.verdict] || COLOR.ink },
   ]);
   slide.addText(
-    'This slide summarizes register→scope alignment only. The platform’s Coverage Gap Analysis screen also checks quant-model coverage, 8-K signal coverage, and RAG-calibration divergence — open it there for the full detail.',
-    { x: 0.5, y: 3.4, w: 9, h: 0.8, fontFace: FONT, fontSize: 10, color: COLOR.ink3, italic: true },
+    'Verdict counts a risk that is missed (no register entry for a domain with a reporting duty) as a gap, and one that is misaligned with the company’s own Item 1A language or stale as an alert. Calibration alerts: ' +
+    `${coverage.calibFlags.length}.`,
+    { x: 0.5, y: 3.25, w: 9, h: 0.7, fontFace: FONT, fontSize: 10, color: COLOR.ink3, italic: true },
   );
   return slide;
+}
+
+// The second half of the coverage story: exposure to a regulator if a risk is
+// missed or misreported, ranked by severity × failure mode × consequence.
+function buildDisclosureRiskSlides(pptx, { coverage }) {
+  const d = coverage?.disclosure;
+  if (!d) return [];
+  const slides = [];
+  const s1 = newSlide(pptx);
+  addHeader(s1, 'Quality Assurance', 'Disclosure Risk — Missed or Misreported',
+    'Exposure if a risk is not identified, or is reported inconsistently with the company’s own filings.');
+
+  if (!d.findings.length) {
+    s1.addText('No missed or misaligned disclosure risks detected from the available signals.', {
+      x: 0.5, y: 1.7, w: 9, h: 0.5, fontFace: FONT, fontSize: 12, color: COLOR.green,
+    });
+  } else {
+    const head = t => ({ text: t, options: { bold: true, color: COLOR.bg, fill: { color: COLOR.ink2 } } });
+    const rows = [
+      [head('Domain'), head('Finding'), head('Exposure'), head('Regulators'), head('Evidence')],
+      ...d.findings.slice(0, 10).map(f => [
+        { text: f.obligation.label, options: { bold: true } },
+        { text: KIND_LABEL[f.kind] || f.kind, options: { color: f.kind === 'missed' ? COLOR.red : COLOR.amber, bold: true } },
+        { text: fmt2(f.exposure) },
+        { text: truncate(f.obligation.regulators.join(', '), 40), options: { fontSize: 8, color: COLOR.ink3 } },
+        { text: truncate(f.evidence, 150), options: { fontSize: 8.5, color: COLOR.ink3 } },
+      ]),
+    ];
+    s1.addTable(rows, {
+      x: 0.5, y: 1.5, w: 9, colW: [1.4, 0.95, 0.75, 1.9, 4.0],
+      fontFace: FONT, fontSize: 9.5, color: COLOR.ink2, valign: 'top',
+      border: { type: 'solid', color: COLOR.line, pt: 0.5 },
+      autoPage: true, autoPageRepeatHeader: true,
+    });
+    if (d.findings.length > 10) {
+      s1.addText(`+ ${d.findings.length - 10} further findings on the Coverage Gap screen.`, {
+        x: 0.5, y: 5.2, w: 9, h: 0.3, fontFace: FONT, fontSize: 9, color: COLOR.ink4, italic: true,
+      });
+    }
+  }
+  slides.push(s1);
+
+  // AI confidence is its own slide: AI risk is the one domain here that
+  // can't be scored directly, so how far to trust the number is the finding.
+  const s2 = newSlide(pptx);
+  addHeader(s2, 'Quality Assurance', 'AI Risk — Evidence Confidence',
+    'AI risk is reported as observable evidence with a confidence level, not as a bare score.');
+  const conf = d.aiConfidence;
+  const CONF_HEX = { high: COLOR.green, medium: COLOR.amber, low: COLOR.red, 'very low': COLOR.red, unknown: COLOR.ink4 };
+  addStatRow(s2, 1.6, [
+    { label: 'Confidence', value: conf.level.toUpperCase(), color: CONF_HEX[conf.level] || COLOR.ink, sub: 'Weakest of classification, assessment and audit evidence' },
+    { label: 'AI findings', value: fmtInt(d.findings.filter(f => f.domain === 'ai').length), sub: 'Missed, misaligned or stale' },
+  ]);
+  s2.addText(`${conf.note}.`, { x: 0.5, y: 3.35, w: 9, h: 0.6, fontFace: FONT, fontSize: 11, color: COLOR.ink2 });
+  if (d.undated > 0) {
+    s2.addText(`${d.undated} obligation-bearing risk${d.undated !== 1 ? 's have' : ' has'} no assessment date, so staleness cannot be verified.`, {
+      x: 0.5, y: 3.95, w: 9, h: 0.4, fontFace: FONT, fontSize: 10, color: COLOR.ink3, italic: true,
+    });
+  }
+  slides.push(s2);
+  return slides;
 }
 
 function buildExceptionSlides(pptx, { report, dateFrom, dateTo }) {
@@ -462,6 +550,7 @@ function buildExceptionSlides(pptx, { report, dateFrom, dateTo }) {
  * @param {string} data.exceptionDateTo
  * @param {object|null} data.boardPersonaBrief   - { headline, sections, callouts } or null if not yet generated
  * @param {object|null} data.boardExceptionBrief - same shape, or null
+ * @param {object|null} data.coverage - useCoverageAnalysis() result (coverage-gap.jsx): verdict, gap counts, disclosure findings
  */
 export async function exportConsolidatedReportPptx(data) {
   const pptx = new pptxgen();
@@ -481,6 +570,7 @@ export async function exportConsolidatedReportPptx(data) {
   addBriefSlide(pptx, 'Board Risk Profile', 'Persona Report — Board', data.boardPersonaBrief);
 
   buildCoverageGapSlide(pptx, data);
+  buildDisclosureRiskSlides(pptx, data);
 
   buildExceptionSlides(pptx, {
     report: data.exceptionReport, dateFrom: data.exceptionDateFrom, dateTo: data.exceptionDateTo,

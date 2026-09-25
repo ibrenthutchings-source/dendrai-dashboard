@@ -49,7 +49,11 @@ function ScoreCard({ label, value, sub, ok }) {
   );
 }
 
-function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events = [], ratios = {}, industry = '', ticker = '' }) {
+// All derived coverage state in one hook so the on-screen panel and the
+// board report's PowerPoint export (board-consolidated-report.jsx) read the
+// same numbers — a deck that recomputed the verdict separately could disagree
+// with the screen it was exported from.
+function useCoverageAnalysis({ risks = [], objectives = [], rssSignals = [], events = [], ratios = {}, industry = '' }) {
 
   // ── 1. Register ↔ Scope alignment ────────────────────────────
   const coverageRows = risks.map(r => {
@@ -197,6 +201,20 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
   const totalFlags = calibFlags.length + (disclosure ? disclosure.misaligned + disclosure.stale : 0);
   const verdict    = totalGaps === 0 && totalFlags === 0 ? 'COMPLETE' : totalGaps === 0 ? 'PARTIAL' : 'INCOMPLETE';
   const verdictColor = verdict === 'COMPLETE' ? 'var(--green-ink)' : verdict === 'PARTIAL' ? 'var(--amber-ink)' : 'var(--red-ink)';
+
+  return {
+    coverageRows, coveredCount, orphanedCount, calibFlags, eightKFindings,
+    uncoveredSignals, macroRisk, quantOnly, disclosure,
+    totalGaps, totalFlags, verdict, verdictColor,
+  };
+}
+
+function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events = [], ratios = {}, industry = '', ticker = '' }) {
+  const {
+    coverageRows, coveredCount, orphanedCount, calibFlags, eightKFindings,
+    uncoveredSignals, macroRisk, quantOnly, disclosure,
+    totalGaps, totalFlags, verdict, verdictColor,
+  } = useCoverageAnalysis({ risks, objectives, rssSignals, events, ratios, industry });
 
   return (
     <div style={{ padding:'0 20px 32px', maxWidth:900 }}>
@@ -481,4 +499,4 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
   );
 }
 
-Object.assign(window, { CoverageGapPanel });
+Object.assign(window, { CoverageGapPanel, useCoverageAnalysis });

@@ -28,6 +28,8 @@ import feedparser
 import requests
 
 # ── Feed Registry (mirrors rss-engine.js FEEDS) ───────────────────────────────
+_FR_API = "https://www.federalregister.gov/api/v1/documents.rss?"
+
 FEEDS: list[dict] = [
     # bis, epa, and nis2 were removed 2026-09-19 — all three source sites now
     # block non-browser requests (EPA and ENISA return an AWS WAF/bot-protection
@@ -147,6 +149,39 @@ FEEDS: list[dict] = [
         "domains": ["AI", "Regulatory"],
         "risks": ["R-05"],
         "weight": 1.1,
+    },
+    # Federal Register API feeds (api/v1/documents.rss — NOT the site's feed
+    # builder, which sits behind a WAF bot-challenge; the API endpoint returns
+    # real RSS to this proxy's User-Agent, verified 2026-09-24). Full-text
+    # queries over final and proposed rules, so these are the official
+    # rulemaking pipeline for the domains no standard-setter RSS covers.
+    # Full-text matching is broad (an "artificial intelligence" hit can be a
+    # Medicare notice), which is why the vocabulary scoring — not the query —
+    # decides what surfaces.
+    {
+        "id": "fr_sec_rules",
+        "name": "SEC Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bagencies%5D%5B%5D=securities-and-exchange-commission&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["Regulatory", "Financial Reporting", "ESG", "Cybersecurity", "AI"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "fr_ai_rules",
+        "name": "AI Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bterm%5D=%22artificial+intelligence%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["AI"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "fr_climate_rules",
+        "name": "Greenhouse-Gas Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bterm%5D=%22greenhouse+gas%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["ESG"],
+        "risks": ["R-05"],
+        # Below 1.0: EPA state air-plan approvals match "greenhouse gas" too.
+        "weight": 0.8,
     },
     {
         "id": "carb",
