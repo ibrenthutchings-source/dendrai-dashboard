@@ -148,6 +148,7 @@ import fair_endpoints
 import deploy_env
 import exceptions_endpoints
 import process_mining_endpoints
+import control_cost_endpoints
 import pac_negative_sweep
 import connector_hygiene_sweep
 import vendor_risk_sweep
@@ -1026,6 +1027,7 @@ app.include_router(infra_posture_endpoints.router)
 # Process Mining: variant analysis, conformance checking, cycle-time/bottleneck
 # stats, and rework detection over case-tracked adjudications.
 app.include_router(process_mining_endpoints.router)
+app.include_router(control_cost_endpoints.router)
 
 # Journal Entry Testing: deterministic anomaly rules (round-dollar, weekend/
 # after-hours postings, preparer==approver SoD, rare accounts, velocity

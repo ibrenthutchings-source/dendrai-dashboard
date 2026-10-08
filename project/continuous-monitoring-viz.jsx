@@ -75,7 +75,7 @@ function readThemeColors() {
   THEME_VARS.forEach(k => { const v = cs.getPropertyValue(`--${k}`).trim(); out[k] = v || THEME_FALLBACK[k]; });
   return out;
 }
-function useThemeColors() {
+export function useThemeColors() {
   const [colors, setColors] = useState(readThemeColors);
   useEffect(() => {
     const update = () => setColors(readThemeColors());

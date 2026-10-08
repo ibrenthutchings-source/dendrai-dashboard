@@ -196,6 +196,15 @@ class ExceptionBriefRequest(BaseModel):
     by_control: List[Dict[str, Any]] = []
 
 
+class OpsEfficiencyBriefRequest(BaseModel):
+    days: int = 30
+    process: Optional[str] = None
+    summary: Dict[str, Any] = {}
+    cycle_times: Dict[str, Any] = {}
+    rework: Dict[str, Any] = {}
+    variants: List[Dict[str, Any]] = []
+
+
 class ReportRequest(BaseModel):
     ticker: str
     run_id: Optional[int] = None
@@ -990,6 +999,85 @@ def exception_brief(req: ExceptionBriefRequest, current_user: dict = Depends(get
 
     analysis_id = db.save_ai_analysis(
         "exception_brief", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=result.get("headline", "")[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    _embed_ai_summary(analysis_id, "", f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #4c — Head of Operations brief, fed real process-mining statistics (see
+# process_mining_endpoints.py) rather than the risk register or an exception
+# report — the first persona brief in this file that narrates bottleneck/
+# rework/variant data directly instead of risk scores or control exceptions.
+# Same cache/review mechanism as #4/#4b.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_OPS_EFFICIENCY_SYSTEM = """You write a Head of Operations briefing from real process-mining \
+statistics over a trailing window of case-tracked business-process activity (order-to-cash, \
+procure-to-pay, receive-to-ship, and other monitored processes). You are given:
+- summary: case counts and, per process, conformance rate, rework rate, bottleneck, and \
+average case duration.
+- cycle_times: every step-to-step transition's mean/median/p90 duration, slowest first — the \
+first edge is the bottleneck: where time actually accumulates, which is a different thing from \
+transaction VOLUME.
+- rework: the rate and list of cases that revisited an already-completed step — often the \
+fingerprint of a control catching something and sending the case backward, not a random error.
+- variants: the distinct step-sequences actually observed, most frequent first, each flagged \
+whether it is the happy path (most common) and whether it matches the documented process \
+template (is_canonical) — a happy path that ISN'T canonical means the "normal" way of working \
+has quietly drifted from what's documented, which is itself worth flagging even with no \
+violations.
+
+Write for a Head of Operations: where is time actually being lost (cite the bottleneck edge by \
+name and its hours), is rework structural or isolated, and has the real process drifted from \
+the documented one. Every number you cite must come from the data given — never invent a \
+duration, rate, or case count, and say plainly when a figure is absent (e.g. no bottleneck edge \
+because there's too little data) rather than estimating one. Output a headline, 2-4 sections \
+with a title and body each, and a short list of callouts — the highest-priority one-line \
+findings a Head of Operations should act on first."""
+
+
+@router.post("/ai/ops-efficiency-brief")
+def ops_efficiency_brief(req: OpsEfficiencyBriefRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    process_label = req.process or "all processes"
+    user = (
+        f"Process: {process_label}\nWindow: trailing {req.days} days\n\n"
+        f"Summary:\n{json.dumps(req.summary, indent=2, default=str)}\n\n"
+        f"Cycle times:\n{json.dumps(req.cycle_times, indent=2, default=str)}\n\n"
+        f"Rework:\n{json.dumps(req.rework, indent=2, default=str)}\n\n"
+        f"Top variants:\n{json.dumps(req.variants[:5], indent=2, default=str)}\n\n"
+        f"Write the Head of Operations brief."
+    )
+
+    subject_ref = f"OPS:{req.process or 'all'}:{req.days}"
+    input_hash = hashlib.sha256((_OPS_EFFICIENCY_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("ops_efficiency_brief", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _OPS_EFFICIENCY_SYSTEM, user, _PERSONA_SCHEMA, label="ops_efficiency_persona",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "ops_efficiency_brief", result,
         run_id=None, ticker=None, subject_ref=subject_ref,
         model=_MODEL_STRUCTURED, effort="medium",
         summary=result.get("headline", "")[:500],

@@ -2480,11 +2480,36 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_itsm_tickets_active_hash
 -- transition by update_itsm_ticket_status, mirroring model_health alerts'
 -- existing resolved_at precedent.
 ALTER TABLE observability.itsm_tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+-- Ops-efficiency signal: a ticket resolved then reopened is a rework
+-- indicator exactly like process_mining_tool.py's rework_summary, but for
+-- the ITSM lifecycle rather than a case flow. Incremented by
+-- update_itsm_ticket_status on the resolved/closed -> open/in_progress
+-- transition only (a fresh ticket's first open doesn't count).
+ALTER TABLE observability.itsm_tickets ADD COLUMN IF NOT EXISTS reopened_count INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_itsm_tickets_sla_sweep
     ON observability.itsm_tickets (sla_due_at)
     WHERE sla_breached_at IS NULL AND status NOT IN ('closed', 'cancelled');
 CREATE INDEX IF NOT EXISTS idx_itsm_tickets_system
     ON observability.itsm_tickets (external_system, status);
+
+-- Control-cost-efficiency (Head of Operations): the platform has no table
+-- anywhere recording what a control actually costs to run, so "is this
+-- control worth its upkeep" has never been answerable — only what risk it
+-- maps to. control_ref is the free-text ref embedded in each risk
+-- template's objective.controls entries (e.g. "CUS-101" from "CUS-101
+-- Top-10 customer concentration KRI" — see risk-engine.js buildObjectives),
+-- the most granular stable key this platform already has; there is no
+-- separate controls table to foreign-key against. Admin-entered, not
+-- computed — cost data doesn't exist in any system this platform ingests
+-- from.
+CREATE TABLE IF NOT EXISTS observability.control_cost_profiles (
+    control_ref       VARCHAR(32)  PRIMARY KEY,
+    annual_cost_usd   NUMERIC,
+    hours_per_month   NUMERIC,
+    notes             TEXT,
+    updated_by        VARCHAR(128),
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
 
 -- Platform-wide tamper-evident audit trail (identity/access changes + MCP
 -- tool calls). Distinct from evidence_records above (SARIF/SAST-shaped,
@@ -10120,6 +10145,54 @@ def compute_dora_metrics(window_days: int = 30) -> dict:
     return _aggregate_dora_metrics(window_days, *result)
 
 
+def compute_dora_trend(period_days: int = 7, periods: int = 8) -> list:
+    """The same three metrics as compute_dora_metrics, but over `periods`
+    consecutive trailing windows of `period_days` each (most recent last),
+    for the DevOps Health screen's trend view — compute_dora_metrics alone
+    only ever reports one number as of now, which can't show whether change
+    failure rate is improving or worsening. Each period is queried
+    independently (not derived from a single running window) so a period
+    with zero attestations correctly reports None, not a smoothed-over
+    value from its neighbors."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                out = []
+                for i in range(periods - 1, -1, -1):
+                    start_offset = (i + 1) * period_days
+                    end_offset = i * period_days
+                    cur.execute(
+                        "SELECT COUNT(*) FROM observability.pipeline_attestations "
+                        "WHERE created_at >= NOW() - (%s || ' days')::interval "
+                        "AND created_at < NOW() - (%s || ' days')::interval",
+                        (start_offset, end_offset),
+                    )
+                    attestation_count = cur.fetchone()[0]
+                    cur.execute(
+                        "SELECT COUNT(*) FROM observability.itsm_tickets "
+                        "WHERE created_at >= NOW() - (%s || ' days')::interval "
+                        "AND created_at < NOW() - (%s || ' days')::interval",
+                        (start_offset, end_offset),
+                    )
+                    ticket_count = cur.fetchone()[0]
+                    cur.execute(
+                        """
+                        SELECT EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0
+                        FROM observability.itsm_tickets
+                        WHERE resolved_at IS NOT NULL
+                          AND created_at >= NOW() - (%s || ' days')::interval
+                          AND created_at < NOW() - (%s || ' days')::interval
+                        """,
+                        (start_offset, end_offset),
+                    )
+                    resolved_hours = [r[0] for r in cur.fetchall() if r[0] is not None]
+                    period = _aggregate_dora_metrics(period_days, attestation_count, ticket_count, resolved_hours)
+                    period["period_end_days_ago"] = end_offset
+                    out.append(period)
+                return out
+    return _run(_do) or []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PaC negative-testing assurance (pac_contracts.py / pac_negative_tests.py)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -14421,6 +14494,52 @@ def list_ai_systems(high_risk_only: bool = False) -> list:
     return _run(_do) or []
 
 
+def list_control_cost_profiles() -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT control_ref, annual_cost_usd, hours_per_month, notes, updated_by, updated_at "
+                    "FROM observability.control_cost_profiles ORDER BY control_ref"
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    if d.get("updated_at"):
+                        d["updated_at"] = d["updated_at"].isoformat()
+                    if d.get("annual_cost_usd") is not None:
+                        d["annual_cost_usd"] = float(d["annual_cost_usd"])
+                    if d.get("hours_per_month") is not None:
+                        d["hours_per_month"] = float(d["hours_per_month"])
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def upsert_control_cost_profile(control_ref: str, annual_cost_usd, hours_per_month, notes: Optional[str],
+                                 updated_by: str) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.control_cost_profiles
+                        (control_ref, annual_cost_usd, hours_per_month, notes, updated_by, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (control_ref) DO UPDATE SET
+                        annual_cost_usd = EXCLUDED.annual_cost_usd,
+                        hours_per_month = EXCLUDED.hours_per_month,
+                        notes = EXCLUDED.notes,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    """,
+                    (control_ref, annual_cost_usd, hours_per_month, notes, updated_by),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do))
+
+
 def expire_overdue_ai_assessments() -> list:
     """Flip CURRENT -> EXPIRED for every AI system past its
     assessment_expires_at. Mirrors expire_overdue_vendor_soc2 exactly."""
@@ -14546,9 +14665,10 @@ def get_pipeline_attestation(attestation_id: int) -> Optional[dict]:
 
 _ITSM_TICKET_COLUMNS = (
     "id, finding_hash, external_system, external_ticket_key, connector_id, summary, "
-    "severity, status, sla_hours, sla_due_at, sla_breached_at, created_by, created_at, updated_at"
+    "severity, status, sla_hours, sla_due_at, sla_breached_at, created_by, created_at, updated_at, "
+    "resolved_at, reopened_count"
 )
-_ITSM_TIMESTAMP_FIELDS = ("sla_due_at", "sla_breached_at", "created_at", "updated_at")
+_ITSM_TIMESTAMP_FIELDS = ("sla_due_at", "sla_breached_at", "created_at", "updated_at", "resolved_at")
 
 
 def _itsm_row_to_dict(cols: list, row: tuple) -> dict:
@@ -14667,7 +14787,13 @@ def update_itsm_ticket_status(ticket_id: int, status: str) -> bool:
     timestamp, not updated_at (which bumps on any field change). Re-closing
     an already-resolved ticket (idempotent re-sync) leaves resolved_at as
     the FIRST resolution time, not the latest sync — COALESCE keeps it from
-    being overwritten on every subsequent poll."""
+    being overwritten on every subsequent poll.
+
+    Also increments reopened_count exactly on the resolved/closed ->
+    open/in_progress transition (i.e. only when resolved_at was already
+    set) — a ticket's first-ever open is not a reopen. The CASE guards on
+    the row's CURRENT resolved_at before this statement clears it, so the
+    increment and the clear see the same pre-update state."""
     status = status.lower()
     def _do():
         with _conn() as conn:
@@ -14681,7 +14807,9 @@ def update_itsm_ticket_status(ticket_id: int, status: str) -> bool:
                     )
                 else:
                     cur.execute(
-                        "UPDATE observability.itsm_tickets SET status = %s, updated_at = NOW(), resolved_at = NULL "
+                        "UPDATE observability.itsm_tickets SET status = %s, updated_at = NOW(), "
+                        "reopened_count = reopened_count + (CASE WHEN resolved_at IS NOT NULL THEN 1 ELSE 0 END), "
+                        "resolved_at = NULL "
                         "WHERE id = %s",
                         (status, ticket_id),
                     )

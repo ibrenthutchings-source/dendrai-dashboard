@@ -51,6 +51,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import db
+import dora_metrics
 import mcp_governance
 from auth_endpoints import require_screen_permission
 
@@ -303,3 +304,27 @@ def verify_chain(limit: Optional[int] = None, current_user: dict = Depends(requi
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database unavailable")
     return db.verify_evidence_chain(limit=limit)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DORA-style change-management metrics (dora_metrics.py / db.compute_dora_metrics)
+# — code-screens.jsx's SOC 2 scorecard has called GET /evidence/dora-metrics
+# since it was built, but no route ever existed to answer it; this is that
+# route, plus a trend variant for the DevOps Health screen (nav id
+# "devopshealth") that the single-window endpoint can't support.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/dora-metrics")
+def dora_metrics_endpoint(window_days: int = 30,
+                           current_user: dict = Depends(require_screen_permission(_SCREEN_ID))):
+    return dora_metrics.compute_dora_metrics(window_days=window_days)
+
+
+@router.get("/dora-metrics/trend")
+def dora_metrics_trend(period_days: int = 7, periods: int = 8,
+                        current_user: dict = Depends(require_screen_permission("devopshealth"))):
+    if periods < 1 or periods > 52:
+        raise HTTPException(status_code=422, detail="periods must be between 1 and 52")
+    if period_days < 1 or period_days > 90:
+        raise HTTPException(status_code=422, detail="period_days must be between 1 and 90")
+    return {"periods": db.compute_dora_trend(period_days=period_days, periods=periods)}

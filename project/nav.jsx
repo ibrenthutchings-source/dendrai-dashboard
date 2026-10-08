@@ -99,6 +99,19 @@ const NAV_SECTIONS = [
     ],
   },
   {
+    label: "Operations Intelligence",
+    items: [
+      // Reuses process_mining_endpoints.py's own router-level permission
+      // (that router gates every route on "continuousmonitoring", not a
+      // dedicated id) — see nav entry comments above for the same
+      // permissionScreenId pattern (Concept Links, Exception Report).
+      { id: "opsefficiency", icon: "compass", l: "Operational Efficiency", permissionScreenId: "continuousmonitoring", divider: "Process" },
+      { id: "slatracker",    icon: "alert",   l: "SLA Tracker" },
+      { id: "devopshealth",  icon: "trend",   l: "DevOps Health" },
+      { id: "controlcost",   icon: "doc",     l: "Control Cost Efficiency", divider: "Economics" },
+    ],
+  },
+  {
     label: "Board Intelligence",
     items: [
       { id: "gov", govTab: "overview",  icon: "compass", l: "Boardroom Pulse" },

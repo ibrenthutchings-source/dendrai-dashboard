@@ -37,6 +37,21 @@ window.MCP = (function () {
 
   function _postAi(path, body) { return _post(path, body, AI_TIMEOUT_MS); }
 
+  async function _put(path, body, timeoutMs = TIMEOUT_MS) {
+    const res = await fetch(BASE + path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
   // 5s was too aggressive for every _get caller sharing one budget — some
   // endpoints do real work server-side (e.g. exceptionsDriftSummary's live
   // PSI computation across every system_source x metric pair), and under
@@ -913,6 +928,54 @@ window.MCP = (function () {
     return _post('/process-mining/walkthrough-narrative', { process, transcript, days });
   }
 
+  /** #4c — Head of Operations brief over real process-mining statistics
+   * (bottleneck/rework/variant drift), not the risk register. */
+  function aiOpsEfficiencyBrief(days, process, summary, cycleTimes, rework, variants) {
+    return _postAi('/ai/ops-efficiency-brief', {
+      days, process, summary, cycle_times: cycleTimes, rework, variants,
+    });
+  }
+
+  // ── SLA Tracker (observability.itsm_tickets) ────────────────────────────
+
+  /** Filtered ticket list — status/external_system/breached_only, same
+   * filters db.list_itsm_tickets supports. */
+  async function itsmListTickets({ status = null, externalSystem = null, breachedOnly = false, limit = 200 } = {}) {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (externalSystem) params.set('external_system', externalSystem);
+    if (breachedOnly) params.set('breached_only', 'true');
+    params.set('limit', String(limit));
+    return _get(`/itsm/tickets?${params.toString()}`);
+  }
+
+  // ── DevOps Health (DORA metrics) ─────────────────────────────────────────
+
+  /** Single trailing window — deployment frequency, change-failure rate, MTTR. */
+  async function doraMetrics(windowDays = 30) {
+    return _get(`/evidence/dora-metrics?window_days=${windowDays}`);
+  }
+
+  /** `periods` consecutive trailing windows of `periodDays` each, oldest
+   * first, for a trend view a single window can't show. */
+  async function doraMetricsTrend(periodDays = 7, periods = 8) {
+    return _get(`/evidence/dora-metrics/trend?period_days=${periodDays}&periods=${periods}`);
+  }
+
+  // ── Control Cost Efficiency ──────────────────────────────────────────────
+
+  /** All admin-entered control cost profiles on file. */
+  async function controlCostListProfiles() {
+    return _get('/control-cost/profiles');
+  }
+
+  /** Set/update one control's annual cost / hours-per-month / notes. */
+  async function controlCostUpsertProfile(controlRef, { annualCostUsd = null, hoursPerMonth = null, notes = null } = {}) {
+    return _put(`/control-cost/profiles/${encodeURIComponent(controlRef)}`, {
+      annual_cost_usd: annualCostUsd, hours_per_month: hoursPerMonth, notes,
+    });
+  }
+
   // ── Journal Entry Testing — je_testing_endpoints.py ───────────────────────────
 
   /** Headline tiles: entries tested, findings by rule, top preparers. */
@@ -1155,6 +1218,15 @@ window.MCP = (function () {
     pmRework,
     pmCases,
     draftWalkthroughNarrative,
+    aiOpsEfficiencyBrief,
+    // SLA Tracker
+    itsmListTickets,
+    // DevOps Health (DORA)
+    doraMetrics,
+    doraMetricsTrend,
+    // Control Cost Efficiency
+    controlCostListProfiles,
+    controlCostUpsertProfile,
     // Journal Entry Testing
     jeTestingSummary,
     jeTestingFindings,

@@ -40,6 +40,10 @@ const GovernanceViewLazy = lazyGlobal(() => import('./governance.jsx'), 'Governa
 const PostureTrendScreenLazy = lazyGlobal(() => import('./posture-trend.jsx'), 'PostureTrendPanel');
 const HelpScreenLazy = lazyGlobal(() => import('./help.jsx'), 'HelpScreen');
 const BoardConsolidatedReportScreenLazy = lazyGlobal(() => import('./board-consolidated-report.jsx'), 'BoardConsolidatedReportScreen');
+const OpsEfficiencyScreenLazy = lazyGlobal(() => import('./ops-efficiency.jsx'), 'OpsEfficiencyScreen');
+const SlaTrackerScreenLazy = lazyGlobal(() => import('./sla-tracker.jsx'), 'SlaTrackerScreen');
+const DevOpsHealthScreenLazy = lazyGlobal(() => import('./devops-health.jsx'), 'DevOpsHealthScreen');
+const ControlCostScreenLazy = lazyGlobal(() => import('./control-cost.jsx'), 'ControlCostScreen');
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { err: null }; }
@@ -2702,6 +2706,46 @@ function App() {
               industry={hasRun ? profile.entity?.industry : cfg.industry}
               ticker={cfg.ticker} />
           </div>
+          )}
+
+          {/* ---- Operational Efficiency (process mining, reframed for Ops) ---- */}
+          {activeScreen === "opsefficiency" && (
+          <ScreenAccessGate screenId="continuousmonitoring">
+          <div className="panel active">
+            <OpsEfficiencyScreenLazy onNavigate={navigateToScreen} />
+          </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- SLA Tracker (ITSM ticket aging + reopen rate) ---- */}
+          {activeScreen === "slatracker" && (
+          <ScreenAccessGate screenId="slatracker">
+          <div className="panel active">
+            <SlaTrackerScreenLazy onNavigate={navigateToScreen} />
+          </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- DevOps Health (DORA trend) ---- */}
+          {activeScreen === "devopshealth" && (
+          <ScreenAccessGate screenId="devopshealth">
+          <div className="panel active">
+            <DevOpsHealthScreenLazy onNavigate={navigateToScreen} />
+          </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Control Cost Efficiency ---- */}
+          {activeScreen === "controlcost" && (
+          <ScreenAccessGate screenId="controlcost">
+          <div className="panel active">
+            <ControlCostScreenLazy
+              risks={output.s2?.risks || (hasRun ? profile.risks : []) || []}
+              objectives={output.s3?.objectives || (hasRun ? profile.objectives : []) || []}
+              maps={railMaps}
+              onNavigate={navigateToScreen} />
+          </div>
+          </ScreenAccessGate>
           )}
 
           {/* ---- Posture Trend ---- */}
