@@ -33,9 +33,37 @@ rather than typed in — this never touches a hardcoded credential):
 from __future__ import annotations
 
 import argparse
+import os
 import secrets
 import string
 import sys
+from urllib.parse import urlsplit, urlunsplit
+
+# sandbox's DATABASE_URL points at postgres-sandbox.railway.internal, which
+# only resolves inside Railway's network — `railway run` injects the real
+# env vars into this process, but doesn't put the local machine ON that
+# network. A public TCP proxy already exists for postgres-sandbox (created
+# 2026-09-09, not something this script sets up), so when the internal host
+# can't resolve, rewrite just the host:port to that proxy's public endpoint
+# and keep everything else (scheme, user, password, dbname, query) from the
+# real DATABASE_URL untouched — the credential itself never has to be read
+# or typed by a human, only passed through.
+_SANDBOX_INTERNAL_HOST = "postgres-sandbox.railway.internal"
+_SANDBOX_PROXY_HOSTPORT = "trolley.proxy.rlwy.net:26897"
+
+
+def _rewrite_for_local_run(url: str) -> str:
+    parts = urlsplit(url)
+    if parts.hostname != _SANDBOX_INTERNAL_HOST.split(":")[0]:
+        return url
+    userinfo = parts.netloc.split("@", 1)[0] if "@" in parts.netloc else ""
+    new_netloc = f"{userinfo}@{_SANDBOX_PROXY_HOSTPORT}" if userinfo else _SANDBOX_PROXY_HOSTPORT
+    return urlunsplit((parts.scheme, new_netloc, parts.path, parts.query, parts.fragment))
+
+
+_url = os.environ.get("DATABASE_URL", "")
+if _url:
+    os.environ["DATABASE_URL"] = _rewrite_for_local_run(_url)
 
 import auth_db
 import db
@@ -52,9 +80,13 @@ def main() -> int:
     parser.add_argument("--username", default="admin", help="Account to reset (default: admin)")
     args = parser.parse_args()
 
-    if not db.is_available():
-        print("ERROR: database not reachable from this environment — run this via `railway run` "
-              "inside the target service/environment so DATABASE_URL is injected, not locally.",
+    if not db.init_db():
+        print("ERROR: could not connect using this environment's DATABASE_URL. Either it wasn't "
+              "injected (run via `railway run --service <svc> --environment <env> python "
+              "reset_admin_password.py`, not locally with no flags), or the DB is only reachable "
+              "from inside Railway's network (an internal *.railway.internal host won't resolve "
+              "from your machine even under `railway run` — check the Railway dashboard for a "
+              "public proxy host/port for this database if so).",
               file=sys.stderr)
         return 1
 
