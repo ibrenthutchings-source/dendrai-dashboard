@@ -1388,6 +1388,11 @@ function stepColor(label, theme) {
   return _stepColorCache.get(label);
 }
 
+// Fastest-N whole-case highlight: how many of the shortest-duration cases'
+// own step-to-step edges get the "fastest path" overlay. A handful reads as
+// a lane through the graph; too many would just repaint most of it green.
+const _CASE_FLOW_FASTEST_N = 3;
+
 function buildCaseDfgGraph(events) {
   const byCase = new Map();
   events.forEach(e => {
@@ -1399,6 +1404,13 @@ function buildCaseDfgGraph(events) {
 
   const nodeMeta = new Map(); // label -> { id, label, value }
   const edgeCount = new Map(); // "src|tgt" -> count
+  // Edge duration (bottleneck) and per-case total duration (fastest paths)
+  // computed here from the same timestamped events the topology above
+  // already groups by case — same method as process_mining_tool.py's
+  // cycle_time_stats/case duration, just client-side over this screen's
+  // own rawEvents rather than a second /process-mining/cycle-times call.
+  const edgeDurations = new Map(); // "src|tgt" -> [hours, ...]
+  const caseDurations = []; // { caseId, hours, edgeKeys: [...] }
   function node(label) {
     if (!nodeMeta.has(label)) nodeMeta.set(label, { id: `s:${label}`, label, value: 0 });
     const n = nodeMeta.get(label);
@@ -1408,23 +1420,61 @@ function buildCaseDfgGraph(events) {
   function edge(src, tgt) {
     const k = `${src}|${tgt}`;
     edgeCount.set(k, (edgeCount.get(k) || 0) + 1);
+    return k;
   }
 
-  byCase.forEach(stepsRaw => {
+  byCase.forEach((stepsRaw, caseId) => {
     const steps = [...stepsRaw].sort((a, b) => new Date(a.adjudicated_at) - new Date(b.adjudicated_at));
     let prevId = node(CASE_FLOW_START);
+    let prevTs = steps.length ? new Date(steps[0].adjudicated_at) : null;
+    const edgeKeys = [];
     steps.forEach(s => {
       const id = node(s.process_step || "Unknown step");
-      edge(prevId, id);
+      edgeKeys.push(edge(prevId, id));
       prevId = id;
+      prevTs = new Date(s.adjudicated_at);
     });
-    edge(prevId, node(CASE_FLOW_END));
+    edgeKeys.push(edge(prevId, node(CASE_FLOW_END)));
+
+    if (steps.length >= 2) {
+      const first = new Date(steps[0].adjudicated_at);
+      const last = new Date(steps[steps.length - 1].adjudicated_at);
+      for (let i = 0; i < steps.length - 1; i++) {
+        const a = new Date(steps[i].adjudicated_at), b = new Date(steps[i + 1].adjudicated_at);
+        if (b < a) continue;
+        const hours = (b - a) / 3_600_000;
+        const key = edgeKeys[i + 1]; // edgeKeys[0] is START->first step
+        if (!edgeDurations.has(key)) edgeDurations.set(key, []);
+        edgeDurations.get(key).push(hours);
+      }
+      if (last >= first) caseDurations.push({ caseId, hours: (last - first) / 3_600_000, edgeKeys });
+    }
   });
+
+  // Bottleneck: the edge with the highest mean duration — same definition
+  // as process_mining_tool.py's cycle_time_stats, "where time actually
+  // accumulates" as distinct from this graph's own edge width (volume).
+  let bottleneckKey = null, bottleneckHours = 0;
+  edgeDurations.forEach((hrs, key) => {
+    const mean = hrs.reduce((s, h) => s + h, 0) / hrs.length;
+    if (mean > bottleneckHours) { bottleneckHours = mean; bottleneckKey = key; }
+  });
+
+  // Fastest whole cases, by total elapsed time start to end.
+  const fastestEdgeKeys = new Set();
+  caseDurations.sort((a, b) => a.hours - b.hours)
+    .slice(0, _CASE_FLOW_FASTEST_N)
+    .forEach(c => c.edgeKeys.forEach(k => fastestEdgeKeys.add(k)));
 
   const nodes = [...nodeMeta.values()];
   const edges = [...edgeCount.entries()].map(([k, value]) => {
     const [source, target] = k.split("|");
-    return { source, target, value };
+    return {
+      source, target, value,
+      isBottleneck: k === bottleneckKey,
+      bottleneckHours: k === bottleneckKey ? bottleneckHours : null,
+      inFastestPath: fastestEdgeKeys.has(k),
+    };
   });
   return { nodes, edges, caseCount: byCase.size };
 }
@@ -1449,13 +1499,17 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
       ? window.matchMedia("(prefers-reduced-motion: reduce)").matches : false;
 
     const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: "LR", nodesep: 14, ranksep: 90, marginx: 10, marginy: 10 });
+    // TB (top-to-bottom) — rotated 90° from this graph's previous LR
+    // layout, read top-down like the DimensionFlowGraph's own orientation.
+    g.setGraph({ rankdir: "TB", nodesep: 14, ranksep: 90, marginx: 10, marginy: 10 });
     g.setDefaultEdgeLabel(() => ({}));
     graph.nodes.forEach(n => {
       const w = Math.min(200, Math.max(70, n.label.length * 6.6 + 24));
       g.setNode(n.id, { ...n, width: w, height: 24 });
     });
-    graph.edges.forEach(e => g.setEdge(e.source, e.target, { value: e.value }));
+    graph.edges.forEach(e => g.setEdge(e.source, e.target, {
+      value: e.value, isBottleneck: e.isBottleneck, bottleneckHours: e.bottleneckHours, inFastestPath: e.inFastestPath,
+    }));
     dagre.layout(g);
 
     // Graph's own natural size — zoom/pan (not viewBox scale-to-fit)
@@ -1475,23 +1529,39 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     const lineGen = d3.line().x(d => d.x + 20).y(d => d.y + 20).curve(d3.curveBasis);
 
     const edgeG = contentG.append("g");
-    const edgeSel = edgeG.selectAll("path").data(g.edges().map(e => ({ ...g.edge(e), _e: e }))).join("path")
+    const edgeData = g.edges().map(e => ({ ...g.edge(e), _e: e }));
+    const edgeSel = edgeG.selectAll("path").data(edgeData).join("path")
       .attr("d", d => lineGen(d.points))
       .attr("fill", "none")
-      .attr("stroke", d => stepColor(g.node(d._e.v).label, theme))
-      .attr("stroke-opacity", 0.3)
-      .attr("stroke-width", d => Math.max(1, Math.sqrt(d.value / maxVal) * 8))
+      .attr("stroke", d => d.isBottleneck ? theme["red-ink"] : stepColor(g.node(d._e.v).label, theme))
+      .attr("stroke-opacity", d => d.isBottleneck ? 0.75 : 0.3)
+      .attr("stroke-width", d => Math.max(1, Math.sqrt(d.value / maxVal) * 8) + (d.isBottleneck ? 1.5 : 0))
       .on("mouseover", (evt, d) => {
         edgeSel.attr("stroke-opacity", o => o === d ? 0.9 : 0.08);
         setTooltip({
           x: evt.clientX, y: evt.clientY, isLink: true,
           sourceLabel: g.node(d._e.v).label, sourceColor: stepColor(g.node(d._e.v).label, theme),
           targetLabel: g.node(d._e.w).label, targetColor: stepColor(g.node(d._e.w).label, theme),
-          value: d.value,
+          value: d.value, isBottleneck: d.isBottleneck, bottleneckHours: d.bottleneckHours,
+          inFastestPath: d.inFastestPath,
         });
       })
       .on("mousemove", evt => setTooltip(p => p ? { ...p, x: evt.clientX, y: evt.clientY } : null))
-      .on("mouseout", () => { edgeSel.attr("stroke-opacity", 0.3); setTooltip(null); });
+      .on("mouseout", () => { edgeSel.attr("stroke-opacity", d => d.isBottleneck ? 0.75 : 0.3); setTooltip(null); });
+
+    // Fastest-case overlay: a bright thin line drawn on top of the fastest
+    // _CASE_FLOW_FASTEST_N whole cases' own edges — distinct from the base
+    // edges above (which encode volume/bottleneck), this traces a specific
+    // handful of complete, quick case paths through the same topology.
+    edgeG.selectAll("path.fastest-overlay").data(edgeData.filter(d => d.inFastestPath)).join("path")
+      .attr("class", "fastest-overlay")
+      .attr("d", d => lineGen(d.points))
+      .attr("fill", "none")
+      .attr("stroke", theme["green-ink"])
+      .attr("stroke-opacity", 0.85)
+      .attr("stroke-width", 1.75)
+      .attr("stroke-dasharray", "1,5")
+      .attr("pointer-events", "none");
 
     const nodeG = contentG.append("g");
     const nodeSel = nodeG.selectAll("g").data(g.nodes().map(id => g.node(id))).join("g")
@@ -1578,6 +1648,14 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
             onZoomOut={() => zoomApiRef.current?.zoomOut()}
             onFit={() => zoomApiRef.current?.fitToView(true)}
             expanded={expanded} onToggleExpand={() => setExpanded(e => !e)} />
+          <div style={{
+            position: "absolute", left: 10, bottom: 10, display: "flex", gap: 14,
+            fontSize: 9.5, color: theme["ink-2"], background: theme.surface, opacity: 0.92,
+            border: `1px solid ${theme.line}`, borderRadius: 6, padding: "5px 10px", pointerEvents: "none",
+          }}>
+            <span><span style={{ display: "inline-block", width: 14, height: 2, background: theme["red-ink"], marginRight: 5, verticalAlign: "middle" }} />Bottleneck</span>
+            <span><span style={{ display: "inline-block", width: 14, height: 0, borderTop: `2px dotted ${theme["green-ink"]}`, marginRight: 5, verticalAlign: "middle" }} />Fastest {_CASE_FLOW_FASTEST_N} cases</span>
+          </div>
         </div>
       )}
       {tooltip && (
@@ -1603,6 +1681,16 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
               <div style={{ marginTop: 5, fontSize: 10, color: theme["ink-2"] }}>
                 <span style={{ color: theme.ink, fontWeight: 700 }}>{tooltip.value}</span> case{tooltip.value !== 1 ? "s" : ""} took this step
               </div>
+              {tooltip.isBottleneck && (
+                <div style={{ marginTop: 4, fontSize: 10, color: theme["red-ink"], fontWeight: 700 }}>
+                  ● Bottleneck — {tooltip.bottleneckHours.toFixed(1)}h average, slowest transition in this graph
+                </div>
+              )}
+              {tooltip.inFastestPath && (
+                <div style={{ marginTop: 4, fontSize: 10, color: theme["green-ink"], fontWeight: 700 }}>
+                  ┄ On one of the {_CASE_FLOW_FASTEST_N} fastest complete case paths
+                </div>
+              )}
             </>
           ) : (
             <>
