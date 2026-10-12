@@ -42,7 +42,14 @@ function ScopeApprovalReview({
   onOverrideGate,
   onAddObjective,
 }) {
-  if (!objectives || objectives.length === 0) return null;
+  // A genuinely empty objectives list (0 objectives derived from the risk
+  // register for this run) must still render the Confirm/Override footer
+  // below — allResolved is trivially true for 0 === 0, so nothing actually
+  // blocks the gate from passing, but an early `return null` here used to
+  // hide the ONLY buttons that could ever resolve it, leaving Gate 2
+  // permanently stuck on "awaiting your review" with nothing on screen to
+  // click — see the identical fix in risk-approval.jsx's RiskApprovalReview.
+  objectives = objectives || [];
 
   const [riskReductions, setRiskReductions] = React.useState(() => {
     const map = {};
@@ -83,7 +90,7 @@ function ScopeApprovalReview({
         <div className="rar-head-r">
           <div className="rar-prog">
             <div className="rar-prog-track">
-              <div className="rar-prog-fill" style={{width: `${(decided/total)*100}%`}}/>
+              <div className="rar-prog-fill" style={{width: `${total ? (decided/total)*100 : 100}%`}}/>
             </div>
             <div className="rar-prog-meta">
               <span className="mono">
@@ -99,6 +106,11 @@ function ScopeApprovalReview({
         </div>
       </div>
 
+      {total === 0 ? (
+        <div style={{padding: "18px 4px", fontSize: 12, color: "var(--ink-3)"}}>
+          No audit objectives were derived for this run — nothing to review. Confirm below to continue, or add an objective manually first.
+        </div>
+      ) : (
       <div className="rar-table-wrap">
         <div className="rar-thead sar-thead">
           <div className="rar-th sar-th-pri">Pri</div>
@@ -133,6 +145,7 @@ function ScopeApprovalReview({
           })}
         </div>
       </div>
+      )}
 
       <div className="sar-footer-meta">
         <span className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>

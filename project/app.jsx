@@ -302,6 +302,14 @@ function App() {
 
   // ---- Pipeline run state ----
   const [running, setRunning] = useState(false);
+  // Mirrors `running` for the mount-time restore effect below, which needs
+  // the CURRENT value inside a stale closure captured once at mount (a
+  // `[]`-dep effect's `running` reference is permanently `false`, its value
+  // when the effect was created — reading state directly there can never
+  // see a run that started after mount, which is exactly the race this
+  // exists to catch).
+  const runningRef = useRef(false);
+  useEffect(() => { runningRef.current = running; }, [running]);
   const [hasRun, setHasRun] = useState(false);
   const [stageState, setStageState] = useState({}); // id -> idle/running/done/waiting
   const [gateState, setGateState] = useState({ g1: null, g2: null }); // null / "pending" / "approved" / "overridden"
@@ -704,6 +712,20 @@ function App() {
   const [profile, setProfile] = useState(() => RISK_ENGINE.buildProfile("ON", null, "3674", "Semiconductors"));
   const profileRef = useRef(profile);
 
+  // ---- Manual audit plan entries ----
+  // Same TDZ reason as `profile` above: also declared here, ahead of its
+  // usual spot near addManualAudit/removeManualAudit below, because the
+  // persistence effect's dependency array (and payload) reference it. This
+  // was the actual cause of the post-login "Cannot access '<var>' before
+  // initialization" crash — a real bug in this file, not a Vite/Rollup
+  // chunk-splitting issue (confirmed by decoding a production sourcemap:
+  // the throw site mapped directly to the dependency array below, at the
+  // point it read `manualAudits` — declared, at the time, ~100 lines further
+  // down in this same function body). manualAuditsRef itself was already
+  // declared early (see above near loopLogRef) — only this useState call
+  // was misplaced.
+  const [manualAudits, setManualAudits] = useState([]);
+
   // ---- Last loop persistence — DB primary, localStorage fallback ----
   useEffect(() => {
     (async () => {
@@ -761,12 +783,26 @@ function App() {
       try {
         const res = await fetch(`/api/mcp/loop/last-state?ticker=${encodeURIComponent(ticker)}`);
         if (res.ok) {
-          applyLoop(await res.json());
+          const body = await res.json();
+          // A live run (runLoop()/rerunFromS3()) can start and reach a gate
+          // — setting e.g. gateState.g1 = "pending" — before this mount-time
+          // fetch resolves, especially on a slow connection or a user who
+          // clicks Run immediately on page load. Applying a stale snapshot
+          // at that point clobbers the live gate state right back to
+          // whatever was last saved (often null, or an already-resolved
+          // gate from a prior run), which silently swaps Gate 1's per-risk
+          // review table for the plain "not pending" banner with no way to
+          // confirm — looking exactly like the loop is "stuck" post-Gate-1
+          // with nothing left to click. If a run is already live by the
+          // time this resolves, its own state is authoritative — skip.
+          if (runningRef.current) return;
+          applyLoop(body);
           return;
         }
       } catch {}
       // Fallback to localStorage when API is unavailable
       try {
+        if (runningRef.current) return;
         const raw = localStorage.getItem(`dendrai.lastLoop:${ticker}`);
         if (raw) applyLoop(JSON.parse(raw));
       } catch {}
@@ -818,7 +854,20 @@ function App() {
         window.showToast?.("Couldn't sync this run's state to the server — saved locally, will retry.", { tone: "warn" });
       }
     });
-  }, [hasRun, output, profile]);
+    // Every field the payload above actually reads must be a dependency —
+    // otherwise a change to e.g. gateState/stageState alone (opening Gate 1,
+    // dispositioning a risk row) never re-fires this effect, and the
+    // persisted snapshot silently falls behind until output/profile/hasRun
+    // next change for an unrelated reason. A page refresh (or a fresh /
+    // second browser tab loading the same ticker) in that window restores
+    // the STALE snapshot — e.g. gateState still {g1:null} even though the
+    // live session already has Gate 1 open and pending — which looks
+    // exactly like "the gate never triggered" with no banner to click,
+    // even though the run genuinely is sitting at that gate. cfg.ticker is
+    // the one deliberate omission (see the runTicker comment above); every
+    // other field in `payload` needs to be here.
+  }, [hasRun, output, profile, stageState, gateState, loopLog, livefacts,
+      perRiskAppetite, riskApprovals, scopeApprovals, manualAudits, narrativeResult, hubFocus]);
 
   const auth = window.useAuth ? window.useAuth() : null;
   const auditorName = auth?.user?.display_name || auth?.user?.username || "Auditor";
@@ -866,8 +915,6 @@ function App() {
     setLoopLog(loopLogRef.current);
   }, []);
 
-  // ---- Manual audit plan entries ----
-  const [manualAudits, setManualAudits] = useState([]);
   const addManualAudit = useCallback((audit) => {
     setManualAudits(prev => {
       const next = [...prev, audit];
@@ -885,6 +932,17 @@ function App() {
   }, []);
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
+
+  // TEMPORARY (redact-mode.js): tell the screen-recording redactor which
+  // company to hide and which screen is showing — it stays off on Setup
+  // ("config"), where the real company has to be selectable.
+  useEffect(() => {
+    window.DENDRAI_REDACT?.update({
+      tickers: [cfg.ticker],
+      names: [profile?.entity?.name],
+      screen: activeScreen,
+    });
+  }, [cfg.ticker, profile?.entity?.name, activeScreen]);
 
   // ---- HITL gates ----
   const showGate = (n) => new Promise((res) => {
@@ -1214,6 +1272,14 @@ function App() {
     }
     log(`Stage ${id.toUpperCase()} starting`);
     await t(durationMs);
+    // Stamp when each risk was assessed — the Disclosure Risk layer
+    // (disclosure-risk.js) needs this to flag stale assessments. A risk that
+    // already carries assessedAt (e.g. carried over from a restored session)
+    // keeps its original date rather than being refreshed by a re-render.
+    if (id === "s2" && Array.isArray(payload?.risks)) {
+      const now = new Date().toISOString();
+      payload = { ...payload, risks: payload.risks.map(r => r && !r.assessedAt ? { ...r, assessedAt: now } : r) };
+    }
     setOutput((prev) => ({ ...prev, [id]: payload }));
     setStageState((prev) => ({ ...prev, [id]: "done" }));
     log(`Stage ${id.toUpperCase()} complete`);
@@ -1418,6 +1484,49 @@ function App() {
         // check_financial_risk_pipeline() returns server-side.
         if (mcpResult.financial_risk_pipeline) {
           templateProfile.forecasts.financialRiskPipeline = mcpResult.financial_risk_pipeline;
+        }
+
+        // Dynamically-detected material accounts — industry-template
+        // (manufacturing/financial_services/saas) + materiality-ratio based,
+        // see material_accounts_tool.py — beyond the fixed revenue/margin/
+        // eps/etc. set built above. Best-effort and never fatal to the run:
+        // everything above has already succeeded by this point.
+        try {
+          const matResult = await MCP.fetchMaterialAccounts(cfg.ticker);
+          const materialAccts = (matResult?.accounts || []).filter(a => a.is_material);
+          if (materialAccts.length) {
+            const fcResult = await MCP.forecastMaterialAccounts(cfg.ticker);
+            const bundles = fcResult?.forecasts || {};
+            const { fcLabels: fcLabelsMA } = RISK_ENGINE.quarterBoundaries();
+            const _toQLma = (d) => { if (!d) return null; const [y,m] = d.slice(0,7).split('-').map(Number); return `Q${Math.ceil(m/3)}-${String(y).slice(-2)}`; };
+            templateProfile.forecasts.materialAccounts = materialAccts.map(acc => {
+              const bundle = bundles[acc.metric]?.forecast;
+              const history = (bundle?.history || []).slice(-20).map(p => ({
+                q: _toQLma(p.quarter_end) || p.quarter_end,
+                v: +(p.value / 1e6).toFixed(2),
+              }));
+              const forecast = bundle?.forecasts?.length
+                ? bundle.forecasts.map((f, i) => ({
+                    q:    fcLabelsMA[i] || `H${i + 1}`,
+                    base: +(f.point / 1e6).toFixed(2),
+                    lo:   +(f.ci_lower / 1e6).toFixed(2),
+                    hi:   +(f.ci_upper / 1e6).toFixed(2),
+                  }))
+                : [];
+              return {
+                metric: acc.metric, label: acc.label, parent: acc.parent,
+                ratio: acc.ratio, industryGroup: acc.industry_group, source: acc.source,
+                baseMetric: acc.base_metric, unit: "$M", history, forecast,
+              };
+            })
+            // An account with fewer than 8 quarters of history (or none at
+            // all) comes back with an empty history/forecast from
+            // run_forecast_backtest — dropped here rather than shown as an
+            // empty chart.
+            .filter(a => a.history.length > 0);
+          }
+        } catch (matErr) {
+          log(`Material-account detection skipped: ${matErr.message}`);
         }
 
         // Same placeholder problem as mscore/zscore above — templateProfile.ratios
@@ -2975,7 +3084,7 @@ function App() {
             <div className="pm-body">
               <PersonaTab personas={hasRun ? profile.personas : null} selected={selectedPersona} setSelected={setSelectedPersona}
                 ticker={cfg.ticker} risks={output.s2?.risks || profile.risks || []}
-                loopStats={output.s6 || loop || {}} runId={runIdRef.current}/>
+                loopStats={output.s6 || {}} runId={runIdRef.current}/>
             </div>
           </div>
         </div>

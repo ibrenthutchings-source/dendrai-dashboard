@@ -21,7 +21,8 @@ Endpoints:
     POST /sox/hitl/coverage-approvals         Gate S2 — per-process coverage HITL decisions
     GET  /sox/hitl/gate-status/{run_id}       Gate S1/S2 status for a run
     POST /sox/segments/{ticker}               Add/update geographic or segment financials (historical)
-    POST /sox/segments/{ticker}/import-xbrl   Auto-ingest segment/geography revenue from the latest 10-K/10-Q XBRL
+    POST /sox/segments/{ticker}/import-xbrl   Auto-ingest segment/geography financials from the latest 10-K/10-Q XBRL
+    POST /sox/segments/{ticker}/estimate-financials  % -of-consolidated estimate for a hand-defined segment
     GET  /sox/segments/{ticker}/latest        Most recent fiscal year's segments, no fy lookup required
     GET  /sox/segments/{ticker}/{fy}          Retrieve segments for a company + fiscal year
     DELETE /sox/segments/{ticker}/{id}        Delete a geography/segment financial record
@@ -33,8 +34,11 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -42,6 +46,7 @@ from pydantic import BaseModel
 import db
 from sox_scoping_tool import run_sox_scoping
 from auth_endpoints import require_screen_permission
+from edgar_tool import get_company_info, fetch_xbrl_facts
 
 # Router-level: SOX Scoping backs the "SOX Control Pulse" screen (nav id
 # "sox") — see auth_endpoints.require_screen_permission's docstring.
@@ -100,6 +105,12 @@ class SoxProcessDetailRequest(BaseModel):
     notes: Optional[str] = None
     manual_coverage_level: Optional[str] = None
     estimated_exposure: Optional[float] = None
+    updated_by: Optional[str] = None
+
+
+class SoxSegmentDetailRequest(BaseModel):
+    notes: Optional[str] = None
+    manual_in_scope: Optional[bool] = None
     updated_by: Optional[str] = None
 
 
@@ -187,9 +198,27 @@ def compute_sox_scope(req: SoxScopeRequest):
             mat_pct  = cfg["materiality_pct"]
             perf_pct = cfg["performance_mat_pct"]
 
-    # Load user-supplied account / process detail & scope overrides
+    # Load user-supplied account / process / segment detail & scope overrides
     account_overrides = db.get_sox_account_details(company_id) if db_ok else {}
     process_overrides = db.get_sox_process_details(company_id) if db_ok else {}
+    segment_overrides = db.get_sox_segment_details(company_id) if db_ok else {}
+
+    # Real detected balances (material_accounts_tool.py) to prefer over
+    # sox_scoping_tool's heuristic estimates — a single XBRL fetch for this
+    # one ticker (user-triggered re-scope, not a peer fan-out), best-effort:
+    # a failure here just falls back to the heuristic, same as before this
+    # feature existed.
+    real_balances = None
+    try:
+        import material_accounts_tool
+        meta, _sub = get_company_info(req.ticker)
+        subj_xbrl = fetch_xbrl_facts(meta["cik"]) or {}
+        uploaded_xbrl = db.get_manual_financials(company_id, granularity=["annual", "quarterly"]) if db_ok else {}
+        mat_accounts = material_accounts_tool.detect_material_accounts(
+            subj_xbrl, meta.get("sic", ""), uploaded_xbrl)
+        real_balances = material_accounts_tool.real_balances_for_sox(mat_accounts)
+    except Exception as _mat_err:
+        logger.warning("Material-account balance detection failed for SOX scoping (non-fatal, falling back to heuristic estimates): %s", _mat_err)
 
     result = run_sox_scoping(
         run_id=req.run_id,
@@ -204,6 +233,8 @@ def compute_sox_scope(req: SoxScopeRequest):
         trigger_reason=req.trigger_reason,
         account_overrides=account_overrides,
         process_overrides=process_overrides,
+        real_balances=real_balances,
+        segment_overrides=segment_overrides,
     )
 
     if db_ok and req.run_id is not None:
@@ -378,6 +409,39 @@ def upsert_sox_process_detail(ticker: str, process_id: str, req: SoxProcessDetai
     return {"saved": True, "detail_id": detail_id, "ticker": ticker.upper(), "process_id": process_id}
 
 
+@router.get("/segment-details/{ticker}")
+def list_sox_segment_details(ticker: str):
+    """
+    Retrieve user-supplied overrides for SOX segments/geographies (notes,
+    manual in-scope override), keyed by segment_key
+    ("{segment_type}:{segment_name}") — a separate path prefix from
+    /segments/{ticker}/... (the filed/estimated financial breakdown CRUD)
+    to avoid any route-matching ambiguity with that resource's own
+    {fiscal_year}/{segment_id} path params.
+    """
+    company_id = _resolve_company_id(ticker)
+    details = db.get_sox_segment_details(company_id) if company_id else {}
+    return {"ticker": ticker.upper(), "segments": details}
+
+
+@router.post("/segment-details/{ticker}/{segment_key:path}")
+def upsert_sox_segment_detail(ticker: str, segment_key: str, req: SoxSegmentDetailRequest):
+    """
+    Add or update notes or a manual in-scope override for a SOX segment/
+    geography (segment_key = "{segment_type}:{segment_name}", from a
+    segments_coverage row's own segment_key field). Applied on the next
+    scoping run (POST /sox/scope) — click "Rescope" to see the change
+    reflected. This is what Gate S1's per-segment HITL approval adjusts.
+    """
+    company_id = _resolve_company_id(ticker)
+    if not company_id:
+        return {"saved": False, "reason": "database not configured", "segment_key": segment_key}
+    detail_id = db.upsert_sox_segment_detail(company_id, segment_key, req.dict())
+    if not detail_id:
+        raise HTTPException(status_code=500, detail="Failed to save segment detail")
+    return {"saved": True, "detail_id": detail_id, "ticker": ticker.upper(), "segment_key": segment_key}
+
+
 # ── HITL gate endpoints ─────────────────────────────────────────────────────────
 # Gate S1 (materiality + significant accounts) and Gate S2 (process coverage),
 # mirroring the Enterprise Risk pipeline's Gate 1 (risk approval) / Gate 2
@@ -449,14 +513,35 @@ def import_xbrl_segments(ticker: str):
     above describes; that auto-ingestion didn't actually exist until now.
 
     Only breakdowns that reconcile to the filing's own consolidated revenue
-    (within tolerance) are written, tagged source='filed' so they're never
-    confused with a manually-entered row. Unreconciled or unextractable
-    breakdowns are reported in the response but not persisted — see
-    edgar_segments.persist_segments's docstring for why.
+    (within tolerance) are written, tagged source='filed' (every derived
+    financial field was itself filed dimensionally) or 'filed+estimated'
+    (revenue is filed; gross_profit/operating_income/net_income/assets/
+    margins were partly or wholly allocated from consolidated totals by
+    revenue_pct — see edgar_segments.enrich_breakdown_financials) so a
+    manually-entered row is never confused with either. Unreconciled or
+    unextractable breakdowns are reported in the response but not
+    persisted — see edgar_segments.persist_segments's docstring for why.
     """
     import edgar_segments
     result = edgar_segments.persist_segments(ticker)
     return result
+
+
+@router.post("/segments/{ticker}/estimate-financials")
+def estimate_sox_segment_financials(ticker: str, revenue_pct: float = Query(..., ge=0, le=100)):
+    """
+    Percentage-of-consolidated estimate for a segment/geography an auditor
+    is defining by hand (an internal business unit, say) that has no filed
+    XBRL breakdown for import-xbrl above to pick up — allocates the
+    company's most recently reported consolidated Revenue/GrossProfit/
+    OperatingIncome/NetIncome/TotalAssets by `revenue_pct` and derives the
+    three margin ratios, so the Add/Edit segment form's financial fields
+    are a reviewable starting point instead of eight blank text boxes.
+    Always source='estimated'; never persisted by this endpoint — the
+    caller still saves via POST /segments/{ticker} once satisfied.
+    """
+    import edgar_segments
+    return edgar_segments.estimate_segment_financials(ticker, revenue_pct)
 
 
 @router.get("/segments/{ticker}/latest")

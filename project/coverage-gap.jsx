@@ -49,7 +49,11 @@ function ScoreCard({ label, value, sub, ok }) {
   );
 }
 
-function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events = [], ratios = {}, industry = '', ticker = '' }) {
+// All derived coverage state in one hook so the on-screen panel and the
+// board report's PowerPoint export (board-consolidated-report.jsx) read the
+// same numbers — a deck that recomputed the verdict separately could disagree
+// with the screen it was exported from.
+function useCoverageAnalysis({ risks = [], objectives = [], rssSignals = [], events = [], ratios = {}, industry = '' }) {
 
   // ── 1. Register ↔ Scope alignment ────────────────────────────
   const coverageRows = risks.map(r => {
@@ -156,11 +160,61 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
     ? [{ id:'R-09', name:'Macro Demand Cyclicality', rag:'R', note:`Revenue ${(ratios.revGrowth*100).toFixed(1)}% YoY. Re-run loop to add this risk.` }]
     : [];
 
+  // ── 4b. Disclosure risk — the risk a risk is missed or misreported ──
+  // AI inventory is fetched here rather than threaded through props so the
+  // three CoverageGapPanel call sites (app, pipeline, board report) stay
+  // unchanged. A failed fetch leaves it null, which the assessment reports
+  // as "AI inventory unavailable" instead of silently treating AI as clean.
+  const [aiInventory, setAiInventory] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch(`${window.MCP_API_BASE || '/api/mcp'}/observability/ai-inventory`, { credentials: 'include' })
+      .then(res => res.ok ? res.json() : null)
+      .then(d => { if (!cancelled) setAiInventory(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // AI governance register (assessment dates, oversight). Left null on a
+  // 403/503 so the assessment says "unavailable" instead of assuming clean.
+  const [aiGovernance, setAiGovernance] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch(`${window.MCP_API_BASE || '/api/mcp'}/ai-governance`, { credentials: 'include' })
+      .then(res => res.ok ? res.json() : null)
+      .then(d => { if (!cancelled && d) setAiGovernance(d.systems || []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const disclosure = React.useMemo(
+    () => window.DISCLOSURE_RISK?.assess({ risks, rssSignals, events, aiInventory, aiGovernance }) || null,
+    [risks, rssSignals, events, aiInventory, aiGovernance]);
+
   // ── 5. Overall verdict ───────────────────────────────────────
-  const totalGaps  = orphanedCount + uncoveredSignals.length + quantOnly.length;
-  const totalFlags = calibFlags.length;
+  // Disclosure findings count toward the verdict: a "missed" risk is a gap
+  // (nothing in the register covers a domain with a reporting duty);
+  // "misaligned"/"stale" are alerts (a risk exists but is reported
+  // inconsistently or has lapsed). Otherwise the board report could say
+  // COMPLETE while this same panel lists regulatory exposure.
+  const totalGaps  = orphanedCount + uncoveredSignals.length + quantOnly.length + (disclosure?.missed || 0);
+  const totalFlags = calibFlags.length + (disclosure ? disclosure.misaligned + disclosure.stale : 0);
   const verdict    = totalGaps === 0 && totalFlags === 0 ? 'COMPLETE' : totalGaps === 0 ? 'PARTIAL' : 'INCOMPLETE';
   const verdictColor = verdict === 'COMPLETE' ? 'var(--green-ink)' : verdict === 'PARTIAL' ? 'var(--amber-ink)' : 'var(--red-ink)';
+
+  return {
+    coverageRows, coveredCount, orphanedCount, calibFlags, eightKFindings,
+    uncoveredSignals, macroRisk, quantOnly, disclosure,
+    totalGaps, totalFlags, verdict, verdictColor,
+  };
+}
+
+function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events = [], ratios = {}, industry = '', ticker = '' }) {
+  const {
+    coverageRows, coveredCount, orphanedCount, calibFlags, eightKFindings,
+    uncoveredSignals, macroRisk, quantOnly, disclosure,
+    totalGaps, totalFlags, verdict, verdictColor,
+  } = useCoverageAnalysis({ risks, objectives, rssSignals, events, ratios, industry });
 
   return (
     <div style={{ padding:'0 20px 32px', maxWidth:900 }}>
@@ -192,6 +246,11 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
           sub="signal categories uncovered" ok={uncoveredSignals.length === 0} />
         <ScoreCard label="Calibration alerts" value={calibFlags.length}
           sub="RAG vs. quant divergence" ok={calibFlags.length === 0 ? true : undefined} />
+        {disclosure && (
+          <ScoreCard label="Disclosure exposure" value={disclosure.totalExposure}
+            sub={`${disclosure.missed} missed · ${disclosure.misaligned} misaligned · ${disclosure.stale} stale`}
+            ok={disclosure.findings.length === 0 ? true : disclosure.totalExposure >= 6 ? false : undefined} />
+        )}
         <ScoreCard label="Overall" value={verdict}
           sub={`${totalGaps} gap${totalGaps !== 1 ? 's' : ''}, ${totalFlags} alert${totalFlags !== 1 ? 's' : ''}`}
           ok={verdict === 'COMPLETE' ? true : verdict === 'INCOMPLETE' ? false : undefined} />
@@ -349,11 +408,46 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
         ))}
       </div>
 
-      {/* ── Section 5: Recommended actions ── */}
+      {/* ── Section 5: Disclosure risk ── */}
+      {disclosure && (
+        <div style={{ background:'var(--surface)', border:'1px solid var(--line)', borderRadius:8,
+          padding:'14px 16px', marginBottom:16 }}>
+          <SectionHead title="5. Disclosure Risk — Missed or Misreported"
+            sub="Exposure to a regulator if a risk is not identified, or is reported inconsistently with the company's own filings. Ranked by severity × failure mode × regulatory consequence." />
+          {!disclosure.findings.length ? (
+            <div style={{ fontSize:11, color:'var(--green-ink)', display:'flex', alignItems:'center', gap:6 }}>
+              <Icon name="check" size={12}/> No missed or misaligned disclosure risks detected from available signals.
+            </div>
+          ) : disclosure.findings.map((f, i) => (
+            <div key={i} style={{ border:'1px solid var(--line)', borderRadius:6, padding:'10px 14px',
+              marginBottom:8, background:'var(--surface-2)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                {ragDot(f.severityRag)}
+                <span style={{ fontSize:11, fontWeight:600 }}>{f.obligation.label}</span>
+                <Badge label={f.kind} color={f.kind === 'missed' ? 'var(--red-ink)' : 'var(--amber-ink)'}
+                  bg={f.kind === 'missed' ? 'var(--red-soft)' : 'var(--amber-soft)'}/>
+                <span style={{ marginLeft:'auto', fontFamily:'var(--mono)', fontSize:10.5, color:'var(--ink-3)' }}>
+                  exposure {f.exposure}
+                </span>
+              </div>
+              <div style={{ fontSize:10.5, color:'var(--ink-2)', lineHeight:1.55 }}>{f.evidence}</div>
+              <div style={{ fontSize:10, color:'var(--ink-4)', marginTop:4, lineHeight:1.5 }}>
+                {f.obligation.regulators.join(' · ')} — {f.obligation.duties}
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize:10.5, color:'var(--ink-3)', marginTop:10, lineHeight:1.55 }}>
+            <b>AI risk confidence: {disclosure.aiConfidence.level}.</b> {disclosure.aiConfidence.note}.
+            {disclosure.undated > 0 && ` ${disclosure.undated} obligation-bearing risk${disclosure.undated !== 1 ? 's have' : ' has'} no assessment date, so staleness cannot be checked.`}
+          </div>
+        </div>
+      )}
+
+      {/* ── Section 6: Recommended actions ── */}
       {(totalGaps > 0 || totalFlags > 0) && (
         <div style={{ background:'var(--surface)', border:'1px solid var(--line)', borderRadius:8,
           padding:'14px 16px' }}>
-          <SectionHead title="5. Recommended Actions" />
+          <SectionHead title="6. Recommended Actions" />
           <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
             {quantOnly.map(q => (
               <div key={q.id} style={{ display:'flex', gap:8, fontSize:11, alignItems:'flex-start' }}>
@@ -379,6 +473,19 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
                 <span>Review <b>{f.riskId}</b> register score — consider re-calibration if no entity-specific evidence supports elevated rating.</span>
               </div>
             ))}
+            {(disclosure?.findings || []).slice(0, 5).map((f, i) => (
+              <div key={`d${i}`} style={{ display:'flex', gap:8, fontSize:11, alignItems:'flex-start' }}>
+                <span style={{ color: f.kind === 'missed' ? 'var(--red-ink)' : 'var(--amber-ink)', fontWeight:700, flexShrink:0 }}>
+                  {f.kind === 'missed' ? '➕' : '⚠'}
+                </span>
+                <span><b>{f.obligation.label}</b> ({f.kind}, exposure {f.exposure}) — {f.evidence}.</span>
+              </div>
+            ))}
+            {disclosure && disclosure.findings.length > 5 && (
+              <div style={{ fontSize:10.5, color:'var(--ink-3)', paddingLeft:22 }}>
+                + {disclosure.findings.length - 5} more in section 5.
+              </div>
+            )}
             {orphanedCount > 0 && (
               <div style={{ display:'flex', gap:8, fontSize:11, alignItems:'flex-start' }}>
                 <span style={{ color:'var(--amber-ink)', fontWeight:700, flexShrink:0 }}>⚠</span>
@@ -392,4 +499,4 @@ function CoverageGapPanel({ risks = [], objectives = [], rssSignals = [], events
   );
 }
 
-Object.assign(window, { CoverageGapPanel });
+Object.assign(window, { CoverageGapPanel, useCoverageAnalysis });

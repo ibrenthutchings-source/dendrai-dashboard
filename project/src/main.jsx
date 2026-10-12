@@ -22,6 +22,8 @@ import '../rss.jsx'
 import '../audit-scope-review.jsx'
 import '../report.jsx'
 import '../evidence-pack.jsx'
+import '../report-delivery.jsx'
+import '../disclosure-risk.js'
 import '../coverage-gap.jsx'
 import '../risk-register-review.jsx'
 import '../cem.jsx'
@@ -29,6 +31,7 @@ import '../nav.jsx'
 import '../ai-chat-panel.jsx'
 import '../auth.jsx'
 import '../tweaks.jsx'
+import '../redact-mode.js'   // TEMPORARY — screen-recording aid; see file header
 
 // The remaining screen-level files (scenarios, scenario-analysis, flow,
 // governance, config-screen, ubo-config, audit-scope, code-screens,

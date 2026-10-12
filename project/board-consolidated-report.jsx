@@ -521,7 +521,7 @@ function ExceptionCharts({ report }) {
         value: r.impact_usd,
         rating: RATING_META[r.worst_risk_rating] ? r.worst_risk_rating : "unrated",
         fill: _ratingMeta(r.worst_risk_rating).fill,
-        note: `${r.occurrence_count} occurrence${r.occurrence_count === 1 ? "" : "s"} in this period${
+        note: `${Number.isFinite(r.worst_risk_score) ? `Risk score ${fmt2(r.worst_risk_score)}/25 — ` : ""}${r.occurrence_count} occurrence${r.occurrence_count === 1 ? "" : "s"} in this period${
           r.impact_source === "fair_estimate" ? " · impact estimated via FAIR Monte Carlo, no transaction amount captured"
           : r.impact_source === "transaction_amount_partial" ? " · partial: sum of the occurrences that carried a transaction amount"
           : " · sum of the captured transaction amounts"}`,
@@ -643,7 +643,7 @@ function ExceptionBoardSection({ dateFrom, dateTo, report, state }) {
 // second AI spend) whenever a brief has already rendered on screen, and a
 // real (correct) generation on the rare case someone exports before either
 // section's autoGenerate has resolved.
-function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo }) {
+function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo, coverage }) {
   const [state, setState] = React.useState({ busy: false, error: null });
 
   const run = React.useCallback(async () => {
@@ -661,13 +661,13 @@ function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, run
       await exportConsolidatedReportPptx({
         ticker, hasRun, risks, objectives, maps, riskAppetite, appetiteThreshold,
         exceptionReport: excReport, exceptionDateFrom: dateFrom, exceptionDateTo: dateTo,
-        boardPersonaBrief, boardExceptionBrief,
+        boardPersonaBrief, boardExceptionBrief, coverage,
       });
       setState({ busy: false, error: null });
     } catch (e) {
       setState({ busy: false, error: e.message || "PowerPoint export failed" });
     }
-  }, [ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo]);
+  }, [ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo, coverage]);
 
   return { ...state, run };
 }
@@ -691,9 +691,16 @@ function BoardConsolidatedReportScreen({
     return () => { live = false; };
   }, [dateFrom, dateTo]);
 
+  // Same analysis the embedded CoverageGapPanel renders, so the exported deck
+  // carries the on-screen verdict and disclosure findings, not a recomputation.
+  const coverage = window.useCoverageAnalysis({
+    risks: risks || [], objectives: objectives || [], rssSignals: rssSignals || [],
+    events: events || [], ratios: ratios || {}, industry: industry || '',
+  });
+
   const pptxExport = usePptxExport({
     ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold,
-    excReport, dateFrom, dateTo,
+    excReport, dateFrom, dateTo, coverage,
   });
 
   return (

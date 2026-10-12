@@ -368,12 +368,133 @@ function AdjustAccountModal({ open, acc, ticker, onClose, onSubmit }) {
   );
 }
 
+// ── Gate S1 — Per-segment/geography review ───────────────────────────────────
+// Every segment/geography scope_segments() flagged "significant" (in_scope —
+// revenue > performance materiality, ≥15% of consolidated revenue, or a RED
+// geographic-concentration risk) now goes through the same Approve/Adjust
+// HITL as accounts and processes, rather than being a purely computed,
+// unreviewed table (AS2201 §16 requires human scoping judgment over
+// significant locations, same as significant accounts).
+
+function SegmentApprovalRow({ seg, approval, onApprove, onAdjust }) {
+  const status = approval.status || "pending";
+  const adj = approval.adjustments || null;
+  const effInScope = adj ? adj.in_scope : seg.in_scope;
+  const wasAdjusted = ["submitted", "manager_approved", "rejected"].includes(status);
+  const typeLabel = seg.segment_type === "geography" ? "Geography" : seg.segment_type === "product_line" ? "Product Line" : "Business Segment";
+
+  return (
+    <div className={`rar-row rar-row-${status}`}>
+      <div className="rar-td" style={{flexDirection: "column", alignItems: "flex-start", gap: 2, overflow: "visible"}}>
+        <div style={{display: "flex", alignItems: "center", gap: 6}}>
+          <span style={{width: 6, height: 6, borderRadius: "50%", background: effInScope ? "var(--green-ink)" : "var(--ink-4)", flexShrink: 0}}/>
+          <span style={{fontSize: 12.5, fontWeight: 500, color: "var(--ink)"}}>{seg.segment_name}</span>
+          <span className="mono" style={{fontSize: 9, color: "var(--ink-4)"}}>{typeLabel}</span>
+          {wasAdjusted && effInScope !== seg.in_scope && (
+            <span className="rar-was mono">was {seg.in_scope ? "in scope" : "out of scope"}</span>
+          )}
+        </div>
+        <div style={{fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.4}}>{seg.rationale}</div>
+      </div>
+      <div className="rar-td" style={{justifyContent: "flex-end"}}>
+        <span className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{sxFmtM(seg.revenue)}</span>
+      </div>
+      <div className="rar-td" style={{justifyContent: "center"}}>
+        <span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{seg.revenue_pct != null ? `${seg.revenue_pct.toFixed(1)}%` : "—"}</span>
+      </div>
+      <div className="rar-td rar-td-action">
+        {status === "pending" && (
+          <div className="rar-actions">
+            <button className="btn btn-sm rar-btn-approve" onClick={onApprove}><Icon name="check" size={10}/> Approve</button>
+            <button className="btn btn-sm" onClick={onAdjust}><Icon name="edit" size={10}/> Adjust</button>
+          </div>
+        )}
+        {status === "rejected" && (
+          <div className="rar-actions">
+            <Disposition status={status}/>
+            <button className="btn btn-sm" onClick={onAdjust}><Icon name="edit" size={10}/> Revise</button>
+          </div>
+        )}
+        {status !== "pending" && status !== "rejected" && <Disposition status={status}/>}
+      </div>
+      {wasAdjusted && (
+        <div className="rar-row-detail">
+          <div className="rar-detail-rationale">
+            <div className="rar-detail-label mono">RATIONALE — {approval.adjustedBy || "Auditor"}</div>
+            <div className="rar-detail-text">{approval.rationale}</div>
+          </div>
+          <div style={{display: "flex", flexDirection: "column", gap: 6, borderLeft: "1px solid var(--line)", paddingLeft: 16}}>
+            <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em"}}>REVIEW STATUS</div>
+            <ReviewStatusNote approval={approval}/>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdjustSegmentModal({ open, seg, ticker, onClose, onSubmit }) {
+  const [inScope, setInScope] = React.useState(true);
+  const [rationale, setRationale] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+
+  React.useEffect(() => {
+    if (open && seg) { setInScope(seg.in_scope); setRationale(""); setErr(null); }
+  }, [open, seg?.segment_key]);
+
+  if (!open || !seg) return null;
+  const valid = rationale.trim().length >= 30;
+
+  async function handleSubmit() {
+    setSaving(true); setErr(null);
+    try {
+      const res = await fetch(`/api/mcp/sox/segment-details/${encodeURIComponent(ticker)}/${encodeURIComponent(seg.segment_key)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: seg.notes || null, manual_in_scope: inScope }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await onSubmit({ in_scope: inScope, rationale });
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={`Adjust Segment · ${seg.segment_name}`} width={520}
+      titleSub={`Computed: ${seg.in_scope ? "In scope" : "Out of scope"}`}
+      foot={<>
+        <span className="muted" style={{fontSize: 11}}>{rationale.length} chars</span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid || saving} onClick={handleSubmit}>{saving ? "Saving…" : "Submit Adjustment"}</button>
+        </div>
+      </>}>
+      <div style={{display: "flex", gap: 8, marginBottom: 12}}>
+        <button className={`btn btn-sm ${inScope ? "btn-primary" : ""}`} onClick={() => setInScope(true)}>Force in-scope</button>
+        <button className={`btn btn-sm ${!inScope ? "btn-primary" : ""}`} onClick={() => setInScope(false)}>Force out-of-scope</button>
+      </div>
+      <label className="ar-label">
+        Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
+      </label>
+      <textarea className="fi-ta" value={rationale} onChange={e => setRationale(e.target.value)}
+        placeholder="Describe the basis for this override. Minimum 30 characters."
+        style={{minHeight: 90}}/>
+      {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 6}}>{err}</div>}
+    </Modal>
+  );
+}
+
 // ── Gate S1 container ────────────────────────────────────────────────────────
 
 function SoxGate1Review({
-  scope, accounts, materialityApproval, accountApprovals,
+  scope, accounts, segments, materialityApproval, accountApprovals, segmentApprovals,
   onApproveMateriality, onAdjustMateriality,
   onApproveAccount, onAdjustAccount, onApproveAllAccounts,
+  onApproveSegment, onAdjustSegment,
   onSubmit, onOverrideGate,
 }) {
   const total = accounts.length;
@@ -383,28 +504,39 @@ function SoxGate1Review({
   }).length;
   const submittedCount = accounts.filter(a => ["submitted", "manager_approved", "rejected"].includes(accountApprovals[a.account_id]?.status)).length;
   const pendingReview = accounts.filter(a => accountApprovals[a.account_id]?.status === "submitted").length;
+
+  const segTotal = segments.length;
+  const segDecided = segments.filter(s => {
+    const st = segmentApprovals[s.segment_key]?.status;
+    return st === "approved" || st === "submitted" || st === "manager_approved";
+  }).length;
+  const segSubmittedCount = segments.filter(s => ["submitted", "manager_approved", "rejected"].includes(segmentApprovals[s.segment_key]?.status)).length;
+  const segPendingReview = segments.filter(s => segmentApprovals[s.segment_key]?.status === "submitted").length;
+
   const matDone = materialityApproval.status === "approved" || materialityApproval.status === "manager_approved";
   const matPendingReview = materialityApproval.status === "submitted";
-  const allResolved = matDone && decided === total;
+  const allResolved = matDone && decided === total && segDecided === segTotal;
+  const grandTotal = total + segTotal + 1;
+  const grandDecided = decided + segDecided + (matDone ? 1 : 0);
 
   return (
     <div className="rar sxa" data-screen-label="HITL · SOX Gate S1">
       <div className="rar-head">
         <div className="rar-head-l">
           <div className="rar-pill"><span className="dot"/>HUMAN REVIEW · SOX GATE S1</div>
-          <div className="rar-title">SOX Scope · Materiality &amp; Significant Accounts</div>
+          <div className="rar-title">SOX Scope · Materiality, Significant Accounts &amp; Segments</div>
           <div className="rar-sub">
-            Approve the materiality basis and each significant account as computed, or adjust with rationale.
-            Adjustments route to your manager for review.
+            Approve the materiality basis, each significant account, and each significant segment/geography as
+            computed, or adjust with rationale. Adjustments route to your manager for review.
           </div>
         </div>
         <div className="rar-head-r">
           <div className="rar-prog">
-            <div className="rar-prog-track"><div className="rar-prog-fill" style={{width: `${((decided + (matDone ? 1 : 0)) / (total + 1)) * 100}%`}}/></div>
+            <div className="rar-prog-track"><div className="rar-prog-fill" style={{width: `${(grandDecided / grandTotal) * 100}%`}}/></div>
             <div className="rar-prog-meta">
-              <span className="mono"><b style={{color: "var(--ink)", fontWeight: 500}}>{decided}</b> / {total} accounts resolved</span>
-              {(submittedCount > 0 || matPendingReview) && <span className="mono muted">· {submittedCount + (matPendingReview ? 1 : 0)} adjusted</span>}
-              {(pendingReview > 0 || matPendingReview) && <span className="mono" style={{color: "var(--amber-ink)"}}>· {pendingReview + (matPendingReview ? 1 : 0)} awaiting manager</span>}
+              <span className="mono"><b style={{color: "var(--ink)", fontWeight: 500}}>{grandDecided}</b> / {grandTotal} resolved</span>
+              {(submittedCount + segSubmittedCount > 0 || matPendingReview) && <span className="mono muted">· {submittedCount + segSubmittedCount + (matPendingReview ? 1 : 0)} adjusted</span>}
+              {(pendingReview + segPendingReview > 0 || matPendingReview) && <span className="mono" style={{color: "var(--amber-ink)"}}>· {pendingReview + segPendingReview + (matPendingReview ? 1 : 0)} awaiting manager</span>}
             </div>
           </div>
         </div>
@@ -429,6 +561,30 @@ function SoxGate1Review({
           ))}
         </div>
       </div>
+
+      {segTotal > 0 && (
+        <>
+          <div className="mono" style={{fontSize: 10, color: "var(--ink-4)", letterSpacing: "0.07em", margin: "16px 0 6px"}}>
+            SIGNIFICANT SEGMENTS &amp; GEOGRAPHIES
+          </div>
+          <div className="rar-table-wrap">
+            <div className="rar-thead">
+              <div className="rar-th">Segment</div>
+              <div className="rar-th" style={{textAlign: "right"}}>Revenue</div>
+              <div className="rar-th" style={{textAlign: "center"}}>Rev %</div>
+              <div className="rar-th">Disposition</div>
+            </div>
+            <div className="rar-tbody">
+              {segments.map(seg => (
+                <SegmentApprovalRow key={seg.segment_key} seg={seg}
+                  approval={segmentApprovals[seg.segment_key] || { status: "pending" }}
+                  onApprove={() => onApproveSegment(seg.segment_key)}
+                  onAdjust={() => onAdjustSegment(seg.segment_key)}/>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="rar-foot">
         <button className="btn btn-sm" onClick={onOverrideGate}><Icon name="alert" size={11}/> Override entire gate</button>
@@ -682,5 +838,5 @@ function SoxGateBanner({ label, state }) {
 Object.assign(window, {
   sxFmtM,
   SoxGate1Review, SoxGate2Review, SoxGateBanner,
-  AdjustMaterialityModal, AdjustAccountModal, AdjustProcessModal,
+  AdjustMaterialityModal, AdjustAccountModal, AdjustProcessModal, AdjustSegmentModal,
 });

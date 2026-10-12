@@ -287,7 +287,7 @@ CREATE TABLE IF NOT EXISTS risk_loop_runs (
     industry         VARCHAR(64),
     appetite_level   VARCHAR(8),
     persona          VARCHAR(64),
-    data_mode        VARCHAR(8),
+    data_mode        VARCHAR(16),
     signal_set       TEXT[],
     forecast_metric  VARCHAR(64),
     forecast_horizon INT,
@@ -925,6 +925,25 @@ CREATE TABLE IF NOT EXISTS sox_process_details (
     UNIQUE (company_id, process_id)
 );
 CREATE INDEX IF NOT EXISTS idx_sox_proc_details_co ON sox_process_details (company_id);
+
+-- User-editable override records for individual SOX segments/geographies —
+-- keyed by segment_key ("{segment_type}:{segment_name}", e.g.
+-- "geography:US"), since scope_segments()'s computed rows have no numeric
+-- id of their own to key against (unlike accounts/processes, which key off
+-- a fixed catalogue id). manual_in_scope lets an auditor override a
+-- segment's computed materiality decision, mirroring sox_account_details —
+-- this is what Gate S1's per-segment approval (sox-hitl.jsx) adjusts.
+CREATE TABLE IF NOT EXISTS sox_segment_details (
+    id               SERIAL PRIMARY KEY,
+    company_id       INT NOT NULL REFERENCES companies(id),
+    segment_key      VARCHAR(160) NOT NULL,
+    notes            TEXT,
+    manual_in_scope  BOOLEAN,
+    updated_by       VARCHAR(128),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, segment_key)
+);
+CREATE INDEX IF NOT EXISTS idx_sox_seg_details_co ON sox_segment_details (company_id);
 
 -- Risks-as-Code artifacts: OSCAL and COSO ERM / ISO 31000 outputs per run
 CREATE TABLE IF NOT EXISTS risks_as_code_artifacts (
@@ -1583,6 +1602,13 @@ CREATE INDEX IF NOT EXISTS idx_exc_inferences_pending
 -- je_testing_sweep.py, which never sets it) simply have no risk_rating,
 -- sorting last rather than being coerced into a fake tier.
 ALTER TABLE exception_model_inferences ADD COLUMN IF NOT EXISTS risk_rating VARCHAR(8);
+-- risk_score: the 0-25 number risk_rating bands, from risk_rating_engine.
+-- score_exception (via exception_tool.score_event) — the same canonical
+-- impact x likelihood methodology risk-engine.js uses for the Enterprise
+-- Risk Loop's own register. Before this column existed, Exception
+-- Management had a letter with no number behind it at all. Nullable, same
+-- "legacy/JE-testing rows carry no score" discipline as risk_rating itself.
+ALTER TABLE exception_model_inferences ADD COLUMN IF NOT EXISTS risk_score NUMERIC(5,2);
 
 CREATE TABLE IF NOT EXISTS exception_auditor_triage (
     id                      BIGSERIAL    PRIMARY KEY,
@@ -1785,6 +1811,14 @@ ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(32) N
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS trigger_incident_id INT REFERENCES model_health_drift_incidents(id);
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_triggered_at TIMESTAMPTZ;
 ALTER TABLE model_health_drift_incidents ADD COLUMN IF NOT EXISTS reoptimize_summary      JSONB;
+-- create_risk_loop_run's config["data_mode"] is 'mcp' (3 chars) for an
+-- organic pipeline run, but reoptimization_tool.py passes 'reoptimize' (10
+-- chars) — always exceeded the original VARCHAR(8), so every drift-
+-- triggered or manual-review re-optimization failed its INSERT
+-- unconditionally ("value too long for type character varying(8)"). Widen
+-- for databases created before this fix, same shape as pac_processes.source
+-- above.
+ALTER TABLE risk_loop_runs ALTER COLUMN data_mode TYPE VARCHAR(16);
 
 -- cem_events.exposure / cem_event_templates.exposure is VARCHAR(64) and
 -- always was — it holds "$12-18M" and "Regulatory" and "Material
@@ -2416,6 +2450,40 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_system_registry_name
 CREATE INDEX IF NOT EXISTS idx_ai_system_registry_assessment_expiry
     ON observability.ai_system_registry (assessment_expires_at) WHERE status = 'CURRENT';
 
+-- Latest behavioural-audit outcome per system (POST /ai-governance/behavioral-audit).
+-- Persisted so "does the attested oversight actually work?" is answerable
+-- later (Disclosure Risk / AI confidence) instead of living only in a
+-- transient telemetry event. INSUFFICIENT_DATA is stored as-is: "could not
+-- test" is a different fact from CLEAR and must not be collapsed into it.
+-- NULL last_audit_at means never audited.
+ALTER TABLE observability.ai_system_registry ADD COLUMN IF NOT EXISTS last_audit_verdict VARCHAR(24);  -- CLEAR | MONITOR | ESCALATE | INSUFFICIENT_DATA
+ALTER TABLE observability.ai_system_registry ADD COLUMN IF NOT EXISTS last_audit_at      TIMESTAMPTZ;
+ALTER TABLE observability.ai_system_registry ADD COLUMN IF NOT EXISTS last_audit_events  INT;
+
+-- Passive shadow-AI detection: candidates surfaced by mcp_governance.py's
+-- _extract_ai_tool_name (an AI-vendor/tool keyword match in some connector
+-- event's payload, e.g. an IAM entitlement literally named
+-- "OPENAI_ENTERPRISE_ACCESS") — a machine-generated proposal, never
+-- auto-promoted into ai_system_registry above. A human resolves it either
+-- by registering the system (PUT /ai-governance, which auto-resolves any
+-- pending candidate whose detected_name matches — see
+-- resolve_ai_shadow_candidate_by_name) or by dismissing it outright.
+CREATE TABLE IF NOT EXISTS observability.ai_shadow_candidates (
+    id                  BIGSERIAL    PRIMARY KEY,
+    detected_name       VARCHAR(256) NOT NULL,   -- e.g. "OpenAI" — the display name, not the raw entitlement
+    source_detail       VARCHAR(256),            -- the raw matched string (entitlement/resource) for audit trail
+    first_detected_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    occurrence_count    INT          NOT NULL DEFAULT 1,
+    last_actor          VARCHAR(128),
+    status              VARCHAR(16)  NOT NULL DEFAULT 'pending',  -- pending | accepted | dismissed
+    linked_system_id    BIGINT REFERENCES observability.ai_system_registry(id),
+    reviewed_by         VARCHAR(128),
+    reviewed_at         TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_shadow_candidates_name
+    ON observability.ai_shadow_candidates (lower(detected_name));
+
 -- DevOps Monitoring: pipeline provenance/attestation metadata (SLSA-adjacent).
 -- Stores what a CI run claims about itself — OIDC identity claims, SLSA
 -- provenance statement, a hash (never the raw values) of its environment
@@ -2734,6 +2802,75 @@ CREATE TABLE IF NOT EXISTS observability.osv_cache (
     queried_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (ecosystem, package_name, version)
 );
+
+-- Report delivery destinations: where a Loop Report or Audit Evidence Pack
+-- can be pushed, instead of only being printed or downloaded by hand. This is
+-- the pull-model inverse of monitored_systems (which authenticates TO us with
+-- an ingest_api_key we issue) and shares poll_connectors' posture instead: WE
+-- authenticate to THEM, so we hold THEIR credential, Fernet-encrypted with
+-- CONNECTOR_ENCRYPTION_KEY (see encrypt_credentials/decrypt_credentials).
+-- Kept separate from poll_connectors because the direction of data flow is the
+-- opposite one — poll_connectors pull evidence in on a timer, these push a
+-- finished artifact out on user action — and nothing about a poll interval,
+-- SoD sync, or identity-graph edge applies here.
+--
+-- artifact_types is an array, not a single column, because the common real
+-- configuration is one GRC/ITSM endpoint that accepts both artifacts; forcing
+-- two near-identical rows for that would make the audit trail read as two
+-- unrelated destinations.
+CREATE TABLE IF NOT EXISTS observability.report_destinations (
+    id               BIGSERIAL    PRIMARY KEY,
+    display_name     VARCHAR(128) NOT NULL,
+    description      TEXT,
+    artifact_types   TEXT[]       NOT NULL DEFAULT '{loop_report,evidence_pack}',
+    url              TEXT         NOT NULL,
+    http_method      VARCHAR(8)   NOT NULL DEFAULT 'POST',
+    auth_type        VARCHAR(24)  NOT NULL DEFAULT 'none',  -- none | bearer | api_key | basic | hmac
+    credentials_enc  BYTEA,                                 -- Fernet-encrypted JSON blob; NULL when auth_type='none'
+    headers          JSONB,                                 -- extra static headers, merged under the auth header
+    payload_format   VARCHAR(24)  NOT NULL DEFAULT 'dendrai', -- dendrai | raw | slack | msteams
+    active           BOOLEAN      NOT NULL DEFAULT TRUE,
+    -- Last-attempt summary, denormalised onto the row so the destination list
+    -- can show health without a per-row join into report_deliveries. The
+    -- deliveries table stays the authoritative history; these three are a cache.
+    last_status      VARCHAR(16),   -- ok | error | never_sent
+    last_sent_at     TIMESTAMPTZ,
+    last_error       TEXT,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by       VARCHAR(128)
+);
+CREATE INDEX IF NOT EXISTS idx_report_destinations_active
+    ON observability.report_destinations (active);
+
+-- Every send attempt, successful or not. This exists because the artifacts
+-- being sent ARE audit evidence: "who sent this run's evidence pack, to which
+-- external system, when, and did it land" is itself an auditable fact, and a
+-- fire-and-forget POST would destroy it. content_sha256 is over the exact
+-- bytes transmitted, so a dispute about what an external system received is
+-- answerable without having stored a second copy of the payload here.
+CREATE TABLE IF NOT EXISTS observability.report_deliveries (
+    id              BIGSERIAL    PRIMARY KEY,
+    destination_id  BIGINT       REFERENCES observability.report_destinations(id) ON DELETE SET NULL,
+    destination_name VARCHAR(128),  -- denormalised: survives destination deletion
+    artifact_type   VARCHAR(32)  NOT NULL,  -- loop_report | evidence_pack | test
+    run_id          BIGINT,
+    ticker          VARCHAR(16),
+    url             TEXT,
+    status          VARCHAR(16)  NOT NULL,  -- ok | error
+    http_status     INTEGER,
+    error           TEXT,
+    response_excerpt TEXT,
+    content_sha256  CHAR(64),
+    content_bytes   INTEGER,
+    duration_ms     INTEGER,
+    sent_by         VARCHAR(128),
+    sent_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_deliveries_dest
+    ON observability.report_deliveries (destination_id, sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_deliveries_run
+    ON observability.report_deliveries (run_id) WHERE run_id IS NOT NULL;
 """
 
 # Formatted at init time with the module-level EMBEDDING_DIM.
@@ -3860,31 +3997,29 @@ def complete_risk_loop_run(run_id: int, on_error=None) -> None:
     _run(_do, on_error=on_error)
 
 
-def list_active_tickers(days: int = 90, limit: int = 15) -> list[str]:
-    """Tickers (public or private — PVT-* tickers included, no special-casing)
-    with a completed run in the last `days` days, oldest-last-run-first. Used
-    by reoptimization_tool.run_reoptimization_sweep to pick which tickers get
-    re-optimized on a drift trigger — drift signals themselves aren't
-    ticker-scoped (see drift_tool.py), so there's no "affected tickers" list
-    to derive; sweeping the actively-tracked set, oldest-stale-first, means
-    repeated triggers cycle through different tickers instead of always
-    hitting the same top N."""
-    def _do():
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT ticker, MAX(run_at) AS last_run
-                    FROM risk_loop_runs
-                    WHERE run_at > NOW() - (%s || ' days')::interval
-                    GROUP BY ticker
-                    ORDER BY last_run ASC
-                    LIMIT %s
-                    """,
-                    (days, limit),
-                )
-                return [r[0] for r in cur.fetchall()]
-    return _run(_do) or []
+def get_target_ticker() -> Optional[str]:
+    """The one company Model Health's re-optimization loop should ever
+    re-evaluate: Mission Control's currently-configured entity (app.jsx's
+    `cfg.ticker`, persisted via PUT /config/pipeline into
+    app_config['pipeline_config'].cfg.ticker — see get_pipeline_config/
+    save_pipeline_config in api_server.py). None if no pipeline config has
+    been saved yet.
+
+    Deliberately NOT "every ticker with a completed risk_loop_runs row" (a
+    prior version of this function, list_active_tickers, swept exactly
+    that) — SIC peer/benchmark tickers (sic_peers; pulled in only as an
+    enrichment signal for the target company's own analysis, via cfg's
+    "peers" signal_set entry) can end up with their own completed runs from
+    peer-comps backtests or one-off demo/seed activity without ever being a
+    tracked subject in their own right. Sweeping that whole set re-optimized
+    (and, before the risk_loop_runs.data_mode VARCHAR(16) widening above,
+    outright failed to persist for) every peer alongside the real target
+    company on every drift trigger — real signal diluted by noise, not a
+    correctness bug alone."""
+    config = get_app_config("pipeline_config")
+    ticker = ((config or {}).get("cfg") or {}).get("ticker")
+    ticker = (ticker or "").strip().upper()
+    return ticker or None
 
 
 def get_latest_run_meta(ticker: str) -> Optional[dict]:
@@ -5026,7 +5161,7 @@ def get_approval_task(task_id: int) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, run_id, gate_type, item_ref, item_label, manager_id, status,
+                    SELECT id, run_id, gate_type, item_ref, item_label, manager_id, manager_name, status,
                            disposition, adjustments, rationale, prepared_by_name, execution_result
                     FROM approval_tasks WHERE id = %s
                     """,
@@ -5038,8 +5173,20 @@ def get_approval_task(task_id: int) -> Optional[dict]:
     return _run(_do)
 
 
-def get_approval_inbox(manager_id: int) -> list:
-    """Items awaiting this user's review, newest-submitted first.
+def get_approval_inbox(manager_id: Optional[int], all_pending: bool = False) -> list:
+    """Items awaiting review, newest-submitted first — every manager's own
+    assigned items by default, or (all_pending=True, admin-only at the API
+    layer — see approvals_endpoints.get_inbox) every submitted item
+    org-wide regardless of who it's assigned to.
+
+    Exists because a 'submitted' item is otherwise a dead end the moment
+    its assigned manager_id belongs to an account nobody actually uses —
+    common in a small team or a single-admin deployment where a preparer's
+    manager was set (even correctly) to a colleague who never logs in to
+    clear their inbox. all_pending gives an admin visibility into every
+    such orphaned item so approvals_endpoints.review_item's admin-override
+    path (any admin may decide ANY submitted item, not just ones they're
+    the assigned manager_id for) has something to act on.
 
     LEFT JOIN (not INNER) — devops_scm_exception tasks have run_id=NULL (no
     risk_loop_runs association; see approval_tasks.run_id's DROP NOT NULL
@@ -5048,17 +5195,19 @@ def get_approval_inbox(manager_id: int) -> list:
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
+                where = "t.status = 'submitted'" if all_pending else "t.manager_id = %s AND t.status = 'submitted'"
+                params = () if all_pending else (manager_id,)
                 cur.execute(
-                    """
+                    f"""
                     SELECT t.id, t.run_id, t.gate_type, t.item_ref, t.item_label, t.disposition,
                            t.adjustments, t.rationale, t.prepared_by_name, t.prepared_at, r.ticker,
-                           t.ai_suggested, t.ai_accepted
+                           t.ai_suggested, t.ai_accepted, t.manager_id, t.manager_name
                     FROM approval_tasks t
                     LEFT JOIN risk_loop_runs r ON r.id = t.run_id
-                    WHERE t.manager_id = %s AND t.status = 'submitted'
+                    WHERE {where}
                     ORDER BY t.prepared_at DESC
                     """,
-                    (manager_id,),
+                    params,
                 )
                 cols = [d[0] for d in cur.description]
                 rows = []
@@ -5086,6 +5235,44 @@ def get_approval_tasks_for_run(run_id: int, gate_type: Optional[str] = None) -> 
                     q += " AND gate_type = %s"
                     params.append(gate_type)
                 cur.execute(q, params)
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    for tf in ("prepared_at", "reviewed_at"):
+                        if d.get(tf) and hasattr(d[tf], "isoformat"):
+                            d[tf] = d[tf].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def get_approval_tasks_by_item_ref(gate_type: str, item_ref: str) -> list:
+    """Every approval_tasks row for one (gate_type, item_ref) pair, newest
+    first — the get_approval_tasks_for_run equivalent for a gate type that
+    isn't tied to a risk_loop_run (run_id IS NULL; same precedent as
+    concept_link/devops_scm_exception — see approval_tasks.run_id's DROP
+    NOT NULL migration above). Used by process_mining_endpoints.py's
+    walkthrough-narrative/history: since each drafted walkthrough is
+    submitted as its own new row rather than upserted (real history worth
+    keeping, not a single mutable "current" narrative — see
+    upsert_approval_task's NULL-run_id behavior note above), this is how a
+    reviewer sees every past submission for one process, not just the
+    latest."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, gate_type, item_ref, item_label, status, disposition, adjustments,
+                           rationale, prepared_by, prepared_by_name, prepared_at, manager_id, manager_name,
+                           reviewed_by, reviewed_by_name, reviewed_at, review_comment, ai_suggested, ai_accepted
+                    FROM approval_tasks
+                    WHERE run_id IS NULL AND gate_type = %s AND item_ref = %s
+                    ORDER BY prepared_at DESC
+                    """,
+                    (gate_type, item_ref),
+                )
                 cols = [d[0] for d in cur.description]
                 rows = []
                 for row in cur.fetchall():
@@ -6768,6 +6955,56 @@ def get_sox_process_details(company_id: int) -> dict:
                         "geography": r[1] or [], "segments": r[2] or [], "notes": r[3],
                         "manual_coverage_level": r[4], "estimated_exposure": float(r[5]) if r[5] is not None else None,
                         "updated_at": r[6].isoformat() if r[6] else None,
+                    }
+                    for r in cur.fetchall()
+                }
+    return _run(_do) or {}
+
+
+def upsert_sox_segment_detail(company_id: int, segment_key: str, detail: dict) -> Optional[int]:
+    """Add or update a user-supplied override for a SOX segment/geography's
+    computed in-scope decision — segment_key is "{segment_type}:{segment_name}"
+    (see sox_scoping_tool.scope_segments), not a numeric row id."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sox_segment_details
+                        (company_id, segment_key, notes, manual_in_scope, updated_by)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (company_id, segment_key) DO UPDATE SET
+                        notes           = EXCLUDED.notes,
+                        manual_in_scope = EXCLUDED.manual_in_scope,
+                        updated_by      = EXCLUDED.updated_by,
+                        updated_at      = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        company_id, segment_key,
+                        detail.get("notes"),
+                        detail.get("manual_in_scope"),
+                        detail.get("updated_by"),
+                    ),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def get_sox_segment_details(company_id: int) -> dict:
+    """All segment detail/override rows for a company, keyed by segment_key."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT segment_key, notes, manual_in_scope, updated_at "
+                    "FROM sox_segment_details WHERE company_id = %s",
+                    (company_id,),
+                )
+                return {
+                    r[0]: {
+                        "notes": r[1], "manual_in_scope": r[2],
+                        "updated_at": r[3].isoformat() if r[3] else None,
                     }
                     for r in cur.fetchall()
                 }
@@ -9981,19 +10218,33 @@ def get_recent_adjudications_for_domain_summary(days: int = 30, limit: int = 500
     against an unbounded response on a `days` window far larger than this
     platform's actual event volume today (a few hundred/month) — raise it
     if that volume genuinely grows.
+
+    The inner ORDER BY is DESC (most recent first) so LIMIT keeps the latest
+    `limit` rows in the window, then the outer query re-sorts them ascending
+    for the caller. Capping an ascending scan directly would instead keep
+    the OLDEST `limit` rows and silently drop everything more recent once a
+    window's true volume exceeds `limit` — harmless at a small `days` value
+    where the whole window fits under the cap, but for a wider window (30d/
+    90d) it means the chart's "detail" (per-domain color/volume breakdown)
+    thins out or vanishes for anything but the earliest few days, even
+    though that's exactly the opposite of what a bounded response should
+    prioritize keeping.
     """
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, adjudicated_at, final_verdict, risk_tier, source_system,
-                           target_tool, server_name, requires_human_review, policy_violations,
-                           case_id, process_step
-                    FROM observability.adjudicated_tool_calls
-                    WHERE adjudicated_at > NOW() - (%s || ' days')::interval
+                    SELECT * FROM (
+                        SELECT id, adjudicated_at, final_verdict, risk_tier, source_system,
+                               target_tool, server_name, requires_human_review, policy_violations,
+                               case_id, process_step
+                        FROM observability.adjudicated_tool_calls
+                        WHERE adjudicated_at > NOW() - (%s || ' days')::interval
+                        ORDER BY adjudicated_at DESC
+                        LIMIT %s
+                    ) recent
                     ORDER BY adjudicated_at
-                    LIMIT %s
                     """,
                     (days, limit),
                 )
@@ -10033,21 +10284,29 @@ def get_recent_unreviewed_system_events(days: int = 30, limit: int = 5000) -> li
 
     id is offset by 10_000_000_000 to guarantee no collision with
     adjudicated_tool_calls' own BIGSERIAL ids when both lists are merged and
-    used as a single id-keyed collection client-side."""
+    used as a single id-keyed collection client-side.
+
+    Same DESC-then-re-sort shape as get_recent_adjudications_for_domain_
+    summary's LIMIT, for the same reason: keep the most recent `limit` rows
+    in the window rather than silently keeping the oldest ones and dropping
+    everything more recent once true volume exceeds `limit`."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT st.id, st.created_at, st.system_type, st.resource, st.server_name,
-                           st.raw_payload
-                    FROM observability.system_telemetry st
-                    LEFT JOIN observability.adjudicated_tool_calls atc
-                        ON atc.system_telemetry_id = st.id
-                    WHERE st.created_at > NOW() - (%s || ' days')::interval
-                      AND atc.id IS NULL
-                    ORDER BY st.created_at
-                    LIMIT %s
+                    SELECT * FROM (
+                        SELECT st.id, st.created_at, st.system_type, st.resource, st.server_name,
+                               st.raw_payload
+                        FROM observability.system_telemetry st
+                        LEFT JOIN observability.adjudicated_tool_calls atc
+                            ON atc.system_telemetry_id = st.id
+                        WHERE st.created_at > NOW() - (%s || ' days')::interval
+                          AND atc.id IS NULL
+                        ORDER BY st.created_at DESC
+                        LIMIT %s
+                    ) recent
+                    ORDER BY created_at
                     """,
                     (days, limit),
                 )
@@ -11615,14 +11874,15 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                             raw_payload: Optional[dict] = None,
                             system_telemetry_id: Optional[int] = None,
                             connector_id: Optional[int] = None, assigned_owner: Optional[str] = None,
-                            risk_rating: Optional[str] = None) -> Optional[int]:
+                            risk_rating: Optional[str] = None,
+                            risk_score: Optional[float] = None) -> Optional[int]:
     """One exception_control_events row + its exception_model_inferences row,
     in a single connection — connector_poller.py's per-event scoring hook
     calls this for every polled event once deploy_env.IS_DEVELOPMENT, and
     je_testing_sweep.py calls it unconditionally for JE findings (leaving
-    connector_id/assigned_owner/risk_rating at their default None — JE
-    findings aren't connector-scored events and are excluded from every
-    Exception Management query anyway, see _EXCLUDE_JE_TESTING_SQL)."""
+    connector_id/assigned_owner/risk_rating/risk_score at their default
+    None — JE findings aren't connector-scored events and are excluded from
+    every Exception Management query anyway, see _EXCLUDE_JE_TESTING_SQL)."""
     raw_payload = _encrypt_raw_payload(raw_payload)
     def _do():
         with _conn() as conn:
@@ -11647,11 +11907,12 @@ def insert_exception_event(control_id: str, system_source: str, process: Optiona
                 cur.execute(
                     """
                     INSERT INTO exception_model_inferences
-                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review, risk_rating)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                        (event_id, model_version, anomaly_score, uncertainty_score, requires_human_review,
+                         risk_rating, risk_score)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (event_id, model_version[:64], anomaly_score, uncertainty_score, requires_human_review,
-                     risk_rating),
+                     risk_rating, risk_score),
                 )
                 return event_id
     return _run(_do)
@@ -11696,7 +11957,8 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0,
                     SELECT ce.id, ce.control_id, ce.system_source, ce.process, ce.event_timestamp,
                            ce.point_in_time_features, ce.actor, ce.action, ce.event_type,
                            ce.raw_payload, ce.system_telemetry_id, ce.connector_id, ce.assigned_owner,
-                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.risk_rating, mi.scored_at
+                           mi.id, mi.model_version, mi.anomaly_score, mi.uncertainty_score, mi.risk_rating,
+                           mi.risk_score, mi.scored_at
                     FROM exception_control_events ce
                     JOIN LATERAL (
                         SELECT * FROM exception_model_inferences m
@@ -11721,7 +11983,8 @@ def list_pending_exceptions(limit: int = 100, min_uncertainty: float = 0.0,
                         "inference_id": r[13], "model_version": r[14],
                         "anomaly_score": float(r[15]), "uncertainty_score": float(r[16]),
                         "risk_rating": r[17],
-                        "scored_at": r[18].isoformat() if r[18] else None,
+                        "risk_score": float(r[18]) if r[18] is not None else None,
+                        "scored_at": r[19].isoformat() if r[19] else None,
                     })
                 return out
     return _run(_do) or []
@@ -11765,6 +12028,7 @@ def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str]
                     f"""
                     SELECT ce.control_id, ce.system_source, COUNT(*) AS occurrence_count,
                            MIN({_RISK_RATING_ORDER_SQL}) AS worst_rating_order,
+                           MAX(mi.risk_score) AS worst_risk_score,
                            MIN(ce.event_timestamp) AS first_seen_at, MAX(ce.event_timestamp) AS last_seen_at,
                            (array_agg(ce.id ORDER BY ce.event_timestamp DESC))[1] AS sample_event_id,
                            (array_agg(ce.assigned_owner ORDER BY ce.event_timestamp DESC))[1] AS owner,
@@ -11791,6 +12055,8 @@ def list_pending_exceptions_grouped(limit: int = 200, risk_rating: Optional[str]
                 for row in cur.fetchall():
                     d = dict(zip(cols, row))
                     d["worst_risk_rating"] = _rating_by_order.get(d.pop("worst_rating_order"))
+                    if d.get("worst_risk_score") is not None:
+                        d["worst_risk_score"] = float(d["worst_risk_score"])
                     for k in ("first_seen_at", "last_seen_at"):
                         if d.get(k):
                             d[k] = d[k].isoformat()
@@ -11829,6 +12095,7 @@ def list_exceptions_report_grouped(date_from: str, date_to: str, limit: int = 20
                     SELECT ce.control_id, ce.system_source, ce.process,
                            COUNT(*) AS occurrence_count,
                            MIN({_RISK_RATING_ORDER_SQL}) AS worst_rating_order,
+                           MAX(mi.risk_score) AS worst_risk_score,
                            MIN(ce.event_timestamp) AS first_seen_at, MAX(ce.event_timestamp) AS last_seen_at,
                            COALESCE(SUM((ce.point_in_time_features->>'amount')::numeric)
                                     FILTER (WHERE ce.point_in_time_features->>'amount' IS NOT NULL), 0) AS literal_amount_total,
@@ -11851,6 +12118,8 @@ def list_exceptions_report_grouped(date_from: str, date_to: str, limit: int = 20
                 for row in cur.fetchall():
                     d = dict(zip(cols, row))
                     d["worst_risk_rating"] = _rating_by_order.get(d.pop("worst_rating_order"))
+                    if d.get("worst_risk_score") is not None:
+                        d["worst_risk_score"] = float(d["worst_risk_score"])
                     for k in ("first_seen_at", "last_seen_at"):
                         if d.get(k):
                             d[k] = d[k].isoformat()
@@ -11991,6 +12260,39 @@ def list_exceptions_report_detail(date_from: str, date_to: str, control_id: Opti
                         "assigned_owner": r[9], "risk_rating": r[10],
                     })
                 return out
+    return _run(_do) or []
+
+
+def list_pending_exception_ids_for_group(control_id: str, system_source: str, scope: str = "exception") -> list:
+    """event_ids of every currently-pending event for one (control_id,
+    system_source) pair — the exact same predicate list_pending_exceptions_grouped
+    counts under that pair's occurrence_count, queried directly rather than
+    filtered out of a globally-limited list_pending_exceptions() page.
+    Feeding bulk_submit_exception_triage from a top-N global fetch instead of
+    this would silently under-resolve (or 404) any group whose events don't
+    happen to land within that page once total pending volume exceeds N —
+    real at this app's scale (see exceptions_endpoints.py's bulk-triage
+    route). No LIMIT: a single (control_id, system_source) pair's pending
+    count is bounded by real event volume for that pair, not by queue depth."""
+    def _do():
+        scope_sql = "ce.event_type = 'JOURNAL_ENTRY'" if scope == "je_testing" else _EXCLUDE_JE_TESTING_SQL
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ce.id
+                    FROM exception_control_events ce
+                    JOIN LATERAL (
+                        SELECT * FROM exception_model_inferences m
+                        WHERE m.event_id = ce.id ORDER BY m.scored_at DESC LIMIT 1
+                    ) mi ON TRUE
+                    LEFT JOIN exception_auditor_triage tri ON tri.event_id = ce.id
+                    WHERE mi.requires_human_review = TRUE AND tri.id IS NULL AND {scope_sql}
+                          AND ce.control_id = %s AND ce.system_source = %s
+                    """,
+                    (control_id, system_source),
+                )
+                return [r[0] for r in cur.fetchall()]
     return _run(_do) or []
 
 
@@ -12934,6 +13236,203 @@ def record_poll_result(connector_id: int, status: str, error: Optional[str] = No
                     (status, error, connector_id),
                 )
     _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Report delivery: push a Loop Report / Evidence Pack to an external webhook
+# or API endpoint (observability.report_destinations / .report_deliveries).
+# Credentials are Fernet-encrypted the same way poll_connectors' are — see
+# encrypt_credentials/decrypt_credentials above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_report_destination(display_name: str, url: str, *, description: Optional[str] = None,
+                               artifact_types: Optional[list] = None, http_method: str = "POST",
+                               auth_type: str = "none", credentials: Optional[dict] = None,
+                               headers: Optional[dict] = None, payload_format: str = "dendrai",
+                               created_by: Optional[str] = None) -> Optional[int]:
+    """Create a report delivery destination. `credentials` is a plain dict —
+    encrypted here before storage, same as create_poll_connector."""
+    enc = encrypt_credentials(credentials) if credentials else None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.report_destinations
+                        (display_name, description, artifact_types, url, http_method,
+                         auth_type, credentials_enc, headers, payload_format, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (display_name, description, artifact_types or ["loop_report", "evidence_pack"],
+                     url, http_method.upper(), auth_type, enc,
+                     Json(headers) if headers else None, payload_format, created_by),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_report_destinations(active_only: bool = False) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, display_name, description, artifact_types, url, http_method,
+                           auth_type, headers, payload_format, active,
+                           last_status, last_sent_at, last_error, created_at, updated_at, created_by
+                    FROM observability.report_destinations
+                    """ + ("WHERE active" if active_only else "") + """
+                    ORDER BY display_name
+                    """
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _run(_do, default=[]) or []
+
+
+def get_report_destination(destination_id: int, include_credentials: bool = False) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                fields = "id, display_name, description, artifact_types, url, http_method, auth_type, headers, payload_format, active, last_status, last_sent_at, last_error, created_at, updated_at, created_by"
+                if include_credentials:
+                    fields += ", credentials_enc"
+                cur.execute(f"SELECT {fields} FROM observability.report_destinations WHERE id = %s", (destination_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cur.description]
+                result = dict(zip(cols, row))
+                if include_credentials:
+                    enc = result.pop("credentials_enc", None)
+                    result["credentials"] = decrypt_credentials(enc) if enc else None
+                return result
+    return _run(_do)
+
+
+def update_report_destination(destination_id: int, *, display_name: Optional[str] = None,
+                               description: Optional[str] = None, artifact_types: Optional[list] = None,
+                               url: Optional[str] = None, http_method: Optional[str] = None,
+                               auth_type: Optional[str] = None, credentials: Optional[dict] = None,
+                               headers: Optional[dict] = None, payload_format: Optional[str] = None,
+                               active: Optional[bool] = None) -> bool:
+    """Partial update — only columns whose kwarg was actually passed are
+    touched. `credentials`, when given, is re-encrypted and replaces the
+    stored blob; pass None (the default, meaning "not given") to leave the
+    existing credential untouched, same convention as update_poll_connector."""
+    sets, vals = [], []
+    for col, val in (
+        ("display_name", display_name), ("description", description),
+        ("artifact_types", artifact_types), ("url", url),
+        ("http_method", http_method.upper() if http_method else None),
+        ("auth_type", auth_type), ("payload_format", payload_format), ("active", active),
+    ):
+        if val is not None:
+            sets.append(f"{col} = %s")
+            vals.append(val)
+    if headers is not None:
+        sets.append("headers = %s")
+        vals.append(Json(headers))
+    if credentials is not None:
+        sets.append("credentials_enc = %s")
+        vals.append(encrypt_credentials(credentials))
+    if not sets:
+        return False
+    sets.append("updated_at = NOW()")
+    vals.append(destination_id)
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE observability.report_destinations SET {', '.join(sets)} WHERE id = %s",
+                    tuple(vals),
+                )
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def delete_report_destination(destination_id: int) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM observability.report_destinations WHERE id = %s", (destination_id,))
+                return cur.rowcount > 0
+    return _run(_do, default=False) or False
+
+
+def record_report_delivery(*, destination_id: Optional[int], destination_name: Optional[str],
+                            artifact_type: str, status: str, url: Optional[str] = None,
+                            run_id: Optional[int] = None, ticker: Optional[str] = None,
+                            http_status: Optional[int] = None, error: Optional[str] = None,
+                            response_excerpt: Optional[str] = None, content_sha256: Optional[str] = None,
+                            content_bytes: Optional[int] = None, duration_ms: Optional[int] = None,
+                            sent_by: Optional[str] = None) -> Optional[int]:
+    """Log one delivery attempt and, on success, refresh the destination's
+    denormalised last_status/last_sent_at/last_error cache. Logged even when
+    destination_id is None (an ad-hoc one-off send never saved as a
+    destination) — destination_name still identifies the target for the
+    audit trail."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.report_deliveries
+                        (destination_id, destination_name, artifact_type, run_id, ticker, url,
+                         status, http_status, error, response_excerpt, content_sha256,
+                         content_bytes, duration_ms, sent_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (destination_id, destination_name, artifact_type, run_id, ticker, url,
+                     status, http_status, error, response_excerpt, content_sha256,
+                     content_bytes, duration_ms, sent_by),
+                )
+                row = cur.fetchone()
+                if destination_id is not None:
+                    cur.execute(
+                        """
+                        UPDATE observability.report_destinations
+                        SET last_status = %s, last_sent_at = NOW(), last_error = %s
+                        WHERE id = %s
+                        """,
+                        (status, error, destination_id),
+                    )
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_report_deliveries(destination_id: Optional[int] = None, run_id: Optional[int] = None,
+                            limit: int = 50) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                where, vals = [], []
+                if destination_id is not None:
+                    where.append("destination_id = %s")
+                    vals.append(destination_id)
+                if run_id is not None:
+                    where.append("run_id = %s")
+                    vals.append(run_id)
+                clause = ("WHERE " + " AND ".join(where)) if where else ""
+                vals.append(limit)
+                cur.execute(
+                    f"""
+                    SELECT id, destination_id, destination_name, artifact_type, run_id, ticker, url,
+                           status, http_status, error, content_sha256, content_bytes, duration_ms,
+                           sent_by, sent_at
+                    FROM observability.report_deliveries
+                    {clause}
+                    ORDER BY sent_at DESC
+                    LIMIT %s
+                    """,
+                    tuple(vals),
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _run(_do, default=[]) or []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -14475,6 +14974,7 @@ def list_ai_systems(high_risk_only: bool = False) -> list:
                     SELECT id, system_name, vendor, business_owner, risk_tier,
                            requires_human_oversight, human_oversight_defined,
                            last_assessment_date, assessment_expires_at, status,
+                           last_audit_verdict, last_audit_at, last_audit_events,
                            created_at, updated_at
                     FROM observability.ai_system_registry
                     WHERE (%s = FALSE OR risk_tier = 'HIGH')
@@ -14486,7 +14986,7 @@ def list_ai_systems(high_risk_only: bool = False) -> list:
                 rows = []
                 for r in cur.fetchall():
                     d = dict(zip(cols, r))
-                    for k in ("last_assessment_date", "assessment_expires_at", "created_at", "updated_at"):
+                    for k in ("last_assessment_date", "assessment_expires_at", "last_audit_at", "created_at", "updated_at"):
                         if d.get(k) is not None:
                             d[k] = d[k].isoformat()
                     rows.append(d)
@@ -14540,6 +15040,27 @@ def upsert_control_cost_profile(control_ref: str, annual_cost_usd, hours_per_mon
     return bool(_run(_do))
 
 
+def record_ai_behavioral_audit(system_name: str, verdict: str, events_examined: int) -> bool:
+    """Persist the latest behavioural-audit outcome on the system's registry
+    row. Separate from upsert_ai_system so re-saving a profile (which never
+    carries audit data) can't wipe the audit evidence. Returns False when the
+    system isn't registered."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.ai_system_registry
+                    SET last_audit_verdict = %s, last_audit_at = NOW(),
+                        last_audit_events = %s, updated_at = NOW()
+                    WHERE system_name = %s
+                    """,
+                    (verdict, events_examined, system_name),
+                )
+                return cur.rowcount > 0
+    return bool(_run(_do))
+
+
 def expire_overdue_ai_assessments() -> list:
     """Flip CURRENT -> EXPIRED for every AI system past its
     assessment_expires_at. Mirrors expire_overdue_vendor_soc2 exactly."""
@@ -14563,6 +15084,120 @@ def expire_overdue_ai_assessments() -> list:
                     rows.append(d)
                 return rows
     return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Passive shadow-AI detection (observability.ai_shadow_candidates)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_ai_shadow_candidate(detected_name: str, source_detail: Optional[str],
+                                actor: Optional[str]) -> Optional[int]:
+    """Record (or bump) a passively-detected AI tool candidate.
+
+    Returns None without writing anything in two cases, both deliberate:
+      - `detected_name` already matches a REGISTERED system (case-
+        insensitive) — nothing to propose, it's already attested.
+      - The existing candidate row for this name has already been
+        `accepted`/`dismissed` — a resolved candidate must never silently
+        flip back to `pending` just because the same entitlement fired
+        again; a human already made a decision about it.
+    Otherwise inserts a fresh `pending` row, or bumps last_seen_at/
+    occurrence_count/last_actor on an existing `pending` one.
+    """
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM observability.ai_system_registry WHERE lower(system_name) = lower(%s)",
+                    (detected_name,),
+                )
+                if cur.fetchone():
+                    return None
+                cur.execute(
+                    """
+                    INSERT INTO observability.ai_shadow_candidates
+                        (detected_name, source_detail, last_actor)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (lower(detected_name)) DO UPDATE SET
+                        last_seen_at     = NOW(),
+                        occurrence_count = observability.ai_shadow_candidates.occurrence_count + 1,
+                        last_actor       = EXCLUDED.last_actor,
+                        source_detail    = EXCLUDED.source_detail
+                    WHERE observability.ai_shadow_candidates.status = 'pending'
+                    RETURNING id
+                    """,
+                    (detected_name, source_detail, actor),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+def list_ai_shadow_candidates(status: str = "pending") -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, detected_name, source_detail, first_detected_at, last_seen_at,
+                           occurrence_count, last_actor, status, linked_system_id,
+                           reviewed_by, reviewed_at
+                    FROM observability.ai_shadow_candidates
+                    WHERE status = %s
+                    ORDER BY last_seen_at DESC
+                    """,
+                    (status,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(zip(cols, r))
+                    for k in ("first_detected_at", "last_seen_at", "reviewed_at"):
+                        if d.get(k) is not None:
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    return _run(_do) or []
+
+
+def dismiss_ai_shadow_candidate(candidate_id: int, reviewed_by: Optional[str]) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.ai_shadow_candidates
+                    SET status = 'dismissed', reviewed_by = %s, reviewed_at = NOW()
+                    WHERE id = %s AND status = 'pending'
+                    RETURNING id
+                    """,
+                    (reviewed_by, candidate_id),
+                )
+                return cur.fetchone() is not None
+    return _run(_do, default=False)
+
+
+def resolve_ai_shadow_candidate_by_name(detected_name: str, linked_system_id: Optional[int],
+                                         reviewed_by: Optional[str]) -> None:
+    """Auto-resolve a pending candidate to 'accepted' when the register is
+    saved with a matching system_name — registering the system IS the
+    acceptance, no separate accept action needed. Best-effort: _run() below
+    already never raises (returns None on any failure), which is exactly
+    the "must never fail because this side-step did" contract the caller
+    (ai_governance_endpoints.py's register save) needs."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE observability.ai_shadow_candidates
+                    SET status = 'accepted', linked_system_id = %s,
+                        reviewed_by = %s, reviewed_at = NOW()
+                    WHERE lower(detected_name) = lower(%s) AND status = 'pending'
+                    """,
+                    (linked_system_id, reviewed_by, detected_name),
+                )
+    _run(_do)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

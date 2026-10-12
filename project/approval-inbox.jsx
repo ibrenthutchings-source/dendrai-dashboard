@@ -16,6 +16,14 @@ const GATE_TYPE_LABEL = {
   // branch-protection weakness — same generic approval_tasks workflow, no
   // schema change (gate_type is free-text, per approvals_endpoints.py).
   devops_scm_exception: "DevOps Monitoring · SCM Exception",
+  // Continuous Monitoring's Walkthrough tab: an AI-drafted narrative,
+  // grounded in real Case Flow/Variants/CaC/PaC evidence, submitted for
+  // the same preparer -> manager sign-off as every other gate here — see
+  // continuous-monitoring-viz.jsx's WalkthroughNarrativeView. run_id is
+  // always NULL (not tied to a risk_loop_run — see approval_tasks.run_id's
+  // DROP NOT NULL migration in db.py), so the ticker/run line below is
+  // skipped for it, same as devops_scm_exception.
+  walkthrough_narrative: "Continuous Monitoring · Walkthrough Narrative",
   // Closed-loop remediation (remediation_endpoints.py): the only gate_types
   // whose approval fires a real external write (github_write_tool.py) —
   // "Approve" here doesn't just record a decision, it opens the GitHub
@@ -178,7 +186,8 @@ function AdjustmentSummary({ adjustments }) {
   );
 }
 
-function InboxItem({ item, onDecide }) {
+function InboxItem({ item, currentUserId, onDecide }) {
+  const isOverride = currentUserId != null && item.manager_id != null && item.manager_id !== currentUserId;
   const [expanded, setExpanded] = React.useState(false);
   const [comment, setComment] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -215,13 +224,20 @@ function InboxItem({ item, onDecide }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 240 }}>
           <div className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 4 }}>
-            {GATE_TYPE_LABEL[item.gate_type] || item.gate_type} · {item.ticker} · Run #{item.run_id}
+            {GATE_TYPE_LABEL[item.gate_type] || item.gate_type}
+            {item.run_id != null && <> · {item.ticker} · Run #{item.run_id}</>}
           </div>
           <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{item.item_label || item.item_ref}</div>
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>
             Submitted by <b style={{ color: "var(--ink-2)" }}>{item.prepared_by_name}</b>
             {item.prepared_at && <> · {new Date(item.prepared_at).toLocaleString()}</>}
           </div>
+          {isOverride && (
+            <div className="mono" style={{ fontSize: 9.5, color: "var(--amber-ink)", marginTop: 4 }}
+              title="You're not the assigned reviewer for this item — deciding it will be recorded as an admin override.">
+              <Icon name="alert" size={9} /> Assigned to {item.manager_name || "another manager"} — admin override
+            </div>
+          )}
         </div>
         <button className="btn btn-sm" onClick={() => setExpanded(e => !e)}>
           {expanded ? "Collapse" : "Review"}
@@ -525,6 +541,15 @@ function _sameContent(a, b) {
 
 function ApprovalInboxScreen() {
   const LiveBadge = window.LiveBadge;
+  const auth = window.useAuth ? window.useAuth() : null;
+  const currentUserId = auth?.user?.id;
+  const isAdmin = auth?.user?.role === "admin";
+  // Admin-only escape hatch for an item whose assigned manager_id belongs
+  // to an account nobody actually uses (a real dead end otherwise — see
+  // approvals_endpoints.review_item's admin-override branch, which is what
+  // actually lets a decision land here): shows every submitted item
+  // org-wide, not just ones routed to the logged-in admin specifically.
+  const [showAllPending, setShowAllPending] = React.useState(false);
   const [items, setItems] = React.useState([]);
   const [telemetryItems, setTelemetryItems] = React.useState([]);
   const [aiReviewItems, setAiReviewItems] = React.useState([]);
@@ -548,8 +573,9 @@ function ApprovalInboxScreen() {
     if (!hasLoadedRef.current) setLoading(true);
     setError(null);
     try {
+      const inboxUrl = showAllPending && isAdmin ? "/approvals/inbox?all_pending=true" : "/approvals/inbox";
       const [gateRes, telRes, aiRes] = await Promise.all([
-        fetch("/approvals/inbox", { credentials: "include" }),
+        fetch(inboxUrl, { credentials: "include" }),
         fetch(`${window.MCP_API_BASE || "/api/mcp"}/observability/telemetry/human-review`, { credentials: "include" }),
         fetch(`${window.MCP_API_BASE || "/api/mcp"}/ai/review-queue`, { credentials: "include" }),
       ]);
@@ -578,7 +604,7 @@ function ApprovalInboxScreen() {
       setLoading(false);
       hasLoadedRef.current = true;
     }
-  }, []);
+  }, [showAllPending, isAdmin]);
 
   window.usePolling(reload, 5000, { paused: isPaused });
 
@@ -643,10 +669,19 @@ function ApprovalInboxScreen() {
             and AI narrative reviews are broadcast to every user — whoever reviews one first resolves it for everyone.
           </div>
         </div>
-        {LiveBadge && (
-          <LiveBadge lastRefresh={lastRefresh} isPaused={isPaused}
-            onToggle={() => setIsPaused(p => !p)} intervalLabel="5s" />
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {isAdmin && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ink-3)", cursor: "pointer" }}
+              title="Every submitted gate item org-wide, not just ones routed to you — the admin escape hatch for an item whose assigned manager never logs in to review it.">
+              <input type="checkbox" checked={showAllPending} onChange={e => setShowAllPending(e.target.checked)} />
+              Show all pending (admin)
+            </label>
+          )}
+          {LiveBadge && (
+            <LiveBadge lastRefresh={lastRefresh} isPaused={isPaused}
+              onToggle={() => setIsPaused(p => !p)} intervalLabel="5s" />
+          )}
+        </div>
       </div>
 
       {error && (
@@ -669,12 +704,12 @@ function ApprovalInboxScreen() {
           )}
           {items.length > 0 && (
             <>
-              {(telemetryItems.length > 0 || aiReviewItems.length > 0) && (
+              {(telemetryItems.length > 0 || aiReviewItems.length > 0 || showAllPending) && (
                 <div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--ink-4)", margin: "16px 0 8px" }}>
-                  GATE ADJUSTMENTS · {items.length} AWAITING YOUR REVIEW
+                  GATE ADJUSTMENTS · {items.length} {showAllPending && isAdmin ? "PENDING ORG-WIDE" : "AWAITING YOUR REVIEW"}
                 </div>
               )}
-              {items.map(item => <InboxItem key={item.id} item={item} onDecide={handleDecide} />)}
+              {items.map(item => <InboxItem key={item.id} item={item} currentUserId={currentUserId} onDecide={handleDecide} />)}
             </>
           )}
           {aiReviewItems.length > 0 && (

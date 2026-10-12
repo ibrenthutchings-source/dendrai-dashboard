@@ -52,6 +52,19 @@ const rssProxyPlugin = {
 };
 
 export default defineConfig({
+  build: {
+    // NOTE on history: the post-login "Cannot access '<var>' before
+    // initialization" crash was chased through two manualChunks attempts
+    // (recharts-only vendor chunk, then all-of-node_modules vendor chunk)
+    // and even a codeSplitting:false single-file build — none of it helped,
+    // because the bug was never in the build config. Decoding a production
+    // sourcemap traced the throw site straight to app.jsx: a `useState`
+    // declaration (`manualAudits`) sat ~100 lines below a `useEffect` whose
+    // dependency array already referenced it — a plain same-render TDZ
+    // ReferenceError, evaluated fresh on every render regardless of how the
+    // output was chunked. Fixed by moving that declaration above the
+    // effect (see app.jsx). Build config is back to defaults.
+  },
   plugins: [
     react({ jsxRuntime: 'classic' }),
     AutoImport({
@@ -183,6 +196,13 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/evidence-pack/, '/evidence-pack'),
       },
+      // report_delivery_endpoints.router declares prefix="/report-delivery" —
+      // same gap, different router.
+      '/api/report-delivery': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/report-delivery/, '/report-delivery'),
+      },
     },
   },
   // vite preview (port 4173) needs its own proxy block — server.proxy is dev-only
@@ -247,6 +267,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/evidence-pack/, '/evidence-pack'),
+      },
+      '/api/report-delivery': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/report-delivery/, '/report-delivery'),
       },
       '/auth/': {
         target: 'http://127.0.0.1:8001',

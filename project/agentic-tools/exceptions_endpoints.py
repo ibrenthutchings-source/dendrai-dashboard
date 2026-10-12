@@ -114,8 +114,7 @@ def submit_bulk_triage(
     if resolution_label in _NOTES_REQUIRED_LABELS and not (notes or "").strip():
         raise HTTPException(status_code=422, detail=f"justification_notes is required for {resolution_label}")
     auditor = current_user.get("display_name") or current_user.get("username") or "unknown"
-    pending = db.list_pending_exceptions(limit=1000)
-    event_ids = [r["event_id"] for r in pending if r["control_id"] == control_id and r["system_source"] == system_source]
+    event_ids = db.list_pending_exception_ids_for_group(control_id, system_source)
     if not event_ids:
         raise HTTPException(status_code=404, detail=f"No pending exceptions for control_id={control_id}, system_source={system_source}")
     resolved = db.bulk_submit_exception_triage(event_ids, auditor, resolution_label, notes)

@@ -16,6 +16,7 @@ import pac_endpoints
 import db
 import drift_tool
 from predictive_analytics_tool import compute_grey_swan
+import risk_rating_engine as rre
 from api_server import _build_digest_payload, _DIGEST_INTERVALS
 
 
@@ -119,31 +120,47 @@ def test_rule_coverage_empty_module():
 
 
 # ── predictive_analytics_tool.compute_grey_swan — RAG boundary + impact tier ──
+#
+# rag_status is now the canonical letter vocabulary (R/A/G, 0-25 scale) —
+# risk_rating_engine.rag_of, ported from risk-engine.js — not this module's
+# former independent 0-10/Red-Amber-Green scheme. See risk_rating_engine.py's
+# module docstring for why that migration happened.
 
-def _risk(name="R1", category="Financial Reporting", score=5.0, velocity=1, rag_status="Amber"):
+def _risk(name="R1", category="Financial Reporting", score=5.0, velocity=1, rag_status="A"):
     return {"name": name, "category": category, "score": score, "velocity": velocity, "rag_status": rag_status}
 
 
 def test_grey_swan_picks_highest_velocity_amber():
     risks = [
-        _risk(name="low-vel", score=5.0, velocity=1, rag_status="Amber"),
-        _risk(name="high-vel", score=4.5, velocity=3, rag_status="Amber"),
-        _risk(name="red", score=8.0, velocity=5, rag_status="Red"),
+        _risk(name="low-vel", score=5.0, velocity=1, rag_status="A"),
+        _risk(name="high-vel", score=4.5, velocity=3, rag_status="A"),
+        _risk(name="red", score=8.0, velocity=5, rag_status="R"),
     ]
     result = compute_grey_swan({"risks": risks})
     assert result["trigger_risk"] == "high-vel"
 
 
-def test_grey_swan_rag_boundaries_exact():
-    # rag_status = Red if score >= 7.0, Amber if >= 5.0, else Green — exact
-    # boundary values are exactly the kind of off-by-one this session's RAG
-    # case-mismatch bug (Feature 4) fell into.
-    risks = [_risk(score=4.0, velocity=1, rag_status="Amber")]
+def test_grey_swan_stage_scores_escalate_by_risk_rating_engines_velocity_bands():
+    # Stage deltas are risk_rating_engine.escalation_step(1/2/3) — the exact
+    # score-vs-baseline deltas velocity_of()/risk-engine.js's velOf() read as
+    # velocity levels 1/2/3 — not an arbitrary tuned constant. Starting from
+    # 12.0 (Amber) crosses into Red by T+90, exercising a real band change.
+    risks = [_risk(score=12.0, velocity=1, rag_status="A")]
     result = compute_grey_swan({"risks": risks})
-    scores_to_rag = {s["score"]: s["rag_status"] for s in result["timeline"]}
-    for score, rag in scores_to_rag.items():
-        expected = "Red" if score >= 7.0 else ("Amber" if score >= 5.0 else "Green")
-        assert rag == expected, f"score {score} expected {expected}, got {rag}"
+    timeline = result["timeline"]
+    expected_deltas = [0.0, rre.escalation_step(1), rre.escalation_step(2), rre.escalation_step(3)]
+    for stage, delta in zip(timeline, expected_deltas):
+        assert stage["score"] == round(12.0 + delta, 2)
+        assert stage["rag_status"] == rre.rag_of(stage["score"])
+    # The escalation actually crosses a band by the final stage.
+    assert timeline[0]["rag_status"] == "A"
+    assert timeline[-1]["rag_status"] == "R"
+
+
+def test_grey_swan_peak_rag_matches_peak_score():
+    risks = [_risk(score=12.0, velocity=1, rag_status="A")]
+    result = compute_grey_swan({"risks": risks})
+    assert result["peak_rag"] == rre.rag_of(result["peak_score"])
 
 
 def test_grey_swan_no_risks_returns_error():
@@ -152,8 +169,8 @@ def test_grey_swan_no_risks_returns_error():
 
 def test_grey_swan_falls_back_to_highest_score_when_no_amber():
     risks = [
-        _risk(name="green", score=2.0, velocity=1, rag_status="Green"),
-        _risk(name="red-highest", score=8.0, velocity=1, rag_status="Red"),
+        _risk(name="green", score=2.0, velocity=1, rag_status="G"),
+        _risk(name="red-highest", score=8.0, velocity=1, rag_status="R"),
     ]
     result = compute_grey_swan({"risks": risks})
     assert result["trigger_risk"] == "red-highest"

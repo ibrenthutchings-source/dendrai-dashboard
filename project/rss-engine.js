@@ -17,16 +17,13 @@
 window.RSS_ENGINE = (function () {
 
   // ── Feed registry ─────────────────────────────────────────
+  // bis and epa were removed 2026-09-19 — both source sites now block
+  // non-browser requests (bis.gov dropped RSS entirely; EPA's feed builder
+  // is behind an AWS WAF bot-challenge, same as the federalregister.gov
+  // fallback below used to hit). Not fixable by URL swap; see
+  // rss_ingest_service.py's FEEDS for the full writeup. This is only the
+  // fallback used when the live /api/mcp/rss/feeds fetch fails.
   const FEEDS = [
-    {
-      id: "bis",
-      name: "BIS Export Controls",
-      url: "https://www.bis.doc.gov/index.php/2013-01-17-21-19-53/2013-01-17-21-20-34.xml",
-      domains: ["Trade Compliance"],
-      risks: ["R-02"],
-      weight: 1.5,
-      icon: "shield",
-    },
     {
       id: "cisa",
       name: "CISA ICS Advisories",
@@ -57,17 +54,6 @@ window.RSS_ENGINE = (function () {
       risks: ["R-09"],
       weight: 0.9,
       icon: "trend",
-    },
-    {
-      id: "epa",
-      name: "EPA Climate Enforcement",
-      url: "https://www.federalregister.gov/agencies/environmental-protection-agency.rss",
-      domains: ["ESG"],
-      risks: ["R-07"],
-      weight: 0.8,
-      icon: "compass",
-      companyGated: true,  // this is an enforcement-action feed covering every regulated company —
-                            // without gating, any company's ESG violation shows up in every other company's feed
     },
   ];
 
@@ -129,6 +115,21 @@ window.RSS_ENGINE = (function () {
       "climate", "esg", "water stress", "sec disclosure", "scope 3",
       "carbon", "emission", "sustainability", "drought", "physical risk",
       "transition risk", "tcfd", "arizona", "fab water",
+      "climate-related disclosure", "climate disclosure", "sb 253", "sb 261",
+      "csrd", "esrs", "issb", "greenwashing", "sustainability reporting",
+      "greenhouse gas", "ghg",
+    ],
+    // Substring matching (see scoreRelevance): multi-word terms only, since
+    // a short token like "ai" would match inside "said"/"maintain".
+    "AI": [
+      "artificial intelligence", "machine learning", "generative ai", "ai washing",
+      "ai act", "high-risk ai", "foundation model", "large language model",
+      "algorithmic", "automated decision", "ai system", "chatbot", "deepfake",
+    ],
+    "Privacy": [
+      "gdpr", "ccpa", "cpra", "hipaa", "privacy", "data protection",
+      "personal data", "data subject", "biometric", "breach notification",
+      "children's data",
     ],
     "Supply": [
       "conflict minerals", "rmap", "dodd-frank", "cobalt", "tantalum",
@@ -154,6 +155,8 @@ window.RSS_ENGINE = (function () {
     'Regulatory':          ['compliance', 'legal', 'regulatory', 'esg'],
     'Environmental':       ['esg', 'environmental', 'climate', 'sustainability'],
     'ESG':                 ['esg', 'environmental', 'climate', 'sustainability'],
+    'AI':                  ['ai ', 'artificial', 'algorithm', 'regulatory', 'compliance', 'technology'],
+    'Privacy':             ['privacy', 'data protection', 'cybersecurity', 'compliance', 'regulatory'],
     'Competitive':         ['competitive', 'market', 'commercial', 'operational'],
     'Operational':         ['operational', 'operations'],
   };

@@ -217,14 +217,22 @@ window.MCP = (function () {
       const mr = byIndex || byCategory;
       if (!mr) return tr;
 
-      // MCP server returns scores on 0-10 scale; scale to 0-25
-      const score = mr.score    != null ? +(mr.score * 2.5).toFixed(1) : tr.score;
-      const base  = mr.base_score != null ? +(mr.base_score * 2.5).toFixed(1) : tr.base;
+      // predictive_analytics_tool.compute_risk_scores now emits the same
+      // canonical 0-25 scale / R-A-G letters risk-engine.js itself uses
+      // (risk_rating_engine.py) — no rescale, no letter conversion needed.
+      // This used to scale mr.score *2.5 while taking mr.rag_status through
+      // _ragChar's OWN 0-10-native word check ("Red"/"Amber"/"Green"), so a
+      // predictive score of 6.0 rendered as "15.0" wearing an Amber badge —
+      // risk-engine.js's own ragOf(15.0) calls that Red. Score and rating on
+      // the same row disagreed. Backend now emits both pre-converted, so
+      // this is a straight passthrough.
+      const score = mr.score      != null ? mr.score      : tr.score;
+      const base  = mr.base_score != null ? mr.base_score : tr.base;
       return {
         ...tr,
         score,
         base,
-        rag:           _ragChar(mr.rag_status) || tr.rag,
+        rag:           mr.rag_status || tr.rag,
         velocity:      mr.velocity  ?? tr.velocity,
         ce:            mr.control_env || tr.ce,
         peerBenchmark: mr.peer_benchmark ?? tr.peerBenchmark,
@@ -335,6 +343,34 @@ window.MCP = (function () {
 
   async function fetchPeerBenchmarks(ticker) {
     return _post('/edgar/peers', { ticker });
+  }
+
+  /**
+   * Dynamically-detected material accounts for this filer — industry-
+   * template (manufacturing/financial_services/saas) plus a materiality-
+   * ratio cutoff, see material_accounts_tool.py — rather than the fixed
+   * revenue/margin/eps/etc. set every ticker gets today.
+   * Returns { ticker, sic, accounts: [{metric, label, ratio, is_material,
+   * parent, source, ...}] }.
+   */
+  async function fetchMaterialAccounts(ticker) {
+    return _get(`/material-accounts/${encodeURIComponent(ticker)}`);
+  }
+
+  /**
+   * Forecast every detected material account, capped server-side (see
+   * material_accounts_tool.py's _MAX_FORECAST_ACCOUNTS) — same generic
+   * ensemble engine every other KPI forecast already uses. Returns
+   * { ticker, accounts, forecasts: { [metric]: { forecast: {history,
+   * forecasts,...}, backtest? } } } — each per-metric bundle is the same
+   * shape as fetchFullAnalysis()'s own `.forecast`, so the same adapter
+   * logic (see app.jsx's revenue/margin handling) applies to any metric.
+   */
+  async function forecastMaterialAccounts(ticker, opts = {}) {
+    return _post(`/material-accounts/${encodeURIComponent(ticker)}/forecast`, {
+      horizon: opts.horizon ?? 4,
+      macro_info: opts.macroInfo ?? null,
+    });
   }
 
   // ── Manual financials — private companies + monthly/quarterly supplements ──
@@ -922,10 +958,19 @@ window.MCP = (function () {
   }
 
   /** Draft a first-draft walkthrough narrative from an interview transcript
-   * + real process-mining stats for the same process. Never persisted —
-   * the caller pastes/edits the returned text into their own workpaper. */
+   * + real Case Flow/Variants/CaC/PaC evidence for the same process. Not
+   * persisted by this call alone — review/edit, then submit it through the
+   * same HITL gate every other Assess Risk item uses (prepareApprovalTask
+   * with gateType: 'walkthrough_narrative'). */
   async function draftWalkthroughNarrative(process, transcript, days = 90) {
     return _post('/process-mining/walkthrough-narrative', { process, transcript, days });
+  }
+
+  /** HITL status of every walkthrough narrative submitted for one process
+   * (gate_type='walkthrough_narrative', run_id always NULL — see
+   * db.get_approval_tasks_by_item_ref), newest first. */
+  async function getWalkthroughNarrativeHistory(process) {
+    return _get(`/process-mining/walkthrough-narrative/history?process=${encodeURIComponent(process)}`);
   }
 
   /** #4c — Head of Operations brief over real process-mining statistics
@@ -1157,6 +1202,8 @@ window.MCP = (function () {
     fetch8kEvents,
     fetchProxyData,
     fetchPeerBenchmarks,
+    fetchMaterialAccounts,
+    forecastMaterialAccounts,
     createPrivateCompany,
     uploadFinancials,
     commitFinancials,
@@ -1218,6 +1265,7 @@ window.MCP = (function () {
     pmRework,
     pmCases,
     draftWalkthroughNarrative,
+    getWalkthroughNarrativeHistory,
     aiOpsEfficiencyBrief,
     // SLA Tracker
     itsmListTickets,

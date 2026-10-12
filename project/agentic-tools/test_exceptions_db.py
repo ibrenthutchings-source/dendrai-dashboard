@@ -91,7 +91,8 @@ def test_insert_exception_event_threads_new_columns(monkeypatch):
 
     event_id = db.insert_exception_event(
         "je-1", "sap_hana", "P2P", "2026-08-01T00:00:00Z", {}, "exception-heuristic-v1",
-        0.9, 0.2, True, connector_id=42, assigned_owner="treasury-team@acme.com", risk_rating="R",
+        0.9, 0.2, True, connector_id=42, assigned_owner="treasury-team@acme.com",
+        risk_rating="R", risk_score=20.0,
     )
 
     assert event_id == 101
@@ -100,12 +101,13 @@ def test_insert_exception_event_threads_new_columns(monkeypatch):
     assert control_params[-2:] == (42, "treasury-team@acme.com")
     inference_sql, inference_params = recorder[1]
     assert "risk_rating" in inference_sql
-    assert inference_params[-1] == "R"
+    assert "risk_score" in inference_sql
+    assert inference_params[-2:] == ("R", 20.0)
 
 
 def test_insert_exception_event_defaults_new_columns_to_none(monkeypatch):
     """je_testing_sweep.py calls this without the new kwargs — must not
-    error, and must persist NULL rather than a fabricated owner/rating."""
+    error, and must persist NULL rather than a fabricated owner/rating/score."""
     recorder = []
     _patch(monkeypatch, recorder, [_Call(fetchone=(1,)), _Call()])
 
@@ -115,7 +117,7 @@ def test_insert_exception_event_defaults_new_columns_to_none(monkeypatch):
     _, control_params = recorder[0]
     assert control_params[-2:] == (None, None)
     _, inference_params = recorder[1]
-    assert inference_params[-1] is None
+    assert inference_params[-2:] == (None, None)
 
 
 # ── list_pending_exceptions ────────────────────────────────────────────────────
@@ -149,13 +151,25 @@ def test_list_pending_exceptions_filters_by_risk_rating_and_owner(monkeypatch):
 
 def test_list_pending_exceptions_decodes_new_columns(monkeypatch):
     row = (1, "ctrl-1", "sap_hana", "P2P", None, {}, "jdoe", "post", "sod_violation",
-           None, 7, 42, "treasury-team@acme.com", 9, "exception-heuristic-v1", 0.9, 0.6, "R", None)
+           None, 7, 42, "treasury-team@acme.com", 9, "exception-heuristic-v1", 0.9, 0.6, "R", 20.0, None)
     recorder = []
     _patch(monkeypatch, recorder, [_Call(fetchall=[row])])
     result = db.list_pending_exceptions()
     assert result[0]["connector_id"] == 42
     assert result[0]["assigned_owner"] == "treasury-team@acme.com"
     assert result[0]["risk_rating"] == "R"
+    assert result[0]["risk_score"] == 20.0
+
+
+def test_list_pending_exceptions_decodes_null_risk_score_as_none(monkeypatch):
+    """Legacy rows scored before risk_score existed — must stay None, not
+    coerce to 0.0 (0.0 would be a real, very-low-but-scored risk)."""
+    row = (1, "ctrl-1", "sap_hana", "P2P", None, {}, "jdoe", "post", "sod_violation",
+           None, 7, 42, "treasury-team@acme.com", 9, "exception-heuristic-v1", 0.9, 0.6, "R", None, None)
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[row])])
+    result = db.list_pending_exceptions()
+    assert result[0]["risk_score"] is None
 
 
 # ── list_pending_exceptions_grouped ──────────────────────────────────────────
@@ -184,6 +198,18 @@ def test_list_pending_exceptions_grouped_decodes_worst_rating_and_map_badge(monk
     assert result[0]["occurrence_count"] == 5
     assert result[0]["has_open_map"] is True
     assert result[0]["map_ref"] == "MAP-CM-000042"
+
+
+def test_list_pending_exceptions_grouped_decodes_worst_risk_score(monkeypatch):
+    cols = ["control_id", "system_source", "occurrence_count", "worst_rating_order", "worst_risk_score",
+            "first_seen_at", "last_seen_at", "sample_event_id", "owner", "has_open_map", "map_ref"]
+    row = ("ctrl-1", "sap_hana", 5, 0, 20.0, None, None, 99, "treasury-team@acme.com", True, "MAP-CM-000042")
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[row], cols=cols)])
+
+    result = db.list_pending_exceptions_grouped()
+
+    assert result[0]["worst_risk_score"] == 20.0
 
 
 def test_list_pending_exceptions_grouped_filters_by_risk_rating_and_owner(monkeypatch):
@@ -380,6 +406,16 @@ def test_report_grouped_decodes_worst_rating_and_literal_amount(monkeypatch):
     assert result[0]["worst_risk_rating"] == "R"
     assert result[0]["literal_amount_total"] == 1500.5
     assert result[0]["unpriced_count"] == 1
+
+
+def test_report_grouped_decodes_worst_risk_score(monkeypatch):
+    row = ("ITGC-AC-01", "sap_hana", "itgc", 3, 0, 20.0, None, None, 1500.5, 1)
+    cols = ["control_id", "system_source", "process", "occurrence_count", "worst_rating_order",
+            "worst_risk_score", "first_seen_at", "last_seen_at", "literal_amount_total", "unpriced_count"]
+    recorder = []
+    _patch(monkeypatch, recorder, [_Call(fetchall=[row], cols=cols)])
+    result = db.list_exceptions_report_grouped("2026-08-01", "2026-08-31")
+    assert result[0]["worst_risk_score"] == 20.0
 
 
 def test_report_grouped_worst_rating_unrated_when_no_inference(monkeypatch):

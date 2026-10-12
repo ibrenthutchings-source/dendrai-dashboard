@@ -610,7 +610,7 @@ function ReviewResultsPanel({ result }) {
         forecasting models were backtested.
       </div>
       {!result.results?.length ? (
-        <Empty>No actively-tracked tickers to review — a ticker needs at least one completed run in the last 90 days.</Empty>
+        <Empty>No target company configured yet — set an entity in Mission Control, run its first analysis, then review again.</Empty>
       ) : (
         result.results.map(r => <ReviewResultRow key={r.ticker} result={r} />)
       )}
@@ -618,13 +618,14 @@ function ReviewResultsPanel({ result }) {
   );
 }
 
-// User-initiated version of the sweep model_health_drift_watch runs
-// automatically on drift (POST /model-health/run-review) — re-derives FRED
-// correlations and re-optimizes ensemble weights (walk-forward backtest
-// MAPE/RMSE/R2) for every actively-tracked ticker, without waiting for a
-// drift flag or the 6h background check. Same tri-state idle/running/done
-// shape as DataConfigModal's testKey(), since a spinner alone doesn't show
-// whether the run actually helped.
+// User-initiated version of the re-optimization model_health_drift_watch
+// runs automatically on drift (POST /model-health/run-review) — re-derives
+// FRED correlations and re-optimizes ensemble weights (walk-forward
+// backtest MAPE/RMSE/R2) for the target company (Mission Control's
+// currently-configured entity), without waiting for a drift flag or the 6h
+// background check. Same tri-state idle/running/done shape as
+// DataConfigModal's testKey(), since a spinner alone doesn't show whether
+// the run actually helped.
 function RunReviewButton({ onDone }) {
   const [state, setState] = React.useState({ status: "idle", summary: null, error: null });
 
@@ -652,7 +653,7 @@ function RunReviewButton({ onDone }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
       <button className="btn btn-sm" disabled={state.status === "running"} onClick={run}
-        title="Re-run the forecast/backtest layer (FRED correlations + ensemble weights) for every actively-tracked ticker now, without waiting for drift or the background watch.">
+        title="Re-run the forecast/backtest layer (FRED correlations + ensemble weights) for the target company now, without waiting for drift or the background watch.">
         {state.status === "running" ? <span className="spin" /> : "▶"} Run review
       </button>
       {state.status === "done" && state.summary && (

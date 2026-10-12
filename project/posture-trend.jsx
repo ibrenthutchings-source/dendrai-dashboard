@@ -76,6 +76,14 @@ function PostureTrendPanel({ ticker }) {
     delta: i > 0 && r.avg_score != null && runs[i - 1].avg_score != null
       ? r.avg_score - runs[i - 1].avg_score : null,
   }));
+  // avg_score is NULL for a completed run with zero rows in risk_scores yet
+  // (get_posture_trend LEFT JOINs against risk_scores) — a real, valid run,
+  // just nothing to plot. Recharts' Line/Area default to connectNulls=false,
+  // so leaving these in `data` breaks the trend into disconnected segments
+  // and strands the next real point as a floating, unconnected dot. The
+  // detail table below still shows every run (including these, as "—");
+  // the chart only needs the ones that actually have a score to trend.
+  const chartRows = rows.filter(r => r.avg_score != null);
 
   function toggleSort(key) {
     setSort(prev => prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" });
@@ -154,11 +162,16 @@ function PostureTrendPanel({ ticker }) {
           <div className="rep-section">
             <h3>Average Risk Score <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)", fontWeight: 400 }}>· {rows.length} run{rows.length === 1 ? "" : "s"}</span></h3>
             <ResponsiveContainer width="100%" height={220}>
-              <ComposedChart data={rows} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+              <ComposedChart data={chartRows} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" strokeOpacity={0.6} vertical={false} />
                 <XAxis dataKey="dateLabel" tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
                   tickLine={false} axisLine={{ stroke: 'var(--line)' }} />
-                <YAxis domain={[0, 10]} tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
+                {/* Risk scores here are on a 0–25 scale (see risk-engine.js's
+                    RAG banding: R >= 17.5, A >= 12.5, G below) — a hardcoded
+                    [0, 10] domain used to clip/distort any run averaging
+                    above 10. `dataMax` tracks whatever scale is actually in
+                    use instead of assuming one. */}
+                <YAxis domain={[0, 'dataMax']} tick={{ fontSize: 9, fill: 'var(--ink-3)', fontFamily: 'Geist Mono, monospace' }}
                   tickLine={false} axisLine={false} width={28} />
                 <Tooltip content={<ChartTooltip/>} />
                 <Area type="monotone" dataKey="avg_score" stroke="none" fill="var(--acc)" fillOpacity={0.08} />

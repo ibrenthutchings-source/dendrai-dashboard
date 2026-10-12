@@ -69,6 +69,7 @@ import argparse
 import asyncio
 import concurrent.futures
 import contextvars
+import functools
 import logging
 import os
 import threading
@@ -107,6 +108,7 @@ from edgar_tool import (
     annotate_8k,
     has_material_item,
     classify_8k_event,
+    XBRL_METRICS,
 )
 from rss_tool import run_rss_analysis
 from rss_ingest_service import (
@@ -136,6 +138,7 @@ import pac_policy_docs
 import approvals_endpoints
 import remediation_endpoints
 import evidence_pack_endpoints
+import report_delivery_endpoints
 import evidence_endpoints
 import itsm_endpoints
 import map_endpoints
@@ -188,6 +191,7 @@ from cac_mcp_server import mcp as _cac_mcp
 from infrastructure_monitoring_mcp_server import mcp as _infrastructure_monitoring_mcp
 from fair_mcp_server import mcp as _fair_mcp
 from process_mining_mcp_server import mcp as _process_mining_mcp
+from risk_rating_mcp_server import mcp as _risk_rating_mcp
 
 try:
     from oracle_fusion_mcp_server import mcp as _oracle_mcp
@@ -223,6 +227,63 @@ import auth_endpoints
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+try:
+    import resource as _resource  # POSIX only — absent on Windows (local dev)
+except ImportError:
+    _resource = None
+
+
+def _rss_mb() -> Optional[float]:
+    """This process's peak resident set size in MB so far, or None on
+    platforms without the `resource` module (Windows). Used to instrument
+    memory-heavy endpoints with log lines that are flushed immediately —
+    unlike a return value, they survive the process being OOM-killed before
+    the request completes (see the 2026-09 /edgar/proxy OOM incidents)."""
+    if _resource is None:
+        return None
+    return _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss / 1024.0  # Linux ru_maxrss is in KB
+
+
+# ── Heavy-endpoint concurrency limiter ────────────────────────────────────────
+# A single Risk Loop run fires ~8 analytics/EDGAR endpoints at once, several of
+# which hold multi-MB filing HTML or large dataframes in memory for the length
+# of the call. Run all at the same time in the threadpool they spike memory past
+# the container limit and the worker is OOM-killed — no traceback, the whole
+# process dies and every request 502s until it restarts. Cap how many run
+# concurrently; queue the rest briefly, then shed load with 503 rather than take
+# the process down. Tunable via env; 0 disables the limiter entirely.
+_HEAVY_LIMIT = int(os.environ.get("HEAVY_ENDPOINT_CONCURRENCY", "3"))
+_HEAVY_QUEUE_TIMEOUT = float(os.environ.get("HEAVY_ENDPOINT_QUEUE_TIMEOUT", "90"))
+_heavy_semaphore = threading.BoundedSemaphore(_HEAVY_LIMIT) if _HEAVY_LIMIT > 0 else None
+
+
+def _heavy_endpoint(fn):
+    """Serialise memory-heavy sync endpoints through a bounded semaphore.
+
+    FastAPI resolves the wrapped function's signature via ``__wrapped__`` (set
+    by functools.wraps), so request-body parsing and dependency injection are
+    unaffected. Apply it *below* ``@app.post(...)`` in source order.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if _heavy_semaphore is None:
+            return fn(*args, **kwargs)
+        if not _heavy_semaphore.acquire(timeout=_HEAVY_QUEUE_TIMEOUT):
+            logger.warning(
+                "heavy endpoint %s shed load — all %d slots busy for %ss",
+                fn.__name__, _HEAVY_LIMIT, _HEAVY_QUEUE_TIMEOUT,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Server busy running analytics — too many heavy requests "
+                       "in flight. Retry in a few seconds.",
+            )
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _heavy_semaphore.release()
+    return wrapper
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -989,6 +1050,10 @@ app.include_router(remediation_endpoints.router)
 # Audit Evidence Pack: one-shot assembly of everything defensible about a run.
 app.include_router(evidence_pack_endpoints.router)
 
+# Report Delivery: push a Loop Report / Evidence Pack to an external
+# webhook or API destination on user action from the Assess Risk screen.
+app.include_router(report_delivery_endpoints.router)
+
 # DevOps Monitoring: SARIF/SAST evidence ingestion (tamper-evident, hash-chained).
 app.include_router(evidence_endpoints.router)
 logger.info("Evidence ingestion router registered at /evidence/webhook")
@@ -1079,6 +1144,7 @@ _mount_mcp("/mcp/oracle",           "Oracle Fusion ERP data",                   
 _mount_mcp("/mcp/infrastructure-monitoring", "Infrastructure Monitoring: IaaS/OS/DB continuous audit", _infrastructure_monitoring_mcp)
 _mount_mcp("/mcp/fair",             "Risk Quantification: FAIR Monte Carlo loss modeling",      _fair_mcp)
 _mount_mcp("/mcp/process-mining",   "Process Mining: variant/conformance/cycle-time analysis",  _process_mining_mcp)
+_mount_mcp("/mcp/risk-rating",      "Canonical RAG risk scoring (0-25 scale, R/A/G) — pass any risk through the same methodology as the register", _risk_rating_mcp)
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
@@ -1425,6 +1491,28 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
                     segments = db.get_sox_segments(company_id, fiscal_year)
                     mat_pct  = sox_cfg["materiality_pct"]  if sox_cfg else 5.0
                     perf_pct = sox_cfg["performance_mat_pct"] if sox_cfg else 75.0
+
+                    # Real detected balances (material_accounts_tool.py) to
+                    # prefer over sox_scoping_tool's heuristic estimates —
+                    # a single extra XBRL fetch for the SUBJECT only (not a
+                    # peer fan-out, so none of the OOM-bounding concerns
+                    # that apply to peer enrichment apply here). Best-effort:
+                    # a failure here just means scoping falls back to the
+                    # heuristic, same as before this feature existed.
+                    real_balances = None
+                    try:
+                        import material_accounts_tool
+                        subj_cik = result.get("cik", "")
+                        if subj_cik:
+                            subj_xbrl = fetch_xbrl_facts(subj_cik) or {}
+                            uploaded_xbrl = db.get_manual_financials(
+                                company_id, granularity=["annual", "quarterly"]) or {}
+                            mat_accounts = material_accounts_tool.detect_material_accounts(
+                                subj_xbrl, result.get("sic", ""), uploaded_xbrl)
+                            real_balances = material_accounts_tool.real_balances_for_sox(mat_accounts)
+                    except Exception as _mat_err:
+                        logger.warning("Material-account balance detection failed for SOX scoping (non-fatal, falling back to heuristic estimates): %s", _mat_err)
+
                     sox_result = run_sox_scoping(
                         run_id=run_id,
                         forecast=forecast_data,
@@ -1436,6 +1524,7 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
                         materiality_pct=mat_pct,
                         performance_mat_pct=perf_pct,
                         trigger_reason="auto_rescope_on_new_run",
+                        real_balances=real_balances,
                     )
                     db.save_sox_scoping_result(run_id, company_id, sox_result)
                     prev_run_id = prev_scope.get("run_id") if prev_scope else None
@@ -1541,27 +1630,11 @@ def get_company_cik(ticker: str):
 # duplicated inline. The frontend fetches on startup and falls back to its
 # hardcoded values if the backend is unavailable.
 
-_SIC_RANGES = [
-    (lambda n: n == 3674 or (3672 <= n <= 3679) or n in (3559, 3577), "Semiconductors"),
-    (lambda n: n in (3711, 3714, 3716, 3519),                          "Automotive OEM"),
-    (lambda n: 7370 <= n <= 7379,                                       "Software & Cloud"),
-    (lambda n: 6020 <= n <= 6199,                                       "Financial Services"),
-    (lambda n: (2830 <= n <= 2836) or (8010 <= n <= 8099),             "Healthcare & Pharma"),
-    (lambda n: 5200 <= n <= 5999,                                       "Retail & Consumer"),
-    (lambda n: (1300 <= n <= 1382) or n == 2911,                       "Energy & Resources"),
-    (lambda n: 4911 <= n <= 4939,                                       "Utilities"),
-    (lambda n: 2000 <= n <= 3999,                                       "Industrial & Manufacturing"),
-]
-
-def _classify_sic(sic: str) -> str:
-    try:
-        n = int(sic)
-    except (ValueError, TypeError):
-        return "Generic"
-    for pred, industry in _SIC_RANGES:
-        if pred(n):
-            return industry
-    return "Generic"
+# Moved to sic_industry.py (single source of truth — also used by
+# material_accounts_tool.py, which can't import this FastAPI app module
+# without a circular import). Kept as a thin alias here so every existing
+# call site below (_classify_sic(sic)) is unaffected.
+from sic_industry import classify_sic as _classify_sic  # noqa: E402
 
 
 @app.get("/rss/feeds")
@@ -1677,6 +1750,7 @@ def industry_from_sic(sic: str = Query(..., description="SIC code as string (e.g
 # ── Tool endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/predictive/full-analysis")
+@_heavy_endpoint
 def predictive_full_analysis(req: FullAnalysisRequest):
     """
     Run all 10 Dendrai Intelligenza predictive analytics models and persist
@@ -1727,6 +1801,7 @@ def sync_risk_scores(run_id: int, req: SyncRiskScoresRequest):
 
 
 @app.post("/edgar/financials")
+@_heavy_endpoint
 def edgar_financials(req: TickerRequest):
     """Return XBRL financial time-series and save to normalized DB tables."""
     try:
@@ -1857,6 +1932,7 @@ def commit_financials(req: CommitFinancialsRequest):
 
 
 @app.post("/edgar/risk-factors")
+@_heavy_endpoint
 def edgar_risk_factors_endpoint(req: RiskFactorsRequest):
     """Return Item 1A Risk Factors and save to edgar_risk_factor_filings."""
     try:
@@ -1928,6 +2004,7 @@ def rss_news(req: RssRequest):
 
 
 @app.post("/rss/ingest")
+@_heavy_endpoint
 def rss_ingest(req: RssIngestRequest):
     """
     Fetch and grade the compliance/regulatory RSS feeds registered in the dashboard
@@ -1990,6 +2067,7 @@ _8K_CLASSIFY_MAX_PER_CALL = 10  # bounds per-request latency/LLM cost — see co
 
 
 @app.post("/edgar/8k-events")
+@_heavy_endpoint
 def edgar_8k_events(req: TickerRequest):
     """
     Return annotated 8-K events and save to edgar_8k_events. Filings whose
@@ -2181,17 +2259,66 @@ def _build_ratio_history(xbrl: dict, max_years: int = 6) -> list:
 # 10-K data, not intraday) purely to bound memory growth over a long-running
 # process, not because the data goes stale quickly.
 _PEER_ENRICH_CACHE_TTL = 6 * 3600
-_PEER_ENRICH_FIELDS = ("gross_margin", "rd_intensity", "revenue_growth", "history", "m_score", "z_score")
+# "_flat_metrics" is cached (subject-independent — a peer's own latest XBRL
+# values don't depend on who's comparing against it) but deliberately not
+# exposed on the peer dict returned to callers; "material_accounts" is
+# NEVER cached here — see _attach_peer_material_accounts, it's derived
+# fresh per call from the subject's own industry template, which differs
+# request to request even for the same cached peer.
+_PEER_ENRICH_FIELDS = ("gross_margin", "rd_intensity", "revenue_growth", "history", "m_score", "z_score", "_flat_metrics")
 _peer_enrich_cache: Dict[str, tuple] = {}  # cik -> (expires_at, fields_dict)
+
+# Peer enrichment concurrency — bounds peak memory, not just wall-clock time.
+# Confirmed live (2026-08-30 development OOM incident): fetch_sic_peers now
+# ranks currently-active companies first (the peer-benchmarking data fix),
+# which means a "peer" is now typically a real large-cap filer instead of
+# the decades-defunct shell companies the old ranking mostly returned. A
+# large-cap's companyfacts.json measured 3.5-4.5MB raw over the wire and
+# ~4.4x that (15-20MB) once parsed into Python objects. At max_workers=8,
+# a single /edgar/peers call could hold 8 of these in memory at once — and
+# the SAME page load can trigger this twice (the live POST /edgar/peers call
+# and GET /edgar/peers/{ticker}'s self-heal re-enrichment), so a genuinely
+# unbounded amount of large-cap XBRL data could be in flight simultaneously
+# for one user action. This is what actually OOM-killed the backend that
+# night, not anything in the same deploy's unrelated risk-scoring work
+# (confirmed by measurement, not guessed at — see the incident notes).
+# 3 concurrent fetches keeps enrichment reasonably fast without the
+# unbounded blow-up; it does not fix the per-document size, which is
+# capped by what SEC's bulk companyfacts endpoint returns.
+_PEER_ENRICH_MAX_WORKERS = 3
 _peer_enrich_lock = threading.Lock()
 
 
-def _enrich_peer_financials(peer: dict) -> dict:
+def _attach_peer_material_accounts(peer: dict, flat_metrics: dict, subject_sic: str) -> None:
+    """Material-account ratios for this peer, scored against the SUBJECT
+    company's industry template (not the peer's own) — so every peer in a
+    comparison is measured on the same line items rather than each peer
+    picking its own set. Never cached (see _PEER_ENRICH_FIELDS) — the same
+    peer compared against a different subject's industry gets a different
+    template, and flat_metrics (cheap: a handful of floats) makes
+    recomputing this free even on a cache hit for the base fields.
+    """
+    if not flat_metrics or not subject_sic:
+        return
+    import material_accounts_tool
+    synthetic_xbrl = {m: {"label": m, "data_points": [{"val": v}]} for m, v in flat_metrics.items()}
+    try:
+        peer["material_accounts"] = [
+            a for a in material_accounts_tool.detect_material_accounts(synthetic_xbrl, subject_sic)
+            if a["is_material"]
+        ]
+    except Exception:
+        pass
+
+
+def _enrich_peer_financials(peer: dict, subject_sic: str = "") -> dict:
     """Fetch XBRL facts for a peer and attach gross_margin, rd_intensity,
     revenue_growth, a simplified Beneish M-score and Altman Z''-Score for
-    cross-peer benchmarking, and a multi-year `history` series for the
-    peer-benchmarking time series chart. Cached by CIK — see
-    _peer_enrich_cache above."""
+    cross-peer benchmarking, a multi-year `history` series for the
+    peer-benchmarking time series chart, and (when `subject_sic` is given)
+    material-account ratios scored against the SUBJECT's industry template.
+    Base fields are cached by CIK — see _peer_enrich_cache above; material
+    accounts are always recomputed per call (see _attach_peer_material_accounts)."""
     cik = str(peer.get("cik") or peer.get("cik_plain") or "").zfill(10)
     if not cik or cik == "0000000000":
         return peer
@@ -2201,6 +2328,7 @@ def _enrich_peer_financials(peer: dict) -> dict:
         hit = _peer_enrich_cache.get(cik)
     if hit and hit[0] > now:
         peer.update(hit[1])
+        _attach_peer_material_accounts(peer, peer.pop("_flat_metrics", None) or {}, subject_sic)
         return peer
 
     try:
@@ -2234,6 +2362,26 @@ def _enrich_peer_financials(peer: dict) -> dict:
         peer["rd_intensity"]   = (rd  / rev) if rev and rd  is not None else None
         peer["revenue_growth"] = ((rev - rev_prev) / rev_prev) if rev and rev_prev else None
         peer["history"]        = _build_ratio_history(xbrl)
+
+        # A cheap, small snapshot of every whitelisted XBRL metric's latest
+        # value (a few dozen floats) — kept and cached below (unlike the
+        # full parsed document) so a LATER request for this same peer under
+        # a DIFFERENT subject's industry template can still detect material
+        # accounts for it without re-fetching/re-parsing its XBRL.
+        flat_metrics = {}
+        for metric in XBRL_METRICS:
+            v, _ = latest_two_annual(metric)
+            if v is not None:
+                flat_metrics[metric] = v
+        peer["_flat_metrics"] = flat_metrics
+
+        # Done with the full parsed document (15-20MB in memory for a
+        # large-cap peer, see _PEER_ENRICH_MAX_WORKERS above) — only the
+        # small extracted ratios above (and flat_metrics, just extracted)
+        # are kept. Drop the reference now rather than waiting for the
+        # function to return, since this thread may sit in the pool a while
+        # longer processing the next peer.
+        del xbrl
 
         # Simplified Beneish M-score (same 3-of-8-variable formula as risk-engine.js's
         # computeRatios(), with GMI/AQI/DEPI/SGAI/LVGI held at their neutral defaults)
@@ -2271,6 +2419,9 @@ def _enrich_peer_financials(peer: dict) -> dict:
     if fields:
         with _peer_enrich_lock:
             _peer_enrich_cache[cik] = (now + _PEER_ENRICH_CACHE_TTL, fields)
+
+    # _flat_metrics is cache/internal-only — never returned to a caller.
+    _attach_peer_material_accounts(peer, peer.pop("_flat_metrics", None) or {}, subject_sic)
     return peer
 
 
@@ -2286,6 +2437,7 @@ def _peer_has_data(peer: dict) -> bool:
 
 
 @app.post("/edgar/peers")
+@_heavy_endpoint
 def edgar_peers(req: TickerRequest):
     """
     Peer intelligence. Primary source is the competitors the company names in its
@@ -2314,8 +2466,8 @@ def edgar_peers(req: TickerRequest):
             peer_source = "SIC peers"
             peers = fetch_sic_peers(sic, max_peers=15)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            peers = list(pool.map(_enrich_peer_financials, peers))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
+            peers = list(pool.map(lambda p: _enrich_peer_financials(p, sic), peers))
 
         # 3) Remove all companies that have no data.
         peers = [p for p in peers if _peer_has_data(p)]
@@ -2376,8 +2528,8 @@ def edgar_peers_saved(ticker: str):
     if not saved:
         raise HTTPException(status_code=404, detail="No saved peer data for this ticker")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        peers = list(pool.map(_enrich_peer_financials, saved["peers"]))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
+        peers = list(pool.map(lambda p: _enrich_peer_financials(p, saved.get("sic") or ""), saved["peers"]))
     peers = [p for p in peers if _peer_has_data(p)]
 
     # Self-heal a starved peer set. fetch_sic_peers() used to return an
@@ -2394,8 +2546,8 @@ def edgar_peers_saved(ticker: str):
     # a healthy set (the new fetch_sic_peers ranking keeps producing one).
     if len(peers) < _MIN_USEFUL_SIC_PEERS and saved.get("sic"):
         fresh_identities = fetch_sic_peers(saved["sic"], max_peers=15)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            fresh_peers = list(pool.map(_enrich_peer_financials, fresh_identities))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_PEER_ENRICH_MAX_WORKERS) as pool:
+            fresh_peers = list(pool.map(lambda p: _enrich_peer_financials(p, saved["sic"]), fresh_identities))
         fresh_peers = [p for p in fresh_peers if _peer_has_data(p)]
         if len(fresh_peers) > len(peers):
             peers = fresh_peers
@@ -2418,12 +2570,102 @@ def edgar_peers_saved(ticker: str):
     return saved
 
 
+def _material_accounts_context(ticker: str):
+    """Shared setup for both /material-accounts endpoints below: resolve the
+    filer, pull its filed XBRL, and layer in any Mission Control uploads
+    (which win over the filed value for the same metric — see
+    material_accounts_tool.detect_material_accounts's uploaded_xbrl param).
+    Returns (meta, sic, xbrl, accounts, company_id) — company_id is None
+    when the DB isn't configured, which forecast_material_accounts already
+    treats as "no manually-uploaded monthly detail available", not an error.
+    """
+    import material_accounts_tool
+
+    meta, sub = get_company_info(ticker)
+    sic = meta.get("sic", "")
+    xbrl = fetch_xbrl_facts(meta["cik"]) or {}
+
+    uploaded_xbrl: dict = {}
+    company_id = None
+    if db.is_available():
+        company_id = db.upsert_company({
+            "ticker": ticker, "company_name": meta["company_name"],
+            "cik": meta.get("cik", ""), "sic": sic,
+            "sic_description": meta.get("sic_description", ""),
+        })
+        if company_id:
+            uploaded_xbrl = db.get_manual_financials(company_id, granularity=["annual", "quarterly"]) or {}
+
+    accounts = material_accounts_tool.detect_material_accounts(xbrl, sic, uploaded_xbrl)
+    return meta, sic, xbrl, accounts, company_id
+
+
+@app.get("/material-accounts/{ticker}")
+def material_accounts(ticker: str):
+    """
+    Dynamically detect which financial-statement accounts are material for
+    this filer — industry-template (manufacturing/financial_services/saas)
+    plus a materiality-ratio cutoff, see material_accounts_tool.py — rather
+    than the fixed revenue/margin/eps/etc. set every ticker gets today.
+    """
+    try:
+        meta, sic, _xbrl, accounts, _company_id = _material_accounts_context(ticker)
+        return {
+            "ticker": ticker.upper(), "company_name": meta["company_name"],
+            "sic": sic, "sic_description": meta.get("sic_description", ""),
+            "accounts": accounts,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class MaterialAccountsForecastRequest(BaseModel):
+    horizon: int = 4
+    macro_info: Optional[dict] = None
+
+
+@app.post("/material-accounts/{ticker}/forecast")
+@_heavy_endpoint
+def material_accounts_forecast(ticker: str, req: MaterialAccountsForecastRequest = MaterialAccountsForecastRequest()):
+    """
+    Forecast every detected material account, capped at
+    material_accounts_tool._MAX_FORECAST_ACCOUNTS — the same lesson as the
+    2026-08-30 peer-enrichment OOM incident applied to a new fan-out point.
+    Uses the same generic ensemble forecasting engine
+    (predictive_analytics_tool.run_forecast_backtest) every other KPI chart
+    already relies on; no new modeling code.
+    """
+    import material_accounts_tool
+    try:
+        _meta, _sic, xbrl, accounts, company_id = _material_accounts_context(ticker)
+        forecasts = material_accounts_tool.forecast_material_accounts(
+            xbrl, req.macro_info, accounts, horizon=req.horizon, company_id=company_id,
+        )
+        return {"ticker": ticker.upper(), "accounts": accounts, "forecasts": forecasts}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/edgar/proxy")
+@_heavy_endpoint
 def edgar_proxy(req: RiskFactorsRequest):
     """Return DEF 14A proxy governance sections and save to edgar_proxy_filings."""
+    # MEMPROBE: this endpoint has OOM-killed the process three times
+    # (2026-09-10, 2026-09-16) even after capping the downloaded HTML at
+    # 5MB — with no traceback (SIGKILL gives none), so these log lines are
+    # the only way to see which step and how much RSS was in use right
+    # before death. Remove once the real ceiling is found; see _rss_mb().
+    logger.warning("MEMPROBE edgar_proxy start ticker=%s max_filings=%s rss_mb=%s",
+                    req.ticker, req.max_filings, _rss_mb())
     try:
         meta, sub = get_company_info(req.ticker)
         filings = parse_filings(sub, {"DEF 14A"})["DEF 14A"][: req.max_filings]
+        logger.warning("MEMPROBE edgar_proxy after_parse_filings n_filings=%s rss_mb=%s",
+                        len(filings), _rss_mb())
         results = []
         company_id = None
 
@@ -2437,13 +2679,18 @@ def edgar_proxy(req: RiskFactorsRequest):
 
         for f in filings:
             text = fetch_filing_text(meta["cik"], f)
+            logger.warning("MEMPROBE edgar_proxy after_fetch accession=%s text_chars=%s rss_mb=%s",
+                            f.get("accession_number"), len(text) if text else 0, _rss_mb())
             sections = extract_proxy_sections(text) if text else {}
+            del text
             truncated = {k: v[:8_000] for k, v in sections.items()}
             results.append({
                 "filing_date": f["date"],
                 "accession_number": f["accession_number"],
                 "sections": truncated,
             })
+            logger.warning("MEMPROBE edgar_proxy after_extract accession=%s rss_mb=%s",
+                            f.get("accession_number"), _rss_mb())
             if company_id:
                 proxy_id = db.save_edgar_proxy(
                     company_id,
@@ -2451,7 +2698,22 @@ def edgar_proxy(req: RiskFactorsRequest):
                     f["accession_number"],
                     sections,
                 )
-                _embed_proxy_sections(company_id, proxy_id, sections)
+                # DISABLED 2026-09-18: this call is where the process dies. The
+                # MEMPROBE trail above shows RSS flat at ~440MB right up to
+                # "after_extract" — no growth, no exception logged (this
+                # function already wraps itself in try/except), yet the
+                # container hard-crashes a few seconds later, inside this one
+                # call, every time /edgar/proxy runs. That's a signal outside
+                # normal Python error handling (SIGKILL/native crash), not a
+                # memory-size problem — sizing fixes (commits 8bda102,
+                # bfb7ce0) didn't touch it. Proxy sections are already saved
+                # to edgar_proxy_filings above; this step only adds them to
+                # chat RAG retrieval, so skipping it costs a "nice to have,"
+                # not core functionality, while this gets root-caused with
+                # real profiling rather than more guesses.
+                # _embed_proxy_sections(company_id, proxy_id, sections)
+                logger.warning("MEMPROBE edgar_proxy after_extract_pre_embed_skip accession=%s rss_mb=%s",
+                                f.get("accession_number"), _rss_mb())
 
         result = {
             "ticker": req.ticker.upper(),
@@ -2660,6 +2922,20 @@ class DigestCheckRequest(BaseModel):
     ticker: str
 
 
+def _fmt_score(x: Optional[float]) -> str:
+    """avg_score can be NULL — a completed run with zero risks scored, or one
+    whose risk-score sync hasn't landed yet. `f"{x:.2f}"` raises TypeError on
+    None rather than producing "None", which previously took the whole
+    process down (an unhandled exception inside nested BaseHTTPMiddleware
+    dispatch layers crashed the single shared uvicorn worker, 502ing every
+    other endpoint too — not just this one)."""
+    return f"{x:.2f}" if x is not None else "n/a"
+
+
+def _fmt_delta(x: Optional[float]) -> str:
+    return f"{x:+.2f}" if x is not None else "n/a"
+
+
 def _build_digest_payload(ticker: str, from_row: Optional[dict], to_row: dict) -> dict:
     to_score = to_row.get("avg_score")
     from_score = from_row.get("avg_score") if from_row else None
@@ -2668,7 +2944,7 @@ def _build_digest_payload(ticker: str, from_row: Optional[dict], to_row: dict) -
     if not from_row:
         headline = (
             f"{ticker}: first posture snapshot — avg score "
-            f"{to_score:.2f} · {to_row['red_count']}R/{to_row['amber_count']}A/{to_row['green_count']}G "
+            f"{_fmt_score(to_score)} · {to_row['red_count']}R/{to_row['amber_count']}A/{to_row['green_count']}G "
             f"across {to_row['risk_count']} risks."
         )
         red_delta = amber_delta = green_delta = risk_count_delta = None
@@ -2682,8 +2958,8 @@ def _build_digest_payload(ticker: str, from_row: Optional[dict], to_row: dict) -
                     ((red_delta, "RED"), (amber_delta, "AMBER"), (green_delta, "GREEN")) if d]
         rag_note = ", ".join(rag_bits) if rag_bits else "no RAG band changes"
         headline = (
-            f"{ticker}: posture {direction} — avg score {from_score:.2f} -> {to_score:.2f} "
-            f"({score_delta:+.2f}). {rag_note}."
+            f"{ticker}: posture {direction} — avg score {_fmt_score(from_score)} -> {_fmt_score(to_score)} "
+            f"({_fmt_delta(score_delta)}). {rag_note}."
         )
 
     return {
@@ -3228,14 +3504,14 @@ def _check_model_health_drift_once() -> list[dict]:
             entry.get("n_baseline"), entry.get("n_current"), detail=entry,
         )
         # Close the loop: a ratio or FRED-regime drift means the forecast
-        # layer (FRED correlations + ensemble weights) may be stale for every
-        # actively-tracked ticker, not just whichever one happened to be
-        # open in the UI — see reoptimization_tool.py's docstring for why
-        # this sweeps the tracked set rather than a computed "affected"
-        # subset (neither drift signal is ticker-scoped). ai_acceptance
-        # drift is a governance-process signal, not a forecasting one, so it
-        # doesn't trigger this. Best-effort: a re-optimization failure must
-        # never break the drift-check loop itself.
+        # layer (FRED correlations + ensemble weights) may be stale for the
+        # target company — Mission Control's currently-configured entity
+        # (db.get_target_ticker()), not a swept set of tickers — since
+        # neither drift signal is ticker-scoped to begin with; see
+        # reoptimization_tool.py's docstring. ai_acceptance drift is a
+        # governance-process signal, not a forecasting one, so it doesn't
+        # trigger this. Best-effort: a re-optimization failure must never
+        # break the drift-check loop itself.
         reoptimize_summary = None
         if (
             incident_id
@@ -3421,12 +3697,14 @@ def run_model_health_review(
     body: Dict[str, Any] = Body(default={}),
     current_user: Dict[str, Any] = Depends(auth_endpoints.get_current_user),
 ):
-    """User-initiated version of the same sweep model_health_drift_watch runs
-    automatically on drift — re-derives FRED correlations and re-optimizes
-    ensemble weights (walk-forward backtest MAPE/RMSE/R²) for every
-    actively-tracked ticker/company, without waiting for the next drift flag
-    or the 6h background check. Synchronous — bounded by max_tickers, same
-    cost profile as the existing synchronous /predictive/full-analysis call.
+    """User-initiated version of the same re-optimization
+    model_health_drift_watch runs automatically on drift — re-derives FRED
+    correlations and re-optimizes ensemble weights (walk-forward backtest
+    MAPE/RMSE/R²) for the target company (Mission Control's currently-
+    configured entity, db.get_target_ticker()), without waiting for the
+    next drift flag or the 6h background check. Synchronous — same cost
+    profile as the existing synchronous /predictive/full-analysis call, just
+    for one company.
     """
     if not db.is_available():
         raise HTTPException(status_code=503, detail="Database not configured")

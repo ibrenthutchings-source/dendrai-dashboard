@@ -28,15 +28,15 @@ import feedparser
 import requests
 
 # ── Feed Registry (mirrors rss-engine.js FEEDS) ───────────────────────────────
+_FR_API = "https://www.federalregister.gov/api/v1/documents.rss?"
+
 FEEDS: list[dict] = [
-    {
-        "id": "bis",
-        "name": "BIS Export Controls",
-        "url": "https://www.bis.doc.gov/index.php/2013-01-17-21-19-53/2013-01-17-21-20-34.xml",
-        "domains": ["Trade Compliance"],
-        "risks": ["R-02"],
-        "weight": 1.5,
-    },
+    # bis, epa, and nis2 were removed 2026-09-19 — all three source sites now
+    # block non-browser requests (EPA and ENISA return an AWS WAF/bot-protection
+    # challenge; BIS moved to bis.gov, which dropped RSS entirely). None of
+    # these are fixable by swapping the URL; they'd need real headless-browser
+    # fetching, which this proxy doesn't do. See git history for the removed
+    # entries if that capability is ever added.
     {
         "id": "cisa",
         "name": "CISA ICS Advisories",
@@ -64,20 +64,10 @@ FEEDS: list[dict] = [
         "risks": ["R-09"],
         "weight": 0.9,
     },
-    {
-        "id": "epa",
-        "name": "EPA Climate Enforcement",
-        "url": "https://www.epa.gov/newsreleases/search/rss",
-        "domains": ["ESG"],
-        "risks": ["R-07"],
-        "weight": 0.8,
-        "companyGated": True,  # enforcement-action feed covering every regulated company —
-                                # without gating, any company's ESG violation shows up in every other company's feed
-    },
-    # Four feeds for regulatory_change_tool.py's horizon-scanning path
+    # Three feeds for regulatory_change_tool.py's horizon-scanning path
     # (regulatory_change_endpoints.py) — not company-gated, since a new EU AI
-    # Act obligation or a DORA/NIS2 supervisory update applies regardless of
-    # which company is the active ticker, same reasoning as bis/cisa/fed above.
+    # Act obligation or a DORA supervisory update applies regardless of which
+    # company is the active ticker, same reasoning as cisa/fed above.
     {
         "id": "eu_ai_act",
         "name": "EU AI Act",
@@ -95,20 +85,113 @@ FEEDS: list[dict] = [
         "weight": 1.2,
     },
     {
-        "id": "nis2",
-        "name": "EU NIS2 Directive",
-        "url": "https://www.enisa.europa.eu/media/news-items/news-rss",
-        "domains": ["Cybersecurity", "Regulatory"],
-        "risks": ["R-04", "R-05"],
+        "id": "state_privacy",
+        "name": "US State Privacy Enforcement",
+        # oag.ca.gov redesigned their site; /news/rss.xml 404s now. Verified
+        # working 2026-09-19: /news/feed (application/rss+xml, real entries).
+        "url": "https://oag.ca.gov/news/feed",
+        "domains": ["Regulatory", "Privacy"],
+        "risks": ["R-05"],
+        "weight": 1.0,
+    },
+    # Regulator feeds added 2026-09-24 so the Disclosure Risk layer
+    # (disclosure-risk.js) has signal for the domains it tracks — SEC
+    # enforcement/rulemaking, AI, privacy and climate disclosure. Each URL was
+    # verified to return real RSS entries with this proxy's User-Agent.
+    # Not company-gated (same reasoning as eu_ai_act/dora above): a new SEC
+    # rule or DPA fine matters regardless of which ticker is active. Not in
+    # regulatory_change_endpoints._SCAN_FEED_IDS, so the text-diff scanner is
+    # unaffected. Feeds that still don't work and were tried: EFRAG, IFRS/ISSB,
+    # GRI, ICO, PCAOB (404) and CDP/SASB (unreachable) — no dedicated ESG
+    # standard-setter feed exists, hence SEC statements + CARB for ESG.
+    {
+        "id": "sec_press",
+        "name": "SEC Press Releases",
+        "url": "https://www.sec.gov/news/pressreleases.rss",
+        "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
+        "risks": ["R-01", "R-05"],
         "weight": 1.2,
     },
     {
-        "id": "state_privacy",
-        "name": "US State Privacy Enforcement",
-        "url": "https://oag.ca.gov/news/rss.xml",
-        "domains": ["Regulatory"],
+        "id": "sec_statements",
+        "name": "SEC Statements",
+        "url": "https://www.sec.gov/news/statements.rss",
+        "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "ftc",
+        "name": "FTC Consumer Protection",
+        "url": "https://www.ftc.gov/feeds/press-release-consumer-protection.xml",
+        # No "Regulatory": generic enforcement wording (fine/penalty/guidance)
+        # made every consumer-fraud release score Red. Only AI/privacy items
+        # are disclosure signals here.
+        "domains": ["AI", "Privacy"],
         "risks": ["R-05"],
         "weight": 1.0,
+    },
+    {
+        "id": "edpb",
+        "name": "EDPB / EU Data Protection Authorities",
+        "url": "https://www.edpb.europa.eu/feed/news_en",
+        "domains": ["Privacy"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "ai_act_tracker",
+        "name": "EU AI Act Tracker",
+        # Independent implementation tracker (Future of Life Institute), not an
+        # official EU source — used because the official digital-strategy feed
+        # above is a general site feed dominated by non-AI-Act items.
+        "url": "https://artificialintelligenceact.eu/feed/",
+        "domains": ["AI", "Regulatory"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    # Federal Register API feeds (api/v1/documents.rss — NOT the site's feed
+    # builder, which sits behind a WAF bot-challenge; the API endpoint returns
+    # real RSS to this proxy's User-Agent, verified 2026-09-24). Full-text
+    # queries over final and proposed rules, so these are the official
+    # rulemaking pipeline for the domains no standard-setter RSS covers.
+    # Full-text matching is broad (an "artificial intelligence" hit can be a
+    # Medicare notice), which is why the vocabulary scoring — not the query —
+    # decides what surfaces.
+    {
+        "id": "fr_sec_rules",
+        "name": "SEC Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bagencies%5D%5B%5D=securities-and-exchange-commission&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["Regulatory", "Financial Reporting", "ESG", "Cybersecurity", "AI"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "fr_ai_rules",
+        "name": "AI Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bterm%5D=%22artificial+intelligence%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["AI"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "fr_climate_rules",
+        "name": "Greenhouse-Gas Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bterm%5D=%22greenhouse+gas%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["ESG"],
+        "risks": ["R-05"],
+        # Below 1.0: EPA state air-plan approvals match "greenhouse gas" too.
+        "weight": 0.8,
+    },
+    {
+        "id": "carb",
+        "name": "California Air Resources Board (SB 253/261 climate disclosure)",
+        "url": "https://ww2.arb.ca.gov/rss.xml",
+        "domains": ["ESG"],
+        "risks": ["R-05"],
+        # Low weight: CARB's feed is mostly air-quality/programme news; only
+        # climate-disclosure items (SB 253/261) are signals.
+        "weight": 0.5,
     },
 ]
 
@@ -147,6 +230,21 @@ DOMAIN_VOCAB: dict[str, list[str]] = {
         "climate", "esg", "water stress", "sec disclosure", "scope 3",
         "carbon", "emission", "sustainability", "drought", "physical risk",
         "transition risk", "tcfd", "arizona", "fab water",
+        "climate-related disclosure", "climate disclosure", "sb 253", "sb 261",
+        "csrd", "esrs", "issb", "greenwashing", "sustainability reporting",
+        "greenhouse gas", "ghg",
+    ],
+    # Substring matching (see score_relevance), so no short tokens like "ai"
+    # — they'd match inside "said"/"maintain". Multi-word terms only.
+    "AI": [
+        "artificial intelligence", "machine learning", "generative ai", "ai washing",
+        "ai act", "high-risk ai", "foundation model", "large language model",
+        "algorithmic", "automated decision", "ai system", "chatbot", "deepfake",
+    ],
+    "Privacy": [
+        "gdpr", "ccpa", "cpra", "hipaa", "privacy", "data protection",
+        "personal data", "data subject", "biometric", "breach notification",
+        "children's data",
     ],
     "Supply": [
         "conflict minerals", "rmap", "dodd-frank", "cobalt", "tantalum",
@@ -164,6 +262,8 @@ DOMAIN_VOCAB: dict[str, list[str]] = {
         "operational resilience", "incident reporting", "third-party risk",
         "critical entity", "data protection", "privacy law", "consumer protection",
         "penalty", "fine", "guidance", "technical standard", "implementing act",
+        "sec charges", "cybersecurity disclosure", "material cybersecurity incident",
+        "disclosure controls", "misleading statements", "proposes rescission",
     ],
 }
 
@@ -188,6 +288,8 @@ DOMAIN_RISK_CATS: dict[str, list[str]] = {
     "Regulatory":          ["compliance", "legal", "regulatory", "esg"],
     "Environmental":       ["esg", "environmental", "climate", "sustainability"],
     "ESG":                 ["esg", "environmental", "climate", "sustainability"],
+    "AI":                  ["ai ", "artificial", "algorithm", "regulatory", "compliance", "technology"],
+    "Privacy":             ["privacy", "data protection", "cybersecurity", "compliance", "regulatory"],
     "Competitive":         ["competitive", "market", "commercial", "operational"],
     "Operational":         ["operational", "operations"],
 }

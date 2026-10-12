@@ -109,18 +109,21 @@ def _score_exception_event(connector: dict, event: dict, system_telemetry_id: "i
     from. actor/action/event_type/raw_payload are carried the same way, for
     "what actually happened" in the triage card itself.
 
-    connector["risk_tier"]/["id"]/.get("system_owner") are also already in
+    connector["risk_tier"]/["id"]/.get("system_owner") and the event's own
+    `process` (extra_config.get("process"), just below) are also already in
     hand here — no extra query needed to feed exception_tool.py's
-    risk_rating computation or to snapshot connector_id/assigned_owner onto
-    the exception row for delegation (see db.py's DDL comment on those two
-    columns for why this is a snapshot, not a live join)."""
+    risk_rating/risk_score computation (risk_tier + process are the two
+    independent inputs risk_rating_engine.score_exception needs alongside
+    severity) or to snapshot connector_id/assigned_owner onto the exception
+    row for delegation (see db.py's DDL comment on those two columns for why
+    this is a snapshot, not a live join)."""
     extra_config = connector.get("extra_config") or {}
     system_source = extra_config.get("system_label") or connector["connector_type"]
     process = extra_config.get("process")
     control_id = event.get("resource") or event.get("event_id") or "unknown"
     scored = exception_tool.score_event(
         event.get("event_type") or "", event.get("severity") or "INFO", event.get("raw_payload") or {},
-        connector_risk_tier=connector.get("risk_tier"),
+        connector_risk_tier=connector.get("risk_tier"), process=process,
     )
     event_ts = event.get("created_at") or datetime.now(timezone.utc)
     db.insert_exception_event(
@@ -129,7 +132,7 @@ def _score_exception_event(connector: dict, event: dict, system_telemetry_id: "i
         actor=event.get("actor"), action=event.get("action"), event_type=event.get("event_type"),
         raw_payload=event.get("raw_payload"), system_telemetry_id=system_telemetry_id,
         connector_id=connector.get("id"), assigned_owner=connector.get("system_owner"),
-        risk_rating=scored["risk_rating"],
+        risk_rating=scored["risk_rating"], risk_score=scored["risk_score"],
     )
 
 

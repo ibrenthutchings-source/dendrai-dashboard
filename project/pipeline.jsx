@@ -225,6 +225,11 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
     onAddObjective,
     peerData,
     peerCompareList,
+    peerCompareLoading,
+    peerCompareError,
+    onAddPeerCompare,
+    onRemovePeerCompare,
+    onClearPeerCompare,
   };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
@@ -250,9 +255,9 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
     onOpenMain: onOpenMainFlow,
   };
   // Coordinates zoom across every KPI time-series chart rendered anywhere in
-  // this tree — the Forecasts panel (ForecastChartsInline) and S1Body's
-  // detailed per-metric charts both live under this same Pipeline root
-  // regardless of which node is focused, so one provider here covers both.
+  // this tree — S1Body's Forecasts tab and its detailed per-metric charts
+  // all live under this same Pipeline root regardless of which node is
+  // focused, so one provider here covers all of them.
   // Falls back to a plain Fragment (each chart keeps its own independent
   // zoom) if charts.jsx hasn't loaded for some reason.
   const ZoomProvider = window.ChartZoomProvider || React.Fragment;
@@ -283,6 +288,10 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
           onBack={onGoHub}
           liveRssSignals={liveRssSignals} events={events} ratios={ratios} industry={industry}
           pipelineTicker={pipelineTicker} onRerunFromS3={onRerunFromS3}
+          forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList}
+          peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
+          onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
+          onClearPeerCompare={onClearPeerCompare}
         />
       )}
       {focusedStage && (
@@ -365,7 +374,9 @@ function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, per
                        riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onAddRisk,
                        scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onAddObjective,
                        onSubmit, onOverride, onBack,
-                       liveRssSignals, events, ratios, industry, pipelineTicker, onRerunFromS3 }) {
+                       liveRssSignals, events, ratios, industry, pipelineTicker, onRerunFromS3,
+                       forecasts, peerData, peerCompareList, peerCompareLoading, peerCompareError,
+                       onAddPeerCompare, onRemovePeerCompare, onClearPeerCompare }) {
   return (
     <div className="loop-canvas">
       <div className="canvas-nav">
@@ -375,20 +386,39 @@ function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, per
       </div>
       {state === "pending" ? (
         gate.num === 1 ? (
-          <RiskApprovalReview
-            risks={output.s2?.risks || []}
-            approvals={riskApprovals}
-            appetiteLevel={appetiteLevel}
-            appetiteThreshold={appetiteThreshold}
-            perRiskAppetite={perRiskAppetite || {}}
-            onSetPerRiskAppetite={setPerRiskAppetite}
-            onApproveRisk={onApproveRisk}
-            onOpenAdjust={onOpenAdjustRisk}
-            onApproveAll={onApproveAllRisks}
-            onSubmit={onSubmit}
-            onOverrideGate={onOverride}
-            onAddRisk={onAddRisk}
-          />
+          <>
+            {/* Same Fraud & Distress Signals / Forecasts content as Stage 1's
+                tabs, surfaced right here, expanded by default — reaching
+                them used to mean clicking back to Loop overview, into the
+                Stage 1 card, then into a tab, which made them easy to miss
+                entirely while a gate banner has the reviewer's attention.
+                Still collapsible for anyone who wants less scroll. */}
+            <PipelinePanel label="Fraud & Distress Signals" defaultOpen={true}>
+              <FraudDistressPanel forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList} onAddObjective={onAddObjective}/>
+            </PipelinePanel>
+            <PipelinePanel label="Forecasts" defaultOpen={true}>
+              <ForecastsPanel
+                forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList}
+                peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
+                onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
+                onClearPeerCompare={onClearPeerCompare} onAddObjective={onAddObjective}
+              />
+            </PipelinePanel>
+            <RiskApprovalReview
+              risks={output.s2?.risks || []}
+              approvals={riskApprovals}
+              appetiteLevel={appetiteLevel}
+              appetiteThreshold={appetiteThreshold}
+              perRiskAppetite={perRiskAppetite || {}}
+              onSetPerRiskAppetite={setPerRiskAppetite}
+              onApproveRisk={onApproveRisk}
+              onOpenAdjust={onOpenAdjustRisk}
+              onApproveAll={onApproveAllRisks}
+              onSubmit={onSubmit}
+              onOverrideGate={onOverride}
+              onAddRisk={onAddRisk}
+            />
+          </>
         ) : (
           <ScopeApprovalReview
             objectives={output.s3?.objectives || []}
@@ -470,13 +500,13 @@ function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, fo
             <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
           </PipelinePanel>
         )}
+        {/* Revenue/margin mini-charts used to duplicate here what Stage 1's own
+            "Forecasts" tab already shows in full (with Monte Carlo commentary,
+            peer overlays, and the rest of the P&L/CF set) — dropped in favor
+            of that one home. Geography/segment data has no other home on this
+            screen, so it stays here. */}
         {stage.id === "s2" && status === "done" && forecasts && (
-          <PipelinePanel label="Forecasts">
-            <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}
-              peerData={peerData}
-              peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
-              peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
-              onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}/>
+          <PipelinePanel label="Geography & Segment Data">
             <GeoSegmentKPISection ticker={pipelineTicker || ""}/>
           </PipelinePanel>
         )}
@@ -550,9 +580,8 @@ function ComparableChart({ history, forecast, unit, color, decimals, chartMetric
 }
 
 // [{ticker, history, forecast}] for a given chart metric key, one entry per
-// selected peer that has data for that metric — shared by every panel that
-// renders KPI charts (S1Body's detailed stage body, ForecastChartsInline's
-// always-visible summary) so "compare against peers" behaves identically in both.
+// selected peer that has data for that metric — used by S1Body's Forecasts
+// tab so "compare against peers" is available on every KPI chart there.
 function _peerSeriesListFor(peerCompareList, key) {
   return (peerCompareList || [])
     .filter(p => p.forecasts?.[key])
@@ -700,77 +729,6 @@ function GeoSegmentKPISection({ ticker }) {
   );
 }
 
-function ForecastChartsInline({ forecasts, livefacts, peerData, peerCompareList,
-                                 peerCompareLoading, peerCompareError, onAddPeerCompare, onRemovePeerCompare, onClearPeerCompare }) {
-  const [tick, setTick] = React.useState(0);
-  React.useEffect(() => {
-    if (!window.ForecastChart) {
-      const id = setTimeout(() => setTick(t => t + 1), 300);
-      return () => clearTimeout(id);
-    }
-  }, [tick]);
-
-  const FC = window.ForecastChart;
-  const picker = (
-    <PeerComparePicker
-      peerData={peerData}
-      peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
-      peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
-      onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
-    />
-  );
-  if (!forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>No forecast data — run the loop first.</div>;
-  if (!FC) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Loading chart engine…</div>;
-  const rev = forecasts.revenue;
-  const mg  = forecasts.margin;
-  const lastRev  = rev?.history?.slice(-1)[0]?.v;
-  const fcRev    = rev?.forecast?.slice(-1)[0]?.base;
-  const lastMg   = mg?.history?.slice(-1)[0]?.v;
-  const fcMg     = mg?.forecast?.slice(-1)[0]?.base;
-  const revDelta = lastRev && fcRev ? ((fcRev - lastRev) / lastRev * 100) : null;
-  const mgDelta  = lastMg != null && fcMg != null ? (fcMg - lastMg) * 100 : null;
-  return (
-    <div style={{display:"flex", flexDirection:"column", gap:18}}>
-      {rev?.history?.length > 0 && (
-        <div>
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue Growth Risk ($M)</div>
-            {revDelta != null && (
-              <div style={{fontSize:10, fontFamily:"var(--mono)", color: revDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {revDelta >= 0 ? "▲" : "▼"}{Math.abs(revDelta).toFixed(1)}% · 4Q forecast ${fcRev?.toFixed(2)}M
-              </div>
-            )}
-          </div>
-          {/* Peer selector lives on this chart specifically (it's the primary
-              KPI users compare against peers on) but the selection is shared
-              app-wide state, so picking a peer here also overlays it on the
-              margin chart, the M-Score/Z-Score gauges, and S1Body's detail view. */}
-          {picker}
-          <FCWithMetrics history={rev.history} forecast={rev.forecast} unit="$M" color="var(--acc)" peers={_peerSeriesListFor(peerCompareList, 'revenue')}/>
-        </div>
-      )}
-      {mg?.history?.length > 0 && (
-        <div>
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Margin Compression Risk (%)</div>
-            {mgDelta != null && (
-              <div style={{fontSize:10, fontFamily:"var(--mono)", color: mgDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps · 4Q forecast {fcMg?.toFixed(2)}%
-              </div>
-            )}
-          </div>
-          <FCWithMetrics history={mg.history} forecast={mg.forecast} unit="%" color="var(--violet)" peers={_peerSeriesListFor(peerCompareList, 'margin')}/>
-        </div>
-      )}
-      {livefacts && (
-        <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)"}}>
-          Source: EDGAR XBRL — {livefacts.entity} · {livefacts.cik}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function SankeyInline({ risks, maps, flowMeta, objectives, onOpenMain }) {
   const [selId, setSelId] = React.useState(null);
   const [hovId, setHovId] = React.useState(null);
@@ -823,6 +781,380 @@ function PipelinePanel({ label, defaultOpen = true, children }) {
       </Clickable>
       {open && <div className="stage-body open">{children}</div>}
     </div>
+  );
+}
+
+// Beneish M-Score / Altman Z''-Score gauges + Financial Risk Pipeline cards —
+// extracted out of S1Body's "Fraud & Distress Signals" tab so Gate 1's review
+// screen can show the same content inline instead of forcing the reviewer
+// back to Loop overview -> Stage 1 -> this tab to see it (see GateCanvas).
+function FraudDistressPanel({ forecasts, peerData = null, peerCompareList = [], onAddObjective }) {
+  const gaugePeers = [
+    ...(peerData?.peers || []),
+    ...peerCompareList.map(p => ({ ticker: p.ticker, z_score: p.zscore, m_score: p.mscore })),
+  ];
+  return (
+    <>
+      {/* Beneish M-Score gauge */}
+      {forecasts?.mscore != null && (() => {
+        const MSG = window.MScoreGauge;
+        const ms = forecasts.mscore;
+        if (!MSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Earnings Manipulation Risk — is revenue recognition or accruals quality deteriorating? (pairs with Z''-Score below)</h5>
+            <MSG m={ms.m} peers={gaugePeers}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>M = {ms.m?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: ms.m > -1.78 ? "var(--red-soft)" : ms.m > -2.22 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      ms.m > -1.78 ? "var(--red-ink)"  : ms.m > -2.22 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{ms.band || (ms.m > -1.78 ? "ELEVATED" : ms.m > -2.22 ? "GRAY ZONE" : "NORMAL")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≥ −1.78 · ELEVATED</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>−2.22 to −1.78 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>≤ −2.22 · NORMAL</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
+              </div>
+            </div>
+            {(() => {
+              const tone = ms.m > -1.78 ? "red" : ms.m > -2.22 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Review revenue recognition and accruals quality — Beneish M-Score (${ms.m.toFixed(2)}) is ${tone === "red" ? "above the likely-manipulator threshold (-1.78)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {ms.m > -1.78 ? "Score exceeds the likely-manipulator threshold — accruals and revenue recognition warrant IA review this cycle."
+                    : ms.m > -2.22 ? "Gray zone — worth a lighter-touch accruals monitoring pass, not necessarily a full scope item."
+                    : "Within normal range — no elevated financial-reporting risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Altman Z''-Score gauge */}
+      {forecasts?.zscore != null && (() => {
+        const ZSG = window.ZScoreGauge;
+        const zs = forecasts.zscore;
+        if (!ZSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Solvency Risk — is the balance sheet strong enough to avoid distress? (pairs with M-Score above)</h5>
+            <ZSG z={zs.z} peers={gaugePeers}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>Z'' = {zs.z?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: zs.z <= 1.1 ? "var(--red-soft)" : zs.z <= 2.6 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      zs.z <= 1.1 ? "var(--red-ink)"  : zs.z <= 2.6 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{zs.band || (zs.z <= 1.1 ? "DISTRESS" : zs.z <= 2.6 ? "GRAY ZONE" : "SAFE")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≤ 1.10 · DISTRESS</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>1.10 to 2.60 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>&gt; 2.60 · SAFE</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                General/non-manufacturer variant (book equity, no market-cap dependency): working capital, retained earnings, and EBIT relative to total assets, plus book equity to total liabilities — computed from EDGAR 10-K.
+              </div>
+            </div>
+            {(() => {
+              const tone = zs.z <= 1.1 ? "red" : zs.z <= 2.6 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Assess going-concern risk and covenant headroom — Altman Z''-Score (${zs.z.toFixed(2)}) is ${tone === "red" ? "in the distress zone (≤1.10)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {zs.z <= 1.1 ? "Distress zone — going-concern assessment and covenant headroom warrant IA review this cycle."
+                    : zs.z <= 2.6 ? "Gray zone — worth a liquidity/solvency monitoring pass, not necessarily a full scope item."
+                    : "Within safe range — no elevated solvency risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Financial Risk Pipeline — JE velocity / liquidity shift / inventory divergence */}
+      {forecasts?.financialRiskPipeline && (() => {
+        const frp = forecasts.financialRiskPipeline;
+        const cards = [
+          { key: "je_velocity", label: "Manual JE Velocity", data: frp.je_velocity, flag: "anomaly",
+            detail: d => `z = ${d.z_score}σ (${d.recent_daily_rate}/day vs. baseline ${d.baseline_daily_mean}/day)` },
+          { key: "liquidity_shift", label: "Liquidity Shift", data: frp.liquidity_shift, flag: "shift_detected",
+            detail: d => `worst QoQ z = ${d.worst_z_score}σ` },
+          { key: "inventory_divergence", label: "Inventory/Sales Divergence", data: frp.inventory_divergence, flag: "divergence_detected",
+            detail: d => `QoQ ratio z = ${d.z_score}σ` },
+        ].filter(c => c.data && c.data.interpretation !== "insufficient_data" && c.data.interpretation !== "insufficient_baseline");
+
+        if (!cards.length) return null;
+
+        return (
+          <div className="stage-detail">
+            <h5>Financial Risk Pipeline — journal-entry velocity, liquidity, and inventory signals beyond the point-in-time Z/M-Score snapshot above</h5>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, marginTop: 8 }}>
+              {cards.map(c => {
+                const flagged = !!c.data[c.flag];
+                const tone = flagged ? (c.data.rag_status === "Red" ? "red" : "amber") : "green";
+                return (
+                  <div key={c.key} style={{
+                    padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line)",
+                    background: tone === "red" ? "var(--red-soft)" : tone === "amber" ? "var(--amber-soft)" : "var(--surface-2,var(--surface))",
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: tone === "red" ? "var(--red-ink)" : tone === "amber" ? "var(--amber-ink)" : "var(--ink-2)" }}>
+                      {c.label}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 2 }}>
+                      {flagged ? "Flagged — " : "Normal — "}{c.detail(c.data)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {cards.some(c => c.data[c.flag]) && onAddObjective && (
+              <AuditorTakeaway
+                tone="amber"
+                actionLabel="Add to scope"
+                onAction={() => onAddObjective(
+                  `Review ${cards.filter(c => c.data[c.flag]).map(c => c.label.toLowerCase()).join(", ")} — Financial Risk Pipeline flagged a statistically significant deviation from historical baseline.`
+                )}
+              >
+                One or more Financial Risk Pipeline checks flagged a deviation beyond the company's own historical noise — worth a targeted review this cycle.
+              </AuditorTakeaway>
+            )}
+          </div>
+        );
+      })()}
+    </>
+  );
+}
+
+// KPI forecast charts (revenue, margin, EPS, EBITDA, FCF, material accounts) —
+// extracted out of S1Body's "Forecasts" tab for the same reason as
+// FraudDistressPanel above: Gate 1's review screen renders this inline too.
+function ForecastsPanel({ forecasts, peerData = null, peerCompareList = [], peerCompareLoading = false,
+                           peerCompareError = null, onAddPeerCompare = null, onRemovePeerCompare = null,
+                           onClearPeerCompare = null, onAddObjective }) {
+  const peerSeries = (key) => _peerSeriesListFor(peerCompareList, key);
+  return (
+    <>
+      {/* Peer selector for every KPI chart below — the selection is shared
+          app-wide state, so picking a peer here also overlays it on every
+          chart in this tab (and on the M-Score/Z-Score gauges above). */}
+      <PeerComparePicker
+        peerData={peerData}
+        peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+        peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+        onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
+      />
+      {/* Revenue forecast chart */}
+      {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Revenue Growth Risk — is growth decelerating, reversing, or masking concentration?</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
+            </div>
+            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2} peers={peerSeries('revenue')}/>
+            {forecasts.revenue.monteCarlo && (
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:6, display:"flex", gap:14, flexWrap:"wrap"}}>
+                <span>Monte Carlo · {forecasts.revenue.monteCarlo.nSims} sims</span>
+                <span>QoQ volatility <span style={{color:"var(--ink-2)"}}>{forecasts.revenue.monteCarlo.volatilityPct}%</span></span>
+                <span>P(revenue decline by Q4) <span style={{color: forecasts.revenue.monteCarlo.probDecline > 0.4 ? "var(--red-ink)" : "var(--ink-2)"}}>{(forecasts.revenue.monteCarlo.probDecline * 100).toFixed(0)}%</span></span>
+                <span>Bands = 10th/90th percentile of simulated paths, not a fixed ±%</span>
+              </div>
+            )}
+            {forecasts.revenue.monteCarlo && (() => {
+              const pd = forecasts.revenue.monteCarlo.probDecline;
+              const material = pd > 0.4; // same threshold already used to color the span above red
+              return (
+                <AuditorTakeaway
+                  tone={material ? "red" : "green"}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Assess revenue concentration and growth durability — Monte Carlo model shows a ${(pd * 100).toFixed(0)}% probability of Q4 revenue decline.`
+                  ) : undefined}
+                >
+                  {material
+                    ? `Elevated downside risk — ${(pd * 100).toFixed(0)}% simulated probability of a Q4 revenue decline warrants a concentration/durability review this cycle.`
+                    : "Downside probability within normal range — no elevated revenue risk from this forecast."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Gross margin forecast chart */}
+      {forecasts?.margin?.history?.length > 0 && forecasts?.margin?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Margin Compression Risk — cost pressure and earnings-quality flag (pairs with M-Score above)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
+            </div>
+            <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)" peers={peerSeries('margin')}/>
+            {(() => {
+              const lastF = forecasts.margin.forecast.slice(-1)[0]?.base;
+              if (lastF == null) return null;
+              const material = lastF < 10; // same 10% GMI-risk threshold stated above
+              return (
+                <AuditorTakeaway
+                  tone={material ? "amber" : "green"}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Review cost structure and margin trend — gross margin is forecast to compress to ${lastF.toFixed(1)}%, below the 10% Beneish GMI-risk threshold.`
+                  ) : undefined}
+                >
+                  {material
+                    ? `Forecast margin (${lastF.toFixed(1)}%) is below the 10% threshold that flags Beneish GMI risk — worth a cost-structure review this cycle.`
+                    : "Forecast margin stays above the GMI-risk threshold — no elevated financial-reporting risk from this signal."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* EPS forecast chart */}
+      {forecasts?.eps?.history?.length > 0 && forecasts?.eps?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        const lastH = forecasts.eps.history.slice(-1)[0]?.v;
+        const lastF = forecasts.eps.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Earnings Trend Risk — compression signals reporting and liquidity stress</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
+              Persistent EPS compression raises financial-reporting and liquidity risk scores.
+            </div>
+            <FCWithMetrics history={forecasts.eps.history} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)" peers={peerSeries('eps')}/>
+          </div>
+        );
+      })()}
+
+      {/* Operating Margin forecast */}
+      {forecasts?.opMargin?.history?.length > 0 && forecasts?.opMargin?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        const lastF = forecasts.opMargin.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Operating Efficiency Risk — contraction signals cost or competitive pressure</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              EBIT ÷ Revenue. Forecast: {lastF?.toFixed(2)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
+            </div>
+            <FCWithMetrics history={forecasts.opMargin.history} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838" peers={peerSeries('opMargin')}/>
+          </div>
+        );
+      })()}
+
+      {/* EBITDA forecast */}
+      {forecasts?.ebitda?.history?.length > 0 && forecasts?.ebitda?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        const lastF = forecasts.ebitda.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Debt-Covenant Risk — leverage service capacity (pairs with Free Cash Flow below)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
+            </div>
+            <FCWithMetrics history={forecasts.ebitda.history} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)" peers={peerSeries('ebitda')}/>
+          </div>
+        );
+      })()}
+
+      {/* Net Income forecast */}
+      {forecasts?.netIncome?.history?.length > 0 && forecasts?.netIncome?.forecast?.length > 0 && (() => {
+        const lastF = forecasts.netIncome.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Profitability Risk — net-loss quarters signal liquidity stress (compare with FCF below)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
+            </div>
+            <ComparableChart history={forecasts.netIncome.history} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)" peers={peerSeries('netIncome')}/>
+          </div>
+        );
+      })()}
+
+      {/* Free Cash Flow forecast */}
+      {forecasts?.fcf?.history?.length > 0 && forecasts?.fcf?.forecast?.length > 0 && (() => {
+        const lastF = forecasts.fcf.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Liquidity Risk — negative cash-flow streaks signal cash-runway stress (compare with Net Income above)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
+            </div>
+            <ComparableChart history={forecasts.fcf.history} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52" peers={peerSeries('fcf')}/>
+          </div>
+        );
+      })()}
+
+      {/* Dynamically-detected material accounts — industry-template
+          (manufacturing/financial_services/saas) + materiality-ratio based
+          (material_accounts_tool.py), beyond the fixed P&L/CF set above.
+          Sub-accounts (e.g. a manufacturer's inventory components) render
+          grouped under their parent's header instead of as flat,
+          unrelated-looking siblings. */}
+      {(forecasts?.materialAccounts || []).length > 0 && (() => {
+        const accounts = forecasts.materialAccounts;
+        const byParent = {};
+        const standalone = [];
+        accounts.forEach(a => (a.parent ? (byParent[a.parent] || (byParent[a.parent] = [])).push(a) : standalone.push(a)));
+        const baseLabel = (a) => a.baseMetric === "TotalAssets" ? "total assets" : "revenue";
+        const renderChart = (a) => {
+          const lastF = a.forecast?.slice(-1)[0]?.base;
+          return (
+            <div className="stage-detail" key={a.metric}>
+              <h5>{a.label || a.metric}</h5>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+                {a.ratio != null && `${(a.ratio * 100).toFixed(1)}% of ${baseLabel(a)}`}
+                {lastF != null && ` · 4Q forecast $${lastF.toFixed(2)}M`}
+                {a.source === "uploaded" && " · from an uploaded financial statement"}
+              </div>
+              <FCWithMetrics history={a.history} forecast={a.forecast} unit={a.unit || "$M"} decimals={2} color="var(--violet)" peers={[]}/>
+            </div>
+          );
+        };
+        return (
+          <>
+            {standalone.map(renderChart)}
+            {Object.entries(byParent).map(([parentMetric, kids]) => (
+              <div key={parentMetric} style={{border:"1px solid var(--line)", borderRadius:8, padding:"4px 8px 0", marginBottom:10}}>
+                <div className="mono" style={{fontSize:10, color:"var(--ink-4)", padding:"4px 4px 0"}}>
+                  {parentMetric} breakdown
+                </div>
+                {kids.map(renderChart)}
+              </div>
+            ))}
+          </>
+        );
+      })()}
+    </>
   );
 }
 
@@ -1230,7 +1562,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onAddPeerCompare={s1Extra?.onAddPeerCompare} onRemovePeerCompare={s1Extra?.onRemovePeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -1341,15 +1673,11 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
 }
 
 function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null,
-                  peerCompareList = [] }) {
-  // The picker control itself lives in the always-visible "Forecasts" panel
-  // (ForecastChartsInline) so it's impossible to miss — this stage body only
-  // consumes the resulting peerCompareList, via the same _peerSeriesListFor helper.
-  const peerSeries = (key) => _peerSeriesListFor(peerCompareList, key);
-  const gaugePeers = [
-    ...(peerData?.peers || []),
-    ...peerCompareList.map(p => ({ ticker: p.ticker, z_score: p.zscore, m_score: p.mscore })),
-  ];
+                  peerCompareList = [], peerCompareLoading = false, peerCompareError = null,
+                  onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null }) {
+  // Peer selection / gauge-peer derivation now lives inside FraudDistressPanel
+  // and ForecastsPanel (below) — both tabs are rendered through those shared
+  // components so Gate 1's review screen can show the same content inline.
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
@@ -1482,307 +1810,19 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
       )}
       </>}
 
-      {activeTab === "signals" && <>
-      {/* Beneish M-Score gauge */}
-      {forecasts?.mscore != null && (() => {
-        const MSG = window.MScoreGauge;
-        const ms = forecasts.mscore;
-        if (!MSG) return null;
-        return (
-          <div className="stage-detail">
-            <h5>Earnings Manipulation Risk — is revenue recognition or accruals quality deteriorating? (pairs with Z''-Score below)</h5>
-            <MSG m={ms.m} peers={gaugePeers}/>
-            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
-              <div style={{display:"flex", gap:10}}>
-                <span className="mono" style={{color:"var(--ink-4)"}}>M = {ms.m?.toFixed(2)}</span>
-                <span className="mono" style={{
-                  padding:"1px 7px", borderRadius:4, fontSize:10,
-                  background: ms.m > -1.78 ? "var(--red-soft)" : ms.m > -2.22 ? "var(--amber-soft)" : "var(--green-soft)",
-                  color:      ms.m > -1.78 ? "var(--red-ink)"  : ms.m > -2.22 ? "var(--amber-ink)"  : "var(--green-ink)",
-                }}>{ms.band || (ms.m > -1.78 ? "ELEVATED" : ms.m > -2.22 ? "GRAY ZONE" : "NORMAL")}</span>
-              </div>
-              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
-                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≥ −1.78 · ELEVATED</span>
-                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>−2.22 to −1.78 · GRAY ZONE</span>
-                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>≤ −2.22 · NORMAL</span>
-              </div>
-              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
-                8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
-              </div>
-            </div>
-            {(() => {
-              const tone = ms.m > -1.78 ? "red" : ms.m > -2.22 ? "amber" : "green";
-              const material = tone !== "green";
-              return (
-                <AuditorTakeaway
-                  tone={tone}
-                  actionLabel={material ? "Add to scope" : undefined}
-                  onAction={material && onAddObjective ? () => onAddObjective(
-                    `Review revenue recognition and accruals quality — Beneish M-Score (${ms.m.toFixed(2)}) is ${tone === "red" ? "above the likely-manipulator threshold (-1.78)" : "in the gray zone"}.`
-                  ) : undefined}
-                >
-                  {ms.m > -1.78 ? "Score exceeds the likely-manipulator threshold — accruals and revenue recognition warrant IA review this cycle."
-                    : ms.m > -2.22 ? "Gray zone — worth a lighter-touch accruals monitoring pass, not necessarily a full scope item."
-                    : "Within normal range — no elevated financial-reporting risk detected from this model."}
-                </AuditorTakeaway>
-              );
-            })()}
-          </div>
-        );
-      })()}
+      {activeTab === "signals" && (
+        <FraudDistressPanel forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList} onAddObjective={onAddObjective}/>
+      )}
 
-      {/* Altman Z''-Score gauge */}
-      {forecasts?.zscore != null && (() => {
-        const ZSG = window.ZScoreGauge;
-        const zs = forecasts.zscore;
-        if (!ZSG) return null;
-        return (
-          <div className="stage-detail">
-            <h5>Solvency Risk — is the balance sheet strong enough to avoid distress? (pairs with M-Score above)</h5>
-            <ZSG z={zs.z} peers={gaugePeers}/>
-            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
-              <div style={{display:"flex", gap:10}}>
-                <span className="mono" style={{color:"var(--ink-4)"}}>Z'' = {zs.z?.toFixed(2)}</span>
-                <span className="mono" style={{
-                  padding:"1px 7px", borderRadius:4, fontSize:10,
-                  background: zs.z <= 1.1 ? "var(--red-soft)" : zs.z <= 2.6 ? "var(--amber-soft)" : "var(--green-soft)",
-                  color:      zs.z <= 1.1 ? "var(--red-ink)"  : zs.z <= 2.6 ? "var(--amber-ink)"  : "var(--green-ink)",
-                }}>{zs.band || (zs.z <= 1.1 ? "DISTRESS" : zs.z <= 2.6 ? "GRAY ZONE" : "SAFE")}</span>
-              </div>
-              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
-                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≤ 1.10 · DISTRESS</span>
-                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>1.10 to 2.60 · GRAY ZONE</span>
-                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>&gt; 2.60 · SAFE</span>
-              </div>
-              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
-                General/non-manufacturer variant (book equity, no market-cap dependency): working capital, retained earnings, and EBIT relative to total assets, plus book equity to total liabilities — computed from EDGAR 10-K.
-              </div>
-            </div>
-            {(() => {
-              const tone = zs.z <= 1.1 ? "red" : zs.z <= 2.6 ? "amber" : "green";
-              const material = tone !== "green";
-              return (
-                <AuditorTakeaway
-                  tone={tone}
-                  actionLabel={material ? "Add to scope" : undefined}
-                  onAction={material && onAddObjective ? () => onAddObjective(
-                    `Assess going-concern risk and covenant headroom — Altman Z''-Score (${zs.z.toFixed(2)}) is ${tone === "red" ? "in the distress zone (≤1.10)" : "in the gray zone"}.`
-                  ) : undefined}
-                >
-                  {zs.z <= 1.1 ? "Distress zone — going-concern assessment and covenant headroom warrant IA review this cycle."
-                    : zs.z <= 2.6 ? "Gray zone — worth a liquidity/solvency monitoring pass, not necessarily a full scope item."
-                    : "Within safe range — no elevated solvency risk detected from this model."}
-                </AuditorTakeaway>
-              );
-            })()}
-          </div>
-        );
-      })()}
+      {activeTab === "forecasts" && (
+        <ForecastsPanel
+          forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList}
+          peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
+          onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
+          onClearPeerCompare={onClearPeerCompare} onAddObjective={onAddObjective}
+        />
+      )}
 
-      {/* Financial Risk Pipeline — JE velocity / liquidity shift / inventory divergence */}
-      {forecasts?.financialRiskPipeline && (() => {
-        const frp = forecasts.financialRiskPipeline;
-        const cards = [
-          { key: "je_velocity", label: "Manual JE Velocity", data: frp.je_velocity, flag: "anomaly",
-            detail: d => `z = ${d.z_score}σ (${d.recent_daily_rate}/day vs. baseline ${d.baseline_daily_mean}/day)` },
-          { key: "liquidity_shift", label: "Liquidity Shift", data: frp.liquidity_shift, flag: "shift_detected",
-            detail: d => `worst QoQ z = ${d.worst_z_score}σ` },
-          { key: "inventory_divergence", label: "Inventory/Sales Divergence", data: frp.inventory_divergence, flag: "divergence_detected",
-            detail: d => `QoQ ratio z = ${d.z_score}σ` },
-        ].filter(c => c.data && c.data.interpretation !== "insufficient_data" && c.data.interpretation !== "insufficient_baseline");
-
-        if (!cards.length) return null;
-
-        return (
-          <div className="stage-detail">
-            <h5>Financial Risk Pipeline — journal-entry velocity, liquidity, and inventory signals beyond the point-in-time Z/M-Score snapshot above</h5>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, marginTop: 8 }}>
-              {cards.map(c => {
-                const flagged = !!c.data[c.flag];
-                const tone = flagged ? (c.data.rag_status === "Red" ? "red" : "amber") : "green";
-                return (
-                  <div key={c.key} style={{
-                    padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line)",
-                    background: tone === "red" ? "var(--red-soft)" : tone === "amber" ? "var(--amber-soft)" : "var(--surface-2,var(--surface))",
-                  }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: tone === "red" ? "var(--red-ink)" : tone === "amber" ? "var(--amber-ink)" : "var(--ink-2)" }}>
-                      {c.label}
-                    </div>
-                    <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 2 }}>
-                      {flagged ? "Flagged — " : "Normal — "}{c.detail(c.data)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {cards.some(c => c.data[c.flag]) && onAddObjective && (
-              <AuditorTakeaway
-                tone="amber"
-                actionLabel="Add to scope"
-                onAction={() => onAddObjective(
-                  `Review ${cards.filter(c => c.data[c.flag]).map(c => c.label.toLowerCase()).join(", ")} — Financial Risk Pipeline flagged a statistically significant deviation from historical baseline.`
-                )}
-              >
-                One or more Financial Risk Pipeline checks flagged a deviation beyond the company's own historical noise — worth a targeted review this cycle.
-              </AuditorTakeaway>
-            )}
-          </div>
-        );
-      })()}
-      </>}
-
-      {activeTab === "forecasts" && <>
-      {/* Revenue forecast chart */}
-      {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        return (
-          <div className="stage-detail">
-            <h5>Revenue Growth Risk — is growth decelerating, reversing, or masking concentration?</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
-            </div>
-            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2} peers={peerSeries('revenue')}/>
-            {forecasts.revenue.monteCarlo && (
-              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:6, display:"flex", gap:14, flexWrap:"wrap"}}>
-                <span>Monte Carlo · {forecasts.revenue.monteCarlo.nSims} sims</span>
-                <span>QoQ volatility <span style={{color:"var(--ink-2)"}}>{forecasts.revenue.monteCarlo.volatilityPct}%</span></span>
-                <span>P(revenue decline by Q4) <span style={{color: forecasts.revenue.monteCarlo.probDecline > 0.4 ? "var(--red-ink)" : "var(--ink-2)"}}>{(forecasts.revenue.monteCarlo.probDecline * 100).toFixed(0)}%</span></span>
-                <span>Bands = 10th/90th percentile of simulated paths, not a fixed ±%</span>
-              </div>
-            )}
-            {forecasts.revenue.monteCarlo && (() => {
-              const pd = forecasts.revenue.monteCarlo.probDecline;
-              const material = pd > 0.4; // same threshold already used to color the span above red
-              return (
-                <AuditorTakeaway
-                  tone={material ? "red" : "green"}
-                  actionLabel={material ? "Add to scope" : undefined}
-                  onAction={material && onAddObjective ? () => onAddObjective(
-                    `Assess revenue concentration and growth durability — Monte Carlo model shows a ${(pd * 100).toFixed(0)}% probability of Q4 revenue decline.`
-                  ) : undefined}
-                >
-                  {material
-                    ? `Elevated downside risk — ${(pd * 100).toFixed(0)}% simulated probability of a Q4 revenue decline warrants a concentration/durability review this cycle.`
-                    : "Downside probability within normal range — no elevated revenue risk from this forecast."}
-                </AuditorTakeaway>
-              );
-            })()}
-          </div>
-        );
-      })()}
-
-      {/* Gross margin forecast chart */}
-      {forecasts?.margin?.history?.length > 0 && forecasts?.margin?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        return (
-          <div className="stage-detail">
-            <h5>Margin Compression Risk — cost pressure and earnings-quality flag (pairs with M-Score above)</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
-            </div>
-            <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)" peers={peerSeries('margin')}/>
-            {(() => {
-              const lastF = forecasts.margin.forecast.slice(-1)[0]?.base;
-              if (lastF == null) return null;
-              const material = lastF < 10; // same 10% GMI-risk threshold stated above
-              return (
-                <AuditorTakeaway
-                  tone={material ? "amber" : "green"}
-                  actionLabel={material ? "Add to scope" : undefined}
-                  onAction={material && onAddObjective ? () => onAddObjective(
-                    `Review cost structure and margin trend — gross margin is forecast to compress to ${lastF.toFixed(1)}%, below the 10% Beneish GMI-risk threshold.`
-                  ) : undefined}
-                >
-                  {material
-                    ? `Forecast margin (${lastF.toFixed(1)}%) is below the 10% threshold that flags Beneish GMI risk — worth a cost-structure review this cycle.`
-                    : "Forecast margin stays above the GMI-risk threshold — no elevated financial-reporting risk from this signal."}
-                </AuditorTakeaway>
-              );
-            })()}
-          </div>
-        );
-      })()}
-
-      {/* EPS forecast chart */}
-      {forecasts?.eps?.history?.length > 0 && forecasts?.eps?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastH = forecasts.eps.history.slice(-1)[0]?.v;
-        const lastF = forecasts.eps.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Earnings Trend Risk — compression signals reporting and liquidity stress</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
-              Persistent EPS compression raises financial-reporting and liquidity risk scores.
-            </div>
-            <FCWithMetrics history={forecasts.eps.history} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)" peers={peerSeries('eps')}/>
-          </div>
-        );
-      })()}
-
-      {/* Operating Margin forecast */}
-      {forecasts?.opMargin?.history?.length > 0 && forecasts?.opMargin?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastF = forecasts.opMargin.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Operating Efficiency Risk — contraction signals cost or competitive pressure</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              EBIT ÷ Revenue. Forecast: {lastF?.toFixed(2)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
-            </div>
-            <FCWithMetrics history={forecasts.opMargin.history} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838" peers={peerSeries('opMargin')}/>
-          </div>
-        );
-      })()}
-
-      {/* EBITDA forecast */}
-      {forecasts?.ebitda?.history?.length > 0 && forecasts?.ebitda?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastF = forecasts.ebitda.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Debt-Covenant Risk — leverage service capacity (pairs with Free Cash Flow below)</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
-            </div>
-            <FCWithMetrics history={forecasts.ebitda.history} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)" peers={peerSeries('ebitda')}/>
-          </div>
-        );
-      })()}
-
-      {/* Net Income forecast */}
-      {forecasts?.netIncome?.history?.length > 0 && forecasts?.netIncome?.forecast?.length > 0 && (() => {
-        const lastF = forecasts.netIncome.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Profitability Risk — net-loss quarters signal liquidity stress (compare with FCF below)</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
-            </div>
-            <ComparableChart history={forecasts.netIncome.history} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)" peers={peerSeries('netIncome')}/>
-          </div>
-        );
-      })()}
-
-      {/* Free Cash Flow forecast */}
-      {forecasts?.fcf?.history?.length > 0 && forecasts?.fcf?.forecast?.length > 0 && (() => {
-        const lastF = forecasts.fcf.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Liquidity Risk — negative cash-flow streaks signal cash-runway stress (compare with Net Income above)</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
-            </div>
-            <ComparableChart history={forecasts.fcf.history} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52" peers={peerSeries('fcf')}/>
-          </div>
-        );
-      })()}
-      </>}
 
       {activeTab === "narrative" && aiAvailable && (
         <div className="stage-detail">
@@ -1883,7 +1923,11 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
   const S2_TABS = [
     { id: "risks", label: "Risk Register" },
     { id: "methodology", label: "Scoring & Methodology" },
-    { id: "forecast", label: "Forecast" },
+    // Labeled distinctly from Stage 1's "Forecasts" tab — this one projects
+    // the residual RISK SCORE forward (velocity-dampened), not a financial
+    // line item. Sharing the word "Forecast" with Stage 1 is what made this
+    // read as a duplicate.
+    { id: "forecast", label: "Risk Score Forecast" },
   ];
   const [activeTab, setActiveTab] = React.useState("risks");
 

@@ -526,15 +526,27 @@ const ATTENTION_RISK_RATING_META = {
   G: { label: "G — Low", bg: "var(--green-soft)", ink: "var(--green-ink)" },
 };
 
-function RiskRatingPill({ rating }) {
+// score: the 0-25 number the rating letter bands (risk_rating_engine.rag_of
+// on the backend — same 0-25 / R>=15/A>=9/G scale the Enterprise Risk Loop's
+// own register uses). Optional and additive — every existing caller that
+// doesn't have a score yet (JE Testing rows, any row from before
+// exception_model_inferences.risk_score existed) renders exactly as before.
+function RiskRatingPill({ rating, score }) {
   const meta = ATTENTION_RISK_RATING_META[rating];
   if (!meta) return <span style={{ fontSize: 9.5, color: "var(--ink-4)" }}>Unrated</span>;
   return (
-    <span className="mono" style={{
-      fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
-      background: meta.bg, color: meta.ink, whiteSpace: "nowrap",
-    }}>
-      {meta.label}
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+      <span className="mono" style={{
+        fontSize: 9.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+        background: meta.bg, color: meta.ink, whiteSpace: "nowrap",
+      }}>
+        {meta.label}
+      </span>
+      {score != null && (
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-3)" }} title="Risk score (0-25)">
+          {Number(score).toFixed(1)}
+        </span>
+      )}
     </span>
   );
 }
@@ -551,7 +563,7 @@ function RiskRatingPill({ rating }) {
 //
 // Props:
 //   group          — { control_id, system_source, occurrence_count, worst_risk_rating,
-//                       owner, first_seen_at, last_seen_at, has_open_map, map_ref }
+//                       worst_risk_score, owner, first_seen_at, last_seen_at, has_open_map, map_ref }
 //   getMembers(group) -> Promise<row[]>   fetch this group's individual pending rows
 //   renderMember(row, onMemberResolved) -> node   render one drilled-in row
 //   onBulkResolve(group, label, notes) -> Promise   resolve every member at once
@@ -630,7 +642,7 @@ function AttentionGroupRow({ group, getMembers, renderMember, onBulkResolve, onR
             {" · "}last seen {group.last_seen_at ? new Date(group.last_seen_at).toLocaleString() : "—"}
           </div>
         </div>
-        <RiskRatingPill rating={group.worst_risk_rating} />
+        <RiskRatingPill rating={group.worst_risk_rating} score={group.worst_risk_score} />
       </div>
 
       {expanded && (

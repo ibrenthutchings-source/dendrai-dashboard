@@ -62,6 +62,28 @@ class TestGetJournalEntriesPacing:
             assert je["posted_at"]  # ISO string, not a bare datetime
 
 
+class TestJournalEntryAmountIsCappedUnderOneMillion:
+    """A synthetic JE this large read as an unrealistic single entry for the
+    everyday-journal-noise this simulator is meant to produce — capped
+    below $1M. Runs many calls (each producing 1-3 entries, per
+    _CASES_PER_TICK) to actually exercise the amount range's upper bound,
+    not just get lucky on one low roll."""
+
+    def test_no_generated_amount_reaches_one_million(self):
+        seen = [je["amount"] for _ in range(200)
+                for je in stt.get_journal_entries(None, {}, _r2r_config())["journal_entries"]]
+        assert seen, "expected at least some journal entries across 200 calls"
+        assert all(a < 1_000_000 for a in seen)
+
+    def test_amounts_still_span_a_realistic_range_above_the_old_floor(self):
+        # Guards against a future edit collapsing the range to something
+        # trivially small while "fixing" the ceiling.
+        seen = [je["amount"] for _ in range(200)
+                for je in stt.get_journal_entries(None, {}, _r2r_config())["journal_entries"]]
+        assert min(seen) >= 5000
+        assert max(seen) > 500_000  # the range still reaches well into 6 figures
+
+
 # ── violating cases actually reach mcp_governance._detect_system_flags() ────
 # Confirmed against real production data: HIGH-severity synthetic violations
 # (vendor offboarding, HCM termination, payment runs, ...) all had
