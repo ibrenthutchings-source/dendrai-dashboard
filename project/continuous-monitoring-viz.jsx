@@ -1128,8 +1128,19 @@ function attachGraphZoom(svg, contentG, { graphWidth, graphHeight, hostWidth, ho
     svg.transition().duration(180).call(zoom.scaleBy, factor);
   }
 
+  // Center the view on a specific content-space point at a given scale —
+  // used to zoom straight into an auto-detected outlier edge/node rather
+  // than just resetting to the whole-graph fit.
+  function panToPoint(px, py, scale = 1.8) {
+    const s = Math.min(maxScale, Math.max(minScale, scale));
+    const tx = hostWidth / 2 - px * s;
+    const ty = hostHeight / 2 - py * s;
+    const t = d3.zoomIdentity.translate(tx, ty).scale(s);
+    svg.transition().duration(420).call(zoom.transform, t);
+  }
+
   fitToView(false);
-  return { zoom, fitToView, zoomIn: () => step(1.4), zoomOut: () => step(1 / 1.4) };
+  return { zoom, fitToView, zoomIn: () => step(1.4), zoomOut: () => step(1 / 1.4), panToPoint };
 }
 
 // Small on-pane control cluster — zoom in/out/fit plus an "Expand" toggle
@@ -1444,13 +1455,19 @@ function buildCaseDfgGraph(events, process, processes) {
     return k;
   }
 
+  // Per-edge tally of which process template the traversing case classified
+  // as (classifyCaseProcess), independent of any active `process` filter —
+  // this is what lets an outlier edge found while viewing "All processes"
+  // recommend which specific process to filter/zoom into, rather than just
+  // reporting a step pair with no actionable next step.
+  const edgeProcessCounts = new Map(); // edgeKey -> Map<processId, count>
+
   let caseCount = 0;
   byCase.forEach((stepsRaw, caseId) => {
     const steps = [...stepsRaw].sort((a, b) => new Date(a.adjudicated_at) - new Date(b.adjudicated_at));
-    if (process) {
-      const stepLabels = steps.map(s => s.process_step || "Unknown step");
-      if (classifyCaseProcess(stepLabels, processes) !== process) return;
-    }
+    const stepLabels = steps.map(s => s.process_step || "Unknown step");
+    const caseProcessId = classifyCaseProcess(stepLabels, processes);
+    if (process && caseProcessId !== process) return;
     caseCount += 1;
     let prevId = node(CASE_FLOW_START);
     let prevTs = steps.length ? new Date(steps[0].adjudicated_at) : null;
@@ -1462,6 +1479,11 @@ function buildCaseDfgGraph(events, process, processes) {
       prevTs = new Date(s.adjudicated_at);
     });
     edgeKeys.push(edge(prevId, node(CASE_FLOW_END)));
+    edgeKeys.forEach(key => {
+      if (!edgeProcessCounts.has(key)) edgeProcessCounts.set(key, new Map());
+      const m = edgeProcessCounts.get(key);
+      m.set(caseProcessId, (m.get(caseProcessId) || 0) + 1);
+    });
 
     if (steps.length >= 2) {
       const first = new Date(steps[0].adjudicated_at);
@@ -1494,6 +1516,37 @@ function buildCaseDfgGraph(events, process, processes) {
     .slice(0, _CASE_FLOW_FASTEST_N)
     .forEach(c => c.edgeKeys.forEach(k => fastestEdgeKeys.add(k)));
 
+  // Auto-identified outliers: edges whose mean duration is a statistical
+  // outlier relative to every other timed edge in THIS graph (z-score over
+  // the distribution of edge means), not just the single slowest one
+  // (bottleneckKey above). Requires >=2 observations so a single slow case
+  // can't manufacture an outlier out of noise. Each outlier carries the
+  // process template its traversing cases classified as most often
+  // (edgeProcessCounts), so a click can both filter AND zoom straight to it.
+  const edgeStats = [...edgeDurations.entries()]
+    .filter(([, hrs]) => hrs.length >= 2)
+    .map(([key, hrs]) => ({ key, mean: hrs.reduce((s, h) => s + h, 0) / hrs.length, n: hrs.length }));
+  const meanOfMeans = edgeStats.length ? edgeStats.reduce((s, e) => s + e.mean, 0) / edgeStats.length : 0;
+  const variance = edgeStats.length ? edgeStats.reduce((s, e) => s + (e.mean - meanOfMeans) ** 2, 0) / edgeStats.length : 0;
+  const stddev = Math.sqrt(variance);
+  const outliers = stddev > 0
+    ? edgeStats
+      .map(e => ({ ...e, z: (e.mean - meanOfMeans) / stddev }))
+      .filter(e => e.z > 1.5)
+      .sort((a, b) => b.z - a.z)
+      .slice(0, 5)
+      .map(e => {
+        const [source, target] = e.key.split("|");
+        const procCounts = edgeProcessCounts.get(e.key);
+        let dominantProcess = null, dominantCount = 0;
+        if (procCounts) procCounts.forEach((c, pid) => { if (pid && c > dominantCount) { dominantCount = c; dominantProcess = pid; } });
+        return {
+          key: e.key, sourceLabel: source.slice(2), targetLabel: target.slice(2),
+          hours: e.mean, z: e.z, dominantProcess,
+        };
+      })
+    : [];
+
   const nodes = [...nodeMeta.values()];
   const edges = [...edgeCount.entries()].map(([k, value]) => {
     const [source, target] = k.split("|");
@@ -1502,9 +1555,10 @@ function buildCaseDfgGraph(events, process, processes) {
       isBottleneck: k === bottleneckKey,
       bottleneckHours: k === bottleneckKey ? bottleneckHours : null,
       inFastestPath: fastestEdgeKeys.has(k),
+      isOutlier: outliers.some(o => o.key === k),
     };
   });
-  return { nodes, edges, caseCount };
+  return { nodes, edges, caseCount, outliers };
 }
 
 export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
@@ -1512,6 +1566,8 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
   const svgRef = useRef(null);
   const rafRef = useRef(null);
   const zoomApiRef = useRef(null);
+  const edgeCentersRef = useRef({});
+  const pendingFocusKeyRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
   const [expanded, setExpanded] = useState(false);
   const [process, setProcess] = useState(null);
@@ -1520,6 +1576,22 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
 
   const graph = useMemo(() => buildCaseDfgGraph(rawEvents, process, processes), [rawEvents, process, processes]);
   const hasData = !!graph && graph.nodes.length > 0;
+  const outliers = graph?.outliers || [];
+  const processLabelById = useMemo(() => Object.fromEntries(processes.map(p => [p.id, p.label])), [processes]);
+
+  // Switching `process` rebuilds the graph (new node layout, new edge keys)
+  // before a zoom target exists — stash the outlier edge key and let the
+  // layout effect below zoom to it once the new positions are computed, so
+  // one click both filters AND zooms instead of requiring a second click.
+  function focusOutlier(o) {
+    if (o.dominantProcess && o.dominantProcess !== process) {
+      pendingFocusKeyRef.current = o.key;
+      setProcess(o.dominantProcess);
+      return;
+    }
+    const c = edgeCentersRef.current[o.key];
+    if (c && zoomApiRef.current) zoomApiRef.current.panToPoint(c.x, c.y, 1.8);
+  }
 
   useEffect(() => {
     if (!svgRef.current || !hostRef.current || !hasData) return;
@@ -1538,7 +1610,8 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
       g.setNode(n.id, { ...n, width: w, height: 24 });
     });
     graph.edges.forEach(e => g.setEdge(e.source, e.target, {
-      value: e.value, isBottleneck: e.isBottleneck, bottleneckHours: e.bottleneckHours, inFastestPath: e.inFastestPath,
+      value: e.value, isBottleneck: e.isBottleneck, bottleneckHours: e.bottleneckHours,
+      inFastestPath: e.inFastestPath, isOutlier: e.isOutlier,
     }));
     dagre.layout(g);
 
@@ -1563,9 +1636,9 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
     const edgeSel = edgeG.selectAll("path").data(edgeData).join("path")
       .attr("d", d => lineGen(d.points))
       .attr("fill", "none")
-      .attr("stroke", d => d.isBottleneck ? theme["red-ink"] : stepColor(g.node(d._e.v).label, theme))
-      .attr("stroke-opacity", d => d.isBottleneck ? 0.75 : 0.3)
-      .attr("stroke-width", d => Math.max(1, Math.sqrt(d.value / maxVal) * 8) + (d.isBottleneck ? 1.5 : 0))
+      .attr("stroke", d => d.isBottleneck ? theme["red-ink"] : d.isOutlier ? theme["amber-ink"] : stepColor(g.node(d._e.v).label, theme))
+      .attr("stroke-opacity", d => d.isBottleneck || d.isOutlier ? 0.75 : 0.3)
+      .attr("stroke-width", d => Math.max(1, Math.sqrt(d.value / maxVal) * 8) + (d.isBottleneck || d.isOutlier ? 1.5 : 0))
       .on("mouseover", (evt, d) => {
         edgeSel.attr("stroke-opacity", o => o === d ? 0.9 : 0.08);
         setTooltip({
@@ -1573,11 +1646,11 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
           sourceLabel: g.node(d._e.v).label, sourceColor: stepColor(g.node(d._e.v).label, theme),
           targetLabel: g.node(d._e.w).label, targetColor: stepColor(g.node(d._e.w).label, theme),
           value: d.value, isBottleneck: d.isBottleneck, bottleneckHours: d.bottleneckHours,
-          inFastestPath: d.inFastestPath,
+          inFastestPath: d.inFastestPath, isOutlier: d.isOutlier,
         });
       })
       .on("mousemove", evt => setTooltip(p => p ? { ...p, x: evt.clientX, y: evt.clientY } : null))
-      .on("mouseout", () => { edgeSel.attr("stroke-opacity", d => d.isBottleneck ? 0.75 : 0.3); setTooltip(null); });
+      .on("mouseout", () => { edgeSel.attr("stroke-opacity", d => d.isBottleneck || d.isOutlier ? 0.75 : 0.3); setTooltip(null); });
 
     // Fastest-case overlay: a bright thin line drawn on top of the fastest
     // _CASE_FLOW_FASTEST_N whole cases' own edges — distinct from the base
@@ -1643,6 +1716,23 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
 
     zoomApiRef.current = attachGraphZoom(svg, contentG, { graphWidth: W, graphHeight: H, hostWidth: hostW, hostHeight: hostH });
 
+    // Edge midpoints in content-space, for panToPoint — same +20 offset
+    // used by lineGen/nodeSel above (the graph is laid out with a 20px
+    // margin baked into every coordinate read off of `g`).
+    const centers = {};
+    g.edges().forEach(e => {
+      const v = g.node(e.v), w = g.node(e.w);
+      centers[`${e.v}|${e.w}`] = { x: (v.x + w.x) / 2 + 20, y: (v.y + w.y) / 2 + 20 };
+    });
+    edgeCentersRef.current = centers;
+
+    if (pendingFocusKeyRef.current) {
+      const key = pendingFocusKeyRef.current;
+      pendingFocusKeyRef.current = null;
+      const c = centers[key];
+      if (c) zoomApiRef.current.panToPoint(c.x, c.y, 1.8);
+    }
+
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [graph, hasData, theme, expanded]);
 
@@ -1657,7 +1747,31 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
   }, []);
 
   return (
-    <VizFrame
+    <>
+      {hasData && outliers.length > 0 && (
+        <div style={{
+          display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10,
+          background: theme["amber-soft"] || "color-mix(in srgb, var(--amber) 14%, transparent)",
+          border: `1px solid ${theme.amber}`, borderRadius: 8, padding: "9px 12px",
+        }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: theme["amber-ink"], marginRight: 4, alignSelf: "center" }}>
+            Outliers auto-detected:
+          </div>
+          {outliers.map(o => (
+            <button key={o.key} type="button" onClick={() => focusOutlier(o)}
+              title={o.dominantProcess ? `Filter to ${processLabelById[o.dominantProcess] || o.dominantProcess} and zoom in` : "Zoom to this transition"}
+              style={{
+                fontSize: 10.5, padding: "4px 9px", borderRadius: 999, cursor: "pointer",
+                border: `1px solid ${theme["amber-ink"]}`, background: theme.surface, color: theme["amber-ink"],
+                fontFamily: "system-ui, sans-serif",
+              }}>
+              {o.sourceLabel} → {o.targetLabel} · {_pmFmtHours(o.hours)} ({o.z.toFixed(1)}σ)
+              {o.dominantProcess && <span style={{ color: theme["ink-3"], marginLeft: 5 }}>· {processLabelById[o.dominantProcess] || o.dominantProcess}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+      <VizFrame
       theme={theme}
       kicker="Continuous evidence · Case Flow Graph (real DFG)"
       sub={graph
@@ -1689,6 +1803,7 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
             border: `1px solid ${theme.line}`, borderRadius: 6, padding: "5px 10px", pointerEvents: "none",
           }}>
             <span><span style={{ display: "inline-block", width: 14, height: 2, background: theme["red-ink"], marginRight: 5, verticalAlign: "middle" }} />Bottleneck</span>
+            <span><span style={{ display: "inline-block", width: 14, height: 2, background: theme["amber-ink"], marginRight: 5, verticalAlign: "middle" }} />Outlier</span>
             <span><span style={{ display: "inline-block", width: 14, height: 0, borderTop: `2px dotted ${theme["green-ink"]}`, marginRight: 5, verticalAlign: "middle" }} />Fastest {_CASE_FLOW_FASTEST_N} cases</span>
           </div>
         </div>
@@ -1726,6 +1841,11 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
                   ┄ On one of the {_CASE_FLOW_FASTEST_N} fastest complete case paths
                 </div>
               )}
+              {tooltip.isOutlier && !tooltip.isBottleneck && (
+                <div style={{ marginTop: 4, fontSize: 10, color: theme["amber-ink"], fontWeight: 700 }}>
+                  ▲ Outlier — duration far above this graph's typical transition
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -1738,7 +1858,8 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
           )}
         </div>
       )}
-    </VizFrame>
+      </VizFrame>
+    </>
   );
 }
 
