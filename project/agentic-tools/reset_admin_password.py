@@ -39,25 +39,31 @@ import string
 import sys
 from urllib.parse import urlsplit, urlunsplit
 
-# sandbox's DATABASE_URL points at postgres-sandbox.railway.internal, which
-# only resolves inside Railway's network — `railway run` injects the real
-# env vars into this process, but doesn't put the local machine ON that
-# network. A public TCP proxy already exists for postgres-sandbox (created
-# 2026-09-09, not something this script sets up), so when the internal host
-# can't resolve, rewrite just the host:port to that proxy's public endpoint
-# and keep everything else (scheme, user, password, dbname, query) from the
-# real DATABASE_URL untouched — the credential itself never has to be read
-# or typed by a human, only passed through.
-_SANDBOX_INTERNAL_HOST = "postgres-sandbox.railway.internal"
-_SANDBOX_PROXY_HOSTPORT = "trolley.proxy.rlwy.net:26897"
+# Every environment's DATABASE_URL points at that environment's own
+# *.railway.internal host, which only resolves inside Railway's network —
+# `railway run` injects the real env vars into this process, but doesn't put
+# the local machine ON that network. A public TCP proxy already exists for
+# each of this project's Postgres services (not something this script sets
+# up), so when the internal host can't resolve, rewrite just the host:port to
+# that proxy's public endpoint and keep everything else (scheme, user,
+# password, dbname, query) from the real DATABASE_URL untouched — the
+# credential itself never has to be read or typed by a human, only passed
+# through.
+_INTERNAL_TO_PROXY = {
+    "postgres-sandbox.railway.internal": "trolley.proxy.rlwy.net:26897",
+    "postgres-uat.railway.internal": "altaria.proxy.rlwy.net:35832",
+    "postgres-development.railway.internal": "altaria.proxy.rlwy.net:30786",
+    "postgres-production.railway.internal": "trolley.proxy.rlwy.net:26763",
+}
 
 
 def _rewrite_for_local_run(url: str) -> str:
     parts = urlsplit(url)
-    if parts.hostname != _SANDBOX_INTERNAL_HOST.split(":")[0]:
+    proxy_hostport = _INTERNAL_TO_PROXY.get(parts.hostname or "")
+    if not proxy_hostport:
         return url
     userinfo = parts.netloc.split("@", 1)[0] if "@" in parts.netloc else ""
-    new_netloc = f"{userinfo}@{_SANDBOX_PROXY_HOSTPORT}" if userinfo else _SANDBOX_PROXY_HOSTPORT
+    new_netloc = f"{userinfo}@{proxy_hostport}" if userinfo else proxy_hostport
     return urlunsplit((parts.scheme, new_netloc, parts.path, parts.query, parts.fragment))
 
 
