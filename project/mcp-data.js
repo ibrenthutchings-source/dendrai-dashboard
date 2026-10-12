@@ -957,6 +957,26 @@ window.MCP = (function () {
     return _get(`/process-mining/cases?days=${days}&limit=${limit}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
   }
 
+  /** Value Stream Map: canonical (forward, template-order) vs. deviation
+   * (rework/skip/off-template) hours from the same real edges cycle-times
+   * computes, rolled into a process cycle efficiency ratio. */
+  async function pmValueStreamMap(days = 30, process = null) {
+    return _get(`/process-mining/value-stream-map?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Pareto ranking of deviation edges by total hours lost, with the 80/20
+   * vital-few cutoff flagged. */
+  async function pmPareto(days = 30, process = null) {
+    return _get(`/process-mining/pareto?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Case-duration control chart: trailing period means + center line/UCL/LCL. */
+  async function pmControlChart(process = null, periodDays = 7, periods = 8) {
+    const params = new URLSearchParams({ period_days: periodDays, periods });
+    if (process) params.set('process', process);
+    return _get(`/process-mining/control-chart?${params.toString()}`);
+  }
+
   /** Draft a first-draft walkthrough narrative from an interview transcript
    * + real Case Flow/Variants/CaC/PaC evidence for the same process. Not
    * persisted by this call alone — review/edit, then submit it through the
@@ -1264,6 +1284,9 @@ window.MCP = (function () {
     pmCycleTimes,
     pmRework,
     pmCases,
+    pmValueStreamMap,
+    pmPareto,
+    pmControlChart,
     draftWalkthroughNarrative,
     getWalkthroughNarrativeHistory,
     aiOpsEfficiencyBrief,

@@ -13,6 +13,19 @@
                     indicators: a process drifting or reworking today
                     is a bottleneck/breach next week.
      3. Cycle Time — full detail, visible by default (Tier 1).
+     3b. Value Stream Map — the same Cycle Time edges, re-labeled
+                    canonical (forward, template order) vs. deviation
+                    (rework/skip/off-template), rolled into a process
+                    cycle efficiency ratio. See process_mining_tool.py's
+                    value_stream_map for why this isn't a textbook
+                    touch-time VSM (no per-step start/end timestamp
+                    exists to measure that honestly).
+     3c. Pareto    — those same deviation edges, ranked by total hours
+                    lost with the 80/20 vital-few cutoff flagged — "fix
+                    these first," not a flat deviation list.
+     3d. Control Chart — case-duration trend across trailing periods
+                    against a center line + UCL/LCL, so drift shows up
+                    before it becomes next week's bottleneck.
      4. Variants  — full detail, visible but secondary (Tier 2).
      5. Case Flow Graph — volume drill-down, collapsed by default.
                     Answers "how much volume is backed up here" only
@@ -24,15 +37,18 @@
    rework and already covered by the rework alert. It still lives on
    the Continuous Monitoring screen for that audience.
 
-   Nothing here is a new computation: same GET /process-mining/* and
-   GET /observability/events endpoints Continuous Monitoring already
-   uses, same ProcessCycleTimeView/ProcessVariantsView/CaseFlowGraph
-   components, just re-prioritized and paired with SLA data (GET
-   /itsm/tickets) that screen never had.
+   Nothing here is a new computation beyond 3b-3d: same GET
+   /process-mining/* and GET /observability/events endpoints Continuous
+   Monitoring already uses, same ProcessCycleTimeView/ProcessVariantsView/
+   CaseFlowGraph/ValueStreamMapView/ParetoView/CycleTimeControlChartView
+   components (all defined in continuous-monitoring-viz.jsx), just
+   re-prioritized and paired with SLA data (GET /itsm/tickets) that
+   screen never had.
    ============================================================ */
 import { useEffect, useMemo, useState } from "react";
 import {
   ProcessCycleTimeView, ProcessVariantsView, CaseFlowGraph, useThemeColors,
+  ValueStreamMapView, ParetoView, CycleTimeControlChartView,
 } from "./continuous-monitoring-viz.jsx";
 
 function _fmtHours(h) {
@@ -330,6 +346,21 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
       <SectionLabel>Cycle Time — where time actually accumulates</SectionLabel>
       <div style={{ marginBottom: 24 }}>
         <ProcessCycleTimeView theme={theme} days={days} />
+      </div>
+
+      <SectionLabel>Value Stream Map — how much of that time was forward progress?</SectionLabel>
+      <div style={{ marginBottom: 24 }}>
+        <ValueStreamMapView theme={theme} days={days} />
+      </div>
+
+      <SectionLabel>Pareto — which deviations to fix first</SectionLabel>
+      <div style={{ marginBottom: 24 }}>
+        <ParetoView theme={theme} days={days} />
+      </div>
+
+      <SectionLabel>Control Chart — is cycle time drifting?</SectionLabel>
+      <div style={{ marginBottom: 24 }}>
+        <CycleTimeControlChartView theme={theme} />
       </div>
 
       <SectionLabel>Variants — is the real process still the documented one?</SectionLabel>

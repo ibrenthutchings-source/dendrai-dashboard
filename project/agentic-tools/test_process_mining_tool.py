@@ -276,3 +276,127 @@ def test_summary_buckets_untemplated_and_per_process():
 def test_summary_empty_events():
     result = pm.summary([])
     assert result == {"total_cases": 0, "untemplated_cases": 0, "processes": {}}
+
+
+# ── value_stream_map ──────────────────────────────────────────────────────────
+
+def test_value_stream_map_splits_canonical_from_deviation_hours():
+    # Clean case: both edges are consecutive template pairs -> all canonical.
+    # Reworked case: an extra Invoice Matched -> Purchase Order Created loop
+    # (not a template-consecutive pair) -> that edge is a deviation.
+    events = _clean_p2p_case("A") + [
+        _ev("B", "Purchase Order Created", 0),
+        _ev("B", "Invoice Matched", 1),
+        _ev("B", "Purchase Order Created", 2),  # loops back: deviation edge
+        _ev("B", "Invoice Matched", 3),
+        _ev("B", "Payment Released", 4),
+    ]
+    cases = pm.build_cases(events)
+    vsm = pm.value_stream_map(cases, "procure_to_pay")
+    assert vsm["scored_cases"] == 2
+    dev_pairs = {(e["source"], e["target"]) for e in vsm["deviation_edges"]}
+    assert ("Invoice Matched", "Purchase Order Created") in dev_pairs
+    canon_pairs = {(e["source"], e["target"]) for e in vsm["canonical_edges"]}
+    assert ("Purchase Order Created", "Invoice Matched") in canon_pairs
+    assert ("Invoice Matched", "Payment Released") in canon_pairs
+    assert 0.0 < vsm["process_cycle_efficiency"] < 1.0
+
+
+def test_value_stream_map_no_cases_is_honest_null():
+    vsm = pm.value_stream_map({}, "procure_to_pay")
+    assert vsm["scored_cases"] == 0
+    assert vsm["process_cycle_efficiency"] is None
+    assert vsm["deviation_edges"] == []
+
+
+def test_value_stream_map_all_canonical_is_100pct_efficient():
+    cases = pm.build_cases(_clean_p2p_case("A"))
+    vsm = pm.value_stream_map(cases, "procure_to_pay")
+    assert vsm["process_cycle_efficiency"] == 1.0
+    assert vsm["deviation_edges"] == []
+
+
+# ── pareto_rank / pareto_breakdown ────────────────────────────────────────────
+
+def test_pareto_rank_flags_vital_few_at_80pct_cumulative():
+    items = [{"name": "a", "hrs": 50}, {"name": "b", "hrs": 30}, {"name": "c", "hrs": 15}, {"name": "d", "hrs": 5}]
+    ranked = pm.pareto_rank(items, "hrs", lambda i: i["name"])
+    assert [r["name"] for r in ranked] == ["a", "b", "c", "d"]
+    # a=50% b=80% (crosses 80% here) c/d are past it.
+    assert ranked[0]["is_vital_few"] is True
+    assert ranked[1]["is_vital_few"] is True
+    assert ranked[2]["is_vital_few"] is False
+    assert ranked[3]["is_vital_few"] is False
+    assert ranked[-1]["cumulative_pct"] == 1.0
+
+
+def test_pareto_rank_empty_items():
+    assert pm.pareto_rank([], "hrs", lambda i: i) == []
+
+
+def test_pareto_breakdown_ranks_deviation_edges_by_total_hours():
+    events = _clean_p2p_case("A") + [
+        _ev("B", "Purchase Order Created", 0),
+        _ev("B", "Invoice Matched", 1),
+        _ev("B", "Purchase Order Created", 11),  # long deviation loop: 10 days
+        _ev("B", "Invoice Matched", 12),
+        _ev("B", "Payment Released", 13),
+    ]
+    cases = pm.build_cases(events)
+    pareto = pm.pareto_breakdown(cases, "procure_to_pay")
+    assert pareto["basis"] == "deviation_edge_total_hours"
+    assert pareto["ranked"][0]["source"] == "Invoice Matched"
+    assert pareto["ranked"][0]["target"] == "Purchase Order Created"
+    assert pareto["vital_few_count"] >= 1
+    assert pareto["total_deviation_hours"] == pareto["ranked"][0]["total_hours"]
+
+
+def test_pareto_breakdown_no_deviations_gives_empty_ranking():
+    cases = pm.build_cases(_clean_p2p_case("A"))
+    pareto = pm.pareto_breakdown(cases, "procure_to_pay")
+    assert pareto["ranked"] == []
+    assert pareto["vital_few_count"] == 0
+    assert pareto["vital_few_share_of_hours"] is None
+
+
+# ── cycle_time_control_chart ──────────────────────────────────────────────────
+
+def test_control_chart_buckets_cases_into_trailing_periods():
+    # process_mining_tool anchors periods to datetime.now(), not _BASE, so
+    # fixture cases must be "recent" (within the last few days) to land in
+    # any scored period rather than falling outside every window.
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc)
+
+    def _recent_case(case_id, days_ago, step_gap_hours=2):
+        base = now - timedelta(days=days_ago)
+        return [
+            _ev_at(case_id, "Purchase Order Created", base),
+            _ev_at(case_id, "Invoice Matched", base + timedelta(hours=step_gap_hours)),
+            _ev_at(case_id, "Payment Released", base + timedelta(hours=2 * step_gap_hours)),
+        ]
+
+    events = _recent_case("A", 0.5) + _recent_case("B", 0.5) + _recent_case("C", 2.5, step_gap_hours=20)
+    cases = pm.build_cases(events)
+    cc = pm.cycle_time_control_chart(cases, "procure_to_pay", period_days=1, periods=4)
+    assert len(cc["periods"]) == 4
+    assert cc["periods"][-1]["case_count"] == 2       # A, B landed in the most recent period
+    assert cc["scored_periods"] >= 2
+    assert cc["center_line_hours"] is not None
+    assert cc["ucl_hours"] >= cc["center_line_hours"] >= cc["lcl_hours"]
+
+
+def test_control_chart_insufficient_periods_is_honest_null():
+    cc = pm.cycle_time_control_chart({}, "procure_to_pay", period_days=1, periods=4)
+    assert cc["scored_periods"] == 0
+    assert cc["center_line_hours"] is None
+    assert cc["ucl_hours"] is None
+    assert all(not p["out_of_control"] for p in cc["periods"])
+
+
+def _ev_at(case_id, step, dt, event_id=1):
+    return {
+        "id": event_id, "adjudicated_at": dt, "final_verdict": "CLEAR", "risk_tier": "LOW",
+        "source_system": "ORACLE_FUSION", "target_tool": None, "server_name": "oracle-fusion",
+        "requires_human_review": False, "policy_violations": [], "case_id": case_id, "process_step": step,
+    }

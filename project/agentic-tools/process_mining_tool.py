@@ -34,7 +34,7 @@ db._build_control_flow_map / db.get_control_flow_map already established.
 from __future__ import annotations
 
 import statistics
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 # ── Canonical process templates ──────────────────────────────────────────────
@@ -466,6 +466,228 @@ def rework_summary(cases: dict[str, list[dict]], process: Optional[str] = None) 
              "variant": c["variant"], "started_at": c["started_at"]}
             for c in reworked
         ],
+    }
+
+
+# ── Value stream map (process cycle efficiency) ────────────────────────────────
+#
+# Textbook VSM splits every station's time into touch time (value-add work)
+# vs. wait time (queueing) using a start-of-work and end-of-work timestamp per
+# station. This platform has neither — adjudicated_at is a single instant per
+# step (when it was logged), so there is no honest way to say how long the
+# step's own work took, only how long elapsed between consecutive steps (the
+# same edges cycle_time_stats already computes). Rather than fabricate a
+# touch/wait split with no data behind it, this reclassifies those same real
+# edges by whether they advance the case along its template's documented
+# order (canonical — the forward, expected handoff) or not (deviation —
+# rework/out-of-order/off-template, i.e. where elapsed time bought no forward
+# progress). Process Cycle Efficiency = canonical hours / total hours is the
+# same ratio VSM uses for value-add %, computed from a labeling rule rather
+# than a measured station duration, and is reported as such.
+
+
+def _is_canonical_edge(src: str, tgt: str, process: Optional[str]) -> bool:
+    """True iff (src, tgt) is a consecutive pair in process's template order
+    — the one forward handoff this edge is "supposed" to be, per the
+    documented lifecycle. False for every rework loop, skip, or off-template
+    step pair, and always False when the case has no matched template
+    (nothing to be canonical against)."""
+    if not process:
+        return False
+    steps = PROCESS_TEMPLATES[process]["steps"]
+    try:
+        return steps.index(tgt) == steps.index(src) + 1
+    except ValueError:
+        return False
+
+
+def value_stream_map(cases: dict[str, list[dict]], process: Optional[str] = None) -> dict:
+    """Per-case split of real inter-step elapsed time into canonical
+    (forward, template-order) vs. deviation (rework/skip/off-template) hours,
+    aggregated into a process cycle efficiency ratio and a ranked ledger of
+    the deviation edges actually costing time — the "waste" side of the
+    map. Unscored (process_cycle_efficiency=None) when there's no case with
+    at least one timed edge, same honest-null convention cycle_time_stats
+    uses for case_duration."""
+    summaries = {c["case_id"]: c for c in list_case_summaries(cases, process)}
+    canonical_hours_by_case: list[float] = []
+    deviation_hours_by_case: list[float] = []
+    deviation_edges: dict[tuple[str, str], list[float]] = {}
+    canonical_edges: dict[tuple[str, str], list[float]] = {}
+
+    for cid, events in cases.items():
+        if cid not in summaries:
+            continue
+        case_process = summaries[cid]["process"]
+        if process and case_process != process:
+            continue
+        ordered = sorted(events, key=lambda e: _parse_ts(e.get("adjudicated_at")) or datetime.min.replace(tzinfo=None))
+        canon_h, dev_h, any_timed = 0.0, 0.0, False
+        for a, b in zip(ordered, ordered[1:]):
+            ta, tb = _parse_ts(a.get("adjudicated_at")), _parse_ts(b.get("adjudicated_at"))
+            if ta is None or tb is None or tb < ta:
+                continue
+            hours = (tb - ta).total_seconds() / 3600.0
+            key = (_step_label(a), _step_label(b))
+            any_timed = True
+            if _is_canonical_edge(key[0], key[1], case_process):
+                canon_h += hours
+                canonical_edges.setdefault(key, []).append(hours)
+            else:
+                dev_h += hours
+                deviation_edges.setdefault(key, []).append(hours)
+        if any_timed:
+            canonical_hours_by_case.append(canon_h)
+            deviation_hours_by_case.append(dev_h)
+
+    def _edge_rows(edges: dict[tuple[str, str], list[float]]) -> list[dict]:
+        rows = []
+        for (src, tgt), hrs in edges.items():
+            rows.append({
+                "source": src, "target": tgt, "count": len(hrs),
+                "total_hours": round(sum(hrs), 2),
+                "avg_hours": round(statistics.fmean(hrs), 2),
+            })
+        rows.sort(key=lambda r: r["total_hours"], reverse=True)
+        return rows
+
+    total_canon = sum(canonical_hours_by_case)
+    total_dev = sum(deviation_hours_by_case)
+    total = total_canon + total_dev
+    n = len(canonical_hours_by_case)
+
+    return {
+        "process": process,
+        "scored_cases": n,
+        "process_cycle_efficiency": round(total_canon / total, 4) if total > 0 else None,
+        "avg_value_add_hours": round(total_canon / n, 2) if n else None,
+        "avg_deviation_hours": round(total_dev / n, 2) if n else None,
+        "canonical_edges": _edge_rows(canonical_edges),
+        "deviation_edges": _edge_rows(deviation_edges),
+    }
+
+
+# ── Pareto analysis ──────────────────────────────────────────────────────────
+#
+# "Which few causes account for most of the pain" — the vital-few-vs-trivial-
+# many ranking, applied here to the deviation edges value_stream_map already
+# computes (real elapsed hours, not an invented severity score) rather than
+# to opinion-based severity ratings, keeping this consistent with the
+# platform's never-fabricate rule.
+
+
+def pareto_rank(items: list[dict], value_key: str, label_fn) -> list[dict]:
+    """Generic 80/20 ranking: sorts `items` by `value_key` descending, adds
+    pct_of_total/cumulative_pct, and flags is_vital_few for the smallest
+    leading set of items whose cumulative_pct first reaches 80% (inclusive
+    of the item that crosses the line — the standard Pareto cutoff). Pure
+    utility, reusable for any ranked-cause breakdown, not just process
+    mining's own callers."""
+    total = sum(i[value_key] for i in items)
+    ranked = sorted(items, key=lambda i: i[value_key], reverse=True)
+    cumulative = 0.0
+    out = []
+    crossed = False
+    for i in ranked:
+        cumulative += i[value_key]
+        pct = round(i[value_key] / total, 4) if total else 0.0
+        cum_pct = round(cumulative / total, 4) if total else 0.0
+        out.append({**i, "label": label_fn(i), "pct_of_total": pct, "cumulative_pct": cum_pct,
+                    "is_vital_few": not crossed})
+        if cum_pct >= 0.80:
+            crossed = True
+    return out
+
+
+def pareto_breakdown(cases: dict[str, list[dict]], process: Optional[str] = None) -> dict:
+    """Pareto-ranks this process's deviation edges (from value_stream_map) by
+    total hours lost — "which specific step-pair deviations cost the most
+    total time" — the direct, data-backed answer to "where should process
+    improvement focus first." Reported on total_hours, not just count: one
+    rare-but-very-slow deviation can outweigh many quick ones, and ranking by
+    count alone would hide that."""
+    vsm = value_stream_map(cases, process)
+    ranked = pareto_rank(
+        vsm["deviation_edges"], "total_hours",
+        lambda e: f"{e['source']} → {e['target']}",
+    )
+    vital_few = [e for e in ranked if e["is_vital_few"]]
+    return {
+        "process": process,
+        "basis": "deviation_edge_total_hours",
+        "total_deviation_hours": round(sum(e["total_hours"] for e in ranked), 2),
+        "ranked": ranked,
+        "vital_few_count": len(vital_few),
+        "vital_few_share_of_hours": round(
+            sum(e["total_hours"] for e in vital_few) / sum(e["total_hours"] for e in ranked), 4
+        ) if ranked else None,
+    }
+
+
+# ── Statistical process control (cycle-time control chart) ─────────────────────
+#
+# A single z-score outlier check (like CaseFlowGraph's) answers "is this one
+# edge unusual right now." This answers the trend question instead — is
+# overall case duration drifting out of its normal range over time — using
+# the same individuals-control-chart logic (center line ± k * population
+# stdev of the period means) as a textbook I-chart, computed over trailing
+# periods the same way db.compute_dora_trend buckets deployment metrics, so a
+# Head of Operations sees drift, not just a snapshot.
+
+
+def cycle_time_control_chart(
+    cases: dict[str, list[dict]], process: Optional[str] = None,
+    period_days: int = 7, periods: int = 8, sigma: float = 2.0,
+) -> dict:
+    """Case-duration mean per trailing period (most recent last, same
+    windowing convention as db.compute_dora_trend), plus a center line and
+    UCL/LCL fit across the periods that actually have data. A period's mean
+    outside [LCL, UCL] is flagged out_of_control — a signal worth
+    investigating, not proof of a problem on its own (a single outlier period
+    from genuinely low volume is still flagged, but reported alongside its
+    case_count so that's visible). Honest-null when fewer than two periods
+    have any cases — a center line and control limits need real variation
+    across periods to mean anything, same as the rest of this module declines
+    to score against data it doesn't have."""
+    summaries = list_case_summaries(cases, process)
+    now = datetime.now(timezone.utc)
+
+    period_rows = []
+    for i in range(periods - 1, -1, -1):
+        start = now - timedelta(days=(i + 1) * period_days)
+        end = now - timedelta(days=i * period_days)
+        durations = []
+        for c in summaries:
+            started_at = _parse_ts(c.get("started_at"))
+            if started_at is None or c.get("duration_hours") is None:
+                continue
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            if start <= started_at < end:
+                durations.append(c["duration_hours"])
+        period_rows.append({
+            "period_start": start.isoformat(), "period_end": end.isoformat(),
+            "case_count": len(durations),
+            "mean_hours": round(statistics.fmean(durations), 2) if durations else None,
+        })
+
+    scored_means = [p["mean_hours"] for p in period_rows if p["mean_hours"] is not None]
+    center_line = round(statistics.fmean(scored_means), 2) if len(scored_means) >= 2 else None
+    stdev = statistics.pstdev(scored_means) if len(scored_means) >= 2 else None
+    ucl = round(center_line + sigma * stdev, 2) if center_line is not None else None
+    lcl = round(max(0.0, center_line - sigma * stdev), 2) if center_line is not None else None
+
+    for p in period_rows:
+        p["out_of_control"] = (
+            center_line is not None and p["mean_hours"] is not None
+            and (p["mean_hours"] > ucl or p["mean_hours"] < lcl)
+        )
+
+    return {
+        "process": process, "period_days": period_days, "periods": period_rows,
+        "center_line_hours": center_line, "ucl_hours": ucl, "lcl_hours": lcl,
+        "sigma": sigma,
+        "scored_periods": len(scored_means),
     }
 
 

@@ -2085,6 +2085,185 @@ export function ProcessCycleTimeView({ theme, days }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   Value Stream Map, Pareto, Control Chart — process_mining_tool.py's
+   value_stream_map/pareto_breakdown/cycle_time_control_chart, all three
+   re-labelings/aggregations of the same real step-to-step edges Cycle Time
+   above already computes (see that module's own comments for why this is
+   NOT a measured touch-time VSM or a fabricated severity-weighted Pareto —
+   both ride on real elapsed hours only).
+   ════════════════════════════════════════════════════════════════════════ */
+
+export function ValueStreamMapView({ theme, days }) {
+  const processes = useProcessList();
+  const [process, setProcess] = useState(null);
+  const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmValueStreamMap(d, p), days, process);
+  const hasData = !!data && data.scored_cases > 0;
+  const pce = data?.process_cycle_efficiency;
+  const canonPct = pce != null ? Math.round(pce * 100) : null;
+
+  return (
+    <VizFrame theme={theme} height={480}
+      kicker="Process mining · Value Stream Map — process cycle efficiency"
+      sub="Real step-to-step hours split by whether the transition followed the template's documented order (canonical) or not (deviation: rework/skip/off-template) — not a measured per-step touch time, since this platform has no start/end-of-work timestamp for a single step."
+      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      error={error} empty={!loading && !hasData ? "No timed case transitions in this window yet." : null}
+      loading={loading && !hasData}>
+      {hasData && (
+        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 14 }}>
+            <div style={{ minWidth: 160, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+              <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>Process cycle efficiency</div>
+              <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: canonPct != null && canonPct < 60 ? theme["red-ink"] : theme["green-ink"] }}>
+                {canonPct == null ? "—" : `${canonPct}%`}
+              </div>
+            </div>
+            <div style={{ minWidth: 140, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+              <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>Avg canonical hrs/case</div>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: theme.ink }}>{_pmFmtHours(data.avg_value_add_hours)}</div>
+            </div>
+            <div style={{ minWidth: 140, padding: "10px 14px", borderRadius: 6, border: `1px solid ${theme.line}`, background: theme["surface-2"] }}>
+              <div style={{ fontSize: 9.5, color: theme["ink-4"], textTransform: "uppercase", letterSpacing: "0.05em" }}>Avg deviation hrs/case</div>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: data.avg_deviation_hours ? theme["amber-ink"] : theme.ink }}>{_pmFmtHours(data.avg_deviation_hours)}</div>
+            </div>
+          </div>
+
+          {pce != null && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ display: "flex", height: 16, borderRadius: 4, overflow: "hidden", border: `1px solid ${theme.line}` }}>
+                <div style={{ width: `${canonPct}%`, background: theme["green-ink"] }} title="Canonical (forward) hours" />
+                <div style={{ width: `${100 - canonPct}%`, background: theme["amber-ink"] }} title="Deviation hours" />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: theme["ink-4"], marginTop: 3 }}>
+                <span>Canonical {canonPct}%</span><span>Deviation {100 - canonPct}%</span>
+              </div>
+            </div>
+          )}
+
+          {data.deviation_edges.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, fontWeight: 600, color: theme.ink, marginBottom: 6 }}>Deviation edges — real time spent off the documented path</div>
+              {data.deviation_edges.slice(0, 8).map(e => (
+                <div key={`${e.source}|${e.target}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, padding: "4px 0", borderBottom: `1px solid ${theme["line-2"]}` }}>
+                  <span style={{ color: theme.ink }}>{e.source} <span style={{ color: theme["ink-4"] }}>→</span> {e.target}</span>
+                  <span className="mono" style={{ color: theme["amber-ink"] }}>{_pmFmtHours(e.total_hours)} · {e.count}x</span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </VizFrame>
+  );
+}
+
+export function ParetoView({ theme, days }) {
+  const processes = useProcessList();
+  const [process, setProcess] = useState(null);
+  const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmPareto(d, p), days, process);
+  const ranked = data?.ranked || [];
+  const hasData = ranked.length > 0;
+
+  return (
+    <VizFrame theme={theme} height={480}
+      kicker="Process mining · Pareto — where deviation time concentrates"
+      sub="Deviation edges (Value Stream Map's off-path transitions) ranked by total real hours lost, vital few (≈80% cumulative) highlighted — never ranked by an invented severity score."
+      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      error={error} empty={!loading && !hasData ? "No deviation edges in this window — every observed transition followed the documented order." : null}
+      loading={loading && !hasData}>
+      {hasData && (
+        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
+          <div style={{ fontSize: 11.5, color: theme["ink-2"], marginBottom: 12 }}>
+            <b style={{ color: theme.ink }}>{data.vital_few_count}</b> of {ranked.length} deviation type{ranked.length !== 1 ? "s" : ""} account for{" "}
+            <b style={{ color: theme.ink }}>{data.vital_few_share_of_hours != null ? `${Math.round(data.vital_few_share_of_hours * 100)}%` : "—"}</b> of{" "}
+            {_pmFmtHours(data.total_deviation_hours)} total deviation time.
+          </div>
+          {ranked.map(r => (
+            <div key={`${r.source}|${r.target}`} style={{ marginBottom: 9 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                <span style={{ color: theme.ink, fontWeight: r.is_vital_few ? 700 : 400 }}>{r.label}</span>
+                <span className="mono" style={{ color: theme["ink-2"] }}>
+                  {_pmFmtHours(r.total_hours)} · {r.count}x · cum {Math.round(r.cumulative_pct * 100)}%
+                </span>
+              </div>
+              <div style={{ height: 7, borderRadius: 4, background: theme["surface-2"], overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", width: `${Math.max(2, r.pct_of_total * 100)}%`,
+                  background: r.is_vital_few ? theme["red-ink"] : theme["ink-4"], borderRadius: 4,
+                }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </VizFrame>
+  );
+}
+
+const _CONTROL_CHART_PERIODS = 8;
+
+export function CycleTimeControlChartView({ theme }) {
+  const processes = useProcessList();
+  const [process, setProcess] = useState(null);
+  const [periodDays, setPeriodDays] = useState(7);
+  const [state, setState] = useState({ data: null, loading: true, error: null });
+
+  useEffect(() => {
+    setState(s => ({ ...s, loading: true }));
+    window.MCP.pmControlChart(process, periodDays, _CONTROL_CHART_PERIODS)
+      .then(d => setState({ data: d, loading: false, error: null }))
+      .catch(e => setState({ data: null, loading: false, error: e.message || String(e) }));
+  }, [process, periodDays]);
+
+  const { data, loading, error } = state;
+  const periods = data?.periods || [];
+  const hasLimits = data && data.scored_periods >= 2;
+  const maxHours = Math.max(1, data?.ucl_hours || 0, ...periods.map(p => p.mean_hours || 0));
+
+  return (
+    <VizFrame theme={theme} height={300}
+      kicker="Process mining · Control Chart — is cycle time drifting?"
+      sub="Mean case duration per trailing period vs. a center line and ±2σ control limits fit across periods — a bar outside the band is a drift signal worth investigating, not proof of a problem on its own."
+      controls={
+        <div style={{ display: "flex", gap: 8 }}>
+          <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />
+          <select value={periodDays} onChange={e => setPeriodDays(Number(e.target.value))}
+            style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink)" }}>
+            <option value={1}>Daily periods</option>
+            <option value={7}>Weekly periods</option>
+            <option value={30}>Monthly periods</option>
+          </select>
+        </div>
+      }
+      error={error} empty={!loading && !hasLimits ? "Not enough periods with case data yet to establish control limits." : null}
+      loading={loading && !data}>
+      {hasLimits && (
+        <div style={{ position: "absolute", inset: 0, overflow: "auto", padding: 14 }}>
+          <div style={{ fontSize: 10.5, color: theme["ink-2"], marginBottom: 10 }}>
+            Center line <b style={{ color: theme.ink }}>{_pmFmtHours(data.center_line_hours)}</b> · UCL {_pmFmtHours(data.ucl_hours)} · LCL {_pmFmtHours(data.lcl_hours)} ({data.sigma}σ)
+          </div>
+          <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 90 }}>
+            {periods.map((p, i) => {
+              const h = p.mean_hours == null ? 2 : Math.max(3, (p.mean_hours / maxHours) * 90);
+              return (
+                <div key={i} title={p.mean_hours == null ? "no data" : `${_pmFmtHours(p.mean_hours)} (${p.case_count} cases)`}
+                  style={{
+                    flex: 1, height: h, borderRadius: 2,
+                    background: p.mean_hours == null ? theme.line : p.out_of_control ? theme["red-ink"] : theme.acc,
+                  }} />
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: theme["ink-4"], marginTop: 2 }}>
+            <span>{periods.length} periods ago</span>
+            <span>latest</span>
+          </div>
+        </div>
+      )}
+    </VizFrame>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    Journal Entry Testing — je_testing_tool.py's deterministic anomaly rules
    (round-dollar, weekend/after-hours, preparer==approver SoD, threshold-
    unapproved, rare account, unusual description, velocity spike) over real

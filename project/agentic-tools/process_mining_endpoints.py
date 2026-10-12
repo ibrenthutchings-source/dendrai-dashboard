@@ -12,6 +12,9 @@ Router prefix: /process-mining
     GET /process-mining/cycle-times    Per-edge duration stats + overall case duration + bottleneck
     GET /process-mining/rework         Cases that revisited an already-completed step
     GET /process-mining/cases          Per-case detail (steps, duration, variant, conformance)
+    GET /process-mining/value-stream-map  Canonical vs. deviation hours + process cycle efficiency
+    GET /process-mining/pareto         Deviation edges ranked by total hours lost, 80/20 cutoff flagged
+    GET /process-mining/control-chart  Case-duration trend with center line + UCL/LCL per trailing period
     POST /process-mining/walkthrough-narrative  Draft a walkthrough narrative from an interview transcript + real process-mining/CaC/PaC evidence
     GET /process-mining/walkthrough-narrative/history  HITL status of this process's submitted walkthrough narratives
 
@@ -119,6 +122,29 @@ async def cases_endpoint(days: int = 30, process: Optional[str] = None, limit: i
     cases = await _load_cases(days)
     out = pm.list_case_summaries(cases, process)
     return {"cases": out[:limit], "total": len(out), "window_days": days}
+
+
+@router.get("/value-stream-map")
+async def value_stream_map_endpoint(days: int = 30, process: Optional[str] = None):
+    cases = await _load_cases(days)
+    return {**pm.value_stream_map(cases, process), "window_days": days}
+
+
+@router.get("/pareto")
+async def pareto_endpoint(days: int = 30, process: Optional[str] = None):
+    cases = await _load_cases(days)
+    return {**pm.pareto_breakdown(cases, process), "window_days": days}
+
+
+@router.get("/control-chart")
+async def control_chart_endpoint(
+    process: Optional[str] = None, period_days: int = 7, periods: int = 8,
+):
+    # No `days` query param here — the chart needs period_days * periods of
+    # history regardless of the screen's own trailing-window selector, same
+    # reasoning db.compute_dora_trend's own caller (devops-health.jsx) applies.
+    cases = await _load_cases(period_days * periods)
+    return pm.cycle_time_control_chart(cases, process, period_days=period_days, periods=periods)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
