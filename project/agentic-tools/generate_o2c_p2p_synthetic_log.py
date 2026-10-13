@@ -312,6 +312,16 @@ def _goods_receipt_violating(rng, rid):
             "grn_quality_inspection_passed": False, "grn_received_by": rng.choice(_ACTORS)}
 
 
+def _quality_inspection_clean(rng, rid):
+    return {"qi_inspector": rng.choice(_ACTORS), "qi_passed": True,
+            "qi_defect_rate_pct": round(rng.uniform(0.0, 2.0), 1), "qi_reference": rid}
+
+
+def _quality_inspection_violating(rng, rid):
+    return {"qi_inspector": rng.choice(_ACTORS), "qi_passed": False,
+            "qi_defect_rate_pct": round(rng.uniform(8.0, 25.0), 1), "qi_reference": rid}
+
+
 def _putaway_clean(rng, rid):
     return {"putaway_location": f"WH-{rng.randint(1,6)}-{rng.randint(10,99)}",
             "putaway_qty": rng.randint(50, 2000), "putaway_variance_pct": 0.0,
@@ -322,6 +332,26 @@ def _putaway_violating(rng, rid):
     return {"putaway_location": f"WH-{rng.randint(1,6)}-{rng.randint(10,99)}",
             "putaway_qty": rng.randint(50, 2000), "putaway_variance_pct": round(rng.uniform(8.0, 30.0), 1),
             "putaway_cycle_count_matched": False}
+
+
+def _pick_clean(rng, rid):
+    return {"pick_order_number": _rid("SO", rng), "pick_qty": rng.randint(10, 1800),
+            "pick_picker": rng.choice(_ACTORS), "pick_qty_matches_order": True}
+
+
+def _pick_violating(rng, rid):
+    return {"pick_order_number": _rid("SO", rng), "pick_qty": rng.randint(10, 1800),
+            "pick_picker": rng.choice(_ACTORS), "pick_qty_matches_order": False}
+
+
+def _pack_clean(rng, rid):
+    return {"pack_order_number": _rid("SO", rng), "pack_packer": rng.choice(_ACTORS),
+            "pack_carton_count": rng.randint(1, 40), "pack_verified": True}
+
+
+def _pack_violating(rng, rid):
+    return {"pack_order_number": _rid("SO", rng), "pack_packer": rng.choice(_ACTORS),
+            "pack_carton_count": rng.randint(1, 40), "pack_verified": False}
 
 
 def _shipment_clean(rng, rid):
@@ -338,17 +368,25 @@ def _shipment_violating(rng, rid):
 
 REVENUE_KIND        = TxnKind("revenue", "REVENUE_RECOGNITION_EVENT", "revenue_recognition_event", "SO", _revenue_clean, _revenue_violating)
 SALES_ORDER_KIND     = TxnKind("sales_order", "SALES_ORDER_CREDIT_EVENT", "sales_order_credit_event", "SO", _sales_order_clean, _sales_order_violating)
+CREDIT_APPROVAL_KIND = TxnKind("credit_approval", "CREDIT_APPROVAL_EVENT", "credit_approval_event", "CR", _credit_approval_clean, _credit_approval_violating)
+O2C_SHIPMENT_KIND    = TxnKind("o2c_shipment", "O2C_SHIPMENT_EVENT", "o2c_shipment_event", "SHP", _o2c_shipment_clean, _o2c_shipment_violating)
 BILLING_KIND         = TxnKind("billing", "BILLING_EVENT", "billing_event", "INV", _billing_clean, _billing_violating)
 CASH_KIND            = TxnKind("cash", "CASH_APPLICATION_EVENT", "cash_application_event", "CR", _cash_clean, _cash_violating)
 CUSTOMER_MASTER_KIND = TxnKind("customer_master", "CUSTOMER_MASTER_CHANGE", "customer_master_change", "CUST", _customer_master_clean, _customer_master_violating)
 AR_AGING_KIND        = TxnKind("ar_aging", "AR_AGING_EVENT", "ar_aging_event", "AR", _ar_aging_clean, _ar_aging_violating)
+REQUISITION_KIND     = TxnKind("requisition", "REQUISITION_EVENT", "requisition_event", "REQ", _requisition_clean, _requisition_violating)
 PURCHASE_ORDER_KIND  = TxnKind("purchase_order", "PURCHASE_ORDER_EVENT", "purchase_order_event", "PO", _po_clean, _po_violating)
+PO_GOODS_RECEIPT_KIND = TxnKind("po_goods_receipt", "PO_GOODS_RECEIPT_EVENT", "po_goods_receipt_event", "GR", _po_goods_receipt_clean, _po_goods_receipt_violating)
 INVOICE_KIND         = TxnKind("invoice", "INVOICE_MATCH_EVENT", "invoice_match_event", "INV", _invoice_clean, _invoice_violating)
 VENDOR_MASTER_KIND   = TxnKind("vendor_master", "VENDOR_MASTER_CHANGE", "vendor_master_change", "VEND", _vendor_master_clean, _vendor_master_violating)
+PAYMENT_APPROVAL_KIND = TxnKind("payment_approval", "PAYMENT_APPROVAL_EVENT", "payment_approval_event", "PAA", _payment_approval_clean, _payment_approval_violating)
 PAYMENT_KIND         = TxnKind("payment", "PAYMENT_RUN_EVENT", "payment_run_event", "PAY", _payment_clean, _payment_violating)
 SOD_KIND             = TxnKind("sod", "PROCUREMENT_SOD_CONFLICT", "procurement_sod_conflict", "USR", _sod_clean, _sod_violating)
 GOODS_RECEIPT_KIND   = TxnKind("goods_receipt", "GOODS_RECEIPT_EVENT", "goods_receipt_event", "GRN", _goods_receipt_clean, _goods_receipt_violating)
+QUALITY_INSPECTION_KIND = TxnKind("quality_inspection", "QUALITY_INSPECTION_EVENT", "quality_inspection_event", "QI", _quality_inspection_clean, _quality_inspection_violating)
 PUTAWAY_KIND         = TxnKind("putaway", "INVENTORY_PUTAWAY_EVENT", "inventory_putaway_event", "PUT", _putaway_clean, _putaway_violating)
+PICK_KIND            = TxnKind("pick", "INVENTORY_PICK_EVENT", "inventory_pick_event", "PIK", _pick_clean, _pick_violating)
+PACK_KIND            = TxnKind("pack", "INVENTORY_PACK_EVENT", "inventory_pack_event", "PAK", _pack_clean, _pack_violating)
 SHIPMENT_KIND        = TxnKind("shipment", "GOODS_SHIPMENT_EVENT", "goods_shipment_event", "SHP", _shipment_clean, _shipment_violating)
 
 # Standalone kinds: not naturally a multi-step lifecycle, so each instance is
