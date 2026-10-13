@@ -144,9 +144,13 @@ def _detail(rng: random.Random, rid: str, violating: bool, actor_field: str = "a
 
 # ── Oracle Fusion — Hire to Retire ───────────────────────────────────────────
 _HIRE_TO_RETIRE = ProcessDef("REQ", [
-    SimStep("Requisition Approved", "HCM_REQUISITION_EVENT", (0, 0),
+    SimStep("Requisition Created", "HCM_REQUISITION_CREATE_EVENT", (0, 0),
             lambda rng, rid, v: _detail(rng, rid, v, "hiring_manager")),
-    SimStep("Offer Accepted", "HCM_OFFER_EVENT", (5, 21),
+    SimStep("Requisition Approved", "HCM_REQUISITION_EVENT", (1, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "hiring_manager")),
+    SimStep("Offer Extended", "HCM_OFFER_EXTENDED_EVENT", (5, 21),
+            lambda rng, rid, v: _detail(rng, rid, v, "recruiter", "offer_amount", (60000, 220000))),
+    SimStep("Offer Accepted", "HCM_OFFER_EVENT", (1, 10),
             lambda rng, rid, v: _detail(rng, rid, v, "candidate", "offer_amount", (60000, 220000))),
     SimStep("Onboarding Completed", "HCM_ONBOARDING_EVENT", (1, 14),
             lambda rng, rid, v: _detail(rng, rid, v, "new_hire", extra={"background_check_cleared": not v})),
@@ -159,6 +163,8 @@ _HIRE_TO_RETIRE = ProcessDef("REQ", [
             lambda rng, rid, v: _detail(rng, rid, v, "employee", extra={"access_revoked": not v}),
             violating_event_type="TERMINATED_EMPLOYEE_ACCESS_RETAINED",
             violating_flag="terminated_employee_access_retained"),
+    SimStep("Final Pay Issued", "HCM_FINAL_PAY_EVENT", (1, 10),
+            lambda rng, rid, v: _detail(rng, rid, v, "payroll_admin", "final_pay_amount", (500, 20000))),
 ])
 
 # ── SailPoint — IAM ───────────────────────────────────────────────────────────
@@ -166,7 +172,9 @@ _IAM = ProcessDef("ACC", [
     SimStep("Access Requested", "IAM_ACCESS_REQUEST_EVENT", (0, 0),
             lambda rng, rid, v: _detail(rng, rid, v, "identity",
                                          extra={"entitlement": _iam_entitlement(rng)})),
-    SimStep("Access Approved", "IAM_ACCESS_APPROVAL_EVENT", (0, 3),
+    SimStep("Access Request Reviewed", "IAM_ACCESS_REVIEW_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "manager")),
+    SimStep("Access Approved", "IAM_ACCESS_APPROVAL_EVENT", (0, 2),
             lambda rng, rid, v: _detail(rng, rid, v, "identity",
                                          extra={"sod_conflict_detected": v}),
             violating_flag="sod_violation"),
@@ -197,34 +205,48 @@ _RECORD_TO_REPORT = ProcessDef("JE", [
             lambda rng, rid, v: _detail(rng, rid, v, "preparer", "je_amount", (5000, 999_999),
                                          extra={"account": rng.choice(_JE_ACCOUNTS),
                                                 "description": rng.choice(_JE_DESCRIPTIONS)})),
-    SimStep("Account Reconciled", "R2R_RECONCILIATION_EVENT", (3, 20),
+    SimStep("Journal Entry Approved", "R2R_JE_APPROVAL_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "approver")),
+    SimStep("Account Reconciled", "R2R_RECONCILIATION_EVENT", (1, 15),
             lambda rng, rid, v: _detail(rng, rid, v, "reconciler", extra={"variance_identified": v})),
     SimStep("Period Closed", "R2R_PERIOD_CLOSE_EVENT", (1, 10),
             lambda rng, rid, v: _detail(rng, rid, v, "controller")),
     SimStep("Financial Statement Published", "R2R_FS_PUBLISH_EVENT", (1, 5),
             lambda rng, rid, v: _detail(rng, rid, v, "cfo_office")),
+    SimStep("Flux Analysis Reviewed", "R2R_FLUX_REVIEW_EVENT", (1, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "fpna_analyst")),
 ])
 
 # ── SAP HANA — Fixed Assets ──────────────────────────────────────────────────
 _FIXED_ASSETS = ProcessDef("FA", [
     SimStep("Asset Acquired", "FA_ACQUISITION_EVENT", (0, 0),
             lambda rng, rid, v: _detail(rng, rid, v, "requestor", "acquisition_cost", (5000, 500000))),
-    SimStep("Asset Capitalized", "FA_CAPITALIZATION_EVENT", (2, 15),
+    SimStep("Asset Tagged", "FA_TAGGING_EVENT", (1, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "asset_custodian")),
+    SimStep("Asset Capitalized", "FA_CAPITALIZATION_EVENT", (1, 10),
             lambda rng, rid, v: _detail(rng, rid, v, "accountant", extra={"capitalization_threshold_met": not v})),
     SimStep("Depreciation Posted", "FA_DEPRECIATION_EVENT", (30, 90),
             lambda rng, rid, v: _detail(rng, rid, v, "accountant")),
+    SimStep("Impairment Reviewed", "FA_IMPAIRMENT_REVIEW_EVENT", (90, 365),
+            lambda rng, rid, v: _detail(rng, rid, v, "accountant", extra={"impairment_identified": v})),
     SimStep("Asset Disposed", "FA_DISPOSAL_EVENT", (180, 1800),
             lambda rng, rid, v: _detail(rng, rid, v, "requestor", extra={"disposal_approved": not v})),
 ])
 
 # ── SAP HANA — Vendor Management ─────────────────────────────────────────────
+# Risk assessment/due diligence happens BEFORE onboarding in a real
+# procurement walkthrough — the original order here had it backwards.
 _VENDOR_MANAGEMENT = ProcessDef("VEN", [
-    SimStep("Vendor Onboarded", "VM_ONBOARDING_EVENT", (0, 0),
-            lambda rng, rid, v: _detail(rng, rid, v, "sourcing_owner", extra={"due_diligence_completed": not v})),
-    SimStep("Vendor Risk Assessed", "VM_RISK_ASSESSMENT_EVENT", (5, 30),
+    SimStep("Vendor Risk Assessed", "VM_RISK_ASSESSMENT_EVENT", (0, 0),
             lambda rng, rid, v: _detail(rng, rid, v, "risk_analyst")),
+    SimStep("Vendor Onboarded", "VM_ONBOARDING_EVENT", (5, 20),
+            lambda rng, rid, v: _detail(rng, rid, v, "sourcing_owner", extra={"due_diligence_completed": not v})),
+    SimStep("Contract Signed", "VM_CONTRACT_SIGNED_EVENT", (1, 10),
+            lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner", "contract_value", (10000, 3000000))),
     SimStep("Vendor Contract Renewed", "VM_CONTRACT_RENEWAL_EVENT", (180, 400),
             lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner", "contract_value", (10000, 3000000))),
+    SimStep("Vendor Performance Reviewed", "VM_PERFORMANCE_REVIEW_EVENT", (60, 180),
+            lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner")),
     SimStep("Vendor Offboarded", "VM_OFFBOARDING_EVENT", (60, 700),
             lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner")),
 ])
@@ -237,7 +259,11 @@ _PAYROLL = ProcessDef("TS", [
             lambda rng, rid, v: _detail(rng, rid, v, "manager")),
     SimStep("Payroll Calculated", "PAYROLL_CALCULATION_EVENT", (1, 3),
             lambda rng, rid, v: _detail(rng, rid, v, "payroll_admin", "gross_pay", (1500, 12000))),
-    SimStep("Payroll Disbursed", "PAYROLL_DISBURSEMENT_EVENT", (0, 2),
+    SimStep("Payroll Approved", "PAYROLL_APPROVAL_EVENT", (0, 1),
+            lambda rng, rid, v: _detail(rng, rid, v, "payroll_manager")),
+    SimStep("Payroll Disbursed", "PAYROLL_DISBURSEMENT_EVENT", (0, 1),
+            lambda rng, rid, v: _detail(rng, rid, v, "treasury")),
+    SimStep("Payslip Issued", "PAYROLL_PAYSLIP_EVENT", (0, 1),
             lambda rng, rid, v: _detail(rng, rid, v, "treasury")),
 ])
 
@@ -245,6 +271,8 @@ _PAYROLL = ProcessDef("TS", [
 _INVENTORY_MASTER = ProcessDef("SKU", [
     SimStep("Item Master Created", "INV_MASTER_CREATE_EVENT", (0, 0),
             lambda rng, rid, v: _detail(rng, rid, v, "planner")),
+    SimStep("Item Master Approved", "INV_MASTER_APPROVAL_EVENT", (0, 3),
+            lambda rng, rid, v: _detail(rng, rid, v, "category_manager")),
     SimStep("Standard Cost Updated", "INV_STD_COST_UPDATE_EVENT", (10, 120),
             lambda rng, rid, v: _detail(rng, rid, v, "planner", "new_standard_cost", (5, 5000))),
     SimStep("Item Master Deactivated", "INV_MASTER_DEACTIVATE_EVENT", (200, 1200),

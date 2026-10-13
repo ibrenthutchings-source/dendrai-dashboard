@@ -40,10 +40,29 @@ def _ev(case_id, step, day_offset, verdict="CLEAR", violations=None, event_id=1)
 
 
 def _clean_p2p_case(case_id="PO-1"):
+    # Deliberately only 3 of procure_to_pay's now-6 canonical steps — used by
+    # tests (cycle-time, rework, variant violation-rate) that just need SOME
+    # P2P-labeled case to compute over, not a fully template-conforming one.
+    # classify_case_process's Jaccard overlap still tags this procure_to_pay.
+    # See _full_clean_p2p_case below for a case that IS fully conforming.
     return [
         _ev(case_id, "Purchase Order Created", 0),
         _ev(case_id, "Invoice Matched", 3),
         _ev(case_id, "Payment Released", 6),
+    ]
+
+
+def _full_clean_p2p_case(case_id="PO-1"):
+    """Every one of procure_to_pay's 6 canonical steps, in template order —
+    for tests that check exact conformance/is_canonical/process cycle
+    efficiency, which _clean_p2p_case's partial 3-step shape can't satisfy."""
+    return [
+        _ev(case_id, "Purchase Requisition Approved", 0),
+        _ev(case_id, "Purchase Order Created", 1),
+        _ev(case_id, "Goods Receipt Confirmed", 4),
+        _ev(case_id, "Invoice Matched", 6),
+        _ev(case_id, "Payment Approved", 7),
+        _ev(case_id, "Payment Released", 9),
     ]
 
 
@@ -108,9 +127,12 @@ def test_conformance_unscored_when_no_process_match():
     assert result["conforming"] is None
 
 
+_P2P_FULL_STEPS = ["Purchase Requisition Approved", "Purchase Order Created", "Goods Receipt Confirmed",
+                   "Invoice Matched", "Payment Approved", "Payment Released"]
+
+
 def test_conformance_conforming_case():
-    steps = ["Purchase Order Created", "Invoice Matched", "Payment Released"]
-    result = pm.conformance_check_case(steps, "procure_to_pay")
+    result = pm.conformance_check_case(_P2P_FULL_STEPS, "procure_to_pay")
     assert result["scored"] is True
     assert result["conforming"] is True
     assert result["missing_steps"] == []
@@ -118,7 +140,7 @@ def test_conformance_conforming_case():
 
 
 def test_conformance_detects_missing_step():
-    steps = ["Purchase Order Created", "Payment Released"]
+    steps = [s for s in _P2P_FULL_STEPS if s != "Invoice Matched"]
     result = pm.conformance_check_case(steps, "procure_to_pay")
     assert result["conforming"] is False
     assert result["missing_steps"] == ["Invoice Matched"]
@@ -126,7 +148,7 @@ def test_conformance_detects_missing_step():
 
 
 def test_conformance_detects_out_of_order():
-    steps = ["Payment Released", "Purchase Order Created", "Invoice Matched"]
+    steps = ["Payment Released"] + [s for s in _P2P_FULL_STEPS if s != "Payment Released"]
     result = pm.conformance_check_case(steps, "procure_to_pay")
     assert result["conforming"] is False
     assert result["out_of_order"] is True
@@ -154,8 +176,8 @@ def test_conformance_detects_extra_step():
 
 def test_variant_analysis_most_frequent_variant_is_happy_path():
     events = (
-        _clean_p2p_case("A") + _clean_p2p_case("B") + _clean_p2p_case("C")
-        + [_ev("D", "Purchase Order Created", 0), _ev("D", "Payment Released", 1)]  # deviant, skips a step
+        _full_clean_p2p_case("A") + _full_clean_p2p_case("B") + _full_clean_p2p_case("C")
+        + [_ev("D", "Purchase Order Created", 0), _ev("D", "Payment Released", 1)]  # deviant, skips steps
     )
     cases = pm.build_cases(events)
     variants = pm.variant_analysis(cases, "procure_to_pay")
@@ -189,8 +211,8 @@ def test_variant_analysis_empty_cases():
 
 def test_conformance_summary_rate_and_breakdown():
     events = (
-        _clean_p2p_case("A") + _clean_p2p_case("B")
-        + [_ev("C", "Purchase Order Created", 0), _ev("C", "Payment Released", 1)]  # missing step
+        _full_clean_p2p_case("A") + _full_clean_p2p_case("B")
+        + [_ev("C", "Purchase Order Created", 0), _ev("C", "Payment Released", 1)]  # missing steps
     )
     cases = pm.build_cases(events)
     summary = pm.conformance_summary(cases, "procure_to_pay")
@@ -264,7 +286,7 @@ def test_rework_summary_no_cases_gives_none_rate():
 # ── summary (one-shot overview) ──────────────────────────────────────────────
 
 def test_summary_buckets_untemplated_and_per_process():
-    events = _clean_p2p_case("A") + [_ev("R1", "Revenue Recognized", 0)]
+    events = _full_clean_p2p_case("A") + [_ev("R1", "Revenue Recognized", 0)]
     result = pm.summary(events)
     assert result["total_cases"] == 2
     assert result["untemplated_cases"] == 1
@@ -280,25 +302,34 @@ def test_summary_empty_events():
 
 # ── value_stream_map ──────────────────────────────────────────────────────────
 
-def test_value_stream_map_splits_canonical_from_deviation_hours():
-    # Clean case: both edges are consecutive template pairs -> all canonical.
-    # Reworked case: an extra Invoice Matched -> Purchase Order Created loop
-    # (not a template-consecutive pair) -> that edge is a deviation.
-    events = _clean_p2p_case("A") + [
-        _ev("B", "Purchase Order Created", 0),
-        _ev("B", "Invoice Matched", 1),
-        _ev("B", "Purchase Order Created", 2),  # loops back: deviation edge
-        _ev("B", "Invoice Matched", 3),
-        _ev("B", "Payment Released", 4),
+def _p2p_case_with_rework_loop(case_id):
+    """A full, otherwise-canonical P2P case that loops Invoice Matched back
+    to Purchase Order Created once (a bounced invoice sent back for a new
+    PO) before completing normally — Invoice Matched -> Purchase Order
+    Created is not a template-consecutive pair, so that one edge is a
+    deviation; every other edge is still canonical."""
+    return [
+        _ev(case_id, "Purchase Requisition Approved", 0),
+        _ev(case_id, "Purchase Order Created", 1),
+        _ev(case_id, "Goods Receipt Confirmed", 2),
+        _ev(case_id, "Invoice Matched", 3),
+        _ev(case_id, "Purchase Order Created", 4),  # loops back: deviation edge
+        _ev(case_id, "Invoice Matched", 5),
+        _ev(case_id, "Payment Approved", 6),
+        _ev(case_id, "Payment Released", 7),
     ]
+
+
+def test_value_stream_map_splits_canonical_from_deviation_hours():
+    events = _full_clean_p2p_case("A") + _p2p_case_with_rework_loop("B")
     cases = pm.build_cases(events)
     vsm = pm.value_stream_map(cases, "procure_to_pay")
     assert vsm["scored_cases"] == 2
     dev_pairs = {(e["source"], e["target"]) for e in vsm["deviation_edges"]}
     assert ("Invoice Matched", "Purchase Order Created") in dev_pairs
     canon_pairs = {(e["source"], e["target"]) for e in vsm["canonical_edges"]}
-    assert ("Purchase Order Created", "Invoice Matched") in canon_pairs
-    assert ("Invoice Matched", "Payment Released") in canon_pairs
+    assert ("Purchase Order Created", "Goods Receipt Confirmed") in canon_pairs
+    assert ("Invoice Matched", "Payment Approved") in canon_pairs
     assert 0.0 < vsm["process_cycle_efficiency"] < 1.0
 
 
@@ -310,7 +341,7 @@ def test_value_stream_map_no_cases_is_honest_null():
 
 
 def test_value_stream_map_all_canonical_is_100pct_efficient():
-    cases = pm.build_cases(_clean_p2p_case("A"))
+    cases = pm.build_cases(_full_clean_p2p_case("A"))
     vsm = pm.value_stream_map(cases, "procure_to_pay")
     assert vsm["process_cycle_efficiency"] == 1.0
     assert vsm["deviation_edges"] == []
@@ -335,12 +366,16 @@ def test_pareto_rank_empty_items():
 
 
 def test_pareto_breakdown_ranks_deviation_edges_by_total_hours():
-    events = _clean_p2p_case("A") + [
-        _ev("B", "Purchase Order Created", 0),
-        _ev("B", "Invoice Matched", 1),
-        _ev("B", "Purchase Order Created", 11),  # long deviation loop: 10 days
-        _ev("B", "Invoice Matched", 12),
-        _ev("B", "Payment Released", 13),
+    events = _full_clean_p2p_case("A") + [
+        _ev("B", "Purchase Requisition Approved", 0),
+        _ev("B", "Purchase Order Created", 1),
+        _ev("B", "Goods Receipt Confirmed", 2),
+        _ev("B", "Invoice Matched", 3),
+        _ev("B", "Purchase Order Created", 13),  # long deviation loop: 10 days
+        _ev("B", "Goods Receipt Confirmed", 14),  # re-enters the canonical path cleanly
+        _ev("B", "Invoice Matched", 15),
+        _ev("B", "Payment Approved", 16),
+        _ev("B", "Payment Released", 17),
     ]
     cases = pm.build_cases(events)
     pareto = pm.pareto_breakdown(cases, "procure_to_pay")
@@ -352,7 +387,7 @@ def test_pareto_breakdown_ranks_deviation_edges_by_total_hours():
 
 
 def test_pareto_breakdown_no_deviations_gives_empty_ranking():
-    cases = pm.build_cases(_clean_p2p_case("A"))
+    cases = pm.build_cases(_full_clean_p2p_case("A"))
     pareto = pm.pareto_breakdown(cases, "procure_to_pay")
     assert pareto["ranked"] == []
     assert pareto["vital_few_count"] == 0

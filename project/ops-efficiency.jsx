@@ -4,38 +4,44 @@
    rework — see process_mining_tool.py), reframed and re-weighted
    for a Head of Operations rather than a compliance-monitoring one.
 
-   Layout follows a deliberate priority order, not four equal tabs:
+   Layout: a fixed, always-visible summary first, then the detail split
+   into tabs (added once the screen grew to 7 distinct views stacked on
+   top of each other — a tab bar keeps each one scannable instead of a
+   long scroll).
      1. Headline  — bottleneck (where time is lost) + SLA breaches
                     (what it costs). The two measures a Head of Ops
-                    asks for first.
+                    asks for first. Always visible, above the tabs.
      2. Alerts    — rework rate and happy-path/template drift, shown
                     only when they cross a threshold. Leading
                     indicators: a process drifting or reworking today
-                    is a bottleneck/breach next week.
-     3. Cycle Time — full detail, visible by default (Tier 1).
-     3b. Value Stream Map — the same Cycle Time edges, re-labeled
+                    is a bottleneck/breach next week. Always visible.
+     3. Process table — one row per active process. Always visible.
+     Tabs (OpsTabBar), in the same priority order the screen used to
+     stack them in, Tier 1 first:
+       Cycle Time    — full detail (default tab).
+       Value Stream Map — the same Cycle Time edges, re-labeled
                     canonical (forward, template order) vs. deviation
                     (rework/skip/off-template), rolled into a process
                     cycle efficiency ratio. See process_mining_tool.py's
                     value_stream_map for why this isn't a textbook
                     touch-time VSM (no per-step start/end timestamp
                     exists to measure that honestly).
-     3c. Pareto    — those same deviation edges, ranked by total hours
+       Pareto        — those same deviation edges, ranked by total hours
                     lost with the 80/20 vital-few cutoff flagged — "fix
                     these first," not a flat deviation list.
-     3d. Control Chart — case-duration trend across trailing periods
+       Control Chart — case-duration trend across trailing periods
                     against a center line + UCL/LCL, so drift shows up
                     before it becomes next week's bottleneck.
-     3e. Root Cause Investigation — 5 Whys / Fishbone, collapsed by
-                    default. AI-generated HYPOTHESES only, always seeded
-                    from a real bottleneck picked off a dropdown (never
-                    typed-in free text), every individual why/cause
-                    self-labeled evidence vs. assumption by the model,
-                    never auto-written into the risk register. See
-                    ai_endpoints.py's five_whys/fishbone for the full
-                    guardrail rationale.
-     4. Variants  — full detail, visible but secondary (Tier 2).
-     5. Case Flow Graph — volume drill-down, collapsed by default.
+       Root Cause    — 5 Whys / Fishbone. AI-generated HYPOTHESES only,
+                    always seeded from a real bottleneck picked off a
+                    dropdown (never typed-in free text), every individual
+                    why/cause self-labeled evidence vs. assumption by the
+                    model, never auto-written into the risk register.
+                    See ai_endpoints.py's five_whys/fishbone for the
+                    full guardrail rationale.
+       Variants      — Tier 2 detail.
+       Case Flow Graph — volume drill-down; its rawEvents fetch is lazy,
+                    firing only once this tab is actually selected.
                     Answers "how much volume is backed up here" only
                     after Cycle Time has already said where "here" is.
 
@@ -311,7 +317,6 @@ function FishboneResult({ data }) {
 }
 
 function RootCauseInvestigation({ days, summary }) {
-  const [open, setOpen] = useState(false);
   const [seedKey, setSeedKey] = useState("");
   const [whys, setWhys] = useState({ data: null, loading: false, error: null });
   const [fishbone, setFishbone] = useState({ data: null, loading: false, error: null });
@@ -364,12 +369,8 @@ function RootCauseInvestigation({ days, summary }) {
 
   return (
     <div style={{ marginBottom: 24 }}>
-      <button className="btn btn-sm" onClick={() => setOpen(o => !o)}>
-        {open ? "Hide" : "Show"} Root Cause Investigation — 5 Whys / Fishbone ▾
-      </button>
-      {open && (
-        <div style={{ marginTop: 10, border: "1px solid var(--line)", borderRadius: 8, padding: "14px 16px" }}>
-          {!seeds.length ? (
+      <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "14px 16px" }}>
+        {!seeds.length ? (
             <Empty>No bottleneck identified yet in this window — nothing to investigate.</Empty>
           ) : (
             <>
@@ -415,8 +416,7 @@ function RootCauseInvestigation({ days, summary }) {
               )}
             </>
           )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -464,16 +464,50 @@ function OpsBriefPanel({ days, process, summary }) {
   );
 }
 
+// Detail tabs, in the same priority order the screen used to stack them in
+// (see module docstring) — Cycle Time first (Tier 1), Variants/Case Flow
+// Graph last (Tier 2/volume drill-down). Headline, Alerts, and the process
+// table stay OUTSIDE the tabs: that's the "glance at this before anything
+// else" summary every tab's detail elaborates on, not detail itself.
+const _OPS_TABS = [
+  { id: "cycletime", label: "Cycle Time" },
+  { id: "vsm", label: "Value Stream Map" },
+  { id: "pareto", label: "Pareto" },
+  { id: "control", label: "Control Chart" },
+  { id: "rootcause", label: "Root Cause" },
+  { id: "variants", label: "Variants" },
+  { id: "caseflow", label: "Case Flow Graph" },
+];
+
+function OpsTabBar({ tab, setTab }) {
+  return (
+    <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--line)", marginBottom: 16, flexWrap: "wrap" }}>
+      {_OPS_TABS.map(t => (
+        <button key={t.id}
+          onClick={() => setTab(t.id)}
+          style={{
+            padding: "8px 14px", fontSize: 11, fontWeight: tab === t.id ? 600 : 400,
+            background: "none", border: "none",
+            borderBottom: tab === t.id ? "2px solid var(--acc-ink, var(--ink))" : "2px solid transparent",
+            color: tab === t.id ? "var(--ink)" : "var(--ink-4)", cursor: "pointer", whiteSpace: "nowrap",
+          }}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function OpsEfficiencyScreen({ onNavigate } = {}) {
   const theme = useThemeColors();
   const [days, setDays] = useState(30);
+  const [tab, setTab] = useState("cycletime");
   const [summary, setSummary] = useState(null);
   const [summaryError, setSummaryError] = useState(null);
   const [tickets, setTickets] = useState(null);
   const [breachError, setBreachError] = useState(null);
   const [driftProcesses, setDriftProcesses] = useState([]);
   const [reworkDetailFor, setReworkDetailFor] = useState(null);  // process id, or null
-  const [showFlowGraph, setShowFlowGraph] = useState(false);
   const [rawEvents, setRawEvents] = useState(null);
   const [eventsError, setEventsError] = useState(null);
 
@@ -511,12 +545,12 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
   }, [summary, days]);
 
   useEffect(() => {
-    if (!showFlowGraph || rawEvents) return;
+    if (tab !== "caseflow" || rawEvents) return;
     fetch(`${_obsBase()}/events?days=${days}&limit=5000`, { credentials: "include" })
       .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
       .then(d => { setRawEvents(d.events || d || []); setEventsError(null); })
       .catch(e => setEventsError(e.message || String(e)));
-  }, [showFlowGraph, days, rawEvents]);
+  }, [tab, days, rawEvents]);
 
   const breachCount = tickets ? _slaBreachCount(tickets) : 0;
 
@@ -553,44 +587,69 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
 
       <OpsProcessTable summary={summary} />
 
-      <SectionLabel>Cycle Time — where time actually accumulates</SectionLabel>
-      <div style={{ marginBottom: 24 }}>
-        <ProcessCycleTimeView theme={theme} days={days} />
-      </div>
+      <OpsTabBar tab={tab} setTab={setTab} />
 
-      <SectionLabel>Value Stream Map — how much of that time was forward progress?</SectionLabel>
-      <div style={{ marginBottom: 24 }}>
-        <ValueStreamMapView theme={theme} days={days} />
-      </div>
+      {tab === "cycletime" && (
+        <>
+          <SectionLabel>Cycle Time — where time actually accumulates</SectionLabel>
+          <div style={{ marginBottom: 24 }}>
+            <ProcessCycleTimeView theme={theme} days={days} />
+          </div>
+        </>
+      )}
 
-      <SectionLabel>Pareto — which deviations to fix first</SectionLabel>
-      <div style={{ marginBottom: 24 }}>
-        <ParetoView theme={theme} days={days} />
-      </div>
+      {tab === "vsm" && (
+        <>
+          <SectionLabel>Value Stream Map — how much of that time was forward progress?</SectionLabel>
+          <div style={{ marginBottom: 24 }}>
+            <ValueStreamMapView theme={theme} days={days} />
+          </div>
+        </>
+      )}
 
-      <SectionLabel>Control Chart — is cycle time drifting?</SectionLabel>
-      <div style={{ marginBottom: 24 }}>
-        <CycleTimeControlChartView theme={theme} />
-      </div>
+      {tab === "pareto" && (
+        <>
+          <SectionLabel>Pareto — which deviations to fix first</SectionLabel>
+          <div style={{ marginBottom: 24 }}>
+            <ParetoView theme={theme} days={days} />
+          </div>
+        </>
+      )}
 
-      <RootCauseInvestigation days={days} summary={summary} />
+      {tab === "control" && (
+        <>
+          <SectionLabel>Control Chart — is cycle time drifting?</SectionLabel>
+          <div style={{ marginBottom: 24 }}>
+            <CycleTimeControlChartView theme={theme} />
+          </div>
+        </>
+      )}
 
-      <SectionLabel>Variants — is the real process still the documented one?</SectionLabel>
-      <div style={{ marginBottom: 24 }}>
-        <ProcessVariantsView theme={theme} days={days} />
-      </div>
+      {tab === "rootcause" && (
+        <>
+          <SectionLabel>Root Cause Investigation — 5 Whys / Fishbone</SectionLabel>
+          <RootCauseInvestigation days={days} summary={summary} />
+        </>
+      )}
 
-      <div style={{ marginBottom: 24 }}>
-        <button className="btn btn-sm" onClick={() => setShowFlowGraph(s => !s)}>
-          {showFlowGraph ? "Hide" : "Show"} Case Flow Graph — volume drill-down ▾
-        </button>
-        {showFlowGraph && (
-          <div style={{ marginTop: 10 }}>
+      {tab === "variants" && (
+        <>
+          <SectionLabel>Variants — is the real process still the documented one?</SectionLabel>
+          <div style={{ marginBottom: 24 }}>
+            <ProcessVariantsView theme={theme} days={days} />
+          </div>
+        </>
+      )}
+
+      {tab === "caseflow" && (
+        <>
+          <SectionLabel>Case Flow Graph — volume drill-down</SectionLabel>
+          <div style={{ marginBottom: 24 }}>
             {eventsError && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 8 }}>{eventsError}</div>}
             <CaseFlowGraph theme={theme} days={days} rawEvents={rawEvents || []} loading={!rawEvents && !eventsError} error={eventsError} />
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       <OpsBriefPanel days={days} process={null} summary={summary} />
     </div>

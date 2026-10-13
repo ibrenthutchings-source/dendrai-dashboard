@@ -404,20 +404,33 @@ _STANDALONE = [
 # PREVIOUS step — the first step's gap is ignored). Real lifecycles don't
 # take the same 2 seconds a script would default to, so each step lands
 # realistically days after the one before it.
+#
+# Each of these three now walks the full realistic activity sequence a real
+# walkthrough would describe (see process_mining_tool.PROCESS_TEMPLATES'
+# matching entries, which these labels must stay in sync with) — not just
+# the 3 steps that happen to exercise a PaC Rego package.
 _P2P_CASE = [
-    (PURCHASE_ORDER_KIND, "Purchase Order Created", (0, 0)),
-    (INVOICE_KIND, "Invoice Matched", (2, 10)),
-    (PAYMENT_KIND, "Payment Released", (3, 14)),
+    (REQUISITION_KIND, "Purchase Requisition Approved", (0, 0)),
+    (PURCHASE_ORDER_KIND, "Purchase Order Created", (1, 3)),
+    (PO_GOODS_RECEIPT_KIND, "Goods Receipt Confirmed", (3, 10)),
+    (INVOICE_KIND, "Invoice Matched", (1, 5)),
+    (PAYMENT_APPROVAL_KIND, "Payment Approved", (1, 4)),
+    (PAYMENT_KIND, "Payment Released", (1, 5)),
 ]
 _O2C_CASE = [
     (SALES_ORDER_KIND, "Sales Order Booked", (0, 0)),
-    (BILLING_KIND, "Invoice Billed", (1, 5)),
+    (CREDIT_APPROVAL_KIND, "Credit Approved", (0, 1)),
+    (O2C_SHIPMENT_KIND, "Sales Order Shipped", (1, 5)),
+    (BILLING_KIND, "Invoice Billed", (0, 2)),
     (CASH_KIND, "Cash Applied", (5, 30)),
 ]
 _INVENTORY_CASE = [
     (GOODS_RECEIPT_KIND, "Goods Received", (0, 0)),
+    (QUALITY_INSPECTION_KIND, "Quality Inspection Passed", (0, 1)),
     (PUTAWAY_KIND, "Putaway Confirmed", (0, 2)),
-    (SHIPMENT_KIND, "Goods Shipped", (2, 21)),
+    (PICK_KIND, "Pick Confirmed", (1, 10)),
+    (PACK_KIND, "Pack Confirmed", (0, 1)),
+    (SHIPMENT_KIND, "Goods Shipped", (0, 2)),
 ]
 
 # Weighting: cases (3 records) count more toward --count than standalone
