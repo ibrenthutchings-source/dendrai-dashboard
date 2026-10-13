@@ -128,6 +128,26 @@ def _sales_order_violating(rng, rid):
     }
 
 
+def _credit_approval_clean(rng, rid):
+    return {"credit_approver": rng.choice(_ACTORS), "credit_approved": True, "credit_check_number": rid}
+
+
+def _credit_approval_violating(rng, rid):
+    return {"credit_approver": None, "credit_approved": False, "credit_check_number": rid}
+
+
+def _o2c_shipment_clean(rng, rid):
+    return {"o2c_ship_so_number": _rid("SO", rng), "o2c_ship_qty": rng.randint(10, 1800),
+            "o2c_ship_carrier": rng.choice(["FedEx Freight", "UPS", "DHL Supply Chain", "XPO Logistics"]),
+            "o2c_ship_matches_order": True}
+
+
+def _o2c_shipment_violating(rng, rid):
+    return {"o2c_ship_so_number": None, "o2c_ship_qty": rng.randint(10, 1800),
+            "o2c_ship_carrier": rng.choice(["FedEx Freight", "UPS", "DHL Supply Chain", "XPO Logistics"]),
+            "o2c_ship_matches_order": False}
+
+
 def _billing_clean(rng, rid):
     return {
         "inv_type": "manual", "inv_approved_by": rng.choice(_ACTORS), "inv_amount": rng.randint(500, 9500),
@@ -172,6 +192,23 @@ def _ar_aging_violating(rng, rid):
 
 
 # ── Procure-to-Pay builders ──────────────────────────────────────────────────
+#
+# Requisition Approved, Goods Receipt Confirmed, and Payment Approved below
+# have no dedicated PaC Rego package (same "monitoring-only for the gap
+# activities" scope line synthetic_transaction_tool.py's module docstring
+# documents for its own 8 processes) — they round out the real P2P
+# walkthrough's activity sequence around the three steps (PO/Invoice/
+# Payment) that DO exercise controls.oracle_fusion.procure_to_pay.
+
+def _requisition_clean(rng, rid):
+    return {"req_requested_by": rng.choice(_ACTORS), "req_approved_by": rng.choice(_ACTORS),
+            "req_amount": rng.randint(500, 45000), "req_number": rid}
+
+
+def _requisition_violating(rng, rid):
+    return {"req_requested_by": rng.choice(_ACTORS), "req_approved_by": None,
+            "req_amount": rng.randint(50000, 200000), "req_number": rid}
+
 
 def _po_clean(rng, rid):
     return {"po_total": rng.randint(500, 45000), "po_vp_approved": True, "po_number": rid,
@@ -181,6 +218,18 @@ def _po_clean(rng, rid):
 def _po_violating(rng, rid):
     return {"po_total": rng.randint(55000, 240000), "po_vp_approved": False, "po_number": rid,
             "po_cfo_approved": False, "po_type": "standard", "po_annual_review_completed": True}
+
+
+def _po_goods_receipt_clean(rng, rid):
+    qty = rng.randint(1, 500)
+    return {"por_po_number": _rid("PO", rng), "por_qty_received": qty, "por_qty_ordered": qty,
+            "por_received_by": rng.choice(_ACTORS), "por_matches_po": True}
+
+
+def _po_goods_receipt_violating(rng, rid):
+    qty_ordered = rng.randint(1, 500)
+    return {"por_po_number": _rid("PO", rng), "por_qty_received": qty_ordered + rng.randint(50, 200),
+            "por_qty_ordered": qty_ordered, "por_received_by": rng.choice(_ACTORS), "por_matches_po": False}
 
 
 def _invoice_clean(rng, rid):
@@ -210,6 +259,16 @@ def _vendor_master_clean(rng, rid):
 def _vendor_master_violating(rng, rid):
     return {"field": rng.choice(["bank_account_number", "bank_routing_number", "payment_method"]),
             "dual_approved": False, "vendor_name": rng.choice(_VENDORS)}
+
+
+def _payment_approval_clean(rng, rid):
+    return {"pay_appr_approver": rng.choice(_ACTORS), "pay_appr_amount": rng.randint(1000, 90000),
+            "pay_appr_id": rid, "pay_appr_approved": True}
+
+
+def _payment_approval_violating(rng, rid):
+    return {"pay_appr_approver": None, "pay_appr_amount": rng.randint(110000, 500000),
+            "pay_appr_id": rid, "pay_appr_approved": False}
 
 
 def _payment_clean(rng, rid):
