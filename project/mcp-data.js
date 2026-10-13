@@ -1001,6 +1001,24 @@ window.MCP = (function () {
     });
   }
 
+  /** 5 Whys root-cause HYPOTHESIS over one real, already-computed
+   * process-mining finding (a bottleneck or Pareto deviation edge) —
+   * `finding` is {process, process_label, source, target, avg_hours, count,
+   * basis}, never free text. Every why is schema-forced to self-label
+   * "evidence" or "assumption"; see ai_endpoints.py's five_whys for the
+   * full guardrail rationale. */
+  function aiFiveWhys(finding, days = 30) {
+    return _postAi('/ai/five-whys', { finding, days });
+  }
+
+  /** Fishbone (Ishikawa) root-cause HYPOTHESIS brainstorm over the same
+   * kind of real finding as aiFiveWhys — same evidence/assumption
+   * self-labeling guardrail, same "never embedded for semantic search"
+   * isolation (see ai_endpoints.py's fishbone). */
+  function aiFishbone(finding, days = 30) {
+    return _postAi('/ai/fishbone', { finding, days });
+  }
+
   // ── SLA Tracker (observability.itsm_tickets) ────────────────────────────
 
   /** Filtered ticket list — status/external_system/breached_only, same
@@ -1290,6 +1308,8 @@ window.MCP = (function () {
     draftWalkthroughNarrative,
     getWalkthroughNarrativeHistory,
     aiOpsEfficiencyBrief,
+    aiFiveWhys,
+    aiFishbone,
     // SLA Tracker
     itsmListTickets,
     // DevOps Health (DORA)

@@ -205,6 +205,32 @@ class OpsEfficiencyBriefRequest(BaseModel):
     variants: List[Dict[str, Any]] = []
 
 
+# A "finding" the 5 Whys / Fishbone prompts below drill into is always ONE
+# real, already-computed process-mining number (a bottleneck or Pareto
+# deviation edge from process_mining_tool.py) — never free text the caller
+# types in. That's the guardrail: the model is reasoning about a measured
+# fact (this transition takes N hours, observed M times), not an arbitrary,
+# unverified claim someone asserts is a problem.
+class CausalSeedFinding(BaseModel):
+    process: Optional[str] = None
+    process_label: Optional[str] = None
+    source: str
+    target: str
+    avg_hours: Optional[float] = None
+    count: Optional[int] = None
+    basis: str = "bottleneck"  # "bottleneck" | "pareto_deviation"
+
+
+class FiveWhysRequest(BaseModel):
+    finding: CausalSeedFinding
+    days: int = 30
+
+
+class FishboneRequest(BaseModel):
+    finding: CausalSeedFinding
+    days: int = 30
+
+
 class ReportRequest(BaseModel):
     ticker: str
     run_id: Optional[int] = None
@@ -1139,6 +1165,223 @@ def ops_efficiency_brief(req: OpsEfficiencyBriefRequest, current_user: dict = De
         input_hash=input_hash,
     )
     _embed_ai_summary(analysis_id, "", f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5 Whys / Fishbone — root-cause HYPOTHESIS generation over one real
+# process-mining finding (see CausalSeedFinding above). Three guardrails,
+# all enforced structurally rather than left to the prompt's good behavior
+# alone:
+#   1. The seed is always a real, already-computed number (a bottleneck or
+#      Pareto deviation edge) passed in by the frontend from
+#      process_mining_tool.py's own output — this endpoint never accepts a
+#      free-text "problem statement" to reason about.
+#   2. Every individual why/cause is schema-forced to self-classify as
+#      "evidence" (traceable to the hours/count given) or "assumption" (a
+#      plausible but unverified operational explanation) — the model cannot
+#      emit an unlabeled claim.
+#   3. Neither result is ever embedded for semantic search
+#      (_embed_ai_summary is deliberately NOT called here, unlike every
+#      other AI narrative in this file) — a hypothesis must not surface
+#      later as if it were a vetted finding in some unrelated "ask AI about
+#      this company" search result. It only ever appears right where a
+#      human asked for it, behind the same pending/reviewed banner as
+#      every other AI output, and is never auto-written into the risk
+#      register or any other persisted record.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CAUSAL_GUARDRAIL_NOTE = (
+    "This is a HYPOTHESIS-GENERATION exercise, not a finding of fact: the data tells you WHAT "
+    "is slow or deviating, never WHY a human or system actually behaves that way. Classify every "
+    "individual why/cause as exactly one of:\n"
+    '  "evidence" — directly supported by the hours/count/process data given (rare beyond the '
+    "first step)\n"
+    '  "assumption" — a plausible operational explanation you cannot verify from this data alone\n'
+    "Almost everything you write will be an assumption — label it that way honestly rather than "
+    "writing with false confidence, and never invent a number not given to you."
+)
+
+
+def _causal_finding_user_block(finding: "CausalSeedFinding", days: int) -> str:
+    basis_text = (
+        "the single slowest transition in this process" if finding.basis == "bottleneck"
+        else "a transition outside the process's documented step order (rework/skip/off-template)"
+    )
+    return (
+        f"Process: {finding.process_label or finding.process or 'unknown'}\n"
+        f"Flagged transition: {finding.source} -> {finding.target}\n"
+        f"Average hours for this transition: {finding.avg_hours}\n"
+        f"Observed in {finding.count} case(s) over the trailing {days} days\n"
+        f"Why this was flagged: {basis_text}\n"
+    )
+
+
+_FIVE_WHYS_SYSTEM = (
+    "You perform a 5 Whys root-cause drill-down on ONE real process-mining finding — a specific "
+    "step-to-step transition flagged as slow or deviating in a real case-tracked business "
+    "process. You are given only the process name, the two step labels, the average hours this "
+    "transition takes, how many cases it was observed in, and why it was flagged.\n\n"
+    f"{_CAUSAL_GUARDRAIL_NOTE}\n\n"
+    "Write exactly 5 why-steps, each a question and an answer, going progressively deeper. End "
+    "with a root_cause_hypothesis — one sentence, hedged ('may be due to...', never 'is caused "
+    "by...') — and a recommended_next_step that is something a human should go VERIFY (e.g. 'ask "
+    "the process owner whether X', 'pull a sample of N cases and check Y'), never an action to "
+    "take on the hypothesis as if it were already confirmed. Output strict JSON matching the "
+    "given schema only."
+)
+
+_FIVE_WHYS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "problem_statement": {"type": "string"},
+        "whys": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "question": {"type": "string"},
+                    "answer": {"type": "string"},
+                    "basis": {"type": "string", "enum": ["evidence", "assumption"]},
+                },
+                "required": ["question", "answer", "basis"],
+            },
+        },
+        "root_cause_hypothesis": {"type": "string"},
+        "recommended_next_step": {"type": "string"},
+    },
+    "required": ["problem_statement", "whys", "root_cause_hypothesis", "recommended_next_step"],
+}
+
+
+@router.post("/ai/five-whys")
+def five_whys(req: FiveWhysRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    f = req.finding
+    user = _causal_finding_user_block(f, req.days) + "\nPerform the 5 Whys drill-down."
+
+    subject_ref = f"5WHY:{f.process}:{f.source}->{f.target}"
+    input_hash = hashlib.sha256((_FIVE_WHYS_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("five_whys", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _FIVE_WHYS_SYSTEM, user, _FIVE_WHYS_SCHEMA, label="five_whys",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=2000, caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "five_whys", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=result.get("root_cause_hypothesis", "")[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    # Deliberately no _embed_ai_summary call — see module-level guardrail note above.
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+_FISHBONE_SYSTEM = (
+    "You perform a Fishbone (Ishikawa) root-cause brainstorm on ONE real process-mining finding "
+    "— a specific step-to-step transition flagged as slow or deviating in a real case-tracked "
+    "business process. You are given only the process name, the two step labels, the average "
+    "hours this transition takes, how many cases it was observed in, and why it was flagged.\n\n"
+    f"{_CAUSAL_GUARDRAIL_NOTE}\n\n"
+    "Propose 2-4 candidate causes in EACH of these categories: People, Process, Technology, "
+    "Data/Materials, Environment, Measurement — omit a category entirely if you cannot think of "
+    "a plausible cause for it, rather than padding it with filler. End with 1-3 "
+    "root_cause_candidates (the causes, from any category, most worth investigating first) and "
+    "treat them explicitly as starting points for a human to verify, not conclusions. Output "
+    "strict JSON matching the given schema only."
+)
+
+_FISHBONE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "problem_statement": {"type": "string"},
+        "categories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": ["People", "Process", "Technology", "Data/Materials", "Environment", "Measurement"],
+                    },
+                    "causes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "cause": {"type": "string"},
+                                "basis": {"type": "string", "enum": ["evidence", "assumption"]},
+                            },
+                            "required": ["cause", "basis"],
+                        },
+                    },
+                },
+                "required": ["name", "causes"],
+            },
+        },
+        "root_cause_candidates": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["problem_statement", "categories", "root_cause_candidates"],
+}
+
+
+@router.post("/ai/fishbone")
+def fishbone(req: FishboneRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    f = req.finding
+    user = _causal_finding_user_block(f, req.days) + "\nPerform the Fishbone brainstorm."
+
+    subject_ref = f"FISHBONE:{f.process}:{f.source}->{f.target}"
+    input_hash = hashlib.sha256((_FISHBONE_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("fishbone", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _FISHBONE_SYSTEM, user, _FISHBONE_SCHEMA, label="fishbone",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=2500, caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "fishbone", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary="; ".join(result.get("root_cause_candidates", []))[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    # Deliberately no _embed_ai_summary call — see module-level guardrail note above.
     return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
 
 

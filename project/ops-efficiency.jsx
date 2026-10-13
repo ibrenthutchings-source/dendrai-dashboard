@@ -26,6 +26,14 @@
      3d. Control Chart — case-duration trend across trailing periods
                     against a center line + UCL/LCL, so drift shows up
                     before it becomes next week's bottleneck.
+     3e. Root Cause Investigation — 5 Whys / Fishbone, collapsed by
+                    default. AI-generated HYPOTHESES only, always seeded
+                    from a real bottleneck picked off a dropdown (never
+                    typed-in free text), every individual why/cause
+                    self-labeled evidence vs. assumption by the model,
+                    never auto-written into the risk register. See
+                    ai_endpoints.py's five_whys/fishbone for the full
+                    guardrail rationale.
      4. Variants  — full detail, visible but secondary (Tier 2).
      5. Case Flow Graph — volume drill-down, collapsed by default.
                     Answers "how much volume is backed up here" only
@@ -211,6 +219,208 @@ function OpsProcessTable({ summary }) {
   );
 }
 
+// ── Root Cause Investigation (5 Whys / Fishbone) ────────────────────────────
+//
+// Guardrails (see ai_endpoints.py's five_whys/fishbone for the full
+// rationale): the seed is always picked from a dropdown of REAL,
+// already-detected findings (bottlenecks straight from `summary` — no typed-
+// in problem statement is accepted), every why/cause the model writes is
+// schema-forced to self-label "evidence" or "assumption", and this panel
+// never auto-writes anything into the risk register — it only ever renders
+// what the model returned, behind the same pending/reviewed banner every
+// other AI narrative in this app uses, for a human to read and act on (or
+// not) themselves.
+
+const _CAUSAL_DISCLAIMER =
+  "AI-generated hypothesis from real process-mining data — not a measured cause. Verify with the process owner before acting on it.";
+
+function CausalDisclaimer() {
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px", marginBottom: 10,
+      borderRadius: 6, border: "1px solid var(--amber)", background: "var(--amber-soft)",
+      fontSize: 10.5, color: "var(--amber-ink)", fontWeight: 600,
+    }}>
+      <span>⚠</span><span>{_CAUSAL_DISCLAIMER}</span>
+    </div>
+  );
+}
+
+function BasisTag({ basis }) {
+  const isAssumption = basis === "assumption";
+  return (
+    <span style={{
+      fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em",
+      color: isAssumption ? "var(--ink-4)" : "var(--green-ink)", marginLeft: 5,
+    }}>({basis})</span>
+  );
+}
+
+function FiveWhysResult({ data }) {
+  return (
+    <div>
+      <AiReviewBanner review={data._review} />
+      <CausalDisclaimer />
+      <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 10 }}>{data.problem_statement}</div>
+      {data.whys.map((w, i) => (
+        <div key={i} style={{
+          marginBottom: 8, paddingLeft: 10,
+          borderLeft: `2px solid ${w.basis === "assumption" ? "var(--ink-4)" : "var(--green-ink)"}`,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600 }}>Why {i + 1}: {w.question}</div>
+          <div style={{ fontSize: 11, marginTop: 2 }}>{w.answer}<BasisTag basis={w.basis} /></div>
+        </div>
+      ))}
+      <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "var(--surface-2)" }}>
+        <div style={{ fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Root cause hypothesis</div>
+        <div style={{ fontSize: 11.5, marginTop: 2 }}>{data.root_cause_hypothesis}</div>
+      </div>
+      <div style={{ marginTop: 8, fontSize: 11, color: "var(--acc)" }}>
+        ▸ Recommended next step (go verify — don't act on the hypothesis itself): {data.recommended_next_step}
+      </div>
+    </div>
+  );
+}
+
+function FishboneResult({ data }) {
+  return (
+    <div>
+      <AiReviewBanner review={data._review} />
+      <CausalDisclaimer />
+      <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 10 }}>{data.problem_statement}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+        {data.categories.map(cat => (
+          <div key={cat.name} style={{ flex: "1 1 200px", minWidth: 180 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--ink-3)", marginBottom: 4 }}>{cat.name}</div>
+            {cat.causes.map((c, i) => (
+              <div key={i} style={{ fontSize: 10.5, marginBottom: 3, fontStyle: c.basis === "assumption" ? "italic" : "normal" }}>
+                • {c.cause}<BasisTag basis={c.basis} />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 6, background: "var(--surface-2)" }}>
+        <div style={{ fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Investigate first</div>
+        <ul style={{ margin: "4px 0 0 16px", fontSize: 11, padding: 0 }}>
+          {data.root_cause_candidates.map((r, i) => <li key={i}>{r}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function RootCauseInvestigation({ days, summary }) {
+  const [open, setOpen] = useState(false);
+  const [seedKey, setSeedKey] = useState("");
+  const [whys, setWhys] = useState({ data: null, loading: false, error: null });
+  const [fishbone, setFishbone] = useState({ data: null, loading: false, error: null });
+
+  // Every option comes straight from summary's own per-process bottleneck —
+  // already-computed real numbers, never a free-text field the caller fills
+  // in. See process_mining_tool.py's cycle_time_stats for how `bottleneck`
+  // is derived.
+  const seeds = useMemo(() => Object.entries(summary?.processes || {})
+    .filter(([, p]) => p.bottleneck)
+    .map(([id, p]) => ({
+      key: id, process: id, process_label: p.label,
+      source: p.bottleneck.source, target: p.bottleneck.target,
+      avg_hours: p.bottleneck.avg_hours, count: p.bottleneck.count, basis: "bottleneck",
+    })), [summary]);
+
+  const seed = seeds.find(s => s.key === seedKey) || null;
+
+  useEffect(() => {
+    setWhys({ data: null, loading: false, error: null });
+    setFishbone({ data: null, loading: false, error: null });
+  }, [seedKey]);
+
+  async function generateWhys() {
+    if (!seed) return;
+    setWhys({ data: null, loading: true, error: null });
+    try {
+      const { process, process_label, source, target, avg_hours, count, basis } = seed;
+      const d = await window.MCP.aiFiveWhys({ process, process_label, source, target, avg_hours, count, basis }, days);
+      setWhys({ data: d, loading: false, error: null });
+    } catch (e) {
+      setWhys({ data: null, loading: false, error: e.message || "AI 5 Whys unavailable" });
+    }
+  }
+
+  async function generateFishbone() {
+    if (!seed) return;
+    setFishbone({ data: null, loading: true, error: null });
+    try {
+      const { process, process_label, source, target, avg_hours, count, basis } = seed;
+      const d = await window.MCP.aiFishbone({ process, process_label, source, target, avg_hours, count, basis }, days);
+      setFishbone({ data: d, loading: false, error: null });
+    } catch (e) {
+      setFishbone({ data: null, loading: false, error: e.message || "AI Fishbone unavailable" });
+    }
+  }
+
+  const aiAvailable = typeof window !== "undefined" && window.MCP?.aiFiveWhys;
+  if (!aiAvailable) return null;
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <button className="btn btn-sm" onClick={() => setOpen(o => !o)}>
+        {open ? "Hide" : "Show"} Root Cause Investigation — 5 Whys / Fishbone ▾
+      </button>
+      {open && (
+        <div style={{ marginTop: 10, border: "1px solid var(--line)", borderRadius: 8, padding: "14px 16px" }}>
+          {!seeds.length ? (
+            <Empty>No bottleneck identified yet in this window — nothing to investigate.</Empty>
+          ) : (
+            <>
+              <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 10 }}>
+                Pick a real, already-detected finding to investigate — this never accepts a typed-in problem statement.
+              </div>
+              <select className="input" style={{ width: "100%", marginBottom: 12 }} value={seedKey} onChange={e => setSeedKey(e.target.value)}>
+                <option value="">Select a finding…</option>
+                {seeds.map(s => (
+                  <option key={s.key} value={s.key}>
+                    {s.process_label}: {s.source} → {s.target} ({_fmtHours(s.avg_hours)} avg, {s.count} case{s.count !== 1 ? "s" : ""})
+                  </option>
+                ))}
+              </select>
+
+              {seed && (
+                <>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                    <button className="btn btn-sm btn-acc" onClick={generateWhys} disabled={whys.loading}>
+                      {whys.loading ? "Generating…" : "Generate 5 Whys"}
+                    </button>
+                    <button className="btn btn-sm btn-acc" onClick={generateFishbone} disabled={fishbone.loading}>
+                      {fishbone.loading ? "Generating…" : "Generate Fishbone"}
+                    </button>
+                  </div>
+
+                  {whys.error && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 10 }}>{whys.error}</div>}
+                  {whys.data && (
+                    <div style={{ marginBottom: 20, paddingBottom: 16, borderBottom: "1px solid var(--line)" }}>
+                      <div className="kicker" style={{ marginBottom: 8 }}>5 Whys</div>
+                      <FiveWhysResult data={whys.data} />
+                    </div>
+                  )}
+
+                  {fishbone.error && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 10 }}>{fishbone.error}</div>}
+                  {fishbone.data && (
+                    <div>
+                      <div className="kicker" style={{ marginBottom: 8 }}>Fishbone</div>
+                      <FishboneResult data={fishbone.data} />
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OpsBriefPanel({ days, process, summary }) {
   const [state, setState] = useState({ brief: null, loading: false, error: null });
 
@@ -362,6 +572,8 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
       <div style={{ marginBottom: 24 }}>
         <CycleTimeControlChartView theme={theme} />
       </div>
+
+      <RootCauseInvestigation days={days} summary={summary} />
 
       <SectionLabel>Variants — is the real process still the documented one?</SectionLabel>
       <div style={{ marginBottom: 24 }}>
