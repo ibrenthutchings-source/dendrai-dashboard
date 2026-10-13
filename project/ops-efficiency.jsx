@@ -563,11 +563,6 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
           <div className="panel-sub">
             Where process time and SLA risk actually accumulate, ranked the way a Head of Operations would ask for
             it — bottleneck and breaches first, rework and process drift as early warnings, volume as a drill-down.
-            Same process-mining data{" "}
-            <a href="#" onClick={e => { e.preventDefault(); onNavigate?.("continuousmonitoring"); }}>
-              Continuous Watch
-            </a>{" "}
-            computes; conformance detail stays there — it's an audit question, not an operations one.
           </div>
         </div>
         <select className="input" style={{ width: 140 }} value={days} onChange={e => setDays(Number(e.target.value))}>
