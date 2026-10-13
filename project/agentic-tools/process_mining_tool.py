@@ -47,17 +47,32 @@ from typing import Any, Optional
 # ever changes step naming — same cross-file-taxonomy discipline
 # pol_domain_mappings.py documents for its own py/jsx mirror.
 PROCESS_TEMPLATES: dict[str, dict[str, Any]] = {
+    # Expanded from the original 3-step skeleton (PO -> Invoice -> Payment)
+    # to the activities a real P2P walkthrough actually names: a requisition
+    # gets approved before a PO ever exists, goods/services have to arrive
+    # before a 3-way match is possible, and a payment run is approved before
+    # it's released — see generate_o2c_p2p_synthetic_log.py's _P2P_CASE for
+    # the matching producer-side steps.
     "procure_to_pay": {
         "label": "Procure to Pay",
-        "steps": ["Purchase Order Created", "Invoice Matched", "Payment Released"],
+        "steps": ["Purchase Requisition Approved", "Purchase Order Created", "Goods Receipt Confirmed",
+                  "Invoice Matched", "Payment Approved", "Payment Released"],
     },
+    # Expanded from Sales Order -> Billing -> Cash to include the credit
+    # check that gates booking and the shipment that has to happen before an
+    # order can be billed — see generate_o2c_p2p_synthetic_log.py's _O2C_CASE.
     "order_to_cash": {
         "label": "Order to Cash",
-        "steps": ["Sales Order Booked", "Invoice Billed", "Cash Applied"],
+        "steps": ["Sales Order Booked", "Credit Approved", "Sales Order Shipped",
+                  "Invoice Billed", "Cash Applied"],
     },
+    # Expanded with the inspection/pick/pack activities between receipt and
+    # putaway/shipment every warehouse walkthrough actually describes — see
+    # generate_o2c_p2p_synthetic_log.py's _INVENTORY_CASE.
     "receive_to_ship": {
         "label": "Receive to Ship",
-        "steps": ["Goods Received", "Putaway Confirmed", "Goods Shipped"],
+        "steps": ["Goods Received", "Quality Inspection Passed", "Putaway Confirmed",
+                  "Pick Confirmed", "Pack Confirmed", "Goods Shipped"],
     },
     # The eight below mirror synthetic_transaction_tool.py's own ProcessDef
     # step labels (its poll-connector simulator for systems this deployment
@@ -67,37 +82,51 @@ PROCESS_TEMPLATES: dict[str, dict[str, Any]] = {
     # PaC Rego package yet (see pac_endpoints.py's process list), so unlike
     # the three above they won't deep-link into Policy-as-Code — they're
     # still fully case-graphable and analyzable here regardless.
+    #
+    # Every step label across all 11 templates below must stay distinct —
+    # pol_domain_mappings.py's _build_step_to_process() derives its
+    # NOT_REVIEWED-event domain lookup straight from this dict and silently
+    # keeps the FIRST template that claims a given label on a collision.
     "hire_to_retire": {
         "label": "Hire to Retire",
-        "steps": ["Requisition Approved", "Offer Accepted", "Onboarding Completed",
-                  "Pay Rate Change", "Termination Processed"],
+        "steps": ["Requisition Created", "Requisition Approved", "Offer Extended", "Offer Accepted",
+                  "Onboarding Completed", "Pay Rate Change", "Termination Processed", "Final Pay Issued"],
     },
     "iam": {
         "label": "Identity & Access Management",
-        "steps": ["Access Requested", "Access Approved", "Access Provisioned",
+        "steps": ["Access Requested", "Access Request Reviewed", "Access Approved", "Access Provisioned",
                   "Access Certified", "Access Revoked"],
     },
     "record_to_report": {
         "label": "Record to Report",
-        "steps": ["Journal Entry Posted", "Account Reconciled", "Period Closed",
-                  "Financial Statement Published"],
+        "steps": ["Journal Entry Posted", "Journal Entry Approved", "Account Reconciled", "Period Closed",
+                  "Financial Statement Published", "Flux Analysis Reviewed"],
     },
     "fixed_assets": {
         "label": "Fixed Assets",
-        "steps": ["Asset Acquired", "Asset Capitalized", "Depreciation Posted", "Asset Disposed"],
+        "steps": ["Asset Acquired", "Asset Tagged", "Asset Capitalized", "Depreciation Posted",
+                  "Impairment Reviewed", "Asset Disposed"],
     },
+    # Reordered, not just extended: risk assessment/due diligence happens
+    # BEFORE a vendor is onboarded in a real procurement walkthrough, not
+    # after — the original order here had it backwards.
     "vendor_management": {
         "label": "Vendor Management",
-        "steps": ["Vendor Onboarded", "Vendor Risk Assessed", "Vendor Contract Renewed", "Vendor Offboarded"],
+        "steps": ["Vendor Risk Assessed", "Vendor Onboarded", "Contract Signed",
+                  "Vendor Contract Renewed", "Vendor Performance Reviewed", "Vendor Offboarded"],
     },
     "payroll": {
         "label": "Payroll",
-        "steps": ["Time Entry Submitted", "Time Approved", "Payroll Calculated", "Payroll Disbursed"],
+        "steps": ["Time Entry Submitted", "Time Approved", "Payroll Calculated",
+                  "Payroll Approved", "Payroll Disbursed", "Payslip Issued"],
     },
     "inventory_master": {
         "label": "Inventory Master",
-        "steps": ["Item Master Created", "Standard Cost Updated", "Item Master Deactivated"],
+        "steps": ["Item Master Created", "Item Master Approved", "Standard Cost Updated", "Item Master Deactivated"],
     },
+    # Deliberately unchanged — a master-data create/update/merge/deactivate
+    # set is already the realistic exhaustive lifecycle for a standalone
+    # (non-sequential) record type; padding it would just be filler.
     "customer_master_file": {
         "label": "Customer Master File",
         "steps": ["Customer Record Created", "Customer Record Updated",
