@@ -90,17 +90,22 @@ PROCESS_TEMPLATES: dict[str, dict[str, Any]] = {
     "hire_to_retire": {
         "label": "Hire to Retire",
         "steps": ["Requisition Created", "Requisition Approved", "Offer Extended", "Offer Accepted",
-                  "Onboarding Completed", "Pay Rate Change", "Termination Processed", "Final Pay Issued"],
+                  "Background Check Completed", "Onboarding Completed", "Pay Rate Change",
+                  "Termination Processed", "Final Pay Issued"],
     },
     "iam": {
         "label": "Identity & Access Management",
         "steps": ["Access Requested", "Access Request Reviewed", "Access Approved", "Access Provisioned",
                   "Access Certified", "Access Revoked"],
     },
+    # Reordered: flux (variance) analysis is a close-control step performed
+    # BEFORE the period is closed and statements are published, not after —
+    # reviewing variance against statements that already went out doesn't
+    # match how a real close walkthrough is run.
     "record_to_report": {
         "label": "Record to Report",
-        "steps": ["Journal Entry Posted", "Journal Entry Approved", "Account Reconciled", "Period Closed",
-                  "Financial Statement Published", "Flux Analysis Reviewed"],
+        "steps": ["Journal Entry Posted", "Journal Entry Approved", "Account Reconciled",
+                  "Flux Analysis Reviewed", "Period Closed", "Financial Statement Published"],
     },
     "fixed_assets": {
         "label": "Fixed Assets",
@@ -109,16 +114,20 @@ PROCESS_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     # Reordered, not just extended: risk assessment/due diligence happens
     # BEFORE a vendor is onboarded in a real procurement walkthrough, not
-    # after — the original order here had it backwards.
+    # after — the original order here had it backwards. Performance review
+    # also has to precede a contract renewal decision, not follow it — a
+    # renewal isn't informed by a review that hasn't happened yet.
     "vendor_management": {
         "label": "Vendor Management",
         "steps": ["Vendor Risk Assessed", "Vendor Onboarded", "Contract Signed",
-                  "Vendor Contract Renewed", "Vendor Performance Reviewed", "Vendor Offboarded"],
+                  "Vendor Performance Reviewed", "Vendor Contract Renewed", "Vendor Offboarded"],
     },
     "payroll": {
         "label": "Payroll",
         "steps": ["Time Entry Submitted", "Time Approved", "Payroll Calculated",
-                  "Payroll Approved", "Payroll Disbursed", "Payslip Issued"],
+                  "Payroll Approved", "Deductions Withheld", "Expense Reimbursement Approved",
+                  "Payroll Disbursed", "Tax Authorities Paid", "Insurance Carriers Paid",
+                  "Payslip Issued"],
     },
     "inventory_master": {
         "label": "Inventory Master",
