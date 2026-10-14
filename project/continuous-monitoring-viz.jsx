@@ -1561,7 +1561,7 @@ function buildCaseDfgGraph(events, process, processes) {
   return { nodes, edges, caseCount, outliers };
 }
 
-export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
+export function CaseFlowGraph({ theme, days, rawEvents, loading, error, process: controlledProcess, onProcessChange }) {
   const hostRef = useRef(null);
   const svgRef = useRef(null);
   const rafRef = useRef(null);
@@ -1570,7 +1570,7 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
   const pendingFocusKeyRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
   const [expanded, setExpanded] = useState(false);
-  const [process, setProcess] = useState(null);
+  const [process, setProcess, isControlled] = useControllableProcess(controlledProcess, onProcessChange);
   const processes = useProcessList();
   const paneHeight = expanded ? 900 : 520;
 
@@ -1785,7 +1785,7 @@ export function CaseFlowGraph({ theme, days, rawEvents, loading, error }) {
         : null}
       loading={loading && !hasData}
       height={paneHeight}
-      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      controls={isControlled ? null : <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
     >
       {hasData && (
         <div ref={hostRef} style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
@@ -1885,6 +1885,17 @@ function useProcessList() {
   return processes;
 }
 
+// Lets a view's process filter be driven externally (ops-efficiency.jsx's
+// single top-level selector, so every tab stays on the same process without
+// re-picking it each time) or managed locally when no controlled value is
+// passed in — same uncontrolled/controlled duality a plain <input> supports.
+// `process === undefined` (the prop simply omitted) means uncontrolled.
+function useControllableProcess(controlledProcess, onProcessChange) {
+  const [internal, setInternal] = useState(null);
+  const isControlled = controlledProcess !== undefined;
+  return [isControlled ? controlledProcess : internal, isControlled ? onProcessChange : setInternal, isControlled];
+}
+
 function ProcessFilterSelect({ value, onChange, processes }) {
   return (
     <select value={value || ""} onChange={e => onChange(e.target.value || null)}
@@ -1912,9 +1923,9 @@ function _pmUsePmFetch(fetcher, days, process) {
   return state;
 }
 
-export function ProcessVariantsView({ theme, days }) {
+export function ProcessVariantsView({ theme, days, process: controlledProcess, onProcessChange }) {
   const processes = useProcessList();
-  const [process, setProcess] = useState(null);
+  const [process, setProcess, isControlled] = useControllableProcess(controlledProcess, onProcessChange);
   const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmVariants(d, p), days, process);
   const variants = data?.variants || [];
   const hasData = variants.length > 0;
@@ -1923,7 +1934,7 @@ export function ProcessVariantsView({ theme, days }) {
     <VizFrame theme={theme} height={520}
       kicker="Process mining · Variants — every path actually taken"
       sub="Distinct step sequences observed over the trailing window, most frequent first. The top row is the happy path; a green tag means it also matches the documented process template exactly — the two can diverge when the 'normal' path has quietly drifted."
-      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      controls={isControlled ? null : <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
       error={error} empty={!loading && !hasData ? "No case-tracked transactions in this window yet — see generate_o2c_p2p_synthetic_log.py." : null}
       loading={loading && !hasData}>
       {hasData && (
@@ -2034,9 +2045,9 @@ export function ProcessConformanceView({ theme, days }) {
   );
 }
 
-export function ProcessCycleTimeView({ theme, days }) {
+export function ProcessCycleTimeView({ theme, days, process: controlledProcess, onProcessChange }) {
   const processes = useProcessList();
-  const [process, setProcess] = useState(null);
+  const [process, setProcess, isControlled] = useControllableProcess(controlledProcess, onProcessChange);
   const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmCycleTimes(d, p), days, process);
   const edges = data?.edges || [];
   const hasData = edges.length > 0;
@@ -2046,7 +2057,7 @@ export function ProcessCycleTimeView({ theme, days }) {
     <VizFrame theme={theme} height={520}
       kicker="Process mining · Cycle Time — where time actually accumulates"
       sub="Mean/median/p90 duration for every step-to-step transition, slowest first — the bottleneck, as opposed to the Case Flow Graph's edge width, which shows volume, not speed."
-      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      controls={isControlled ? null : <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
       error={error} empty={!loading && !hasData ? "No case-tracked transitions in this window yet." : null}
       loading={loading && !hasData}>
       {hasData && (
@@ -2093,9 +2104,9 @@ export function ProcessCycleTimeView({ theme, days }) {
    both ride on real elapsed hours only).
    ════════════════════════════════════════════════════════════════════════ */
 
-export function ValueStreamMapView({ theme, days }) {
+export function ValueStreamMapView({ theme, days, process: controlledProcess, onProcessChange }) {
   const processes = useProcessList();
-  const [process, setProcess] = useState(null);
+  const [process, setProcess, isControlled] = useControllableProcess(controlledProcess, onProcessChange);
   const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmValueStreamMap(d, p), days, process);
   const hasData = !!data && data.scored_cases > 0;
   const pce = data?.process_cycle_efficiency;
@@ -2105,7 +2116,7 @@ export function ValueStreamMapView({ theme, days }) {
     <VizFrame theme={theme} height={480}
       kicker="Process mining · Value Stream Map — process cycle efficiency"
       sub="Real step-to-step hours split by whether the transition followed the template's documented order (canonical) or not (deviation: rework/skip/off-template) — not a measured per-step touch time, since this platform has no start/end-of-work timestamp for a single step."
-      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      controls={isControlled ? null : <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
       error={error} empty={!loading && !hasData ? "No timed case transitions in this window yet." : null}
       loading={loading && !hasData}>
       {hasData && (
@@ -2156,9 +2167,9 @@ export function ValueStreamMapView({ theme, days }) {
   );
 }
 
-export function ParetoView({ theme, days }) {
+export function ParetoView({ theme, days, process: controlledProcess, onProcessChange }) {
   const processes = useProcessList();
-  const [process, setProcess] = useState(null);
+  const [process, setProcess, isControlled] = useControllableProcess(controlledProcess, onProcessChange);
   const { data, loading, error } = _pmUsePmFetch((d, p) => window.MCP.pmPareto(d, p), days, process);
   const ranked = data?.ranked || [];
   const hasData = ranked.length > 0;
@@ -2167,7 +2178,7 @@ export function ParetoView({ theme, days }) {
     <VizFrame theme={theme} height={480}
       kicker="Process mining · Pareto — where deviation time concentrates"
       sub="Deviation edges (Value Stream Map's off-path transitions) ranked by total real hours lost, vital few (≈80% cumulative) highlighted — never ranked by an invented severity score."
-      controls={<ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
+      controls={isControlled ? null : <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
       error={error} empty={!loading && !hasData ? "No deviation edges in this window — every observed transition followed the documented order." : null}
       loading={loading && !hasData}>
       {hasData && (
@@ -2201,9 +2212,9 @@ export function ParetoView({ theme, days }) {
 
 const _CONTROL_CHART_PERIODS = 8;
 
-export function CycleTimeControlChartView({ theme }) {
+export function CycleTimeControlChartView({ theme, process: controlledProcess, onProcessChange }) {
   const processes = useProcessList();
-  const [process, setProcess] = useState(null);
+  const [process, setProcess, isControlled] = useControllableProcess(controlledProcess, onProcessChange);
   const [periodDays, setPeriodDays] = useState(7);
   const [state, setState] = useState({ data: null, loading: true, error: null });
 
@@ -2225,7 +2236,7 @@ export function CycleTimeControlChartView({ theme }) {
       sub="Mean case duration per trailing period vs. a center line and ±2σ control limits fit across periods — a bar outside the band is a drift signal worth investigating, not proof of a problem on its own."
       controls={
         <div style={{ display: "flex", gap: 8 }}>
-          <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />
+          {!isControlled && <ProcessFilterSelect value={process} onChange={setProcess} processes={processes} />}
           <select value={periodDays} onChange={e => setPeriodDays(Number(e.target.value))}
             style={{ fontSize: 11, padding: "3px 6px", borderRadius: 4, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink)" }}>
             <option value={1}>Daily periods</option>

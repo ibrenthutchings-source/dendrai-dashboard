@@ -375,7 +375,7 @@ function FishboneResult({ data }) {
   );
 }
 
-function RootCauseInvestigation({ days, summary }) {
+function RootCauseInvestigation({ days, summary, process }) {
   const [seedKey, setSeedKey] = useState("");
   const [whys, setWhys] = useState({ data: null, loading: false, error: null });
   const [fishbone, setFishbone] = useState({ data: null, loading: false, error: null });
@@ -385,14 +385,16 @@ function RootCauseInvestigation({ days, summary }) {
   // in. See process_mining_tool.py's cycle_time_stats for how `bottleneck`
   // is derived.
   const seeds = useMemo(() => Object.entries(summary?.processes || {})
-    .filter(([, p]) => p.bottleneck)
+    .filter(([id, p]) => p.bottleneck && (!process || id === process))
     .map(([id, p]) => ({
       key: id, process: id, process_label: p.label,
       source: p.bottleneck.source, target: p.bottleneck.target,
       avg_hours: p.bottleneck.avg_hours, count: p.bottleneck.count, basis: "bottleneck",
-    })), [summary]);
+    })), [summary, process]);
 
   const seed = seeds.find(s => s.key === seedKey) || null;
+
+  useEffect(() => { setSeedKey(""); }, [process]);
 
   useEffect(() => {
     setWhys({ data: null, loading: false, error: null });
@@ -561,6 +563,14 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
   const theme = useThemeColors();
   const [days, setDays] = useState(30);
   const [tab, setTab] = useState("cycletime");
+  // Single screen-wide process filter, shared by every tab below (instead of
+  // each view's own, independent process dropdown) — picking one process
+  // once should keep every analysis in sync on it, not just whichever tab
+  // happens to be open. Scoped to processes that have actually produced
+  // case-tracked activity in this window (summary.processes), not the full
+  // 11-entry static template catalog, which is what "analyses that have
+  // been run" is actually asking for.
+  const [process, setProcess] = useState(null);
   const [summary, setSummary] = useState(null);
   const [summaryError, setSummaryError] = useState(null);
   const [tickets, setTickets] = useState(null);
@@ -572,7 +582,15 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
 
   useEffect(() => {
     window.MCP.pmSummary(days)
-      .then(d => { setSummary(d); setSummaryError(d.note || null); })
+      .then(d => {
+        setSummary(d);
+        setSummaryError(d.note || null);
+        // A process the filter was set to can stop having run anything in
+        // this window (switched --days, or it was simply quiet) — fall back
+        // to "All processes" rather than silently filtering every tab to a
+        // process no longer in the picker's own option list.
+        setProcess(p => (p && !d.processes?.[p]) ? null : p);
+      })
       .catch(e => setSummaryError(e.message || String(e)));
   }, [days]);
 
@@ -624,11 +642,19 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
             it — bottleneck and breaches first, rework and process drift as early warnings, volume as a drill-down.
           </div>
         </div>
-        <select className="input" style={{ width: 140 }} value={days} onChange={e => setDays(Number(e.target.value))}>
-          <option value={7}>Trailing 7d</option>
-          <option value={30}>Trailing 30d</option>
-          <option value={90}>Trailing 90d</option>
-        </select>
+        <div style={{ display: "flex", gap: 8 }}>
+          <select className="input" style={{ width: 200 }} value={process || ""} onChange={e => setProcess(e.target.value || null)}>
+            <option value="">All processes</option>
+            {Object.entries(summary?.processes || {}).map(([id, p]) => (
+              <option key={id} value={id}>{p.label}</option>
+            ))}
+          </select>
+          <select className="input" style={{ width: 140 }} value={days} onChange={e => setDays(Number(e.target.value))}>
+            <option value={7}>Trailing 7d</option>
+            <option value={30}>Trailing 30d</option>
+            <option value={90}>Trailing 90d</option>
+          </select>
+        </div>
       </div>
 
       {summaryError && <div className="mono" style={{ fontSize: 10.5, color: "var(--amber-ink)", marginBottom: 10 }}>{summaryError}</div>}
@@ -647,7 +673,7 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
         <>
           <SectionLabel>Cycle Time — where time actually accumulates</SectionLabel>
           <div style={{ marginBottom: 24 }}>
-            <ProcessCycleTimeView theme={theme} days={days} />
+            <ProcessCycleTimeView theme={theme} days={days} process={process} onProcessChange={setProcess} />
           </div>
         </>
       )}
@@ -656,7 +682,7 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
         <>
           <SectionLabel>Value Stream Map — how much of that time was forward progress?</SectionLabel>
           <div style={{ marginBottom: 24 }}>
-            <ValueStreamMapView theme={theme} days={days} />
+            <ValueStreamMapView theme={theme} days={days} process={process} onProcessChange={setProcess} />
           </div>
         </>
       )}
@@ -665,7 +691,7 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
         <>
           <SectionLabel>Pareto — which deviations to fix first</SectionLabel>
           <div style={{ marginBottom: 24 }}>
-            <ParetoView theme={theme} days={days} />
+            <ParetoView theme={theme} days={days} process={process} onProcessChange={setProcess} />
           </div>
         </>
       )}
@@ -674,7 +700,7 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
         <>
           <SectionLabel>Control Chart — is cycle time drifting?</SectionLabel>
           <div style={{ marginBottom: 24 }}>
-            <CycleTimeControlChartView theme={theme} />
+            <CycleTimeControlChartView theme={theme} process={process} onProcessChange={setProcess} />
           </div>
         </>
       )}
@@ -682,7 +708,7 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
       {tab === "rootcause" && (
         <>
           <SectionLabel>Root Cause Investigation — 5 Whys / Fishbone</SectionLabel>
-          <RootCauseInvestigation days={days} summary={summary} />
+          <RootCauseInvestigation days={days} summary={summary} process={process} />
         </>
       )}
 
@@ -690,7 +716,7 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
         <>
           <SectionLabel>Variants — is the real process still the documented one?</SectionLabel>
           <div style={{ marginBottom: 24 }}>
-            <ProcessVariantsView theme={theme} days={days} />
+            <ProcessVariantsView theme={theme} days={days} process={process} onProcessChange={setProcess} />
           </div>
         </>
       )}
@@ -700,12 +726,13 @@ export function OpsEfficiencyScreen({ onNavigate } = {}) {
           <SectionLabel>Case Flow Graph — volume drill-down</SectionLabel>
           <div style={{ marginBottom: 24 }}>
             {eventsError && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginBottom: 8 }}>{eventsError}</div>}
-            <CaseFlowGraph theme={theme} days={days} rawEvents={rawEvents || []} loading={!rawEvents && !eventsError} error={eventsError} />
+            <CaseFlowGraph theme={theme} days={days} rawEvents={rawEvents || []} loading={!rawEvents && !eventsError} error={eventsError}
+              process={process} onProcessChange={setProcess} />
           </div>
         </>
       )}
 
-      <OpsBriefPanel days={days} process={null} summary={summary} />
+      <OpsBriefPanel days={days} process={process} summary={summary} />
     </div>
   );
 }
