@@ -288,24 +288,83 @@ function FiveWhysResult({ data }) {
   );
 }
 
+// Real Ishikawa layout: a horizontal spine running into the problem ("head")
+// on the right, each category a diagonal bone off the spine (alternating
+// above/below, in the order the model returned them), its causes listed at
+// the bone's outer end. Geometry is computed in plain pixels so the SVG
+// bone/spine lines and the HTML text boxes they connect to always line up —
+// percentage-based CSS couldn't guarantee that against variable category
+// counts (up to the 6 in _FISHBONE_SCHEMA) and variable cause-list lengths.
+function FishboneDiagram({ data }) {
+  const categories = data.categories || [];
+  const n = Math.max(categories.length, 1);
+  const SLOT = 190;    // horizontal space reserved per category along the spine
+  const HEAD_W = 170;  // room reserved for the problem/head box at the right
+  const MARGIN_L = 30;
+  const H = 300;       // fixed diagram height — tall enough for a 2-4-cause bone on each side
+  const MID = H / 2;   // spine y
+  const BONE_DX = 45;  // horizontal run of each diagonal bone
+  const TIP = 60;       // vertical rise/drop of each bone from the spine to its category end
+
+  const spineStart = MARGIN_L;
+  const spineEnd = MARGIN_L + n * SLOT;
+  const width = spineEnd + HEAD_W;
+
+  const points = categories.map((cat, i) => ({
+    cat, x: MARGIN_L + SLOT * (i + 0.6), top: i % 2 === 0,
+  }));
+
+  return (
+    <div style={{ overflowX: "auto", marginBottom: 4 }}>
+      <div style={{ position: "relative", width, height: H, minWidth: width }}>
+        <svg width={width} height={H} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}>
+          <line x1={spineStart} y1={MID} x2={spineEnd} y2={MID} stroke="var(--ink-3)" strokeWidth="2" />
+          <polygon points={`${spineEnd},${MID - 8} ${spineEnd + 16},${MID} ${spineEnd},${MID + 8}`} fill="var(--ink-3)" />
+          {points.map((p, i) => (
+            <line key={i} x1={p.x} y1={MID}
+              x2={p.x + (p.top ? -BONE_DX : BONE_DX)} y2={p.top ? MID - TIP : MID + TIP}
+              stroke="var(--ink-4)" strokeWidth="1.5" />
+          ))}
+        </svg>
+
+        <div style={{
+          position: "absolute", left: spineEnd + 14, top: MID - 26, width: HEAD_W - 20,
+          padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line)",
+          background: "var(--surface-2)", fontSize: 10.5, fontWeight: 700,
+        }}>
+          {data.problem_statement}
+        </div>
+
+        {points.map((p, i) => {
+          const tipX = p.x + (p.top ? -BONE_DX : BONE_DX);
+          const tipY = p.top ? MID - TIP : MID + TIP;
+          return (
+            <div key={i} style={{
+              position: "absolute", left: tipX - 85, width: 170, textAlign: p.top ? "right" : "left",
+              ...(p.top ? { bottom: H - tipY + 6 } : { top: tipY + 6 }),
+            }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em", color: "var(--ink-3)", marginBottom: 3 }}>
+                {p.cat.name}
+              </div>
+              {p.cat.causes.map((c, j) => (
+                <div key={j} style={{ fontSize: 10, marginBottom: 2, fontStyle: c.basis === "assumption" ? "italic" : "normal" }}>
+                  {c.cause}<BasisTag basis={c.basis} />
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function FishboneResult({ data }) {
   return (
     <div>
       <AiReviewBanner review={data._review} />
       <CausalDisclaimer />
-      <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 10 }}>{data.problem_statement}</div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
-        {data.categories.map(cat => (
-          <div key={cat.name} style={{ flex: "1 1 200px", minWidth: 180 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--ink-3)", marginBottom: 4 }}>{cat.name}</div>
-            {cat.causes.map((c, i) => (
-              <div key={i} style={{ fontSize: 10.5, marginBottom: 3, fontStyle: c.basis === "assumption" ? "italic" : "normal" }}>
-                • {c.cause}<BasisTag basis={c.basis} />
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
+      <FishboneDiagram data={data} />
       <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 6, background: "var(--surface-2)" }}>
         <div style={{ fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Investigate first</div>
         <ul style={{ margin: "4px 0 0 16px", fontSize: 11, padding: 0 }}>
