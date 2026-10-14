@@ -35,12 +35,42 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import random
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Same local-run rewrite reset_admin_password.py uses, and for the same
+# reason: `railway run` injects this environment's real DATABASE_URL, but it
+# points at a *.railway.internal host only reachable from inside Railway's
+# network — rewrite just the host:port to that database's public TCP proxy
+# endpoint before anything imports db.py. Keep this dict in sync with
+# reset_admin_password.py's _INTERNAL_TO_PROXY if either ever changes.
+_INTERNAL_TO_PROXY = {
+    "postgres-sandbox.railway.internal": "trolley.proxy.rlwy.net:26897",
+    "postgres-uat.railway.internal": "altaria.proxy.rlwy.net:35832",
+    "postgres-development.railway.internal": "altaria.proxy.rlwy.net:30786",
+    "postgres-production.railway.internal": "trolley.proxy.rlwy.net:26763",
+}
+
+
+def _rewrite_for_local_run(url: str) -> str:
+    parts = urlsplit(url)
+    proxy_hostport = _INTERNAL_TO_PROXY.get(parts.hostname or "")
+    if not proxy_hostport:
+        return url
+    userinfo = parts.netloc.split("@", 1)[0] if "@" in parts.netloc else ""
+    new_netloc = f"{userinfo}@{proxy_hostport}" if userinfo else proxy_hostport
+    return urlunsplit((parts.scheme, new_netloc, parts.path, parts.query, parts.fragment))
+
+
+_url = os.environ.get("DATABASE_URL", "")
+if _url:
+    os.environ["DATABASE_URL"] = _rewrite_for_local_run(_url)
 
 import db
 import mcp_governance as mg
