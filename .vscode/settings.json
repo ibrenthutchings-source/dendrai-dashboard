@@ -1,5 +1,6 @@
 {
     "conventionalCommits.scopes": [
         "Added disagfregation for SOX Scoping and Assess Risk"
-    ]
+    ],
+    "python.terminal.useEnvFile": true
 }
