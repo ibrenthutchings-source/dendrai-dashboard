@@ -1634,7 +1634,12 @@ ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS period_begin   VARCHAR(16);
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS appetite_level VARCHAR(8);
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS persona        VARCHAR(64);
 ALTER TABLE risk_loop_runs ADD COLUMN IF NOT EXISTS signal_set     TEXT[];
-ALTER TABLE sox_systems     ADD COLUMN IF NOT EXISTS version        VARCHAR(32);
+ALTER TABLE beneish_mscores ADD COLUMN IF NOT EXISTS aqi_input  NUMERIC;
+ALTER TABLE beneish_mscores ADD COLUMN IF NOT EXISTS depi_input NUMERIC;
+ALTER TABLE beneish_mscores ADD COLUMN IF NOT EXISTS sgai_input NUMERIC;
+ALTER TABLE beneish_mscores ADD COLUMN IF NOT EXISTS lvgi_input NUMERIC;
+ALTER TABLE beneish_mscores ADD COLUMN IF NOT EXISTS defaulted  TEXT[];
+ALTER TABLE sox_systems    ADD COLUMN IF NOT EXISTS version        VARCHAR(32);
 ALTER TABLE sox_systems     ADD COLUMN IF NOT EXISTS notes          TEXT;
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS rev_growth_yoy_pct NUMERIC(7,3);
 ALTER TABLE sox_financial_segments ADD COLUMN IF NOT EXISTS net_income         NUMERIC;
@@ -4082,8 +4087,9 @@ def save_beneish_mscore(run_id: int, mscore: dict) -> None:
                     """
                     INSERT INTO beneish_mscores
                         (run_id, m_score, interpretation, rag_status,
-                         dsri_input, gmi_input, sgi_input, tata_input, missing_inputs)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         dsri_input, gmi_input, sgi_input, tata_input, missing_inputs,
+                         aqi_input, depi_input, sgai_input, lvgi_input, defaulted)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT DO NOTHING
                     """,
                     (
@@ -4096,6 +4102,11 @@ def save_beneish_mscore(run_id: int, mscore: dict) -> None:
                         (mscore.get("inputs") or {}).get("sgi"),
                         (mscore.get("inputs") or {}).get("tata"),
                         mscore.get("missing_inputs") or [],
+                        (mscore.get("inputs") or {}).get("aqi"),
+                        (mscore.get("inputs") or {}).get("depi"),
+                        (mscore.get("inputs") or {}).get("sgai"),
+                        (mscore.get("inputs") or {}).get("lvgi"),
+                        mscore.get("defaulted") or [],
                     ),
                 )
     _run(_do)
@@ -6471,25 +6482,37 @@ def get_run_detail(run_id: int) -> Optional[dict]:
                     }
                     for r in cur.fetchall()
                 ]
+                _f = lambda v: float(v) if v is not None else None
                 cur.execute(
-                    "SELECT m_score, interpretation, rag_status FROM beneish_mscores WHERE run_id = %s",
+                    """SELECT m_score, interpretation, rag_status,
+                              dsri_input, gmi_input, aqi_input, sgi_input,
+                              depi_input, sgai_input, tata_input, lvgi_input, defaulted
+                       FROM beneish_mscores WHERE run_id = %s""",
                     (run_id,),
                 )
                 brow = cur.fetchone()
                 result["beneish_mscore"] = {
-                    "m_score": float(brow[0]) if brow and brow[0] is not None else None,
-                    "interpretation": brow[1] if brow else None,
-                    "rag_status": brow[2] if brow else None,
+                    "m_score": _f(brow[0]),
+                    "interpretation": brow[1],
+                    "rag_status": brow[2],
+                    "inputs": {k: _f(v) for k, v in zip(
+                        ("dsri", "gmi", "aqi", "sgi", "depi", "sgai", "tata", "lvgi"), brow[3:11])},
+                    # NULL defaulted = row saved before the 8-variable model, when
+                    # AQI/DEPI/SGAI/LVGI were never computed.
+                    "defaulted": brow[11] if brow[11] is not None else ["AQI", "DEPI", "SGAI", "LVGI"],
                 } if brow else None
                 cur.execute(
-                    "SELECT z_score, interpretation, rag_status FROM altman_zscores WHERE run_id = %s",
+                    """SELECT z_score, interpretation, rag_status,
+                              x1_input, x2_input, x3_input, x4_input
+                       FROM altman_zscores WHERE run_id = %s""",
                     (run_id,),
                 )
                 zrow = cur.fetchone()
                 result["altman_zscore"] = {
-                    "z_score": float(zrow[0]) if zrow and zrow[0] is not None else None,
-                    "interpretation": zrow[1] if zrow else None,
-                    "rag_status": zrow[2] if zrow else None,
+                    "z_score": _f(zrow[0]),
+                    "interpretation": zrow[1],
+                    "rag_status": zrow[2],
+                    "inputs": {k: _f(v) for k, v in zip(("x1", "x2", "x3", "x4"), zrow[3:7])},
                 } if zrow else None
                 return result
     return _run(_do)

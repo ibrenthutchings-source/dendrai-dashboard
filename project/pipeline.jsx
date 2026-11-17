@@ -6,6 +6,7 @@
 
 import { RiskApprovalReview } from "./risk-approval.jsx";
 import { ScopeApprovalReview } from "./audit-scope-review.jsx";
+import { RunHistoryPanel } from "./run-history.jsx";
 
 const STAGES = [
   { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · SEC 8-K · internal KRIs" },
@@ -1771,6 +1772,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
     { id: "signals", label: "Fraud & Distress Signals" },
     { id: "forecasts", label: "Forecasts" },
     ...(aiAvailable ? [{ id: "narrative", label: "AI Narrative" }] : []),
+    { id: "history", label: "Run History" },
   ];
   const [activeTab, setActiveTab] = React.useState("overview");
 
@@ -1867,6 +1869,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         <FraudDistressPanel forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList} onAddObjective={onAddObjective}/>
       )}
 
+      {activeTab === "history" && <RunHistoryPanel ticker={ticker} />}
       {activeTab === "forecasts" && (
         <ForecastsPanel
           forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList}

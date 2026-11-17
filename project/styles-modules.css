@@ -2038,7 +2038,7 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
 .ar-rag-opt.active .rag::before { background: var(--surface) !important; }
 
 .ar-slider {
-  width: 100%;
+  display: block; width: 100%; min-width: 0; height: 18px; margin: 0;
   accent-color: var(--ink);
 }
 

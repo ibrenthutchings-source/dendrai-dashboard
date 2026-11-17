@@ -496,7 +496,7 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
 
             <div className="ar-field">
               <label className="ar-label">Score <span className="mono ar-val">{fmt2(score)}</span></label>
-              <input type="range" min="0" max="25" step="0.1" value={score}
+              <input type="range" min="0" max="25" step="0.1" value={Number.isFinite(Number(score)) ? Number(score) : 0}
                 onChange={e => setScore(parseFloat(e.target.value))} className="ar-slider"/>
               <div className="ar-orig mono">AI scored: {fmt2(risk.score)}</div>
             </div>
