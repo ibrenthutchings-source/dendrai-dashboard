@@ -30,6 +30,14 @@ const _CONTROL_PICKER_CAP = 250;
 let MASTER_CONTROLS = [...DEFAULT_CONTROLS];
 let CTRL_BY_REF = Object.fromEntries(MASTER_CONTROLS.map(c => [c.ref, c]));
 
+// Every framework a control is listed under: its home framework plus any it has
+// been shared into (controls_library.framework + control_framework_links, served
+// as `shared_frameworks`). One control, one control number, listed in each.
+function ctrlFrameworks(c) {
+  if (!c) return [];
+  return [...new Set([c.framework, ...(c.shared_frameworks || [])].filter(Boolean))];
+}
+
 // Defaults used while the DB load is in flight (and as fallback when DB is unavailable)
 const _DEFAULT_PRESET_FRAMEWORKS = ["NIST SP 800-53", "ISO/IEC 27001", "ISO/IEC 42001", "CIS Controls", "SOC 2"];
 const _DEFAULT_MATRIX_FRAMEWORKS = ["ISO/IEC 27001", "ISO/IEC 42001", "SOC 2", "NIST SP 800-53", "CIS Controls", "COSO ERM"];
@@ -54,8 +62,9 @@ function computeMatrixFrameworks(activeMxFws, hiddenFws, ctrlStates, risks) {
   const extraFws = new Set();
   for (const cs of Object.values(ctrlStates || {})) {
     for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
-      const fw = CTRL_BY_REF[ref]?.framework;
-      if (fw && !internalFws.has(fw) && !activeMxFws.includes(fw) && !hidden.has(fw)) extraFws.add(fw);
+      for (const fw of ctrlFrameworks(CTRL_BY_REF[ref])) {
+        if (fw && !internalFws.has(fw) && !activeMxFws.includes(fw) && !hidden.has(fw)) extraFws.add(fw);
+      }
     }
   }
   for (const r of (risks || [])) {
@@ -208,7 +217,7 @@ function initControlStates(risks) {
     // For framework-specific risks, also include every MASTER_CONTROLS entry for that framework
     const fw = r.source_framework;
     const fwRefs = (fw && fw !== "Internal Risk Register")
-      ? MASTER_CONTROLS.filter(c => c.framework === fw).map(c => c.ref)
+      ? MASTER_CONTROLS.filter(c => ctrlFrameworks(c).includes(fw)).map(c => c.ref)
       : [];
     const autoRefs = [...new Set([...kwRefs, ...fwRefs])].slice(0, 6);
     states[key] = { autoMapped: autoRefs, manual: [], generateCode: new Set() };
@@ -393,7 +402,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
   // user has removed every pinned Matrix column — those two concepts
   // (which columns are pinned vs. which frameworks controls can target)
   // are related but shouldn't collapse into each other.
-  const _knownFws = new Set(MASTER_CONTROLS.map(c => c.framework).filter(Boolean));
+  const _knownFws = new Set(MASTER_CONTROLS.flatMap(c => ctrlFrameworks(c)));
   const frameworkOptions = ["Internal", ...new Set(
     [...MATRIX_FRAMEWORKS, ...PRESET_FRAMEWORKS, ..._knownFws].filter(f => f && f !== "Internal")
   )];
@@ -905,6 +914,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   // Per-cell expand state: "riskKey:fw"
   const [savingCells, setSavingCells]     = useState(new Set());
   const [fwPicker, setFwPicker]       = useState(null); // { key, fw }
+  const [, bumpShared]                  = useState(0);    // re-render after a control is shared into a framework
   const [ctrlSearch, setCtrlSearch]   = useState("");
   const [domainNames, setDomainNames] = useState({});
   const [domainsLoading, setDomainsLoading] = useState(false);
@@ -1028,8 +1038,9 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   const extraFws = new Set();
   for (const cs of Object.values(ctrlStates)) {
     for (const ref of [...(cs.autoMapped || []), ...(cs.manual || [])]) {
-      const fw = CTRL_BY_REF[ref]?.framework;
-      if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw) && !_hiddenFws.has(fw)) extraFws.add(fw);
+      for (const fw of ctrlFrameworks(CTRL_BY_REF[ref])) {
+        if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw) && !_hiddenFws.has(fw)) extraFws.add(fw);
+      }
     }
   }
   for (const r of (risks || [])) {
@@ -1047,7 +1058,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   // framework MASTER_CONTROLS already knows about (same source ControlsPanel's
   // "new control" dropdown already uses) so a real framework is never
   // unselectable here just because nothing on screen right now points to it.
-  const _knownCtrlFws = new Set(MASTER_CONTROLS.map(c => c.framework).filter(Boolean));
+  const _knownCtrlFws = new Set(MASTER_CONTROLS.flatMap(c => ctrlFrameworks(c)));
   const newCtrlFwOptions = ["Internal", ...new Set(
     [...fwCols, ..._knownCtrlFws].filter(f => f && !_internalFws.has(f))
   )];
@@ -1097,7 +1108,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     return allRefs.filter(ref => {
       const c = CTRL_BY_REF[ref];
       if (!c) return false;
-      return c.framework && !_internalFws.has(c.framework) ? c.framework === fw : true;
+      return c.framework && !_internalFws.has(c.framework) ? ctrlFrameworks(c).includes(fw) : true;
     });
   }
 
@@ -1166,6 +1177,29 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
     await onSaveRow(key, state, allRefs);
     setSavingCells(prev => { const next = new Set(prev); next.delete(cellId); return next; });
+  }
+
+  // ── Share an existing control into another framework ───────────────────────
+  // Persists to control_framework_links so the control (same number) is listed
+  // under both frameworks in every future session, then updates the in-memory
+  // library object (shared by MASTER_CONTROLS and CTRL_BY_REF) so every column
+  // reflects it immediately. Returns false (and leaves state untouched) if the
+  // server refuses, so callers don't assign a control that isn't actually shared.
+  async function shareControlToFramework(ref, fw) {
+    const c = CTRL_BY_REF[ref];
+    if (!c || ctrlFrameworks(c).includes(fw) || !c.framework || _internalFws.has(c.framework)) return true;
+    try {
+      const res = await fetch(`/api/risk-register/controls/${encodeURIComponent(ref)}/frameworks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ framework: fw }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || data.saved === false) return false;
+      c.shared_frameworks = data.shared_frameworks || [...(c.shared_frameworks || []), fw];
+    } catch (_) { return false; }
+    bumpShared(n => n + 1);
+    return true;
   }
 
   // ── "+ New" (create a brand-new control) per cell ──────────────────────────
@@ -1527,18 +1561,21 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                     // native column — restricting the picker itself just meant a column
                     // whose own framework's controls were all already assigned showed
                     // nothing addable at all, even though plenty of controls existed.
+                    // A control assigned to this risk but not yet listed in THIS column
+                    // (e.g. a CIS control, viewed from the ISO column) is still
+                    // addable — picking it shares it into this framework.
                     const addable      = MASTER_CONTROLS.filter(c =>
-                      !allRefs.includes(c.ref) &&
+                      !fwRefs.includes(c.ref) &&
                       (ctrlSearch === "" ||
                         c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
                         c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
-                        (c.framework || "").toLowerCase().includes(ctrlSearch.toLowerCase()))
+                        ctrlFrameworks(c).some(f => f.toLowerCase().includes(ctrlSearch.toLowerCase())))
                     )
                     // Controls native to this column's framework first, and within
                     // that the most recently created (end of the library) first, so a
                     // just-created control is never buried past _CONTROL_PICKER_CAP.
                     .map((c, i) => ({ c, i }))
-                    .sort((a, b) => ((b.c.framework === fw) - (a.c.framework === fw)) || (b.i - a.i))
+                    .sort((a, b) => (ctrlFrameworks(b.c).includes(fw) - ctrlFrameworks(a.c).includes(fw)) || (b.i - a.i))
                     .map(x => x.c);
 
                     return (
@@ -1553,19 +1590,24 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 6 }}>
                             {fwRefs.map(ref => {
                               const ctrl = CTRL_BY_REF[ref];
-                              const isNativeFw = ctrl?.framework === fw;
+                              const ctrlFws    = ctrlFrameworks(ctrl);
+                              const otherFws   = ctrlFws.filter(f => f !== fw);
+                              const isNativeFw = otherFws.length === 0 && !!ctrl?.framework && !_internalFws.has(ctrl.framework);
                               return (
                                 <div key={ref} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                                   <div style={{ flex: 1 }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginBottom: 2 }}>
+                                      <span className="mono" title="Control number" style={{ fontWeight: 700, fontSize: 9.5, color: "var(--acc,#2563eb)", whiteSpace: "nowrap" }}>
+                                        {ref}
+                                      </span>
                                       <span style={{ fontWeight: 700, fontSize: 11, color: "var(--ink,#111)" }}>
                                         {ctrl?.name || ref}
                                       </span>
-                                      {!isNativeFw && ctrl?.framework && (
-                                        <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--surface-2,#f0f0f0)", color: "var(--ink-3,#888)", border: "1px solid var(--line,#e0e0e0)", whiteSpace: "nowrap" }}>
-                                          {ctrl.framework}
+                                      {otherFws.map(f => (
+                                        <span key={f} title={`Also listed under ${f}`} style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--surface-2,#f0f0f0)", color: "var(--ink-3,#888)", border: "1px solid var(--line,#e0e0e0)", whiteSpace: "nowrap" }}>
+                                          {f}
                                         </span>
-                                      )}
+                                      ))}
                                       {ctrl?.pac_control_id && (
                                         <span title={`Enforced by PaC control ${ctrl.pac_control_id}`} style={{ fontSize: 8, color: "var(--acc,#2563eb)", whiteSpace: "nowrap" }}>
                                           ⚡{ctrl.pac_control_id}
@@ -1598,7 +1640,9 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                       // instead of either silently cascading or being unremovable here.
                                       if (!isNativeFw) {
                                         setConfirmRemoveShared({
-                                          message: `"${ctrl?.name || ref}" has no single framework — it's shown in every column because it's one shared control assignment. Removing it here removes it from ALL frameworks on this row, not just ${fw}.`,
+                                          message: _internalFws.has(ctrl?.framework) || !ctrl?.framework
+                                            ? `"${ctrl?.name || ref}" has no single framework — it's shown in every column because it's one shared control assignment. Removing it here removes it from ALL frameworks on this row, not just ${fw}.`
+                                            : `${ref} "${ctrl?.name || ref}" is one control shared across ${ctrlFws.join(", ")}. Removing it here removes it from ALL of those frameworks on this row, not just ${fw}.`,
                                           run: doRemove,
                                         });
                                         return;
@@ -1670,9 +1714,15 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                               {addable.slice(0, _CONTROL_PICKER_CAP).map(c => (
                                 <button
                                   key={c.ref}
-                                  onClick={() => {
-                                    onAddManualControl(key, c.ref);
-                                    onSaveRow(key, state, [...allRefs, c.ref]);
+                                  onClick={async () => {
+                                    // Choosing a control from another framework shares it into
+                                    // this one (persisted) so it's listed under both.
+                                    const shared = await shareControlToFramework(c.ref, fw);
+                                    if (!shared) { alert(`Could not share ${c.ref} into ${fw}. Please try again.`); return; }
+                                    if (!allRefs.includes(c.ref)) {
+                                      onAddManualControl(key, c.ref);
+                                      onSaveRow(key, state, [...allRefs, c.ref]);
+                                    }
                                     setFwPicker(null); setCtrlSearch("");
                                   }}
                                   style={{
@@ -1684,9 +1734,9 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                 >
                                   <span className="mono" style={{ fontWeight: 600, color: "var(--acc,#2563eb)", minWidth: 40 }}>{c.ref}</span>
                                   <span style={{ color: "var(--ink,#111)", flex: 1 }}>{c.name}</span>
-                                  {c.framework && c.framework !== fw && (
-                                    <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--surface-2,#f0f0f0)", color: "var(--ink-3,#888)", border: "1px solid var(--line,#e0e0e0)", whiteSpace: "nowrap", flexShrink: 0 }}>{c.framework}</span>
-                                  )}
+                                  {ctrlFrameworks(c).filter(f => f !== fw).map(f => (
+                                    <span key={f} style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--surface-2,#f0f0f0)", color: "var(--ink-3,#888)", border: "1px solid var(--line,#e0e0e0)", whiteSpace: "nowrap", flexShrink: 0 }}>{f}</span>
+                                  ))}
                                 </button>
                               ))}
                               {addable.length === 0 && (
@@ -1828,10 +1878,11 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
   // to one of those frameworks are shown, so this tab never lists a
   // control/framework that isn't actually on the Framework Matrix tab.
   const controlsInScope = allowedFrameworks
-    ? MASTER_CONTROLS.filter(c => allowedFrameworks.includes(c.framework || "Internal"))
+    ? MASTER_CONTROLS.filter(c => (ctrlFrameworks(c).length ? ctrlFrameworks(c) : ["Internal"]).some(f => allowedFrameworks.includes(f)))
     : MASTER_CONTROLS;
 
-  const allFws = [...new Set(controlsInScope.map(c => c.framework || "Internal"))].sort((a, b) => {
+  const allFws = [...new Set(controlsInScope.flatMap(c => (ctrlFrameworks(c).length ? ctrlFrameworks(c) : ["Internal"]))
+    .filter(f => !allowedFrameworks || allowedFrameworks.includes(f)))].sort((a, b) => {
     // Pin "Internal" first
     if (a === "Internal") return -1;
     if (b === "Internal") return 1;
@@ -1928,7 +1979,7 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
                   {/* Framework checkmarks */}
                   {allFws.map(fw => (
                     <td key={fw} style={{ ...tdStyle, borderTop: isGroupStart ? "2px solid var(--line,#d8d8d8)" : undefined, textAlign: "center" }}>
-                      {(ctrl.framework || "Internal") === fw ? (
+                      {(ctrlFrameworks(ctrl).length ? ctrlFrameworks(ctrl) : ["Internal"]).includes(fw) ? (
                         <span style={{ color: "var(--green,#16a34a)", fontWeight: 700, fontSize: 14 }}>✓</span>
                       ) : null}
                     </td>

@@ -1053,6 +1053,20 @@ CREATE TABLE IF NOT EXISTS controls_library (
 -- generation" guardrail as the framework crosswalk columns below.
 ALTER TABLE controls_library ADD COLUMN IF NOT EXISTS pac_control_id VARCHAR(32);
 
+-- A control's home framework stays in controls_library.framework. This table
+-- records the ADDITIONAL frameworks it has been shared into (e.g. a CIS control
+-- also used for ISO/IEC 27001), so one control row — one control number — is
+-- listed under every framework it belongs to. Soft reference to control_ref,
+-- same convention as risk_control_mappings.
+CREATE TABLE IF NOT EXISTS control_framework_links (
+    id           SERIAL PRIMARY KEY,
+    control_ref  VARCHAR(32) NOT NULL,
+    framework    VARCHAR(64) NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (control_ref, framework)
+);
+CREATE INDEX IF NOT EXISTS idx_cfl_control ON control_framework_links (control_ref);
+
 CREATE TABLE IF NOT EXISTS risk_control_mappings (
     id             SERIAL PRIMARY KEY,
     review_id      INT         NOT NULL REFERENCES risk_register_reviews(id) ON DELETE CASCADE,
@@ -9265,8 +9279,10 @@ def get_controls_library() -> list:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT control_ref, framework, name, description, category, domain, tags, pac_control_id "
-                    "FROM controls_library ORDER BY control_ref"
+                    "SELECT c.control_ref, c.framework, c.name, c.description, c.category, c.domain, c.tags, c.pac_control_id, "
+                    "  COALESCE((SELECT array_agg(l.framework ORDER BY l.framework) FROM control_framework_links l "
+                    "            WHERE l.control_ref = c.control_ref), '{}') "
+                    "FROM controls_library c ORDER BY c.control_ref"
                 )
                 return [
                     {
@@ -9278,6 +9294,7 @@ def get_controls_library() -> list:
                         "domain":         r[5] or "",
                         "tags":           r[6] or [],
                         "pac_control_id": r[7],
+                        "shared_frameworks": list(r[8] or []),
                     }
                     for r in cur.fetchall()
                 ]
@@ -9304,8 +9321,10 @@ def get_control_by_ref(control_ref: str) -> Optional[dict]:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT control_ref, framework, name, description, category, domain, tags, pac_control_id "
-                    "FROM controls_library WHERE control_ref = %s",
+                    "SELECT c.control_ref, c.framework, c.name, c.description, c.category, c.domain, c.tags, c.pac_control_id, "
+                    "  COALESCE((SELECT array_agg(l.framework ORDER BY l.framework) FROM control_framework_links l "
+                    "            WHERE l.control_ref = c.control_ref), '{}') "
+                    "FROM controls_library c WHERE c.control_ref = %s",
                     (ref,),
                 )
                 row = cur.fetchone()
@@ -9315,6 +9334,7 @@ def get_control_by_ref(control_ref: str) -> Optional[dict]:
                     "ref": row[0], "framework": row[1] or "", "name": row[2],
                     "description": row[3] or "", "category": row[4] or "",
                     "domain": row[5] or "", "tags": row[6] or [], "pac_control_id": row[7],
+                    "shared_frameworks": list(row[8] or []),
                 }
     return _run(_do)
 
@@ -9349,6 +9369,39 @@ def upsert_control(control: dict) -> bool:
                         control.get("domain", "Custom"),
                         control.get("pac_control_id") or None,
                     ),
+                )
+        return True
+    return _run(_do, default=False) or False
+
+
+def link_control_framework(control_ref: str, framework: str) -> bool:
+    """Share an existing control into another framework (idempotent)."""
+    ref, fw = (control_ref or "").strip().upper(), (framework or "").strip()
+    if not ref or not fw:
+        return False
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO control_framework_links (control_ref, framework) VALUES (%s, %s) "
+                    "ON CONFLICT (control_ref, framework) DO NOTHING",
+                    (ref, fw),
+                )
+        return True
+    return _run(_do, default=False) or False
+
+
+def unlink_control_framework(control_ref: str, framework: str) -> bool:
+    """Stop sharing a control into a framework (its home framework is unaffected)."""
+    ref, fw = (control_ref or "").strip().upper(), (framework or "").strip()
+    if not ref or not fw:
+        return False
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM control_framework_links WHERE control_ref = %s AND framework = %s",
+                    (ref, fw),
                 )
         return True
     return _run(_do, default=False) or False

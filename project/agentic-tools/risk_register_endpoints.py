@@ -482,6 +482,49 @@ async def link_control_to_pac(ref: str, req: ControlPacLinkRequest):
     return {"saved": True, "ref": ref, "pac_control_id": pac_control_id}
 
 
+class ControlFrameworkRequest(BaseModel):
+    framework: str
+
+
+@router.post("/controls/{ref}/frameworks")
+async def share_control_with_framework(ref: str, req: ControlFrameworkRequest):
+    """Share an existing control into another framework: one control (one
+    control number) then lists under every framework it has been shared into."""
+    ref = ref.strip().upper()
+    fw = req.framework.strip()
+    if not fw:
+        return {"saved": False, "detail": "Framework is required."}
+    existing = db.get_control_by_ref(ref) if db.is_available() else _CONTROL_MAP.get(ref)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"{ref} not found in the control library")
+    if (existing.get("framework") or "") == fw:
+        return {"saved": True, "ref": ref, "shared_frameworks": existing.get("shared_frameworks", [])}
+    if db.is_available():
+        db.link_control_framework(ref, fw)
+        shared = (db.get_control_by_ref(ref) or {}).get("shared_frameworks", [])
+    else:
+        shared = sorted(set(existing.get("shared_frameworks", [])) | {fw})
+        existing["shared_frameworks"] = shared
+    return {"saved": True, "ref": ref, "shared_frameworks": shared}
+
+
+@router.delete("/controls/{ref}/frameworks")
+async def unshare_control_from_framework(ref: str, framework: str):
+    """Stop sharing a control into a framework (its home framework is unaffected)."""
+    ref = ref.strip().upper()
+    fw = framework.strip()
+    existing = db.get_control_by_ref(ref) if db.is_available() else _CONTROL_MAP.get(ref)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"{ref} not found in the control library")
+    if db.is_available():
+        db.unlink_control_framework(ref, fw)
+        shared = (db.get_control_by_ref(ref) or {}).get("shared_frameworks", [])
+    else:
+        shared = [f for f in existing.get("shared_frameworks", []) if f != fw]
+        existing["shared_frameworks"] = shared
+    return {"saved": True, "ref": ref, "shared_frameworks": shared}
+
+
 @router.get("/matrix-config")
 async def get_matrix_config():
     """Return MATRIX_FRAMEWORKS and PRESET_FRAMEWORKS (from DB or defaults).
