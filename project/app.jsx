@@ -1467,8 +1467,9 @@ function App() {
             band: _bm.rag_status === "Red" ? "ELEVATED" : _bm.rag_status === "Amber" ? "GRAY ZONE" : "NORMAL",
             key_driver: _bm.inputs?.dsri > 1.15 ? "DSRI (receivables quality)" : _bm.inputs?.tata > 0.04 ? "TATA (accrual quality)" : "SGI (sales growth)",
             thresholds: { red: -1.78, amber: -2.22 },
-            defaulted: ["AQI", "DEPI", "SGAI", "LVGI"],
-            vars: { DSRI: _bm.inputs?.dsri ?? 1.0, GMI: _bm.inputs?.gmi ?? 1.0, AQI: 1.0, SGI: _bm.inputs?.sgi ?? 1.0, DEPI: 1.0, SGAI: 1.0, LVGI: 1.0, TATA: _bm.inputs?.tata ?? 0.0 },
+            // Backend reports which indices it couldn't compute (neutral 1.0 used).
+            defaulted: _bm.defaulted ?? ["AQI", "DEPI", "SGAI", "LVGI"],
+            vars: { DSRI: _bm.inputs?.dsri ?? 1.0, GMI: _bm.inputs?.gmi ?? 1.0, AQI: _bm.inputs?.aqi ?? 1.0, SGI: _bm.inputs?.sgi ?? 1.0, DEPI: _bm.inputs?.depi ?? 1.0, SGAI: _bm.inputs?.sgai ?? 1.0, LVGI: _bm.inputs?.lvgi ?? 1.0, TATA: _bm.inputs?.tata ?? 0.0 },
           };
         }
         const _az = mcpResult.altman_zscore;

@@ -123,10 +123,16 @@ def _latest(pts: list) -> Optional[float]:
     return max(pts, key=lambda p: p.get("end", ""))["val"]
 
 def _prev(pts: list) -> Optional[float]:
-    if len(pts) < 2:
+    # EDGAR repeats each period across later filings (and 10-K/A amendments), so
+    # the 2nd-newest *point* can be the same period as the newest. Take the
+    # newest filing's value for each distinct period end, then the 2nd period.
+    by_end = {}
+    for p in sorted(pts, key=lambda p: (p.get("end", ""), p.get("filed", ""))):
+        by_end[p.get("end", "")] = p
+    ends = sorted(by_end, reverse=True)
+    if len(ends) < 2:
         return None
-    srt = sorted(pts, key=lambda p: p.get("end", ""), reverse=True)
-    return srt[1]["val"]
+    return by_end[ends[1]]["val"]
 
 def _safe_div(n, d):
     if n is None or d is None or d == 0:
@@ -212,6 +218,38 @@ def compute_financial_ratios(xbrl: dict) -> dict:
     # GMI = GrossMargin_prev / GrossMargin_now  (rising GMI → deteriorating margin)
     gmi = _safe_div(gross_margin_p, gross_margin)
 
+    # ── Remaining Beneish (1999) indices ─────────────────────────────────────
+    ppe_a   = _a("PPENet")
+    sga_a   = _a("SGA")
+    dep_a   = _a("Depreciation")
+    ltd_a   = _a("LongTermDebtNoncurrent")
+    ca_now, ca_prev = cur_assets_now, _prev(cur_assets_a)
+    cl_now, cl_prev = cur_liab_now,   _prev(cur_liab_a)
+    ppe_now, ppe_prev = _latest(ppe_a), _prev(ppe_a)
+    dep_now, dep_prev = _latest(dep_a), _prev(dep_a)
+    sga_rep_now, sga_rep_prev = _latest(sga_a), _prev(sga_a)
+    ltd_now = _latest(ltd_a) or 0.0
+    ltd_prev = _prev(ltd_a) or 0.0
+
+    # AQI = [1 - (CurrentAssets + PPE)/TA]_t / [same]_t-1
+    def _nca_share(ca, ppe, ta):
+        return None if None in (ca, ppe) or not ta else 1 - (ca + ppe) / ta
+    aqi = _safe_div(_nca_share(ca_now, ppe_now, assets_now), _nca_share(ca_prev, ppe_prev, assets_prev))
+
+    # DEPI = [Dep/(Dep+PPE)]_t-1 / [Dep/(Dep+PPE)]_t
+    def _dep_rate(dep, ppe):
+        return None if None in (dep, ppe) or (dep + ppe) == 0 else dep / (dep + ppe)
+    depi = _safe_div(_dep_rate(dep_prev, ppe_prev), _dep_rate(dep_now, ppe_now))
+
+    # SGAI = (SGA/Rev)_t / (SGA/Rev)_t-1  — reported SG&A only (not GP - OpInc,
+    # which would fold R&D in).
+    sgai = _safe_div(_safe_div(sga_rep_now, rev_now), _safe_div(sga_rep_prev, rev_prev))
+
+    # LVGI = [(CurrentLiab + LongTermDebt)/TA]_t / [same]_t-1
+    def _lev(cl, ltd, ta):
+        return None if cl is None or not ta else (cl + ltd) / ta
+    lvgi = _safe_div(_lev(cl_now, ltd_now, assets_now), _lev(cl_prev, ltd_prev, assets_prev))
+
     # Altman Z''-Score inputs (general/non-manufacturer variant, book equity —
     # no market-cap dependency)
     working_capital = (cur_assets_now - cur_liab_now) if (cur_assets_now is not None and cur_liab_now is not None) else None
@@ -236,7 +274,11 @@ def compute_financial_ratios(xbrl: dict) -> dict:
         "tata":               tata,
         "dsri":               dsri,
         "sgi":                sgi,
-        "assets_now":         assets_now,
+        "aqi":                aqi,
+        "depi":               depi,
+        "sgai":               sgai,
+        "lvgi":               lvgi,
+        "assets_now":        assets_now,
         "cash_now":           cash_now,
         "net_income_now":     ni_now,
         "operating_cashflow": cfo_now,
@@ -615,9 +657,13 @@ def compute_analyst_series(xbrl: dict, rev_q_series: list, macro_info: Optional[
 
 def compute_beneish_mscore(ratios: dict) -> dict:
     """
-    Simplified 5-variable Beneish M-Score (Beneish 1999).
+    8-variable Beneish M-Score (Beneish 1999).
 
-    M = -4.84 + 0.920·DSRI + 0.528·GMI + 0.892·SGI + 4.679·TATA
+    M = -4.84 + 0.920·DSRI + 0.528·GMI + 0.404·AQI + 0.892·SGI
+        + 0.115·DEPI − 0.172·SGAI + 4.679·TATA − 0.327·LVGI
+
+    TATA here is (NetIncome − CFO) / TotalAssets, the common cash-flow
+    approximation of Beneish's balance-sheet accruals definition.
 
     Thresholds:
       M > -1.78  → likely manipulator   (Red)
@@ -644,7 +690,15 @@ def compute_beneish_mscore(ratios: dict) -> dict:
     sgi  = sgi  if sgi  is not None else 1.0
     tata = tata if tata is not None else 0.0
 
-    m = -4.84 + 0.920 * dsri + 0.528 * gmi + 0.892 * sgi + 4.679 * tata
+    # Remaining four indices: use the real value when the filer's XBRL has the
+    # inputs, otherwise the neutral 1.0 and report it in `defaulted`.
+    extra = {"aqi": ratios.get("aqi"), "depi": ratios.get("depi"),
+             "sgai": ratios.get("sgai"), "lvgi": ratios.get("lvgi")}
+    defaulted = [k.upper() for k, v in extra.items() if v is None]
+    aqi, depi, sgai, lvgi = (v if v is not None else 1.0 for v in extra.values())
+
+    m = (-4.84 + 0.920 * dsri + 0.528 * gmi + 0.404 * aqi + 0.892 * sgi
+         + 0.115 * depi - 0.172 * sgai + 4.679 * tata - 0.327 * lvgi)
 
     if m > -1.78:
         interp, rag = "likely_manipulator", "Red"
@@ -659,9 +713,12 @@ def compute_beneish_mscore(ratios: dict) -> dict:
         "rag_status":     rag,
         "thresholds":     {"red_above": -1.78, "amber_above": -2.22},
         "inputs":         {"dsri": round(dsri, 4), "gmi": round(gmi, 4),
-                           "sgi":  round(sgi, 4),  "tata": round(tata, 4)},
+                           "aqi": round(aqi, 4), "sgi": round(sgi, 4),
+                           "depi": round(depi, 4), "sgai": round(sgai, 4),
+                           "tata": round(tata, 4), "lvgi": round(lvgi, 4)},
         "missing_inputs": missing,
-        "formula":        "M = -4.84 + 0.920·DSRI + 0.528·GMI + 0.892·SGI + 4.679·TATA",
+        "defaulted":      defaulted,
+        "formula":        "M = -4.84 + 0.920·DSRI + 0.528·GMI + 0.404·AQI + 0.892·SGI + 0.115·DEPI − 0.172·SGAI + 4.679·TATA − 0.327·LVGI",
     }
 
 

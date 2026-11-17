@@ -83,6 +83,13 @@ XBRL_METRICS = {
     "AccountsReceivable": ["AccountsReceivableNetCurrent"],
     "COGS": ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"],
 
+    # Beneish M-Score inputs (AQI, DEPI, SGAI, LVGI) — see compute_beneish_mscore.
+    # Non-current debt is its own metric: "LongTermDebt" above often includes the
+    # current portion, which LVGI would double-count with current liabilities.
+    "SGA": ["SellingGeneralAndAdministrativeExpense"],
+    "PPENet": ["PropertyPlantAndEquipmentNet"],
+    "LongTermDebtNoncurrent": ["LongTermDebtNoncurrent"],
+
     # ── Industry-template accounts (material_accounts_tool.py) ─────────────
     # Not every filer discloses these — fetch_xbrl_facts() below already
     # skips any tag missing from a filer's own us-gaap facts, same as every
