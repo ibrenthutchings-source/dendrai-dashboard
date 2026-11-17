@@ -694,7 +694,8 @@ function RiskReviewRow({
               rows={2}
               className="dendrai-input"
               style={{
-                flex:1, fontSize:11, lineHeight:1.5, resize:"vertical", padding:"4px 7px",
+                flex:"1 1 0", minWidth:0, width:"auto", boxSizing:"border-box",
+                fontSize:11, lineHeight:1.5, resize:"vertical", padding:"4px 7px",
                 border: wordingChanged ? "1px solid var(--amber,#f80)" : "1px solid var(--line,#ddd)",
                 borderRadius:4, background:"var(--surface,#fff)", fontFamily:"inherit",
               }}
@@ -1532,7 +1533,13 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                         c.name.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
                         c.ref.toLowerCase().includes(ctrlSearch.toLowerCase()) ||
                         (c.framework || "").toLowerCase().includes(ctrlSearch.toLowerCase()))
-                    );
+                    )
+                    // Controls native to this column's framework first, and within
+                    // that the most recently created (end of the library) first, so a
+                    // just-created control is never buried past _CONTROL_PICKER_CAP.
+                    .map((c, i) => ({ c, i }))
+                    .sort((a, b) => ((b.c.framework === fw) - (a.c.framework === fw)) || (b.i - a.i))
+                    .map(x => x.c);
 
                     return (
                       <td key={fw} style={tdStyle}>
