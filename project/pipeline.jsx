@@ -821,6 +821,59 @@ function FraudDistressPanel({ forecasts, peerData = null, peerCompareList = [], 
               <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
                 8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
               </div>
+              {(() => {
+                const IDX = [
+                  { k:"DSRI", name:"Days Sales in Receivables", coef:0.920,  flag:"revenue inflation",          red:1 },
+                  { k:"GMI",  name:"Gross Margin",              coef:0.528,  flag:"margin deterioration",       red:1 },
+                  { k:"AQI",  name:"Asset Quality",             coef:0.404,  flag:"expense capitalisation",     red:1 },
+                  { k:"SGI",  name:"Sales Growth",              coef:0.892,  flag:"growth pressure",            red:1 },
+                  { k:"DEPI", name:"Depreciation",              coef:0.115,  flag:"slower depreciation",        red:1 },
+                  { k:"SGAI", name:"SG&A Expense",              coef:-0.172, flag:"SG&A inefficiency",          red:1 },
+                  { k:"TATA", name:"Total Accruals to Total Assets", coef:4.679, flag:"earnings exceed cash flow", red:0 },
+                  { k:"LVGI", name:"Leverage",                  coef:-0.327, flag:"rising leverage",            red:1 },
+                ];
+                const vars = ms.vars || {};
+                const defaulted = new Set(ms.defaulted || []);
+                const term = (x, i) => `${x.coef < 0 ? "−" : (i === 0 ? "" : "+")} ${Math.abs(x.coef).toFixed(3)}·${x.k}`;
+                return (
+                  <>
+                    <div className="mono" style={{fontSize:10.5, color:"var(--ink-2)", marginTop:6, lineHeight:1.7}}>
+                      M = −4.84 {IDX.map((x, i) => term(x, i + 1)).join(" ")}
+                    </div>
+                    <table style={{width:"100%", borderCollapse:"collapse", marginTop:6, fontSize:10.5}}>
+                      <thead>
+                        <tr style={{textAlign:"left", color:"var(--ink-3)", borderBottom:"1px solid var(--line)"}}>
+                          <th style={{padding:"3px 6px", fontWeight:600}}>Index</th>
+                          <th style={{padding:"3px 6px", fontWeight:600, textAlign:"right"}}>Value</th>
+                          <th style={{padding:"3px 6px", fontWeight:600}}>Red flag when</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {IDX.map(x => {
+                          const v = vars[x.k];
+                          const has = typeof v === "number";
+                          const isRed = has && !defaulted.has(x.k) && v > x.red;
+                          return (
+                            <tr key={x.k} style={{borderBottom:"1px solid var(--line)"}}>
+                              <td style={{padding:"3px 6px"}}>{x.k} <span style={{color:"var(--ink-3)"}}>({x.name})</span></td>
+                              <td className="mono" style={{padding:"3px 6px", textAlign:"right", color: isRed ? "var(--red-ink)" : "var(--ink-2)", fontWeight: isRed ? 700 : 400}}
+                                  title={defaulted.has(x.k) ? "Not computed from filings — neutral default used in the simplified model" : undefined}>
+                                {has ? v.toFixed(x.k === "TATA" ? 3 : 2) : "—"}{defaulted.has(x.k) ? "*" : ""}
+                              </td>
+                              <td className="mono" style={{padding:"3px 6px", color:"var(--ink-3)"}}>&gt; {x.red} ({x.flag})</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {defaulted.size > 0 && (
+                      <div style={{fontSize:9.5, color:"var(--ink-3)", marginTop:3}}>
+                        * Not yet computed from filings; neutral default (1.0) shown, so it doesn't signal a red flag.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             {(() => {
               const tone = ms.m > -1.78 ? "red" : ms.m > -2.22 ? "amber" : "green";

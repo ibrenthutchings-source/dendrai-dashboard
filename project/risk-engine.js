@@ -1811,6 +1811,7 @@ window.RISK_ENGINE = (function () {
         band: ratios.mscore!=null ? (ratios.mscore>-1.78?'ELEVATED':ratios.mscore>-2.22?'GRAY ZONE':'NORMAL') : 'NORMAL',
         key_driver: ratios.dsri!=null&&ratios.dsri>1.15 ? 'DSRI (receivables quality)' : ratios.tata!=null&&ratios.tata>0.04 ? 'TATA (accrual quality)' : 'SGI (sales growth)',
         thresholds: { red:-1.78, amber:-2.22 },
+        defaulted: ['GMI','AQI','DEPI','SGAI','LVGI'],
         vars: { DSRI: ratios.dsri??1.0, GMI:1.0, AQI:1.0, SGI:ratios.sgi??1.0, DEPI:1.0, SGAI:1.0, LVGI:1.0, TATA:ratios.tata??0.0 },
       },
       zscore: {
