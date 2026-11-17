@@ -947,11 +947,18 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22, peers = 
             const a = angleOf(p.m);
             const p1 = toXY(a, tickInner, cx, cy);
             const p2 = toXY(a, tickOuter, cx, cy);
+            // Superscript footnote number beside the tick — matches the
+            // numbered chip in the list below the gauge.
+            const pn = toXY(a, tickOuter + 5, cx, cy);
             return (
-              <line key={i} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
-                stroke="var(--ink-3)" strokeWidth="2.5" strokeLinecap="round" opacity="0.65">
-                <title>{`${p.ticker}: ${p.m.toFixed(2)}`}</title>
-              </line>
+              <g key={i}>
+                <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+                  stroke="var(--ink-3)" strokeWidth="2.5" strokeLinecap="round" opacity="0.65">
+                  <title>{`${p.ticker}: ${p.m.toFixed(2)}`}</title>
+                </line>
+                <text x={pn.x} y={pn.y} textAnchor="middle" dominantBaseline="middle" fontSize="7"
+                  fontFamily="Geist Mono, monospace" fontWeight="600" fill="var(--ink-2)">{i + 1}</text>
+              </g>
             );
           })}
           {/* Needle — className (not a static line) so it sweeps to its new
@@ -986,7 +993,7 @@ function MScoreGauge({ m, redThreshold = -1.78, amberThreshold = -2.22, peers = 
           {peerStats.sorted.map((p, i) => (
             <span key={i} className="mono" style={{fontSize:9.5, padding:"2px 6px", borderRadius:4,
               background:"var(--surface-2,var(--surface))", border:"1px solid var(--line)", color:"var(--ink-2)"}}>
-              {p.ticker} {p.m.toFixed(2)}
+              {p.ticker}<sup style={{fontWeight:600, marginLeft:1}}>{i + 1}</sup> {p.m.toFixed(2)}
             </span>
           ))}
         </div>
