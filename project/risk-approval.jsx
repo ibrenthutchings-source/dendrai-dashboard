@@ -321,7 +321,9 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
 // ----------- Adjust Risk Modal -----------
 function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResult, onClose, onSubmit }) {
-  const [name, setName] = useState(risk?.name || "");
+  const NEW_NAME = "__new_risk_name__";
+  const [customName, setCustomName] = useState(!!risk?._isNew);
+  const [name, setName] = useState(risk?._isNew ? "" : (risk?.name || ""));
   const [category, setCategory] = useState(risk?.category || "");
   const [rag, setRag] = useState(risk?.rag || "A");
   const [score, setScore] = useState(risk?.score ?? 5);
@@ -332,7 +334,9 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
 
   useEffect(() => {
     if (open && risk) {
-      setName(risk.name || "");
+      // A freshly added risk starts in free-text mode with an empty name.
+      setCustomName(!!risk._isNew);
+      setName(risk._isNew ? "" : (risk.name || ""));
       setCategory(risk.category || "");
       setRag(risk.rag);
       setScore(risk.score);
@@ -441,7 +445,12 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
           <div className="ar-field" style={{marginBottom: 14, display: "flex", gap: 12}}>
             <div style={{flex: 2}}>
               <label className="ar-label">Risk Name</label>
-              <select value={name} onChange={e => handleNameSelect(e.target.value)} className="fi-input">
+              <select value={customName ? NEW_NAME : name}
+                onChange={e => {
+                  if (e.target.value === NEW_NAME) { setCustomName(true); setName(""); }
+                  else { setCustomName(false); handleNameSelect(e.target.value); }
+                }} className="fi-input">
+                <option value={NEW_NAME}>+ Add new risk name…</option>
                 <optgroup label="Current">
                   <option value={risk.name}>{risk.name}</option>
                 </optgroup>
@@ -451,6 +460,11 @@ function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResul
                   </optgroup>
                 ))}
               </select>
+              {customName && (
+                <input className="fi-input" autoFocus value={name} style={{marginTop: 6}}
+                  placeholder="Type the new risk name"
+                  onChange={e => setName(e.target.value)} />
+              )}
               {risk._isNew ? (
                 <div className="ar-orig mono">New risk — pick a name and set a real score below</div>
               ) : (
