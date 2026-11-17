@@ -256,6 +256,25 @@ function ScoreBadge({ score }) {
   );
 }
 
+// Share an existing control into another framework (persisted to
+// control_framework_links) and update the in-memory library object so every
+// screen reflects it immediately. Resolves true on success / nothing to do.
+async function shareControlIntoFramework(ref, fw) {
+  const c = CTRL_BY_REF[ref];
+  if (!c || !fw || ctrlFrameworks(c).includes(fw) || !c.framework || c.framework === "Internal" || c.framework === "Internal Risk Register") return true;
+  try {
+    const res = await fetch(`/api/risk-register/controls/${encodeURIComponent(ref)}/frameworks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ framework: fw }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.saved === false) return false;
+    c.shared_frameworks = data.shared_frameworks || [...(c.shared_frameworks || []), fw];
+    return true;
+  } catch (_) { return false; }
+}
+
 function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto }) {
   const ctrl = CTRL_BY_REF[ctrlRef];
   const [editing, setEditing]   = useState(false);
@@ -331,6 +350,9 @@ function ControlPill({ ctrlRef, onRemove, generateCode, onToggleGenerate, isAuto
     <div style={{ display:"flex", alignItems:"center", gap:4, padding:"2px 6px", borderRadius:4, background:"var(--surface-2,#f5f5f5)", border:"1px solid var(--line,#e0e0e0)", fontSize:10 }}>
       <span className="mono" style={{ fontWeight:600, color:"var(--ink-2,#555)" }}>{ctrlRef}</span>
       {ctrl && <span style={{ color:"var(--ink-3,#888)" }}>{ctrl.name}</span>}
+      {ctrlFrameworks(ctrl).map(f => (
+        <span key={f} title={`Listed under ${f}`} style={{ fontSize:8, padding:"1px 4px", borderRadius:3, background:"var(--surface,#fff)", color:"var(--ink-3,#888)", border:"1px solid var(--line,#e0e0e0)", whiteSpace:"nowrap" }}>{f}</span>
+      ))}
       {ctrl?.pac_control_id && (
         <span title={`Enforced by PaC control ${ctrl.pac_control_id}`} style={{ fontSize:9, color:"var(--acc,#2563eb)" }}>⚡{ctrl.pac_control_id}</span>
       )}
@@ -387,13 +409,20 @@ function _nextRefForFramework(fw) {
   return `${prefix}-${String(max + 1).padStart(2, "0")}`;
 }
 
-function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual, onRemove, onToggleGenerate, onGetAiRecs, aiRecsLoading }) {
+function ControlsPanel({ riskKey, riskName, riskCategory, contextFramework, ctrlState, onAddManual, onRemove, onToggleGenerate, onGetAiRecs, aiRecsLoading }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [newCtrl, setNewCtrl] = useState({ ref: "", name: "", framework: "", desc: "", pacControlId: "" });
   const [refIsAuto, setRefIsAuto] = useState(true);
   const [createErr, setCreateErr] = useState("");
+  // Framework to list a picked control under as well ("" = leave as-is). Defaults
+  // to the risk's own framework so adding a CIS control to an ISO 27001 risk
+  // shares it into ISO 27001 as well.
+  const _ctxFw = contextFramework && !["Internal", "Internal Risk Register", "Enterprise Risks"].includes(contextFramework) ? contextFramework : "";
+  const [shareFw, setShareFw] = useState(_ctxFw);
+  const [, bumpShared] = useState(0);
+  useEffect(() => { setShareFw(_ctxFw); }, [riskKey, _ctxFw]);
 
   // Frameworks available for a new control — "Internal" first, then every
   // framework currently pinned to the Matrix, in the preset list, or already
@@ -460,7 +489,7 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
   const allAssigned = [...(ctrlState.autoMapped || []), ...(ctrlState.manual || [])];
   const filteredLibrary = MASTER_CONTROLS.filter(c =>
     !allAssigned.includes(c.ref) &&
-    (pickerSearch === "" || c.name.toLowerCase().includes(pickerSearch.toLowerCase()) || c.ref.toLowerCase().includes(pickerSearch.toLowerCase()) || c.category.toLowerCase().includes(pickerSearch.toLowerCase()))
+    (pickerSearch === "" || c.name.toLowerCase().includes(pickerSearch.toLowerCase()) || c.ref.toLowerCase().includes(pickerSearch.toLowerCase()) || c.category.toLowerCase().includes(pickerSearch.toLowerCase()) || ctrlFrameworks(c).some(f => f.toLowerCase().includes(pickerSearch.toLowerCase())))
   );
 
   return (
@@ -530,6 +559,13 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
             style={{ fontSize:10, padding:"3px 7px" }}
             autoFocus
           />
+          <label style={{ fontSize:9, color:"var(--ink-3,#888)", display:"flex", alignItems:"center", gap:5 }}>
+            Also list picked control under
+            <select value={shareFw} onChange={e => setShareFw(e.target.value)} className="dendrai-input" style={{ fontSize:9, padding:"1px 4px" }}>
+              <option value="">— its own framework only —</option>
+              {frameworkOptions.filter(f => f !== "Internal").map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </label>
           <div style={{ overflowY:"auto", display:"flex", flexDirection:"column", gap:2 }}>
             {/* The library is sorted alphabetically by ref, and this list was
                 capped at the first 20 regardless of search — with 40+ default
@@ -545,13 +581,20 @@ function ControlsPanel({ riskKey, riskName, riskCategory, ctrlState, onAddManual
               <button
                 key={c.ref}
                 style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 6px", borderRadius:4, border:"none", background:"transparent", cursor:"pointer", textAlign:"left", fontSize:10 }}
-                onClick={() => { onAddManual(riskKey, c.ref); setPickerOpen(false); setPickerSearch(""); }}
+                onClick={async () => {
+                  if (shareFw && !(await shareControlIntoFramework(c.ref, shareFw))) {
+                    alert(`Could not share ${c.ref} into ${shareFw}. Please try again.`);
+                    return;
+                  }
+                  onAddManual(riskKey, c.ref); bumpShared(n => n + 1);
+                  setPickerOpen(false); setPickerSearch("");
+                }}
                 onMouseEnter={e => e.currentTarget.style.background="var(--surface-2,#f5f5f5)"}
                 onMouseLeave={e => e.currentTarget.style.background="transparent"}
               >
                 <span className="mono" style={{ fontWeight:600, minWidth:46, color:"var(--acc,#2563eb)" }}>{c.ref}</span>
                 <span style={{ color:"var(--ink,#111)" }}>{c.name}</span>
-                <span style={{ marginLeft:"auto", fontSize:9, color:"var(--ink-3,#888)" }}>{c.category}</span>
+                <span style={{ marginLeft:"auto", fontSize:9, color:"var(--ink-3,#888)" }}>{ctrlFrameworks(c).join(" · ") || c.category}</span>
               </button>
             ))}
             {filteredLibrary.length === 0 && <div style={{ fontSize:10, color:"var(--ink-3,#888)", padding:4 }}>No matches</div>}
@@ -770,6 +813,7 @@ function RiskReviewRow({
               riskKey={key}
               riskName={riskState.wording}
               riskCategory={risk.category}
+              contextFramework={risk.source_framework}
               ctrlState={ctrlState}
               onAddManual={onAddManualControl}
               onRemove={onRemoveControl}
@@ -1871,6 +1915,33 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
     setLinkSaving(null);
   }
 
+  // Map / unmap a control to a framework from its checkbox. The control's home
+  // framework (controls_library.framework) is fixed; every other framework is a
+  // persisted share (control_framework_links). Optimistic, rolled back on failure.
+  const [fwSaving, setFwSaving] = useState(null); // `${ref}|${fw}` being saved
+  const [fwErr, setFwErr] = useState("");
+  async function handleToggleFramework(ctrl, fw, nowMapped) {
+    const id = `${ctrl.ref}|${fw}`;
+    const before = ctrl.shared_frameworks || [];
+    setFwErr(""); setFwSaving(id);
+    ctrl.shared_frameworks = nowMapped ? [...new Set([...before, fw])] : before.filter(f => f !== fw);
+    bump(n => n + 1);
+    try {
+      const res = nowMapped
+        ? await fetch(`/api/risk-register/controls/${encodeURIComponent(ctrl.ref)}/frameworks`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ framework: fw }) })
+        : await fetch(`/api/risk-register/controls/${encodeURIComponent(ctrl.ref)}/frameworks?framework=${encodeURIComponent(fw)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || data.saved === false) throw new Error(data?.detail || `HTTP ${res.status}`);
+      ctrl.shared_frameworks = data.shared_frameworks || ctrl.shared_frameworks;
+    } catch (e) {
+      ctrl.shared_frameworks = before;
+      setFwErr(`Could not ${nowMapped ? "map" : "unmap"} ${ctrl.ref} ${nowMapped ? "to" : "from"} ${fw}: ${e.message}`);
+    }
+    setFwSaving(null);
+    bump(n => n + 1);
+  }
+
   // Derive the full set of frameworks and controls at render time so we pick up
   // any DB-loaded controls that were appended to MASTER_CONTROLS. When
   // allowedFrameworks is set (the Framework Matrix's own visible column set —
@@ -1881,8 +1952,13 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
     ? MASTER_CONTROLS.filter(c => (ctrlFrameworks(c).length ? ctrlFrameworks(c) : ["Internal"]).some(f => allowedFrameworks.includes(f)))
     : MASTER_CONTROLS;
 
-  const allFws = [...new Set(controlsInScope.flatMap(c => (ctrlFrameworks(c).length ? ctrlFrameworks(c) : ["Internal"]))
-    .filter(f => !allowedFrameworks || allowedFrameworks.includes(f)))].sort((a, b) => {
+  // When the Matrix's own column set is known, every one of its frameworks is a
+  // column (even one no control is mapped to yet) so a control can be mapped to it.
+  const allFws = [...new Set([
+    ...(allowedFrameworks || []),
+    ...controlsInScope.flatMap(c => (ctrlFrameworks(c).length ? ctrlFrameworks(c) : ["Internal"]))
+      .filter(f => !allowedFrameworks || allowedFrameworks.includes(f)),
+  ])].sort((a, b) => {
     // Pin "Internal" first
     if (a === "Internal") return -1;
     if (b === "Internal") return 1;
@@ -1919,6 +1995,7 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
 
   return (
     <div>
+    {fwErr && <div style={{ fontSize: 10, color: "var(--red,#e53)", marginBottom: 6 }}>{fwErr}</div>}
     <div ref={scrollWrapRef} style={{ overflowX: "auto", maxWidth: "100%" }}>
       <table style={{ width: "100%", minWidth: coverageMinWidth, borderCollapse: "collapse", fontSize: 11 }}>
         <thead>
@@ -1979,9 +2056,18 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
                   {/* Framework checkmarks */}
                   {allFws.map(fw => (
                     <td key={fw} style={{ ...tdStyle, borderTop: isGroupStart ? "2px solid var(--line,#d8d8d8)" : undefined, textAlign: "center" }}>
-                      {(ctrlFrameworks(ctrl).length ? ctrlFrameworks(ctrl) : ["Internal"]).includes(fw) ? (
-                        <span style={{ color: "var(--green,#16a34a)", fontWeight: 700, fontSize: 14 }}>✓</span>
-                      ) : null}
+                      {(() => {
+                        const home   = ctrl.framework || "Internal";
+                        const mapped = (ctrlFrameworks(ctrl).length ? ctrlFrameworks(ctrl) : ["Internal"]).includes(fw);
+                        const isHome = home === fw;
+                        return (
+                          <input type="checkbox" checked={mapped}
+                            disabled={isHome || fwSaving === `${ctrl.ref}|${fw}`}
+                            onChange={e => handleToggleFramework(ctrl, fw, e.target.checked)}
+                            title={isHome ? `${fw} is this control's home framework` : mapped ? `Unmap ${ctrl.ref} from ${fw}` : `Map ${ctrl.ref} to ${fw}`}
+                            style={{ cursor: isHome ? "default" : "pointer", accentColor: "var(--green,#16a34a)", width: 14, height: 14 }}/>
+                        );
+                      })()}
                     </td>
                   ))}
                   {/* PaC link */}
