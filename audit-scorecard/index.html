@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Internal Audit Scorecard</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --ink: #1b1f24; --muted: #5b6470; --line: #e2e5e9; --grid: #eceef1;
+  --good: #17803f; --bad: #c0392b; --good-bg: #e4f3e9; --bad-bg: #fbe8e5; --flat-bg: #eef0f2;
+  --c0: #1b1f24; --c1: #2f6fd6; --c2: #0e8f84; --c3: #b87700; --c4: #8452d4; --c5: #cc3f74; --c6: #5a8619;
+  --accent: #2f6fd6; --shadow: 0 1px 2px rgba(16,24,40,.05);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101317; --panel: #191d23; --ink: #e6e9ed; --muted: #9aa3ad; --line: #2a3038; --grid: #232830;
+    --good: #4cc47e; --bad: #ff7b6b; --good-bg: #173022; --bad-bg: #3b1d19; --flat-bg: #252a31;
+    --c0: #e6e9ed; --c1: #6fa3ff; --c2: #3fc8b8; --c3: #f0b23e; --c4: #b48cff; --c5: #ff7aa8; --c6: #9fcd55;
+    --accent: #6fa3ff; --shadow: none;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101317; --panel: #191d23; --ink: #e6e9ed; --muted: #9aa3ad; --line: #2a3038; --grid: #232830;
+  --good: #4cc47e; --bad: #ff7b6b; --good-bg: #173022; --bad-bg: #3b1d19; --flat-bg: #252a31;
+  --c0: #e6e9ed; --c1: #6fa3ff; --c2: #3fc8b8; --c3: #f0b23e; --c4: #b48cff; --c5: #ff7aa8; --c6: #9fcd55;
+  --accent: #6fa3ff; --shadow: none;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 40px; }
+header.top { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; margin-bottom: 18px; }
+.eyebrow { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -.01em; }
+.lede { margin: 0; font-size: 16px; max-width: 68ch; }
+.lede b { font-weight: 650; }
+.tools { display: flex; gap: 8px; align-items: center; }
+button, .btn {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 12px; cursor: pointer; white-space: nowrap;
+}
+button:hover, .btn:hover { border-color: var(--muted); }
+button:focus-visible, .btn:focus-within, svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+.notice { border: 1px solid var(--line); background: var(--panel); border-left: 3px solid var(--c3); border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; font-size: 13px; }
+.notice.error { border-left-color: var(--bad); }
+.notice[hidden] { display: none; }
+
+.grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .grid.two { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); min-width: 0; }
+.panel h2 { font-size: 15px; margin: 0 0 2px; }
+.panel .sub { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+
+/* progress chart */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; touch-action: pan-y; }
+.chart .axis text { fill: var(--muted); font-size: 11px; }
+.chart .gridline { stroke: var(--grid); }
+.chart .zero { stroke: var(--line); }
+.chart .targetline { stroke: var(--muted); stroke-dasharray: 4 4; }
+.chart .guide { stroke: var(--muted); stroke-width: 1; opacity: .5; }
+.series { fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.endlabel { font-size: 11.5px; }
+.tip {
+  position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); min-width: 150px; z-index: 2;
+}
+.tip[hidden] { display: none; }
+.tip .t { font-weight: 650; margin-bottom: 4px; }
+.tip .r { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.tip .r span:first-child { display: flex; gap: 6px; align-items: center; }
+.sw { display: inline-block; width: 10px; height: 3px; border-radius: 2px; flex: none; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; }
+tr.group td { text-align: left; font-weight: 650; padding-top: 14px; color: var(--ink); background: transparent; border-bottom: 1px solid var(--line); }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.small-table { margin-top: 12px; }
+.small-table td:first-child { white-space: nowrap; }
+
+.good { color: var(--good); }
+.bad { color: var(--bad); }
+.flat { color: var(--muted); }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pill.good { background: var(--good-bg); }
+.pill.bad { background: var(--bad-bg); }
+.pill.flat { background: var(--flat-bg); }
+
+/* cards */
+.cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); margin: 16px 0; }
+.card { display: flex; flex-direction: column; gap: 6px; }
+.card .name { font-weight: 600; font-size: 13.5px; min-height: 2.9em; }
+.card .val { font-size: 28px; font-weight: 650; letter-spacing: -.01em; line-height: 1.1; }
+.card .tgt { color: var(--muted); font-size: 12px; }
+.card .deltas { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.card .deltas .lbl { color: var(--muted); font-weight: 500; margin-right: 3px; }
+.card svg { display: block; width: 100%; height: 48px; overflow: visible; }
+
+/* bars */
+.bars { display: grid; gap: 12px; }
+.bar .row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.bar .track { height: 10px; border-radius: 5px; background: var(--grid); overflow: hidden; }
+.bar .fill { height: 100%; border-radius: 5px; }
+
+footer { margin-top: 20px; color: var(--muted); font-size: 12px; }
+footer p { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="eyebrow" id="asof">Internal audit scorecard</p>
+      <h1>Internal audit scorecard</h1>
+      <p class="lede" id="lede">Loading…</p>
+    </div>
+    <div class="tools">
+      <label class="btn" title="Load a CSV with the same columns">Load CSV<input type="file" id="file" accept=".csv,text/csv"></label>
+      <button type="button" id="theme" aria-label="Toggle colour theme">Theme: auto</button>
+    </div>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <div class="grid two">
+    <section class="panel" aria-labelledby="h-progress">
+      <h2 id="h-progress">Progress to target, all metrics on one scale</h2>
+      <p class="sub" id="progress-sub">0% = starting quarter, 100% = target reached.</p>
+      <div class="chart" id="chart"><div class="tip" id="tip" hidden></div></div>
+      <div class="scroll"><table class="small-table" id="series-table"></table></div>
+    </section>
+    <section class="panel" aria-labelledby="h-bars">
+      <h2 id="h-bars">On target by area</h2>
+      <p class="sub">Share of targeted metrics at or past target in the latest quarter.</p>
+      <div class="bars" id="bars"></div>
+    </section>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <section class="panel" aria-labelledby="h-all">
+    <h2 id="h-all">All metrics</h2>
+    <p class="sub">Percentage changes are in percentage points (pp). Green means a move in the better direction; neutral metrics are never coloured.</p>
+    <div class="scroll"><table id="all-table"></table></div>
+  </section>
+
+  <footer id="footer"></footer>
+</div>
+
+<!-- Fallback copy of the sample, used only when the browser blocks reading the CSV file (page opened by double-click). -->
+<script type="text/csv" id="embedded-sample">
+id,area,metric,unit,better,target,q3_25,q4_25,q1_26,q2_26,q3_26,qoq,yoy,status
+risk_assessment_currency,Planning,Risk assessment currency,pct,up,0.95,0.78,0.82,0.86,0.90,0.93,,,
+plan_risk_alignment,Planning,Plan-to-risk alignment,pct,up,0.90,0.71,0.74,0.79,0.83,0.86,,,
+plan_changes,Planning,Plan changes,count,neutral,,3,5,2,4,3,,,
+rw_plan_completion,Delivery,Risk-weighted plan completion,pct,up,0.90,0.68,0.74,0.80,0.84,0.91,,,
+report_cycle_time,Delivery,Report cycle time,days,down,20,34,31,29,26,24,,,
+budget_variance,Delivery,Budget variance,pct,down,0.10,0.18,0.16,0.15,0.12,0.11,,,
+qa_pass_rate,Quality,QA review pass rate,pct,up,0.90,0.82,0.85,0.84,0.88,0.92,,,
+reports_reissued,Quality,Reports reissued,count,down,0,3,2,2,1,1,,,
+finding_quality,Quality,Finding quality score,score,up,4.0,3.4,3.5,3.7,3.8,3.9,,,
+standards_conformance,Quality,Standards conformance,pct,up,1.00,0.88,0.90,0.92,0.95,0.96,,,
+committee_timeliness,Governance,Committee package timeliness,pct,up,1.00,0.83,0.92,1.00,0.92,1.00,,,
+private_sessions,Governance,Private committee sessions,count,up,1,0,1,1,0,1,,,
+skills_coverage,People,Skills coverage vs. plan,pct,up,0.90,0.70,0.73,0.76,0.80,0.82,,,
+training_hours,People,Training hours per auditor,hrs,up,10,6,7,9,8,10.5,,,
+bench_depth,People,Bench depth,pct,up,0.75,0.40,0.45,0.50,0.50,0.55,,,
+regretted_attrition,People,Regretted attrition,pct,down,0.05,0.09,0.10,0.08,0.07,0.08,,,
+cost_variance,Efficiency,Cost variance,pct,down,0.05,0.09,0.08,0.07,0.06,0.04,,,
+analytics_coverage,Efficiency,Analytics coverage,pct,up,0.60,0.35,0.40,0.46,0.52,0.57,,,
+ca_coverage_rw,Efficiency,Risk-weighted continuous auditing coverage,pct,up,0.40,0.18,0.22,0.26,0.31,0.34,,,
+ca_coverage_top,Efficiency,"Continuous auditing coverage, top-tier risks",pct,up,0.60,0.30,0.36,0.42,0.50,0.55,,,
+</script>
+
+<script>
+// Layout settings. Data, targets and quarters all come from the CSV.
+const CONFIG = {
+  defaultCsv: 'internal_audit_scorecard_sample.csv',   // override with ?csv=other.csv
+  // Headline cards, by CSV id (falls back to metric name).
+  headline: ['ca_coverage_rw', 'ca_coverage_top', 'risk_assessment_currency', 'report_cycle_time', 'skills_coverage', 'regretted_attrition'],
+  areaOrder: ['Planning', 'Delivery', 'Quality', 'Governance', 'People', 'Efficiency'],
+  progressClamp: [-1, 1.5],
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const EPS = 1e-9;
+
+// ---------- CSV ----------
+function parseCSV(text) {
+  const rows = []; let row = [], field = '', q = false;
+  text = text.replace(/^﻿/, '');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.some((f) => f.trim() !== '')) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.some((f) => f.trim() !== '')) rows.push(row);
+  if (!rows.length) throw new Error('The CSV is empty.');
+  const head = rows[0].map((h) => h.trim().toLowerCase());
+  return { head, records: rows.slice(1).map((r) => Object.fromEntries(head.map((h, i) => [h, (r[i] ?? '').trim()]))) };
+}
+
+function num(s) {
+  if (s == null || s === '') return null;
+  const pct = /%$/.test(s);
+  const v = parseFloat(s.replace(/[,%\s]/g, ''));
+  if (!isFinite(v)) return null;
+  return pct ? v / 100 : v;
+}
+
+function buildModel({ head, records }) {
+  for (const col of ['area', 'metric']) if (!head.includes(col)) throw new Error(`The CSV has no "${col}" column.`);
+  // Any column named q<1-4>_<yy> is a quarter; sorted chronologically.
+  const quarters = head
+    .map((h) => ({ col: h, m: /^q([1-4])[_ ]?(\d{2}|\d{4})$/.exec(h) }))
+    .filter((x) => x.m)
+    .map(({ col, m }) => { const y = m[2].length === 2 ? 2000 + +m[2] : +m[2]; return { col, year: y, q: +m[1], label: `Q${m[1]} ${y}` }; })
+    .sort((a, b) => a.year - b.year || a.q - b.q);
+  if (quarters.length < 2) throw new Error('The CSV needs at least two quarter columns named like q3_25.');
+
+  const n = quarters.length;
+  const metrics = records.filter((r) => r.metric).map((r, i) => {
+    const better = ['up', 'down'].includes((r.better || '').toLowerCase()) ? r.better.toLowerCase() : 'neutral';
+    const dir = better === 'up' ? 1 : better === 'down' ? -1 : 0;
+    const values = quarters.map((q) => num(r[q.col]));
+    const target = dir ? num(r.target) : null;
+    const last = values[n - 1], prev = values[n - 2], yearAgo = n >= 5 ? values[n - 5] : null, base = values[0];
+    const diff = (a, b) => (a == null || b == null ? null : a - b);
+    const m = {
+      id: r.id || `row${i + 1}`, area: r.area || 'Other', metric: r.metric, unit: (r.unit || '').toLowerCase(),
+      better, dir, target, values, last,
+      qoq: diff(last, prev), yoy: diff(last, yearAgo),
+    };
+    m.hasTarget = dir !== 0 && target != null;
+    m.onTarget = m.hasTarget && last != null ? (dir > 0 ? last >= target - EPS : last <= target + EPS) : null;
+    // Common scale: 0 at the first quarter, 1 at target.
+    m.progress = m.hasTarget && base != null && Math.abs(target - base) > EPS
+      ? values.map((v) => (v == null ? null : clamp((v - base) / (target - base))))
+      : null;
+    return m;
+  });
+  if (!metrics.length) throw new Error('The CSV has no metric rows.');
+
+  const areas = [...CONFIG.areaOrder.filter((a) => metrics.some((m) => m.area === a)),
+                 ...[...new Set(metrics.map((m) => m.area))].filter((a) => !CONFIG.areaOrder.includes(a))];
+
+  const avgSeries = (ms) => quarters.map((_, qi) => {
+    const vs = ms.map((m) => m.progress[qi]).filter((v) => v != null);
+    return vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
+  });
+  const prog = metrics.filter((m) => m.progress);
+  const series = [{ key: 'overall', name: 'Overall', color: 'var(--c0)', width: 3.5, count: prog.length, values: avgSeries(prog) }];
+  areas.forEach((a, i) => {
+    const ms = prog.filter((m) => m.area === a);
+    if (ms.length) series.push({ key: a, name: a, color: `var(--c${(i % 6) + 1})`, width: 1.75, count: ms.length, values: avgSeries(ms) });
+  });
+  const areaColor = Object.fromEntries(areas.map((a, i) => [a, `var(--c${(i % 6) + 1})`]));
+  return { quarters, metrics, areas, series, areaColor };
+}
+function clamp(v) { return Math.max(CONFIG.progressClamp[0], Math.min(CONFIG.progressClamp[1], v)); }
+
+// ---------- formatting ----------
+const r1 = (v) => { const s = (Math.round(v * 10) / 10).toFixed(1); return s.endsWith('.0') ? s.slice(0, -2) : s; };
+const sign = (v) => (v > EPS ? '+' : v < -EPS ? '−' : '±');
+function fmtVal(m, v) {
+  if (v == null) return '—';
+  switch (m.unit) {
+    case 'pct': return r1(v * 100) + '%';
+    case 'days': return r1(v) + (Math.abs(v - 1) < EPS ? ' day' : ' days');
+    case 'hrs': return r1(v) + ' h';
+    case 'score': return v.toFixed(1);
+    default: return r1(v);
+  }
+}
+function fmtDelta(m, d) {
+  if (d == null) return '—';
+  const a = Math.abs(d);
+  switch (m.unit) {
+    case 'pct': return sign(d) + r1(a * 100) + ' pp';
+    case 'days': return sign(d) + r1(a) + ' d';
+    case 'hrs': return sign(d) + r1(a) + ' h';
+    case 'score': return sign(d) + a.toFixed(1);
+    default: return sign(d) + r1(a);
+  }
+}
+const tone = (dir, d) => (!dir || d == null || Math.abs(d) < EPS ? 'flat' : d * dir > 0 ? 'good' : 'bad');
+const fmtPts = (v) => (v == null ? '—' : Math.round(v * 100) + '%');
+const fmtPtsDelta = (d) => (d == null ? '—' : sign(d) + Math.abs(Math.round(d * 100)) + ' pts');
+const svgEl = (tag, attrs) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+
+// ---------- render ----------
+let MODEL = null, SOURCE = '';
+
+function renderAll() {
+  if (!MODEL) return;
+  const { quarters, metrics } = MODEL;
+  const latest = quarters[quarters.length - 1].label;
+  const targeted = metrics.filter((m) => m.hasTarget);
+  const onT = targeted.filter((m) => m.onTarget).length;
+  const directional = metrics.filter((m) => m.dir);
+  const qoqUp = directional.filter((m) => tone(m.dir, m.qoq) === 'good').length;
+  const yoyUp = directional.filter((m) => tone(m.dir, m.yoy) === 'good').length;
+  const hasYoY = quarters.length >= 5;
+
+  $('asof').textContent = `Latest quarter: ${latest}`;
+  $('lede').innerHTML = `<b>${onT} of ${targeted.length}</b> targeted metrics are on target. ` +
+    `Of ${directional.length} metrics with a preferred direction, <b>${qoqUp}</b> improved quarter over quarter` +
+    (hasYoY ? ` and <b>${yoyUp}</b> improved year over year.` : '. (Year-over-year needs five quarters of data.)');
+  $('progress-sub').textContent = `0% = ${quarters[0].label} level, 100% = target reached. Averages ${MODEL.series[0].count} targeted metrics; capped at −100% and 150%.`;
+
+  renderChart();
+  renderSeriesTable();
+  renderBars();
+  renderCards();
+  renderTable();
+  renderFooter();
+}
+
+function renderChart() {
+  const host = $('chart'), tip = $('tip');
+  host.querySelector('svg')?.remove();
+  const { quarters, series } = MODEL;
+  const W = Math.max(280, host.clientWidth), narrow = W < 520;
+  const H = narrow ? 260 : 310;
+  const M = { l: 40, r: narrow ? 104 : 128, t: 12, b: 26 };
+  const pw = W - M.l - M.r, ph = H - M.t - M.b;
+
+  const all = series.flatMap((s) => s.values).filter((v) => v != null);
+  let lo = Math.min(0, ...all), hi = Math.max(1, ...all);
+  lo = Math.floor(lo * 4) / 4; hi = Math.ceil(hi * 4) / 4;
+  const step = hi - lo > 1.5 ? 0.5 : 0.25;
+  const x = (i) => M.l + (quarters.length === 1 ? pw / 2 : (i * pw) / (quarters.length - 1));
+  const y = (v) => M.t + ph - ((v - lo) / (hi - lo)) * ph;
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, height: H, tabindex: 0, role: 'img',
+    'aria-label': 'Line chart of average progress to target by quarter for overall and each area. Use left and right arrow keys to read each quarter.' });
+  const axis = svgEl('g', { class: 'axis' });
+  for (let v = lo; v <= hi + EPS; v += step) {
+    axis.append(svgEl('line', { x1: M.l, x2: M.l + pw, y1: y(v), y2: y(v), class: Math.abs(v) < EPS ? 'zero' : 'gridline' }));
+    const t = svgEl('text', { x: M.l - 6, y: y(v) + 4, 'text-anchor': 'end' }); t.textContent = Math.round(v * 100) + '%'; axis.append(t);
+  }
+  quarters.forEach((q, i) => {
+    const t = svgEl('text', { x: x(i), y: H - 6, 'text-anchor': 'middle' });
+    t.textContent = narrow ? q.label.replace(/ 20(\d\d)$/, " '$1") : q.label; axis.append(t);
+  });
+  axis.append(svgEl('line', { x1: M.l, x2: M.l + pw, y1: y(1), y2: y(1), class: 'targetline' }));
+  const tl = svgEl('text', { x: M.l + 4, y: y(1) - 5 }); tl.textContent = 'Target'; axis.append(tl);
+  svg.append(axis);
+
+  // overall drawn last so it sits on top
+  const ordered = [...series.slice(1), series[0]];
+  const ends = [];
+  for (const s of ordered) {
+    let d = '', pen = false;
+    s.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${x(i)},${y(v)}`; pen = true; });
+    svg.append(svgEl('path', { d, class: 'series', stroke: s.color, 'stroke-width': s.width }));
+    const li = s.values.map((v, i) => (v == null ? -1 : i)).filter((i) => i >= 0).pop();
+    if (li != null) {
+      svg.append(svgEl('circle', { cx: x(li), cy: y(s.values[li]), r: s.key === 'overall' ? 4 : 3, fill: s.color }));
+      ends.push({ s, y: y(s.values[li]), v: s.values[li] });
+    }
+  }
+  // end-of-line labels, nudged apart so they don't collide
+  ends.sort((a, b) => a.y - b.y);
+  const gap = 14;
+  for (let i = 1; i < ends.length; i++) ends[i].ly = Math.max(ends[i].y, (ends[i - 1].ly ?? ends[i - 1].y) + gap);
+  ends[0] && (ends[0].ly = ends[0].y);
+  const overflow = (ends.at(-1)?.ly ?? 0) - (M.t + ph + 4);
+  if (overflow > 0) ends.forEach((e) => (e.ly -= overflow));
+  for (let i = ends.length - 2; i >= 0; i--) ends[i].ly = Math.min(ends[i].ly, ends[i + 1].ly - gap);
+  for (const e of ends) {
+    const t = svgEl('text', { x: M.l + pw + 8, y: e.ly + 4, class: 'endlabel', fill: e.s.color, 'font-weight': e.s.key === 'overall' ? 700 : 500 });
+    t.textContent = `${e.s.name} ${fmtPts(e.v)}`; svg.append(t);
+  }
+
+  // hover / touch / keyboard: show every series for one quarter
+  const guide = svgEl('line', { y1: M.t, y2: M.t + ph, class: 'guide', visibility: 'hidden' });
+  svg.append(guide);
+  const hit = svgEl('rect', { x: M.l - 10, y: M.t, width: pw + 20, height: ph, fill: 'transparent' });
+  svg.append(hit);
+  host.insertBefore(svg, tip);
+
+  let cur = null;
+  const show = (i) => {
+    cur = i;
+    guide.setAttribute('x1', x(i)); guide.setAttribute('x2', x(i)); guide.setAttribute('visibility', 'visible');
+    const rows = series.map((s) => ({ s, v: s.values[i] })).sort((a, b) => (b.v ?? -9) - (a.v ?? -9));
+    tip.innerHTML = `<div class="t">${esc(quarters[i].label)}</div>` + rows.map(({ s, v }) =>
+      `<div class="r"><span><i class="sw" style="background:${s.color}"></i>${s.key === 'overall' ? '<b>Overall</b>' : esc(s.name)}</span><span>${fmtPts(v)}</span></div>`).join('');
+    tip.hidden = false;
+    const scale = host.clientWidth / W;
+    const tw = tip.offsetWidth, px = x(i) * scale;
+    tip.style.left = (px + 12 + tw > host.clientWidth ? Math.max(0, px - 12 - tw) : px + 12) + 'px';
+    tip.style.top = '8px';
+  };
+  const hide = () => { cur = null; tip.hidden = true; guide.setAttribute('visibility', 'hidden'); };
+  const nearest = (ev) => {
+    const r = svg.getBoundingClientRect(), sx = ((ev.clientX - r.left) / r.width) * W;
+    let best = 0; quarters.forEach((_, i) => { if (Math.abs(x(i) - sx) < Math.abs(x(best) - sx)) best = i; }); return best;
+  };
+  hit.addEventListener('pointermove', (ev) => show(nearest(ev)));
+  hit.addEventListener('pointerdown', (ev) => show(nearest(ev)));
+  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('blur', hide);
+  svg.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+      ev.preventDefault();
+      const n = quarters.length;
+      show(cur == null ? n - 1 : (cur + (ev.key === 'ArrowRight' ? 1 : -1) + n) % n);
+    } else if (ev.key === 'Escape') hide();
+  });
+}
+
+function renderSeriesTable() {
+  const { series, quarters } = MODEL, n = quarters.length;
+  const d = (a, b) => (a == null || b == null ? null : a - b);
+  $('series-table').innerHTML =
+    `<thead><tr><th>Series</th><th>Metrics</th><th>Latest</th><th>QoQ</th><th>YoY</th></tr></thead><tbody>` +
+    series.map((s) => {
+      const qoq = d(s.values[n - 1], s.values[n - 2]), yoy = n >= 5 ? d(s.values[n - 1], s.values[n - 5]) : null;
+      return `<tr><td><i class="sw" style="background:${s.color};margin-right:6px;vertical-align:middle"></i>${s.key === 'overall' ? '<b>Overall</b>' : esc(s.name)}</td>` +
+        `<td>${s.count}</td><td>${fmtPts(s.values[n - 1])}</td>` +
+        `<td class="${tone(1, qoq)}">${fmtPtsDelta(qoq)}</td><td class="${tone(1, yoy)}">${fmtPtsDelta(yoy)}</td></tr>`;
+    }).join('') + '</tbody>';
+}
+
+function renderBars() {
+  const { areas, metrics, areaColor } = MODEL;
+  $('bars').innerHTML = areas.map((a) => {
+    const t = metrics.filter((m) => m.area === a && m.hasTarget);
+    const on = t.filter((m) => m.onTarget).length;
+    const share = t.length ? on / t.length : 0;
+    return `<div class="bar"><div class="row"><span>${esc(a)}</span><span class="flat">${t.length ? `${on} of ${t.length}` : 'No targets'}</span></div>` +
+      `<div class="track" role="img" aria-label="${esc(a)}: ${on} of ${t.length} on target"><div class="fill" style="width:${share * 100}%;background:${areaColor[a]}"></div></div></div>`;
+  }).join('');
+}
+
+function sparkline(m) {
+  const W = 240, H = 48, P = 4;
+  const vs = m.values.filter((v) => v != null);
+  const ext = m.target != null ? [...vs, m.target] : vs;
+  let lo = Math.min(...ext), hi = Math.max(...ext);
+  if (hi - lo < EPS) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+  const x = (i) => P + (i * (W - 2 * P)) / (m.values.length - 1);
+  const y = (v) => H - ((v - lo) / (hi - lo)) * H;
+  let d = '', pen = false;
+  m.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`; pen = true; });
+  const li = m.values.length - 1, lv = m.values[li];
+  const color = MODEL.areaColor[m.area];
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">` +
+    (m.target != null ? `<line x1="0" x2="${W}" y1="${y(m.target)}" y2="${y(m.target)}" stroke="var(--muted)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>` : '') +
+    `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>` +
+    (lv != null ? `<line x1="${x(li)}" x2="${x(li)}" y1="${y(lv)}" y2="${y(lv)}" stroke="${color}" stroke-width="7" stroke-linecap="round" vector-effect="non-scaling-stroke"/>` : '') +
+    `</svg>`;
+}
+
+function renderCards() {
+  const { metrics, quarters } = MODEL;
+  const pick = CONFIG.headline.map((k) => metrics.find((m) => m.id === k) || metrics.find((m) => m.metric.toLowerCase() === String(k).toLowerCase())).filter(Boolean);
+  $('cards').innerHTML = pick.map((m) => {
+    const st = m.onTarget == null ? '' : `<span class="pill ${m.onTarget ? 'good' : 'bad'}">${m.onTarget ? 'On target' : 'Off target'}</span>`;
+    return `<article class="panel card">
+      <p class="eyebrow" style="margin:0">${esc(m.area)}</p>
+      <div class="name">${esc(m.metric)}</div>
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"><span class="val">${fmtVal(m, m.last)}</span>${st}</div>
+      <div class="tgt">${m.target != null ? `Target ${m.dir < 0 ? '≤' : '≥'} ${fmtVal(m, m.target)}` : 'No target'}</div>
+      <div class="deltas">
+        <span class="pill ${tone(m.dir, m.qoq)}"><span class="lbl">QoQ</span>${fmtDelta(m, m.qoq)}</span>
+        <span class="pill ${tone(m.dir, m.yoy)}"><span class="lbl">YoY</span>${fmtDelta(m, m.yoy)}</span>
+      </div>
+      ${sparkline(m)}
+      <div class="tgt" style="display:flex;justify-content:space-between"><span>${esc(quarters[0].label)}</span><span>${esc(quarters.at(-1).label)}</span></div>
+    </article>`;
+  }).join('');
+}
+
+function renderTable() {
+  const { areas, metrics, quarters } = MODEL;
+  const latest = quarters.at(-1).label;
+  let html = `<thead><tr><th>Metric</th><th>${esc(latest)}</th><th>QoQ</th><th>YoY</th><th>Target</th><th>Status</th></tr></thead><tbody>`;
+  for (const a of areas) {
+    html += `<tr class="group"><td colspan="6"><i class="sw" style="background:${MODEL.areaColor[a]};margin-right:6px;vertical-align:middle"></i>${esc(a)}</td></tr>`;
+    for (const m of metrics.filter((x) => x.area === a)) {
+      const st = !m.hasTarget ? '<span class="pill flat">No target</span>'
+        : m.onTarget == null ? '—'
+        : `<span class="pill ${m.onTarget ? 'good' : 'bad'}">${m.onTarget ? 'On target' : 'Off target'}</span>`;
+      const arrow = m.dir > 0 ? ' ↑' : m.dir < 0 ? ' ↓' : '';
+      html += `<tr><td>${esc(m.metric)}<span class="flat" title="Better direction">${arrow}</span></td><td>${fmtVal(m, m.last)}</td>` +
+        `<td class="${tone(m.dir, m.qoq)}">${fmtDelta(m, m.qoq)}</td><td class="${tone(m.dir, m.yoy)}">${fmtDelta(m, m.yoy)}</td>` +
+        `<td>${m.hasTarget ? (m.dir < 0 ? '≤ ' : '≥ ') + fmtVal(m, m.target) : '—'}</td><td>${st}</td></tr>`;
+    }
+  }
+  $('all-table').innerHTML = html + '</tbody>';
+}
+
+function renderFooter() {
+  const sample = /sample/i.test(SOURCE);
+  $('footer').innerHTML =
+    (sample ? `<p><b>Sample data.</b> All figures are invented to show the layout; they describe no real audit function. Targets are placeholders.</p>` : '') +
+    `<p>Source: ${esc(SOURCE)}. QoQ = latest minus prior quarter; YoY = latest minus same quarter a year earlier. ` +
+    `Only metrics internal audit controls are included. Status compares the latest quarter with the target (↑ higher is better, ↓ lower is better).</p>`;
+}
+
+// ---------- loading ----------
+function load(text, source) {
+  try {
+    MODEL = buildModel(parseCSV(text));
+    SOURCE = source;
+    renderAll();
+  } catch (e) {
+    notice(`Could not read ${esc(source)}: ${esc(e.message)}`, true);
+  }
+}
+function notice(html, isError) {
+  const n = $('notice'); n.innerHTML = html; n.hidden = !html; n.classList.toggle('error', !!isError);
+}
+
+async function boot() {
+  const src = new URLSearchParams(location.search).get('csv') || CONFIG.defaultCsv;
+  try {
+    const r = await fetch(src, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    load(await r.text(), src);
+  } catch (e) {
+    load($('embedded-sample').textContent, `${CONFIG.defaultCsv} (built-in copy)`);
+    notice(`Showing the built-in copy of the sample because <code>${esc(src)}</code> couldn't be read` +
+      (location.protocol === 'file:' ? ' (browsers block this when the page is opened as a file)' : '') +
+      `. Use <b>Load CSV</b>, drop a CSV on the page, or serve this folder to read it directly.`);
+  }
+}
+
+function readFile(f) {
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { notice(''); load(String(rd.result), f.name); };
+  rd.readAsText(f);
+}
+$('file').addEventListener('change', (e) => readFile(e.target.files[0]));
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => { e.preventDefault(); readFile(e.dataTransfer.files[0]); });
+
+// theme: auto -> light -> dark
+const THEMES = ['auto', 'light', 'dark'];
+function setTheme(t) {
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  $('theme').textContent = `Theme: ${t}`;
+  try { localStorage.setItem('ia-scorecard-theme', t); } catch (e) {}
+}
+let theme = 'auto';
+try { theme = localStorage.getItem('ia-scorecard-theme') || 'auto'; } catch (e) {}
+setTheme(THEMES.includes(theme) ? theme : 'auto');
+$('theme').addEventListener('click', () => {
+  const t = document.documentElement.getAttribute('data-theme') || 'auto';
+  setTheme(THEMES[(THEMES.indexOf(t) + 1) % THEMES.length]);
+});
+
+let resizeTimer = 0, lastW = 0;
+new ResizeObserver(() => {
+  const w = $('chart').clientWidth;
+  if (!MODEL || w === lastW) return; lastW = w;
+  clearTimeout(resizeTimer); resizeTimer = setTimeout(renderChart, 60);
+}).observe($('chart'));
+
+boot();
+</script>
+</body>
+</html>
