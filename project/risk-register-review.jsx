@@ -1985,6 +1985,7 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
     color: "var(--ink-2,#555)", background: "var(--surface-2,#f8f9fa)",
     borderBottom: "2px solid var(--line,#e0e0e0)", borderRight: "1px solid var(--line,#eee)",
     textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap",
+    position: "sticky", top: 0, zIndex: 2,
   };
   const tdStyle = {
     padding: "6px 10px", verticalAlign: "middle",
@@ -1996,8 +1997,9 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
   return (
     <div>
     {fwErr && <div style={{ fontSize: 10, color: "var(--red,#e53)", marginBottom: 6 }}>{fwErr}</div>}
-    <div ref={scrollWrapRef} style={{ overflowX: "auto", maxWidth: "100%" }}>
-      <table style={{ width: "100%", minWidth: coverageMinWidth, borderCollapse: "collapse", fontSize: 11 }}>
+    {/* The wrapper is the scroll container (both axes) so the sticky header stays pinned while rows scroll. */}
+    <div ref={scrollWrapRef} style={{ overflow: "auto", maxWidth: "100%", maxHeight: "calc(100vh - 240px)", minHeight: 240 }}>
+      <table style={{ width: "100%", minWidth: coverageMinWidth, borderCollapse: "separate", borderSpacing: 0, fontSize: 11 }}>
         <thead>
           <tr>
             <th style={{ ...thStyle, minWidth: 90 }}>Category</th>
@@ -2100,7 +2102,6 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
         </tbody>
       </table>
     </div>
-    <StickyHScrollBar targetRef={scrollWrapRef} contentWidth={coverageMinWidth} />
     </div>
   );
 }
