@@ -30,6 +30,7 @@ from pydantic import BaseModel
 import claude_client
 import db
 import embedding_util
+import shared_suggestions
 from pac_endpoints import _controls_to_rego
 from auth_endpoints import require_screen_permission
 
@@ -523,6 +524,32 @@ async def unshare_control_from_framework(ref: str, framework: str):
         shared = [f for f in existing.get("shared_frameworks", []) if f != fw]
         existing["shared_frameworks"] = shared
     return {"saved": True, "ref": ref, "shared_frameworks": shared}
+
+
+@router.get("/suggestions/shared")
+async def get_shared_suggestions(control_threshold: float = 0.30, risk_threshold: float = 0.28):
+    """Auto-suggest (1) controls that look equivalent to a control already in
+    another framework and (2) risks that recur across several frameworks, each
+    with suggested controls. Read-only: a human accepts or dismisses each one;
+    accepting a control suggestion goes through POST /controls/{ref}/frameworks.
+    """
+    def _build() -> Dict[str, Any]:
+        controls = _get_controls_live()
+        catalogs: Dict[str, List[Dict[str, Any]]] = {
+            fw: list(risks) for fw, risks in _DEFAULT_FRAMEWORK_CATALOGS.items()
+        }
+        if db.is_available():
+            for cat in db.list_framework_catalogs():
+                if cat.get("risks"):
+                    catalogs[cat["framework"]] = cat["risks"]
+        return {
+            "controls": shared_suggestions.suggest_shared_controls(
+                controls, threshold=max(0.05, min(control_threshold, 0.95))),
+            "risks": shared_suggestions.suggest_common_risks(
+                catalogs, controls, threshold=max(0.05, min(risk_threshold, 0.95))),
+        }
+    result = await asyncio.to_thread(_build)
+    return {**result, "control_count": len(result["controls"]), "risk_count": len(result["risks"])}
 
 
 @router.get("/matrix-config")

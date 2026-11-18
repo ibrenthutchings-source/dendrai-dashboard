@@ -2143,6 +2143,156 @@ function ControlCoverageMatrix({ ctrlStates, allowedFrameworks }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Suggestions — auto-suggested controls/risks common to more than one framework,
+// for human review. Nothing is changed until a reviewer accepts a suggestion.
+// ─────────────────────────────────────────────────────────────────────────────
+const _SUGG_DISMISS_KEY = "dendrai.sharedSuggestions.dismissed";
+
+function SharedSuggestionsPanel({ onAcceptRisk, onControlShared }) {
+  const [data, setData]         = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [err, setErr]           = useState("");
+  const [busy, setBusy]         = useState(null);
+  const [accepted, setAccepted] = useState(() => new Set());
+  const [showDismissed, setShowDismissed] = useState(false);
+  const [minScore, setMinScore] = useState(0.3);
+  const [dismissed, setDismissed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(_SUGG_DISMISS_KEY) || "[]")); } catch (_) { return new Set(); }
+  });
+
+  function persistDismissed(next) {
+    setDismissed(next);
+    try { localStorage.setItem(_SUGG_DISMISS_KEY, JSON.stringify([...next])); } catch (_) {}
+  }
+  const dismiss = id => persistDismissed(new Set([...dismissed, id]));
+  const restore = id => { const n = new Set(dismissed); n.delete(id); persistDismissed(n); };
+
+  async function load() {
+    setLoading(true); setErr("");
+    try {
+      const res = await fetch("/api/risk-register/suggestions/shared?control_threshold=0.2");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setData(await res.json());
+    } catch (e) { setErr(`Could not load suggestions: ${e.message}`); }
+    setLoading(false);
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  async function acceptControl(s) {
+    setBusy(s.id);
+    const ok = await shareControlIntoFramework(s.ref, s.target_framework);
+    setBusy(null);
+    if (!ok) { setErr(`Could not share ${s.ref} into ${s.target_framework}.`); return; }
+    setErr("");
+    setAccepted(prev => new Set([...prev, s.id]));
+    onControlShared && onControlShared();
+  }
+
+  async function acceptRisk(s) {
+    setBusy(s.id);
+    // Share every suggested control into every framework the risk recurs in.
+    let failed = 0;
+    for (const c of s.suggested_controls) {
+      for (const fw of s.frameworks) {
+        if (!(await shareControlIntoFramework(c.ref, fw))) failed++;
+      }
+    }
+    onAcceptRisk && onAcceptRisk(s);
+    setBusy(null);
+    setAccepted(prev => new Set([...prev, s.id]));
+    setErr(failed ? `Risk added, but ${failed} control share${failed === 1 ? "" : "s"} could not be saved.` : "");
+    onControlShared && onControlShared();
+  }
+
+  const visible = list => (list || []).filter(s =>
+    !accepted.has(s.id) && (showDismissed ? dismissed.has(s.id) : !dismissed.has(s.id)));
+  const ctrlSuggs = visible(data?.controls).filter(s => s.score >= minScore);
+  const riskSuggs = visible(data?.risks);
+  const nDismissed = [...(data?.controls || []), ...(data?.risks || [])].filter(s => dismissed.has(s.id) && !accepted.has(s.id)).length;
+
+  const card = { border: "1px solid var(--line,#e0e0e0)", borderRadius: 6, padding: "10px 12px", marginBottom: 8, background: "var(--surface,#fff)" };
+  const chip = { fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "rgba(37,99,235,0.08)", color: "var(--acc,#2563eb)", marginRight: 4, whiteSpace: "nowrap" };
+  const pct = n => `${Math.round(n * 100)}%`;
+  const actions = s => (
+    <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+      {showDismissed
+        ? <button className="btn btn-sm" onClick={() => restore(s.id)} style={{ fontSize: 9 }}>Restore</button>
+        : <>
+            <button className="btn btn-sm btn-acc" disabled={busy === s.id}
+              onClick={() => s.kind === "common_risk" ? acceptRisk(s) : acceptControl(s)} style={{ fontSize: 9 }}>
+              {busy === s.id ? "Saving…" : s.kind === "common_risk" ? "Accept — add risk & share controls" : `Accept — share into ${s.target_framework}`}
+            </button>
+            <button className="btn btn-sm" onClick={() => dismiss(s.id)} style={{ fontSize: 9 }}>Dismiss</button>
+          </>}
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "12px 4px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 700 }}>Suggested shared controls &amp; risks</div>
+        <button className="btn btn-sm" onClick={load} disabled={loading} style={{ fontSize: 9 }}>{loading ? "Analysing…" : "Re-run"}</button>
+        <label style={{ fontSize: 9, color: "var(--ink-2,#555)", display: "flex", alignItems: "center", gap: 5 }}>
+          Min. control similarity {pct(minScore)}
+          <input type="range" min="0.2" max="0.8" step="0.05" value={minScore} onChange={e => setMinScore(Number(e.target.value))} />
+        </label>
+        {(nDismissed > 0 || showDismissed) && (
+          <button onClick={() => setShowDismissed(v => !v)} style={{ fontSize: 9, padding: 0, border: "none", background: "transparent", color: "var(--acc,#2563eb)", cursor: "pointer", textDecoration: "underline" }}>
+            {showDismissed ? "Back to suggestions" : `Show dismissed (${nDismissed})`}
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize: 10, color: "var(--ink-3,#888)", marginBottom: 10, lineHeight: 1.5 }}>
+        Matched on wording similarity (not authoritative mappings) — review each before accepting. Accepting a control
+        lists it under the extra framework, saved to the database; dismissals are remembered in this browser.
+      </div>
+      {err && <div style={{ fontSize: 10, color: "var(--red,#e53)", marginBottom: 8 }}>{err}</div>}
+      {loading && !data && <div style={{ fontSize: 11, color: "var(--ink-3,#888)" }}>Analysing controls and framework risks…</div>}
+
+      {data && <>
+        <div style={{ fontSize: 11, fontWeight: 700, margin: "6px 0" }}>Controls likely common to another framework ({ctrlSuggs.length})</div>
+        {!ctrlSuggs.length && <div style={{ fontSize: 10, color: "var(--ink-3,#888)", marginBottom: 10 }}>No pending control suggestions.</div>}
+        {ctrlSuggs.map(s => (
+          <div key={s.id} style={card}>
+            <div style={{ fontSize: 11 }}>
+              <b style={{ fontFamily: "monospace", color: "var(--acc,#2563eb)" }}>{s.ref}</b> {s.name}
+              <span style={{ marginLeft: 8, fontSize: 9, color: "var(--ink-3,#888)" }}>{pct(s.score)} match</span>
+            </div>
+            <div style={{ fontSize: 10, color: "var(--ink-2,#555)", marginTop: 4 }}>
+              Currently in {s.from_frameworks.map(f => <span key={f} style={chip}>{f}</span>)}
+              — similar to <b style={{ fontFamily: "monospace" }}>{s.match_ref}</b> {s.match_name}
+              {" "}in <span style={chip}>{s.target_framework}</span>
+            </div>
+            {s.shared_terms?.length > 0 && <div style={{ fontSize: 9, color: "var(--ink-3,#999)", marginTop: 3 }}>Shared terms: {s.shared_terms.join(", ")}</div>}
+            {actions(s)}
+          </div>
+        ))}
+
+        <div style={{ fontSize: 11, fontWeight: 700, margin: "14px 0 6px" }}>Risks recurring across frameworks ({riskSuggs.length})</div>
+        {!riskSuggs.length && <div style={{ fontSize: 10, color: "var(--ink-3,#888)" }}>No pending risk suggestions.</div>}
+        {riskSuggs.map(s => (
+          <div key={s.id} style={card}>
+            <div style={{ fontSize: 11, fontWeight: 600 }}>{s.name}</div>
+            <div style={{ marginTop: 5 }}>{s.frameworks.map(f => <span key={f} style={chip}>{f}</span>)}
+              <span style={{ fontSize: 9, color: "var(--ink-3,#888)" }}>{pct(s.score)} avg match</span></div>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 16, fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.5 }}>
+              {s.members.map(m => <li key={m.id || m.name}><b>{m.framework}</b> {m.id ? `(${m.id}) ` : ""}— {m.name}</li>)}
+            </ul>
+            {s.suggested_controls.length > 0 && (
+              <div style={{ fontSize: 10, marginTop: 6 }}>
+                Suggested controls: {s.suggested_controls.map(c => (
+                  <span key={c.ref} style={chip} title={c.name}>{c.ref} {c.name}</span>))}
+              </div>
+            )}
+            {actions(s)}
+          </div>
+        ))}
+      </>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2560,6 +2710,22 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setDiscCtrlStates(initControlStates(found));
     setDiscCollapsed({});
     setSearching(false);
+  }
+
+  // Accepting a suggested common risk: bring each framework's version of the
+  // risk into Framework Discovery (skipping any already there) with the
+  // suggested controls pre-assigned.
+  function handleAcceptSuggestedRisk(sugg) {
+    const have = new Set(discoveredRisks.map(r => r.id || r.risk_ref));
+    const refs = (sugg.suggested_controls || []).map(c => c.ref).filter(ref => CTRL_BY_REF[ref]);
+    const fresh = sugg.members
+      .filter(m => m.id && !have.has(m.id))
+      .map(m => ({ id: m.id, name: m.name, category: m.category || sugg.category, source_framework: m.framework,
+                   control_family: m.framework, score: null, rag: null, auto_controls: refs }));
+    if (!fresh.length) return;
+    setDiscovered(prev => [...prev, ...fresh]);
+    setDiscStates(prev => ({ ...prev, ...initRiskStates(fresh) }));
+    setDiscCtrlStates(prev => ({ ...prev, ...initControlStates(fresh) }));
   }
 
   // ── Refresh ───────────────────────────────────────────────────────────────
@@ -3560,6 +3726,13 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           Upload Register
           {uploadedRisks.length > 0 && <span className="rac-tab-dot"/>}
         </button>
+        <button
+          className={"rac-tab" + (activeTab === "suggestions" ? " active" : "")}
+          onClick={() => setActiveTab("suggestions")}
+        >
+          <span className="rac-tab-badge">AI</span>
+          Suggestions
+        </button>
       </div>
 
       {/* Tab content — scrollable, no bottom padding needed since action bar is outside.
@@ -3805,6 +3978,14 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         )}
 
         {/* ── Upload Register tab ── */}
+        {/* ── Suggestions tab ── */}
+        {activeTab === "suggestions" && (
+          <SharedSuggestionsPanel
+            onAcceptRisk={handleAcceptSuggestedRisk}
+            onControlShared={() => setControlsKey(k => k + 1)}
+          />
+        )}
+
         {activeTab === "upload" && (
           <div>
             {/* Drop zone */}
