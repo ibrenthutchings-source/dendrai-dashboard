@@ -6,6 +6,7 @@
 import { RiskGraphViz } from "./risk-graph-viz.jsx";
 import { RiskSankey }   from "./risk-sankey.jsx";
 import { DEFAULT_CONTROLS, fetchControlsFromApi } from "./controls-reference.jsx";
+import { downloadXlsx } from "./xlsx-export.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reference data — seeded from hardcoded defaults, overwritten from DB on mount
@@ -1302,9 +1303,70 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   const matrixMinWidth = `${340 + fwCols.length * 200}px`;
   const allDomains = [...new Set((risks || []).map(r => domainNames[r.id || r.risk_ref] || inferDomain(r)))];
 
+  // Risks as currently shown: column filters applied, then the active sort.
+  // Shared by the table render and the Excel export so both always agree.
+  function getVisibleRisks() {
+              return [...(risks || [])].filter((r, idx, arr) => {
+                const key = r.id || r.risk_ref || `idx-${idx}`;
+                const cs  = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [] };
+                return rowMatchesFilters(r, key, cs);
+              }).sort((a, b) => {
+                const keyA = a.id || a.risk_ref, keyB = b.id || b.risk_ref;
+                if (sortCol && sortCol !== "domain") {
+                  let cmp;
+                  if (sortCol === "risk") {
+                    cmp = (a.category || a.name || "").localeCompare(b.category || b.name || "");
+                  } else {
+                    const csA = ctrlStates[keyA] || { autoMapped: [], manual: [] };
+                    const csB = ctrlStates[keyB] || { autoMapped: [], manual: [] };
+                    const allA = [...(csA.autoMapped || []), ...(csA.manual || [])];
+                    const allB = [...(csB.autoMapped || []), ...(csB.manual || [])];
+                    cmp = computeFwRefs(allA, sortCol).length - computeFwRefs(allB, sortCol).length;
+                  }
+                  return sortDir === "asc" ? cmp : -cmp;
+                }
+                // Default / explicit domain sort: primary Core Domain & Risks, secondary
+                // Enterprise Risks, so each domain group is internally ordered too.
+                const da = domainNames[a.id || a.risk_ref] || inferDomain(a);
+                const db_ = domainNames[b.id || b.risk_ref] || inferDomain(b);
+                let domainCmp = da.localeCompare(db_);
+                if (domainCmp === 0) domainCmp = (a.category || "Risk").localeCompare(b.category || "Risk");
+                return sortDir === "asc" ? domainCmp : -domainCmp;
+    });
+  }
+
+  // Download the matrix as an .xlsx: one row per risk (as filtered/sorted on
+  // screen), one column per framework listing "REF – control name" per line.
+  function exportMatrixToExcel() {
+    const header = ["Core Domain", "Risk Category", "Risk Wording", ...orderedFwCols];
+    const rows = getVisibleRisks().map((r, idx) => {
+      const key = r.id || r.risk_ref || `idx-${idx}`;
+      const cs = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [] };
+      const allRefs = [...(cs.autoMapped || []), ...(cs.manual || [])];
+      const wording = riskStates[key]?.wording ?? r.current_wording ?? r.name ?? "";
+      return [
+        domainNames[key] || inferDomain(r),
+        r.category || "Risk",
+        wording,
+        ...orderedFwCols.map(fw =>
+          computeFwRefs(allRefs, fw).map(ref => `${ref} – ${CTRL_BY_REF[ref]?.name || ""}`).join("\n")),
+      ];
+    });
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadXlsx([header, ...rows], `framework-matrix-${stamp}.xlsx`, {
+      sheetName: "Framework Matrix",
+      colWidths: [24, 24, 50, ...orderedFwCols.map(() => 45)],
+    });
+  }
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        <button
+          onClick={exportMatrixToExcel}
+          title="Download the Framework Matrix (with current filters and sort) as an Excel file"
+          style={{ fontSize: 9, padding: "2px 8px", borderRadius: 3, cursor: "pointer", border: "1px solid var(--line,#ddd)", background: "transparent", color: "var(--ink-2,#555)" }}
+        >⬇ Download Excel</button>
         <div style={{ display: "flex", gap: 4 }}>
           <button
             onClick={() => setCollapsedDomains(new Set(allDomains))}
@@ -1450,33 +1512,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                 </td>
               </tr>
             )}
-            {[...(risks || [])].filter((r, idx, arr) => {
-              const key = r.id || r.risk_ref || `idx-${idx}`;
-              const cs  = ctrlStates[key] || { autoMapped: autoMapControls(r.name, r.category), manual: [] };
-              return rowMatchesFilters(r, key, cs);
-            }).sort((a, b) => {
-              const keyA = a.id || a.risk_ref, keyB = b.id || b.risk_ref;
-              if (sortCol && sortCol !== "domain") {
-                let cmp;
-                if (sortCol === "risk") {
-                  cmp = (a.category || a.name || "").localeCompare(b.category || b.name || "");
-                } else {
-                  const csA = ctrlStates[keyA] || { autoMapped: [], manual: [] };
-                  const csB = ctrlStates[keyB] || { autoMapped: [], manual: [] };
-                  const allA = [...(csA.autoMapped || []), ...(csA.manual || [])];
-                  const allB = [...(csB.autoMapped || []), ...(csB.manual || [])];
-                  cmp = computeFwRefs(allA, sortCol).length - computeFwRefs(allB, sortCol).length;
-                }
-                return sortDir === "asc" ? cmp : -cmp;
-              }
-              // Default / explicit domain sort: primary Core Domain & Risks, secondary
-              // Enterprise Risks, so each domain group is internally ordered too.
-              const da = domainNames[a.id || a.risk_ref] || inferDomain(a);
-              const db_ = domainNames[b.id || b.risk_ref] || inferDomain(b);
-              let domainCmp = da.localeCompare(db_);
-              if (domainCmp === 0) domainCmp = (a.category || "Risk").localeCompare(b.category || "Risk");
-              return sortDir === "asc" ? domainCmp : -domainCmp;
-            }).map((r, idx, arr) => {
+            {getVisibleRisks().map((r, idx, arr) => {
               // Fallback for legacy rows persisted before predictive_analytics_tool.py
               // assigned stable risk ids — prevents every id-less risk from colliding
               // onto the same React key and sharing wording/control state.
