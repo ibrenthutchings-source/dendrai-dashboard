@@ -72,14 +72,93 @@ async function resolveIndustryFromSec(raw) {
   }
 }
 
+function quarterDateRange(year, q) {
+  const startMonth = (q - 1) * 3;
+  const start = new Date(Date.UTC(year, startMonth, 1));
+  const end = new Date(Date.UTC(year, startMonth + 3, 0));
+  const fmt = d => d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
+// Preceding fiscal year, current fiscal year, and two future fiscal years —
+// recomputed from today's date so the list never goes stale.
 function genFiscalQuarters() {
+  const currentYear = new Date().getFullYear();
+  const years = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
   const qtrs = [];
-  for (let yr = 2022; yr <= 2027; yr++) {
-    for (let q = 1; q <= 4; q++) qtrs.push(`Q${q} ${yr}`);
+  for (const yr of years) {
+    for (let q = 1; q <= 4; q++) {
+      qtrs.push({ value: `Q${q} ${yr}`, label: `Q${q} ${yr} (${quarterDateRange(yr, q)})` });
+    }
   }
   return qtrs;
 }
 const FISCAL_QUARTERS = genFiscalQuarters();
+
+// Private companies have no SEC ticker/CIK — this creates one via
+// POST /company/private (a synthetic PVT-<SLUG> pseudo-ticker) and points
+// cfg.ticker at it, so every other ticker-keyed part of the app (this form's
+// two call sites — Sidebar and ConfigScreen's Entity card — plus the run
+// loop, /predictive/full-analysis, localStorage caching) works unmodified.
+function PrivateCompanyForm({ cfg, setCfg }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [fye, setFye] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  if (!open) {
+    return (
+      <button type="button" className="cfg-link" style={{marginTop: 4}} onClick={() => setOpen(true)}>
+        + Private company (no ticker)
+      </button>
+    );
+  }
+
+  async function create() {
+    if (!name.trim() || !window.MCP?.createPrivateCompany) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await window.MCP.createPrivateCompany(name.trim(), industry, fye);
+      setCfg(prev => ({
+        ...prev,
+        ticker: res.ticker,
+        company: res.company_name,
+        industry: industry || prev.industry,
+        isPrivate: true,
+      }));
+      setOpen(false);
+      setName(""); setIndustry(""); setFye("");
+    } catch (e) {
+      setErr(e.message || "Failed to create private company");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div style={{marginTop: 6, padding: 8, border: "1px solid var(--line)", borderRadius: 6, background: "var(--surface-2)"}}>
+      <div className="mono" style={{fontSize: 10, color: "var(--ink-3)", marginBottom: 6, letterSpacing: "0.04em"}}>
+        PRIVATE COMPANY — NO SEC TICKER
+      </div>
+      <input className="input" style={{marginBottom: 6}} placeholder="Company name"
+        value={name} onChange={e => setName(e.target.value)} />
+      <input className="input" style={{marginBottom: 6}} placeholder="Industry (free text)"
+        value={industry} onChange={e => setIndustry(e.target.value)} />
+      <input className="input" style={{marginBottom: 6}} placeholder="Fiscal year end (e.g. 1231)"
+        value={fye} onChange={e => setFye(e.target.value)} />
+      {err && <div className="mono" style={{fontSize: 10, color: "var(--red-ink)", marginBottom: 6}}>{err}</div>}
+      <div style={{display: "flex", gap: 6}}>
+        <button type="button" className="btn btn-sm btn-primary" style={{flex: 1}}
+          disabled={busy || !name.trim()} onClick={create}>
+          {busy ? "Creating…" : "Create"}
+        </button>
+        <button type="button" className="btn btn-sm" onClick={() => setOpen(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
 
 function Sidebar({
   cfg, setCfg, signalSet, setSignalSet,
@@ -88,6 +167,7 @@ function Sidebar({
   running, hasRun, onRun, onReset, onOpenReport, onOpenPersona, onOpenConfig,
   liveMode, setLiveMode,
   mcpMode, setMcpMode,
+  useDb, setUseDb,
   liveStatus,
 }) {
   const SIGNAL_OPTS = [
@@ -160,6 +240,7 @@ function Sidebar({
               <div className="mono" style={{fontSize:10,color:"var(--ink-3)",marginTop:3}}>{meta.name}</div>
             ) : null;
           })()}
+          <PrivateCompanyForm cfg={cfg} setCfg={setCfg} />
         </div>
         <div className="field">
           <label className="field-label">Industry</label>
@@ -176,14 +257,14 @@ function Sidebar({
         <div className="field" style={{marginBottom:0}}>
           <label className="field-label">Audit Period</label>
           <div style={{display:"flex", gap:6, alignItems:"center"}}>
-            <select className="input" style={{flex:1}} value={cfg.periodBegin || "Q1 2025"}
+            <select className="input" style={{flex:1}} value={cfg.periodBegin || FISCAL_QUARTERS[4].value}
               onChange={e => setCfg({...cfg, periodBegin: e.target.value})}>
-              {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+              {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
             </select>
             <span className="mono" style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>→</span>
-            <select className="input" style={{flex:1}} value={cfg.periodEnd || "Q4 2025"}
+            <select className="input" style={{flex:1}} value={cfg.periodEnd || FISCAL_QUARTERS[7].value}
               onChange={e => setCfg({...cfg, periodEnd: e.target.value})}>
-              {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+              {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
             </select>
           </div>
           <div className="mono" style={{fontSize:10,color:"var(--ink-3)",marginTop:3}}>Beginning → Ending fiscal quarter</div>
@@ -256,10 +337,24 @@ function Sidebar({
             <Icon name="gear" size={11}/> MCP
           </button>
         </div>
+        {mcpMode && (
+          <div style={{marginTop:6}}>
+            <div style={{display:"flex", gap:5}}>
+              <button className={`btn btn-sm ${!useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                onClick={() => setUseDb?.(false)} title="Fetch fresh data from EDGAR / FRED">
+                <Icon name="wifi" size={10}/> Live
+              </button>
+              <button className={`btn btn-sm ${useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                onClick={() => setUseDb?.(true)} title="Use data cached in PostgreSQL">
+                <Icon name="database" size={10}/> DB Cache
+              </button>
+            </div>
+          </div>
+        )}
         {(liveMode || mcpMode) && (
-          <div style={{marginTop: 8, fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
+          <div style={{marginTop: 6, fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
             {mcpMode
-              ? (liveStatus || "Python MCP servers · start api_server.py")
+              ? (useDb ? "PostgreSQL cache · no external calls" : (liveStatus || "Python MCP servers · api_server.py"))
               : (liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled")}
           </div>
         )}
@@ -291,7 +386,7 @@ function Sidebar({
             <span className="cfg-val mono">{velocity.toFixed(1)}</span>
           </div>
           <div className="cfg-row">
-            <span className="cfg-lab">HITL gates</span>
+            <span className="cfg-lab">Review gates</span>
             <span className="cfg-val mono">
               <span className={hitl.risk ? "on" : "off"} title="Risk assessment">R</span>
               <span className={hitl.scope ? "on" : "off"} title="Audit scope">S</span>
@@ -322,7 +417,7 @@ function Sidebar({
           </div>
         </div>
         <div className="cfg-hint">
-          Velocity threshold, HITL gates, and risk appetite level configure the loop. Appetite level marks residual risks that breach tolerance on the Sankey. Edit velocity and gates in Tweaks.
+          Velocity threshold, review gates, and risk appetite level configure the loop. Appetite level marks residual risks that breach tolerance on the Sankey. Edit velocity and gates in Tweaks.
         </div>
       </div>
 
@@ -350,4 +445,5 @@ function Sidebar({
 Object.assign(window, {
   Sidebar,
   FOCUS_OPTS, TICKER_META, FISCAL_QUARTERS, findTickerMeta, resolveIndustryFromSec,
+  PrivateCompanyForm,
 });

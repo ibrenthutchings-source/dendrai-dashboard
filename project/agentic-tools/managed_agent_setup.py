@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Managed Agents scheduled deployment for the Dendrai Risk Loop (recommendation #5).
+Managed Agents scheduled deployment for Dendrai Intelligenza (recommendation #5).
 
 Turns the Loop tab's copy-paste `/schedule` panel into a real autonomous agent.
 Anthropic runs the agent loop on a cron cadence; each firing re-investigates a
@@ -40,7 +40,9 @@ try:
 except ImportError:
     sys.exit("anthropic SDK not installed. Run: pip install -U anthropic")
 
-MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-opus-4-8")
+import claude_client
+
+MODEL = claude_client.MODEL
 AGENT_NAME = "Dendrai Risk Loop Agent"
 ENV_NAME = "dendrai-risk-loop-env"
 

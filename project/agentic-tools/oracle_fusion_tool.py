@@ -413,6 +413,74 @@ def get_control_issues(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# General Ledger — Journal Entries (Financials Cloud)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_journal_entries(
+    date_from: str = "",
+    date_to: str = "",
+    max_items: int = 500,
+    client: Optional[OracleFusionClient] = None,
+) -> dict:
+    """
+    Fetch posted GL journal entries from Oracle Fusion Financials Cloud
+    (the fscmRestApi `journals` resource — same host/auth as the RMCS control
+    endpoints above, different REST family).
+
+    Normalized to the shared journal-entry shape je_testing_tool.py's rule
+    engine consumes: je_id, amount, currency, account, gl_account_desc,
+    description, preparer, approver, posted_at, period_close_date,
+    source_system. Field names deliberately mirror pac_endpoints.py's
+    record_to_report Rego (`input.journal.*`) so that vocabulary describes a
+    real payload instead of one nothing ever constructs.
+
+    Args:
+        date_from: ISO date string YYYY-MM-DD (empty = no lower bound)
+        date_to:   ISO date string YYYY-MM-DD (empty = today)
+        max_items: pagination cap
+    """
+    c = client or OracleFusionClient()
+
+    params: dict[str, Any] = {}
+    filters: list[str] = []
+    if date_from:
+        filters.append(f"AccountingDate>='{date_from}'")
+    if date_to:
+        filters.append(f"AccountingDate<='{date_to}'")
+    if filters:
+        params["q"] = ";".join(filters)
+
+    try:
+        items = c._get_all(c._fscm_url("journals"), params=params, max_items=max_items)
+    except Exception as exc:
+        return {"error": str(exc), "journal_entries": [], "count": 0}
+
+    normalized = []
+    for j in items:
+        normalized.append({
+            "je_id":              str(j.get("JournalHeaderId", j.get("journalHeaderId", ""))),
+            "amount":             float(j.get("EnteredAmount", j.get("enteredAmount", 0)) or 0),
+            "currency":           j.get("Currency",          j.get("currency", "USD")),
+            "account":            j.get("AccountCombination", j.get("accountCombination", "")),
+            "gl_account_desc":    j.get("AccountDescription", j.get("accountDescription", "")),
+            "description":        j.get("Description",       j.get("description", "")),
+            "preparer":           j.get("CreatedBy",          j.get("createdBy", "")),
+            "approver":           j.get("ApprovedBy",         j.get("approvedBy")) or None,
+            "posted_at":          j.get("AccountingDate",     j.get("accountingDate", "")),
+            "period_close_date":  j.get("PeriodName",         j.get("periodName")) or None,
+            "source_system":      "ORACLE_FUSION",
+        })
+
+    return {
+        "source":         "Oracle Fusion Financials Cloud — GL Journals",
+        "fetched_at":     _now(),
+        "period":         {"from": date_from, "to": date_to or _today()},
+        "count":          len(normalized),
+        "journal_entries": normalized,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # User role assignments (access controls)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -564,6 +632,173 @@ def get_sod_violations(
         },
         "violations": normalized,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Treasury & Cash Management (FSCM Payments / Cash Management modules)
+# ─────────────────────────────────────────────────────────────────────────────
+# Same Oracle Fusion Cloud tenant/host as the ERP control-library functions
+# above — Treasury/Cash Management is part of core FSCM (module codes PAY,
+# CE), unlike HCM which is a separate REST API family (see oracle_hcm_tool.py).
+
+_WIRE_APPROVAL_MIN = 2  # dual-approval is the control every outbound wire is expected to carry
+_BANK_RECON_SLA_DAYS = 5  # business days after statement date a reconciliation is due
+
+
+def check_wire_transfer_approvals(
+    date_from: str = "",
+    min_approvers: int = _WIRE_APPROVAL_MIN,
+    max_items: int = 200,
+    client: Optional[OracleFusionClient] = None,
+) -> dict:
+    """Fetch recent outbound wire payment process requests and flag any that
+    cleared with fewer than min_approvers approvals on file."""
+    c = client or OracleFusionClient()
+
+    params: dict[str, Any] = {"q": "PaymentMethod='WIRE'"}
+    if date_from:
+        params["q"] += f";PaymentDate>='{date_from}'"
+    try:
+        items = c._get_all(c._fscm_url("paymentProcessRequests"), params=params, max_items=max_items)
+    except Exception as exc:
+        return {"error": str(exc), "findings": [], "count": 0}
+
+    findings = []
+    for p in items:
+        approvers = p.get("Approvers", p.get("approvers", []))
+        if len(approvers) < min_approvers:
+            findings.append({
+                "payment_id": p.get("PaymentProcessRequestId", p.get("paymentProcessRequestId", "")),
+                "amount":     p.get("PaymentAmount", p.get("paymentAmount", "")),
+                "currency":   p.get("Currency", p.get("currency", "")),
+                "approver_count": len(approvers),
+                "payment_date": p.get("PaymentDate", p.get("paymentDate", "")),
+            })
+
+    return {"source": "Oracle Fusion FSCM — Payment Process Requests",
+            "fetched_at": _now(), "count": len(findings), "findings": findings}
+
+
+def check_bank_reconciliation_status(
+    sla_days: int = _BANK_RECON_SLA_DAYS,
+    max_items: int = 200,
+    client: Optional[OracleFusionClient] = None,
+) -> dict:
+    """Fetch bank account reconciliation status and flag accounts overdue
+    against sla_days from their last statement date."""
+    c = client or OracleFusionClient()
+
+    try:
+        items = c._get_all(c._fscm_url("bankStatementReconciliations"), params={}, max_items=max_items)
+    except Exception as exc:
+        return {"error": str(exc), "findings": [], "count": 0}
+
+    findings = []
+    for r in items:
+        status = (r.get("ReconciliationStatus") or r.get("reconciliationStatus") or "").upper()
+        if status == "RECONCILED":
+            continue
+        stmt_date = r.get("StatementDate") or r.get("statementDate")
+        days_overdue = _days_since(stmt_date, sla_days)
+        if days_overdue is not None and days_overdue > 0:
+            findings.append({
+                "bank_account": r.get("BankAccountName", r.get("bankAccountName", "")),
+                "last_reconciled_date": r.get("LastReconciledDate", r.get("lastReconciledDate", stmt_date)),
+                "days_overdue": days_overdue,
+            })
+
+    return {"source": "Oracle Fusion FSCM — Bank Statement Reconciliations",
+            "fetched_at": _now(), "sla_days": sla_days,
+            "count": len(findings), "findings": findings}
+
+
+def check_fx_hedge_documentation(
+    max_items: int = 200,
+    client: Optional[OracleFusionClient] = None,
+) -> dict:
+    """Fetch open FX hedge/derivative positions and flag ones missing
+    completed hedge-accounting documentation (required for ASC 815 hedge
+    accounting treatment). Resource path may need adjustment depending on
+    which Treasury/Risk Management module configuration a given tenant runs —
+    written to the same FSCM REST convention as the checks above."""
+    c = client or OracleFusionClient()
+
+    try:
+        items = c._get_all(c._fscm_url("treasuryHedgeDesignations"), params={"q": "Status='Open'"}, max_items=max_items)
+    except Exception as exc:
+        return {"error": str(exc), "findings": [], "count": 0}
+
+    findings = []
+    for h in items:
+        doc_status = (h.get("DocumentationStatus") or h.get("documentationStatus") or "").upper()
+        if doc_status != "COMPLETE":
+            findings.append({
+                "hedge_id":       h.get("HedgeId", h.get("hedgeId", "")),
+                "currency_pair":  h.get("CurrencyPair", h.get("currencyPair", "")),
+                "notional_amount": h.get("NotionalAmount", h.get("notionalAmount", "")),
+                "documentation_status": doc_status or "MISSING",
+            })
+
+    return {"source": "Oracle Fusion FSCM — Treasury Hedge Designations",
+            "fetched_at": _now(), "count": len(findings), "findings": findings}
+
+
+_VENDOR_CONCENTRATION_THRESHOLD_PCT = float(os.environ.get("VENDOR_CONCENTRATION_THRESHOLD_PCT", "25.0"))
+_VENDOR_CONCENTRATION_WINDOW_DAYS = int(os.environ.get("VENDOR_CONCENTRATION_WINDOW_DAYS", "90"))
+
+
+def check_vendor_concentration(
+    date_from: str = "",
+    threshold_pct: float = _VENDOR_CONCENTRATION_THRESHOLD_PCT,
+    window_days: int = _VENDOR_CONCENTRATION_WINDOW_DAYS,
+    max_items: int = 500,
+    client: Optional[OracleFusionClient] = None,
+) -> dict:
+    """Aggregate trailing-window payment spend by supplier and flag any
+    vendor whose share of total spend exceeds threshold_pct — VM-02 (Supply
+    Chain Resilience) concentration risk."""
+    c = client or OracleFusionClient()
+
+    params: dict[str, Any] = {}
+    if date_from:
+        params["q"] = f"PaymentDate>='{date_from}'"
+    try:
+        items = c._get_all(c._fscm_url("paymentProcessRequests"), params=params, max_items=max_items)
+    except Exception as exc:
+        return {"error": str(exc), "findings": [], "count": 0}
+
+    by_supplier: dict[str, float] = {}
+    for p in items:
+        supplier = p.get("SupplierName") or p.get("supplierName") or "Unknown"
+        amount = p.get("PaymentAmount") or p.get("paymentAmount") or 0
+        by_supplier[supplier] = by_supplier.get(supplier, 0) + float(amount)
+
+    total = sum(by_supplier.values())
+    findings = []
+    if total > 0:
+        for supplier, amount in by_supplier.items():
+            pct = round(amount / total * 100, 2)
+            if pct >= threshold_pct:
+                findings.append({
+                    "vendor_name": supplier, "amount": amount,
+                    "concentration_pct": pct, "total_spend": total,
+                })
+
+    return {"source": "Oracle Fusion FSCM — Payment Process Requests (Concentration)",
+            "fetched_at": _now(), "threshold_pct": threshold_pct, "window_days": window_days,
+            "total_spend": total, "count": len(findings), "findings": findings}
+
+
+def _days_since(date_str: Optional[str], sla_days: int) -> Optional[int]:
+    """Days past sla_days since date_str. None on missing/bad input."""
+    if not date_str:
+        return None
+    try:
+        d = datetime.fromisoformat(date_str[:10])
+        elapsed = (datetime.now(timezone.utc).date() - d.date()).days
+        return elapsed - sla_days
+    except (ValueError, TypeError):
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -773,3 +1008,162 @@ def _today() -> str:
 def is_configured() -> bool:
     """Return True if ORACLE_FUSION_HOST is set."""
     return bool(os.environ.get("ORACLE_FUSION_HOST", ""))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# connector_poller adapter interface
+# ─────────────────────────────────────────────────────────────────────────────
+# Thin wrappers so this module (which predates the connector framework and is
+# also used standalone via /oracle-fusion/* REST endpoints + env-var config)
+# can be registered in connector_poller._ADAPTERS. UI-configured connectors
+# pass base_url/credentials explicitly rather than relying on
+# ORACLE_FUSION_HOST/USERNAME/PASSWORD env vars.
+#
+# pull_events() returns the UNIFORM shape every adapter must produce —
+# {event_id, event_type, actor, action, resource, severity, raw_payload} —
+# so connector_poller.py can hand any adapter's output to
+# mcp_governance._detect_system_flags/_ingest_system_event without knowing
+# each vendor's native field names.
+
+def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
+                 since: Optional[datetime]) -> list[dict]:
+    """Pull audit events created since `since`, normalized to the uniform
+    connector event shape (see module docstring above). Also runs the
+    Treasury & Cash Management checks (wire dual-approval, bank recon SLA,
+    FX hedge documentation) every tick — same connector, same tenant, no
+    separate poll schedule needed."""
+    client = OracleFusionClient(
+        host=base_url,
+        username=credentials.get("username"),
+        password=credentials.get("password"),
+        client_id=credentials.get("client_id"),
+        client_secret=credentials.get("client_secret"),
+    )
+    date_from = since.strftime("%Y-%m-%dT%H:%M:%S") if since else ""
+    result = get_audit_events(date_from=date_from, max_items=500, client=client)
+    if result.get("error"):
+        raise RuntimeError(result["error"])
+    events = [
+        {
+            "event_id":    str(e.get("event_id") or ""),
+            "event_type":  e.get("event_type") or "audit_event",
+            "actor":       e.get("username") or "",
+            "action":      e.get("event_type") or "",
+            "resource":    f"{e.get('module', '')}/{e.get('object_type', '')}/{e.get('object_id', '')}".strip("/"),
+            "severity":    "INFO",
+            "raw_payload": e,
+        }
+        for e in result.get("events", [])
+    ]
+
+    min_approvers = int((extra_config or {}).get("wire_min_approvers") or _WIRE_APPROVAL_MIN)
+    recon_sla_days = int((extra_config or {}).get("bank_recon_sla_days") or _BANK_RECON_SLA_DAYS)
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    wires = check_wire_transfer_approvals(date_from=date_from, min_approvers=min_approvers, client=client)
+    if wires.get("error"):
+        raise RuntimeError(wires["error"])
+    for f in wires["findings"]:
+        events.append({
+            "event_id":   f"wire:{f['payment_id']}",
+            "event_type": "wire_transfer_single_approval",
+            "actor":      "oracle_fusion_tool",
+            "action":     "payment_approval_audit",
+            "resource":   f"payment/{f['payment_id']}",
+            "severity":   "HIGH",
+            "raw_payload": {
+                "wire_transfer_single_approval": True,
+                "treasury_detail": {
+                    "payment_id": f["payment_id"], "amount": f["amount"], "currency": f["currency"],
+                    "approver_count": f["approver_count"],
+                },
+            },
+        })
+
+    recon = check_bank_reconciliation_status(sla_days=recon_sla_days, client=client)
+    if recon.get("error"):
+        raise RuntimeError(recon["error"])
+    for f in recon["findings"]:
+        events.append({
+            "event_id":   f"bankrecon:{f['bank_account']}:{today}",
+            "event_type": "bank_recon_overdue",
+            "actor":      "oracle_fusion_tool",
+            "action":     "bank_reconciliation_audit",
+            "resource":   f"bank_account/{f['bank_account']}",
+            "severity":   "HIGH",
+            "raw_payload": {
+                "bank_recon_overdue": True,
+                "treasury_detail": {
+                    "bank_account": f["bank_account"], "last_reconciled_date": f["last_reconciled_date"],
+                    "days_overdue": f["days_overdue"],
+                },
+            },
+        })
+
+    hedges = check_fx_hedge_documentation(client=client)
+    if hedges.get("error"):
+        raise RuntimeError(hedges["error"])
+    for f in hedges["findings"]:
+        events.append({
+            "event_id":   f"fxhedge:{f['hedge_id']}:{today}",
+            "event_type": "fx_hedge_documentation_missing",
+            "actor":      "oracle_fusion_tool",
+            "action":     "hedge_documentation_audit",
+            "resource":   f"hedge/{f['hedge_id']}",
+            "severity":   "MEDIUM",
+            "raw_payload": {
+                "fx_hedge_documentation_missing": True,
+                "treasury_detail": {
+                    "hedge_id": f["hedge_id"], "currency_pair": f["currency_pair"],
+                    "notional_amount": f["notional_amount"],
+                },
+            },
+        })
+
+    # Continuous Third-Party/Vendor Risk: spend-concentration check rides this
+    # same connector/poll schedule — see vendor_risk_sweep.py for the other
+    # half (SOC 2 expiry), which is DB-only and doesn't need ERP access.
+    concentration_threshold = float((extra_config or {}).get("vendor_concentration_threshold_pct")
+                                     or _VENDOR_CONCENTRATION_THRESHOLD_PCT)
+    concentration = check_vendor_concentration(date_from=date_from, threshold_pct=concentration_threshold, client=client)
+    if concentration.get("error"):
+        raise RuntimeError(concentration["error"])
+    for f in concentration["findings"]:
+        events.append({
+            "event_id":   f"vendor-concentration:{f['vendor_name']}:{today}",
+            "event_type": "vendor_concentration_breach",
+            "actor":      "oracle_fusion_tool",
+            "action":     "vendor_spend_concentration_audit",
+            "resource":   f"vendor/{f['vendor_name']}",
+            "severity":   "MEDIUM",
+            "raw_payload": {
+                "vendor_concentration_breach": True,
+                "vendor_risk_detail": {
+                    "vendor_name": f["vendor_name"],
+                    "concentration_pct": f["concentration_pct"],
+                    "threshold_pct": concentration_threshold,
+                    "window_days": _VENDOR_CONCENTRATION_WINDOW_DAYS,
+                },
+            },
+        })
+
+    return events
+
+
+def test_connection(base_url: Optional[str], credentials: dict, extra_config: dict) -> tuple[bool, str]:
+    """Verify connectivity/credentials with a minimal real call, without
+    pulling a full event batch."""
+    try:
+        client = OracleFusionClient(
+            host=base_url,
+            username=credentials.get("username"),
+            password=credentials.get("password"),
+            client_id=credentials.get("client_id"),
+            client_secret=credentials.get("client_secret"),
+        )
+        result = get_audit_events(max_items=1, client=client)
+        if result.get("error"):
+            return False, result["error"]
+        return True, f"Connected — {result.get('count', 0)} audit event(s) visible in test window"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"

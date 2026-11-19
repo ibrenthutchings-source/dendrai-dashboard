@@ -15,23 +15,41 @@ import '../components.jsx'
 import '../charts.jsx'
 import '../sidebar.jsx'
 import '../pipeline.jsx'
-import '../cem.jsx'
 import '../forecasts.jsx'
-import '../scenarios.jsx'
-import '../flow.jsx'
 import '../rail.jsx'
-import '../governance.jsx'
-import '../report.jsx'
 import '../risk-approval.jsx'
 import '../rss.jsx'
 import '../audit-scope-review.jsx'
+import '../report.jsx'
+import '../evidence-pack.jsx'
+import '../report-delivery.jsx'
+import '../disclosure-risk.js'
+import '../coverage-gap.jsx'
+import '../risk-register-review.jsx'
+import '../cem.jsx'
 import '../nav.jsx'
-import '../config-screen.jsx'
 import '../ai-chat-panel.jsx'
-import '../audit-scope.jsx'
-import '../code-screens.jsx'
-import '../sox-scope.jsx'
+import '../auth.jsx'
 import '../tweaks.jsx'
+import '../redact-mode.js'   // TEMPORARY — screen-recording aid; see file header
+
+// The remaining screen-level files (scenarios, scenario-analysis, flow,
+// governance, config-screen, ubo-config, audit-scope, code-screens,
+// sox-hitl, sox-scope, approval-inbox, user-config, token-usage,
+// model-health, continuous-monitoring, ai-inventory) are no longer
+// imported here — they are lazy-loaded on first navigation via
+// React.lazy() in app.jsx (see src/lazy-screen.js).
+//
+// Everything above stays eager because it's reachable outside the
+// activeScreen Suspense boundary (pipeline.jsx is the landing screen and
+// unconditionally/guardedly renders Rail, RSSPanel, CoverageGapPanel;
+// app.jsx renders OverrideModal, AdjustRiskModal, AdjustObjectiveModal
+// unconditionally at the root; audit-scope-review.jsx and risk-approval.jsx
+// read window.MASTER_CONTROLS / window.FW_MOCK_RISKS from
+// risk-register-review.jsx during the core Gate 1/2 HITL flow; app.jsx's
+// live-mode 8-K event ingestion uses cem.jsx's TIERS/notifMsgFor directly,
+// unguarded, independent of which screen is active) — verified via direct
+// grep, not assumed.
 
 import App from '../app.jsx'
 
@@ -58,5 +76,13 @@ class RootBoundary extends React.Component {
   }
 }
 
+const { AuthProvider } = window;
+
 const root = ReactDOM.createRoot(document.getElementById('root'))
-root.render(<RootBoundary><App /></RootBoundary>)
+root.render(
+  <RootBoundary>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </RootBoundary>
+)

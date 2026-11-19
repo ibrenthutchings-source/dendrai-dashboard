@@ -295,6 +295,52 @@ FRED_SERIES: dict[str, dict] = {
     },
 }
 
+# Sector-matched PPI, one per industry template (see predictive_analytics_tool.py's
+# SIC_TO_INDUSTRY) — added on top of the 30 generic series above when run_analysis()
+# is given an industry, since PPIACO (all commodities) is too broad to pick up
+# input-cost pressure specific to a company's own sector. Series IDs verified live
+# on FRED (BLS "Producer Price Index by Industry", total-industry / primary-products
+# level, not a narrow sub-product line).
+INDUSTRY_PPI_SERIES: dict[str, dict] = {
+    "Semiconductors": {
+        "id": "PCU334413334413",
+        "name": "PPI: Semiconductor & Related Device Manufacturing",
+        "description": "Producer prices for the subject's own industry (NAICS 334413), vs. PPIACO's economy-wide input costs",
+    },
+    "Automotive OEM": {
+        "id": "PCU336110336110",
+        "name": "PPI: Automobile, Light Truck & Utility Vehicle Manufacturing",
+        "description": "Producer prices for the subject's own industry (NAICS 336110), vs. PPIACO's economy-wide input costs",
+    },
+    "Software & Cloud": {
+        "id": "PCU511210511210",
+        "name": "PPI: Software Publishers",
+        "description": "Producer prices for the subject's own industry (NAICS 511210), vs. PPIACO's economy-wide input costs",
+    },
+    "Financial Services": {
+        "id": "PCU522110522110",
+        "name": "PPI: Commercial Banking",
+        "description": "Producer prices for the subject's own industry (NAICS 522110), vs. PPIACO's economy-wide input costs",
+    },
+    "Healthcare & Pharma": {
+        "id": "PCU325412325412",
+        "name": "PPI: Pharmaceutical Preparation Manufacturing",
+        "description": "Producer prices for the subject's own industry (NAICS 325412), vs. PPIACO's economy-wide input costs",
+    },
+    "Energy & Utilities": {
+        "id": "PCU22112211",
+        "name": "PPI: Electric Power Generation, Transmission & Distribution",
+        "description": "Producer prices for the subject's own industry (NAICS 2211), vs. PPIACO's economy-wide input costs",
+    },
+    "Retail & Consumer": {
+        "id": "PCU452452",
+        "name": "PPI: General Merchandise Retailers",
+        "description": "Producer prices for the subject's own industry (NAICS 452), vs. PPIACO's economy-wide input costs",
+    },
+    # "Generic" has no sector-matched series — PPIACO (already in FRED_SERIES) stays
+    # the only pricing input, same as before this enhancement.
+}
+
 # Financial metrics sourced from EDGAR XBRL (must match XBRL_METRICS keys or EBITDA)
 TARGET_METRICS = [
     "Revenue",
@@ -575,11 +621,15 @@ def run_analysis(
     min_r: float = 0.85,
     lags: tuple[int, ...] = (1, 2, 3),
     output_path: Optional[Path] = None,
+    industry: str = "",
 ) -> dict:
     """
     Full pipeline:
       1. Fetch company quarterly financials from EDGAR XBRL
-      2. Fetch 30 FRED macro series (6 years, aggregated to quarterly)
+      2. Fetch 30 FRED macro series (6 years, aggregated to quarterly), plus a
+         31st sector-matched PPI series when `industry` maps to one in
+         INDUSTRY_PPI_SERIES — PPIACO alone is economy-wide input costs, too
+         broad to catch pricing pressure specific to the subject's own sector.
       3. Compute Pearson correlation at each lag for every combination
       4. Keep only indicators with |r| >= min_r at any tested lag
       5. Save full results + raw data to fred_macro_indicators.json
@@ -598,18 +648,30 @@ def run_analysis(
     if not financial_series:
         raise ValueError(f"No quarterly XBRL data found for {ticker.upper()}")
 
-    # 2. FRED macro data
-    print(f"  [2/4] Fetching {len(FRED_SERIES)} FRED macro series …")
+    # 2. FRED macro data — local copy so a per-call industry addition never
+    # mutates the module-level FRED_SERIES other callers rely on.
+    series_to_fetch = dict(FRED_SERIES)
+    industry_ppi = INDUSTRY_PPI_SERIES.get(industry)
+    if industry_ppi and industry_ppi["id"] not in series_to_fetch:
+        series_to_fetch[industry_ppi["id"]] = {
+            "name": industry_ppi["name"],
+            "category": "Sector-Specific Pricing",
+            "agg_method": "avg",
+            "units": "Index",
+            "description": industry_ppi["description"],
+        }
+
+    print(f"  [2/4] Fetching {len(series_to_fetch)} FRED macro series …")
     macro_data: dict[str, dict[str, float]] = {}
-    for i, (sid, info) in enumerate(FRED_SERIES.items(), 1):
-        print(f"         [{i:02d}/{len(FRED_SERIES)}] {sid}: {info['name']} …", end="", flush=True)
+    for i, (sid, info) in enumerate(series_to_fetch.items(), 1):
+        print(f"         [{i:02d}/{len(series_to_fetch)}] {sid}: {info['name']} …", end="", flush=True)
         series = fetch_fred_series(sid, api_key, info["agg_method"])
         if series:
             macro_data[sid] = series
             print(f" {len(series)}q")
         else:
             print(" FAILED")
-    print(f"         {len(macro_data)}/{len(FRED_SERIES)} series fetched successfully")
+    print(f"         {len(macro_data)}/{len(series_to_fetch)} series fetched successfully")
 
     # 3. Lagged correlation analysis
     print(f"  [3/4] Pearson correlations (lags={list(lags)}, threshold |r|≥{min_r}) …")
@@ -627,7 +689,7 @@ def run_analysis(
                     best = {"r": r, "p": p, "lag": lag, "n": n}
 
             if abs(best["r"]) >= min_r:
-                info = FRED_SERIES[sid]
+                info = series_to_fetch[sid]
                 entry: dict = {
                     "series_id": sid,
                     "name": info["name"],
@@ -667,11 +729,11 @@ def run_analysis(
 
     macro_series_out = {
         sid: {
-            "name": FRED_SERIES[sid]["name"],
-            "category": FRED_SERIES[sid]["category"],
-            "units": FRED_SERIES[sid]["units"],
-            "description": FRED_SERIES[sid]["description"],
-            "aggregation_method": FRED_SERIES[sid]["agg_method"],
+            "name": series_to_fetch[sid]["name"],
+            "category": series_to_fetch[sid]["category"],
+            "units": series_to_fetch[sid]["units"],
+            "description": series_to_fetch[sid]["description"],
+            "aggregation_method": series_to_fetch[sid]["agg_method"],
             "quarterly_observations": sorted(
                 [{"quarter_end": q, "value": v} for q, v in series.items()],
                 key=lambda x: x["quarter_end"],
@@ -695,7 +757,7 @@ def run_analysis(
         "parameters": {
             "min_correlation_threshold": min_r,
             "lags_tested_quarters": list(lags),
-            "fred_series_attempted": len(FRED_SERIES),
+            "fred_series_attempted": len(series_to_fetch),
             "fred_series_fetched": len(macro_data),
             "financial_metrics_analyzed": metric_names,
             "min_quarter_pairs_required": MIN_PAIRS,
@@ -747,6 +809,11 @@ def main():
         "--api-key", default=None,
         help="FRED API key (default: $FRED_API_KEY env var)",
     )
+    parser.add_argument(
+        "--industry", default="",
+        help="Industry template name (see INDUSTRY_PPI_SERIES) to add a sector-matched "
+             "PPI series on top of the 30 generic ones, e.g. 'Semiconductors'",
+    )
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get("FRED_API_KEY", "")
@@ -773,6 +840,7 @@ def main():
             min_r=args.min_r,
             lags=lags,
             output_path=Path(args.output),
+            industry=args.industry,
         )
         print("\nDone.")
     except ValueError as e:

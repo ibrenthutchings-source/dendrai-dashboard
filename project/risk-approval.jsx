@@ -1,24 +1,12 @@
 /* ============================================================
    Per-Risk Approval Review (HITL Gate 1)
    - Lists every risk inline with Approve / Adjust controls
-   - Adjusted risks require sequential sign-off:
-       1. CAE (Sarah Lin)        — Chief Audit Executive
-       2. CFO (Marcus Reed)      — Chief Financial Officer
-       3. Audit Committee        — J. Vance, Chair
+   - Approve as-is is final immediately (nothing changed, nothing to check).
+   - Adjustments route to the preparer's manager (real org-chart reporting
+     line, see auth.users.manager_id) for a second review, via the Approval
+     Inbox screen — not a fixed fictional signoff chain.
    - Rationale captured verbatim into the audit trail
    ============================================================ */
-
-const SIGNOFFS = [
-  { id: "cae", role: "CAE",              who: "Sarah Lin",      title: "Chief Audit Executive" },
-  { id: "cfo", role: "CFO",              who: "Marcus Reed",    title: "Chief Financial Officer" },
-  { id: "ac",  role: "Audit Committee",  who: "J. Vance",       title: "Audit Committee, Chair"  },
-];
-
-// Status values per risk approval:
-//   'pending'    — awaiting auditor disposition
-//   'approved'   — AI score accepted as-is
-//   'adjusted'   — values changed; signoffs are routing through CAE → CFO → AC
-//   'signed'     — fully signed off (all three signatures captured)
 
 function deltaLabel(orig, next, key, fmt = (v) => v) {
   if (orig[key] === next[key]) return null;
@@ -27,6 +15,13 @@ function deltaLabel(orig, next, key, fmt = (v) => v) {
 
 const RAR_CE_ADJ = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
 const RAR_APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
+
+// Status values per risk approval:
+//   'pending'          — awaiting preparer disposition
+//   'approved'         — accepted as scored; final, no review needed
+//   'submitted'        — adjusted with rationale; routed to manager for review
+//   'manager_approved' — manager reviewed and approved the adjustment; final
+//   'rejected'         — manager sent it back; preparer must revise
 
 function RiskApprovalReview({
   risks,
@@ -38,18 +33,26 @@ function RiskApprovalReview({
   onApproveRisk,
   onOpenAdjust,
   onApproveAll,
-  onSignoff,
   onSubmit,
   onOverrideGate,
+  onAddRisk,
 }) {
-  if (!risks || risks.length === 0) return null;
+  // A genuinely empty risk list (0 risks generated for this run) must still
+  // render the Confirm/Override footer below — allResolved is trivially
+  // true for 0 === 0, so there's nothing blocking the gate from passing,
+  // but an early `return null` here used to hide the ONLY buttons that
+  // could ever resolve it, leaving Gate 1 permanently stuck on "awaiting
+  // your review" with nothing on screen to click.
+  risks = risks || [];
+  const [expandedId, setExpandedId] = React.useState(null);
   const total = risks.length;
   const decided = risks.filter(r => {
-    const a = approvals[r.id];
-    return a && (a.status === "approved" || a.status === "signed");
+    const s = approvals[r.id]?.status;
+    return s === "approved" || s === "submitted" || s === "manager_approved";
   }).length;
-  const adjustedCount = risks.filter(r => approvals[r.id]?.status === "adjusted" || approvals[r.id]?.status === "signed").length;
-  const pendingSig = risks.filter(r => approvals[r.id]?.status === "adjusted").length;
+  const submittedCount = risks.filter(r => ["submitted", "manager_approved", "rejected"].includes(approvals[r.id]?.status)).length;
+  const pendingReview = risks.filter(r => approvals[r.id]?.status === "submitted").length;
+  const rejectedCount = risks.filter(r => approvals[r.id]?.status === "rejected").length;
   const allResolved = decided === total;
 
   return (
@@ -57,26 +60,31 @@ function RiskApprovalReview({
       <div className="rar-head">
         <div className="rar-head-l">
           <div className="rar-pill">
-            <span className="dot"/>HITL · GATE 1
+            <span className="dot"/>HUMAN REVIEW · GATE 1
           </div>
           <div className="rar-title">Risk Assessment · Per-Risk Review</div>
           <div className="rar-sub">
-            Approve each risk as-is, or adjust scoring with rationale. Adjustments are routed for sign-off:
-            <span className="rar-sub-chain">CAE → CFO → Audit Committee</span>.
+            Approve each risk as-is, or adjust scoring with rationale. Adjustments route to your manager for review.
           </div>
         </div>
         <div className="rar-head-r">
           <div className="rar-prog">
-            <div className="rar-prog-track"><div className="rar-prog-fill" style={{width: `${(decided/total)*100}%`}}/></div>
+            <div className="rar-prog-track"><div className="rar-prog-fill" style={{width: `${total ? (decided/total)*100 : 100}%`}}/></div>
             <div className="rar-prog-meta">
               <span className="mono"><b style={{color:"var(--ink)",fontWeight:500}}>{decided}</b> / {total} resolved</span>
-              {adjustedCount > 0 && <span className="mono muted">· {adjustedCount} adjusted</span>}
-              {pendingSig > 0 && <span className="mono" style={{color:"var(--amber-ink)"}}>· {pendingSig} awaiting sign-off</span>}
+              {submittedCount > 0 && <span className="mono muted">· {submittedCount} adjusted</span>}
+              {pendingReview > 0 && <span className="mono" style={{color:"var(--amber-ink)"}}>· {pendingReview} awaiting manager</span>}
+              {rejectedCount > 0 && <span className="mono" style={{color:"var(--red-ink)"}}>· {rejectedCount} rejected</span>}
             </div>
           </div>
         </div>
       </div>
 
+      {total === 0 ? (
+        <div style={{padding: "18px 4px", fontSize: 12, color: "var(--ink-3)"}}>
+          No risks were generated for this run — nothing to review. Confirm below to continue, or add a risk manually first.
+        </div>
+      ) : (
       <div className="rar-table-wrap">
         <div className="rar-thead">
           <div className="rar-th rar-th-name">Risk</div>
@@ -96,19 +104,26 @@ function RiskApprovalReview({
               onSetPerRiskLevel={(lvl) => onSetPerRiskAppetite && onSetPerRiskAppetite(prev => ({...prev, [r.id]: lvl}))}
               onApprove={() => onApproveRisk(r.id)}
               onAdjust={() => onOpenAdjust(r.id)}
-              onSignoff={(role) => onSignoff(r.id, role)}
+              expanded={expandedId === r.id}
+              onToggle={() => setExpandedId(prev => prev === r.id ? null : r.id)}
             />
           ))}
         </div>
       </div>
+      )}
 
       <div className="rar-foot">
         <button className="btn btn-sm" onClick={onOverrideGate}>
           <Icon name="alert" size={11}/> Override entire gate
         </button>
+        {onAddRisk && (
+          <button className="btn btn-sm" onClick={onAddRisk}>
+            <Icon name="plus" size={11}/> Add Risk
+          </button>
+        )}
         <div className="rar-foot-spacer"/>
         <button className="btn btn-sm" onClick={onApproveAll} disabled={allResolved}>
-          Approve all remaining ({total - decided - pendingSig})
+          Approve all remaining ({total - decided})
         </button>
         <button className="btn btn-sm btn-primary" disabled={!allResolved} onClick={onSubmit}>
           <Icon name="check" size={11}/> Confirm Risk Assessment
@@ -118,9 +133,8 @@ function RiskApprovalReview({
   );
 }
 
-function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBER", onSetPerRiskLevel, onApprove, onAdjust, onSignoff }) {
+function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBER", onSetPerRiskLevel, onApprove, onAdjust, expanded, onToggle }) {
   const r = risk;
-  const [showControls, setShowControls] = React.useState(false);
   const status = approval.status || "pending";
   const adj = approval.adjustments || null;
   const effRag = adj?.rag ?? risk.rag;
@@ -128,29 +142,28 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
   const effVel = adj?.velocity ?? risk.velocity;
   const effCe = adj?.ce ?? risk.ce;
 
-  const isAdjusted = status === "adjusted" || status === "signed";
+  const wasAdjusted = ["submitted", "manager_approved", "rejected"].includes(status);
   const controls = MOCK.riskFlow?.[risk.id]?.controls || [];
   const threshold = RAR_APPETITE_THRESHOLDS[perRiskLevel] ?? 7.5;
   const breachesAppetite = effScore >= threshold;
 
   return (
-    <div className={`rar-row rar-row-${status}`}>
+    <Clickable className={`rar-row rar-row-${status}`} onClick={onToggle} style={{cursor: "pointer", userSelect: "none"}}>
       <div className="rar-td rar-td-name">
         <div className="rar-name-head">
           <RAGChip rag={effRag}>{effRag}</RAGChip>
-          {isAdjusted && effRag !== risk.rag && (
+          {wasAdjusted && effRag !== risk.rag && (
             <span className="rar-was mono">was <RAGChip rag={risk.rag}>{risk.rag}</RAGChip></span>
           )}
           <div className="rar-rname">{risk.name}</div>
+          <span style={{marginLeft: "auto", fontSize: 10, color: "var(--ink-3)", flexShrink: 0, paddingLeft: 6}}>{expanded ? "▲" : "▼"}</span>
         </div>
         <div className="rar-rmeta mono">
           <span>{risk.id}</span>
           <span>·</span>
           <span>{risk.category}</span>
           {controls.length > 0 && (
-            <button className="rar-ctrl-toggle" onClick={() => setShowControls(!showControls)}>
-              {showControls ? "▲" : "▼"} {controls.length} controls
-            </button>
+            <span style={{color: "var(--ink-3)", fontSize: 10}}>{controls.length} controls</span>
           )}
         </div>
       </div>
@@ -158,7 +171,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
       <div className="rar-td rar-td-score">
         <div className="rar-score-row">
           <span className="mono" style={{color: scoreColorInk(effScore), fontWeight: 500}}>{fmt2(effScore)}</span>
-          {isAdjusted && effScore !== risk.score && (
+          {wasAdjusted && effScore !== risk.score && (
             <span className="rar-was mono">was {fmt2(risk.score)}</span>
           )}
         </div>
@@ -177,7 +190,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
                 <button key={ch}
                   className={"rar-apt-btn" + (isActive ? " active" : "")}
                   style={isActive ? {background:softs[ch], color:colors[ch], borderColor:colors[ch]} : {}}
-                  onClick={() => onSetPerRiskLevel && onSetPerRiskLevel(lvl)}
+                  onClick={(e) => { e.stopPropagation(); onSetPerRiskLevel && onSetPerRiskLevel(lvl); }}
                   title={`Set ${r.id} appetite to ${lvl}`}>
                   {ch}
                 </button>
@@ -189,28 +202,37 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
       <div className="rar-td rar-td-vel">
         <VelocityPill v={effVel}/>
-        {isAdjusted && effVel !== risk.velocity && (
+        {wasAdjusted && effVel !== risk.velocity && (
           <span className="rar-was mono">was {risk.velocity > 0 ? "+" : ""}{risk.velocity}</span>
         )}
       </div>
 
       <div className="rar-td rar-td-ce">
         <span className="mono" style={{fontSize: 10.5}}>{effCe}</span>
-        {isAdjusted && effCe !== risk.ce && (
+        {wasAdjusted && effCe !== risk.ce && (
           <span className="rar-was mono">was {risk.ce}</span>
         )}
       </div>
 
       <div className="rar-td rar-td-action">
         {status === "pending" && (
-          <div className="rar-actions">
-            <button className="btn btn-sm rar-btn-approve" onClick={onApprove}>
-              <Icon name="check" size={10}/> Approve
-            </button>
-            <button className="btn btn-sm" onClick={onAdjust}>
-              <Icon name="edit" size={10}/> Adjust
-            </button>
-          </div>
+          risk._isNew ? (
+            <div className="rar-actions">
+              <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); onAdjust(); }}>
+                <Icon name="edit" size={10}/> Assess risk
+              </button>
+              <div className="mono" style={{fontSize: 9, color: "var(--amber-ink)"}}>New — must be assessed</div>
+            </div>
+          ) : (
+            <div className="rar-actions">
+              <button className="btn btn-sm rar-btn-approve" onClick={(e) => { e.stopPropagation(); onApprove(); }}>
+                <Icon name="check" size={10}/> Approve
+              </button>
+              <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); onAdjust(); }}>
+                <Icon name="edit" size={10}/> Adjust
+              </button>
+            </div>
+          )
         )}
         {status === "approved" && (
           <div className="rar-disposition rar-disposition-approved">
@@ -218,85 +240,91 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
             <span>Approved as scored</span>
           </div>
         )}
-        {status === "adjusted" && (
+        {status === "submitted" && (
           <div className="rar-disposition rar-disposition-adjusted">
             <Icon name="alert" size={11}/>
-            <span>Awaiting sign-off</span>
+            <span>Awaiting {approval.managerName || "manager"} review</span>
           </div>
         )}
-        {status === "signed" && (
+        {status === "manager_approved" && (
           <div className="rar-disposition rar-disposition-signed">
             <Icon name="check" size={11}/>
-            <span>Adjustment signed</span>
+            <span>Approved by {approval.reviewerName || "manager"}</span>
+          </div>
+        )}
+        {status === "rejected" && (
+          <div className="rar-actions">
+            <div className="rar-disposition" style={{color: "var(--red-ink)"}}>
+              <Icon name="alert" size={11}/>
+              <span>Rejected — revise</span>
+            </div>
+            <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); onAdjust(); }}>
+              <Icon name="edit" size={10}/> Revise
+            </button>
           </div>
         )}
       </div>
 
-      {showControls && controls.length > 0 && (
-        <div className="rar-ctrl-detail-row">
-          <div className="rar-ctrl-detail-head mono">
-            Control tolerance · threshold ≥ {threshold}
-          </div>
-          {controls.map((ctrl, ci) => {
-            const adj = parseFloat((effScore + (RAR_CE_ADJ[ctrl.ce] || 0)).toFixed(1));
-            const withinTol = adj < threshold;
-            return (
-              <div key={ci} className="rar-ctrl-item">
-                <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>
-                <span style={{flex:1, fontSize:11, color:"var(--ink-2)"}}>{ctrl.name}</span>
-                <span className="mono" style={{fontSize:10, color:"var(--ink-3)", marginRight:8}}>{ctrl.ce}</span>
-                <span className="mono" style={{fontSize:10, fontWeight:500, color: withinTol ? "var(--green-ink)" : "var(--red-ink)"}}>
-                  {adj.toFixed(1)} {withinTol ? "OK" : "BREACH"}
-                </span>
+      {expanded && (
+        <>
+          {controls.length > 0 && (
+            <div className="rar-ctrl-detail-row">
+              <div className="rar-ctrl-detail-head mono">
+                Control tolerance · threshold ≥ {threshold}
               </div>
-            );
-          })}
-        </div>
-      )}
-
-      {isAdjusted && (
-        <div className="rar-row-detail">
-          <div className="rar-detail-rationale">
-            <div className="rar-detail-label mono">RATIONALE — {approval.adjustedBy || "Auditor"} · {approval.adjustedAt ? new Date(approval.adjustedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}) : "—"}</div>
-            <div className="rar-detail-text">{approval.rationale}</div>
-          </div>
-          <div className="rar-signoff-chain">
-            {SIGNOFFS.map((s, i) => {
-              const sig = approval.signoffs?.[s.id];
-              const isSigned = !!sig?.signedAt;
-              const prevSigned = i === 0 || approval.signoffs?.[SIGNOFFS[i-1].id]?.signedAt;
-              const canSign = !isSigned && prevSigned;
-              return (
-                <div key={s.id} className={`rar-sig ${isSigned ? "rar-sig-signed" : canSign ? "rar-sig-active" : "rar-sig-blocked"}`}>
-                  <div className="rar-sig-num mono">{i+1}</div>
-                  <div className="rar-sig-body">
-                    <div className="rar-sig-role">{s.role}</div>
-                    <div className="rar-sig-who mono">{isSigned ? sig.who : s.who}</div>
+              {controls.map((ctrl, ci) => {
+                const adj = parseFloat((effScore + (RAR_CE_ADJ[ctrl.ce] || 0)).toFixed(1));
+                const withinTol = adj < threshold;
+                return (
+                  <div key={ci} className="rar-ctrl-item">
+                    <span className={"s2-ctrl-dot " + (withinTol ? "ok" : "out")}/>
+                    <span style={{flex:1, fontSize:11, color:"var(--ink-2)"}}>{ctrl.name}</span>
+                    <span className="mono" style={{fontSize:10, color:"var(--ink-3)", marginRight:8}}>{ctrl.ce}</span>
+                    <span className="mono" style={{fontSize:10, fontWeight:500, color: withinTol ? "var(--green-ink)" : "var(--red-ink)"}}>
+                      {adj.toFixed(1)} {withinTol ? "OK" : "BREACH"}
+                    </span>
                   </div>
-                  {isSigned ? (
-                    <div className="rar-sig-stamp">
-                      <Icon name="check" size={11}/>
-                      <span className="mono">{new Date(sig.signedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</span>
-                    </div>
-                  ) : canSign ? (
-                    <button className="btn btn-sm rar-sig-btn" onClick={() => onSignoff(s.id)}>
-                      Sign as {s.role}
-                    </button>
-                  ) : (
-                    <span className="rar-sig-pending mono">Blocked</span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                );
+              })}
+            </div>
+          )}
+
+          {wasAdjusted && (
+            <div className="rar-row-detail">
+              <div className="rar-detail-rationale">
+                <div className="rar-detail-label mono">RATIONALE — {approval.adjustedBy || "Auditor"} · {approval.adjustedAt ? new Date(approval.adjustedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}) : "—"}</div>
+                <div className="rar-detail-text">{approval.rationale}</div>
+              </div>
+              <div style={{display: "flex", flexDirection: "column", gap: 6, borderLeft: "1px solid var(--line)", paddingLeft: 16}}>
+                <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.07em"}}>REVIEW STATUS</div>
+                {status === "submitted" && (
+                  <div style={{fontSize: 11.5, color: "var(--amber-ink)"}}>Awaiting review from {approval.managerName || "your manager"}.</div>
+                )}
+                {status === "manager_approved" && (
+                  <div style={{fontSize: 11.5, color: "var(--green-ink)"}}>
+                    Approved by {approval.reviewerName || "manager"}{approval.reviewedAt ? ` at ${new Date(approval.reviewedAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}` : ""}.
+                  </div>
+                )}
+                {status === "rejected" && (
+                  <div style={{fontSize: 11.5, color: "var(--red-ink)"}}>
+                    Rejected by {approval.reviewerName || "manager"}{approval.reviewComment ? `: "${approval.reviewComment}"` : "."}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
-    </div>
+    </Clickable>
   );
 }
 
 // ----------- Adjust Risk Modal -----------
-function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, onSubmit }) {
+function AdjustRiskModal({ open, risk, risks = [], ticker, runId, narrativeResult, onClose, onSubmit }) {
+  const NEW_NAME = "__new_risk_name__";
+  const [customName, setCustomName] = useState(!!risk?._isNew);
+  const [name, setName] = useState(risk?._isNew ? "" : (risk?.name || ""));
+  const [category, setCategory] = useState(risk?.category || "");
   const [rag, setRag] = useState(risk?.rag || "A");
   const [score, setScore] = useState(risk?.score ?? 5);
   const [velocity, setVelocity] = useState(risk?.velocity ?? 0);
@@ -306,6 +334,10 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
 
   useEffect(() => {
     if (open && risk) {
+      // A freshly added risk starts in free-text mode with an empty name.
+      setCustomName(!!risk._isNew);
+      setName(risk._isNew ? "" : (risk.name || ""));
+      setCategory(risk.category || "");
       setRag(risk.rag);
       setScore(risk.score);
       setVelocity(risk.velocity);
@@ -342,40 +374,111 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
 
   if (!open || !risk) return null;
 
-  const changed = rag !== risk.rag || score !== risk.score || velocity !== risk.velocity || ce !== risk.ce;
-  const valid = changed && rationale.trim().length >= 30;
+  const frameworkRisks = window.FW_MOCK_RISKS || {};
+  const fwRiskByName = {};
+  Object.values(frameworkRisks).flat().forEach(r => { fwRiskByName[r.name] = r; });
+
+  const categoryOptions = [...new Set([
+    risk.category,
+    ...risks.map(r => r.category),
+    ...Object.values(frameworkRisks).flat().map(r => r.category),
+  ].filter(Boolean))].sort();
+
+  function handleNameSelect(newName) {
+    setName(newName);
+    const match = fwRiskByName[newName];
+    if (match) setCategory(match.category);
+  }
+
+  const nameValid = name.trim().length > 0;
+  // Tracked for the "was X" diff indicators below, not required to submit — a
+  // written rationale on its own is sufficient grounds for Adjust (an auditor may
+  // want to formally document/reaffirm a risk's disposition without moving its
+  // score, distinct from a quick "Approve as scored").
+  const changed = rag !== risk.rag || score !== risk.score || velocity !== risk.velocity || ce !== risk.ce
+    || name.trim() !== (risk.name || "") || category.trim() !== (risk.category || "")
+    || !!aiState.reco;
+  const valid = rationale.trim().length >= 30 && nameValid;
+
+  // Normalized to the same keys as the submitted adjustments, so the backend
+  // can tell whether the preparer kept the AI's suggestion or overrode it —
+  // see approval_tasks.ai_suggested / ai_accepted.
+  const aiSuggestedFields = aiState.reco ? {
+    ...(aiState.reco.suggested_rag != null      ? { rag: aiState.reco.suggested_rag } : {}),
+    ...(aiState.reco.suggested_score != null    ? { score: aiState.reco.suggested_score } : {}),
+    ...(aiState.reco.suggested_velocity != null ? { velocity: aiState.reco.suggested_velocity } : {}),
+    ...(aiState.reco.suggested_ce != null       ? { ce: aiState.reco.suggested_ce } : {}),
+  } : null;
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
-      <div className="modal-box" style={{width: 640}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Adjust Risk · {risk.id}</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>
-              {risk.name} · {risk.category}
-            </div>
-          </div>
-          <div style={{display: "flex", alignItems: "center", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
-                title="Draft a disposition with Claude — review and override as needed">
-                <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
-              </button>
-            )}
-            <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-          </div>
+    <Modal open={open} onClose={onClose} title={`Adjust Risk · ${risk.id}`} width={640}
+      titleSub={`${risk.name} · ${risk.category}`}
+      headerActions={aiAvailable && (
+        <button className="btn btn-sm" onClick={runAiSuggest} disabled={aiState.loading}
+          title="Draft a disposition with Claude — review and override as needed">
+          <Icon name="spark" size={11}/> {aiState.loading ? "Analyzing…" : "Suggest with AI"}
+        </button>
+      )}
+      foot={<>
+        <span className="muted mono" style={{fontSize: 11}}>
+          {valid ? "Submitting routes to your manager for review" : "Write a rationale (min 30 characters) to continue"}
+        </span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid}
+            onClick={() => onSubmit({ name: name.trim(), category: category.trim(), rag, score, velocity, ce, rationale: rationale.trim(), ai_suggested: aiSuggestedFields })}>
+            Submit Adjustment
+          </button>
         </div>
+      </>}>
         {aiState.error && (
           <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--red-ink)"}}>
             AI suggestion unavailable: {aiState.error}
           </div>
         )}
         {aiState.reco && (
-          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)"}}>
-            AI recommends: <b>{aiState.reco.recommendation}</b> · {aiState.reco.confidence} confidence — fields pre-filled below, edit freely.
+          <div className="mono" style={{padding: "4px 16px", fontSize: 10.5, color: "var(--acc-ink)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap"}}>
+            <span>AI recommends: <b>{aiState.reco.recommendation}</b> — fields pre-filled below, edit freely.</span>
+            <ProvenanceChip verdict={aiState.reco.recommendation} confidence={aiState.reco.confidence} />
           </div>
         )}
-        <div className="modal-body">
+          <div className="ar-field" style={{marginBottom: 14, display: "flex", gap: 12}}>
+            <div style={{flex: 2}}>
+              <label className="ar-label">Risk Name</label>
+              <select value={customName ? NEW_NAME : name}
+                onChange={e => {
+                  if (e.target.value === NEW_NAME) { setCustomName(true); setName(""); }
+                  else { setCustomName(false); handleNameSelect(e.target.value); }
+                }} className="fi-input">
+                <option value={NEW_NAME}>+ Add new risk name…</option>
+                <optgroup label="Current">
+                  <option value={risk.name}>{risk.name}</option>
+                </optgroup>
+                {Object.entries(frameworkRisks).map(([fw, list]) => (
+                  <optgroup key={fw} label={fw}>
+                    {list.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              {customName && (
+                <input className="fi-input" autoFocus value={name} style={{marginTop: 6}}
+                  placeholder="Type the new risk name"
+                  onChange={e => setName(e.target.value)} />
+              )}
+              {risk._isNew ? (
+                <div className="ar-orig mono">New risk — pick a name and set a real score below</div>
+              ) : (
+                <div className="ar-orig mono">Original: {risk.name}</div>
+              )}
+            </div>
+            <div style={{flex: 1}}>
+              <label className="ar-label">Category</label>
+              <select value={category} onChange={e => setCategory(e.target.value)} className="fi-input">
+                {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+
           <div className="ar-grid">
             <div className="ar-field">
               <label className="ar-label">RAG Band</label>
@@ -393,7 +496,7 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
 
             <div className="ar-field">
               <label className="ar-label">Score <span className="mono ar-val">{fmt2(score)}</span></label>
-              <input type="range" min="0" max="10" step="0.1" value={score}
+              <input type="range" min="0" max="25" step="0.1" value={Number.isFinite(Number(score)) ? Number(score) : 0}
                 onChange={e => setScore(parseFloat(e.target.value))} className="ar-slider"/>
               <div className="ar-orig mono">AI scored: {fmt2(risk.score)}</div>
             </div>
@@ -429,7 +532,7 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
 
           <div className="ar-rationale">
             <label className="ar-label">
-              Rationale <span className="muted">· captured verbatim into audit trail, sent to CAE, CFO, Audit Committee</span>
+              Rationale <span className="muted">· captured verbatim into audit trail, routed to your manager for review</span>
             </label>
             <textarea className="fi-ta" value={rationale}
               onChange={e => setRationale(e.target.value)}
@@ -439,44 +542,16 @@ function AdjustRiskModal({ open, risk, ticker, runId, narrativeResult, onClose, 
               <span style={{color: rationale.trim().length >= 30 ? "var(--green-ink)" : "var(--ink-3)"}}>
                 {rationale.trim().length} / 30 chars
               </span>
-              {!changed && <span className="muted">· no changes made yet</span>}
+              {!changed && rationale.trim().length >= 30 && <span className="muted">· reaffirming as scored, with rationale on file</span>}
             </div>
           </div>
 
-          <div className="ar-signoff-preview">
-            <div className="rar-detail-label mono">SIGN-OFF ROUTING ON SUBMIT</div>
-            <div className="ar-chain">
-              {SIGNOFFS.map((s, i) => (
-                <React.Fragment key={s.id}>
-                  <div className="ar-chain-node">
-                    <div className="ar-chain-num mono">{i+1}</div>
-                    <div>
-                      <div className="ar-chain-role">{s.role}</div>
-                      <div className="ar-chain-who mono">{s.who}</div>
-                    </div>
-                  </div>
-                  {i < SIGNOFFS.length - 1 && <div className="ar-chain-arrow">→</div>}
-                </React.Fragment>
-              ))}
-            </div>
+          <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", padding: "8px 10px", background: "var(--surface-2, var(--surface))", borderRadius: 6, border: "1px solid var(--line)"}}>
+            This adjustment will be submitted to your manager for review. If you have no manager configured (set one from the header user menu), it is auto-approved so the workflow still completes.
           </div>
-        </div>
-        <div className="modal-foot">
-          <span className="muted mono" style={{fontSize: 11}}>
-            {changed ? "Submitting routes for 3-step sign-off" : "Adjust at least one field to continue"}
-          </span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({ rag, score, velocity, ce, rationale: rationale.trim() })}>
-              Submit Adjustment
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
-Object.assign(window, { RiskApprovalReview, AdjustRiskModal, SIGNOFFS });
-export { RiskApprovalReview, AdjustRiskModal, SIGNOFFS };
+Object.assign(window, { RiskApprovalReview, AdjustRiskModal });
+export { RiskApprovalReview, AdjustRiskModal };

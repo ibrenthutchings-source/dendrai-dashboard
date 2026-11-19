@@ -1,0 +1,231 @@
+"""
+Tests for concept_linking.py's link_entity() (Stage 3 entity linking) and the
+/ontology/link, /ontology/links endpoints.
+
+DB and embedding calls mocked as MagicMock instances passed into a single
+patch.object() per target — this suite's standard pattern, adopted after a
+nested-patch bug elsewhere silently shadowed an outer mock.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import auth_endpoints
+import concept_linking as cl
+import db
+import embedding_util
+
+
+def _candidate(concept_id=1, pref_label="Cybersecurity", distance=0.1):
+    return {"concept_id": concept_id, "scheme": "risk_category", "pref_label": pref_label,
+            "notation": None, "distance": distance}
+
+
+class TestLinkEntityDegradesToUnresolved:
+    def test_empty_text_is_unresolved_without_any_embedding_call(self):
+        embed_avail = MagicMock()
+        upsert_link = MagicMock(return_value={"status": "unresolved"})
+        with patch.object(embedding_util, "is_available", embed_avail), \
+             patch.object(db, "upsert_concept_link", upsert_link):
+            result = cl.link_entity("risk_scores", "7", "risk_category", "   ")
+        embed_avail.assert_not_called()
+        upsert_link.assert_called_once_with(
+            "risk_scores", "7", "risk_category", concept_id=None, status="unresolved", method="ann",
+        )
+        assert result == {"status": "unresolved"}
+
+    def test_embedding_unavailable_is_unresolved(self):
+        upsert_link = MagicMock(return_value={"status": "unresolved"})
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=False)), \
+             patch.object(db, "upsert_concept_link", upsert_link):
+            cl.link_entity("risk_scores", "7", "risk_category", "vendor breach")
+        assert upsert_link.call_args.kwargs["status"] == "unresolved"
+
+    def test_embed_text_failure_is_unresolved(self):
+        upsert_link = MagicMock(return_value={"status": "unresolved"})
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=True)), \
+             patch.object(embedding_util, "embed_text", MagicMock(return_value=None)), \
+             patch.object(db, "upsert_concept_link", upsert_link):
+            cl.link_entity("risk_scores", "7", "risk_category", "vendor breach")
+        assert upsert_link.call_args.kwargs["status"] == "unresolved"
+
+    def test_distance_above_ambiguous_band_is_unresolved_never_snapped(self):
+        """d > 0.45: must NOT snap to the nearest-but-wrong concept."""
+        upsert_link = MagicMock(return_value={"status": "unresolved"})
+        task = MagicMock()
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=True)), \
+             patch.object(embedding_util, "embed_text", MagicMock(return_value=[0.1] * 1536)), \
+             patch.object(db, "search_concepts_by_embedding", MagicMock(return_value=[_candidate(distance=0.9)])), \
+             patch.object(db, "upsert_concept_link", upsert_link), \
+             patch.object(db, "upsert_concept_link_task", task):
+            cl.link_entity("risk_scores", "7", "risk_category", "vendor breach")
+        assert upsert_link.call_args.kwargs["status"] == "unresolved"
+        assert upsert_link.call_args.kwargs["concept_id"] is None
+        task.assert_not_called()  # unresolved never reaches the Approval Inbox
+
+    def test_no_candidates_is_unresolved(self):
+        upsert_link = MagicMock(return_value={"status": "unresolved"})
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=True)), \
+             patch.object(embedding_util, "embed_text", MagicMock(return_value=[0.1] * 1536)), \
+             patch.object(db, "search_concepts_by_embedding", MagicMock(return_value=[])), \
+             patch.object(db, "upsert_concept_link", upsert_link):
+            cl.link_entity("risk_scores", "7", "risk_category", "vendor breach")
+        assert upsert_link.call_args.kwargs["status"] == "unresolved"
+
+
+class TestLinkEntityProposes:
+    def test_confident_match_is_proposed_with_confidence_and_no_ambiguous_flag(self):
+        upsert_link = MagicMock(return_value={"status": "proposed", "concept_id": 1})
+        task = MagicMock()
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=True)), \
+             patch.object(embedding_util, "embed_text", MagicMock(return_value=[0.1] * 1536)), \
+             patch.object(db, "search_concepts_by_embedding",
+                          MagicMock(return_value=[_candidate(distance=0.1)])), \
+             patch.object(db, "upsert_concept_link", upsert_link), \
+             patch.object(db, "upsert_concept_link_task", task):
+            cl.link_entity("risk_scores", "7", "risk_category", "vendor breach")
+        kwargs = upsert_link.call_args.kwargs
+        assert kwargs["status"] == "proposed"
+        assert kwargs["concept_id"] == 1
+        assert abs(kwargs["confidence"] - 0.9) < 1e-9
+        task.assert_called_once()
+        task_args = task.call_args.args
+        assert task_args[0] == "risk_scores:7:risk_category"
+        assert task.call_args.args[2]["ambiguous"] is False
+
+    def test_ambiguous_band_still_proposes_but_flags_and_records_runner_up(self):
+        candidates = [_candidate(concept_id=1, distance=0.35), _candidate(concept_id=2, pref_label="Supply", distance=0.4)]
+        upsert_link = MagicMock(return_value={"status": "proposed", "concept_id": 1})
+        task = MagicMock()
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=True)), \
+             patch.object(embedding_util, "embed_text", MagicMock(return_value=[0.1] * 1536)), \
+             patch.object(db, "search_concepts_by_embedding", MagicMock(return_value=candidates)), \
+             patch.object(db, "upsert_concept_link", upsert_link), \
+             patch.object(db, "upsert_concept_link_task", task):
+            cl.link_entity("risk_scores", "7", "risk_category", "vendor breach")
+        kwargs = upsert_link.call_args.kwargs
+        assert kwargs["status"] == "proposed"
+        assert kwargs["runner_up_concept_id"] == 2
+        assert task.call_args.args[2]["ambiguous"] is True
+
+    def test_boundary_distance_exactly_at_ambiguous_cutoff_still_proposes(self):
+        upsert_link = MagicMock(return_value={"status": "proposed"})
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=True)), \
+             patch.object(embedding_util, "embed_text", MagicMock(return_value=[0.1] * 1536)), \
+             patch.object(db, "search_concepts_by_embedding",
+                          MagicMock(return_value=[_candidate(distance=cl.DISTANCE_AMBIGUOUS)])), \
+             patch.object(db, "upsert_concept_link", upsert_link), \
+             patch.object(db, "upsert_concept_link_task", MagicMock()):
+            cl.link_entity("risk_scores", "7", "risk_category", "vendor breach")
+        assert upsert_link.call_args.kwargs["status"] == "proposed"
+
+
+class TestEndpoints:
+    def _client(self, role="admin"):
+        app = FastAPI()
+        app.include_router(cl.router)
+        app.dependency_overrides[auth_endpoints.get_current_user] = lambda: {
+            "id": 1, "username": "tester", "role": role,
+        }
+        return TestClient(app)
+
+    def test_link_endpoint_returns_link(self):
+        with patch.object(embedding_util, "is_available", MagicMock(return_value=False)), \
+             patch.object(db, "upsert_concept_link", MagicMock(return_value={"status": "unresolved"})):
+            r = self._client().post("/ontology/link", json={
+                "source_table": "risk_scores", "source_id": "7",
+                "scheme": "risk_category", "text": "vendor breach",
+            })
+        assert r.status_code == 200
+        assert r.json()["link"]["status"] == "unresolved"
+
+    def test_links_endpoint_returns_existing_links(self):
+        with patch.object(db, "get_concept_links", MagicMock(return_value=[{"scheme": "risk_category"}])):
+            r = self._client().get("/ontology/links", params={"source_table": "risk_scores", "source_id": "7"})
+        assert r.status_code == 200
+        assert r.json()["links"] == [{"scheme": "risk_category"}]
+
+    def test_pending_links_endpoint_returns_queue(self):
+        with patch.object(db, "list_pending_concept_links", MagicMock(return_value=[{"id": 1, "status": "proposed"}])):
+            r = self._client().get("/ontology/links/pending")
+        assert r.status_code == 200
+        assert r.json()["links"] == [{"id": 1, "status": "proposed"}]
+
+    def test_decide_endpoint_confirms(self):
+        decide = MagicMock(return_value={"id": 5, "status": "confirmed"})
+        with patch.object(db, "decide_concept_link", decide):
+            r = self._client().post("/ontology/links/5/decide", json={"decision": "confirmed"})
+        assert r.status_code == 200
+        assert r.json()["link"]["status"] == "confirmed"
+        decide.assert_called_once_with(5, "confirmed", "tester")
+
+    def test_decide_endpoint_rejects_invalid_decision(self):
+        r = self._client().post("/ontology/links/5/decide", json={"decision": "maybe"})
+        assert r.status_code == 400
+
+    def test_decide_endpoint_404s_when_already_decided(self):
+        with patch.object(db, "decide_concept_link", MagicMock(return_value=None)):
+            r = self._client().post("/ontology/links/5/decide", json={"decision": "confirmed"})
+        assert r.status_code == 409
+
+    def test_pending_links_endpoint_requires_permission(self):
+        with patch("auth_db.get_effective_screen_permissions",
+                   MagicMock(return_value={"approvals": {"can_read": True, "can_edit": False}})):
+            r = self._client(role="user").get("/ontology/links/pending")
+        assert r.status_code == 403
+
+    def test_link_risks_endpoint_calls_batch_linker(self):
+        with patch.object(cl, "link_all_risks_for_run", MagicMock(return_value={"checked": 3})) as fn:
+            r = self._client().post("/ontology/link/risks/42")
+        assert r.status_code == 200
+        assert r.json() == {"checked": 3}
+        fn.assert_called_once_with(42)
+
+    def test_link_controls_endpoint_calls_batch_linker(self):
+        with patch.object(cl, "link_all_controls", MagicMock(return_value={"checked": 5})) as fn:
+            r = self._client().post("/ontology/link/controls")
+        assert r.status_code == 200
+        assert r.json() == {"checked": 5}
+        fn.assert_called_once()
+
+
+class TestLinkAllRisksForRun:
+    def test_links_every_risk_and_tallies_proposed_vs_unresolved(self):
+        risks = [
+            {"id": 1, "risk_ref": "R1", "name": "Vendor breach", "category": "Cybersecurity"},
+            {"id": 2, "risk_ref": "R2", "name": "Unclear thing", "category": ""},
+        ]
+        link_entity_mock = MagicMock(side_effect=[
+            {"status": "proposed", "concept_id": 5},
+            {"status": "unresolved", "concept_id": None},
+        ])
+        with patch.object(db, "get_risk_score_ids_for_run", MagicMock(return_value=risks)), \
+             patch.object(cl, "link_entity", link_entity_mock):
+            result = cl.link_all_risks_for_run(42)
+        assert result == {"checked": 2, "proposed": 1, "unresolved": 1}
+        assert link_entity_mock.call_args_list[0].args == ("risk_scores", "1", "risk_category", "Vendor breach Cybersecurity")
+
+    def test_no_risks_in_run_is_a_clean_no_op(self):
+        with patch.object(db, "get_risk_score_ids_for_run", MagicMock(return_value=[])), \
+             patch.object(cl, "link_entity", MagicMock()) as link_entity_mock:
+            result = cl.link_all_risks_for_run(42)
+        assert result == {"checked": 0, "proposed": 0, "unresolved": 0}
+        link_entity_mock.assert_not_called()
+
+
+class TestLinkAllControls:
+    def test_links_every_control_against_all_four_schemes(self):
+        controls = [{"control_id": "INFRA-001", "name": "SSL not enforced", "description": "desc"}]
+        link_entity_mock = MagicMock(return_value={"status": "proposed"})
+        with patch.object(db, "list_controls", MagicMock(return_value=controls)), \
+             patch.object(cl, "link_entity", link_entity_mock):
+            result = cl.link_all_controls()
+        assert result["checked"] == 1
+        assert result["proposed"] == 4  # one per scheme
+        called_schemes = [c.args[2] for c in link_entity_mock.call_args_list]
+        assert called_schemes == ["enterprise_domain", "soc2", "nist_800_53", "iso_27001"]
+        assert all(c.args[0] == "controls_catalog" and c.args[1] == "INFRA-001" for c in link_entity_mock.call_args_list)

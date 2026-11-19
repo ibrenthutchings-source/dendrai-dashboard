@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — RSS Ingestion + Grading Engine
+   Dendrai Intelligenza — RSS Ingestion + Grading Engine
    Fetch → parse → keyword-relevance grade → velocity delta
 
    Fetch path:
@@ -17,16 +17,13 @@
 window.RSS_ENGINE = (function () {
 
   // ── Feed registry ─────────────────────────────────────────
+  // bis and epa were removed 2026-09-19 — both source sites now block
+  // non-browser requests (bis.gov dropped RSS entirely; EPA's feed builder
+  // is behind an AWS WAF bot-challenge, same as the federalregister.gov
+  // fallback below used to hit). Not fixable by URL swap; see
+  // rss_ingest_service.py's FEEDS for the full writeup. This is only the
+  // fallback used when the live /api/mcp/rss/feeds fetch fails.
   const FEEDS = [
-    {
-      id: "bis",
-      name: "BIS Export Controls",
-      url: "https://www.bis.doc.gov/index.php/2013-01-17-21-19-53/2013-01-17-21-20-34.xml",
-      domains: ["Trade Compliance"],
-      risks: ["R-02"],
-      weight: 1.5,
-      icon: "shield",
-    },
     {
       id: "cisa",
       name: "CISA ICS Advisories",
@@ -57,15 +54,6 @@ window.RSS_ENGINE = (function () {
       risks: ["R-09"],
       weight: 0.9,
       icon: "trend",
-    },
-    {
-      id: "epa",
-      name: "EPA Climate Enforcement",
-      url: "https://www.federalregister.gov/agencies/environmental-protection-agency.rss",
-      domains: ["ESG"],
-      risks: ["R-07"],
-      weight: 0.8,
-      icon: "compass",
     },
   ];
 
@@ -127,6 +115,21 @@ window.RSS_ENGINE = (function () {
       "climate", "esg", "water stress", "sec disclosure", "scope 3",
       "carbon", "emission", "sustainability", "drought", "physical risk",
       "transition risk", "tcfd", "arizona", "fab water",
+      "climate-related disclosure", "climate disclosure", "sb 253", "sb 261",
+      "csrd", "esrs", "issb", "greenwashing", "sustainability reporting",
+      "greenhouse gas", "ghg",
+    ],
+    // Substring matching (see scoreRelevance): multi-word terms only, since
+    // a short token like "ai" would match inside "said"/"maintain".
+    "AI": [
+      "artificial intelligence", "machine learning", "generative ai", "ai washing",
+      "ai act", "high-risk ai", "foundation model", "large language model",
+      "algorithmic", "automated decision", "ai system", "chatbot", "deepfake",
+    ],
+    "Privacy": [
+      "gdpr", "ccpa", "cpra", "hipaa", "privacy", "data protection",
+      "personal data", "data subject", "biometric", "breach notification",
+      "children's data",
     ],
     "Supply": [
       "conflict minerals", "rmap", "dodd-frank", "cobalt", "tantalum",
@@ -152,6 +155,8 @@ window.RSS_ENGINE = (function () {
     'Regulatory':          ['compliance', 'legal', 'regulatory', 'esg'],
     'Environmental':       ['esg', 'environmental', 'climate', 'sustainability'],
     'ESG':                 ['esg', 'environmental', 'climate', 'sustainability'],
+    'AI':                  ['ai ', 'artificial', 'algorithm', 'regulatory', 'compliance', 'technology'],
+    'Privacy':             ['privacy', 'data protection', 'cybersecurity', 'compliance', 'regulatory'],
     'Competitive':         ['competitive', 'market', 'commercial', 'operational'],
     'Operational':         ['operational', 'operations'],
   };
@@ -203,22 +208,35 @@ window.RSS_ENGINE = (function () {
     return Math.round(Math.max(0, Math.min(5, raw)));
   }
 
+  // Corporate-suffix words too generic to use as a company-name match term
+  // (e.g. matching on "group" or "inc" alone would defeat the gate entirely).
+  const _COMPANY_NAME_STOPWORDS = new Set(['corp', 'inc', 'ltd', 'llc', 'group', 'holdings']);
+
+  function _companyNameTerms(companyName) {
+    return (companyName || "").toLowerCase().split(/\W+/)
+      .filter(w => w.length >= 4 && !_COMPANY_NAME_STOPWORDS.has(w));
+  }
+
+  // Returns null (not just velocity=0) when a company-gated feed's article
+  // doesn't actually mention the subject company — an EPA enforcement release
+  // about Nike or Conagra has nothing to do with an unrelated company's risk
+  // profile and shouldn't appear in that company's feed at all, not just be
+  // down-ranked to a green/non-signal entry that still clutters the list.
   function gradeArticle(article, feed, risks = [], companyName = "") {
     const text = `${article.title || ""} ${article.description || article.summary || ""}`;
+
+    if (feed.companyGated && companyName) {
+      const terms = _companyNameTerms(companyName);
+      if (terms.length && !terms.some(term => tokenize(text).includes(term))) {
+        return null;
+      }
+    }
+
     const relevance = scoreRelevance(text, feed.domains);
     const severity  = article.severity_hint != null
       ? Math.min(1, article.severity_hint / 3)
       : scoreSeverity(text);
-    let velocity    = velocityFromScores(relevance, severity, feed.weight);
-
-    // Company-gated feeds: suppress articles that don't mention the company.
-    // CISA ICS advisories cover all vendors — only surface ones relevant to this company.
-    if (feed.companyGated && companyName) {
-      const t = tokenize(text);
-      const STOP = new Set(['corp', 'inc', 'ltd', 'llc', 'group', 'holdings']);
-      const terms = companyName.toLowerCase().split(/\W+/).filter(w => w.length >= 4 && !STOP.has(w));
-      if (terms.length && !terms.some(term => t.includes(term))) velocity = 0;
-    }
+    const velocity  = velocityFromScores(relevance, severity, feed.weight);
 
     const rag = velocity >= 3 ? "R" : velocity >= 2 ? "A" : "G";
 
@@ -380,7 +398,9 @@ window.RSS_ENGINE = (function () {
         rawArticles = await fetchFeed(feed);
       }
       const fetchStatus = rawArticles ? "ok" : "failed";
-      const graded = (rawArticles || []).map(a => gradeArticle(a, feed, risks, companyName));
+      const graded = (rawArticles || [])
+        .map(a => gradeArticle(a, feed, risks, companyName))
+        .filter(Boolean); // drop company-gated articles that didn't match
       results.push({ feed, articles: graded, fetchStatus });
       onProgress?.(`${feed.name} fetched`, feed.id, true);
     }

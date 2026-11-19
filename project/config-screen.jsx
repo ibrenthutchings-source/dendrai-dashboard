@@ -122,12 +122,199 @@ function AiChatConfigCard({ aiChatCfg, setAiChatCfg }) {
   );
 }
 
+// Mirrors edgar_tool.XBRL_METRICS' keys (manual_financials_tool.py maps
+// uploaded labels onto this same taxonomy) — kept as a plain list here since
+// the frontend has no other reason to import the Python module's constants.
+const MANUAL_FINANCIALS_METRICS = [
+  "Revenue", "GrossProfit", "OperatingIncome", "NetIncome", "EPS_Basic", "EPS_Diluted",
+  "TotalAssets", "CurrentAssets", "CurrentLiabilities", "TotalLiabilities",
+  "StockholdersEquity", "RetainedEarnings", "Cash", "LongTermDebt", "OperatingCashFlow",
+  "CapEx", "Depreciation", "SharesOutstanding", "Dividends", "ResearchAndDevelopment",
+  "IncomeTaxExpense", "InterestExpense", "Inventory", "AccountsReceivable",
+];
+
+// Upload -> review -> commit, mirroring risk-register-review.jsx's Upload
+// Register tab: parse server-side, show an editable table (unmapped rows get
+// a metric dropdown instead of being silently dropped), then persist only
+// once the user confirms. See api_server.py's /financials/upload + /commit.
+function FinancialsUploadCard({ ticker }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [parsed, setParsed] = useState(null);
+  const [items, setItems] = useState([]);
+  const [saveResult, setSaveResult] = useState(null);
+  const mcpAvailable = typeof window !== "undefined" && !!window.MCP?.uploadFinancials;
+
+  async function handleFile(file) {
+    if (!file || !ticker) return;
+    setBusy(true); setErr(null); setSaveResult(null);
+    try {
+      const res = await window.MCP.uploadFinancials(ticker, file);
+      setParsed(res);
+      setItems((res.line_items || []).map((li, i) => ({ ...li, _key: i })));
+    } catch (e) {
+      setErr(e.message || "Upload failed");
+      setParsed(null);
+      setItems([]);
+    }
+    setBusy(false);
+  }
+
+  function updateItem(key, patch) {
+    setItems(prev => prev.map(li => (li._key === key ? { ...li, ...patch } : li)));
+  }
+
+  async function commit() {
+    if (!ticker || items.length === 0) return;
+    setBusy(true); setErr(null);
+    try {
+      const res = await window.MCP.commitFinancials(ticker, items);
+      setSaveResult(res);
+      setParsed(null);
+      setItems([]);
+    } catch (e) {
+      setErr(e.message || "Save failed");
+    }
+    setBusy(false);
+  }
+
+  const mappedCount = items.filter(li => li.metric).length;
+
+  return (
+    <ConfigCard title="Upload Financials"
+      sub="Supplement or substitute EDGAR data — private-company statements, trial balances, or monthly detail to fill in a quarter.">
+      {!mcpAvailable ? (
+        <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", lineHeight: 1.5}}>
+          Requires the Python bridge. Start api_server.py and reload.
+        </div>
+      ) : !ticker ? (
+        <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)"}}>Set a Company / Ticker above first.</div>
+      ) : (
+        <>
+          <label
+            htmlFor="financials-upload-input"
+            onDragOver={e => { e.preventDefault(); e.currentTarget.style.background = "var(--acc-bg,#e8f0fe)"; }}
+            onDragLeave={e => { e.currentTarget.style.background = "transparent"; }}
+            onDrop={e => {
+              e.preventDefault();
+              e.currentTarget.style.background = "transparent";
+              const f = e.dataTransfer.files?.[0];
+              if (f) handleFile(f);
+            }}
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+              border: "1px dashed var(--line)", borderRadius: 8, padding: "18px 10px",
+              cursor: "pointer", textAlign: "center",
+            }}
+          >
+            <span style={{fontSize: 16}}>↑</span>
+            <span style={{fontSize: 11.5}}>Drop a statement here, or <span style={{textDecoration: "underline"}}>browse</span></span>
+            <span className="mono" style={{fontSize: 9.5, color: "var(--ink-3)"}}>
+              .xlsx, .xls, .csv, .pdf · template or trial-balance layout
+            </span>
+            <input id="financials-upload-input" type="file" accept=".xlsx,.xls,.csv,.pdf" style={{display: "none"}}
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ""; }} />
+          </label>
+
+          {busy && <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 8}}>Working…</div>}
+          {err && <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 8}}>⚠ {err}</div>}
+          {saveResult && (
+            <div className="mono" style={{fontSize: 10.5, color: "var(--green-ink)", marginTop: 8}}>
+              ✓ Saved {saveResult.data_points_saved} data points across {saveResult.metrics_saved} metrics
+              {saveResult.segments_saved ? ` + ${saveResult.segments_saved} segment breakdown${saveResult.segments_saved === 1 ? "" : "s"}` : ""}
+              {saveResult.skipped_unmapped ? ` (${saveResult.skipped_unmapped} unmapped rows skipped)` : ""}
+            </div>
+          )}
+
+          {items.length > 0 && (
+            <div style={{marginTop: 10}}>
+              <div className="mono" style={{fontSize: 10, color: "var(--ink-3)", marginBottom: 6}}>
+                {parsed?.filename} · {parsed?.format_detected} · {items.length} rows
+                {mappedCount < items.length ? ` · ${items.length - mappedCount} need a metric assigned` : ""}
+              </div>
+              <div style={{maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 6}}>
+                <table style={{width: "100%", borderCollapse: "collapse", fontSize: 11}}>
+                  <thead>
+                    <tr style={{textAlign: "left", borderBottom: "1px solid var(--line)"}}>
+                      <th style={{padding: "5px 8px"}}>Label</th>
+                      <th style={{padding: "5px 8px"}}>Metric</th>
+                      <th style={{padding: "5px 8px"}}>Segment</th>
+                      <th style={{padding: "5px 8px"}}>Period end</th>
+                      <th style={{padding: "5px 8px"}}>Granularity</th>
+                      <th style={{padding: "5px 8px", textAlign: "right"}}>Value</th>
+                      <th style={{padding: "5px 8px"}}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map(li => (
+                      <tr key={li._key} style={{borderBottom: "1px solid var(--line)", opacity: li.metric ? 1 : 0.65}}>
+                        <td style={{padding: "5px 8px"}}>{li.raw_label}</td>
+                        <td style={{padding: "5px 8px"}}>
+                          <select className="input" style={{fontSize: 10.5, padding: "2px 4px"}}
+                            value={li.metric || ""} onChange={e => updateItem(li._key, { metric: e.target.value || null })}>
+                            <option value="">— unmapped —</option>
+                            {MANUAL_FINANCIALS_METRICS.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        </td>
+                        <td style={{padding: "5px 8px"}}>
+                          <div style={{display: "flex", gap: 3}}>
+                            <select className="input" style={{fontSize: 10.5, padding: "2px 4px", width: 70}}
+                              value={li.segment_type || ""}
+                              onChange={e => updateItem(li._key, { segment_type: e.target.value || null })}
+                              title="Operating unit dimension">
+                              <option value="">—</option>
+                              <option value="geography">geo</option>
+                              <option value="business_segment">segment</option>
+                            </select>
+                            {li.segment_type && (
+                              <input className="input" style={{fontSize: 10.5, padding: "2px 4px", width: 70}}
+                                value={li.segment_name || ""} placeholder="name"
+                                onChange={e => updateItem(li._key, { segment_name: e.target.value || null })} />
+                            )}
+                          </div>
+                        </td>
+                        <td style={{padding: "5px 8px"}} className="mono">{li.period_end}</td>
+                        <td style={{padding: "5px 8px"}}>
+                          <select className="input" style={{fontSize: 10.5, padding: "2px 4px"}}
+                            value={li.granularity} onChange={e => updateItem(li._key, { granularity: e.target.value })}>
+                            <option value="annual">annual</option>
+                            <option value="quarterly">quarterly</option>
+                            <option value="monthly">monthly</option>
+                          </select>
+                        </td>
+                        <td style={{padding: "5px 8px", textAlign: "right"}} className="mono">{li.value}</td>
+                        <td style={{padding: "5px 8px"}}>
+                          <button type="button" className="btn btn-sm btn-ghost"
+                            onClick={() => setItems(prev => prev.filter(x => x._key !== li._key))} title="Remove row">✕</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{display: "flex", gap: 6, marginTop: 8}}>
+                <button type="button" className="btn btn-sm btn-primary" style={{flex: 1}}
+                  disabled={busy || mappedCount === 0} onClick={commit}>
+                  Save {mappedCount} line item{mappedCount === 1 ? "" : "s"}
+                </button>
+                <button type="button" className="btn btn-sm" onClick={() => { setParsed(null); setItems([]); }}>Discard</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </ConfigCard>
+  );
+}
+
 function ConfigScreen({
   cfg, setCfg, signalSet, setSignalSet,
   velocity, setVelocity, hitl, setHitl,
-  liveMode, setLiveMode, mcpMode, setMcpMode, liveStatus,
+  liveMode, setLiveMode, mcpMode, setMcpMode, useDb, setUseDb, liveStatus,
   lastSaved, rssEnabledFeeds, setRssEnabledFeeds,
   aiChatCfg, setAiChatCfg,
+  colorScheme, setColorScheme,
+  accent, setAccent,
 }) {
   const focusList = Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus].filter(Boolean);
 
@@ -142,8 +329,8 @@ function ConfigScreen({
       <div className="panel-head">
         <div>
           <div className="kicker">Configuration</div>
-          <div className="panel-title mt-8">Setup</div>
-          <div className="panel-sub">Entity, signal sources, run configuration, and recurring schedule. Changes save automatically.</div>
+          <div className="panel-title mt-8">Mission Control</div>
+          <div className="panel-sub">Entity, signal sources, and run configuration. Changes save automatically. Recurring runs are provisioned from the Loop tab after your first run.</div>
         </div>
         <div className="cfg-saved mono">
           <span className="live-dot on" /> {lastSaved ? `Saved ${new Date(lastSaved).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}` : "Autosave on"}
@@ -174,6 +361,7 @@ function ConfigScreen({
               const meta = TICKER_META[cfg.ticker?.toUpperCase?.()];
               return meta ? <div className="mono" style={{fontSize:10,color:"var(--ink-3)",marginTop:3}}>{meta.name}</div> : null;
             })()}
+            <PrivateCompanyForm cfg={cfg} setCfg={setCfg} />
           </div>
           <div className="field">
             <label className="field-label">Industry</label>
@@ -190,18 +378,21 @@ function ConfigScreen({
           <div className="field" style={{marginBottom:0}}>
             <label className="field-label">Audit Period</label>
             <div style={{display:"flex", gap:6, alignItems:"center"}}>
-              <select className="input" style={{flex:1}} value={cfg.periodBegin || "Q1 2025"}
+              <select className="input" style={{flex:1}} value={cfg.periodBegin || FISCAL_QUARTERS[4].value}
                 onChange={e => setCfg({...cfg, periodBegin: e.target.value})}>
-                {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+                {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
               </select>
               <span className="mono" style={{fontSize:10,color:"var(--ink-3)",flexShrink:0}}>→</span>
-              <select className="input" style={{flex:1}} value={cfg.periodEnd || "Q4 2025"}
+              <select className="input" style={{flex:1}} value={cfg.periodEnd || FISCAL_QUARTERS[7].value}
                 onChange={e => setCfg({...cfg, periodEnd: e.target.value})}>
-                {FISCAL_QUARTERS.map(q => <option key={q} value={q}>{q}</option>)}
+                {FISCAL_QUARTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
               </select>
             </div>
           </div>
         </ConfigCard>
+
+        {/* ---- Upload Financials ---- */}
+        <FinancialsUploadCard ticker={cfg.ticker} />
 
         {/* ---- Audit Universe Focus ---- */}
         <ConfigCard title="Audit Universe Focus" sub="Risk domains in scope for this entity."
@@ -291,7 +482,7 @@ function ConfigScreen({
           </div>
 
           <div className="field">
-            <label className="field-label">HITL Gates</label>
+            <label className="field-label">Review Gates</label>
             <div className="hitl-toggle-row">
               {[
                 { k: "risk",  l: "Risk assessment" },
@@ -349,16 +540,76 @@ function ConfigScreen({
               onClick={() => { setMcpMode(true); setLiveMode(false); }} title="Use Python MCP servers (api_server.py must be running)">
               <Icon name="gear" size={11}/> MCP</button>
           </div>
+          {mcpMode && (
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:10, color:"var(--ink-4)", marginBottom:4}}>Data source when MCP is active</div>
+              <div style={{display:"flex", gap:6}}>
+                <button className={`btn btn-sm ${!useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                  onClick={() => setUseDb(false)}
+                  title="Fetch fresh data from EDGAR / FRED / APIs">
+                  <Icon name="wifi" size={11}/> Live
+                </button>
+                <button className={`btn btn-sm ${useDb ? "btn-primary" : ""}`} style={{flex:1}}
+                  onClick={() => setUseDb(true)}
+                  title="Use data already cached in PostgreSQL — faster, no external calls">
+                  <Icon name="database" size={11}/> DB Cache
+                </button>
+              </div>
+            </div>
+          )}
           <div style={{marginTop:8, fontSize:10.5, color:"var(--ink-3)", lineHeight:1.5}}>
-            {mcpMode ? (liveStatus || "Python MCP servers · start api_server.py")
+            {mcpMode
+              ? (useDb
+                  ? "Using PostgreSQL cache — no external API calls."
+                  : (liveStatus || "Fetching live from EDGAR / FRED via MCP servers."))
               : liveMode ? (liveStatus || "EDGAR via data.sec.gov · FRED snapshot bundled")
               : "Mock dataset — no external calls."}
           </div>
         </ConfigCard>
 
-        {/* ---- Recurring Schedule ---- */}
-        <ConfigCard title="Recurring Schedule" sub="Register a cloud agent to re-run the loop on a cadence.">
-          <ScheduleBuilder focusText={`Re-run Dendrai risk loop for ${cfg.ticker || "entity"}, re-score all risks, flag velocity breaches and RAG changes, post summary.`} />
+        {/* ---- Appearance ---- */}
+        <ConfigCard title="Appearance" sub="Color scheme and accent for the dashboard — saved to your account and follows you across browsers and machines.">
+          <div className="field">
+            <label className="field-label">Color scheme</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[
+                { value: "light",  label: "Light" },
+                { value: "dark",   label: "Dark" },
+                { value: "system", label: "System" },
+              ].map(opt => (
+                <button key={opt.value}
+                  className={`btn btn-sm${colorScheme === opt.value ? " btn-primary" : ""}`}
+                  style={{ flex: 1 }}
+                  onClick={() => setColorScheme(opt.value)}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 10, color: "var(--ink-3)" }}>
+              {colorScheme === "system"
+                ? "Follows your OS dark/light setting automatically."
+                : colorScheme === "dark" ? "Always uses dark theme."
+                : "Always uses light theme."}
+            </div>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="field-label">Accent color</label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[
+                { value: "emerald", label: "Emerald" },
+                { value: "indigo",  label: "Indigo" },
+                { value: "slate",   label: "Slate" },
+                { value: "forest",  label: "Dendrai Forest Green" },
+              ].map(opt => (
+                <button key={opt.value}
+                  className={`btn btn-sm${accent === opt.value ? " btn-primary" : ""}`}
+                  style={{ flex: "1 1 auto" }}
+                  onClick={() => setAccent(opt.value)}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </ConfigCard>
 
         {/* ---- AI Chat Assistant ---- */}
@@ -379,6 +630,24 @@ function InvestigationCard({ ticker }) {
   const [trace, setTrace] = useState([]); // live tool-call events
   const aiAvailable = typeof window !== "undefined" && (window.MCP?.agentInvestigateStream || window.MCP?.agentInvestigate);
   const hasStream = typeof window !== "undefined" && window.MCP?.agentInvestigateStream;
+
+  // #1b — Council investigation: financial / operational-cyber / compliance
+  // analysts run in parallel, then a synthesis pass. Separate state from the
+  // single-agent run above since the result shape (perspectives + synthesis)
+  // is different and neither run streams a shared trace.
+  const [councilState, setCouncilState] = useState({ loading: false, error: null, result: null });
+  const councilAvailable = typeof window !== "undefined" && window.MCP?.agentInvestigateCouncil;
+
+  async function runCouncil() {
+    if (!councilAvailable || !ticker) return;
+    setCouncilState({ loading: true, error: null, result: null });
+    try {
+      const res = await window.MCP.agentInvestigateCouncil(ticker, focus, null);
+      setCouncilState({ loading: false, error: null, result: res });
+    } catch (e) {
+      setCouncilState({ loading: false, error: e.message || "AI unavailable", result: null });
+    }
+  }
 
   async function run() {
     if (!aiAvailable || !ticker) return;
@@ -423,9 +692,18 @@ function InvestigationCard({ ticker }) {
           <input className="fi-input" value={focus} onChange={e => setFocus(e.target.value)}
             placeholder={`Optional focus (e.g. "margin trend", "8-K events") for ${ticker || "entity"}`}
             style={{width: "100%", marginBottom: 8, fontSize: 12}}/>
-          <button className="btn btn-sm" style={{width: "100%"}} onClick={run} disabled={state.loading || !ticker}>
-            <Icon name="spark" size={11}/> {state.loading ? "Investigating…" : "Run investigation"}
-          </button>
+          <div style={{display: "flex", gap: 6}}>
+            <button className="btn btn-sm" style={{flex: 1}} onClick={run} disabled={state.loading || !ticker}>
+              <Icon name="spark" size={11}/> {state.loading ? "Investigating…" : "Run investigation"}
+            </button>
+            {councilAvailable && (
+              <button className="btn btn-sm" style={{flex: 1}} onClick={runCouncil}
+                disabled={councilState.loading || !ticker}
+                title="3 independent analysts (financial, operational/cyber, compliance) investigate in parallel, then a synthesis pass shows where they agree vs. diverge — ~3x the cost of a single investigation.">
+                <Icon name="spark" size={11}/> {councilState.loading ? "Council investigating…" : "Run council"}
+              </button>
+            )}
+          </div>
 
           {/* Live thinking trace (streaming) */}
           {state.loading && trace.length > 0 && (
@@ -462,6 +740,67 @@ function InvestigationCard({ ticker }) {
                 maxHeight: 360, overflowY: "auto"}}>
                 {state.result.final_text}
               </div>
+            </div>
+          )}
+
+          {councilState.loading && (
+            <div style={{marginTop: 8, display: "flex", gap: 6, alignItems: "center"}}>
+              <span className="spin" style={{width: 10, height: 10, borderWidth: 1.5}}/>
+              <span style={{fontSize: 10.5, color: "var(--ink-3)"}}>3 analysts investigating in parallel…</span>
+            </div>
+          )}
+          {councilState.error && (
+            <div className="mono" style={{fontSize: 10.5, color: "var(--red-ink)", marginTop: 8}}>
+              {councilState.error}
+            </div>
+          )}
+          {councilState.result && (
+            <div style={{marginTop: 10}}>
+              <div style={{fontSize: 12.5, fontWeight: 500, marginBottom: 8}}>
+                {councilState.result.synthesis?.headline}
+              </div>
+
+              {(councilState.result.synthesis?.convergent_findings || []).length > 0 && (
+                <div style={{marginBottom: 10}}>
+                  <div className="mono" style={{fontSize: 9.5, color: "var(--green-ink)", letterSpacing: "0.06em", marginBottom: 4}}>
+                    CONVERGENT — flagged independently by multiple analysts
+                  </div>
+                  {councilState.result.synthesis.convergent_findings.map((f, i) => (
+                    <div key={i} style={{fontSize: 11.5, color: "var(--ink-2)", padding: "4px 0", borderBottom: "1px solid var(--line)"}}>
+                      {f.finding}
+                      <div className="mono" style={{fontSize: 9.5, color: "var(--ink-3)", marginTop: 2}}>{(f.perspectives || []).join(" + ")}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(councilState.result.synthesis?.divergent_findings || []).length > 0 && (
+                <div style={{marginBottom: 10}}>
+                  <div className="mono" style={{fontSize: 9.5, color: "var(--amber-ink)", letterSpacing: "0.06em", marginBottom: 4}}>
+                    SINGLE-ANALYST — not cross-validated, still worth noting
+                  </div>
+                  {councilState.result.synthesis.divergent_findings.map((f, i) => (
+                    <div key={i} style={{fontSize: 11.5, color: "var(--ink-2)", padding: "4px 0", borderBottom: "1px solid var(--line)"}}>
+                      {f.finding}
+                      <div className="mono" style={{fontSize: 9.5, color: "var(--ink-3)", marginTop: 2}}>{f.perspective}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mono" style={{fontSize: 9.5, color: "var(--ink-4)", letterSpacing: "0.06em", margin: "10px 0 4px"}}>
+                FULL MEMOS BY PERSPECTIVE
+              </div>
+              {(councilState.result.perspectives || []).map(p => (
+                <div key={p.key} style={{marginBottom: 8}}>
+                  <div style={{fontSize: 11, fontWeight: 500, color: "var(--ink-3)", marginBottom: 3}}>{p.label}</div>
+                  <div style={{whiteSpace: "pre-wrap", fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.6,
+                    background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px",
+                    maxHeight: 220, overflowY: "auto"}}>
+                    {p.memo}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </>

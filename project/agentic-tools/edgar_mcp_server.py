@@ -42,9 +42,13 @@ import json
 import os
 import sys
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+load_dotenv()
+
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import audit_log, check_rate_limit, sanitize_external, validate_int_range, validate_ticker
 from edgar_tool import (
     annotate_8k,
     extract_proxy_sections,
@@ -69,6 +73,9 @@ def edgar_company_info(ticker: str) -> str:
     fiscal year end, exchanges, phone, and business address for a public company.
     """
     try:
+        check_rate_limit("edgar_company_info")
+        ticker = validate_ticker(ticker)
+        audit_log("edgar_company_info", ticker=ticker)
         meta, _ = get_company_info(ticker)
         return json.dumps(meta, indent=2)
     except ValueError as e:
@@ -88,6 +95,9 @@ def edgar_financial_metrics(ticker: str) -> str:
     Each metric includes quarterly and annual data points with period dates.
     """
     try:
+        check_rate_limit("edgar_financial_metrics")
+        ticker = validate_ticker(ticker)
+        audit_log("edgar_financial_metrics", ticker=ticker)
         meta, _ = get_company_info(ticker)
         xbrl = fetch_xbrl_facts(meta["cik"])
         return json.dumps(xbrl, indent=2)
@@ -102,6 +112,10 @@ def edgar_risk_factors(ticker: str, max_filings: int = 2) -> str:
     reports. max_filings sets how many years to fetch (default 2, max 5).
     """
     try:
+        check_rate_limit("edgar_risk_factors", max_per_minute=10)
+        ticker = validate_ticker(ticker)
+        max_filings = validate_int_range(max_filings, 1, 5, "max_filings")
+        audit_log("edgar_risk_factors", ticker=ticker, max_filings=max_filings)
         meta, sub = get_company_info(ticker)
         filings = parse_filings(sub, {"10-K"})["10-K"][:max_filings]
         results = []
@@ -111,7 +125,7 @@ def edgar_risk_factors(ticker: str, max_filings: int = 2) -> str:
             results.append({
                 "filing_date": f["date"],
                 "accession_number": f["accession_number"],
-                "risk_factors": risks[:30_000],
+                "risk_factors": sanitize_external(risks, max_len=30_000, source=f"SEC 10-K {f['date']}"),
                 "word_count": len(risks.split()) if risks else 0,
             })
         return json.dumps(results, indent=2)
@@ -127,6 +141,10 @@ def edgar_proxy_data(ticker: str, max_filings: int = 2) -> str:
     proposals. max_filings sets how many years to fetch (default 2, max 5).
     """
     try:
+        check_rate_limit("edgar_proxy_data", max_per_minute=10)
+        ticker = validate_ticker(ticker)
+        max_filings = validate_int_range(max_filings, 1, 5, "max_filings")
+        audit_log("edgar_proxy_data", ticker=ticker, max_filings=max_filings)
         meta, sub = get_company_info(ticker)
         filings = parse_filings(sub, {"DEF 14A"})["DEF 14A"][:max_filings]
         results = []
@@ -136,7 +154,10 @@ def edgar_proxy_data(ticker: str, max_filings: int = 2) -> str:
             results.append({
                 "filing_date": f["date"],
                 "accession_number": f["accession_number"],
-                "sections": {k: v[:15_000] for k, v in sections.items()},
+                "sections": {
+                    k: sanitize_external(v, max_len=15_000, source=f"SEC DEF14A {f['date']}")
+                    for k, v in sections.items()
+                },
             })
         return json.dumps(results, indent=2)
     except Exception as e:
@@ -151,6 +172,9 @@ def edgar_filings_index(ticker: str) -> str:
     (e.g. "Results of Operations", "Departure of Director").
     """
     try:
+        check_rate_limit("edgar_filings_index")
+        ticker = validate_ticker(ticker)
+        audit_log("edgar_filings_index", ticker=ticker)
         meta, sub = get_company_info(ticker)
         filing_map = parse_filings(sub, {"10-K", "10-Q", "8-K", "DEF 14A"})
         filing_map["8-K"] = [annotate_8k(dict(f)) for f in filing_map["8-K"]]
@@ -178,6 +202,10 @@ def edgar_sic_peers(ticker: str, max_peers: int = 20) -> str:
     max_peers controls how many peers to return (default 20, max ~100).
     """
     try:
+        check_rate_limit("edgar_sic_peers")
+        ticker = validate_ticker(ticker)
+        max_peers = validate_int_range(max_peers, 1, 100, "max_peers")
+        audit_log("edgar_sic_peers", ticker=ticker, max_peers=max_peers)
         meta, _ = get_company_info(ticker)
         sic = meta.get("sic", "")
         if not sic:
@@ -209,6 +237,10 @@ def edgar_peer_financials(ticker: str, max_peers: int = 10) -> str:
     max_peers sets how many peers to process (default 10).
     """
     try:
+        check_rate_limit("edgar_peer_financials", max_per_minute=5)
+        ticker = validate_ticker(ticker)
+        max_peers = validate_int_range(max_peers, 1, 20, "max_peers")
+        audit_log("edgar_peer_financials", ticker=ticker, max_peers=max_peers)
         meta, _ = get_company_info(ticker)
         sic = meta.get("sic", "")
         if not sic:

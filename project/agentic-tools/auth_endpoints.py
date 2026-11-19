@@ -1,0 +1,1092 @@
+#!/usr/bin/env python3
+"""
+auth_endpoints.py — FastAPI authentication router.
+
+Routes
+------
+POST /auth/login                   Local username + password
+POST /auth/logout                  Revoke session cookie
+POST /auth/touch                   Record activity, resetting the idle timeout
+GET  /auth/me                      Current user info
+POST /auth/change-password         Change own password (with history check)
+GET  /auth/sso/providers           List enabled SSO providers
+GET  /auth/sso/{provider}/start    Redirect to provider OAuth screen
+GET  /auth/sso/{provider}/callback Handle OAuth callback + JIT provisioning
+GET  /auth/users                   List active accounts (manager picker)
+PUT  /auth/users/me/manager        Self-service manager assignment
+GET  /auth/admin/users             List all accounts, admin only
+POST /auth/admin/users             Create a user (manual or generated password), admin only
+PUT  /auth/admin/users/{id}          Update a user's email/display name, admin only
+PUT  /auth/admin/users/{id}/manager  Set any user's manager, admin only
+PUT  /auth/admin/users/{id}/role     Promote/demote a user, admin only
+PUT  /auth/admin/users/{id}/active   Activate/deactivate a user, admin only
+PUT  /auth/admin/users/{id}/password Set/reset a user's password (manual or generated), admin only
+DELETE /auth/admin/users/{id}        Permanently remove a user, admin only
+GET  /auth/admin/screen-permissions/{user_id}  Get a user's screen access matrix (override layer), admin only
+PUT  /auth/admin/screen-permissions/{user_id}  Replace a user's screen access matrix (override layer), admin only
+GET  /auth/admin/roles                         List roles, admin only
+POST /auth/admin/roles                         Create a role, admin only
+PUT  /auth/admin/roles/{id}                    Update a role's description, admin only
+DELETE /auth/admin/roles/{id}                  Delete a role (blocked if system role or has assigned users), admin only
+GET  /auth/admin/roles/{id}/permissions        Get a role's default screen permissions, admin only
+PUT  /auth/admin/roles/{id}/permissions        Replace a role's default screen permissions, admin only
+GET  /auth/admin/audit-log                     Tamper-evident identity/access audit trail, admin only
+GET  /auth/admin/audit-log/verify              Verify the audit trail's hash chain, admin only
+
+Dependencies (pip install):
+    passlib[bcrypt]     password hashing
+    PyJWT               JWT encode/decode
+    httpx               async HTTP for SSO token exchange
+"""
+from __future__ import annotations
+
+import contextvars
+import hashlib
+import logging
+import os
+import re
+import secrets
+import string
+import time
+import uuid
+from base64 import urlsafe_b64encode
+from collections import defaultdict, deque
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, Optional
+
+import httpx
+
+import claude_client
+from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
+
+import auth_db
+import db
+
+logger = logging.getLogger("auth.endpoints")
+
+
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """Real client IP behind nginx's reverse proxy. uvicorn binds to
+    127.0.0.1 (see project/start.sh) and is only ever reached via nginx on
+    the loopback interface — request.client.host is therefore ALWAYS
+    "127.0.0.1" in production, regardless of who the real caller is.
+    project/nginx.conf's /auth/ location already sets X-Forwarded-For /
+    X-Real-IP correctly on every request; this reads that instead, so the
+    login rate limiter (_rate_check) and the audit/session IP fields
+    reflect the actual caller rather than colliding every visitor into one
+    shared "127.0.0.1" bucket. Falls back to request.client.host for local
+    dev, where uvicorn is often run directly with no proxy in front."""
+    if not request:
+        return None
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def _audit(action: str, actor: Optional[str], target: Optional[str] = None,
+           detail: Optional[dict] = None, request: Optional[Request] = None) -> None:
+    """Record an identity/access event to the tamper-evident audit trail
+    (observability.audit_log — see db.py). Never raises: an audit-logging
+    failure must not block the login/admin action it's recording."""
+    ip = _client_ip(request)
+    try:
+        db.insert_audit_log_entry("auth", action, actor=actor, target=target, detail=detail, ip_address=ip)
+    except Exception as exc:
+        logger.warning("audit log write failed for action=%s: %s", action, exc)
+
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+# ── Optional deps — degrade gracefully ───────────────────────────────────────
+
+try:
+    from passlib.context import CryptContext
+    _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    _HAS_PASSLIB = True
+except ImportError:
+    _pwd_ctx = None  # type: ignore[assignment]
+    _HAS_PASSLIB = False
+    logger.warning("passlib not installed — local login disabled. pip install passlib[bcrypt]")
+
+try:
+    import jwt as _pyjwt
+    _HAS_JWT = True
+except ImportError:
+    _pyjwt = None  # type: ignore[assignment]
+    _HAS_JWT = False
+    logger.warning("PyJWT not installed — auth disabled. pip install PyJWT")
+
+# ── JWT / cookie config ───────────────────────────────────────────────────────
+
+_JWT_SECRET    = os.environ.get("AUTH_JWT_SECRET") or secrets.token_hex(32)
+_JWT_ALGORITHM = "HS256"
+_COOKIE_NAME   = "dendrai_session"
+_SESSION_HOURS = int(os.environ.get("AUTH_SESSION_TTL_HOURS", "24"))
+_COOKIE_SECURE = os.environ.get("AUTH_COOKIE_SECURE", "true").lower() != "false"
+
+# ── Rate limiting (in-memory, per client IP) ──────────────────────────────────
+
+_RL_WINDOW_S  = 900   # 15 minutes
+_RL_MAX_TRIES = 5
+_rl_store: dict[str, deque] = defaultdict(deque)
+
+
+def _rate_check(ip: str) -> bool:
+    """Return True if the request is allowed; False if rate-limited."""
+    now = time.monotonic()
+    dq  = _rl_store[ip]
+    while dq and now - dq[0] > _RL_WINDOW_S:
+        dq.popleft()
+    if len(dq) >= _RL_MAX_TRIES:
+        return False
+    dq.append(now)
+    return True
+
+
+def _rate_clear(ip: str) -> None:
+    _rl_store.pop(ip, None)
+
+
+# ── Password complexity ───────────────────────────────────────────────────────
+
+def _validate_password(pw: str) -> Optional[str]:
+    if len(pw) < 8:
+        return "Password must be at least 8 characters."
+    if not re.search(r"[A-Z]", pw):
+        return "Password must include at least one uppercase letter."
+    if not re.search(r"[a-z]", pw):
+        return "Password must include at least one lowercase letter."
+    if not re.search(r"\d", pw):
+        return "Password must include at least one number."
+    if not re.search(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]", pw):
+        return "Password must include at least one special character."
+    return None
+
+
+_PW_GEN_ALPHABET = string.ascii_uppercase + string.ascii_lowercase + string.digits + "!@#$%^&*()-_=+"
+
+
+def _generate_password(length: int = 14) -> str:
+    """System-generated password guaranteed to satisfy _validate_password."""
+    while True:
+        pw = "".join(secrets.choice(_PW_GEN_ALPHABET) for _ in range(length))
+        if _validate_password(pw) is None:
+            return pw
+
+
+# ── Multi-tenant JWT secret binding ──────────────────────────────────────────
+# In TENANT_MODE=single (default), nothing here is used — every token is
+# signed/verified with the module-level _JWT_SECRET, exactly as before.
+#
+# In TENANT_MODE=multi, api_server.py's resolution middleware calls
+# bind_tenant_secret(tenant_id, jwt_secret) once at the top of each request,
+# after resolving the Host header. A JWT is then both (a) signed/verified
+# with that tenant's own secret, and (b) carries an explicit tenant_id claim
+# that's independently cross-checked against the resolved tenant on every
+# decode — two layers, so a future bug in secret provisioning (e.g. a
+# copy-paste reusing a key across tenants) doesn't by itself become a
+# cross-tenant auth bypass.
+_tenant_jwt_secret: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "auth_tenant_jwt_secret", default=None
+)
+_tenant_id_ctx: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "auth_tenant_id", default=None
+)
+
+
+def bind_tenant_secret(tenant_id: str, jwt_secret: str) -> None:
+    _tenant_jwt_secret.set(jwt_secret)
+    _tenant_id_ctx.set(tenant_id)
+
+
+def unbind_tenant_secret() -> None:
+    _tenant_jwt_secret.set(None)
+    _tenant_id_ctx.set(None)
+
+
+def _active_jwt_secret() -> str:
+    return _tenant_jwt_secret.get() or _JWT_SECRET
+
+
+# ── JWT helpers ───────────────────────────────────────────────────────────────
+
+def _create_jwt(user: dict, jti: str) -> str:
+    if not _HAS_JWT:
+        raise HTTPException(status_code=503, detail="PyJWT not installed")
+    payload = {
+        "sub":       str(user["id"]),
+        "username":  user["username"],
+        "role":      user["role"],
+        "jti":       jti,
+        "tenant_id": _tenant_id_ctx.get(),
+        "iat":       datetime.now(timezone.utc),
+        "exp":       datetime.now(timezone.utc) + timedelta(hours=_SESSION_HOURS),
+    }
+    return _pyjwt.encode(payload, _active_jwt_secret(), algorithm=_JWT_ALGORITHM)
+
+
+def decode_jwt(token: str) -> Optional[dict]:
+    if not _HAS_JWT or not token:
+        return None
+    try:
+        payload = _pyjwt.decode(token, _active_jwt_secret(), algorithms=[_JWT_ALGORITHM])
+    except Exception:
+        return None
+    bound_tenant = _tenant_id_ctx.get()
+    if bound_tenant is not None and payload.get("tenant_id") != bound_tenant:
+        # Verified against the current request's tenant secret, but minted
+        # for a different tenant's origin — reject independently of the key
+        # check above rather than trusting a shared/misprovisioned key.
+        return None
+    return payload
+
+
+# ── Cookie helpers ────────────────────────────────────────────────────────────
+
+def _set_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=_COOKIE_NAME, value=token,
+        httponly=True, secure=_COOKIE_SECURE,
+        samesite="strict", max_age=_SESSION_HOURS * 3600, path="/",
+    )
+
+
+def _clear_cookie(response: Response) -> None:
+    response.delete_cookie(key=_COOKIE_NAME, path="/")
+
+
+# ── FastAPI auth dependency ───────────────────────────────────────────────────
+
+def _resolve_session(dendrai_session: Optional[str]) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    """Decode + validate a session cookie. Returns (user_id, jti, invalid_reason).
+    invalid_reason is "idle" when the session is otherwise valid but has had no
+    activity within IDLE_TIMEOUT_MINUTES — distinct from a missing/invalid/
+    revoked/absolutely-expired session — so callers can give a specific
+    "signed out due to inactivity" message. An idle session is revoked here so
+    it can't be resurrected by a stale JWT after the fact."""
+    if not dendrai_session:
+        return None, None, None
+    payload = decode_jwt(dendrai_session)
+    if not payload:
+        return None, None, None
+    jti = payload.get("jti", "")
+    user_id, reason = auth_db.validate_session_reason(jti)
+    if reason == "idle":
+        auth_db.revoke_session(jti)
+    return user_id, jti, reason
+
+
+def get_current_user(
+    request: Request,
+    dendrai_session: Optional[str] = Cookie(default=None, alias=_COOKIE_NAME),
+) -> dict:
+    """Raise 401 if cookie is missing, expired, revoked, or idle-timed-out."""
+    user_id, _jti, reason = _resolve_session(dendrai_session)
+    if not user_id:
+        detail = "Session expired due to inactivity" if reason == "idle" else "Not authenticated" if not dendrai_session else "Session expired or revoked"
+        raise HTTPException(status_code=401, detail=detail)
+    user = auth_db.get_user_by_id(user_id)
+    if not user or not user.get("is_active"):
+        raise HTTPException(status_code=401, detail="Account inactive")
+    return user
+
+
+def get_optional_user(
+    request: Request,
+    dendrai_session: Optional[str] = Cookie(default=None, alias=_COOKIE_NAME),
+) -> Optional[dict]:
+    try:
+        return get_current_user(request, dendrai_session)
+    except HTTPException:
+        return None
+
+
+# ── SSO provider registry ──────────────────────────────────────────────────────
+
+def _sso_providers() -> dict[str, dict]:
+    """Build provider configs from env vars. Only includes configured providers."""
+    p: dict[str, dict] = {}
+
+    if os.environ.get("AZURE_CLIENT_ID"):
+        tenant = os.environ.get("AZURE_TENANT_ID", "common")
+        p["microsoft"] = {
+            "label":         "Microsoft",
+            "client_id":     os.environ["AZURE_CLIENT_ID"],
+            "client_secret": os.environ.get("AZURE_CLIENT_SECRET", ""),
+            "discovery_url": f"https://login.microsoftonline.com/{tenant}/v2.0/.well-known/openid-configuration",
+            "scopes":        "openid email profile",
+        }
+
+    if os.environ.get("GOOGLE_CLIENT_ID"):
+        p["google"] = {
+            "label":         "Google",
+            "client_id":     os.environ["GOOGLE_CLIENT_ID"],
+            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+            "discovery_url": "https://accounts.google.com/.well-known/openid-configuration",
+            "scopes":        "openid email profile",
+        }
+
+    if os.environ.get("GITHUB_CLIENT_ID"):
+        p["github"] = {
+            "label":         "GitHub",
+            "client_id":     os.environ["GITHUB_CLIENT_ID"],
+            "client_secret": os.environ.get("GITHUB_CLIENT_SECRET", ""),
+            "auth_url":      "https://github.com/login/oauth/authorize",
+            "token_url":     "https://github.com/login/oauth/access_token",
+            "scopes":        "read:user user:email",
+        }
+
+    if os.environ.get("OKTA_CLIENT_ID"):
+        domain = os.environ.get("OKTA_DOMAIN", "")
+        p["okta"] = {
+            "label":         "Okta",
+            "client_id":     os.environ["OKTA_CLIENT_ID"],
+            "client_secret": os.environ.get("OKTA_CLIENT_SECRET", ""),
+            "discovery_url": f"https://{domain}/oauth2/default/.well-known/openid-configuration",
+            "scopes":        "openid email profile",
+        }
+
+    return p
+
+
+# PKCE state store (in-memory; acceptable for single-process deployments)
+_sso_state: dict[str, dict] = {}  # state -> {provider, code_verifier, created_at}
+
+
+def _pkce() -> tuple[str, str]:
+    """Return (code_verifier, code_challenge_S256)."""
+    verifier   = secrets.token_urlsafe(64)
+    digest     = hashlib.sha256(verifier.encode()).digest()
+    challenge  = urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+def _redirect_uri(request: Request, provider: str) -> str:
+    base = os.environ.get("PUBLIC_URL", str(request.base_url).rstrip("/"))
+    return f"{base}/auth/sso/{provider}/callback"
+
+
+async def _oidc_config(discovery_url: str) -> dict:
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(discovery_url)
+        r.raise_for_status()
+        return r.json()
+
+
+async def _oidc_token_exchange(
+    token_url: str, code: str, redirect_uri: str,
+    client_id: str, client_secret: str, verifier: str,
+) -> dict:
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(token_url, data={
+            "grant_type":    "authorization_code",
+            "code":          code,
+            "redirect_uri":  redirect_uri,
+            "client_id":     client_id,
+            "client_secret": client_secret,
+            "code_verifier": verifier,
+        })
+        r.raise_for_status()
+        return r.json()
+
+
+async def _github_user_info(access_token: str) -> tuple[str, Optional[str], Optional[str]]:
+    """Returns (provider_id, primary_email, display_name)."""
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=10) as c:
+        ur = await c.get("https://api.github.com/user", headers=headers)
+        ur.raise_for_status()
+        u = ur.json()
+        er = await c.get("https://api.github.com/user/emails", headers=headers)
+        emails = er.json() if er.is_success else []
+    primary = next(
+        (e["email"] for e in emails if e.get("primary") and e.get("verified")),
+        u.get("email"),
+    )
+    return str(u["id"]), primary, u.get("name") or u.get("login")
+
+
+def _finish_login(user: dict, request: Request, response: Response) -> dict:
+    ip = _client_ip(request)
+    ua = request.headers.get("user-agent")
+    jti   = auth_db.create_session(user["id"], ip, ua)
+    token = _create_jwt(user, jti)
+    auth_db.update_last_login(user["id"])
+    _set_cookie(response, token)
+    return user
+
+
+# ── Pydantic models ───────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password:     str
+
+
+class SetManagerRequest(BaseModel):
+    manager_id: Optional[int] = None  # None clears it
+
+
+class AdminSetRoleRequest(BaseModel):
+    role: str  # any name in auth.roles — 'user'/'admin' are the seeded system roles
+
+
+class CreateRoleRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class UpdateRoleRequest(BaseModel):
+    description: Optional[str] = None
+
+
+class AdminSetActiveRequest(BaseModel):
+    is_active: bool
+
+
+class AdminCreateUserRequest(BaseModel):
+    username: str
+    email: Optional[str] = None
+    display_name: Optional[str] = None
+    role: str = "user"
+    password: Optional[str] = None       # ignored if generate_password is True
+    generate_password: bool = False
+
+
+class AdminUpdateUserRequest(BaseModel):
+    email: Optional[str] = None
+    display_name: Optional[str] = None
+
+
+class AdminSetPasswordRequest(BaseModel):
+    password: Optional[str] = None       # ignored if generate is True
+    generate: bool = False
+
+
+class ScreenPermissionEntry(BaseModel):
+    screen_id: str
+    can_read: bool = True
+    can_edit: bool = True
+
+
+class SetScreenPermissionsRequest(BaseModel):
+    permissions: list[ScreenPermissionEntry]
+
+
+def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return current_user
+
+
+def require_screen_permission(screen_id: str, edit: bool = False):
+    """FastAPI dependency factory — the backend enforcement counterpart to
+    the screen_permissions matrix nav.jsx already uses to hide nav items.
+
+    Until now that matrix was frontend-only: GET /auth/me hands a user's
+    effective permissions to the UI to decide what to render, but no data
+    endpoint re-checked it, so a screen hidden from the nav was still fully
+    reachable by calling its API directly with a valid session cookie. This
+    closes that gap by making a route depend on the same effective-
+    permission lookup the frontend already gets.
+
+    Mirrors auth_db.screen_permissions' own resolution rules: admins bypass
+    entirely (never locked out, matching admin_get/set_screen_permissions'
+    behavior), and a screen_id with no explicit row for this user or their
+    role means "allowed" — this is a blocklist, not an allowlist, so a
+    screen nobody has configured permissions for yet stays reachable rather
+    than silently 403ing every caller.
+    """
+    def _check(current_user: dict = Depends(get_current_user)) -> dict:
+        if current_user.get("role") == "admin":
+            return current_user
+        perms = auth_db.get_effective_screen_permissions(current_user["id"], current_user.get("role", "user"))
+        entry = perms.get(screen_id)
+        if entry is not None:
+            key = "can_edit" if edit else "can_read"
+            if not entry.get(key, True):
+                raise HTTPException(status_code=403, detail=f"You do not have access to '{screen_id}'")
+        return current_user
+    return _check
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.get("/sso/providers", summary="List enabled SSO providers")
+def list_providers():
+    return {
+        "providers": [
+            {"key": k, "label": v["label"]}
+            for k, v in _sso_providers().items()
+        ]
+    }
+
+
+@router.post("/login", summary="Local username/password login")
+async def local_login(req: LoginRequest, request: Request, response: Response):
+    ip = _client_ip(request) or "unknown"
+
+    if not _rate_check(ip):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again in 15 minutes.")
+
+    if not _HAS_PASSLIB:
+        raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed on server")
+
+    user = auth_db.get_user_by_username(req.username)
+
+    # Constant-time path — always verify something to prevent timing attacks
+    if not user or not user.get("password_hash"):
+        _pwd_ctx.dummy_verify()
+        _audit("login_failed", req.username, detail={"reason": "invalid_credentials"}, request=request)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not user.get("is_active"):
+        _pwd_ctx.dummy_verify()
+        _audit("login_failed", req.username, detail={"reason": "account_inactive"}, request=request)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not _pwd_ctx.verify(req.password, user["password_hash"]):
+        _audit("login_failed", req.username, detail={"reason": "invalid_credentials"}, request=request)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    _rate_clear(ip)
+    _finish_login(user, request, response)
+    _audit("login", user["username"], request=request)
+
+    return {
+        "ok":   True,
+        "user": {
+            "id":            user["id"],
+            "username":      user["username"],
+            "role":          user["role"],
+            "display_name":  user.get("display_name"),
+            "must_change_pw": user["must_change_pw"],
+            "preferences":   user.get("preferences"),
+        },
+    }
+
+
+@router.post("/logout", summary="Revoke current session")
+def logout(
+    response: Response,
+    dendrai_session: Optional[str] = Cookie(default=None, alias=_COOKIE_NAME),
+):
+    if dendrai_session:
+        payload = decode_jwt(dendrai_session)
+        if payload and payload.get("jti"):
+            auth_db.revoke_session(payload["jti"])
+            _audit("logout", payload.get("username"))
+    _clear_cookie(response)
+    return {"ok": True}
+
+
+@router.post("/touch", summary="Record user activity, resetting the idle timeout")
+def touch_session(
+    dendrai_session: Optional[str] = Cookie(default=None, alias=_COOKIE_NAME),
+):
+    """Called by the frontend only on genuine mouse/keyboard/touch activity
+    (throttled), not on background polling — that keeps the idle clock tied to
+    whether a person is actually at the keyboard, not to unattended refresh traffic."""
+    user_id, jti, reason = _resolve_session(dendrai_session)
+    if not user_id:
+        detail = "Session expired due to inactivity" if reason == "idle" else "Not authenticated"
+        raise HTTPException(status_code=401, detail=detail)
+    auth_db.touch_session(jti)
+    return {"ok": True}
+
+
+@router.get("/me", summary="Current authenticated user")
+def me(current_user: dict = Depends(get_current_user)):
+    # Admins are never subject to the screen-permission matrix (never locked
+    # out); everyone else gets their EFFECTIVE matrix — their role's default
+    # permissions with any per-user overrides layered on top — so the
+    # frontend can gate nav + screens without a second round trip on every load.
+    perms = None if current_user.get("role") == "admin" else \
+        auth_db.get_effective_screen_permissions(current_user["id"], current_user.get("role", "user"))
+    return {"user": {**current_user, "screen_permissions": perms}}
+
+
+@router.get("/users", summary="List active user accounts")
+def list_users(current_user: dict = Depends(get_current_user)):
+    """
+    Active accounts (id, username, display_name, role, manager_id) — powers
+    the manager picker and name resolution for the approval workflow.
+    Any authenticated user can list this (no sensitive fields returned);
+    it is not an admin-only directory.
+    """
+    return {"users": auth_db.list_active_users()}
+
+
+@router.put("/users/me/manager", summary="Set your own manager (self-service)")
+def set_my_manager(req: SetManagerRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Self-service reporting-line assignment used to route HITL gate
+    adjustments to the right person for review. No admin role required —
+    there is no admin console for this yet, so this is intentionally
+    self-service. A user cannot set themselves as their own manager.
+    """
+    if req.manager_id is not None:
+        manager = auth_db.get_user_by_id(req.manager_id)
+        if not manager or not manager.get("is_active"):
+            raise HTTPException(status_code=404, detail="Manager account not found or inactive")
+    ok = auth_db.set_manager(current_user["id"], req.manager_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not set manager (cannot be yourself)")
+    return {"ok": True, "manager_id": req.manager_id}
+
+
+@router.put("/users/me/preferences", summary="Save your own appearance preferences (self-service)")
+def set_my_preferences(prefs: Dict[str, Any] = Body(...), current_user: dict = Depends(get_current_user)):
+    """
+    Self-service accent/density/color-scheme persistence — so appearance
+    follows the account across browsers and machines instead of resetting
+    to defaults on every reload. Merged (not replaced) into any existing
+    preferences; send only the keys that changed.
+    """
+    ok = auth_db.set_preferences(current_user["id"], prefs)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not save preferences")
+    return {"ok": True, "preferences": prefs}
+
+
+# ── Admin workflow configuration (Phase 2) ────────────────────────────────────
+# Org-chart and role administration for the approval workflow. Every write
+# here re-derives identity from the session (require_admin), never trusts a
+# role claim from the request body, and blocks an admin from locking
+# themselves out (self-demotion / self-deactivation).
+
+@router.get("/admin/audit-log", summary="Tamper-evident identity/access audit trail (admin)")
+def admin_audit_log(
+    category: Optional[str] = None, actor: Optional[str] = None, limit: int = 200,
+    current_user: dict = Depends(require_admin),
+):
+    """Queryable answer to 'who changed what, and when' — observability.audit_log
+    (see db.py) records every login/logout, role change, user create/delete,
+    password reset, and screen-permission edit, chain-hashed so a deleted or
+    reordered row is detectable (see GET .../audit-log/verify)."""
+    return {"entries": db.list_audit_log(category=category, actor=actor, limit=limit)}
+
+
+@router.get("/admin/audit-log/verify", summary="Verify the audit trail's tamper-evidence chain (admin)")
+def admin_audit_log_verify(current_user: dict = Depends(require_admin)):
+    return db.verify_audit_chain()
+
+
+@router.get("/admin/model-config", summary="Claude model configuration & fallback status (admin)")
+def admin_model_config(current_user: dict = Depends(require_admin)):
+    """
+    Which Claude model is actually configured, whether a client can be built
+    at all, and whether the retired-model fallback (claude_client._create_message)
+    has fired since this process started — the visibility gap that made a
+    deprecated DENDRAI_CLAUDE_MODEL silently break every AI-augmented endpoint
+    at once, discoverable only in server logs.
+    """
+    return claude_client.get_model_status()
+
+
+@router.get("/admin/users", summary="List all accounts (admin)")
+def admin_list_users(current_user: dict = Depends(require_admin)):
+    return {"users": auth_db.list_all_users()}
+
+
+@router.put("/admin/users/{user_id}/manager", summary="Set any user's manager (admin)")
+def admin_set_manager(user_id: int, req: SetManagerRequest, current_user: dict = Depends(require_admin)):
+    if req.manager_id is not None:
+        manager = auth_db.get_user_by_id(req.manager_id)
+        if not manager or not manager.get("is_active"):
+            raise HTTPException(status_code=404, detail="Manager account not found or inactive")
+    ok = auth_db.set_manager(user_id, req.manager_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not set manager (cannot be their own manager)")
+    return {"ok": True, "manager_id": req.manager_id}
+
+
+@router.put("/admin/users/{user_id}/role", summary="Set a user's role (admin)")
+def admin_set_role(user_id: int, req: AdminSetRoleRequest, current_user: dict = Depends(require_admin)):
+    if not auth_db.role_exists(req.role):
+        raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'")
+    if user_id == current_user["id"] and req.role != "admin":
+        raise HTTPException(status_code=400, detail="You cannot remove your own admin role")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not auth_db.set_role(user_id, req.role):
+        raise HTTPException(status_code=500, detail="Failed to update role")
+    _audit("role_changed", current_user["username"], target=target["username"],
+           detail={"old_role": target.get("role"), "new_role": req.role})
+    return {"ok": True, "role": req.role}
+
+
+@router.put("/admin/users/{user_id}/active", summary="Activate or deactivate a user (admin)")
+def admin_set_active(user_id: int, req: AdminSetActiveRequest, current_user: dict = Depends(require_admin)):
+    if user_id == current_user["id"] and not req.is_active:
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not auth_db.set_active(user_id, req.is_active):
+        raise HTTPException(status_code=500, detail="Failed to update active status")
+    if not req.is_active:
+        auth_db.revoke_all_user_sessions(user_id)
+    _audit("user_activated" if req.is_active else "user_deactivated",
+           current_user["username"], target=target["username"])
+    return {"ok": True, "is_active": req.is_active}
+
+
+_USERNAME_RE = re.compile(r"^[a-z0-9._-]{3,64}$")
+
+
+@router.post("/admin/users", summary="Create a new user (admin)")
+def admin_create_user(req: AdminCreateUserRequest, current_user: dict = Depends(require_admin)):
+    if not _HAS_PASSLIB:
+        raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
+
+    username = req.username.strip().lower()
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(status_code=422, detail="Username must be 3-64 characters: lowercase letters, numbers, dot, underscore, hyphen.")
+    if not auth_db.role_exists(req.role):
+        raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'")
+    if auth_db.get_user_by_username(username):
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    email = req.email.strip().lower() if req.email else None
+    if email and auth_db.get_user_by_email(email):
+        raise HTTPException(status_code=409, detail="Email already in use")
+
+    generated = False
+    if req.generate_password or not req.password:
+        password = _generate_password()
+        generated = True
+    else:
+        err = _validate_password(req.password)
+        if err:
+            raise HTTPException(status_code=422, detail=err)
+        password = req.password
+
+    pw_hash = _pwd_ctx.hash(password)
+    # Admin-issued credentials always force a change at next login, same as seeded accounts.
+    uid = auth_db.create_user(
+        username=username, email=email, display_name=req.display_name,
+        role=req.role, password_hash=pw_hash, must_change_pw=True,
+    )
+    if not uid:
+        raise HTTPException(status_code=400, detail="Could not create user (username or email may already be in use)")
+    auth_db.add_password_history(uid, pw_hash)
+    _audit("user_created", current_user["username"], target=username,
+           detail={"role": req.role, "generated_password": generated})
+
+    return {"ok": True, "user": auth_db.get_user_by_id(uid), "generated_password": password if generated else None}
+
+
+@router.put("/admin/users/{user_id}", summary="Update a user's profile (admin)")
+def admin_update_user(user_id: int, req: AdminUpdateUserRequest, current_user: dict = Depends(require_admin)):
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    email = req.email.strip().lower() if req.email else None
+    if email:
+        existing = auth_db.get_user_by_email(email)
+        if existing and existing["id"] != user_id:
+            raise HTTPException(status_code=409, detail="Email already in use")
+
+    if not auth_db.update_profile(user_id, email=email, display_name=req.display_name):
+        raise HTTPException(status_code=500, detail="Failed to update profile")
+    return {"ok": True, "user": auth_db.get_user_by_id(user_id)}
+
+
+@router.put("/admin/users/{user_id}/password", summary="Set or reset a user's password (admin)")
+def admin_set_password(user_id: int, req: AdminSetPasswordRequest, current_user: dict = Depends(require_admin)):
+    if not _HAS_PASSLIB:
+        raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    generated = False
+    if req.generate or not req.password:
+        password = _generate_password()
+        generated = True
+    else:
+        err = _validate_password(req.password)
+        if err:
+            raise HTTPException(status_code=422, detail=err)
+        password = req.password
+
+    pw_hash = _pwd_ctx.hash(password)
+    if not auth_db.update_password(user_id, pw_hash):
+        raise HTTPException(status_code=500, detail="Failed to update password")
+    # update_password() clears must_change_pw for the self-service change-password
+    # flow it was built for — an admin-issued password should still force a change.
+    auth_db.set_must_change_pw(user_id, True)
+    auth_db.revoke_all_user_sessions(user_id)
+    _audit("password_reset_by_admin", current_user["username"], target=target["username"],
+           detail={"generated": generated})
+    return {"ok": True, "generated_password": password if generated else None}
+
+
+@router.delete("/admin/users/{user_id}", summary="Permanently remove a user (admin)")
+def admin_delete_user(user_id: int, current_user: dict = Depends(require_admin)):
+    if user_id == current_user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot remove your own account")
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not auth_db.delete_user(user_id):
+        raise HTTPException(status_code=500, detail="Failed to remove user")
+    _audit("user_deleted", current_user["username"], target=target["username"])
+    return {"ok": True}
+
+
+# ── Screen access permissions (Configuration > User Configuration > Screen Access)
+# Per-user read/edit matrix. Admin accounts are intentionally never editable
+# here — they always have full access, so an admin can never lock every admin out.
+
+@router.get("/admin/screen-permissions/{user_id}", summary="Get a user's screen permissions (admin)")
+def admin_get_screen_permissions(user_id: int, current_user: dict = Depends(require_admin)):
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Admin accounts always have full access and have no configurable permissions")
+    return {"user_id": user_id, "permissions": auth_db.get_screen_permissions(user_id)}
+
+
+@router.put("/admin/screen-permissions/{user_id}", summary="Replace a user's screen permissions (admin)")
+def admin_set_screen_permissions(user_id: int, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
+    target = auth_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Admin accounts always have full access and have no configurable permissions")
+    ok = auth_db.set_screen_permissions(user_id, [p.model_dump() for p in req.permissions])
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save screen permissions")
+    _audit("screen_permissions_changed", current_user["username"], target=target["username"],
+           detail={"permissions": [p.model_dump() for p in req.permissions]})
+    return {"ok": True, "user_id": user_id, "permissions": auth_db.get_screen_permissions(user_id)}
+
+
+# ── Roles (RBAC) — Configuration > User Configuration > Roles ─────────────────
+# A role carries a default screen permission set (auth.role_screen_permissions)
+# that every user assigned to it inherits, unless they have their own per-user
+# override in auth.screen_permissions (see admin_get/set_screen_permissions
+# above — unchanged, now an override layer instead of the sole source).
+
+@router.get("/admin/roles", summary="List roles (admin)")
+def admin_list_roles(current_user: dict = Depends(require_admin)):
+    return {"roles": auth_db.list_roles()}
+
+
+@router.post("/admin/roles", summary="Create a role (admin)")
+def admin_create_role(req: CreateRoleRequest, current_user: dict = Depends(require_admin)):
+    name = req.name.strip().lower()
+    if not re.match(r"^[a-z0-9_-]{2,32}$", name):
+        raise HTTPException(status_code=422, detail="Role name must be 2-32 characters: lowercase letters, numbers, underscore, hyphen.")
+    if auth_db.role_exists(name):
+        raise HTTPException(status_code=409, detail="A role with this name already exists")
+    role_id = auth_db.create_role(name, req.description)
+    if not role_id:
+        raise HTTPException(status_code=500, detail="Failed to create role")
+    _audit("role_created", current_user["username"], target=name, detail={"description": req.description})
+    return {"ok": True, "role_id": role_id}
+
+
+@router.put("/admin/roles/{role_id}", summary="Update a role's description (admin)")
+def admin_update_role(role_id: int, req: UpdateRoleRequest, current_user: dict = Depends(require_admin)):
+    if not auth_db.update_role(role_id, req.description):
+        raise HTTPException(status_code=500, detail="Failed to update role")
+    return {"ok": True}
+
+
+@router.delete("/admin/roles/{role_id}", summary="Delete a role (admin)")
+def admin_delete_role(role_id: int, current_user: dict = Depends(require_admin)):
+    err = auth_db.delete_role(role_id)
+    if err:
+        raise HTTPException(status_code=409, detail=err)
+    _audit("role_deleted", current_user["username"], target=str(role_id))
+    return {"ok": True}
+
+
+@router.get("/admin/roles/{role_id}/permissions", summary="Get a role's default screen permissions (admin)")
+def admin_get_role_permissions(role_id: int, current_user: dict = Depends(require_admin)):
+    return {"role_id": role_id, "permissions": auth_db.get_role_screen_permissions(role_id)}
+
+
+@router.put("/admin/roles/{role_id}/permissions", summary="Replace a role's default screen permissions (admin)")
+def admin_set_role_permissions(role_id: int, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
+    ok = auth_db.set_role_screen_permissions(role_id, [p.model_dump() for p in req.permissions])
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save role permissions")
+    _audit("role_permissions_changed", current_user["username"], target=str(role_id),
+           detail={"permissions": [p.model_dump() for p in req.permissions]})
+    return {"ok": True, "role_id": role_id, "permissions": auth_db.get_role_screen_permissions(role_id)}
+
+
+@router.post("/change-password", summary="Change own password")
+def change_password(
+    req: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    if not _HAS_PASSLIB:
+        raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
+
+    full = auth_db.get_user_by_username(current_user["username"])
+    if not full or not full.get("password_hash"):
+        raise HTTPException(status_code=400, detail="No local password configured on this account.")
+
+    if not _pwd_ctx.verify(req.current_password, full["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+
+    err = _validate_password(req.new_password)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+
+    for old in auth_db.get_password_history(current_user["id"]):
+        if _pwd_ctx.verify(req.new_password, old):
+            raise HTTPException(
+                status_code=422,
+                detail="New password matches one of your last 3 passwords. Choose a different one.",
+            )
+
+    new_hash = _pwd_ctx.hash(req.new_password)
+    if not auth_db.update_password(current_user["id"], new_hash):
+        raise HTTPException(status_code=500, detail="Password update failed.")
+
+    auth_db.revoke_all_user_sessions(current_user["id"])
+    _audit("password_changed", current_user["username"], target=current_user["username"])
+    return {"ok": True, "message": "Password updated. Please log in again."}
+
+
+@router.get("/sso/{provider}/start", summary="Begin OAuth / OIDC flow")
+async def sso_start(provider: str, request: Request):
+    providers = _sso_providers()
+    if provider not in providers:
+        raise HTTPException(status_code=404, detail=f"SSO provider '{provider}' not configured")
+
+    cfg      = providers[provider]
+    state    = secrets.token_urlsafe(32)
+    verifier, challenge = _pkce()
+
+    _sso_state[state] = {
+        "provider":      provider,
+        "code_verifier": verifier,
+        "created_at":    time.monotonic(),
+    }
+
+    redir = _redirect_uri(request, provider)
+
+    if provider == "github":
+        from urllib.parse import urlencode
+        params = {
+            "client_id":    cfg["client_id"],
+            "redirect_uri": redir,
+            "scope":        cfg["scopes"],
+            "state":        state,
+        }
+        return RedirectResponse(f"{cfg['auth_url']}?{urlencode(params)}", status_code=302)
+
+    oidc = await _oidc_config(cfg["discovery_url"])
+    from urllib.parse import urlencode
+    params = {
+        "client_id":             cfg["client_id"],
+        "response_type":         "code",
+        "redirect_uri":          redir,
+        "scope":                 cfg["scopes"],
+        "state":                 state,
+        "nonce":                 secrets.token_urlsafe(16),
+        "code_challenge":        challenge,
+        "code_challenge_method": "S256",
+    }
+    return RedirectResponse(f"{oidc['authorization_endpoint']}?{urlencode(params)}", status_code=302)
+
+
+@router.get("/sso/{provider}/callback", summary="OAuth callback + JIT provisioning")
+async def sso_callback(
+    provider: str, request: Request, response: Response,
+    code: str = "", state: str = "", error: str = "",
+):
+    if error:
+        return RedirectResponse(f"/?auth_error={error}", status_code=302)
+
+    state_data = _sso_state.pop(state, None)
+    if not state_data or state_data["provider"] != provider:
+        return RedirectResponse("/?auth_error=invalid_state", status_code=302)
+    if time.monotonic() - state_data["created_at"] > 600:
+        return RedirectResponse("/?auth_error=state_expired", status_code=302)
+
+    providers = _sso_providers()
+    if provider not in providers:
+        return RedirectResponse("/?auth_error=unknown_provider", status_code=302)
+
+    cfg      = providers[provider]
+    redir    = _redirect_uri(request, provider)
+    verifier = state_data["code_verifier"]
+
+    try:
+        if provider == "github":
+            async with httpx.AsyncClient(timeout=15) as c:
+                tr = await c.post(cfg["token_url"], data={
+                    "client_id":     cfg["client_id"],
+                    "client_secret": cfg["client_secret"],
+                    "code":          code,
+                    "redirect_uri":  redir,
+                }, headers={"Accept": "application/json"})
+                tr.raise_for_status()
+                tokens = tr.json()
+            provider_id, email, display_name = await _github_user_info(tokens["access_token"])
+
+        else:
+            oidc   = await _oidc_config(cfg["discovery_url"])
+            tokens = await _oidc_token_exchange(
+                oidc["token_endpoint"], code, redir,
+                cfg["client_id"], cfg["client_secret"], verifier,
+            )
+            id_token = tokens.get("id_token", "")
+            # Decode without signature verification — HTTPS transport already verified the provider.
+            claims       = _pyjwt.decode(id_token, options={"verify_signature": False}) if _HAS_JWT else {}
+            provider_id  = claims.get("sub", "")
+            email        = claims.get("email", "")
+            display_name = claims.get("name") or claims.get("preferred_username", "")
+
+    except Exception as exc:
+        logger.warning("SSO token exchange failed (%s): %s", provider, exc)
+        return RedirectResponse("/?auth_error=sso_failed", status_code=302)
+
+    if not provider_id:
+        return RedirectResponse("/?auth_error=no_subject", status_code=302)
+
+    # 1. Look up by SSO identity
+    user = auth_db.get_user_by_sso(provider, provider_id)
+
+    # 2. Match by email, or JIT-provision a new account
+    if not user and email:
+        user = auth_db.get_user_by_email(email)
+        if user:
+            auth_db.link_sso_identity(user["id"], provider, provider_id, email)
+        else:
+            raw_base = (email.split("@")[0] if email else display_name or provider_id)[:60]
+            base     = re.sub(r"[^a-z0-9._-]", "", raw_base.lower()) or "user"
+            uid = auth_db.create_user(
+                username=base, email=email, display_name=display_name, sso_only=True,
+            )
+            if uid:
+                auth_db.link_sso_identity(uid, provider, provider_id, email)
+                user = auth_db.get_user_by_id(uid)
+                _audit("user_created", f"sso:{provider}", target=base, detail={"jit_provisioned": True})
+
+    if not user:
+        return RedirectResponse("/?auth_error=provisioning_failed", status_code=302)
+    if not user.get("is_active"):
+        return RedirectResponse("/?auth_error=account_inactive", status_code=302)
+
+    _finish_login(user, request, response)
+    _audit("login", user["username"], detail={"provider": provider}, request=request)
+    return RedirectResponse("/", status_code=302)

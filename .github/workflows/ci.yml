@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dendrai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dendrai_test
+      # db.py's _conn() defaults sslmode to "require" whenever DATABASE_URL
+      # doesn't declare one (see db.py's DATABASE_SSL_MODE comment). CI's
+      # postgres:16 service container has no SSL configured at all, so every
+      # db.init_db() call was failing with "server does not support SSL, but
+      # SSL was required" — pre-existing, unrelated to this run's changes
+      # (confirmed failing back to at least the 2026-07-30 22:01 run). This is
+      # the documented escape hatch for exactly this case: "'disable' for a
+      # local dev Postgres with no TLS at all."
+      DATABASE_SSL_MODE: disable
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: project/agentic-tools/requirements.txt
+
+      - name: Install dependencies
+        working-directory: project/agentic-tools
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        working-directory: project/agentic-tools
+        # Runs every test_*.py in this directory, not just tests/ — the ~200
+        # DB-free tests at the agentic-tools root (test_evidence_chain.py,
+        # test_pac_approval_drift.py, test_compliance_scorecard.py,
+        # test_pac_negative_tests.py, etc.) previously never ran in CI because
+        # `pytest tests` only collects the tests/ subfolder. Discovered while
+        # adding test_mcp_governance_adjudication.py — see that file's
+        # docstring for what it covers.
+        run: python -m pytest -v

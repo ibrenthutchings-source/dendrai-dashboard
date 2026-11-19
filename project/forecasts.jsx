@@ -310,7 +310,7 @@ const ANALYST_CONSENSUS_DB = {
 };
 
 function getAnalystConsensus(industry, ticker, data) {
-  const tmpl = ANALYST_CONSENSUS_DB[industry] || ANALYST_CONSENSUS_DB['Generic'];
+  const tmpl = ANALYST_CONSENSUS_DB[RISK_ENGINE.normalizeIndustry(industry)] || ANALYST_CONSENSUS_DB['Generic'];
   const sv = id => seededVal(ticker, 'ac-' + id, 0, 1);
   const jitter = n => Math.max(0, Math.round(n + (sv('j' + n) - 0.5) * 3));
   const ratings = {};
@@ -334,7 +334,7 @@ function getAnalystConsensus(industry, ticker, data) {
 }
 
 function IndustryKPISection({ industry, data, livefacts, ticker }) {
-  const defs = INDUSTRY_KPI_DEFS[industry] || INDUSTRY_KPI_DEFS['Generic'];
+  const defs = INDUSTRY_KPI_DEFS[RISK_ENGINE.normalizeIndustry(industry)] || INDUSTRY_KPI_DEFS['Generic'];
   const ragColor = { G: 'var(--green)', A: 'var(--amber)', R: 'var(--red)' };
   const ragInk   = { G: 'var(--green-ink)', A: 'var(--amber-ink)', R: 'var(--red-ink)' };
 
@@ -473,18 +473,20 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
 
     const handle = setTimeout(() => {
       try {
-        // Build revenue series — prefer EDGAR XBRL quarterly data (same filter as risk-engine.js buildForecasts)
+        // Build revenue series — standalone quarters only to exclude YTD cumulative XBRL periods
+        // (H1, 9M, etc. tagged on 10-Qs inflate the series the same way they do for COGS/grossProfit)
+        const isStandaloneQ = x => /^Q[1-4]$/.test(x.fp);
         let revSeries = null, revSource = "mock";
         if (livefacts?.revenue?.series) {
-          // Primary: standalone quarterly 10-Q periods (≥4 quarters)
+          // Primary: standalone quarterly 10-Q periods only (≥4 quarters)
           const qtrs = livefacts.revenue.series
-            .filter(x => x.form === "10-Q" && x.fp !== "FY")
+            .filter(x => x.form === "10-Q" && isStandaloneQ(x))
             .sort((a, b) => (a.end < b.end ? -1 : 1));
           if (qtrs.length >= 4) {
             revSeries = qtrs.map(x => x.val / 1e6);
             revSource = "edgar";
           } else {
-            // Fallback: annual 10-K FY data (lowered threshold from 6 to 4)
+            // Fallback: annual 10-K FY data
             const annual = livefacts.revenue.series
               .filter(x => x.form === "10-K" && x.fp === "FY")
               .sort((a, b) => (a.end < b.end ? -1 : 1));
@@ -494,7 +496,7 @@ function ForecastsPanel({ data, liveMode, livefacts, fredSeries, rssSignals, ind
             }
           }
         }
-        // data.revenue.history is already built from EDGAR quarterly data by risk-engine.js when available
+        // data.revenue.history is already built from EDGAR standalone-quarterly data by risk-engine.js
         if (!revSeries) revSeries = data.revenue.history.map(x => x.v);
 
         // margin history already uses EDGAR quarterly COGS/grossProfit when livefacts was present
@@ -1323,11 +1325,13 @@ const _SEG_DEFAULTS = {
 function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
   const [dbSegments, setDbSegments] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
+  const [segFcst, setSegFcst] = React.useState(null);
+  const [fcstRunning, setFcstRunning] = React.useState(false);
 
   React.useEffect(() => {
     if (!ticker) return;
     const year = new Date().getFullYear();
-    const base = window.MCP_API_BASE || 'http://127.0.0.1:8001';
+    const base = window.MCP_API_BASE || '/api/mcp';
     setLoading(true);
     fetch(`${base}/sox/segments/${encodeURIComponent(ticker)}/FY${year}`, { signal: AbortSignal.timeout(4000) })
       .then(r => r.ok ? r.json() : null)
@@ -1336,7 +1340,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
       .finally(() => setLoading(false));
   }, [ticker]);
 
-  const ind = industry || 'Generic';
+  const ind = RISK_ENGINE.normalizeIndustry(industry) || 'Generic';
 
   // Consolidated base values
   const consRevAnnualM = (data?.revenue?.history?.slice(-1)[0]?.v ?? 0) * 4;
@@ -1352,17 +1356,16 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
 
   function buildRows(segType, defaultMap) {
     const dbRows = dbSegments?.filter(r => r.segment_type === segType);
-    if (dbRows?.length) {
-      return dbRows.map(s => ({
-        name: s.segment_name,
-        revM: s.revenue != null ? s.revenue / 1e6 : null,
-        revPct: s.revenue_pct,
-        gmPct: s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : null,
-        omPct: s.operating_income != null && s.revenue ? (s.operating_income / s.revenue * 100) : null,
-        niPct: null,
-        revGrowth: null,
-        fromDB: true,
-      }));
+    if (dbRows?.length >= 2) {
+      return dbRows.map(s => {
+        const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : null;
+        const om = s.operating_income != null && s.revenue ? (s.operating_income / s.revenue * 100) : null;
+        return {
+          name: s.segment_name, revM: s.revenue != null ? s.revenue / 1e6 : null,
+          revPct: s.revenue_pct, gmPct: gm, omPct: om, niPct: null, revGrowth: null,
+          fromDB: true, gmD: gm != null ? gm - consGM : 0, omD: om != null ? om - consOM : 0,
+        };
+      });
     }
     const defs = defaultMap[ind] || defaultMap['Generic'];
     return defs.map(([name, pct, gmD, omD]) => {
@@ -1375,7 +1378,7 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
         omPct: consOM + omD + sv('om') * 1.5,
         niPct: consNI != null ? consNI + omD * 0.6 + sv('ni') * 1.5 : null,
         revGrowth: consGrowth != null ? consGrowth + sv('g') * 4 : null,
-        fromDB: false,
+        fromDB: false, gmD, omD,
       };
     });
   }
@@ -1383,6 +1386,110 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
   const geoRows = buildRows('geography', _GEO_DEFAULTS);
   const bizRows = buildRows('segment',   _SEG_DEFAULTS);
   const isDB = !!dbSegments?.length;
+
+  // ── Forecast computation: walk-forward backtest + ensemble for each segment ──
+  React.useEffect(() => {
+    const consRevHist = data?.revenue?.history;
+    const consMgHist  = data?.margin?.history;
+    if (!consRevHist || !consMgHist || consRevHist.length < 4 || consMgHist.length < 4) return;
+    if (typeof BACKTESTING === 'undefined') return;
+
+    setFcstRunning(true);
+    const handle = setTimeout(() => {
+      try {
+        const fcstQs = data.revenue.forecast?.map(f => f.q) || ['Q1', 'Q2', 'Q3', 'Q4'];
+        const safeN = (v, fb) => Number.isFinite(v) ? v : fb;
+
+        function applyErrBands(fc, btEns) {
+          const mae = btEns?.mae, tme = btEns?.tme ?? 0;
+          if (!mae) return fc;
+          return fc.map((f, i) => {
+            const adj = Number.isFinite(f.base - tme) ? f.base - tme : f.base;
+            const band = mae * Math.sqrt(i + 1);
+            return { ...f, base: adj, lo: adj - band, hi: adj + band };
+          });
+        }
+
+        // Rebuild minimal rows locally to avoid stale closure issues
+        const ind_l = RISK_ENGINE.normalizeIndustry(industry) || 'Generic';
+        const consGM_l = consMgHist[consMgHist.length - 1].v;
+
+        function makeDefaultRows(defaultMap) {
+          const defs = defaultMap[ind_l] || defaultMap['Generic'];
+          return defs.map(([name, pct, gmD]) => ({ name, revPct: pct, gmD }));
+        }
+
+        const dbGeoRows = dbSegments?.filter(r => r.segment_type === 'geography') ?? [];
+        const geoR = dbGeoRows.length >= 2
+          ? dbGeoRows.map(s => {
+              const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
+              return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
+            })
+          : makeDefaultRows(_GEO_DEFAULTS);
+
+        const dbBizRows = dbSegments?.filter(r => r.segment_type === 'segment') ?? [];
+        const bizR = dbBizRows.length >= 2
+          ? dbBizRows.map(s => {
+              const gm = s.gross_profit != null && s.revenue ? (s.gross_profit / s.revenue * 100) : consGM_l;
+              return { name: s.segment_name, revPct: s.revenue_pct ?? 0, gmD: gm - consGM_l };
+            })
+          : makeDefaultRows(_SEG_DEFAULTS);
+
+        function computeForRow(row) {
+          // Revenue history: consolidated quarterly × segment share + per-quarter noise
+          const revHist = consRevHist.map((h, qi) => {
+            const noise = seededVal(ticker || 'X', `fcst-${row.name}-rev-t${qi}`, -0.04, 0.04);
+            return { q: h.q, v: Math.max(0.01, h.v * ((row.revPct || 0) / 100) * (1 + noise)) };
+          });
+          // GM history: consolidated margin + fixed segment delta + per-quarter noise
+          const gmHist = consMgHist.map((h, qi) => {
+            const noise = seededVal(ticker || 'X', `fcst-${row.name}-gm-t${qi}`, -0.6, 0.6);
+            return { q: h.q, v: Math.max(0, h.v + (row.gmD ?? 0) + noise) };
+          });
+
+          const revSeries = revHist.map(h => h.v);
+          const gmSeries  = gmHist.map(h => h.v);
+
+          const revBT = BACKTESTING.backtestAll(revSeries);
+          const gmBT  = BACKTESTING.backtestAll(gmSeries);
+
+          const revFcAll = BACKTESTING.forecastAll(revSeries, null, 4,
+            [revBT.results.arima?.mape, revBT.results.prophet?.mape, revBT.results.rf?.mape]);
+          const gmFcAll  = BACKTESTING.forecastAll(gmSeries,  null, 4,
+            [gmBT.results.arima?.mape,  gmBT.results.prophet?.mape,  gmBT.results.rf?.mape]);
+
+          const lastRev = revHist[revHist.length - 1].v;
+          const lastGm  = gmHist[gmHist.length - 1].v;
+
+          const revFc = fcstQs.map((q, i) => ({
+            q,
+            base: safeN(revFcAll.ensemble?.base[i], lastRev),
+            lo:   safeN(revFcAll.ensemble?.lo[i],   lastRev * 0.85),
+            hi:   safeN(revFcAll.ensemble?.hi[i],   lastRev * 1.15),
+          }));
+          const gmFc = fcstQs.map((q, i) => ({
+            q,
+            base: safeN(gmFcAll.ensemble?.base[i], lastGm),
+            lo:   safeN(gmFcAll.ensemble?.lo[i],   lastGm - 3),
+            hi:   safeN(gmFcAll.ensemble?.hi[i],   lastGm + 3),
+          }));
+
+          return {
+            name: row.name, revPct: row.revPct,
+            rev: { history: revHist, forecast: applyErrBands(revFc, revBT.results.ensemble), backtest: revBT },
+            gm:  { history: gmHist,  forecast: applyErrBands(gmFc,  gmBT.results.ensemble),  backtest: gmBT  },
+          };
+        }
+
+        setSegFcst({ geo: geoR.map(computeForRow), biz: bizR.map(computeForRow) });
+      } catch (e) {
+        console.error("Segment forecast error:", e);
+      }
+      setFcstRunning(false);
+    }, 0);
+
+    return () => clearTimeout(handle);
+  }, [data, ticker, industry, dbSegments]);
 
   const conRow = { name:'Consolidated', revM:consRevAnnualM, revPct:100, gmPct:consGM, omPct:consOM, niPct:consNI, revGrowth:consGrowth, isConsolidated:true };
 
@@ -1448,6 +1555,67 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
     );
   }
 
+  // ── Combined multi-series charts (one chart per metric, all series on it) ────
+  const SEG_COLORS = ['var(--acc)', 'var(--violet)', '#e8a838', '#4aad52', '#e05c5c', '#5bc4c4'];
+
+  function SegmentCharts({ fcstRows, label }) {
+    if (!fcstRows?.length) return null;
+
+    const revSeries = fcstRows.map((seg, si) => ({
+      name: seg.name, color: SEG_COLORS[si % SEG_COLORS.length],
+      history: seg.rev.history, forecast: seg.rev.forecast, backtest: seg.rev.backtest,
+    })).filter(s => s.history?.length && s.forecast?.length);
+
+    const gmSeries = fcstRows.map((seg, si) => ({
+      name: seg.name, color: SEG_COLORS[si % SEG_COLORS.length],
+      history: seg.gm.history, forecast: seg.gm.forecast, backtest: seg.gm.backtest,
+    })).filter(s => s.history?.length && s.forecast?.length);
+
+    const fmtMt = (v, p = 2) => (v == null || !Number.isFinite(v)) ? '—' : v.toFixed(p);
+    const mapeCol = v => v == null ? 'var(--ink-3)' : v < 5 ? 'var(--green-ink)' : v < 15 ? 'var(--amber-ink)' : 'var(--red-ink)';
+
+    function BacktestRows({ rows }) {
+      const filtered = rows.filter(r => r.backtest?.results?.ensemble);
+      if (!filtered.length) return null;
+      return (
+        <div className="mono" style={{fontSize:9, color:'var(--ink-3)', borderTop:'1px solid var(--line)', padding:'5px 0 2px', display:'flex', flexDirection:'column', gap:3}}>
+          {filtered.map((s, i) => {
+            const m = s.backtest.results.ensemble;
+            const lbl = s.name.length > 17 ? s.name.slice(0, 16) + '…' : s.name;
+            return (
+              <div key={i} style={{display:'flex', alignItems:'center', gap:14}}>
+                <span style={{display:'flex', alignItems:'center', gap:5, minWidth:130, color:'var(--ink-2)'}}>
+                  <span style={{width:6, height:6, borderRadius:'50%', background:s.color, display:'inline-block', flexShrink:0}}/>
+                  {lbl}
+                </span>
+                <span>MAPE <span style={{color: mapeCol(m.mape)}}>{fmtMt(m.mape)}%</span></span>
+                <span>R² <span style={{color:'var(--ink-2)'}}>{fmtMt(m.r2, 3)}</span></span>
+                <span>MAE <span style={{color:'var(--ink-2)'}}>{fmtMt(m.mae)}</span></span>
+                <span>TME <span style={{color:'var(--ink-2)'}}>{m.tme != null && Number.isFinite(m.tme) ? (m.tme >= 0 ? '+' : '') + m.tme.toFixed(2) : '—'}</span></span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    return (
+      <div style={{marginTop:18}}>
+        <div style={{fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:8}}>
+          {label} · Revenue · ARIMA / Prophet / RF Ensemble
+        </div>
+        <MultiSeriesForecastChart series={revSeries} unit="$M" decimals={1}/>
+        <BacktestRows rows={revSeries}/>
+
+        <div style={{marginTop:18, fontSize:10, fontWeight:600, color:'var(--ink-3)', letterSpacing:'0.07em', textTransform:'uppercase', marginBottom:8}}>
+          {label} · Gross Margin
+        </div>
+        <MultiSeriesForecastChart series={gmSeries} unit="%"/>
+        <BacktestRows rows={gmSeries}/>
+      </div>
+    );
+  }
+
   return (
     <div className="fcst-card" style={{marginTop:14}}>
       <div className="head">
@@ -1458,14 +1626,32 @@ function GeoSegmentKPISection({ ticker, industry, data, livefacts }) {
             {isDB ? ' actual reported data from DB' : ' industry-typical estimates anchored to consolidated KPIs'}
           </div>
         </div>
-        {loading && <span className="mono" style={{fontSize:10, color:'var(--ink-4)'}}>Loading segments…</span>}
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          {loading    && <span className="mono" style={{fontSize:10, color:'var(--ink-4)'}}>Loading segments…</span>}
+          {fcstRunning && <span className="mono" style={{fontSize:10, color:'var(--ink-4)'}}>Forecasting…</span>}
+        </div>
       </div>
 
       <KpiTable rows={[conRow, ...geoRows]} title="By Geography"/>
+      {segFcst && <SegmentCharts fcstRows={segFcst.geo} label="By Geography"/>}
+      {!segFcst && !fcstRunning && typeof BACKTESTING === 'undefined' && (
+        <div style={{marginTop:10, fontSize:9.5, color:'var(--ink-4)', fontFamily:'Geist Mono, monospace'}}>
+          Load forecasting engines to enable time-series charts per geography.
+        </div>
+      )}
+
+      <div style={{borderTop:'1px solid var(--line)', marginTop:20, paddingTop:2}}/>
+
       <KpiTable rows={[conRow, ...bizRows]} title="By Business Segment"/>
+      {segFcst && <SegmentCharts fcstRows={segFcst.biz} label="By Business Segment"/>}
+      {!segFcst && !fcstRunning && typeof BACKTESTING === 'undefined' && (
+        <div style={{marginTop:10, fontSize:9.5, color:'var(--ink-4)', fontFamily:'Geist Mono, monospace'}}>
+          Load forecasting engines to enable time-series charts per segment.
+        </div>
+      )}
 
       {!isDB && (
-        <div style={{marginTop:10, padding:'8px 12px', background:'var(--surface-2)', borderRadius:6, fontSize:10, color:'var(--ink-4)', lineHeight:1.55}}>
+        <div style={{marginTop:12, padding:'8px 12px', background:'var(--surface-2)', borderRadius:6, fontSize:10, color:'var(--ink-4)', lineHeight:1.55}}>
           Estimates are industry-typical splits anchored to the consolidated figures — not company-reported segment data.
           Upload actual segment financials via <b style={{fontWeight:500}}>SOX → Geography</b> tab to replace with reported values.
         </div>

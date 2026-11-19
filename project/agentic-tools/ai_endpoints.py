@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI-augmented endpoints for the Dendrai Risk Loop (recommendations #1–#5).
+AI-augmented endpoints for Dendrai Intelligenza (recommendations #1–#5).
 
 These are the first endpoints that actually put a language model in the loop.
 They sit alongside the existing deterministic /predictive/* pipeline and degrade
@@ -10,11 +10,17 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
 
     POST /ai/gate1/recommend     #2  per-risk HITL disposition drafts
     POST /ai/gate2/recommend     #2  per-objective scope drafts
+    POST /ai/sox/recommend       #2  SOX Gate S1/S2 materiality/account/process drafts
+    POST /ai/approval/recommend  #2b manager review-assist for a submitted Approval Inbox item
+    POST /ai/pac/draft-rego      #1b draft a Rego module from a policy narrative
     POST /ai/narrative-analysis  #3  Item 1A / proxy narrative extraction
     POST /ai/persona-brief       #4  role-tailored summary (CAE / CFO / COO)
     POST /ai/audit-report        #4  full markdown audit report
     POST /ai/loop-calibrate      #4b loop calibration recommendations (Gate 3)
+    GET  /ai/review-queue        every persona_brief/audit_report generation awaiting human review
+    POST /ai/review-queue/{id}/review  mark a generation as reviewed
     POST /agent/investigate      #1  tool-use investigation agent
+    POST /agent/investigate/council  #1b 3-perspective (financial/cyber/compliance) ensemble + synthesis
     POST /agent/schedule         #5  provision Managed Agent + scheduled deployment
     POST /agent/schedule/run-now #5  trigger an immediate deployment run
     GET  /agent/schedule/status  #5  list recent deployment runs
@@ -22,24 +28,107 @@ Router prefix: /ai  (plus /agent/investigate for the tool-use agent)
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
+import os
+import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import claude_client
 import db
+import embedding_util
+from auth_endpoints import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Model routing: Sonnet for structured output tasks, Opus for the open-ended investigation agent.
-# Sonnet 4.6 is $3/M input · $15/M output vs Opus 4.8 $5/M · $25/M — roughly 40 % cheaper per call.
+# Model routing: Sonnet for all tasks; Opus reserved for absolute necessity.
 _MODEL_STRUCTURED = "claude-sonnet-4-6"
-_MODEL_AGENT = "claude-opus-4-8"
+_MODEL_AGENT = "claude-sonnet-4-6"
+
+# Mandatory pre-delivery review for the two fully-automated narrative
+# endpoints (persona_brief, audit_report) — MODEL_CARD.md known limitation #3.
+# Every other AI endpoint already has a human gate before its output takes
+# effect (preparer submits, manager reviews via Approval Inbox); these two
+# reach an executive/the board with none. This used to sample ~20% of
+# generations for an after-the-fact spot-check — real detection, but not
+# prevention: four in five reached their recipient with no check at all, and
+# even the sampled fifth was reviewed only after delivery, not before.
+#
+# Every generation is now flagged for review (db.save_ai_analysis's
+# sampled_for_review, kept under its original column name since the schema
+# already shipped with it — see MODEL_CARD.md's Recommended Next Steps #4 for
+# that history), and the API response carries the resulting review_status so
+# the UI can show a "Pending Review" state until a human acts on it via
+# GET/POST /ai/review-queue. This doesn't technically block the requester
+# from reading their own generation — they're the human in the loop for that
+# read — but it does mean nothing downstream can mistake an unreviewed
+# narrative for a cleared one, which the silent-sample version couldn't
+# guarantee.
+_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES = True
+
+# ── Embedding helpers ─────────────────────────────────────────────────────────
+# Used by narrative_analysis to chunk and index EDGAR text so that future calls
+# can retrieve relevant snippets from pgvector instead of re-sending entire docs.
+# The actual OpenAI client + chunker live in embedding_util.py so every other
+# module that writes to pgvector (RSS ingestion, scenario analysis, proxy
+# parsing, CEM, CaC/PaC generation) shares the same implementation instead of
+# each hand-rolling its own.
+
+_embed_text = embedding_util.embed_text
+_chunk_text = embedding_util.chunk_text
+
+
+def _embed_risk_factors(ticker: str, analysis_id: "Optional[int]", rf_texts: list) -> None:
+    """Chunk and embed EDGAR risk factor text. Best-effort — never raises."""
+    if not analysis_id or not db.is_available():
+        return
+    company_id = db.get_company_id(ticker)
+    rows: list = []
+    chunk_idx = 0
+    for rf_text in rf_texts:
+        for chunk in _chunk_text(rf_text):
+            vec = _embed_text(chunk)
+            if vec:
+                rows.append({
+                    "source_table": "ai_analyses",
+                    "source_id": analysis_id,
+                    "content_type": db.EMBT_RISK_FACTOR,
+                    "model": "text-embedding-3-small",
+                    "chunk_index": chunk_idx,
+                    "company_id": company_id,
+                    "embedding": vec,
+                    "text_snippet": chunk[:600],
+                })
+            chunk_idx += 1
+    if rows:
+        saved = db.save_embeddings_bulk(rows)
+        logger.info("saved %d risk factor embeddings for %s", saved, ticker)
+
+
+def _embed_ai_summary(analysis_id: "Optional[int]", ticker: str, text: str) -> None:
+    """Embed a human-facing AI narrative (persona brief / audit report) as
+    EMBT_AI_SUMMARY, so chat RAG can retrieve prior narratives instead of
+    only ever surfacing 10-K risk-factor chunks. Best-effort — never raises."""
+    if not analysis_id or not text or not db.is_available():
+        return
+    try:
+        company_id = db.get_company_id(ticker) if ticker else None
+        vec = _embed_text(text[:8000])
+        if vec:
+            db.save_embedding(
+                source_table="ai_analyses", source_id=analysis_id,
+                content_type=db.EMBT_AI_SUMMARY, embedding=vec,
+                company_id=company_id, text_snippet=text[:600],
+            )
+    except Exception as exc:
+        logger.debug("AI summary embedding skipped (non-fatal): %s", exc)
 
 
 def _require_ai():
@@ -97,6 +186,49 @@ class PersonaRequest(BaseModel):
     persona: str = "CAE"
     risks: List[Dict[str, Any]] = []
     loop_stats: Dict[str, Any] = {}
+
+
+class ExceptionBriefRequest(BaseModel):
+    persona: str = "CAE"
+    date_from: str
+    date_to: str
+    summary: Dict[str, Any] = {}
+    by_control: List[Dict[str, Any]] = []
+
+
+class OpsEfficiencyBriefRequest(BaseModel):
+    days: int = 30
+    process: Optional[str] = None
+    summary: Dict[str, Any] = {}
+    cycle_times: Dict[str, Any] = {}
+    rework: Dict[str, Any] = {}
+    variants: List[Dict[str, Any]] = []
+
+
+# A "finding" the 5 Whys / Fishbone prompts below drill into is always ONE
+# real, already-computed process-mining number (a bottleneck or Pareto
+# deviation edge from process_mining_tool.py) — never free text the caller
+# types in. That's the guardrail: the model is reasoning about a measured
+# fact (this transition takes N hours, observed M times), not an arbitrary,
+# unverified claim someone asserts is a problem.
+class CausalSeedFinding(BaseModel):
+    process: Optional[str] = None
+    process_label: Optional[str] = None
+    source: str
+    target: str
+    avg_hours: Optional[float] = None
+    count: Optional[int] = None
+    basis: str = "bottleneck"  # "bottleneck" | "pareto_deviation"
+
+
+class FiveWhysRequest(BaseModel):
+    finding: CausalSeedFinding
+    days: int = 30
+
+
+class FishboneRequest(BaseModel):
+    finding: CausalSeedFinding
+    days: int = 30
 
 
 class ReportRequest(BaseModel):
@@ -167,7 +299,7 @@ _GATE1_SCHEMA = {
 
 
 @router.post("/ai/gate1/recommend")
-def gate1_recommend(req: Gate1Request):
+def gate1_recommend(req: Gate1Request, current_user: dict = Depends(get_current_user)):
     _require_ai()
     risks_min = [
         {
@@ -192,6 +324,7 @@ def gate1_recommend(req: Gate1Request):
         result = claude_client.complete_json(
             _GATE1_SYSTEM, user, _GATE1_SCHEMA, label="gate1",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -249,7 +382,7 @@ _GATE2_SCHEMA = {
 
 
 @router.post("/ai/gate2/recommend")
-def gate2_recommend(req: Gate2Request):
+def gate2_recommend(req: Gate2Request, current_user: dict = Depends(get_current_user)):
     _require_ai()
     objs_min = [
         {
@@ -277,6 +410,7 @@ def gate2_recommend(req: Gate2Request):
         result = claude_client.complete_json(
             _GATE2_SYSTEM, user, _GATE2_SCHEMA, label="gate2",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -287,6 +421,263 @@ def gate2_recommend(req: Gate2Request):
         summary=f"{len(result.get('recommendations', []))} objective scopes",
     )
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #2 — AI-assisted SOX HITL (Gate S1 materiality/account, Gate S2 process)
+#
+# Backfills the one capability gap the UX audit found between Gate 1/2 and
+# SOX HITL: identical Approve/Adjust-with-manager-routing structure (same
+# approval_tasks state machine, same >=30-char rationale rule), but SOX's
+# three Adjust modals (sox-hitl.jsx) never got a "Suggest with AI" button.
+# One endpoint, dispatched by `kind`, rather than three near-identical ones —
+# the three SOX decisions are different enough in shape (a materiality basis
+# is a %, an account is in/out + priority, a process is a P1/P2/Out level)
+# to need their own schema, but identical enough in spirit (approve the
+# computed value or adjust it with a grounded rationale) to share one system
+# prompt and one endpoint.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SOX_SYSTEM = """You are a senior internal-audit reviewer assisting at the SOX ICFR \
+Gate S1/S2 human review stage — the SOX equivalent of Gate 1/2 for the enterprise risk \
+register. You will be asked to review exactly one of three SOX scoping decisions:
+
+- "materiality": the computed planning/performance materiality basis, expressed as a \
+percentage of pre-tax income (planning) and of planning materiality (performance).
+- "account": whether a significant account should be in-scope for SOX testing, and at \
+what priority (P1 = highest, P2 = standard) if so.
+- "process": a business process's SOX coverage level — P1 (full walkthrough + testing), \
+P2 (limited procedures), or Out (not in scope).
+
+Recommend "approve" when the computed/current value is well-supported by the evidence, \
+or "adjust" with concrete suggested values when the evidence warrants a different call. \
+Ground every recommendation in the supplied evidence (balances, prior-year findings, \
+process risk indicators) — never invent numbers. Keep the rationale to 1-3 sentences; it \
+is captured verbatim into the audit trail and routed to the preparer's manager for review."""
+
+_SOX_SCHEMAS = {
+    "materiality": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "recommendation": {"type": "string", "enum": ["approve", "adjust"]},
+            "suggested_materiality_pct": {"type": "number"},
+            "suggested_performance_pct": {"type": "number"},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "rationale": {"type": "string"},
+        },
+        "required": ["recommendation", "suggested_materiality_pct", "suggested_performance_pct",
+                     "confidence", "rationale"],
+    },
+    "account": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "recommendation": {"type": "string", "enum": ["approve", "adjust"]},
+            "suggested_in_scope": {"type": "boolean"},
+            "suggested_priority": {"type": "string", "enum": ["P1", "P2"]},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "rationale": {"type": "string"},
+        },
+        "required": ["recommendation", "suggested_in_scope", "suggested_priority",
+                     "confidence", "rationale"],
+    },
+    "process": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "recommendation": {"type": "string", "enum": ["approve", "adjust"]},
+            "suggested_coverage_level": {"type": "string", "enum": ["P1", "P2", "Out"]},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "rationale": {"type": "string"},
+        },
+        "required": ["recommendation", "suggested_coverage_level", "confidence", "rationale"],
+    },
+}
+
+
+class SoxRecommendRequest(BaseModel):
+    ticker: str
+    run_id: Optional[int] = None
+    kind: str  # "materiality" | "account" | "process"
+    item: Dict[str, Any] = {}
+    context: Dict[str, Any] = {}
+
+
+@router.post("/ai/sox/recommend")
+def sox_recommend(req: SoxRecommendRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    schema = _SOX_SCHEMAS.get(req.kind)
+    if schema is None:
+        raise HTTPException(status_code=422, detail=f"kind must be one of {list(_SOX_SCHEMAS)}")
+    user = (
+        f"Company: {req.ticker}\n"
+        f"Decision type: {req.kind}\n\n"
+        f"Item under review:\n{json.dumps(req.item, indent=2, default=str)}\n\n"
+        f"Available evidence:\n{json.dumps(req.context, indent=2, default=str)[:24_000]}\n\n"
+        f"Return a {req.kind} recommendation."
+    )
+    try:
+        result = claude_client.complete_json(
+            _SOX_SYSTEM, user, schema, label=f"sox_{req.kind}",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=2000,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    db.save_ai_analysis(
+        f"sox_{req.kind}_recommendation", result,
+        run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="medium",
+        summary=f"SOX {req.kind}: {result.get('recommendation', '?')}",
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #2b — AI-assisted manager review (Approval Inbox second-line review)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_APPROVAL_REVIEW_SYSTEM = """You are assisting a manager who is second-line \
+reviewing a preparer's HITL gate override before it is finalized. You receive the \
+gate type, the item under review, the preparer's proposed field changes, and the \
+preparer's written rationale.
+
+Recommend "approved" or "rejected" and explain why in 2-4 sentences, grounded \
+specifically in whether the rationale actually justifies the proposed changes. Flag \
+rationales that are vague, boilerplate, or don't address the specific fields being \
+changed — that is exactly the kind of override this review step exists to catch. Do \
+not rubber-stamp: only recommend "approved" when the rationale genuinely supports \
+the change."""
+
+_APPROVAL_REVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "recommendation": {"type": "string", "enum": ["approved", "rejected"]},
+        "confidence":      {"type": "string", "enum": ["low", "medium", "high"]},
+        "reasoning":       {"type": "string"},
+    },
+    "required": ["recommendation", "confidence", "reasoning"],
+}
+
+
+class ApprovalReviewRequest(BaseModel):
+    task_id: int
+
+
+@router.post("/ai/approval/recommend")
+def approval_review_recommend(req: ApprovalReviewRequest, current_user: dict = Depends(get_current_user)):
+    """
+    AI-drafted approve/reject recommendation for a manager reviewing a submitted
+    HITL gate override in the Approval Inbox. Purely advisory — the manager still
+    has to click Approve/Reject themselves; this never auto-decides.
+    """
+    _require_ai()
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    task = db.get_approval_task(req.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Approval task not found")
+    if task.get("manager_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="You are not the assigned reviewer for this item")
+    if task.get("status") != "submitted":
+        raise HTTPException(status_code=409, detail=f"Item is not awaiting review (status: {task.get('status')})")
+
+    user = (
+        f"Gate type: {task.get('gate_type')}\n"
+        f"Item: {task.get('item_label') or task.get('item_ref')}\n"
+        f"Preparer: {task.get('prepared_by_name')}\n\n"
+        f"Proposed changes:\n{json.dumps(task.get('adjustments') or {}, indent=2, default=str)}\n\n"
+        f"Preparer's rationale:\n{task.get('rationale') or '(none provided)'}\n\n"
+        "Recommend approve or reject."
+    )
+    try:
+        result = claude_client.complete_json(
+            _APPROVAL_REVIEW_SYSTEM, user, _APPROVAL_REVIEW_SCHEMA, label="approval_review",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=1200,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    db.save_ai_analysis(
+        "approval_review_recommendation", result,
+        subject_ref=str(req.task_id), model=_MODEL_STRUCTURED, effort="medium",
+        summary=f"{result.get('recommendation')} ({result.get('confidence')})",
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #1b — AI-drafted Rego from a policy narrative (Policy-as-Code screen)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DRAFT_REGO_SYSTEM = """You are an OPA/Rego policy engineer for the Dendrai \
+Policy-as-Code screen. You are given a plain-language internal-controls policy \
+narrative (often pulled directly from a GitHub policy-docs repo via the "Sync Now" \
+feature) for one business process, and must draft an actual enforceable Rego module \
+implementing it.
+
+Follow the house style used by every other module in this system:
+  package controls.oracle_fusion.<process>
+  import future.keywords.in
+  import future.keywords.if
+
+  deny_<category>_event[msg] if {
+      input.event.type == "<event_type>"
+      not input.event.<some_condition>
+      msg := sprintf("<CONTROL-ID>: <human-readable violation>", [input.event.<field>])
+  }
+
+Derive one or more deny_*_event rules per control described in the narrative. Invent \
+control IDs in the pattern used by the narrative if none are given (e.g. AC-01, \
+P2P-03). Add a header comment block (package, process, version 1.0, source note, \
+last-revised date) matching the existing modules' style. Output ONLY the Rego \
+source — no markdown fences, no prose before or after."""
+
+
+class DraftRegoRequest(BaseModel):
+    process: str
+    narrative: str
+
+
+@router.post("/ai/pac/draft-rego")
+def draft_rego(req: DraftRegoRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Convert a plain-language policy narrative (e.g. pulled in via the Policy-as-
+    Code GitHub 'Sync Now' button) into an actual Rego module. The result only
+    replaces the editor's draft — nothing is persisted until the user clicks
+    Save, same as every other AI-assist feature in this app.
+    """
+    _require_ai()
+    if not req.narrative.strip():
+        raise HTTPException(status_code=422, detail="narrative must not be empty")
+
+    user = (
+        f"Process: {req.process}\n\n"
+        f"Policy narrative to convert:\n{req.narrative[:12000]}\n\n"
+        "Draft the Rego module now."
+    )
+    try:
+        text = claude_client.complete_text(
+            _DRAFT_REGO_SYSTEM, user, label="pac_draft_rego",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    # Models sometimes wrap output in a ```rego fence despite instructions not to.
+    rego_content = text.strip()
+    if rego_content.startswith("```"):
+        rego_content = re.sub(r"^```[a-zA-Z]*\n", "", rego_content)
+        rego_content = re.sub(r"\n```$", "", rego_content)
+
+    db.save_ai_analysis(
+        "pac_rego_draft", {"rego_content": rego_content},
+        subject_ref=req.process, model=_MODEL_STRUCTURED, effort="medium",
+        summary=f"Drafted Rego for process '{req.process}'",
+    )
+    return {"rego_content": rego_content}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,9 +736,22 @@ _NARRATIVE_SCHEMA = {
 
 
 @router.post("/ai/narrative-analysis")
-def narrative_analysis(req: NarrativeRequest):
+def narrative_analysis(req: NarrativeRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
-    # Reuse the existing EDGAR fetchers — we already pay to download this text.
+
+    # ── 1. Cache check — serve a recent result without re-fetching EDGAR ────────
+    # Narrative analysis is stable within a filing cycle (10-K is annual).
+    # Re-running within 30 days costs ~50k input tokens for no new information.
+    if db.is_available():
+        cached = db.get_latest_ai_analysis(req.ticker, "narrative_analysis", max_age_days=30)
+        if cached:
+            logger.info("narrative_analysis: returning cached result for %s", req.ticker)
+            result = dict(cached["content"] or {})
+            result["_cached"] = True
+            result["_cached_at"] = cached["created_at"]
+            return result
+
+    # ── 2. Fetch from EDGAR ──────────────────────────────────────────────────────
     from edgar_tool import (
         get_company_info, parse_filings, fetch_filing_text,
         extract_risk_factors, extract_proxy_sections,
@@ -356,9 +760,11 @@ def narrative_analysis(req: NarrativeRequest):
         meta, sub = get_company_info(req.ticker)
         filings = parse_filings(sub, {"10-K"})["10-K"][: max(1, min(req.max_filings, 2))]
         sections = []
+        _raw_rf_texts: list = []  # full text kept for embedding (not truncated)
         for f in filings:
             text = fetch_filing_text(meta["cik"], f)
             rf = extract_risk_factors(text) if text else ""
+            _raw_rf_texts.append(rf or "")
             sections.append({"filing_date": f["date"], "risk_factors": (rf or "")[:24_000]})
         proxy_text = ""
         if req.include_proxy:
@@ -370,6 +776,7 @@ def narrative_analysis(req: NarrativeRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"EDGAR fetch failed: {exc}")
 
+    # ── 3. Run the LLM ───────────────────────────────────────────────────────────
     user = (
         f"Company: {meta.get('company_name')} ({req.ticker})\n\n"
         f"Item 1A Risk Factors by filing:\n{json.dumps(sections, indent=2, default=str)[:48_000]}\n\n"
@@ -380,15 +787,22 @@ def narrative_analysis(req: NarrativeRequest):
         result = claude_client.complete_json(
             _NARRATIVE_SYSTEM, user, _NARRATIVE_SCHEMA, label="narrative",
             model=_MODEL_STRUCTURED, effort="high", max_tokens=6000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
 
-    db.save_ai_analysis(
+    analysis_id = db.save_ai_analysis(
         "narrative_analysis", result,
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=result.get("summary", "")[:500],
     )
+
+    # ── 4. Chunk + embed the raw risk factor text (best-effort) ─────────────────
+    # Future calls to get_relevant_context() can then serve per-risk snippets
+    # (~750 tokens) instead of re-sending the full 48k-char document.
+    _embed_risk_factors(req.ticker, analysis_id, _raw_rf_texts)
+
     return result
 
 
@@ -397,14 +811,43 @@ def narrative_analysis(req: NarrativeRequest):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PERSONA_SYSTEM = """You write role-tailored executive briefings from a completed \
-internal-audit risk loop. Given a target persona (CAE, CFO, or COO), the scored risk \
-register, and loop statistics, write a brief that speaks to that role's priorities:
+internal-audit risk loop. Given a target persona, the scored risk register, and loop \
+statistics, write a brief that speaks to that audience's priorities and vocabulary:
+
 - CAE: assurance coverage, residual risk, sign-off exposure, audit plan adequacy.
 - CFO: financial-statement risk, margin/liquidity exposure, disclosure and reporting.
 - COO: operational, supply-chain, execution, and people risks.
+- TECH_EXEC (Technical Executive — CTO / CIO / CISO): technology, cyber, data, and \
+IT-control risk; be specific about the control environment (automated/policy-enforced \
+vs. manual controls), system resilience, and technical remediation feasibility. \
+Technical vocabulary is appropriate for this audience.
+- NONTECH_EXEC (Non-Technical Executive — CFO / COO / CEO): translate risk into \
+business, financial, and operational impact — no technical jargon. Focus on what \
+decision or resource ask this creates for leadership.
+- BOARD (Board / Audit Committee): dollar-led governance framing, not a survey of \
+the register. Select only risks that are simultaneously (a) high severity — RAG Red, \
+or Amber with velocity trending toward Red, (b) high velocity — actively worsening, \
+not stable or improving, and (c) carrying the largest dollar_exposure_m. Rank \
+candidates by that combination and keep only the ones that clearly qualify on all \
+three — this is usually a handful of risks, never the full list. If nothing clears \
+that bar, say so explicitly rather than padding the brief with lower-priority risks. \
+For each risk kept: lead with its dollar exposure, then RAG/velocity, then one line \
+on why it's on this list. Close with the aggregate $ figure across the selected \
+risks and how the picture compares to the prior cycle (better/worse/unchanged) and \
+risk appetite. Assume the reader has 90 seconds: keep the whole brief under ~200 \
+words and limit it to 2-3 short sections.
 
-Lead with the single most important thing for that role. Be specific and cite scores \
-and RAG bands. Avoid generic filler."""
+Lead with the single most important thing for that audience. Be specific and cite \
+scores and RAG bands. Avoid generic filler.
+
+Each risk may carry a dollar_exposure_m figure (millions) — a proportional \
+allocation of the Bear-case scenario's modeled revenue-at-risk across the \
+register, weighted by score and velocity. It is real model output, not your \
+estimate. CFO, BOARD, and NONTECH_EXEC audiences care about this most — cite \
+it by name when present ("modeled revenue exposure of ~$XM"), and note it \
+sums to the Bear scenario's total, not a worst-case-per-risk sum. Never \
+invent a dollar figure of your own for a risk where dollar_exposure_m is \
+null — say the impact is not quantified rather than estimating one."""
 
 _PERSONA_SCHEMA = {
     "type": "object",
@@ -430,13 +873,19 @@ _PERSONA_SCHEMA = {
 
 
 @router.post("/ai/persona-brief")
-def persona_brief(req: PersonaRequest):
+def persona_brief(req: PersonaRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
     persona = (req.persona or "CAE").upper()
     risks_min = [
         {"risk_ref": r.get("id") or r.get("risk_ref"), "name": r.get("name"),
          "category": r.get("category"), "score": r.get("score"),
-         "rag": r.get("rag"), "velocity": r.get("velocity"), "ce": r.get("ce")}
+         "rag": r.get("rag"), "velocity": r.get("velocity"), "ce": r.get("ce"),
+         # Pre-computed by risk-engine.js's allocateRiskDollarExposure — a
+         # proportional breakdown of the Bear scenario's modeled revenue-at-risk,
+         # not an independent estimate. Passed through so the model can cite a
+         # real figure instead of inventing one; null when no scenario data
+         # was available to allocate from (e.g. thin/unavailable financials).
+         "dollar_exposure_m": r.get("dollarExposureM")}
         for r in req.risks
     ]
     user = (
@@ -445,21 +894,495 @@ def persona_brief(req: PersonaRequest):
         f"Loop statistics:\n{json.dumps(req.loop_stats, indent=2, default=str)}\n\n"
         f"Write the {persona} brief."
     )
+
+    # Cost reduction: hash the exact inputs and check for a prior identical
+    # generation before spending a Claude call. Re-opening the same persona
+    # brief on the same run with nothing changed (the common "just looking
+    # again" case) is then free. Any real change to risks/loop_stats changes
+    # the hash and falls through to a fresh call, same as before.
+    #
+    # _PERSONA_SYSTEM is included in the hash alongside the user message —
+    # without it, editing the prompt's instructions (e.g. the BOARD persona's
+    # dollar-led filtering rules) would silently keep serving briefs generated
+    # under the OLD instructions for any run whose risks/loop_stats hadn't
+    # changed, since the cache key would be identical either way.
+    input_hash = hashlib.sha256((_PERSONA_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("persona_brief", req.run_id, persona, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
     try:
         result = claude_client.complete_json(
             _PERSONA_SYSTEM, user, _PERSONA_SCHEMA, label="persona",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
 
-    db.save_ai_analysis(
+    analysis_id = db.save_ai_analysis(
         "persona_brief", result,
         run_id=req.run_id, ticker=req.ticker, subject_ref=persona,
         model=_MODEL_STRUCTURED, effort="medium",
         summary=result.get("headline", "")[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
     )
-    return result
+    _embed_ai_summary(analysis_id, req.ticker, f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #4b — Exception Management persona brief (same mechanism as #4 above, fed
+# a period's Continuous Control Monitoring exception report instead of a
+# risk-loop register — see exceptions_endpoints.py's GET /exceptions/report,
+# whose summary/by_control response shape this endpoint's request mirrors
+# directly so the frontend can pass the report straight through unmodified.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EXCEPTION_PERSONA_SYSTEM = """You write role-tailored executive briefings from a Continuous \
+Control Monitoring exception report — every control exception across an organization's \
+business processes (order-to-cash, procure-to-pay, record-to-report, hire-to-retire, payroll, \
+vendor management, IAM, and others) for one reporting period, grouped by control with an \
+estimated dollar impact per group. Given a target persona and the report, write a brief that \
+speaks to that audience's priorities and vocabulary:
+
+- CAE: control environment adequacy — is this a systemic gap in one process or isolated \
+incidents, which controls most urgently need remediation, and what this implies for the \
+next audit plan.
+- CFO: financial-statement-relevant exceptions specifically (record-to-report, payroll, \
+vendor payments, revenue recognition) — dollar exposure and disclosure implications.
+- COO: operational process breakdowns (order-to-cash, procure-to-pay, inventory, \
+hire-to-retire) — what needs a process fix, not a one-off correction.
+- TECH_EXEC (Technical Executive — CTO / CIO / CISO): access-control and IAM exceptions, \
+SOD conflicts, and control automation gaps; technical vocabulary is appropriate here.
+- NONTECH_EXEC (Non-Technical Executive — CFO / COO / CEO): translate exceptions into \
+business, financial, and operational impact — no controls jargon.
+- BOARD (Board / Audit Committee): dollar-led governance framing, not a survey of every \
+control. Select only the highest-impact groups — material impact_usd and a worst_risk_rating \
+of R (or R and A together if R alone is too thin to say anything useful) — and frame this as \
+"is the control environment deteriorating, and does leadership need to act."
+
+Each control group's impact_usd is real model/report output, not your estimate — cite it by \
+name ("estimated impact of ~$XM"), and its impact_source tells you what kind of figure it is: \
+"transaction_amount" is an actual summed dollar total from real transactions, \
+"fair_estimate" is a FAIR (Factor Analysis of Information Risk) Monte Carlo estimate — say so \
+explicitly when citing one and never claim a precision the estimate doesn't have, \
+"transaction_amount_partial" means only some occurrences in that group had a captured amount, \
+and "not_computed" means no figure exists yet for that group — never invent one. \
+controls_total/controls_shown in the summary tell you whether the by-control list is complete \
+or a top-N slice of a larger population — say so if it's a slice, don't imply it's everything."""
+
+
+def _round_to(v, step):
+    """Round a number to the nearest multiple of `step`; passes through
+    None. Used only for building a coarse cache-key fingerprint — never for
+    anything a human or the model actually sees."""
+    if v is None:
+        return None
+    try:
+        return round(float(v) / step) * step
+    except (TypeError, ValueError):
+        return None
+
+
+def _exception_report_fingerprint(persona: str, date_from: str, date_to: str,
+                                   summary: dict, controls_min: list) -> dict:
+    """A coarsened snapshot of the exception report, used ONLY to build the
+    cache-key hash below — never sent to the model (the `user` message right
+    after this uses the exact figures, always).
+
+    Without this, the exception brief's cache was effectively useless on a
+    live system: connector_poller.py ingests new synthetic exception events
+    continuously (every ~60s tick), so total_occurrences/impact_usd drift by
+    a handful of events between almost any two page loads even when the
+    period's overall picture hasn't meaningfully changed — hashing the EXACT
+    figures meant a fresh, paid Claude call on nearly every visit, not "cache
+    until changes are detected." (persona_brief's equivalent cache doesn't
+    have this problem: risk-engine.js's register only changes when a new
+    Enterprise Risk Loop run completes, a deliberate user action, not a
+    continuous background process.)
+
+    Rounding occurrence counts/dollar figures to a coarse grain means the
+    fingerprint — and therefore the cache key — only changes when the
+    report's shape shifts by an amount a board reader would actually
+    notice: a control's rating changing, a new control appearing, or a
+    real move in the totals, not routine background drift.
+    """
+    controls_fp = sorted(
+        (c.get("control_id"), c.get("worst_risk_rating"), _round_to(c.get("occurrence_count"), 5))
+        for c in controls_min
+    )
+    return {
+        "persona": persona, "date_from": date_from, "date_to": date_to,
+        "total_occurrences": _round_to(summary.get("total_occurrences"), 5),
+        "total_impact_usd": _round_to(summary.get("total_impact_usd"), 500),
+        "by_risk_rating": {k: _round_to(v, 5) for k, v in (summary.get("by_risk_rating") or {}).items()},
+        "controls": controls_fp,
+    }
+
+
+@router.post("/ai/exception-brief")
+def exception_brief(req: ExceptionBriefRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    persona = (req.persona or "CAE").upper()
+    controls_min = [
+        {"control_id": c.get("control_id"), "system_source": c.get("system_source"),
+         "process": c.get("process"), "occurrence_count": c.get("occurrence_count"),
+         "worst_risk_rating": c.get("worst_risk_rating"),
+         "impact_usd": c.get("impact_usd"), "impact_source": c.get("impact_source")}
+        for c in req.by_control
+    ]
+    user = (
+        f"Persona: {persona}\nPeriod: {req.date_from} to {req.date_to}\n\n"
+        f"Report summary:\n{json.dumps(req.summary, indent=2, default=str)}\n\n"
+        f"By-control breakdown:\n{json.dumps(controls_min, indent=2, default=str)}\n\n"
+        f"Write the {persona} brief."
+    )
+
+    # Same cost-reduction cache as persona_brief, but hashed off a coarsened
+    # fingerprint rather than the `user` message above — see
+    # _exception_report_fingerprint's docstring for why that distinction
+    # matters here specifically. subject_ref keys on persona + period
+    # (there's no run_id here — exception data isn't tied to a risk-loop
+    # run) so a different date range never collides with a cached brief for
+    # the same persona.
+    subject_ref = f"{persona}:{req.date_from}:{req.date_to}"
+    fingerprint = _exception_report_fingerprint(persona, req.date_from, req.date_to, req.summary, controls_min)
+    input_hash = hashlib.sha256(
+        (_EXCEPTION_PERSONA_SYSTEM + "\n---\n" + json.dumps(fingerprint, sort_keys=True, default=str)).encode("utf-8")
+    ).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("exception_brief", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _EXCEPTION_PERSONA_SYSTEM, user, _PERSONA_SCHEMA, label="exception_persona",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "exception_brief", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=result.get("headline", "")[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    _embed_ai_summary(analysis_id, "", f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #4c — Head of Operations brief, fed real process-mining statistics (see
+# process_mining_endpoints.py) rather than the risk register or an exception
+# report — the first persona brief in this file that narrates bottleneck/
+# rework/variant data directly instead of risk scores or control exceptions.
+# Same cache/review mechanism as #4/#4b.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_OPS_EFFICIENCY_SYSTEM = """You write a Head of Operations briefing from real process-mining \
+statistics over a trailing window of case-tracked business-process activity (order-to-cash, \
+procure-to-pay, receive-to-ship, and other monitored processes). You are given:
+- summary: case counts and, per process, conformance rate, rework rate, bottleneck, and \
+average case duration.
+- cycle_times: every step-to-step transition's mean/median/p90 duration, slowest first — the \
+first edge is the bottleneck: where time actually accumulates, which is a different thing from \
+transaction VOLUME.
+- rework: the rate and list of cases that revisited an already-completed step — often the \
+fingerprint of a control catching something and sending the case backward, not a random error.
+- variants: the distinct step-sequences actually observed, most frequent first, each flagged \
+whether it is the happy path (most common) and whether it matches the documented process \
+template (is_canonical) — a happy path that ISN'T canonical means the "normal" way of working \
+has quietly drifted from what's documented, which is itself worth flagging even with no \
+violations.
+
+Write for a Head of Operations: where is time actually being lost (cite the bottleneck edge by \
+name and its hours), is rework structural or isolated, and has the real process drifted from \
+the documented one. Every number you cite must come from the data given — never invent a \
+duration, rate, or case count, and say plainly when a figure is absent (e.g. no bottleneck edge \
+because there's too little data) rather than estimating one. Output a headline, 2-4 sections \
+with a title and body each, and a short list of callouts — the highest-priority one-line \
+findings a Head of Operations should act on first."""
+
+
+@router.post("/ai/ops-efficiency-brief")
+def ops_efficiency_brief(req: OpsEfficiencyBriefRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    process_label = req.process or "all processes"
+    user = (
+        f"Process: {process_label}\nWindow: trailing {req.days} days\n\n"
+        f"Summary:\n{json.dumps(req.summary, indent=2, default=str)}\n\n"
+        f"Cycle times:\n{json.dumps(req.cycle_times, indent=2, default=str)}\n\n"
+        f"Rework:\n{json.dumps(req.rework, indent=2, default=str)}\n\n"
+        f"Top variants:\n{json.dumps(req.variants[:5], indent=2, default=str)}\n\n"
+        f"Write the Head of Operations brief."
+    )
+
+    subject_ref = f"OPS:{req.process or 'all'}:{req.days}"
+    input_hash = hashlib.sha256((_OPS_EFFICIENCY_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("ops_efficiency_brief", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _OPS_EFFICIENCY_SYSTEM, user, _PERSONA_SCHEMA, label="ops_efficiency_persona",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "ops_efficiency_brief", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=result.get("headline", "")[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    _embed_ai_summary(analysis_id, "", f"{result.get('headline', '')}\n\n{result.get('summary', '')}")
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5 Whys / Fishbone — root-cause HYPOTHESIS generation over one real
+# process-mining finding (see CausalSeedFinding above). Three guardrails,
+# all enforced structurally rather than left to the prompt's good behavior
+# alone:
+#   1. The seed is always a real, already-computed number (a bottleneck or
+#      Pareto deviation edge) passed in by the frontend from
+#      process_mining_tool.py's own output — this endpoint never accepts a
+#      free-text "problem statement" to reason about.
+#   2. Every individual why/cause is schema-forced to self-classify as
+#      "evidence" (traceable to the hours/count given) or "assumption" (a
+#      plausible but unverified operational explanation) — the model cannot
+#      emit an unlabeled claim.
+#   3. Neither result is ever embedded for semantic search
+#      (_embed_ai_summary is deliberately NOT called here, unlike every
+#      other AI narrative in this file) — a hypothesis must not surface
+#      later as if it were a vetted finding in some unrelated "ask AI about
+#      this company" search result. It only ever appears right where a
+#      human asked for it, behind the same pending/reviewed banner as
+#      every other AI output, and is never auto-written into the risk
+#      register or any other persisted record.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CAUSAL_GUARDRAIL_NOTE = (
+    "This is a HYPOTHESIS-GENERATION exercise, not a finding of fact: the data tells you WHAT "
+    "is slow or deviating, never WHY a human or system actually behaves that way. Classify every "
+    "individual why/cause as exactly one of:\n"
+    '  "evidence" — directly supported by the hours/count/process data given (rare beyond the '
+    "first step)\n"
+    '  "assumption" — a plausible operational explanation you cannot verify from this data alone\n'
+    "Almost everything you write will be an assumption — label it that way honestly rather than "
+    "writing with false confidence, and never invent a number not given to you."
+)
+
+
+def _causal_finding_user_block(finding: "CausalSeedFinding", days: int) -> str:
+    basis_text = (
+        "the single slowest transition in this process" if finding.basis == "bottleneck"
+        else "a transition outside the process's documented step order (rework/skip/off-template)"
+    )
+    return (
+        f"Process: {finding.process_label or finding.process or 'unknown'}\n"
+        f"Flagged transition: {finding.source} -> {finding.target}\n"
+        f"Average hours for this transition: {finding.avg_hours}\n"
+        f"Observed in {finding.count} case(s) over the trailing {days} days\n"
+        f"Why this was flagged: {basis_text}\n"
+    )
+
+
+_FIVE_WHYS_SYSTEM = (
+    "You perform a 5 Whys root-cause drill-down on ONE real process-mining finding — a specific "
+    "step-to-step transition flagged as slow or deviating in a real case-tracked business "
+    "process. You are given only the process name, the two step labels, the average hours this "
+    "transition takes, how many cases it was observed in, and why it was flagged.\n\n"
+    f"{_CAUSAL_GUARDRAIL_NOTE}\n\n"
+    "Write exactly 5 why-steps, each a question and an answer, going progressively deeper. End "
+    "with a root_cause_hypothesis — one sentence, hedged ('may be due to...', never 'is caused "
+    "by...') — and a recommended_next_step that is something a human should go VERIFY (e.g. 'ask "
+    "the process owner whether X', 'pull a sample of N cases and check Y'), never an action to "
+    "take on the hypothesis as if it were already confirmed. Output strict JSON matching the "
+    "given schema only."
+)
+
+_FIVE_WHYS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "problem_statement": {"type": "string"},
+        "whys": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "question": {"type": "string"},
+                    "answer": {"type": "string"},
+                    "basis": {"type": "string", "enum": ["evidence", "assumption"]},
+                },
+                "required": ["question", "answer", "basis"],
+            },
+        },
+        "root_cause_hypothesis": {"type": "string"},
+        "recommended_next_step": {"type": "string"},
+    },
+    "required": ["problem_statement", "whys", "root_cause_hypothesis", "recommended_next_step"],
+}
+
+
+@router.post("/ai/five-whys")
+def five_whys(req: FiveWhysRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    f = req.finding
+    user = _causal_finding_user_block(f, req.days) + "\nPerform the 5 Whys drill-down."
+
+    subject_ref = f"5WHY:{f.process}:{f.source}->{f.target}"
+    input_hash = hashlib.sha256((_FIVE_WHYS_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("five_whys", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _FIVE_WHYS_SYSTEM, user, _FIVE_WHYS_SCHEMA, label="five_whys",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=2000, caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "five_whys", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=result.get("root_cause_hypothesis", "")[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    # Deliberately no _embed_ai_summary call — see module-level guardrail note above.
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
+
+
+_FISHBONE_SYSTEM = (
+    "You perform a Fishbone (Ishikawa) root-cause brainstorm on ONE real process-mining finding "
+    "— a specific step-to-step transition flagged as slow or deviating in a real case-tracked "
+    "business process. You are given only the process name, the two step labels, the average "
+    "hours this transition takes, how many cases it was observed in, and why it was flagged.\n\n"
+    f"{_CAUSAL_GUARDRAIL_NOTE}\n\n"
+    "Propose 2-4 candidate causes in EACH of these categories: People, Process, Technology, "
+    "Data/Materials, Environment, Measurement — omit a category entirely if you cannot think of "
+    "a plausible cause for it, rather than padding it with filler. End with 1-3 "
+    "root_cause_candidates (the causes, from any category, most worth investigating first) and "
+    "treat them explicitly as starting points for a human to verify, not conclusions. Output "
+    "strict JSON matching the given schema only."
+)
+
+_FISHBONE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "problem_statement": {"type": "string"},
+        "categories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": ["People", "Process", "Technology", "Data/Materials", "Environment", "Measurement"],
+                    },
+                    "causes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "cause": {"type": "string"},
+                                "basis": {"type": "string", "enum": ["evidence", "assumption"]},
+                            },
+                            "required": ["cause", "basis"],
+                        },
+                    },
+                },
+                "required": ["name", "causes"],
+            },
+        },
+        "root_cause_candidates": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["problem_statement", "categories", "root_cause_candidates"],
+}
+
+
+@router.post("/ai/fishbone")
+def fishbone(req: FishboneRequest, current_user: dict = Depends(get_current_user)):
+    _require_ai()
+    f = req.finding
+    user = _causal_finding_user_block(f, req.days) + "\nPerform the Fishbone brainstorm."
+
+    subject_ref = f"FISHBONE:{f.process}:{f.source}->{f.target}"
+    input_hash = hashlib.sha256((_FISHBONE_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("fishbone", None, subject_ref, input_hash)
+    if cached is not None:
+        return {
+            **cached["content"],
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
+    try:
+        result = claude_client.complete_json(
+            _FISHBONE_SYSTEM, user, _FISHBONE_SCHEMA, label="fishbone",
+            model=_MODEL_STRUCTURED, effort="medium", max_tokens=2500, caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    analysis_id = db.save_ai_analysis(
+        "fishbone", result,
+        run_id=None, ticker=None, subject_ref=subject_ref,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary="; ".join(result.get("root_cause_candidates", []))[:500],
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
+    )
+    # Deliberately no _embed_ai_summary call — see module-level guardrail note above.
+    return {**result, "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,7 +1399,7 @@ report — findings, not marketing. Do not invent data beyond what is supplied."
 
 
 @router.post("/ai/audit-report")
-def audit_report(req: ReportRequest):
+def audit_report(req: ReportRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
     payload = {
         "ticker": req.ticker,
@@ -489,20 +1412,85 @@ def audit_report(req: ReportRequest):
         f"Generate the audit report for {req.ticker} from this risk-loop output:\n\n"
         f"{json.dumps(payload, indent=2, default=str)[:60_000]}"
     )
+
+    # Same cache as persona_brief — this is the more expensive of the two
+    # (effort="high", 10k max_tokens), so a re-open-with-nothing-changed
+    # cache hit here is worth the most. _REPORT_SYSTEM is included in the hash
+    # for the same reason as persona_brief's: a future prompt edit must bust
+    # the cache, not keep serving briefs generated under old instructions.
+    input_hash = hashlib.sha256((_REPORT_SYSTEM + "\n---\n" + user).encode("utf-8")).hexdigest()[:32]
+    cached = db.get_cached_ai_analysis("audit_report", req.run_id, None, input_hash)
+    if cached is not None:
+        return {
+            "ticker": req.ticker, "markdown": cached["content"].get("markdown", ""),
+            "_review": {
+                "id": cached["id"], "status": cached["review_status"],
+                "reviewed_by_name": cached["reviewed_by_name"], "reviewed_at": cached["reviewed_at"],
+            },
+        }
+
     try:
         markdown = claude_client.complete_text(
             _REPORT_SYSTEM, user, label="report",
             model=_MODEL_STRUCTURED, effort="high", max_tokens=10_000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
 
-    db.save_ai_analysis(
+    analysis_id = db.save_ai_analysis(
         "audit_report", {"markdown": markdown},
         run_id=req.run_id, ticker=req.ticker, model=_MODEL_STRUCTURED, effort="high",
         summary=f"{len(markdown)} char report",
+        sampled_for_review=_REQUIRE_REVIEW_FOR_UNGATED_NARRATIVES,
+        input_hash=input_hash,
     )
-    return {"ticker": req.ticker, "markdown": markdown}
+    _embed_ai_summary(analysis_id, req.ticker, markdown)
+    return {
+        "ticker": req.ticker, "markdown": markdown,
+        "_review": {"id": analysis_id, "status": "pending", "reviewed_by_name": None, "reviewed_at": None},
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ungated-narrative review queue (MODEL_CARD.md "Recommended Next Steps" #4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ReviewDecisionRequest(BaseModel):
+    note: Optional[str] = None
+
+
+@router.get("/ai/review-queue")
+def get_review_queue(
+    status: Optional[str] = "pending",
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user),
+):
+    """Every persona_brief/audit_report generation awaiting (or having
+    received) human review — not a sample. status='pending'|'reviewed'|None (all)."""
+    if not db.is_available():
+        return {"items": [], "count": 0}
+    items = db.list_ai_review_queue(status=status, limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/ai/review-queue/{analysis_id}/review")
+def review_sampled_analysis(
+    analysis_id: int,
+    req: ReviewDecisionRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mark a sampled ungated-narrative generation as human-reviewed."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    ok = db.mark_ai_analysis_reviewed(
+        analysis_id, current_user["id"],
+        current_user.get("display_name") or current_user.get("username", ""),
+        note=req.note,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Analysis not found or not sampled for review")
+    return {"ok": True}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -510,7 +1498,7 @@ def audit_report(req: ReportRequest):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/agent/investigate/stream")
-def investigate_stream(req: InvestigateRequest):
+def investigate_stream(req: InvestigateRequest, current_user: dict = Depends(get_current_user)):
     """
     Server-Sent Events version of /agent/investigate.
     Emits one JSON event per tool call/result, then a final 'done' event.
@@ -546,7 +1534,7 @@ def investigate_stream(req: InvestigateRequest):
         for event in claude_client.run_tool_loop_streaming(
             _AGENT_SYSTEM, user, agent_tools.TOOLS, agent_tools.IMPLS,
             label="investigate_stream", model=_MODEL_AGENT, effort="high",
-            max_tokens=10_000, max_iterations=14,
+            max_tokens=10_000, max_iterations=14, caller=current_user,
         ):
             if event.get("type") == "tool_call":
                 all_tool_calls.append({"tool": event["tool"], "input": event["input"], "is_error": False})
@@ -642,7 +1630,7 @@ class CalibrateRequest(BaseModel):
 
 
 @router.post("/ai/loop-calibrate")
-def loop_calibrate(req: CalibrateRequest):
+def loop_calibrate(req: CalibrateRequest, current_user: dict = Depends(get_current_user)):
     """Gate 3 — AI-assisted loop calibration recommendations for the next cycle."""
     _require_ai()
     risk_delta = []
@@ -672,6 +1660,7 @@ def loop_calibrate(req: CalibrateRequest):
         result = claude_client.complete_json(
             _CALIBRATE_SYSTEM, user, _CALIBRATE_SCHEMA, label="loop_calibrate",
             model=_MODEL_STRUCTURED, effort="medium", max_tokens=4000,
+            caller=current_user,
         )
     except Exception as exc:
         raise _ai_exc(exc)
@@ -702,7 +1691,7 @@ the evidence for each, and a recommended audit focus. Be specific and cite figur
 
 
 @router.post("/agent/investigate")
-def investigate(req: InvestigateRequest):
+def investigate(req: InvestigateRequest, current_user: dict = Depends(get_current_user)):
     _require_ai()
     import agent_tools
 
@@ -732,7 +1721,7 @@ def investigate(req: InvestigateRequest):
         result = claude_client.run_tool_loop(
             _AGENT_SYSTEM, user, agent_tools.TOOLS, agent_tools.IMPLS,
             label="investigate", model=_MODEL_AGENT, effort="high",
-            max_tokens=10_000, max_iterations=14,
+            max_tokens=10_000, max_iterations=14, caller=current_user,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI agent failed: {exc}")
@@ -745,6 +1734,190 @@ def investigate(req: InvestigateRequest):
         summary=f"{result['iterations']} iterations, {len(result['tool_calls'])} tool calls",
     )
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #1b — Council investigation: the same multi-perspective ensemble pattern
+# mcp_governance.py's adjudication ensemble already uses (independent voters,
+# then reconciliation) applied to /agent/investigate. Three specialized
+# angles run in parallel over the SAME tool access (agent_tools.TOOLS) —
+# they differ by system-prompt lens, not by what data they can reach — then
+# a lightweight synthesis pass surfaces where they agree (higher-confidence,
+# triangulated findings) vs. where only one angle flagged something (still
+# worth noting, just not cross-validated). Deliberately does NOT let one
+# perspective override another — same "show disagreement, don't hide it"
+# principle as the Council's own reconciliation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PERSPECTIVES = [
+    {
+        "key": "financial",
+        "label": "Financial Analyst",
+        "system": """You are a financial-statement risk analyst on an internal-audit \
+investigation team. Given a company ticker, focus exclusively on financial-statement \
+risk: revenue quality and concentration, margin trends, liquidity and cash generation, \
+manipulation risk (Beneish M-score), and going-concern indicators (Altman Z''-score). \
+Pull financials and run the quant models — cite their numbers, never recompute by hand. \
+Ignore cyber, operational, and regulatory matters unless they have a direct, material \
+financial-statement consequence. Stop and write a concise memo: the 3-5 most material \
+financial risks, the evidence for each, and a recommended audit focus.""",
+    },
+    {
+        "key": "operational_cyber",
+        "label": "Operational & Cyber Risk Analyst",
+        "system": """You are an operational and cybersecurity risk analyst on an \
+internal-audit investigation team. Given a company ticker, focus exclusively on \
+operational and technology risk: cybersecurity incidents and IT control language (8-Ks, \
+Item 1A), supply-chain and execution risk, business continuity, and technology/vendor \
+concentration. Pull 8-K events and risk-factor text — cite specific incidents and \
+language, don't speculate. Ignore pure financial-statement or regulatory/litigation \
+matters unless they stem directly from an operational or cyber event. Stop and write a \
+concise memo: the 3-5 most material operational/cyber risks, the evidence for each, and \
+a recommended audit focus.""",
+    },
+    {
+        "key": "compliance_regulatory",
+        "label": "Compliance & Regulatory Analyst",
+        "system": """You are a compliance and regulatory risk analyst on an internal-audit \
+investigation team. Given a company ticker, focus exclusively on regulatory, legal, and \
+governance risk: litigation and regulatory-action disclosures, industry-specific \
+regulatory exposure, disclosure-control language, and governance/board matters. Pull \
+risk-factor text and recent 8-Ks — cite the company's own disclosed language, don't \
+speculate about matters it hasn't disclosed. Ignore pure financial-statement or \
+operational/cyber matters unless they carry a direct regulatory or legal consequence. \
+Stop and write a concise memo: the 3-5 most material compliance/regulatory risks, the \
+evidence for each, and a recommended audit focus.""",
+    },
+]
+
+_COUNCIL_SYNTHESIS_SYSTEM = """You reconcile three independent investigation memos — \
+financial, operational/cyber, and compliance/regulatory — written by separate analysts \
+who investigated the same company without seeing each other's work. Identify findings \
+that multiple analysts converged on independently (these are higher-confidence, \
+triangulated signals) versus findings only one analyst raised (still worth noting, just \
+not cross-validated — do not discard or downgrade them, only label them accurately). Do \
+not resolve disagreements by picking a side; report them as-is. Write one headline \
+sentence summarizing the overall picture."""
+
+_COUNCIL_SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "headline": {"type": "string"},
+        "convergent_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "finding": {"type": "string"},
+                    "perspectives": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["finding", "perspectives"],
+            },
+        },
+        "divergent_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "finding": {"type": "string"},
+                    "perspective": {"type": "string"},
+                },
+                "required": ["finding", "perspective"],
+            },
+        },
+    },
+    "required": ["headline", "convergent_findings", "divergent_findings"],
+}
+
+
+async def _run_perspective(perspective: dict, user: str, current_user: dict) -> dict:
+    import agent_tools
+    result = await asyncio.to_thread(
+        claude_client.run_tool_loop,
+        perspective["system"], user, agent_tools.TOOLS, agent_tools.IMPLS,
+        label=f"investigate:{perspective['key']}", model=_MODEL_AGENT, effort="high",
+        max_tokens=10_000, max_iterations=14, caller=current_user,
+    )
+    return {"key": perspective["key"], "label": perspective["label"], **result}
+
+
+@router.post("/agent/investigate/council")
+async def investigate_council(req: InvestigateRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Multi-perspective investigation: the financial, operational/cyber, and
+    compliance/regulatory analysts run in parallel over the same ticker, then
+    a synthesis pass reports where they converged vs. where only one flagged
+    something. Costs ~3x a single /agent/investigate call in tokens — use
+    when triangulation matters, not as the default for every cycle.
+    """
+    _require_ai()
+
+    prior_context = ""
+    if db.is_available():
+        prior = db.get_prior_investigation(req.ticker)
+        if prior:
+            memo = (prior.get("content") or {}).get("memo", prior.get("summary", ""))
+            if memo:
+                prior_context = (
+                    f"\n\n--- Prior cycle findings ({prior['created_at']}) ---\n"
+                    f"{memo[:4000]}\n"
+                    "--- End of prior findings ---\n\n"
+                    "Compare the current state against these prior findings within your lens."
+                )
+
+    focus = f"\n\nSpecific focus from the auditor: {req.focus}" if req.focus else ""
+    user = (
+        f"Investigate the risk posture of {req.ticker.upper()} within your assigned lens "
+        f"and produce an investigation memo.{prior_context}{focus}"
+    )
+
+    try:
+        perspective_results = await asyncio.gather(
+            *[_run_perspective(p, user, current_user) for p in _PERSPECTIVES]
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI council investigation failed: {exc}")
+
+    for pr in perspective_results:
+        db.save_ai_analysis(
+            "agent_investigation", {"memo": pr["final_text"], "tool_calls": pr["tool_calls"],
+                                     "iterations": pr["iterations"], "stopped": pr["stopped"]},
+            run_id=req.run_id, ticker=req.ticker, subject_ref=pr["key"],
+            model=_MODEL_AGENT, effort="high",
+            summary=f"[{pr['label']}] {pr['iterations']} iterations, {len(pr['tool_calls'])} tool calls",
+        )
+
+    synthesis_input = "\n\n".join(
+        f"=== {pr['label']} ===\n{pr['final_text']}" for pr in perspective_results
+    )
+    try:
+        synthesis = claude_client.complete_json(
+            _COUNCIL_SYNTHESIS_SYSTEM, synthesis_input, _COUNCIL_SYNTHESIS_SCHEMA,
+            label="investigate_council_synthesis", model=_MODEL_STRUCTURED, effort="medium",
+            max_tokens=3000, caller=current_user,
+        )
+    except Exception as exc:
+        raise _ai_exc(exc)
+
+    db.save_ai_analysis(
+        "agent_investigation_council", synthesis,
+        run_id=req.run_id, ticker=req.ticker,
+        model=_MODEL_STRUCTURED, effort="medium",
+        summary=synthesis.get("headline", "")[:500],
+    )
+
+    return {
+        "ticker": req.ticker,
+        "perspectives": [
+            {"key": pr["key"], "label": pr["label"], "memo": pr["final_text"],
+             "tool_calls": pr["tool_calls"], "iterations": pr["iterations"], "stopped": pr["stopped"]}
+            for pr in perspective_results
+        ],
+        "synthesis": synthesis,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

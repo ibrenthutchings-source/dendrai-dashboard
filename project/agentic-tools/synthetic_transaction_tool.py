@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""
+Synthetic Transaction Simulator — a poll-connector adapter.
+
+Fabricates realistic, case-based transaction activity for systems/processes
+this deployment has no live credentials for, so Continuous Watch (the Case
+Flow Graph, Process Mining tabs, and the adjudication feed underneath both)
+has real, continuously-arriving, monitorable data end-to-end without an
+actual Oracle Fusion/SailPoint/SAP/Dynamics/ServiceNow tenant on the other
+end. Registered as connector_type "synthetic_transaction" in
+connector_poller.py's _ADAPTERS — see db.seed_synthetic_connectors() for the
+eleven (system, process) poll_connectors rows it's meant to back.
+
+Each connector's extra_config carries {"process": <id>, "system_label": <str>}.
+pull_events() looks up that process id and fabricates 1-3 new complete
+lifecycle cases (or standalone events, for processes that aren't naturally
+multi-step) per tick. Steps are backdated with realistic inter-step gaps via
+each event's "created_at" — connector_poller.py forwards that through to
+mcp_governance._ingest_system_event(), so a case's steps land with their
+intended day-apart timestamps instead of all appearing to happen in the same
+instant they were polled (see connector_poller.py's _poll_one for the plumbing).
+
+Order to Cash / Procure to Pay / Receive to Ship reuse the exact case
+templates and payload builders generate_o2c_p2p_synthetic_log.py already
+uses for its one-shot backfill — same event_type/flag shape, so these three
+still exercise the real PaC Rego packages for those processes (pac_endpoints.py),
+just continuously via a poll connector instead of a manual one-shot run.
+
+The other eight processes (Hire to Retire, IAM, Record to Report, Fixed
+Assets, Vendor Management, Payroll, Inventory Master, Customer Master File)
+have no written PaC rule package yet — see pac_endpoints.py's process list.
+They still flow through the real Bronze/Silver/Gold adjudication pipeline and
+are fully visible/case-graphable in the Case Flow Graph and Process Mining
+tabs; they just won't score process-specific policy_violations, since there's
+no Rego package for them to match against. That's a deliberate scope line,
+not an oversight — see the "monitoring-only for the gap processes" decision
+this module implements.
+"""
+from __future__ import annotations
+
+import random
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Optional
+
+from generate_o2c_p2p_synthetic_log import _O2C_CASE, _P2P_CASE, _INVENTORY_CASE
+
+_ACTORS = [
+    "jsmith@acme-corp.com", "mgarcia@acme-corp.com", "rpatel@acme-corp.com",
+    "lchen@acme-corp.com", "kwilliams@acme-corp.com", "atanaka@acme-corp.com",
+]
+
+_VIOLATION_RATE = 0.12
+_CASES_PER_TICK = (1, 3)  # min, max new cases/standalone events fabricated per poll
+
+# How often an IAM "Access Requested" event's entitlement is an AI-tool name
+# instead of an ERP role — gives mcp_governance.py's passive shadow-AI
+# detection (_extract_ai_tool_name) something to actually find without
+# waiting on a real SailPoint/IAM integration. Same probabilistic-injection
+# idiom as _VIOLATION_RATE above.
+_AI_ENTITLEMENT_RATE = 0.15
+_AI_ENTITLEMENTS = ["OPENAI_ENTERPRISE_ACCESS", "GITHUB_COPILOT_SEAT",
+                     "ANTHROPIC_CLAUDE_API", "MIDJOURNEY_TEAM_SEAT"]
+
+# process_mining_tool.PROCESS_TEMPLATES ids these reuse verbatim — kept as a
+# separate import-free constant (not importing process_mining_tool here) so
+# this adapter has no dependency beyond the synthetic generator it borrows from.
+_REUSED_TEMPLATES = {
+    "order_to_cash": _O2C_CASE,
+    "procure_to_pay": _P2P_CASE,
+    "receive_to_ship": _INVENTORY_CASE,
+}
+
+
+@dataclass
+class SimStep:
+    label: str                 # process_step
+    event_type: str
+    gap_days: tuple             # (min, max) days from the PREVIOUS step; ignored for step 0
+    build: Callable              # (rng, rid, violating) -> payload detail dict
+    # When this step is the one deliberately built violating, use THIS
+    # event_type instead — for the couple of steps that line up with a real,
+    # already-written PaC finding type (mcp_governance._SOURCE_EVENT_TO_PAC_PROCESS),
+    # so the violating case actually exercises that existing Rego rule
+    # instead of just landing as a generic HIGH-severity event.
+    violating_event_type: Optional[str] = None
+    # Payload key mcp_governance._detect_system_flags() checks for to route
+    # a violating case into Bronze/Silver/Gold/Council at all — confirmed
+    # this was the actual gap keeping synthetic violations invisible to the
+    # Council: HIGH severity alone was never flag-worthy (only CRITICAL is),
+    # and every other check there is an exact payload-key match set by
+    # whichever real tool the flag was written for (e.g.
+    # oracle_hcm_tool.py sets "terminated_employee_access_retained" —
+    # this module's own termination step only set "access_revoked", a
+    # different key the detector never looked for). None where no existing
+    # flag name is a genuine semantic match for this step — see
+    # _build_own_case's generic "policy_violation" fallback for those.
+    violating_flag: Optional[str] = None
+
+
+@dataclass
+class ProcessDef:
+    resource_prefix: str
+    steps: list                 # list[SimStep]
+    standalone: bool = False    # True: each poll draws ONE step kind as its own one-step case,
+                                 # rather than walking the full list as one linked lifecycle
+
+
+def _rid(prefix: str, rng: random.Random) -> str:
+    return f"{prefix}-{rng.randint(1000, 9999)}"
+
+
+def _case_id(rng: random.Random) -> str:
+    return f"{rng.getrandbits(40):010x}"
+
+
+_ERP_ENTITLEMENTS = ["AP_INVOICE_ENTRY", "PO_BUYER", "PRIV_DB_ADMIN", "FIN_CLOSE_APPROVER"]
+
+
+def _iam_entitlement(rng: random.Random) -> str:
+    """An ERP-role entitlement name, or (at _AI_ENTITLEMENT_RATE) an
+    AI-tool one — see _AI_ENTITLEMENT_RATE above."""
+    if rng.random() < _AI_ENTITLEMENT_RATE:
+        return rng.choice(_AI_ENTITLEMENTS)
+    return rng.choice(_ERP_ENTITLEMENTS)
+
+
+def _detail(rng: random.Random, rid: str, violating: bool, actor_field: str = "actor",
+            amount_field: Optional[str] = None, amount_range: tuple = (1000, 90000),
+            extra: Optional[dict] = None) -> dict:
+    d = {
+        "reference": rid,
+        actor_field: rng.choice(_ACTORS),
+        "properly_approved": not violating,
+        "approver": None if violating else rng.choice(_ACTORS),
+    }
+    if amount_field:
+        d[amount_field] = rng.randint(*amount_range)
+    if extra:
+        d.update(extra)
+    return d
+
+
+# ── Oracle Fusion — Hire to Retire ───────────────────────────────────────────
+_HIRE_TO_RETIRE = ProcessDef("REQ", [
+    SimStep("Requisition Created", "HCM_REQUISITION_CREATE_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "hiring_manager")),
+    SimStep("Requisition Approved", "HCM_REQUISITION_EVENT", (1, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "hiring_manager")),
+    SimStep("Offer Extended", "HCM_OFFER_EXTENDED_EVENT", (5, 21),
+            lambda rng, rid, v: _detail(rng, rid, v, "recruiter", "offer_amount", (60000, 220000))),
+    SimStep("Offer Accepted", "HCM_OFFER_EVENT", (1, 10),
+            lambda rng, rid, v: _detail(rng, rid, v, "candidate", "offer_amount", (60000, 220000))),
+    SimStep("Background Check Completed", "HCM_BACKGROUND_CHECK_EVENT", (1, 7),
+            lambda rng, rid, v: _detail(rng, rid, v, "new_hire", extra={"background_check_cleared": not v})),
+    SimStep("Onboarding Completed", "HCM_ONBOARDING_EVENT", (1, 14),
+            lambda rng, rid, v: _detail(rng, rid, v, "new_hire")),
+    SimStep("Pay Rate Change", "HCM_PAY_RATE_EVENT", (60, 400),
+            lambda rng, rid, v: _detail(rng, rid, v, "employee", "new_annual_pay", (60000, 220000),
+                                         extra={"pct_change": round(random.uniform(30, 60), 1) if v else round(random.uniform(2, 8), 1)}),
+            violating_event_type="UNAUTHORIZED_PAY_RATE_CHANGE",
+            violating_flag="unauthorized_pay_rate_change"),
+    SimStep("Termination Processed", "HCM_TERMINATION_EVENT", (90, 900),
+            lambda rng, rid, v: _detail(rng, rid, v, "employee", extra={"access_revoked": not v}),
+            violating_event_type="TERMINATED_EMPLOYEE_ACCESS_RETAINED",
+            violating_flag="terminated_employee_access_retained"),
+    SimStep("Final Pay Issued", "HCM_FINAL_PAY_EVENT", (1, 10),
+            lambda rng, rid, v: _detail(rng, rid, v, "payroll_admin", "final_pay_amount", (500, 20000))),
+])
+
+# ── SailPoint — IAM ───────────────────────────────────────────────────────────
+_IAM = ProcessDef("ACC", [
+    SimStep("Access Requested", "IAM_ACCESS_REQUEST_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "identity",
+                                         extra={"entitlement": _iam_entitlement(rng)})),
+    SimStep("Access Request Reviewed", "IAM_ACCESS_REVIEW_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "manager")),
+    SimStep("Access Approved", "IAM_ACCESS_APPROVAL_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "identity",
+                                         extra={"sod_conflict_detected": v}),
+            violating_flag="sod_violation"),
+    SimStep("Access Provisioned", "IAM_ACCESS_PROVISIONED_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "identity")),
+    SimStep("Access Certified", "IAM_ACCESS_CERTIFICATION_EVENT", (60, 180),
+            lambda rng, rid, v: _detail(rng, rid, v, "certifier")),
+    SimStep("Access Revoked", "IAM_ACCESS_REVOKED_EVENT", (30, 365),
+            lambda rng, rid, v: _detail(rng, rid, v, "identity")),
+])
+
+# ── SAP HANA — Record to Report ──────────────────────────────────────────────
+# account/description are only used by get_journal_entries() below (je_testing_tool.py's
+# rare_account_combination/unusual_description need real variety to score against) —
+# _build_own_case's other three R2R steps don't read them.
+_JE_ACCOUNTS = ["6100-OPEX", "5000-COGS", "4000-REVENUE", "2100-AP", "1200-AR",
+                "6400-PAYROLL", "3000-EQUITY", "1500-FIXED-ASSETS"]
+_JE_DESCRIPTIONS = ["Vendor invoice accrual", "Monthly payroll accrual", "Inventory revaluation",
+                    "Intercompany allocation", "FX revaluation adjustment", "Bad debt reserve"]
+
+_RECORD_TO_REPORT = ProcessDef("JE", [
+    SimStep("Journal Entry Posted", "R2R_JOURNAL_ENTRY_EVENT", (0, 0),
+            # Capped under $1M — a synthetic JE this large read as an
+            # unrealistic single entry for the "everyday journal noise" this
+            # simulator is meant to produce, not a legitimate top-side/
+            # consolidating entry (that's what TOP_SIDE_PROXY_THRESHOLD in
+            # je_testing_tool.py separately flags for real, on real data).
+            lambda rng, rid, v: _detail(rng, rid, v, "preparer", "je_amount", (5000, 999_999),
+                                         extra={"account": rng.choice(_JE_ACCOUNTS),
+                                                "description": rng.choice(_JE_DESCRIPTIONS)})),
+    SimStep("Journal Entry Approved", "R2R_JE_APPROVAL_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "approver")),
+    SimStep("Account Reconciled", "R2R_RECONCILIATION_EVENT", (1, 15),
+            lambda rng, rid, v: _detail(rng, rid, v, "reconciler", extra={"variance_identified": v})),
+    SimStep("Flux Analysis Reviewed", "R2R_FLUX_REVIEW_EVENT", (1, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "fpna_analyst")),
+    SimStep("Period Closed", "R2R_PERIOD_CLOSE_EVENT", (1, 10),
+            lambda rng, rid, v: _detail(rng, rid, v, "controller")),
+    SimStep("Financial Statement Published", "R2R_FS_PUBLISH_EVENT", (1, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "cfo_office")),
+])
+
+# ── SAP HANA — Fixed Assets ──────────────────────────────────────────────────
+_FIXED_ASSETS = ProcessDef("FA", [
+    SimStep("Asset Acquired", "FA_ACQUISITION_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "requestor", "acquisition_cost", (5000, 500000))),
+    SimStep("Asset Tagged", "FA_TAGGING_EVENT", (1, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "asset_custodian")),
+    SimStep("Asset Capitalized", "FA_CAPITALIZATION_EVENT", (1, 10),
+            lambda rng, rid, v: _detail(rng, rid, v, "accountant", extra={"capitalization_threshold_met": not v})),
+    SimStep("Depreciation Posted", "FA_DEPRECIATION_EVENT", (30, 90),
+            lambda rng, rid, v: _detail(rng, rid, v, "accountant")),
+    SimStep("Impairment Reviewed", "FA_IMPAIRMENT_REVIEW_EVENT", (90, 365),
+            lambda rng, rid, v: _detail(rng, rid, v, "accountant", extra={"impairment_identified": v})),
+    SimStep("Asset Disposed", "FA_DISPOSAL_EVENT", (180, 1800),
+            lambda rng, rid, v: _detail(rng, rid, v, "requestor", extra={"disposal_approved": not v})),
+])
+
+# ── SAP HANA — Vendor Management ─────────────────────────────────────────────
+# Risk assessment/due diligence happens BEFORE onboarding in a real
+# procurement walkthrough — the original order here had it backwards.
+_VENDOR_MANAGEMENT = ProcessDef("VEN", [
+    SimStep("Vendor Risk Assessed", "VM_RISK_ASSESSMENT_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "risk_analyst")),
+    SimStep("Vendor Onboarded", "VM_ONBOARDING_EVENT", (5, 20),
+            lambda rng, rid, v: _detail(rng, rid, v, "sourcing_owner", extra={"due_diligence_completed": not v})),
+    SimStep("Contract Signed", "VM_CONTRACT_SIGNED_EVENT", (1, 10),
+            lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner", "contract_value", (10000, 3000000))),
+    SimStep("Vendor Performance Reviewed", "VM_PERFORMANCE_REVIEW_EVENT", (60, 180),
+            lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner")),
+    SimStep("Vendor Contract Renewed", "VM_CONTRACT_RENEWAL_EVENT", (1, 30),
+            lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner", "contract_value", (10000, 3000000))),
+    SimStep("Vendor Offboarded", "VM_OFFBOARDING_EVENT", (60, 700),
+            lambda rng, rid, v: _detail(rng, rid, v, "procurement_owner")),
+])
+
+# ── SAP HANA — Payroll ────────────────────────────────────────────────────────
+_PAYROLL = ProcessDef("TS", [
+    SimStep("Time Entry Submitted", "PAYROLL_TIME_ENTRY_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "employee", "hours", (20, 90))),
+    SimStep("Time Approved", "PAYROLL_TIME_APPROVAL_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "manager")),
+    SimStep("Payroll Calculated", "PAYROLL_CALCULATION_EVENT", (1, 3),
+            lambda rng, rid, v: _detail(rng, rid, v, "payroll_admin", "gross_pay", (1500, 12000))),
+    SimStep("Payroll Approved", "PAYROLL_APPROVAL_EVENT", (0, 1),
+            lambda rng, rid, v: _detail(rng, rid, v, "payroll_manager")),
+    SimStep("Deductions Withheld", "PAYROLL_DEDUCTION_EVENT", (0, 1),
+            lambda rng, rid, v: _detail(rng, rid, v, "payroll_admin", "withheld_amount", (300, 4000),
+                                         extra={"deduction_types": ["federal_tax", "state_tax", "fica", "health_insurance"]})),
+    SimStep("Expense Reimbursement Approved", "PAYROLL_EXPENSE_REIMBURSEMENT_EVENT", (0, 2),
+            lambda rng, rid, v: _detail(rng, rid, v, "manager", "reimbursement_amount", (0, 2500),
+                                         extra={"expense_category": rng.choice(["travel", "lodging", "meals", "mileage", "none"])})),
+    SimStep("Payroll Disbursed", "PAYROLL_DISBURSEMENT_EVENT", (0, 1),
+            lambda rng, rid, v: _detail(rng, rid, v, "treasury")),
+    SimStep("Tax Authorities Paid", "PAYROLL_TAX_REMITTANCE_EVENT", (0, 3),
+            lambda rng, rid, v: _detail(rng, rid, v, "treasury", "remittance_amount", (300, 3000))),
+    SimStep("Insurance Carriers Paid", "PAYROLL_INSURANCE_REMITTANCE_EVENT", (0, 5),
+            lambda rng, rid, v: _detail(rng, rid, v, "treasury", "remittance_amount", (100, 1500))),
+    SimStep("Payslip Issued", "PAYROLL_PAYSLIP_EVENT", (0, 1),
+            lambda rng, rid, v: _detail(rng, rid, v, "treasury")),
+])
+
+# ── Dynamics — Inventory Master ──────────────────────────────────────────────
+_INVENTORY_MASTER = ProcessDef("SKU", [
+    SimStep("Item Master Created", "INV_MASTER_CREATE_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "planner")),
+    SimStep("Item Master Approved", "INV_MASTER_APPROVAL_EVENT", (0, 3),
+            lambda rng, rid, v: _detail(rng, rid, v, "category_manager")),
+    SimStep("Standard Cost Updated", "INV_STD_COST_UPDATE_EVENT", (10, 120),
+            lambda rng, rid, v: _detail(rng, rid, v, "planner", "new_standard_cost", (5, 5000))),
+    SimStep("Item Master Deactivated", "INV_MASTER_DEACTIVATE_EVENT", (200, 1200),
+            lambda rng, rid, v: _detail(rng, rid, v, "planner")),
+])
+
+# ── ServiceNow — Customer Master File (standalone: master-file edits aren't a
+#    natural multi-step lifecycle, same reasoning as the existing generator's
+#    Customer/Vendor Master Change kinds) ─────────────────────────────────────
+_CUSTOMER_MASTER_FILE = ProcessDef("CUST", [
+    SimStep("Customer Record Created", "CUST_MASTER_CREATE_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "cs_rep"),
+            violating_flag="customer_master_change"),
+    SimStep("Customer Record Updated", "CUST_MASTER_UPDATE_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "cs_rep",
+                                         extra={"field_changed": rng.choice(["billing_address", "payment_terms", "credit_limit", "tax_id"])}),
+            violating_flag="customer_master_change"),
+    SimStep("Customer Record Merged", "CUST_MASTER_MERGE_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "data_steward"),
+            violating_flag="customer_master_change"),
+    SimStep("Customer Record Deactivated", "CUST_MASTER_DEACTIVATE_EVENT", (0, 0),
+            lambda rng, rid, v: _detail(rng, rid, v, "cs_rep"),
+            violating_flag="customer_master_change"),
+], standalone=True)
+
+_PROCESS_DEFS = {
+    "hire_to_retire":      _HIRE_TO_RETIRE,
+    "iam":                 _IAM,
+    "record_to_report":    _RECORD_TO_REPORT,
+    "fixed_assets":        _FIXED_ASSETS,
+    "vendor_management":   _VENDOR_MANAGEMENT,
+    "payroll":             _PAYROLL,
+    "inventory_master":    _INVENTORY_MASTER,
+    "customer_master_file": _CUSTOMER_MASTER_FILE,
+}
+
+
+def _event(event_type: str, actor: str, action: str, resource: str, severity: str,
+           payload: dict, when: datetime) -> dict:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "event_type": event_type,
+        "actor": actor,
+        "action": action,
+        "resource": resource,
+        "severity": severity,
+        "raw_payload": payload,
+        "created_at": when,
+    }
+
+
+def _build_own_case(pdef: ProcessDef, rng: random.Random, now: datetime, process_id: str) -> list:
+    """Walk pdef.steps as one linked lifecycle sharing a case_id — mirrors
+    generate_o2c_p2p_synthetic_log.py's _build_case, adapted to this module's
+    SimStep.build(rng, rid, violating) signature instead of a TxnKind's
+    separate build_clean/build_violating pair."""
+    case_id = _case_id(rng)
+    violates = rng.random() < _VIOLATION_RATE
+    violate_idx = rng.randrange(len(pdef.steps)) if violates else -1
+    when = now - timedelta(days=sum(s.gap_days[1] for s in pdef.steps) * rng.uniform(0.3, 1.0))
+    events = []
+    for i, step in enumerate(pdef.steps):
+        if i > 0:
+            when = min(when + timedelta(days=rng.uniform(*step.gap_days)), now)
+        rid = _rid(pdef.resource_prefix, rng)
+        violating = i == violate_idx
+        detail = step.build(rng, rid, violating)
+        detail["case_id"] = case_id
+        detail["process_step"] = step.label
+        detail["process"] = process_id
+        # Route into mcp_governance._detect_system_flags() — see SimStep.
+        # violating_flag's docstring. A step's own specific flag where one's
+        # a real match, else the generic "policy_violation" catch-all so no
+        # violating case is ever silently invisible to Bronze regardless of
+        # whether this process has a dedicated flag defined for it yet.
+        if violating:
+            detail[step.violating_flag or "policy_violation"] = True
+        event_type = (step.violating_event_type if violating and step.violating_event_type else step.event_type)
+        events.append(_event(
+            event_type, detail.get("actor") or rng.choice(_ACTORS),
+            f"{step.label.lower().replace(' ', '_')}_{'violation' if violating else 'clean'}",
+            detail.get("reference") or case_id, "HIGH" if violating else "INFO", detail, when,
+        ))
+    return events
+
+
+def _build_own_standalone(pdef: ProcessDef, rng: random.Random, now: datetime, process_id: str) -> dict:
+    step = rng.choice(pdef.steps)
+    case_id = _case_id(rng)
+    violating = rng.random() < _VIOLATION_RATE
+    rid = _rid(pdef.resource_prefix, rng)
+    detail = step.build(rng, rid, violating)
+    detail["case_id"] = case_id
+    detail["process_step"] = step.label
+    detail["process"] = process_id
+    if violating:
+        detail[step.violating_flag or "policy_violation"] = True
+    when = now - timedelta(hours=rng.uniform(0, 72))
+    event_type = (step.violating_event_type if violating and step.violating_event_type else step.event_type)
+    return _event(
+        event_type, detail.get("actor") or rng.choice(_ACTORS),
+        f"{step.label.lower().replace(' ', '_')}_{'violation' if violating else 'clean'}",
+        detail.get("reference") or case_id, "HIGH" if violating else "INFO", detail, when,
+    )
+
+
+def _build_reused_case(steps: list, rng: random.Random, now: datetime, process_id: str) -> list:
+    """Same shape as _build_own_case, but for the imported O2C/P2P/Inventory
+    TxnKind templates, whose kind objects carry build_clean/build_violating
+    instead of SimStep's single build(rng, rid, violating)."""
+    case_id = _case_id(rng)
+    violates = rng.random() < _VIOLATION_RATE
+    violate_idx = rng.randrange(len(steps)) if violates else -1
+    max_span = sum(gap[1] for _, _, gap in steps)
+    when = now - timedelta(days=max_span * rng.uniform(0.3, 1.0))
+    events = []
+    for i, (kind, label, gap_days) in enumerate(steps):
+        if i > 0:
+            when = min(when + timedelta(days=rng.uniform(*gap_days)), now)
+        rid = _rid(kind.resource_prefix, rng)
+        violating = i == violate_idx
+        detail = kind.build_violating(rng, rid) if violating else kind.build_clean(rng, rid)
+        detail["case_id"] = case_id
+        detail["process_step"] = label
+        # kind.flag is exactly the mcp_governance._detect_system_flags() key
+        # for this TxnKind (e.g. "revenue_recognition_event") — defined on
+        # the dataclass but never actually threaded into the payload until
+        # now, so every one of these 13 event kinds' violations was
+        # equally invisible to Bronze as synthetic_transaction_tool's own
+        # processes were.
+        if violating:
+            detail[kind.flag] = True
+        detail["process"] = process_id
+        events.append(_event(
+            kind.event_type, rng.choice(_ACTORS), f"{kind.name}_{'violation' if violating else 'clean'}",
+            rid, "HIGH" if violating else "INFO", detail, when,
+        ))
+    return events
+
+
+def pull_events(base_url: Optional[str], credentials: dict, extra_config: dict,
+                 since: Optional[datetime]) -> list:
+    """Fabricate 1-3 new synthetic transactions for this connector's assigned
+    process. `base_url`/`credentials`/`since` are accepted for interface
+    parity with every real adapter but unused — there's nothing to connect
+    to or resume from; every tick just generates fresh activity."""
+    process_id = (extra_config or {}).get("process")
+    if not process_id:
+        return []
+    now = datetime.now(timezone.utc)
+    rng = random.Random()
+    n = rng.randint(*_CASES_PER_TICK)
+    events: list = []
+
+    if process_id in _REUSED_TEMPLATES:
+        for _ in range(n):
+            events.extend(_build_reused_case(_REUSED_TEMPLATES[process_id], rng, now, process_id))
+        return events
+
+    pdef = _PROCESS_DEFS.get(process_id)
+    if pdef is None:
+        return []
+    for _ in range(n):
+        if pdef.standalone:
+            events.append(_build_own_standalone(pdef, rng, now, process_id))
+        else:
+            events.extend(_build_own_case(pdef, rng, now, process_id))
+    return events
+
+
+def get_journal_entries(base_url: Optional[str], credentials: dict, extra_config: dict,
+                         since: Optional[datetime] = None, max_items: int = 200) -> dict:
+    """Fabricates fresh "Journal Entry Posted" events and normalizes them to
+    the shared journal-entry shape je_testing_tool.py's rule engine consumes:
+    je_id, amount, currency, account, gl_account_desc, description,
+    preparer, approver, posted_at, period_close_date, source_system.
+
+    Paced like every other synthetic feed in this module (_CASES_PER_TICK,
+    1-3 new cases) rather than a flat 200 per call — this function's only
+    real caller is je_testing_sweep.py's recurring 30-minute poll, not a
+    one-time "generate a test population" trigger (confirmed: no other
+    caller exists anywhere in this codebase), so a flat 200 every tick
+    compounded without bound. Confirmed against real data: one rule
+    (JE-WEEKEND-POSTING) alone had fired 19,000+ times in a single 30-day
+    window, producing a FAIR-estimated impact in the tens of billions —
+    obviously not a realistic monthly volume for any single control.
+    max_items still caps the (now much smaller) per-tick count, in case a
+    future caller passes something below _CASES_PER_TICK's usual range.
+
+    Only meaningful for a connector whose extra_config.process is
+    "record_to_report" — any other simulated process returns an empty
+    population, same as a real connector with nothing to report."""
+    if (extra_config or {}).get("process") != "record_to_report":
+        return {"source": "Synthetic Transaction Simulator", "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "count": 0, "journal_entries": []}
+
+    now = datetime.now(timezone.utc)
+    rng = random.Random()
+    n_cases = min(max_items, rng.randint(*_CASES_PER_TICK))
+    normalized = []
+    for _ in range(n_cases):
+        events = _build_own_case(_RECORD_TO_REPORT, rng, now, "record_to_report")
+        je_event = next((e for e in events if e["event_type"] == "R2R_JOURNAL_ENTRY_EVENT"), None)
+        if je_event is None:
+            continue
+        payload = je_event["raw_payload"]
+        normalized.append({
+            "je_id":             payload.get("reference"),
+            "amount":            float(payload.get("je_amount") or 0),
+            "currency":          "USD",
+            "account":           payload.get("account", ""),
+            "gl_account_desc":   "",
+            "description":       payload.get("description", ""),
+            "preparer":          payload.get("preparer", ""),
+            "approver":          payload.get("approver"),
+            # ISO string, not the raw datetime _event() stores in created_at —
+            # every real connector's get_journal_entries returns a string
+            # timestamp (straight from a JSON API or SQL driver), and
+            # je_testing_sweep._persist_finding round-trips this value through
+            # db.insert_exception_event's Json(raw_payload), which cannot
+            # serialize a bare datetime.
+            "posted_at":         je_event["created_at"].isoformat(),
+            "period_close_date": None,
+            "source_system":     "SYNTHETIC",
+        })
+
+    return {
+        "source":          "Synthetic Transaction Simulator — Journal Entries",
+        "fetched_at":      now.isoformat(),
+        "count":           len(normalized),
+        "journal_entries": normalized,
+    }
+
+
+def test_connection(base_url: Optional[str], credentials: dict, extra_config: dict):
+    """Always succeeds — there is no external system to actually reach."""
+    process_id = (extra_config or {}).get("process", "unknown")
+    label = (extra_config or {}).get("system_label", "Synthetic")
+    ok = process_id in _PROCESS_DEFS or process_id in _REUSED_TEMPLATES
+    return ok, (f"{label} simulator ready for process '{process_id}'." if ok
+                else f"Unknown simulated process '{process_id}'.")

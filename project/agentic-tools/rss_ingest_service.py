@@ -28,15 +28,15 @@ import feedparser
 import requests
 
 # ── Feed Registry (mirrors rss-engine.js FEEDS) ───────────────────────────────
+_FR_API = "https://www.federalregister.gov/api/v1/documents.rss?"
+
 FEEDS: list[dict] = [
-    {
-        "id": "bis",
-        "name": "BIS Export Controls",
-        "url": "https://www.bis.doc.gov/index.php/2013-01-17-21-19-53/2013-01-17-21-20-34.xml",
-        "domains": ["Trade Compliance"],
-        "risks": ["R-02"],
-        "weight": 1.5,
-    },
+    # bis, epa, and nis2 were removed 2026-09-19 — all three source sites now
+    # block non-browser requests (EPA and ENISA return an AWS WAF/bot-protection
+    # challenge; BIS moved to bis.gov, which dropped RSS entirely). None of
+    # these are fixable by swapping the URL; they'd need real headless-browser
+    # fetching, which this proxy doesn't do. See git history for the removed
+    # entries if that capability is ever added.
     {
         "id": "cisa",
         "name": "CISA ICS Advisories",
@@ -64,13 +64,134 @@ FEEDS: list[dict] = [
         "risks": ["R-09"],
         "weight": 0.9,
     },
+    # Three feeds for regulatory_change_tool.py's horizon-scanning path
+    # (regulatory_change_endpoints.py) — not company-gated, since a new EU AI
+    # Act obligation or a DORA supervisory update applies regardless of which
+    # company is the active ticker, same reasoning as cisa/fed above.
     {
-        "id": "epa",
-        "name": "EPA Climate Enforcement",
-        "url": "https://www.epa.gov/newsreleases/search/rss",
+        "id": "eu_ai_act",
+        "name": "EU AI Act",
+        "url": "https://digital-strategy.ec.europa.eu/en/rss.xml",
+        "domains": ["Regulatory"],
+        "risks": ["R-05"],
+        "weight": 1.3,
+    },
+    {
+        "id": "dora",
+        "name": "EU DORA (Digital Operational Resilience Act)",
+        "url": "https://www.esma.europa.eu/rss.xml",
+        "domains": ["Regulatory", "Cybersecurity"],
+        "risks": ["R-04", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "state_privacy",
+        "name": "US State Privacy Enforcement",
+        # oag.ca.gov redesigned their site; /news/rss.xml 404s now. Verified
+        # working 2026-09-19: /news/feed (application/rss+xml, real entries).
+        "url": "https://oag.ca.gov/news/feed",
+        "domains": ["Regulatory", "Privacy"],
+        "risks": ["R-05"],
+        "weight": 1.0,
+    },
+    # Regulator feeds added 2026-09-24 so the Disclosure Risk layer
+    # (disclosure-risk.js) has signal for the domains it tracks — SEC
+    # enforcement/rulemaking, AI, privacy and climate disclosure. Each URL was
+    # verified to return real RSS entries with this proxy's User-Agent.
+    # Not company-gated (same reasoning as eu_ai_act/dora above): a new SEC
+    # rule or DPA fine matters regardless of which ticker is active. Not in
+    # regulatory_change_endpoints._SCAN_FEED_IDS, so the text-diff scanner is
+    # unaffected. Feeds that still don't work and were tried: EFRAG, IFRS/ISSB,
+    # GRI, ICO, PCAOB (404) and CDP/SASB (unreachable) — no dedicated ESG
+    # standard-setter feed exists, hence SEC statements + CARB for ESG.
+    {
+        "id": "sec_press",
+        "name": "SEC Press Releases",
+        "url": "https://www.sec.gov/news/pressreleases.rss",
+        "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "sec_statements",
+        "name": "SEC Statements",
+        "url": "https://www.sec.gov/news/statements.rss",
+        "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "ftc",
+        "name": "FTC Consumer Protection",
+        "url": "https://www.ftc.gov/feeds/press-release-consumer-protection.xml",
+        # No "Regulatory": generic enforcement wording (fine/penalty/guidance)
+        # made every consumer-fraud release score Red. Only AI/privacy items
+        # are disclosure signals here.
+        "domains": ["AI", "Privacy"],
+        "risks": ["R-05"],
+        "weight": 1.0,
+    },
+    {
+        "id": "edpb",
+        "name": "EDPB / EU Data Protection Authorities",
+        "url": "https://www.edpb.europa.eu/feed/news_en",
+        "domains": ["Privacy"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "ai_act_tracker",
+        "name": "EU AI Act Tracker",
+        # Independent implementation tracker (Future of Life Institute), not an
+        # official EU source — used because the official digital-strategy feed
+        # above is a general site feed dominated by non-AI-Act items.
+        "url": "https://artificialintelligenceact.eu/feed/",
+        "domains": ["AI", "Regulatory"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    # Federal Register API feeds (api/v1/documents.rss — NOT the site's feed
+    # builder, which sits behind a WAF bot-challenge; the API endpoint returns
+    # real RSS to this proxy's User-Agent, verified 2026-09-24). Full-text
+    # queries over final and proposed rules, so these are the official
+    # rulemaking pipeline for the domains no standard-setter RSS covers.
+    # Full-text matching is broad (an "artificial intelligence" hit can be a
+    # Medicare notice), which is why the vocabulary scoring — not the query —
+    # decides what surfaces.
+    {
+        "id": "fr_sec_rules",
+        "name": "SEC Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bagencies%5D%5B%5D=securities-and-exchange-commission&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["Regulatory", "Financial Reporting", "ESG", "Cybersecurity", "AI"],
+        "risks": ["R-01", "R-05"],
+        "weight": 1.2,
+    },
+    {
+        "id": "fr_ai_rules",
+        "name": "AI Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bterm%5D=%22artificial+intelligence%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
+        "domains": ["AI"],
+        "risks": ["R-05"],
+        "weight": 1.1,
+    },
+    {
+        "id": "fr_climate_rules",
+        "name": "Greenhouse-Gas Rulemaking (Federal Register)",
+        "url": _FR_API + "conditions%5Bterm%5D=%22greenhouse+gas%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
         "domains": ["ESG"],
-        "risks": ["R-07"],
+        "risks": ["R-05"],
+        # Below 1.0: EPA state air-plan approvals match "greenhouse gas" too.
         "weight": 0.8,
+    },
+    {
+        "id": "carb",
+        "name": "California Air Resources Board (SB 253/261 climate disclosure)",
+        "url": "https://ww2.arb.ca.gov/rss.xml",
+        "domains": ["ESG"],
+        "risks": ["R-05"],
+        # Low weight: CARB's feed is mostly air-quality/programme news; only
+        # climate-disclosure items (SB 253/261) are signals.
+        "weight": 0.5,
     },
 ]
 
@@ -109,6 +230,21 @@ DOMAIN_VOCAB: dict[str, list[str]] = {
         "climate", "esg", "water stress", "sec disclosure", "scope 3",
         "carbon", "emission", "sustainability", "drought", "physical risk",
         "transition risk", "tcfd", "arizona", "fab water",
+        "climate-related disclosure", "climate disclosure", "sb 253", "sb 261",
+        "csrd", "esrs", "issb", "greenwashing", "sustainability reporting",
+        "greenhouse gas", "ghg",
+    ],
+    # Substring matching (see score_relevance), so no short tokens like "ai"
+    # — they'd match inside "said"/"maintain". Multi-word terms only.
+    "AI": [
+        "artificial intelligence", "machine learning", "generative ai", "ai washing",
+        "ai act", "high-risk ai", "foundation model", "large language model",
+        "algorithmic", "automated decision", "ai system", "chatbot", "deepfake",
+    ],
+    "Privacy": [
+        "gdpr", "ccpa", "cpra", "hipaa", "privacy", "data protection",
+        "personal data", "data subject", "biometric", "breach notification",
+        "children's data",
     ],
     "Supply": [
         "conflict minerals", "rmap", "dodd-frank", "cobalt", "tantalum",
@@ -118,6 +254,16 @@ DOMAIN_VOCAB: dict[str, list[str]] = {
     "Legal": [
         "patent", "litigation", "lawsuit", "ip", "intellectual property",
         "injunction", "royalty", "cross-license", "settlement", "verdict",
+    ],
+    # eu_ai_act / dora / nis2 / state_privacy feeds above.
+    "Regulatory": [
+        "regulation", "directive", "compliance deadline", "enforcement action",
+        "supervisory", "obligation", "high-risk system", "conformity assessment",
+        "operational resilience", "incident reporting", "third-party risk",
+        "critical entity", "data protection", "privacy law", "consumer protection",
+        "penalty", "fine", "guidance", "technical standard", "implementing act",
+        "sec charges", "cybersecurity disclosure", "material cybersecurity incident",
+        "disclosure controls", "misleading statements", "proposes rescission",
     ],
 }
 
@@ -142,6 +288,8 @@ DOMAIN_RISK_CATS: dict[str, list[str]] = {
     "Regulatory":          ["compliance", "legal", "regulatory", "esg"],
     "Environmental":       ["esg", "environmental", "climate", "sustainability"],
     "ESG":                 ["esg", "environmental", "climate", "sustainability"],
+    "AI":                  ["ai ", "artificial", "algorithm", "regulatory", "compliance", "technology"],
+    "Privacy":             ["privacy", "data protection", "cybersecurity", "compliance", "regulatory"],
     "Competitive":         ["competitive", "market", "commercial", "operational"],
     "Operational":         ["operational", "operations"],
 }
@@ -199,10 +347,34 @@ def _article_id(feed_id: str, title: str) -> str:
     return f"{feed_id}-{h}"
 
 
-def grade_article(entry: dict, feed: dict) -> dict:
+# Corporate-suffix words too generic to use as a company-name match term
+# (matching on "group" or "inc" alone would defeat the gate entirely).
+# Mirrors rss-engine.js's _COMPANY_NAME_STOPWORDS exactly — keep in sync.
+_COMPANY_NAME_STOPWORDS = {"corp", "inc", "ltd", "llc", "group", "holdings"}
+
+
+def _company_name_terms(company_name: str) -> list[str]:
+    words = re.split(r"\W+", (company_name or "").lower())
+    return [w for w in words if len(w) >= 4 and w not in _COMPANY_NAME_STOPWORDS]
+
+
+def grade_article(entry: dict, feed: dict, company_name: str = "") -> Optional[dict]:
+    """
+    Returns None (not just velocity=0) when a company-gated feed's article
+    doesn't actually mention the subject company — e.g. an EPA enforcement
+    release about Nike or Conagra has nothing to do with an unrelated
+    company's risk profile and shouldn't appear in that company's feed at
+    all. Mirrors rss-engine.js's gradeArticle exactly — keep both in sync.
+    """
     title = (entry.get("title") or "").strip()
     description = (entry.get("summary") or entry.get("description") or "").strip()
     text = f"{title} {description}"
+
+    if feed.get("companyGated") and company_name:
+        terms = _company_name_terms(company_name)
+        t = _tokenize(text)
+        if terms and not any(term in t for term in terms):
+            return None
 
     relevance = score_relevance(text, feed["domains"])
     severity = score_severity(text)
@@ -305,7 +477,9 @@ def fetch_and_grade_peer_filings(ticker: str, feed: dict) -> dict:
                 "published": _parse_date(entry),
                 "link": getattr(entry, "link", "") or "",
             }
-            graded.append(grade_article(article, feed))
+            graded_article = grade_article(article, feed)
+            if graded_article is not None:
+                graded.append(graded_article)
 
     if not graded:
         return fetch_and_grade(feed)
@@ -313,7 +487,7 @@ def fetch_and_grade_peer_filings(ticker: str, feed: dict) -> dict:
     return {"feed": feed, "articles": graded, "fetchStatus": "ok"}
 
 
-def fetch_and_grade(feed: dict) -> dict:
+def fetch_and_grade(feed: dict, company_name: str = "") -> dict:
     """Fetch a single feed via feedparser, grade all entries, return result dict."""
     raw = _fetch_raw(feed["url"])
     if raw is None:
@@ -332,7 +506,9 @@ def fetch_and_grade(feed: dict) -> dict:
             "published":   _parse_date(entry),
             "link":        getattr(entry, "link",    "") or "",
         }
-        graded.append(grade_article(article, feed))
+        graded_article = grade_article(article, feed, company_name)
+        if graded_article is not None:
+            graded.append(graded_article)
 
     return {"feed": feed, "articles": graded, "fetchStatus": "ok"}
 
@@ -378,6 +554,7 @@ def ingest_feeds(
     force_refresh: bool = False,
     ttl_minutes: int = 30,
     ticker: Optional[str] = None,
+    company_name: Optional[str] = None,
 ) -> dict:
     """
     Fetch and grade the requested feeds. Returns results shaped identically to
@@ -388,9 +565,21 @@ def ingest_feeds(
         force_refresh:  Bypass cache and re-fetch even within TTL.
         ttl_minutes:    Cache TTL in minutes (default: 30).
         ticker:         Active ticker; enables peer-aware EDGAR filing fetch.
+        company_name:   Resolved automatically from ticker if not supplied —
+                         required for company-gated feeds (CISA, EPA) to
+                         suppress articles about unrelated companies.
     """
     ttl_seconds = ttl_minutes * 60
     ticker_key = ticker.upper() if ticker else ""
+
+    if not company_name and ticker:
+        try:
+            from edgar_tool import get_company_info
+            meta, _sub = get_company_info(ticker)
+            company_name = meta.get("company_name", "")
+        except Exception:
+            company_name = ""
+    company_name = company_name or ""
 
     feeds = (
         [FEEDS_BY_ID[fid] for fid in feed_ids if fid in FEEDS_BY_ID]
@@ -400,8 +589,12 @@ def ingest_feeds(
 
     results = []
     for feed in feeds:
-        # Peer-aware feeds are keyed by ticker so each company gets its own cache slot.
-        cache_key = f"{feed['id']}:{ticker_key}" if (feed.get("type") == "edgar-peers" and ticker_key) else feed["id"]
+        # Peer-aware and company-gated feeds are keyed by ticker so each
+        # company gets its own cache slot — without this, company A's
+        # already-gated CISA/EPA results would get served back for company B
+        # within the TTL window.
+        ticker_scoped = feed.get("type") == "edgar-peers" or feed.get("companyGated")
+        cache_key = f"{feed['id']}:{ticker_key}" if (ticker_scoped and ticker_key) else feed["id"]
         cached = None if force_refresh else _get_cached(cache_key, ttl_seconds)
         if cached is not None:
             results.append({**cached, "cached": True})
@@ -409,7 +602,7 @@ def ingest_feeds(
             if feed.get("type") == "edgar-peers" and ticker:
                 result = fetch_and_grade_peer_filings(ticker, feed)
             else:
-                result = fetch_and_grade(feed)
+                result = fetch_and_grade(feed, company_name)
             _set_cached(cache_key, result)
             results.append({**result, "cached": False})
 

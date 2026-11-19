@@ -56,6 +56,7 @@ from mcp.server.fastmcp import FastMCP
 load_dotenv()
 
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import audit_log, check_rate_limit, check_read_only, confine_path
 from token_cost_tool import (
     MODEL_PRICING,
     calculate_cost,
@@ -80,15 +81,14 @@ def cost_estimate(
     model: str = "claude-opus-4-8",
     max_output_tokens: int = 4096,
     system_prompt: str = "",
-    anthropic_api_key: str = "",
 ) -> str:
     """
     Estimate the token count and USD cost of an API call BEFORE making it.
     Useful for budgeting and choosing the right model for a given task.
 
     Token counting uses the Anthropic count_tokens API for exact results when
-    ANTHROPIC_API_KEY is set; falls back to a character-based approximation
-    (~4 chars per token, ±20–30% for English prose) otherwise.
+    ANTHROPIC_API_KEY is set in .env; falls back to a character-based
+    approximation (~4 chars per token, ±20–30% for English prose) otherwise.
 
     Accepts full model IDs (claude-opus-4-8), version aliases (opus-4-8),
     and family shorthand (opus → claude-opus-4-8, sonnet, haiku).
@@ -98,8 +98,12 @@ def cost_estimate(
         model:             Claude model ID or alias (default: claude-opus-4-8)
         max_output_tokens: Expected maximum output size for the output cost estimate
         system_prompt:     Optional system prompt included in the token count
-        anthropic_api_key: API key — falls back to ANTHROPIC_API_KEY env var
     """
+    try:
+        check_rate_limit("cost_estimate")
+        audit_log("cost_estimate", model=model)
+    except ValueError as e:
+        return f"Error: {e}"
     canonical = normalize_model(model)
     pricing = get_pricing(model)
     if pricing is None:
@@ -108,7 +112,7 @@ def cost_estimate(
             "Run cost_list_models to see all supported models."
         )
 
-    key = anthropic_api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
     input_tokens, method = count_tokens_api(text, canonical, key, system_prompt or None)
 
     input_bd = calculate_cost(canonical, input_tokens=input_tokens)
@@ -156,24 +160,27 @@ def cost_count_tokens(
     text: str,
     model: str = "claude-opus-4-8",
     system_prompt: str = "",
-    anthropic_api_key: str = "",
 ) -> str:
     """
     Count tokens in a text string for a given Claude model.
 
     Uses the Anthropic token-counting API for exact counts when ANTHROPIC_API_KEY
-    is set; falls back to a character-based approximation (~4 chars per token).
+    is set in .env; falls back to a character-based approximation (~4 chars per token).
     Token counts are model-specific — pass the same model you intend to use.
 
     Args:
-        text:              Text to count tokens for
-        model:             Claude model ID or alias
-        system_prompt:     Optional system prompt to include in the count
-        anthropic_api_key: API key — falls back to ANTHROPIC_API_KEY env var
+        text:          Text to count tokens for
+        model:         Claude model ID or alias
+        system_prompt: Optional system prompt to include in the count
     """
+    try:
+        check_rate_limit("cost_count_tokens")
+        audit_log("cost_count_tokens", model=model)
+    except ValueError as e:
+        return f"Error: {e}"
     canonical = normalize_model(model)
     pricing = get_pricing(canonical)
-    key = anthropic_api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     tokens, method = count_tokens_api(text, canonical, key, system_prompt or None)
     approx = estimate_tokens_local(text + (system_prompt or ""))
@@ -233,6 +240,10 @@ def cost_track(
         data_file:          Path to the JSON cost data file (default: token_costs.json)
     """
     try:
+        check_rate_limit("cost_track")
+        check_read_only("token usage tracking")
+        safe_file = confine_path(data_file)
+        audit_log("cost_track", model=model, session=session, label=label)
         result = track_usage(
             model_str=model,
             input_tokens=input_tokens,
@@ -241,7 +252,7 @@ def cost_track(
             cache_write_tokens=cache_write_tokens,
             label=label,
             session=session,
-            data_file=Path(data_file),
+            data_file=safe_file,
         )
     except ValueError as e:
         return f"Error: {e}"
@@ -292,7 +303,13 @@ def cost_session_summary(
         session:   Session name to summarize (default: "default")
         data_file: Path to the JSON cost data file (default: token_costs.json)
     """
-    summary = get_session_summary(session=session, data_file=Path(data_file))
+    try:
+        check_rate_limit("cost_session_summary")
+        safe_file = confine_path(data_file)
+        audit_log("cost_session_summary", session=session)
+    except ValueError as e:
+        return f"Error: {e}"
+    summary = get_session_summary(session=session, data_file=safe_file)
 
     if "error" in summary:
         avail = ", ".join(summary.get("sessions", [])) or "(none)"
@@ -347,10 +364,17 @@ def cost_reset_session(
         session:   Session name to clear (default: "default")
         data_file: Path to the JSON cost data file (default: token_costs.json)
     """
-    existed = reset_session(session=session, data_file=Path(data_file))
+    try:
+        check_rate_limit("cost_reset_session")
+        check_read_only("session reset")
+        safe_file = confine_path(data_file)
+        audit_log("cost_reset_session", session=session)
+    except ValueError as e:
+        return f"Error: {e}"
+    existed = reset_session(session=session, data_file=safe_file)
     if existed:
-        return f"Session '{session}' cleared from {data_file}."
-    return f"Session '{session}' not found in {data_file} — nothing to clear."
+        return f"Session '{session}' cleared from {safe_file.name}."
+    return f"Session '{session}' not found in {safe_file.name} — nothing to clear."
 
 
 @mcp.tool()
@@ -360,6 +384,11 @@ def cost_list_models() -> str:
     Shows context window, max output, and cache pricing for each model.
     Useful for comparing cost tradeoffs before choosing a model.
     """
+    try:
+        check_rate_limit("cost_list_models")
+        audit_log("cost_list_models")
+    except ValueError as e:
+        return f"Error: {e}"
     lines = [
         f"Claude Model Pricing Catalog  ({len(MODEL_PRICING)} models)",
         "=" * 74,
@@ -402,13 +431,19 @@ def cost_list_sessions(data_file: str = "token_costs.json") -> str:
     Args:
         data_file: Path to the JSON cost data file (default: token_costs.json)
     """
-    sessions = list_sessions(data_file=Path(data_file))
+    try:
+        check_rate_limit("cost_list_sessions")
+        safe_file = confine_path(data_file)
+        audit_log("cost_list_sessions")
+    except ValueError as e:
+        return f"Error: {e}"
+    sessions = list_sessions(data_file=safe_file)
     if not sessions:
-        return f"No sessions found in {data_file}."
+        return f"No sessions found in {safe_file.name}."
 
-    lines = [f"Sessions in {data_file}:"]
+    lines = [f"Sessions in {safe_file.name}:"]
     for s in sessions:
-        summary = get_session_summary(session=s, data_file=Path(data_file))
+        summary = get_session_summary(session=s, data_file=safe_file)
         totals = summary.get("totals", {})
         lines.append(
             f"  {s:<24}  calls={totals.get('calls', 0):>5}  "

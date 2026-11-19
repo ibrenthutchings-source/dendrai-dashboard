@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Predictive Analytics MCP Server — Dendrai Risk Loop
+Predictive Analytics MCP Server — Dendrai Intelligenza
 
 Exposes 10 predictive analytics models as MCP tools for Claude Code / Claude Desktop.
 
@@ -48,9 +48,13 @@ import json
 import os
 import sys
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+load_dotenv()
+
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import audit_log, cap_output, check_rate_limit, validate_enum, validate_int_range, validate_ticker
 from predictive_analytics_tool import (
     compute_financial_ratios,
     compute_beneish_mscore,
@@ -88,6 +92,7 @@ def _get_xbrl(ticker: str):
     err = _edgar_check()
     if err:
         raise RuntimeError(err)
+    ticker = validate_ticker(ticker)
     meta, _ = get_company_info(ticker)
     xbrl    = fetch_xbrl_facts(meta["cik"])
     return meta, xbrl
@@ -98,7 +103,7 @@ def _get_xbrl(ticker: str):
 @mcp.tool()
 def predictive_financial_ratios(ticker: str) -> str:
     """
-    Compute Dendrai Risk Loop financial ratios from EDGAR XBRL filings.
+    Compute Dendrai Intelligenza financial ratios from EDGAR XBRL filings.
 
     Returns:
       Revenue growth (YoY), gross margin, R&D intensity, SGA intensity,
@@ -110,11 +115,13 @@ def predictive_financial_ratios(ticker: str) -> str:
         ticker: NYSE/NASDAQ ticker symbol (e.g. NVDA, MSFT, AAPL)
     """
     try:
+        check_rate_limit("predictive_financial_ratios", max_per_minute=15)
+        audit_log("predictive_financial_ratios", ticker=ticker)
         meta, xbrl = _get_xbrl(ticker)
         ratios = compute_financial_ratios(xbrl)
         out = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in ratios.items()}
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "sic":          meta.get("sic", ""),
             "ratios":       out,
@@ -140,11 +147,13 @@ def predictive_beneish_mscore(ticker: str) -> str:
         ticker: NYSE/NASDAQ ticker symbol
     """
     try:
+        check_rate_limit("predictive_beneish_mscore", max_per_minute=15)
+        audit_log("predictive_beneish_mscore", ticker=ticker)
         meta, xbrl = _get_xbrl(ticker)
         ratios = compute_financial_ratios(xbrl)
         result = compute_beneish_mscore(ratios)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             **result,
         }, indent=2)
@@ -173,6 +182,8 @@ def predictive_industry_risks(
         industry: Override auto-detected industry (optional)
     """
     try:
+        check_rate_limit("predictive_industry_risks", max_per_minute=15)
+        audit_log("predictive_industry_risks", ticker=ticker, industry=industry)
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
@@ -181,7 +192,7 @@ def predictive_industry_risks(
         ratios = compute_financial_ratios(xbrl)
         result = compute_risk_scores(ratios, ind)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "sic":          sic,
             "detected_industry": ind,
@@ -211,6 +222,8 @@ def predictive_scenario_analysis(
         industry: Override auto-detected industry template (optional)
     """
     try:
+        check_rate_limit("predictive_scenario_analysis", max_per_minute=15)
+        audit_log("predictive_scenario_analysis", ticker=ticker, industry=industry)
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
@@ -220,7 +233,7 @@ def predictive_scenario_analysis(
         risks  = compute_risk_scores(ratios, ind)
         result = compute_scenario_analysis(ratios, risks)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "industry":     ind,
             "scenarios":    result,
@@ -248,6 +261,8 @@ def predictive_grey_swan(
         industry: Override auto-detected industry template (optional)
     """
     try:
+        check_rate_limit("predictive_grey_swan", max_per_minute=15)
+        audit_log("predictive_grey_swan", ticker=ticker, industry=industry)
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
@@ -258,7 +273,7 @@ def predictive_grey_swan(
         q_rev  = (ratios.get("revenue_now") or 0) / 4
         result = compute_grey_swan(risks, q_rev if q_rev > 0 else None)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "industry":     ind,
             **result,
@@ -271,40 +286,42 @@ def predictive_grey_swan(
 def predictive_macro_indicators(
     ticker: str,
     industry: str = "",
-    fred_api_key: str = "",
     min_correlation: float = 0.60,
     lags: str = "1,2,3,4",
 ) -> str:
     """
     Identify leading FRED macro indicators correlated with the company's financials.
 
-    Without a FRED API key, returns pre-computed industry-specific Pearson
-    correlations and lead times for canonical macro series.
+    Without a FRED API key set in .env, returns pre-computed industry-specific
+    Pearson correlations and lead times for canonical macro series.
 
-    With a FRED API key, runs live correlation analysis across 30 FRED series
-    (GDP, unemployment, CPI, VIX, yield curve, credit spreads, and more).
+    With FRED_API_KEY set in .env, runs live correlation analysis across 30 FRED
+    series (GDP, unemployment, CPI, VIX, yield curve, credit spreads, and more).
 
     Get a free FRED API key at: https://fred.stlouisfed.org/docs/api/api_key.html
+    Then add FRED_API_KEY=<your_key> to the .env file in this directory.
 
     Args:
         ticker:          NYSE/NASDAQ ticker symbol
         industry:        Override auto-detected industry (optional)
-        fred_api_key:    FRED API key (falls back to FRED_API_KEY env var)
         min_correlation: Minimum |Pearson r| to include (default 0.60)
         lags:            Comma-separated lags in quarters (default "1,2,3,4")
     """
     try:
+        check_rate_limit("predictive_macro_indicators", max_per_minute=10)
+        audit_log("predictive_macro_indicators", ticker=ticker, industry=industry)
         meta, _ = _get_xbrl(ticker) if _HAS_EDGAR else ({}, {})
         sic = meta.get("sic", "") if meta else ""
         ind = industry.strip() if industry.strip() else detect_industry(sic)
         if ind not in INDUSTRY_TEMPLATES:
             ind = "Generic"
+        fred_api_key = os.environ.get("FRED_API_KEY", "").strip()
         result = get_macro_leading_indicators(
             ticker=ticker, industry=ind, api_key=fred_api_key,
             lags=lags, min_r=min_correlation,
         )
         return json.dumps({
-            "ticker":   ticker.upper(),
+            "ticker":   meta.get("ticker", ticker.upper()) if meta else ticker.upper(),
             "industry": ind,
             **result,
         }, indent=2)
@@ -338,6 +355,8 @@ def predictive_forecast(
         model:   One of arima | prophet | rf | ensemble (default "ensemble")
     """
     try:
+        check_rate_limit("predictive_forecast", max_per_minute=10)
+        audit_log("predictive_forecast", ticker=ticker, metric=metric, model=model)
         meta, xbrl = _get_xbrl(ticker)
         q_series = extract_quarterly_series(xbrl, metric)
         if not q_series:
@@ -346,7 +365,8 @@ def predictive_forecast(
         if len(vals) < 8:
             return f"Error: only {len(vals)} quarters of {metric} data; need ≥8"
 
-        model_lc = model.lower()
+        horizon = validate_int_range(horizon, 1, 12, "horizon")
+        model_lc = validate_enum(model, {"arima", "prophet", "rf", "ensemble"}, "model", default="ensemble").lower()
         if model_lc == "arima":
             from predictive_analytics_tool import fit_arima
             result = fit_arima(vals, horizon=horizon)
@@ -394,6 +414,8 @@ def predictive_backtest(
         metric: Financial metric to backtest (default "Revenue")
     """
     try:
+        check_rate_limit("predictive_backtest", max_per_minute=10)
+        audit_log("predictive_backtest", ticker=ticker, metric=metric)
         meta, xbrl = _get_xbrl(ticker)
         q_series = extract_quarterly_series(xbrl, metric)
         if not q_series:
@@ -403,7 +425,7 @@ def predictive_backtest(
             return f"Error: only {len(vals)} quarters; need ≥10 for backtesting"
         result = walk_forward_backtest(vals)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             "metric":       metric,
             "n_quarters":   len(vals),
@@ -439,6 +461,10 @@ def predictive_rss_signals(
         max_articles: Max articles to fetch per feed (default 20)
     """
     try:
+        check_rate_limit("predictive_rss_signals", max_per_minute=10)
+        audit_log("predictive_rss_signals", ticker=ticker or "(none)")
+        ticker = validate_ticker(ticker) if ticker else ticker
+        max_articles = validate_int_range(max_articles, 1, 50, "max_articles")
         result = compute_rss_signals(
             ticker=ticker,
             company_name=company_name,
@@ -470,13 +496,16 @@ def predictive_qoq_momentum(
         window: Number of quarters to analyse (default 8)
     """
     try:
+        check_rate_limit("predictive_qoq_momentum", max_per_minute=15)
+        audit_log("predictive_qoq_momentum", ticker=ticker, window=window)
+        window = validate_int_range(window, 2, 40, "window")
         meta, xbrl = _get_xbrl(ticker)
         rev_q = extract_quarterly_series(xbrl, "Revenue")
         if not rev_q:
             return f"Error: no quarterly Revenue data found for {ticker.upper()}"
         result = compute_qoq_momentum(rev_q, window=window)
         return json.dumps({
-            "ticker":       ticker.upper(),
+            "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
             **result,
         }, indent=2)
@@ -488,14 +517,13 @@ def predictive_qoq_momentum(
 def predictive_full_analysis(
     ticker: str,
     industry: str = "",
-    fred_api_key: str = "",
     forecast_horizon: int = 4,
     forecast_metric: str = "Revenue",
     include_rss: bool = True,
     include_fred: bool = True,
 ) -> str:
     """
-    Run all 10 Dendrai Risk Loop predictive analytics models in a single call.
+    Run all 10 Dendrai Intelligenza predictive analytics models in a single call.
 
     Returns a comprehensive JSON report including:
       1.  Financial ratios (revenue growth, margins, DSRI, TATA, SGI, GMI)
@@ -503,7 +531,7 @@ def predictive_full_analysis(
       3.  Industry risk scores (8 risks, RAG per risk, velocity)
       4.  Scenario analysis (Bear / Base / Bull)
       5.  Grey Swan model (T+0→T+90 cascade, impact ladder)
-      6.  FRED macro leading indicators (or industry benchmarks)
+      6.  FRED macro leading indicators (FRED_API_KEY from .env, or industry benchmarks)
       7.  Ensemble time-series forecast (ARIMA + Prophet + RF blend)
       8.  Walk-forward backtest (MAPE, RMSE, R², directional F1)
       9.  RSS signal grading (relevance × severity, per-feed RAG)
@@ -514,13 +542,16 @@ def predictive_full_analysis(
     Args:
         ticker:           NYSE/NASDAQ ticker symbol (e.g. NVDA, AAPL, JPM)
         industry:         Override auto-detected industry (optional)
-        fred_api_key:     FRED API key for live macro correlations (optional)
         forecast_horizon: Quarters ahead to forecast (default 4)
         forecast_metric:  Metric to forecast: Revenue | GrossProfit | NetIncome | etc.
         include_rss:      Fetch and grade live RSS feeds (default True)
         include_fred:     Include macro indicator analysis (default True)
     """
     try:
+        check_rate_limit("predictive_full_analysis", max_per_minute=5)
+        audit_log("predictive_full_analysis", ticker=ticker, industry=industry,
+                  include_rss=include_rss, include_fred=include_fred)
+        fred_api_key = os.environ.get("FRED_API_KEY", "").strip()
         result = run_full_analysis(
             ticker=ticker,
             industry=industry,
@@ -530,7 +561,7 @@ def predictive_full_analysis(
             include_rss=include_rss,
             include_fred=include_fred,
         )
-        return json.dumps(result, indent=2)
+        return cap_output(json.dumps(result, indent=2))
     except Exception as e:
         return f"Error running full analysis: {e}"
 
@@ -543,6 +574,11 @@ def predictive_list_industries() -> str:
     Returns industry names, risk names, categories, and base scores.
     Use these names as the `industry` parameter in other predictive_ tools.
     """
+    try:
+        check_rate_limit("predictive_list_industries")
+        audit_log("predictive_list_industries")
+    except ValueError as e:
+        return f"Error: {e}"
     out = {}
     for ind, risks in INDUSTRY_TEMPLATES.items():
         out[ind] = [

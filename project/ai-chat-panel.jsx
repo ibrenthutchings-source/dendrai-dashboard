@@ -49,13 +49,23 @@ function ChatMessage({ msg }) {
   );
 }
 
-function AiChatPanel({ open, onClose, provider = "claude", buttonLabel, ticker, industry, output }) {
+function AiChatPanel({ open, onClose, provider = "claude", buttonLabel, ticker, industry, output, useDb = false, setUseDb, seedQuestion = null }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const abortRef = useRef(null);
+
+  // Pre-fill (never auto-send) a contextual question when a caller opens the
+  // panel with one queued — e.g. the anticipatory help nudge. Only applies to
+  // a fresh conversation so it can't clobber something the user is mid-typing
+  // or already discussing; the user still has to hit send themselves.
+  useEffect(() => {
+    if (open && seedQuestion && messages.length === 0 && !input) {
+      setInput(seedQuestion);
+    }
+  }, [open, seedQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll to bottom on new content
   useEffect(() => {
@@ -114,6 +124,7 @@ function AiChatPanel({ open, onClose, provider = "claude", buttonLabel, ticker, 
           gemini_api_key: geminiApiKey,
           risks,
           loop_stats: loopStats,
+          use_db: useDb,
         }),
       });
 
@@ -219,7 +230,29 @@ function AiChatPanel({ open, onClose, provider = "claude", buttonLabel, ticker, 
             <div className="ai-chat-sub">Natural language queries · MCP data access</div>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          {setUseDb && (
+            <div style={{ display: "flex", gap: 2, background: "var(--surface-2)", borderRadius: 6, padding: 2, border: "1px solid var(--line)" }}>
+              <button
+                style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 4, border: "none", cursor: "pointer",
+                  background: !useDb ? "var(--acc)" : "transparent",
+                  color: !useDb ? "var(--acc-ink, #fff)" : "var(--ink-3)",
+                  fontFamily: "Geist Mono, monospace", fontWeight: 500 }}
+                title="Fetch fresh data from EDGAR / FRED"
+                onClick={() => setUseDb(false)}>
+                Live
+              </button>
+              <button
+                style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 4, border: "none", cursor: "pointer",
+                  background: useDb ? "var(--acc)" : "transparent",
+                  color: useDb ? "var(--acc-ink, #fff)" : "var(--ink-3)",
+                  fontFamily: "Geist Mono, monospace", fontWeight: 500 }}
+                title="Use data cached in PostgreSQL"
+                onClick={() => setUseDb(true)}>
+                DB
+              </button>
+            </div>
+          )}
           {messages.length > 0 && (
             <button className="ai-chat-icon-btn" title="Clear chat" onClick={clearChat} disabled={loading}>
               <Icon name="reset" size={12} />

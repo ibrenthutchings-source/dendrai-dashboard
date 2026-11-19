@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Test cache
+.vitest-cache/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Distribution artifacts (built locally, not committed)
+*.mcpb
+*.tgz
+
+# Bundled OPA binaries — fetched (and checksum-verified) at build/publish
+# time by scripts/fetch-opa-binaries.mjs, never committed. The package.json
+# scaffolds in packages/* ARE tracked; only the binaries and copied LICENSE
+# are ignored.
+packages/*/opa
+packages/*/opa.exe
+packages/*/LICENSE
+
+# Local dev artifacts
+.cache/
+.tmp/
+tmp/
+
+# Personal operator notes — never committed
+LAUNCH-PLAYBOOK.md
+AUDIT.md
+SECURITY_AUDIT.md
+
+# Manual smoke / debug scripts (one-off local-only)
+smoke-real.mjs
+smoke-test.mjs
+mcp-publisher.exe
+opa-mcp.mcpb
+
+# Claude Code session state (per-machine; never committed)
+.claude/
+server-registry.json

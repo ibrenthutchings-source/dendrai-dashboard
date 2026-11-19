@@ -64,6 +64,7 @@ XBRL_METRICS = {
     "CurrentLiabilities": ["LiabilitiesCurrent"],
     "TotalLiabilities": ["Liabilities"],
     "StockholdersEquity": ["StockholdersEquity", "StockholdersEquityAttributableToParent"],
+    "RetainedEarnings": ["RetainedEarningsAccumulatedDeficit"],
     "Cash": [
         "CashAndCashEquivalentsAtCarryingValue",
         "CashCashEquivalentsAndShortTermInvestments",
@@ -80,6 +81,42 @@ XBRL_METRICS = {
     "InterestExpense": ["InterestExpense"],
     "Inventory": ["InventoryNet"],
     "AccountsReceivable": ["AccountsReceivableNetCurrent"],
+    "COGS": ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"],
+
+    # Beneish M-Score inputs (AQI, DEPI, SGAI, LVGI) — see compute_beneish_mscore.
+    # Non-current debt is its own metric: "LongTermDebt" above often includes the
+    # current portion, which LVGI would double-count with current liabilities.
+    "SGA": ["SellingGeneralAndAdministrativeExpense"],
+    "PPENet": ["PropertyPlantAndEquipmentNet"],
+    "LongTermDebtNoncurrent": ["LongTermDebtNoncurrent"],
+
+    # ── Industry-template accounts (material_accounts_tool.py) ─────────────
+    # Not every filer discloses these — fetch_xbrl_facts() below already
+    # skips any tag missing from a filer's own us-gaap facts, same as every
+    # metric above, so listing them here costs nothing for a filer that
+    # doesn't use them. No new network call: fetch_xbrl_facts() already
+    # pulls the filer's FULL companyfacts payload and only the whitelist
+    # here determines what's kept.
+
+    # Manufacturing — inventory sub-components. Falls back to the flat
+    # "Inventory" (InventoryNet) above when a filer doesn't break these out;
+    # material_accounts_tool.py treats these three as children of Inventory.
+    "InventoryRawMaterials": ["InventoryRawMaterialsNetOfReserves", "InventoryRawMaterials"],
+    "InventoryWorkInProcess": ["InventoryWorkInProcessNetOfReserves", "InventoryWorkInProcess"],
+    "InventoryFinishedGoods": ["InventoryFinishedGoodsNetOfReserves", "InventoryFinishedGoods"],
+    "PPEGross": ["PropertyPlantAndEquipmentGross"],
+    "AccumulatedDepreciation": ["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
+
+    # Financial services
+    "LoansReceivable": ["LoansAndLeasesReceivableNetReportedAmount", "NotesReceivableNet"],
+    "AllowanceForLoanLosses": ["AllowanceForLoanAndLeaseLosses", "FinancingReceivableAllowanceForCreditLosses"],
+    "InterestIncome": ["InterestAndDividendIncomeOperating", "InterestAndFeeIncomeLoansAndLeases"],
+    "Deposits": ["Deposits", "InterestBearingDepositLiabilities"],
+
+    # SaaS / software
+    "DeferredRevenueCurrent": ["DeferredRevenueCurrent", "ContractWithCustomerLiabilityCurrent"],
+    "DeferredRevenueNoncurrent": ["DeferredRevenueNoncurrent", "ContractWithCustomerLiabilityNoncurrent"],
+    "CapitalizedSoftware": ["CapitalizedComputerSoftwareNet"],
 }
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -103,19 +140,72 @@ def _get_safe(url: str, **kw) -> Optional[requests.Response]:
         return None
 
 
+# A DEF 14A or 10-K primary document is routinely 5-20 MB of HTML. BeautifulSoup
+# + lxml build a parse tree roughly 10-30x the source size, so parsing a whole
+# large filing inside a request worker spikes memory well past the container
+# limit and the process is OOM-killed with no traceback (the 2026-09-10
+# /edgar/proxy incident: crashed the API every Risk Loop run). The governance /
+# risk sections we actually keep sit near the front of the document and every
+# _extract_section() call already caps its own output at 40-50K chars, so
+# reading only the first few MB costs nothing downstream.
+_MAX_FILING_BYTES = 5_000_000
+
+
+def _get_text_capped(url: str, max_bytes: int = _MAX_FILING_BYTES) -> Optional[str]:
+    """GET a potentially very large document, decoding at most ``max_bytes`` of
+    it. Returns decoded text, or None on any failure (same contract as
+    ``_get_safe``)."""
+    try:
+        _sleep()
+        with requests.get(url, headers=HEADERS, timeout=30, stream=True) as resp:
+            resp.raise_for_status()
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= max_bytes:
+                    break
+            enc = resp.encoding or resp.apparent_encoding or "utf-8"
+        return b"".join(chunks).decode(enc, errors="replace")
+    except Exception:
+        return None
+
+
 def _strip_html(raw: str) -> str:
-    """Return plain text from an HTML string."""
+    """Return plain text from an HTML string, with paragraph structure preserved.
+
+    get_text(separator="\n") inserts a newline at *every* tag boundary — DEF
+    14A/10-K filings wrap running prose in many inline <span>/<b>/<font> tags
+    for formatting, so a single flowing paragraph fragmented into a dozen
+    inline tags came out as a dozen separate one-line "paragraphs" downstream
+    (each looking like a truncated, disconnected bullet on screen). Only
+    block-level tags get a paragraph break; everything else is joined with
+    spaces so sentences stay whole.
+    """
+    # Defensive cap: callers should already bound the download (_get_text_capped),
+    # but never hand an unbounded string to the parser — that is the OOM path.
+    if len(raw) > _MAX_FILING_BYTES:
+        raw = raw[:_MAX_FILING_BYTES]
+
     if _BS4:
         soup = BeautifulSoup(raw, "lxml")
         for tag in soup(["script", "style", "table"]):
             tag.decompose()
-        text = soup.get_text(separator="\n")
+        for tag in soup.find_all(["p", "div", "tr", "li", "br",
+                                   "h1", "h2", "h3", "h4", "h5", "h6"]):
+            tag.append("\n\n")
+        text = soup.get_text(separator=" ")
     else:
         text = re.sub(r"<[^>]+>", " ", raw)
         text = html.unescape(text)
 
-    lines = [ln.strip() for ln in text.splitlines()]
-    return "\n".join(ln for ln in lines if ln)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return "\n".join(ln.strip() for ln in text.split("\n")).strip()
 
 
 def _extract_section(
@@ -258,13 +348,22 @@ def parse_filings(sub: dict, form_types: set[str]) -> dict[str, list[dict]]:
 # ── Document fetching ──────────────────────────────────────────────────────────
 
 def _filing_index(cik: str, accession_number: str) -> list[dict]:
-    """Return the document list from a filing's JSON index."""
+    """Return the document list from a filing's JSON index.
+
+    EDGAR serves the machine-readable directory listing at plain
+    `index.json` in the filing's own accession folder — `{accession-with-
+    dashes}-index.json` (what this used to build) 404s; that dashed-name
+    convention only exists for the *human* `-index.htm` page. This was
+    previously a silent no-op for every caller: fetch_filing_text()'s
+    _best_document() falls through to the already-known primary_document
+    when items is empty, which happens to be right most of the time, so the
+    bug never surfaced — until a caller needed a *different* file in the
+    same directory (edgar_segments.py, locating the XBRL instance doc),
+    where there's no equivalent fallback.
+    """
     cik_int = int(cik)
     acc_clean = accession_number.replace("-", "")
-    url = (
-        f"{EDGAR_BASE}/Archives/edgar/data/{cik_int}"
-        f"/{acc_clean}/{accession_number}-index.json"
-    )
+    url = f"{EDGAR_BASE}/Archives/edgar/data/{cik_int}/{acc_clean}/index.json"
     r = _get_safe(url)
     if r is None:
         return []
@@ -306,13 +405,11 @@ def fetch_filing_text(cik: str, filing: dict) -> str:
     acc_clean = acc.replace("-", "")
     url = f"{EDGAR_BASE}/Archives/edgar/data/{cik_int}/{acc_clean}/{doc_name}"
 
-    r = _get_safe(url)
-    if r is None:
+    raw = _get_text_capped(url)
+    if raw is None:
         return ""
 
-    ct = r.headers.get("Content-Type", "")
-    raw = r.text
-    if "html" in ct or raw.lstrip().startswith("<") or doc_name.lower().endswith((".htm", ".html")):
+    if raw.lstrip()[:1] == "<" or doc_name.lower().endswith((".htm", ".html")):
         return _strip_html(raw)
     return raw
 
@@ -323,7 +420,18 @@ def fetch_xbrl_facts(cik: str) -> dict:
     """
     Pull structured financial metrics from the XBRL company facts endpoint.
     Returns a dict keyed by metric name.
+
+    Zero-pads cik to SEC's required 10 digits regardless of what the caller
+    passed in — get_company_info() already returns a padded CIK for a fresh
+    live lookup, but a CIK read back from companies.cik after a DB round
+    trip is not guaranteed to still have its leading zeros (confirmed: this
+    silently broke Board Intelligence's peer-benchmarking subject-history
+    line, which reads the saved CIK via db.get_sic_peers() — the API 404s on
+    an unpadded CIK, _get_safe swallows that into a plain None, and this
+    function's own `if r is None: return {}` makes the failure indistinguishable
+    from "no data," never raising or logging anything).
     """
+    cik = str(cik).strip().zfill(10)
     url = f"{DATA_BASE}/api/xbrl/companyfacts/CIK{cik}.json"
     r = _get_safe(url)
     if r is None:
@@ -498,6 +606,103 @@ def annotate_8k(filing: dict) -> dict:
     return filing
 
 
+# Item codes worth the cost of fetching + classifying the actual filing body —
+# these are the ones that can represent a genuine change in risk exposure
+# (M&A, divestiture/exit, distress, control, or accounting-integrity events),
+# as opposed to routine/procedural items (Reg FD disclosures, exhibit lists,
+# shareholder-vote mechanics) that are common, low-signal, and not worth an
+# LLM call every time. This is a judgment call, not an SEC-defined category —
+# revisit if a real customer's risk model needs a wider or narrower net.
+_MATERIAL_8K_ITEMS = {
+    "1.01",  # Entry into a Material Definitive Agreement — often the FIRST signal
+             # of an announced-but-not-yet-closed acquisition/divestiture
+    "1.03",  # Bankruptcy or Receivership
+    "1.05",  # Material Cybersecurity Incidents
+    "2.01",  # Completion of Acquisition or Disposition of Assets
+    "2.05",  # Costs Associated with Exit or Disposal Activities — e.g. closing/selling a facility
+    "2.06",  # Material Impairments
+    "4.01",  # Change in Registrant's Certifying Accountant
+    "4.02",  # Non-Reliance on Previously Issued Financial Statements (restatement)
+    "5.01",  # Changes in Control of Registrant
+}
+
+
+def has_material_item(filing: dict) -> bool:
+    """True if this 8-K's item codes intersect _MATERIAL_8K_ITEMS."""
+    raw_items = filing.get("items", "")
+    item_list = {i.strip() for i in re.split(r"[,\s]+", raw_items) if i.strip()}
+    return bool(item_list & _MATERIAL_8K_ITEMS)
+
+
+_8K_CLASSIFY_SYSTEM = """You are a risk analyst reading a single SEC Form 8-K filing. \
+Extract exactly what the filing states — do not infer or speculate beyond the text. \
+If the filing does not actually describe a corporate action (acquisition, divestiture, \
+restructuring, bankruptcy, impairment, accounting restatement, or change of control), \
+set is_corporate_action to false and leave the other fields null. Numbers/dates must be \
+copied verbatim from the text, not estimated.
+
+If is_corporate_action is true, also write suggested_risk_note: one or two plain-English \
+sentences telling an internal auditor what to actually go check in the risk register or \
+scenario models as a result — not a restatement of the summary. Be specific to what changed \
+(e.g. "This closes the previously-flagged pending acquisition — confirm integration risk and \
+purchase-price/goodwill exposure are reflected" or "This divestiture removes a segment — the \
+liquidity/covenant runway model's revenue base should be re-checked"). This is a suggestion for \
+a human to act on, not an instruction you're executing — never claim the register was updated."""
+
+_8K_CLASSIFY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "is_corporate_action": {"type": "boolean"},
+        "action_type": {
+            "type": "string",
+            "enum": ["acquisition", "divestiture", "restructuring", "bankruptcy",
+                     "impairment", "auditor_change", "restatement", "change_of_control",
+                     "cybersecurity_incident", "other", "none"],
+        },
+        "counterparty": {"type": ["string", "null"]},
+        "assets_or_business_description": {"type": ["string", "null"]},
+        "consideration": {"type": ["string", "null"]},
+        "expected_close_or_effective_date": {"type": ["string", "null"]},
+        "rationale": {"type": ["string", "null"]},
+        "summary": {"type": "string"},
+        "suggested_risk_note": {"type": ["string", "null"]},
+    },
+    "required": ["is_corporate_action", "action_type", "summary"],
+}
+
+
+def classify_8k_event(item_descriptions: dict, filing_text: str) -> Optional[dict]:
+    """
+    LLM-based structured extraction of a material 8-K's actual content —
+    counterparty, consideration, what was acquired/sold, stated rationale.
+    Returns None on any failure (missing API key, empty text, malformed
+    response) rather than raising — this must never break the ingestion run,
+    matching every other best-effort path in this codebase.
+    """
+    if not filing_text or not filing_text.strip():
+        return None
+    try:
+        import claude_client
+    except ImportError:
+        return None
+    if not claude_client.is_available():
+        return None
+    try:
+        items_line = "; ".join(f"Item {k}: {v}" for k, v in (item_descriptions or {}).items())
+        user = (
+            f"Filed items: {items_line}\n\n"
+            f"Filing text (truncated to 20,000 chars):\n{filing_text[:20_000]}"
+        )
+        result = claude_client.complete_json(
+            _8K_CLASSIFY_SYSTEM, user, _8K_CLASSIFY_SCHEMA,
+            label="edgar_8k_classify", effort="medium", max_tokens=1000,
+        )
+        return result
+    except Exception:
+        return None
+
+
 # ── SIC peer lookup ────────────────────────────────────────────────────────────
 
 def _cik_to_ticker_map() -> dict[str, str]:
@@ -510,13 +715,29 @@ def _cik_to_ticker_map() -> dict[str, str]:
 
 def fetch_sic_peers(sic: str, max_peers: int = 20) -> list[dict]:
     """
-    Return companies sharing the given SIC code by scraping EDGAR's browse page.
+    Return companies sharing the given SIC code by scraping EDGAR's browse page,
+    preferring companies that are still actively trading over long-defunct ones.
     Each entry: {cik, cik_plain, company_name, state, sic, ticker}.
+
+    EDGAR's browse-edgar company list for a SIC code is alphabetical across
+    EVERY company that has ever filed a matching form — type=10-K only
+    requires "filed a 10-K at some point," not "still files one." For
+    SIC=3674 (semiconductors), a plain first-N cut off that list is
+    dominated by decades-old delisted names (3DLABS, ACTEL CORP, AEROFLEX,
+    AGERE SYSTEMS, ...): confirmed live, 13 of the first 15 alphabetical
+    entries had zero enrichable financial data, leaving the peer-benchmarking
+    chart with 1-2 lines (or none) after _peer_has_data drops the rest — this
+    is the actual cause behind "no peers in the chart," not a data-fetch bug.
+    Fix: pull a much larger raw pool (EDGAR's max page size, 100, vs. the
+    max_peers-sized page fetched before) and rank companies with a live
+    ticker in SEC's company_tickers.json first — a delisted/defunct company
+    drops out of that file, so "has a current ticker" is a solid proxy for
+    "still an active filer" without a per-company submissions.json round trip.
     """
     url = (
         f"{EDGAR_BASE}/cgi-bin/browse-edgar"
         f"?action=getcompany&SIC={sic}&type=10-K"
-        f"&dateb=&owner=include&count={min(max_peers + 10, 100)}&search_text="
+        f"&dateb=&owner=include&count=100&search_text="
     )
     r = _get_safe(url)
     if r is None:
@@ -557,8 +778,22 @@ def fetch_sic_peers(sic: str, max_peers: int = 20) -> list[dict]:
 
     ticker_map = _cik_to_ticker_map()
     for p in peers:
-        p["ticker"] = ticker_map.get(p["cik_plain"], "")
+        # company_tickers.json keys its CIKs unpadded (e.g. "2488", not
+        # "0000002488") while cik_plain here is the zero-padded text EDGAR's
+        # browse page renders — normalize both to a bare int before the
+        # lookup, or every single match silently misses and p["ticker"] is
+        # always "" (this was the actual state of the code before: not one
+        # peer, including still-trading names like AMD, ever resolved a
+        # ticker here).
+        p["ticker"] = ticker_map.get(str(int(p["cik_plain"])), "")
         p["sic"] = sic
+
+    # Stable sort: live-ticker (active) companies first, defunct ones after,
+    # each group keeping its original alphabetical order. A SIC code with
+    # fewer than max_peers active filers still returns a full page rather
+    # than an artificially short list — the defunct tail just won't have
+    # usable financial data once _peer_has_data filters it downstream.
+    peers.sort(key=lambda p: 0 if p["ticker"] else 1)
 
     return peers[:max_peers]
 

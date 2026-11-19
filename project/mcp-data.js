@@ -1,5 +1,5 @@
 /* ============================================================
-   Dendrai Risk Loop — Python MCP server client
+   Dendrai Intelligenza — Python MCP server client
    Calls the FastAPI bridge (api_server.py) via /api/mcp/ proxy.
 
    Start the bridge before running the Vite dev server:
@@ -37,8 +37,52 @@ window.MCP = (function () {
 
   function _postAi(path, body) { return _post(path, body, AI_TIMEOUT_MS); }
 
-  async function _get(path) {
-    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(5000) });
+  async function _put(path, body, timeoutMs = TIMEOUT_MS) {
+    const res = await fetch(BASE + path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
+  // 5s was too aggressive for every _get caller sharing one budget — some
+  // endpoints do real work server-side (e.g. exceptionsDriftSummary's live
+  // PSI computation across every system_source x metric pair), and under
+  // any real network/DB latency that surfaced to the user as a bare
+  // "TimeoutError: signal timed out" with no indication of which call or
+  // why. Default raised to a more realistic budget; slow callers can still
+  // pass a longer one explicitly, same override pattern _post already has.
+  async function _get(path, timeoutMs = 20_000) {
+    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
+  // No Content-Type header here — the browser sets the multipart boundary
+  // itself when the body is a FormData instance (setting it manually breaks
+  // the boundary and the server fails to parse the upload).
+  async function _postForm(path, formData, timeoutMs = TIMEOUT_MS) {
+    const res = await fetch(BASE + path, {
+      method: 'POST',
+      body: formData,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
     return res.json();
   }
 
@@ -50,6 +94,17 @@ window.MCP = (function () {
       return r.status === 'ok';
     } catch {
       return false;
+    }
+  }
+
+  /** Deployment environment name + dev-gating flag: isDev covers Exception Management's
+   *  nav gating (Development, or sandbox/uat opted in via EXCEPTION_MGMT_LOCAL_DEV). */
+  async function fetchEnvironment() {
+    try {
+      const r = await _get('/health');
+      return { environment: r.environment || 'production', isDev: !!r.environment_is_dev };
+    } catch {
+      return { environment: 'unknown', isDev: false };
     }
   }
 
@@ -72,6 +127,11 @@ window.MCP = (function () {
       forecast_metric:  opts.forecastMetric  || 'Revenue',
       include_rss:      opts.includeRss      !== false,
       include_fred:     opts.includeFred     !== false,
+      use_db:           opts.useDb           || false,
+      period_begin:     opts.periodBegin     || '',
+      period_end:       opts.periodEnd       || '',
+      persona:          opts.persona         || '',
+      appetite_level:   opts.appetiteLevel   || '',
     });
   }
 
@@ -89,6 +149,47 @@ window.MCP = (function () {
     return Array.from({ length: 6 }, (_, k) => {
       const frac = k / 5;
       return +Math.max(1, Math.min(25, base + (score - base) * frac)).toFixed(1);
+    });
+  }
+
+  /**
+   * Segment/geography-specific risks (segment_risk_tool.py, Risk Coverage
+   * Cube Phase 3) — real Concentration/Decline/Divergence risk scored from
+   * a segment's own filed revenue, distinct from every templateRisk
+   * (there's no per-segment template — see that module's docstring for
+   * why). mergeRiskScores() above only overlays data onto EXISTING
+   * template risks by index/category match, so it silently drops these;
+   * this instead ADAPTS them into the same risk-object shape the rest of
+   * the app expects (id/name/category/score/rag/velocity/narrative/hist)
+   * so they can be concatenated onto the merged array as real additional
+   * risks, not merged into an existing one.
+   *
+   * Fields a segment risk has no basis for are left honestly absent rather
+   * than guessed: no impact/likelihood decomposition (the score isn't an
+   * impact x likelihood product here), no inferred control effectiveness
+   * (ce: null — no basis to infer one), no peer benchmark.
+   *
+   * @param {object} mcpResult  Full analysis result (may carry a
+   *                            `segment_risks` key — only present when the
+   *                            backend actually extracted segment data)
+   * @returns {object[]} Risk-shaped objects ready to concatenate onto the
+   *                      merged consolidated risk array
+   */
+  function mapSegmentRisks(mcpResult) {
+    return (mcpResult?.segment_risks || []).map(r => {
+      const score = r.score != null ? +r.score.toFixed(1) : 0;
+      const base  = r.base_score != null ? +r.base_score.toFixed(1) : score;
+      return {
+        id: r.risk_ref, name: r.name, category: r.category,
+        impact: null, likelihood: null,
+        score, base, rag: r.rag_status || 'G',
+        velocity: r.velocity ?? 0, ce: null,
+        inherent: score, residual: score, peer: 'in-line',
+        hist: _mkHist(base, score),
+        narrative: r.narrative || '',
+        segment_type: r.segment_type || null,
+        segment_name: r.segment_name || null,
+      };
     });
   }
 
@@ -116,14 +217,22 @@ window.MCP = (function () {
       const mr = byIndex || byCategory;
       if (!mr) return tr;
 
-      // MCP server returns scores on 0-10 scale; scale to 0-25
-      const score = mr.score    != null ? +(mr.score * 2.5).toFixed(1) : tr.score;
-      const base  = mr.base_score != null ? +(mr.base_score * 2.5).toFixed(1) : tr.base;
+      // predictive_analytics_tool.compute_risk_scores now emits the same
+      // canonical 0-25 scale / R-A-G letters risk-engine.js itself uses
+      // (risk_rating_engine.py) — no rescale, no letter conversion needed.
+      // This used to scale mr.score *2.5 while taking mr.rag_status through
+      // _ragChar's OWN 0-10-native word check ("Red"/"Amber"/"Green"), so a
+      // predictive score of 6.0 rendered as "15.0" wearing an Amber badge —
+      // risk-engine.js's own ragOf(15.0) calls that Red. Score and rating on
+      // the same row disagreed. Backend now emits both pre-converted, so
+      // this is a straight passthrough.
+      const score = mr.score      != null ? mr.score      : tr.score;
+      const base  = mr.base_score != null ? mr.base_score : tr.base;
       return {
         ...tr,
         score,
         base,
-        rag:           _ragChar(mr.rag_status) || tr.rag,
+        rag:           mr.rag_status || tr.rag,
         velocity:      mr.velocity  ?? tr.velocity,
         ce:            mr.control_env || tr.ce,
         peerBenchmark: mr.peer_benchmark ?? tr.peerBenchmark,
@@ -157,7 +266,7 @@ window.MCP = (function () {
   }
 
   /**
-   * Convert MCP rss_signals section into Risk Loop signal objects.
+   * Convert MCP rss_signals section into Intelligenza signal objects.
    *
    * @param {object}   mcpResult      Full analysis result
    * @param {object[]} templateRisks  Template risks (with ids) for affectedRisks mapping
@@ -180,6 +289,8 @@ window.MCP = (function () {
           id:           `MCP-RSS-${String(idx).padStart(3, '0')}`,
           src:          'Industry RSS',
           title:        sig.title || '',
+          label:        sig.title || '',
+          feedName:     sig.feed_name || sig.feedName || feed.feed || 'RSS',
           snippet:      sig.title || '',
           velocity:     v,
           delta:        _velocityToDelta(v),
@@ -202,11 +313,13 @@ window.MCP = (function () {
     const indicators = mcpResult?.macro_leading_indicators?.indicators || [];
     return indicators.map((ind, i) => {
       const r = ind.pearson_r ?? 0;
+      const title = ind.name || ind.series_id || '';
       return {
         id:      `MCP-FRED-${String(i + 1).padStart(3, '0')}`,
         src:     'FRED Macro',
-        title:   ind.name || ind.series_id || '',
-        snippet: `${ind.name} · ${ind.optimal_lag_quarters}Q lead · r=${r.toFixed(2)}`,
+        title,
+        label:   title,
+        snippet: `${title} · ${ind.optimal_lag_quarters}Q lead · r=${r.toFixed(2)}`,
         velocity: Math.abs(r) > 0.9 ? 3 : 2,
         delta:   r < 0 ? 'contractionary' : 'expansionary',
         affectedRisks: [],
@@ -230,6 +343,121 @@ window.MCP = (function () {
 
   async function fetchPeerBenchmarks(ticker) {
     return _post('/edgar/peers', { ticker });
+  }
+
+  /**
+   * Dynamically-detected material accounts for this filer — industry-
+   * template (manufacturing/financial_services/saas) plus a materiality-
+   * ratio cutoff, see material_accounts_tool.py — rather than the fixed
+   * revenue/margin/eps/etc. set every ticker gets today.
+   * Returns { ticker, sic, accounts: [{metric, label, ratio, is_material,
+   * parent, source, ...}] }.
+   */
+  async function fetchMaterialAccounts(ticker) {
+    return _get(`/material-accounts/${encodeURIComponent(ticker)}`);
+  }
+
+  /**
+   * Forecast every detected material account, capped server-side (see
+   * material_accounts_tool.py's _MAX_FORECAST_ACCOUNTS) — same generic
+   * ensemble engine every other KPI forecast already uses. Returns
+   * { ticker, accounts, forecasts: { [metric]: { forecast: {history,
+   * forecasts,...}, backtest? } } } — each per-metric bundle is the same
+   * shape as fetchFullAnalysis()'s own `.forecast`, so the same adapter
+   * logic (see app.jsx's revenue/margin handling) applies to any metric.
+   */
+  async function forecastMaterialAccounts(ticker, opts = {}) {
+    return _post(`/material-accounts/${encodeURIComponent(ticker)}/forecast`, {
+      horizon: opts.horizon ?? 4,
+      macro_info: opts.macroInfo ?? null,
+    });
+  }
+
+  // ── Manual financials — private companies + monthly/quarterly supplements ──
+
+  /**
+   * Create a company with no SEC ticker/CIK. Returns { ticker, company_name,
+   * is_private } — the returned synthetic ticker (PVT-<SLUG>) should be set
+   * as cfg.ticker so the rest of the app treats it like any other entity.
+   */
+  async function createPrivateCompany(name, industry = '', fiscalYearEnd = '') {
+    return _post('/company/private', { name, industry, fiscal_year_end: fiscalYearEnd });
+  }
+
+  /**
+   * Upload a financial statement (.xlsx/.xls/.csv/.pdf) for parsing. Returns
+   * { line_items, format_detected, unmapped_labels, filename } for review —
+   * nothing is persisted until commitFinancials() is called with the
+   * (possibly user-edited) line items.
+   */
+  async function uploadFinancials(ticker, file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('ticker', ticker);
+    return _postForm('/financials/upload', fd);
+  }
+
+  /**
+   * Persist a reviewed set of line items for `ticker`. Each item needs
+   * metric/period_end/value/granularity at minimum — rows still missing a
+   * metric (unmapped in review) are skipped server-side, not guessed.
+   */
+  async function commitFinancials(ticker, lineItems) {
+    return _post('/financials/commit', { ticker, line_items: lineItems });
+  }
+
+  // ── Governance Intelligence — load from DB without a live pipeline run ──────
+  // Both return null on 404 (nothing saved yet for this ticker) instead of throwing,
+  // so callers can treat "no saved data" as a normal, non-error case.
+
+  async function _getSavedOrNull(path) {
+    const res = await fetch(BASE + path, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
+  async function fetchSavedProxyData(ticker) {
+    return _getSavedOrNull(`/edgar/proxy/${encodeURIComponent(ticker)}`);
+  }
+
+  async function fetchSavedPeerBenchmarks(ticker) {
+    return _getSavedOrNull(`/edgar/peers/${encodeURIComponent(ticker)}`);
+  }
+
+  async function fetchSavedAuditScope(ticker) {
+    return _getSavedOrNull(`/audit-scope/${encodeURIComponent(ticker)}`);
+  }
+
+  // "What changed since the last run" — see api_server.py's Change Layer
+  // section. Always {has_prior:false, changes:[]} rather than a 404 when
+  // there's no prior run yet, so callers don't need special-case error handling.
+  async function fetchChanges(ticker) {
+    const res = await fetch(BASE + `/changes/${encodeURIComponent(ticker)}`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`MCP /changes: ${res.status}`);
+    return res.json();
+  }
+
+  // ── Approval workflow (real 2-stage preparer -> manager HITL review) ────────
+  // Session-cookie authenticated (proxied at /approvals/, not /api/mcp/) —
+  // identity is always resolved server-side from the login session, never
+  // sent by the client. See approvals_endpoints.py.
+
+  async function prepareApprovalTask({ runId, gateType, itemRef, itemLabel, disposition, adjustments, rationale, aiSuggested }) {
+    const res = await fetch('/approvals/prepare', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        run_id: runId, gate_type: gateType, item_ref: itemRef, item_label: itemLabel,
+        disposition, adjustments, rationale, ai_suggested: aiSuggested || null,
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json(); // { saved, task }
   }
 
   // ── Item 1A enrichment ──────────────────────────────────────────────────────
@@ -393,6 +621,25 @@ window.MCP = (function () {
     return _postAi('/ai/gate2/recommend', { ticker, run_id: runId, objectives, risks });
   }
 
+  /** #2 — SOX Gate S1/S2 materiality/account/process drafts. kind: "materiality" | "account" | "process".
+   *  Returns a single recommendation object (not wrapped in a list, unlike Gate 1/2 — SOX's Adjust
+   *  modals review one item at a time). */
+  function aiSoxRecommend(ticker, kind, item, context = {}, runId = null) {
+    return _postAi('/ai/sox/recommend', { ticker, run_id: runId, kind, item, context });
+  }
+
+  /** #2b — AI-drafted approve/reject recommendation for a manager reviewing a
+   *  submitted Approval Inbox item. Returns { recommendation, confidence, reasoning }. */
+  function aiApprovalRecommend(taskId) {
+    return _postAi('/ai/approval/recommend', { task_id: taskId });
+  }
+
+  /** #1b — Draft a Rego module from a plain-language policy narrative (e.g. one
+   *  pulled in via the Policy-as-Code GitHub "Sync Now" button). Returns { rego_content }. */
+  function aiDraftRego(process, narrative) {
+    return _postAi('/ai/pac/draft-rego', { process, narrative });
+  }
+
   /** #3 — Item 1A / proxy narrative analysis. Returns emerging_risks, yoy_changes, summary. */
   function aiNarrative(ticker, runId = null, opts = {}) {
     return _postAi('/ai/narrative-analysis', {
@@ -407,6 +654,15 @@ window.MCP = (function () {
     return _postAi('/ai/persona-brief', { ticker, run_id: runId, persona, risks, loop_stats: loopStats });
   }
 
+  /** #4b — Same role-tailored brief mechanism as aiPersonaBrief, fed a period's
+   *  Exception Report (exceptionsReport's own response shape passed straight
+   *  through) instead of a risk-loop register. */
+  function aiExceptionBrief(persona, dateFrom, dateTo, summary, byControl) {
+    return _postAi('/ai/exception-brief', {
+      persona, date_from: dateFrom, date_to: dateTo, summary, by_control: byControl,
+    });
+  }
+
   /** #4 — Full markdown audit report. Returns { markdown }. */
   function aiAuditReport(ticker, { risks = [], objectives = [], maps = [], loop = {} } = {}, runId = null) {
     return _postAi('/ai/audit-report', { ticker, run_id: runId, risks, objectives, maps, loop });
@@ -415,6 +671,16 @@ window.MCP = (function () {
   /** #1 — Tool-use investigation agent. Returns { final_text, tool_calls, iterations }. */
   function agentInvestigate(ticker, focus = '', runId = null) {
     return _postAi('/agent/investigate', { ticker, run_id: runId, focus });
+  }
+
+  /**
+   * #1b — Council investigation: financial / operational-cyber /
+   * compliance-regulatory analysts run in parallel, then a synthesis pass.
+   * Returns { ticker, perspectives: [{key, label, memo, tool_calls, iterations, stopped}, ...],
+   *           synthesis: {headline, convergent_findings, divergent_findings} }.
+   */
+  function agentInvestigateCouncil(ticker, focus = '', runId = null) {
+    return _postAi('/agent/investigate/council', { ticker, run_id: runId, focus });
   }
 
   /**
@@ -535,30 +801,472 @@ window.MCP = (function () {
     return _get('/rss/feeds/status');
   }
 
+  // ── Risk Quantification (FAIR) — fair_endpoints.py ────────────────────────────
+
+  /**
+   * Run a FAIR Monte Carlo loss quantification and (by default) persist it.
+   * See fair_endpoints.QuantifyRequest for the full field list — only
+   * resource_type/resource_ref are required; everything else lets the
+   * caller either supply a number directly (sox_estimated_exposure,
+   * risk_dollar_exposure_m — the frontend already has these) or leave it
+   * to the backend to resolve from real data (control_id -> empirical fire
+   * history; company_id -> SOX process lookup).
+   */
+  async function fairQuantify(req) {
+    return _post('/fair/quantify', req);
+  }
+
+  /** Highest-ALE resources right now — the Risk Quantification screen's headline table. */
+  async function fairAleSummary(days = 365) {
+    return _get(`/fair/ale-summary?days=${days}`);
+  }
+
+  /** History of FAIR runs, optionally filtered to one resource_type. */
+  async function fairQuantifications(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.resourceType) params.set('resource_type', opts.resourceType);
+    if (opts.days) params.set('days', opts.days);
+    if (opts.limit) params.set('limit', opts.limit);
+    return _get(`/fair/quantifications?${params.toString()}`);
+  }
+
+  /** Most recent FAIR run for one resource, or { quantification: null } if never run. */
+  async function fairLatestQuantification(resourceType, resourceRef) {
+    return _get(`/fair/quantifications/latest?resource_type=${encodeURIComponent(resourceType)}&resource_ref=${encodeURIComponent(resourceRef)}`);
+  }
+
+  /** Risk-adjusted ROI of a control: two ALE figures (before/after) + its annual cost. */
+  async function fairControlRoi(aleBefore, aleAfter, annualControlCost, controlId = null) {
+    return _post('/fair/control-roi', {
+      ale_before: aleBefore, ale_after: aleAfter,
+      annual_control_cost: annualControlCost, control_id: controlId,
+    });
+  }
+
+  /** The CEM-severity default (min, most-likely, max) $M PERT bands. */
+  async function fairSeverityBands() {
+    return _get('/fair/severity-bands');
+  }
+
+  /**
+   * Real, pickable values for every FAIR resource type — CEM events,
+   * CEM event templates, SOX processes, and controls — so the Risk
+   * Quantification screen's "Resource reference" field can be a dropdown of
+   * actual data instead of a raw id/ref the user has to already know.
+   */
+  async function fairLookups() {
+    return _get('/fair/lookups');
+  }
+
+  // ── Exception Management — exceptions_endpoints.py (Development environment only) ──
+
+  /** Events awaiting triage, risk_rating then uncertainty first. 404s outside the Development
+   *  environment. opts.group=true collapses recurring (control_id, system_source) pairs into
+   *  one row each (occurrence_count, worst_risk_rating, open-MAP badge) instead of one row per event. */
+  async function exceptionsPending(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set('limit', opts.limit);
+    if (opts.minUncertainty) params.set('min_uncertainty', opts.minUncertainty);
+    if (opts.riskRating) params.set('risk_rating', opts.riskRating);
+    if (opts.owner) params.set('owner', opts.owner);
+    if (opts.group) params.set('group', 'true');
+    return _get(`/exceptions/pending?${params.toString()}`);
+  }
+
+  /** Record an auditor's resolution for one pending exception. */
+  async function submitExceptionTriage(eventId, resolutionLabel, justificationNotes) {
+    return _post(`/exceptions/${eventId}/triage`, {
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
+  /** Resolve every currently-pending event for one (control_id, system_source) pair at once —
+   *  the bulk-resolve action behind the grouped Triage Queue view. */
+  async function exceptionsBulkTriage(controlId, systemSource, resolutionLabel, justificationNotes) {
+    return _post('/exceptions/bulk-triage', {
+      control_id: controlId, system_source: systemSource,
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
+  /** Headline counts: pending, resolution mix, pending-by-system/-owner/-risk_rating. */
+  async function exceptionsSummary() {
+    return _get('/exceptions/summary');
+  }
+
+  /** Resolved triage decisions, most recent first — Model Analytics tab. */
+  async function exceptionsHistory(limit = 200) {
+    return _get(`/exceptions/history?limit=${limit}`);
+  }
+
+  /** Live PSI per system_source x {anomaly_score, uncertainty_score} — Feature Drift tab. */
+  async function exceptionsDriftSummary() {
+    return _get('/exceptions/drift-summary');
+  }
+
+  /** Board/executive period report: every exception in [dateFrom, dateTo]
+   *  grouped by control, with a $ impact per group (literal transaction
+   *  amount where captured, else a FAIR estimate) and headline totals. */
+  async function exceptionsReport(dateFrom, dateTo) {
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    return _get(`/exceptions/report?${params.toString()}`);
+  }
+
+  /** Row-level drill-down for exceptionsReport — every occurrence in the
+   *  period, optionally scoped to one control_id (a report row clicked into). */
+  async function exceptionsReportDetail(dateFrom, dateTo, controlId) {
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    if (controlId) params.set('control_id', controlId);
+    return _get(`/exceptions/report/detail?${params.toString()}`);
+  }
+
+  // ── Process Mining — process_mining_endpoints.py ──────────────────────────────
+
+  /** The known process templates (id, label, canonical step order). */
+  async function pmListProcesses() {
+    return _get('/process-mining/processes');
+  }
+
+  /** Headline tiles: case counts, conformance/rework rate, bottleneck per process. */
+  async function pmSummary(days = 30) {
+    return _get(`/process-mining/summary?days=${days}`);
+  }
+
+  /** Distinct step sequences observed, most frequent first. */
+  async function pmVariants(days = 30, process = null) {
+    return _get(`/process-mining/variants?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Conformance rate + deviating cases against the matched process template. */
+  async function pmConformance(days = 30, process = null) {
+    return _get(`/process-mining/conformance?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Per-edge duration stats + overall case duration + bottleneck. */
+  async function pmCycleTimes(days = 30, process = null) {
+    return _get(`/process-mining/cycle-times?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Cases that revisited an already-completed step. */
+  async function pmRework(days = 30, process = null) {
+    return _get(`/process-mining/rework?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Per-case detail: steps, duration, variant, conformance verdict. */
+  async function pmCases(days = 30, process = null, limit = 200) {
+    return _get(`/process-mining/cases?days=${days}&limit=${limit}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Value Stream Map: canonical (forward, template-order) vs. deviation
+   * (rework/skip/off-template) hours from the same real edges cycle-times
+   * computes, rolled into a process cycle efficiency ratio. */
+  async function pmValueStreamMap(days = 30, process = null) {
+    return _get(`/process-mining/value-stream-map?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Pareto ranking of deviation edges by total hours lost, with the 80/20
+   * vital-few cutoff flagged. */
+  async function pmPareto(days = 30, process = null) {
+    return _get(`/process-mining/pareto?days=${days}${process ? `&process=${encodeURIComponent(process)}` : ''}`);
+  }
+
+  /** Case-duration control chart: trailing period means + center line/UCL/LCL. */
+  async function pmControlChart(process = null, periodDays = 7, periods = 8) {
+    const params = new URLSearchParams({ period_days: periodDays, periods });
+    if (process) params.set('process', process);
+    return _get(`/process-mining/control-chart?${params.toString()}`);
+  }
+
+  /** Draft a first-draft walkthrough narrative from an interview transcript
+   * + real Case Flow/Variants/CaC/PaC evidence for the same process. Not
+   * persisted by this call alone — review/edit, then submit it through the
+   * same HITL gate every other Assess Risk item uses (prepareApprovalTask
+   * with gateType: 'walkthrough_narrative'). */
+  async function draftWalkthroughNarrative(process, transcript, days = 90) {
+    return _post('/process-mining/walkthrough-narrative', { process, transcript, days });
+  }
+
+  /** HITL status of every walkthrough narrative submitted for one process
+   * (gate_type='walkthrough_narrative', run_id always NULL — see
+   * db.get_approval_tasks_by_item_ref), newest first. */
+  async function getWalkthroughNarrativeHistory(process) {
+    return _get(`/process-mining/walkthrough-narrative/history?process=${encodeURIComponent(process)}`);
+  }
+
+  /** #4c — Head of Operations brief over real process-mining statistics
+   * (bottleneck/rework/variant drift), not the risk register. */
+  function aiOpsEfficiencyBrief(days, process, summary, cycleTimes, rework, variants) {
+    return _postAi('/ai/ops-efficiency-brief', {
+      days, process, summary, cycle_times: cycleTimes, rework, variants,
+    });
+  }
+
+  /** 5 Whys root-cause HYPOTHESIS over one real, already-computed
+   * process-mining finding (a bottleneck or Pareto deviation edge) —
+   * `finding` is {process, process_label, source, target, avg_hours, count,
+   * basis}, never free text. Every why is schema-forced to self-label
+   * "evidence" or "assumption"; see ai_endpoints.py's five_whys for the
+   * full guardrail rationale. */
+  function aiFiveWhys(finding, days = 30) {
+    return _postAi('/ai/five-whys', { finding, days });
+  }
+
+  /** Fishbone (Ishikawa) root-cause HYPOTHESIS brainstorm over the same
+   * kind of real finding as aiFiveWhys — same evidence/assumption
+   * self-labeling guardrail, same "never embedded for semantic search"
+   * isolation (see ai_endpoints.py's fishbone). */
+  function aiFishbone(finding, days = 30) {
+    return _postAi('/ai/fishbone', { finding, days });
+  }
+
+  // ── SLA Tracker (observability.itsm_tickets) ────────────────────────────
+
+  /** Filtered ticket list — status/external_system/breached_only, same
+   * filters db.list_itsm_tickets supports. */
+  async function itsmListTickets({ status = null, externalSystem = null, breachedOnly = false, limit = 200 } = {}) {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (externalSystem) params.set('external_system', externalSystem);
+    if (breachedOnly) params.set('breached_only', 'true');
+    params.set('limit', String(limit));
+    return _get(`/itsm/tickets?${params.toString()}`);
+  }
+
+  // ── DevOps Health (DORA metrics) ─────────────────────────────────────────
+
+  /** Single trailing window — deployment frequency, change-failure rate, MTTR. */
+  async function doraMetrics(windowDays = 30) {
+    return _get(`/evidence/dora-metrics?window_days=${windowDays}`);
+  }
+
+  /** `periods` consecutive trailing windows of `periodDays` each, oldest
+   * first, for a trend view a single window can't show. */
+  async function doraMetricsTrend(periodDays = 7, periods = 8) {
+    return _get(`/evidence/dora-metrics/trend?period_days=${periodDays}&periods=${periods}`);
+  }
+
+  // ── Control Cost Efficiency ──────────────────────────────────────────────
+
+  /** All admin-entered control cost profiles on file. */
+  async function controlCostListProfiles() {
+    return _get('/control-cost/profiles');
+  }
+
+  /** Set/update one control's annual cost / hours-per-month / notes. */
+  async function controlCostUpsertProfile(controlRef, { annualCostUsd = null, hoursPerMonth = null, notes = null } = {}) {
+    return _put(`/control-cost/profiles/${encodeURIComponent(controlRef)}`, {
+      annual_cost_usd: annualCostUsd, hours_per_month: hoursPerMonth, notes,
+    });
+  }
+
+  // ── Journal Entry Testing — je_testing_endpoints.py ───────────────────────────
+
+  /** Headline tiles: entries tested, findings by rule, top preparers. */
+  async function jeTestingSummary() {
+    return _get('/je-testing/summary');
+  }
+
+  /** Findings list, most recent first. opts: ruleId, systemSource, preparer, onlyPending, group, limit, offset.
+   *  opts.group=true collapses recurring (rule_id, system_source) pairs into one row each — same
+   *  shape as exceptionsPending's grouped view (occurrence_count, worst_risk_rating, owner). */
+  async function jeTestingFindings(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.ruleId) params.set('rule_id', opts.ruleId);
+    if (opts.systemSource) params.set('system_source', opts.systemSource);
+    if (opts.preparer) params.set('preparer', opts.preparer);
+    if (opts.onlyPending) params.set('only_pending', 'true');
+    if (opts.group) params.set('group', 'true');
+    params.set('limit', opts.limit || 100);
+    params.set('offset', opts.offset || 0);
+    return _get(`/je-testing/findings?${params.toString()}`);
+  }
+
+  /** Record an auditor's resolution for one JE finding — same 4-label vocabulary as Exception Management. */
+  async function submitJeTestingDisposition(eventId, resolutionLabel, justificationNotes) {
+    return _post(`/je-testing/findings/${eventId}/disposition`, {
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
+  /** Resolve every currently-pending finding for one (rule_id, system_source) pair at once —
+   *  the bulk-resolve action behind the grouped JE Testing view. */
+  async function jeTestingBulkDisposition(ruleId, systemSource, resolutionLabel, justificationNotes) {
+    return _post('/je-testing/findings/bulk-disposition', {
+      rule_id: ruleId, system_source: systemSource,
+      resolution_label: resolutionLabel, justification_notes: justificationNotes || null,
+    });
+  }
+
+  // ── Closed-loop remediation — remediation_endpoints.py ────────────────────────
+  // /approvals/remediations* go through approvals_endpoints.py's own router,
+  // which the Vite dev proxy forwards directly (see vite.config.js's
+  // '/approvals/' entry) — called via raw fetch in approval-inbox.jsx, same
+  // convention that file already uses for every other /approvals/* call.
+  // remediation_endpoints.py has no such dedicated proxy entry, so it goes
+  // through the same /api/mcp/ catch-all every other session-permission-gated
+  // router here already does (exceptions_endpoints.py, process_mining_endpoints.py).
+
+  /** Draft a GitHub issue for one finding (exception or JE Testing — same
+   * underlying event_id) and submit it for manager approval. */
+  async function proposeRemediation(eventId) {
+    return _post(`/remediation/propose/${eventId}`, {});
+  }
+
+  /** Draft a real GitHub PR fixing one named file for a finding, and submit
+   * it for manager approval. Unlike proposeRemediation (an issue needs no
+   * file target), the caller must name the specific repo file this finding
+   * maps to — there's no principled way to auto-detect that from an
+   * arbitrary business-exception finding. Returns {task, diff}. */
+  async function proposeRemediationPr(eventId, filePath, repo = null, baseBranch = 'main') {
+    return _post(`/remediation/propose-pr/${eventId}`, { file_path: filePath, repo, base_branch: baseBranch });
+  }
+
+  // ── Regulatory Change Management — regulatory_change_endpoints.py ─────────────
+
+  /** Fetch the horizon-scanning feeds, diff against the last snapshot, and
+   * draft proposals for material changes. */
+  async function regChangeScan() {
+    return _post('/regulatory-change/scan', {});
+  }
+
+  /** Recent fetched snapshots, newest first. */
+  async function regChangeVersions(feedId = null) {
+    return _get(`/regulatory-change/versions${feedId ? `?feed_id=${encodeURIComponent(feedId)}` : ''}`);
+  }
+
+  /** Review queue — proposals awaiting a decision (or all, if status omitted). */
+  async function regChangeProposals(status = null) {
+    return _get(`/regulatory-change/proposals${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+  }
+
+  /** One proposal, full diff included. */
+  async function regChangeProposal(id) {
+    return _get(`/regulatory-change/proposals/${id}`);
+  }
+
+  /** approve | reject a proposal — approving applies proposed_edit to controls_library. */
+  async function regChangeDecide(id, decision, reviewNotes) {
+    return _post(`/regulatory-change/proposals/${id}/decision`, {
+      decision, review_notes: reviewNotes || null,
+    });
+  }
+
+  // ── Management Action Plans — map_endpoints.py ─────────────────────────────
+  // Proposed by map_detection_sweep.py whenever a control keeps requiring
+  // human review; a human reviews/adjusts/decides here, same propose ->
+  // review -> approve shape Gate 1 applies to a risk rating.
+
+  /** Filtered list, newest first (status: 'proposed'|'approved'|'rejected'|'in_progress'|'closed'). */
+  async function listMaps(status = null) {
+    return _get(`/maps${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+  }
+
+  /** One MAP, including its source event ids. */
+  async function getMap(mapRef) {
+    return _get(`/maps/${encodeURIComponent(mapRef)}`);
+  }
+
+  /** approve | reject a proposed MAP — adjustments may override any of the
+   * AI-drafted fields (risk_rating/root_cause/action/owner/due_date/
+   * success_criteria/reduction_pct) before approving. comment required on reject. */
+  async function decideMap(mapRef, decision, comment, adjustments) {
+    return _post(`/maps/${encodeURIComponent(mapRef)}/decision`, {
+      decision, comment: comment || null, adjustments: adjustments || null,
+    });
+  }
+
+  /** Execution tracking for an approved MAP — 100 closes it. Routed through
+   * the same /api/mcp/ catch-all as every other call here (not a raw
+   * root-relative fetch) — /maps/ has no dedicated vite dev-proxy entry the
+   * way /approvals/ does. */
+  async function _putMcp(path, body) {
+    const res = await fetch(BASE + path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+
+  async function updateMapProgress(mapRef, completionPct) {
+    return _putMcp(`/maps/${encodeURIComponent(mapRef)}/progress`, { completion_pct: completionPct });
+  }
+
+  /** On-demand recurrence-detection pass (normally runs daily). */
+  async function triggerMapDetection() {
+    return _post('/maps/detect', {});
+  }
+
+  // ── PBC/Workpaper Evidence Quality — evidence_quality_endpoints.py ─────────
+  // Deterministic stale/unsigned/period-mismatch checks, plus one advisory
+  // LLM content-plausibility check when a control_description is supplied.
+
+  /** Log one evidence item; runs both check kinds server-side and returns
+   * the item with its computed quality_flags/content_check. */
+  async function logEvidence(evidence) {
+    return _post('/evidence-quality/items', evidence);
+  }
+
+  /** Filtered list, newest first. */
+  async function listEvidenceQuality(controlId = null, flaggedOnly = false) {
+    const params = new URLSearchParams();
+    if (controlId) params.set('control_id', controlId);
+    if (flaggedOnly) params.set('flagged_only', 'true');
+    const qs = params.toString();
+    return _get(`/evidence-quality/items${qs ? `?${qs}` : ''}`);
+  }
+
+  /** One evidence item. */
+  async function getEvidenceQualityItem(id) {
+    return _get(`/evidence-quality/items/${id}`);
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   return {
     checkHealth,
     fetchFullAnalysis,
     mergeRiskScores,
+    mapSegmentRisks,
     mapRssSignals,
     mapFredSignals,
     fetchRiskFactors,
     fetch8kEvents,
     fetchProxyData,
     fetchPeerBenchmarks,
+    fetchMaterialAccounts,
+    forecastMaterialAccounts,
+    createPrivateCompany,
+    uploadFinancials,
+    commitFinancials,
+    fetchSavedProxyData,
+    fetchSavedPeerBenchmarks,
+    fetchSavedAuditScope,
+    fetchChanges,
+    prepareApprovalTask,
     enrichRisksFromFactors,
     map8kToCemEvents,
     // AI-augmented (#1–#4b)
     aiEnabled,
     aiGate1Recommend,
     aiGate2Recommend,
+    aiSoxRecommend,
+    aiApprovalRecommend,
+    aiDraftRego,
     aiNarrative,
     aiPersonaBrief,
+    aiExceptionBrief,
     aiAuditReport,
     aiLoopCalibrate,
     agentInvestigate,
     agentInvestigateStream,
+    agentInvestigateCouncil,
     fetchAiAnalyses,
     fetchRunTokenCost,
     // Scheduled Managed Agent (#2b)
@@ -568,5 +1276,71 @@ window.MCP = (function () {
     // Compliance RSS ingest
     ingestRssFeeds,
     fetchRssFeedStatus,
+    // Risk Quantification (FAIR)
+    fairQuantify,
+    fairAleSummary,
+    fairQuantifications,
+    fairLatestQuantification,
+    fairControlRoi,
+    fairSeverityBands,
+    fairLookups,
+    // Exception Management
+    exceptionsPending,
+    submitExceptionTriage,
+    exceptionsBulkTriage,
+    exceptionsSummary,
+    exceptionsHistory,
+    exceptionsDriftSummary,
+    exceptionsReport,
+    exceptionsReportDetail,
+    fetchEnvironment,
+    // Process Mining
+    pmListProcesses,
+    pmSummary,
+    pmVariants,
+    pmConformance,
+    pmCycleTimes,
+    pmRework,
+    pmCases,
+    pmValueStreamMap,
+    pmPareto,
+    pmControlChart,
+    draftWalkthroughNarrative,
+    getWalkthroughNarrativeHistory,
+    aiOpsEfficiencyBrief,
+    aiFiveWhys,
+    aiFishbone,
+    // SLA Tracker
+    itsmListTickets,
+    // DevOps Health (DORA)
+    doraMetrics,
+    doraMetricsTrend,
+    // Control Cost Efficiency
+    controlCostListProfiles,
+    controlCostUpsertProfile,
+    // Journal Entry Testing
+    jeTestingSummary,
+    jeTestingFindings,
+    submitJeTestingDisposition,
+    jeTestingBulkDisposition,
+    // Closed-loop remediation
+    proposeRemediation,
+    proposeRemediationPr,
+    // Regulatory Change Management
+    regChangeScan,
+    regChangeVersions,
+    regChangeProposals,
+    regChangeProposal,
+    regChangeDecide,
+    // Management Action Plans
+    listMaps,
+    getMap,
+    decideMap,
+    updateMapProgress,
+    triggerMapDetection,
+    // PBC/Workpaper Evidence Quality
+    logEvidence,
+    listEvidenceQuality,
+    getEvidenceQualityItem,
   };
 })();

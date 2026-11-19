@@ -4,21 +4,22 @@
 
 function ReportModal({ open, onClose, payload }) {
   // Hooks must run unconditionally — declare before the early return.
-  const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null });
-  React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null }); }, [payload?.ts]);
+  const [aiReport, setAiReport] = React.useState({ loading: false, error: null, markdown: null, _review: null });
+  React.useEffect(() => { setAiReport({ loading: false, error: null, markdown: null, _review: null }); }, [payload?.ts]);
+  const [sendOpen, setSendOpen] = React.useState(false);
 
   if (!open || !payload) return null;
   const {
     entity, ticker, runId, ts, cfg, signals, risks, baseRisks, top3, riskAppetite,
     objectives, maps, closure, loop, scenarios, greySwan, personas,
-    fredSeries, fredContrCount, rssHighVelCount, rssLinkedCount, liveMode,
+    fredSeries, fredContrCount, rssHighVelCount, rssLinkedCount, liveMode, mcpMode,
     riskApprovals, scopeApprovals,
     assumptions, obstacles, log,
     stageState = {}, stageOutput = {},
   } = payload;
 
-  const adjRisks = risks.filter(r => riskApprovals?.[r.id]?.status === "adjusted" || riskApprovals?.[r.id]?.status === "signed");
-  const adjObjs  = objectives.filter(o => scopeApprovals?.[o.id]?.status === "adjusted" || scopeApprovals?.[o.id]?.status === "signed");
+  const adjRisks = risks.filter(r => riskApprovals?.[r.id]?.adjustments && riskApprovals?.[r.id]?.status !== "pending");
+  const adjObjs  = objectives.filter(o => scopeApprovals?.[o.id]?.adjustments && scopeApprovals?.[o.id]?.status !== "pending");
 
   // #4 — Generate a board-ready narrative audit report with Claude.
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiAuditReport;
@@ -30,28 +31,40 @@ function ReportModal({ open, onClose, payload }) {
         ticker || entity,
         { risks, objectives, maps, loop }, runId || null,
       );
-      setAiReport({ loading: false, error: null, markdown: res?.markdown || "" });
+      setAiReport({ loading: false, error: null, markdown: res?.markdown || "", _review: res?._review || null });
     } catch (e) {
       const raw = e.message || "";
       const isBilling = raw.includes("402") || raw.includes("credit") || raw.includes("Credits");
       const friendly = isBilling
         ? "BILLING: Anthropic API credits exhausted — add credits at console.anthropic.com/settings/billing"
         : raw || "AI unavailable";
-      setAiReport({ loading: false, error: friendly, markdown: null });
+      setAiReport({ loading: false, error: friendly, markdown: null, _review: null });
     }
   }
 
+  const modalFoot = (
+    <>
+      <span className="mono muted" style={{fontSize: 11}}>{loop.audit_impact_score ? `Audit impact ${loop.audit_impact_score}/25` : ""} · {risks.length} risks · {maps.length} MAPs</span>
+      <div style={{display: "flex", gap: 6}}>
+        {aiAvailable && (
+          <button className="btn btn-sm" onClick={generateAiReport} disabled={aiReport.loading}
+            title="Generate a board-ready narrative report with Claude">
+            <Icon name="spark" size={11}/> {aiReport.loading ? "Generating…" : aiReport.markdown ? "Regenerate AI report" : "Generate AI report"}
+          </button>
+        )}
+        <button className="btn btn-sm" onClick={() => setSendOpen(true)}><Icon name="satellite" size={11}/> Send to…</button>
+        <button className="btn btn-sm" onClick={() => window.print()}><Icon name="download" size={11}/> Print / PDF</button>
+        <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
+      </div>
+    </>
+  );
+
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
-      <div className="modal-box" style={{width: 920}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Loop Report</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>Generated {new Date(ts).toLocaleString()}</div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
-        </div>
-        <div className="modal-body">
+    <>
+    <SendReportModal open={sendOpen} onClose={() => setSendOpen(false)}
+      artifactType="loop_report" payload={payload} runId={runId} ticker={ticker} />
+    <Modal open={open} onClose={onClose} title="Loop Report"
+      titleSub={`Generated ${new Date(ts).toLocaleString()}`} width={920} foot={modalFoot}>
           <div className="rep-h1">{entity}</div>
           <div className="rep-h1-sub">{cfg.industry} · {(Array.isArray(cfg.focus) ? cfg.focus : [cfg.focus]).join(" · ")} · {new Date(ts).toLocaleDateString()}</div>
 
@@ -80,6 +93,7 @@ function ReportModal({ open, onClose, payload }) {
           {aiReport.markdown && (
             <div className="rep-section">
               <h3>AI Narrative Report <span className="mono" style={{fontSize: 10, color: "var(--acc-ink)", fontWeight: 400}}>· Claude-generated</span></h3>
+              <AiReviewBanner review={aiReport._review} />
               <div style={{whiteSpace: "pre-wrap", fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7,
                 background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "14px 16px"}}>
                 {aiReport.markdown}
@@ -112,7 +126,7 @@ function ReportModal({ open, onClose, payload }) {
             <Row k="MAPs"             v={`${maps.length} generated · ${loop.maps_open || 0} open`}/>
             <Row k="Projected Reduction" v={`${closure.projected_total_risk_reduction_pct || 0}%`}/>
             <Row k="Loop Health"      v={<><RAGChip rag={loop.loop_health || "A"}>{loop.loop_health}</RAGChip> <span className="muted mono" style={{marginLeft: 8}}>impact {loop.audit_impact_score}/25</span></>}/>
-            <Row k="Data Mode"        v={liveMode ? "Live (EDGAR + FRED)" : "Mock / Simulated"}/>
+            <Row k="Data Mode"        v={mcpMode ? "Live (MCP · EDGAR + FRED)" : liveMode ? "Live (EDGAR + FRED)" : "Mock / Simulated"}/>
           </div>
 
           {/* ── Pipeline Execution ───────────────────────────── */}
@@ -221,7 +235,7 @@ function ReportModal({ open, onClose, payload }) {
             <div className="rep-section">
               <h3>Changes to Risks &amp; Audit Plan</h3>
               <div style={{fontSize:12, color:"var(--ink-3)", marginBottom:12, lineHeight:1.55}}>
-                The following items were modified by auditors through HITL gate review.
+                The following items were modified by auditors through gate review.
                 All changes are captured verbatim in the audit trail below.
               </div>
 
@@ -274,7 +288,7 @@ function ReportModal({ open, onClose, payload }) {
                         {a?.adjustments && (
                           <div style={{display:"grid", gap:3}}>
                             {a.adjustments.priority && <Row k="Priority" v={`${o.priority} → ${a.adjustments.priority}`}/>}
-                            {a.adjustments.sprint   && <Row k="Sprint"   v={`${o.sprint} → ${a.adjustments.sprint}`}/>}
+                            {a.adjustments.sprint   && <Row k="Fiscal Quarter"   v={`Q${o.sprint} → Q${a.adjustments.sprint}`}/>}
                             {a.adjustments.hours != null && <Row k="Hours" v={<span className="mono">{o.hours}h → <b>{a.adjustments.hours}h</b></span>}/>}
                           </div>
                         )}
@@ -322,7 +336,7 @@ function ReportModal({ open, onClose, payload }) {
                   <b style={{fontWeight: 500, fontSize: 13}}>{o.objective}</b>
                 </div>
                 <Row k="Linked Risk"      v={o.linked_risk}/>
-                <Row k="Sprint / Hours"   v={`${o.sprint} / ${o.hours}h`}/>
+                <Row k="Fiscal Qtr / Hours" v={`Q${o.sprint} / ${o.hours}h`}/>
                 <Row k="Controls to Test" v={o.controls.join(", ")}/>
                 <Row k="Rationale"        v={o.rationale}/>
               </div>
@@ -359,7 +373,7 @@ function ReportModal({ open, onClose, payload }) {
                         <div style={{fontWeight: 700, fontSize: 13}}>{s.name}</div>
                         <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.probability} probability · Revenue impact {s.revenue_impact_pct > 0 ? `+${s.revenue_impact_pct}%` : `${s.revenue_impact_pct}%`}</div>
                       </div>
-                      <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.runway_qtrs} quarters runway</div>
+                      <div className="mono" style={{fontSize: 11, color: "var(--ink-3)"}}>{s.runway_days} days runway</div>
                     </div>
                     <div style={{fontSize: 12, color: "var(--ink-2)", marginBottom: 8}}>{s.description}</div>
                     <Row k="Audit focus" v={s.audit_focus?.join(", ") || "—"}/>
@@ -493,22 +507,8 @@ function ReportModal({ open, onClose, payload }) {
               ))}
             </div>
           </div>
-        </div>
-        <div className="modal-foot">
-          <span className="mono muted" style={{fontSize: 11}}>{loop.audit_impact_score ? `Audit impact ${loop.audit_impact_score}/25` : ""} · {risks.length} risks · {maps.length} MAPs</span>
-          <div style={{display: "flex", gap: 6}}>
-            {aiAvailable && (
-              <button className="btn btn-sm" onClick={generateAiReport} disabled={aiReport.loading}
-                title="Generate a board-ready narrative report with Claude">
-                <Icon name="spark" size={11}/> {aiReport.loading ? "Generating…" : aiReport.markdown ? "Regenerate AI report" : "Generate AI report"}
-              </button>
-            )}
-            <button className="btn btn-sm" onClick={() => window.print()}><Icon name="download" size={11}/> Print / PDF</button>
-            <button className="btn btn-sm btn-primary" onClick={onClose}>Close</button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
+    </>
   );
 }
 
@@ -533,7 +533,7 @@ function RepSubhead({ children, style }) {
 const STAGE_META = [
   { id: "s1", name: "Signal Intake",                      desc: "10-K · peer filings · industry RSS · internal KRIs" },
   { id: "s2", name: "Risk Assessment + Velocity",         desc: "Continuous scoring · velocity delta · RAG matrix" },
-  { id: "s3", name: "Audit Scope Generator",              desc: "Risk-linked audit plan · sprint-ready workplan" },
+  { id: "s3", name: "Audit Scope Generator",              desc: "Risk-linked audit plan · fiscal-quarter-ready workplan" },
   { id: "s4", name: "Findings → Management Action Plans", desc: "Root cause · owner · due date · success criteria" },
   { id: "s5", name: "Closure Evidence + Risk Reduction",  desc: "Quantified risk reduction · MAP completion" },
   { id: "s6", name: "Loop Calibration + Re-feed",         desc: "Updated register · velocity recalibration · lessons" },
@@ -569,7 +569,7 @@ function stageSummary(id, out) {
       { l: "Objectives", v: objs.length },
       { l: "P1", v: p1 },
       { l: "Total hours", v: objs.reduce((a, o) => a + (o.hours || 0), 0) + "h" },
-    ], tasks: objs.map(o => `${o.id} [${o.priority}] · ${o.objective} — ${o.sprint} / ${o.hours}h`) };
+    ], tasks: objs.map(o => `${o.id} [${o.priority}] · ${o.objective} — Q${o.sprint} / ${o.hours}h`) };
   }
   if (id === "s4") {
     const maps = out.maps || [];
@@ -655,7 +655,7 @@ function PipelineStagesReport({ stageState, stageOutput }) {
               <div style={{padding:"8px 14px", fontSize:11, color:"var(--ink-4)"}}>Stage did not run in this loop.</div>
             )}
             {status === "waiting" && (
-              <div style={{padding:"8px 14px", fontSize:11, color:"var(--amber-ink)"}}>Awaiting HITL gate approval.</div>
+              <div style={{padding:"8px 14px", fontSize:11, color:"var(--amber-ink)"}}>Awaiting gate approval.</div>
             )}
           </div>
         );
@@ -668,29 +668,20 @@ function PipelineStagesReport({ stageState, stageOutput }) {
 function OverrideModal({ open, gateNum, onClose, onConfirm }) {
   const [reason, setReason] = useState("");
   useEffect(() => { if (open) setReason(""); }, [open]);
-  if (!open) return null;
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
-      <div className="modal-box sm">
-        <div className="modal-head">
-          <div className="modal-title">Override Gate {gateNum} · Add Rationale</div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+    <Modal open={open} onClose={onClose} title={`Override Gate ${gateNum} · Add Rationale`} size="sm"
+      foot={<>
+        <span className="muted" style={{fontSize: 11}}>{reason.length} chars</span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!reason.trim()} onClick={() => onConfirm(reason.trim())}>Confirm Override</button>
         </div>
-        <div className="modal-body">
-          <div style={{fontSize: 12, color: "var(--ink-3)", marginBottom: 8, lineHeight: 1.5}}>
-            Required for audit trail. The rationale is captured verbatim into the Loop Report.
-          </div>
-          <textarea className="fi-ta" value={reason} onChange={e => setReason(e.target.value)} placeholder="Describe the basis for your override decision…"/>
-        </div>
-        <div className="modal-foot">
-          <span className="muted" style={{fontSize: 11}}>{reason.length} chars</span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!reason.trim()} onClick={() => onConfirm(reason.trim())}>Confirm Override</button>
-          </div>
-        </div>
+      </>}>
+      <div style={{fontSize: 12, color: "var(--ink-3)", marginBottom: 8, lineHeight: 1.5}}>
+        Required for audit trail. The rationale is captured verbatim into the Loop Report.
       </div>
-    </div>
+      <textarea className="fi-ta" value={reason} onChange={e => setReason(e.target.value)} placeholder="Describe the basis for your override decision…"/>
+    </Modal>
   );
 }
 

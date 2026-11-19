@@ -13,6 +13,7 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
             { label: "Emerald", value: "emerald" },
             { label: "Indigo",  value: "indigo" },
             { label: "Slate",   value: "slate" },
+            { label: "Dendrai Forest Green", value: "forest" },
           ]}
           onChange={(v) => setTweak("accent", v)}
         />
@@ -25,10 +26,15 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
           ]}
           onChange={(v) => setTweak("density", v)}
         />
-        <TweakToggle
-          label="Dark mode"
-          value={!!tweaks.dark}
-          onChange={(v) => setTweak("dark", v)}
+        <TweakRadio
+          label="Color scheme"
+          value={tweaks.colorScheme || (tweaks.dark ? "dark" : "light")}
+          options={[
+            { label: "Light",  value: "light" },
+            { label: "Dark",   value: "dark" },
+            { label: "System", value: "system" },
+          ]}
+          onChange={(v) => setTweak("colorScheme", v)}
         />
       </TweakSection>
 
@@ -41,7 +47,7 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
           unit="x"
         />
         <TweakToggle
-          label="Auto-expand stages while running"
+          label="Follow the loop as it runs"
           value={tweaks.autoExpand}
           onChange={(v) => setTweak("autoExpand", v)}
         />
@@ -49,17 +55,17 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
 
       <TweakSection label="Run configuration">
         <TweakToggle
-          label="HITL · Risk assessment gate"
+          label="Human review · Risk assessment gate"
           value={!!hitl.risk}
           onChange={(v) => setHitl({ ...hitl, risk: v })}
         />
         <TweakToggle
-          label="HITL · Audit scope gate"
+          label="Human review · Audit scope gate"
           value={!!hitl.scope}
           onChange={(v) => setHitl({ ...hitl, scope: v })}
         />
         <TweakToggle
-          label="HITL · MAP generation gate"
+          label="Human review · Action plan generation gate"
           value={!!hitl.map}
           onChange={(v) => setHitl({ ...hitl, map: v })}
         />
@@ -75,11 +81,16 @@ function DendraiTweaks({ tweaks, setTweak, hitl, setHitl, velocity, setVelocity 
         <TweakSelect
           label="Persona lens"
           value={tweaks.persona}
+          // Values must match a real key: either PersonaTab's own persona
+          // report keys (risk-engine.js's buildPersonas) or its AI-generated
+          // audience-layer keys (rail.jsx's AUDIENCE_LAYERS) — anything else
+          // falls through to an undefined lookup. See PersonaTab's fallback
+          // comment for what happens when this drifts again.
           options={[
-            { label: "Internal Audit",        value: "Internal Audit" },
-            { label: "Board / Audit Comm.",   value: "Board / Audit Committee" },
-            { label: "CFO / Treasury",        value: "CFO / Treasury" },
-            { label: "CRO / ERM",             value: "CRO / ERM" },
+            { label: "Internal Audit (CAE)",  value: "Chief Audit Executive" },
+            { label: "CFO / Treasury",        value: "Chief Financial Officer" },
+            { label: "COO / Operations",      value: "Chief Operating Officer" },
+            { label: "Board / Audit Comm.",   value: "BOARD" },
           ]}
           onChange={(v) => setTweak("persona", v)}
         />

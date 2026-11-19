@@ -110,8 +110,8 @@ function RSSPanel({ onSignalsReady, enabledFeedIds, risks, ticker, companyName }
             <div
               key={feed.id}
               className={`rss-feed-card ${result ? "rss-feed-done" : ""}`}
-              onClick={() => result && result.fetchStatus === "ok" && toggleExpand(feed.id)}
-              style={{cursor: result && result.fetchStatus === "ok" ? "pointer" : "default"}}
+              onClick={() => result && toggleExpand(feed.id)}
+              style={{cursor: result ? "pointer" : "default"}}
             >
               <div className="rss-feed-head">
                 <Icon name={feed.icon || "wifi"} size={14} className="muted"/>
@@ -146,7 +146,17 @@ function RSSPanel({ onSignalsReady, enabledFeedIds, risks, ticker, companyName }
                 <Icon name="x" size={12}/>
               </button>
             </div>
-            {result.articles.map(a => <ArticleRow key={a.id} article={a}/>)}
+            {result.fetchStatus === "failed" ? (
+              <div style={{padding:"14px 4px", color:"var(--red-ink)", fontSize:11.5}}>
+                Feed unreachable — the proxy request to {result.feed.name} failed or timed out. Retry via RUN INGESTION, or check the rss-proxy route if this persists.
+              </div>
+            ) : result.articles.length === 0 ? (
+              <div style={{padding:"14px 4px", color:"var(--ink-3)", fontSize:11.5}}>
+                Feed reached successfully, but no articles matched this feed's relevance filters{result.feed.companyGated ? " (company-gated — nothing mentioned the active company)" : ""}.
+              </div>
+            ) : (
+              result.articles.map(a => <ArticleRow key={a.id} article={a}/>)
+            )}
           </div>
         );
       })}

@@ -18,6 +18,11 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 PORT = 8000
 
+# Never hardcode this — read from the environment so the key isn't sitting in
+# source control. Set it with: export FRED_API_KEY=your_key (see
+# https://fred.stlouisfed.org/docs/api/api_key.html for a free key).
+FRED_API_KEY = os.environ.get('FRED_API_KEY', '')
+
 PROXY_ROUTES = {
     '/proxy/edgar/': 'https://data.sec.gov/api/xbrl/',
     '/proxy/sec/':   'https://data.sec.gov/',
@@ -43,6 +48,11 @@ class DendraiHandler(SimpleHTTPRequestHandler):
         for prefix, target in PROXY_ROUTES.items():
             if self.path.startswith(prefix):
                 rest = self.path[len(prefix):]
+                # FRED requires an api_key query param — inject it here, server
+                # side, from the environment. The client never sees the key.
+                if prefix == '/proxy/fred/' and FRED_API_KEY:
+                    sep = '&' if '?' in rest else '?'
+                    rest = f'{rest}{sep}api_key={FRED_API_KEY}'
                 self._proxy(target + rest)
                 return
         # Default: serve files from current directory
@@ -111,6 +121,10 @@ if __name__ == '__main__':
     for prefix, target in PROXY_ROUTES.items():
         print(f'    /proxy{prefix[7:]}  ->  {target}')
     print()
+    if not FRED_API_KEY:
+        print('  FRED_API_KEY not set — FRED requests will be rejected upstream.')
+        print('  export FRED_API_KEY=your_key  (free key: https://fred.stlouisfed.org/docs/api/api_key.html)')
+        print()
     print('  Open:  http://localhost:{}/dendrai_ra_loop.html'.format(PORT))
     print()
     print('  Press Ctrl+C to stop.')

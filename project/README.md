@@ -1,8 +1,8 @@
-# Dendrai Risk Loop
+# Dendrai Intelligenza
 
 A six-stage, AI-augmented internal audit and risk governance platform built in React. It derives live risk profiles from SEC EDGAR filings, FRED macro data, and industry RSS signals, runs them through a human-in-the-loop (HITL) review pipeline, and produces a Management Action Plan (MAP) register with quarterly projections and a closing loop calibration.
 
-The platform pairs a **deterministic analytics core** (statistical models — ARIMA, Beneish M-score, correlation, templated scoring) with an **agentic layer** powered by Claude (`claude-opus-4-8`): AI-drafted HITL gate dispositions, SEC filing narrative analysis, role-tailored persona briefs, board-ready report generation, and a tool-use investigation agent. The deterministic numbers remain ground truth the model cites — never invents. See [AI-Augmented Features](#ai-augmented-features).
+The platform pairs a **deterministic analytics core** (statistical models — ARIMA, Beneish M-score, correlation, templated scoring) with an **agentic layer** powered by Claude (`claude-sonnet-4-6`): AI-drafted HITL gate dispositions, SEC filing narrative analysis, role-tailored persona briefs, board-ready report generation, and a tool-use investigation agent. The deterministic numbers remain ground truth the model cites — never invents. See [AI-Augmented Features](#ai-augmented-features) and [MODEL_CARD.md](MODEL_CARD.md) for the full AI-component inventory, human-oversight level per feature, and known limitations.
 
 ---
 
@@ -117,7 +117,7 @@ Select in the sidebar. Each mode changes what gets fetched during a run.
 
 ## Navigation & Layout
 
-The left nav routes the main canvas (Setup, Pipeline, Controls Monitor, MAPs, Notifications, Audit Scope, Risk-as-Code, Policy-as-Code, Governance Intelligence).
+The left nav routes the main canvas (Setup, Pipeline, Controls Monitor, MAPs, Notifications, Audit Scope, Risk-as-Code, Policy-as-Code, Governance Intelligence, Token Usage, User Configuration).
 
 The **Live Register rail** is a contextual right-hand pane that appears **only on the Pipeline screen, and only after a run has produced data** (`hasRun`). It is the single home for the risk-output views that used to be scattered as separate nav screens and pipeline sub-tabs — **Risk Register, Risk Flow, Forecasts, and Scenarios all live here now** (they are no longer separate left-nav items or sub-tabs). The main canvas widens to a third grid column (`.app-body.has-rail`) when the rail is shown.
 
@@ -196,7 +196,7 @@ CE multipliers: `NONE → 1.20 × | WEAK → 1.10 × | ADEQUATE → 0.95 × | ST
 - **Forecasts** — revenue and gross margin history + 4-quarter forecast with confidence band
 - **FRED signals** — 5 industry-relevant macro series with correlation, lead time, and direction
 - **Risk Flow** — impact area mapping, control catalogue, audit cadence by velocity tier
-- **Personas** — CAE, CFO, COO role-filtered summaries
+- **Personas** — CAE, CFO, COO role-filtered summaries, plus AI-generated audience-layer briefs (Technical Executive, Non-Technical Executive, Board)
 
 ---
 
@@ -212,7 +212,7 @@ Implemented in `project/agentic-tools/predictive_analytics_tool.py`. Activated v
 | 4 | **Scenario Analysis** | Bear / Base / Bull with revenue impact %, gross margin delta, liquidity rating, recovery horizon |
 | 5 | **Grey Swan Model** | 4-stage escalation cascade (T+0/+30/+60/+90) with probability, impact $M, catalysts, mitigations |
 | 6 | **FRED Macro Leading Indicators** | Pearson cross-correlation at lags 1–4 between FRED series and company revenue; selects top correlators |
-| 7 | **Time-Series Forecasting** | ARIMA, Prophet-like trend+seasonality, Random Forest (lags 1–4, rolling stats, FRED features), ensemble by inverse MAPE |
+| 7 | **Time-Series Forecasting** | ARIMA, Prophet-like trend+seasonality, Random Forest (lags 1–4, rolling stats, lag-aligned FRED leading-indicator features — Revenue/EPS/NetIncome/EBITDA, real `FRED_API_KEY` only), ensemble by inverse MAPE |
 | 8 | **Walk-Forward Backtesting** | MAPE, RMSE, R², directional accuracy F1 across rolling windows |
 | 9 | **RSS Signal Grading** | NLP-lite relevance × severity pipeline on industry RSS feeds; maps signals to affected risk IDs |
 | 10 | **QoQ Revenue Momentum / Sentiment** | Rolling 8-quarter momentum score, hedge ratio trend, deteriorating/stable/improving classification |
@@ -221,16 +221,19 @@ Implemented in `project/agentic-tools/predictive_analytics_tool.py`. Activated v
 
 ## AI-Augmented Features
 
-The agentic layer puts Claude (`claude-opus-4-8`, adaptive thinking) in the loop alongside the deterministic models. All of it goes through one shared client, `agentic-tools/claude_client.py` (model selection, prompt caching, structured-output handling, token-cost accounting). Every feature **degrades gracefully**: if `ANTHROPIC_API_KEY` is not set on the Python bridge, the AI routes return HTTP `503` and the deterministic pipeline is unaffected — the UI affordances simply don't appear.
+The agentic layer puts Claude (`claude-sonnet-4-6`, adaptive thinking) in the loop alongside the deterministic models. All of it goes through one shared client, `agentic-tools/claude_client.py` (model selection, prompt caching, structured-output handling, token-cost accounting). Every feature **degrades gracefully**: if `ANTHROPIC_API_KEY` is not set on the Python bridge, the AI routes return HTTP `503` and the deterministic pipeline is unaffected — the UI affordances simply don't appear.
+
+See [MODEL_CARD.md](MODEL_CARD.md) for the human-oversight level of each feature below, the deterministic/statistical models alongside them, and known bias/limitation findings.
 
 | Feature | UI surface | Endpoint | What it does |
 |---------|-----------|----------|--------------|
 | **AI-assisted HITL — Gate 1** | "Suggest with AI" in the Adjust Risk modal | `POST /ai/gate1/recommend` | Drafts a per-risk disposition (approve / adjust RAG·score·velocity·CE) with a cited rationale; the auditor accepts or overrides. |
 | **AI-assisted HITL — Gate 2** | "Suggest with AI" in the Adjust Objective modal | `POST /ai/gate2/recommend` | Drafts per-objective scope (priority, sprint, hours, linked risks) justified against the linked risks. |
 | **Narrative analysis** | — (server) | `POST /ai/narrative-analysis` | Extracts emerging risks and year-over-year language shifts from Item 1A / DEF 14A text the app already downloads, mapped to register categories. |
-| **Persona brief** | "Generate with AI" on the Persona tab | `POST /ai/persona-brief` | Role-tailored CAE / CFO / COO briefing from the scored register. |
+| **Persona brief** | "Generate with AI" on the Persona tab | `POST /ai/persona-brief` | Role-tailored briefing from the scored register — by function (CAE / CFO / COO) or by audience layer (Technical Executive / Non-Technical Executive / Board). |
 | **Audit report** | "Generate AI report" in the Loop Report modal | `POST /ai/audit-report` | Board-ready Markdown report from the full run output. |
 | **Investigation agent** | "Run investigation" card on the Setup screen | `POST /agent/investigate` | Tool-use agent that decides its own path — pulls financials, follows anomalies into filings, benchmarks peers, runs the quant models — and writes an investigation memo. |
+| **Council investigation** | "Run council" card on the Setup screen | `POST /agent/investigate/council` | Three independent analysts (financial, operational/cyber, compliance/regulatory) investigate the same ticker in parallel over the same tools, then a synthesis pass reports convergent (multi-analyst) vs. single-analyst findings — the same independent-voters-then-reconciliation pattern as the MCP governance adjudication ensemble, applied to investigation instead of tool-call risk. |
 
 Every AI output is persisted with provenance (model, effort, tokens, cost) to the `ai_analyses` table and is readable via `GET /history/runs/{run_id}/ai-analyses`.
 
@@ -283,10 +286,11 @@ python api_server.py --port 8002  # custom port
 | POST | `/ai/gate1/recommend` · `/ai/gate2/recommend` | AI-assisted HITL gate dispositions |
 | POST | `/ai/narrative-analysis` | Item 1A / proxy narrative extraction |
 | POST | `/ai/persona-brief` · `/ai/audit-report` | Persona brief / Markdown audit report |
-| POST | `/agent/investigate` | Tool-use investigation agent |
+| POST | `/agent/investigate` · `/agent/investigate/council` | Tool-use investigation agent (single or 3-perspective ensemble) |
 | POST | `/loop/hitl/risk-approvals` · `/loop/hitl/scope-approvals` · `/loop/persist` | Persist HITL decisions + loop completion |
 | GET | `/history/runs/{ticker}` · `/history/runs/{ticker}/{run_id}` | Run history |
 | GET | `/history/runs/{run_id}/ai-analyses` | Persisted AI outputs for a run |
+| GET | `/token-usage/summary` | Token usage by user and by feature/source (rolling window) + month/year, MTD/YTD rollups — powers the Token Usage screen |
 
 The `/ai/*` and `/agent/*` routes require `ANTHROPIC_API_KEY`; without it they return `503`. Interactive API docs available at `http://127.0.0.1:8001/docs`.
 
@@ -303,6 +307,12 @@ Each tool also ships as a standalone MCP server for use with Claude Desktop or o
 | `rss_mcp_server.py` | `rss_tool.py` | Industry RSS signal grading |
 | `predictive_analytics_mcp_server.py` | `predictive_analytics_tool.py` | All 10 analytics models |
 | `token_cost_mcp_server.py` | `token_cost_tool.py` | Anthropic API token cost estimation |
+| `oracle_fusion_mcp_server.py` | `oracle_fusion_tool.py` | Oracle Fusion Cloud RMCS/FSCM control data |
+| `risk_as_code_mcp_server.py` | `risks_as_code.py` | OSCAL / COSO ERM Risk-as-Code artifact generation |
+| `pac_mcp_server.py` | `pac_endpoints.py` | Policy-as-Code Rego modules + negative-control testing |
+| `cac_mcp_server.py` | `pac_endpoints.py` | Controls-as-Code artifact generation from PaC deny rules |
+| `devops_monitoring_mcp_server.py` | `scm_audit_endpoints.py` / `evidence_endpoints.py` | SCM branch-protection + pipeline-as-code security audits, real `gitleaks` secret scanning, SARIF evidence with tamper-evidence hash chain, risk waivers, ITSM SLA bridge, DORA change-management metrics |
+| `infrastructure_monitoring_mcp_server.py` | `postgres_cis_tool.py` / `railway_iaas_tool.py` | Continuous Postgres CIS hardening + Railway platform/deployment drift + connector credential rotation hygiene audits |
 
 ### Node.js MCP Server (`mcp-server/`)
 
@@ -377,6 +387,8 @@ dendrai-dashboard/
 │   ├── tweaks.jsx                  # Tweaks panel hook + state
 │   ├── tweaks-panel.jsx            # Tweaks panel UI (accent, density, run speed)
 │   ├── data-config-modal.jsx       # Company/period config modal
+│   ├── user-config.jsx             # Admin: local accounts + per-user Screen Access matrix
+│   ├── token-usage.jsx             # Token usage by user / by feature / calendar rollups (MTD, YTD)
 │   ├── vite.config.js              # Vite config — CORS proxies (EDGAR, SEC, MCP, RSS)
 │   ├── data/
 │   │   └── fred_data.json          # Bundled FRED snapshot (Q1 2021 → Q1 2026)
@@ -472,7 +484,7 @@ Place a `.env` file in `project/agentic-tools/` (copy `.env.example`). The bridg
 | `ANTHROPIC_API_KEY` | All AI features (`/ai/*`, `/agent/*`, 10-K peer intelligence) | Without it those routes return `503` and the deterministic pipeline is unaffected. |
 | `DATABASE_URL` | Postgres persistence | `postgresql://user:pass@host:port/db`. Unset = persistence disabled (app still runs). On Railway use the public proxy host (`…proxy.rlwy.net:PORT`) from outside Railway, or the internal host when deployed on Railway. The schema self-heals on startup (`db.init_db()` runs DDL + idempotent column migrations). |
 | `FRED_API_KEY` | FRED correlation analysis | Free key from [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html). |
-| `DENDRAI_CLAUDE_MODEL` | — | Optional model override (default `claude-opus-4-8`). |
+| `DENDRAI_CLAUDE_MODEL` | — | Optional model override (default `claude-sonnet-4-6`). |
 | `DENDRAI_MCP_URL` | Managed Agents tool access | Optional hosted MCP server URL for the scheduled cloud agent. |
 
 > **Secrets:** `.env` files are git-ignored — never commit real keys; the committed `.env.example` files are the templates.
@@ -485,6 +497,21 @@ When `DATABASE_URL` is set, runs persist to a normalized Postgres schema (compan
 cd project/agentic-tools
 DATABASE_URL=postgresql://… python integration_test.py
 ```
+
+### Automated tests + CI
+
+`project/agentic-tools/tests/` is a pytest suite, split in two:
+
+- `test_pure_functions.py` — fast, DB-free unit tests for regex/parsing/formatting helpers (Rego code-fence stripping, control-ID extraction, RAG-band boundaries, digest delta math), including regression guards for bugs this codebase has actually hit in production (e.g. a `VARCHAR` column too narrow for a real value).
+- `test_db_integration.py` — a pytest port of `integration_test.py`'s live-Postgres round-trip checks, `skip`ped automatically when `DATABASE_URL` isn't set.
+
+```bash
+cd project/agentic-tools
+python -m pytest tests -v                                    # pure-function tests only (no DB needed)
+DATABASE_URL=postgresql://… python -m pytest tests -v         # full suite, including DB integration tests
+```
+
+`.github/workflows/ci.yml` runs the full suite (with a throwaway `postgres:16` service container) on every push and pull request to `main`.
 
 ---
 

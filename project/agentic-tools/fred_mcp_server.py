@@ -50,9 +50,13 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+load_dotenv()
+
 sys.path.insert(0, os.path.dirname(__file__))
+from mcp_guards import audit_log, check_rate_limit, check_read_only, confine_path, validate_ticker
 from fred_tool import FRED_SERIES, TARGET_METRICS, run_analysis
 
 mcp = FastMCP("fred-macro")
@@ -66,7 +70,6 @@ def fred_macro_correlations(
     min_correlation: float = 0.85,
     lags: str = "1,2,3",
     output_file: str = "fred_macro_indicators.json",
-    fred_api_key: str = "",
 ) -> str:
     """
     Identify leading macro-economic indicators from FRED that are most correlated
@@ -85,17 +88,25 @@ def fred_macro_correlations(
     Results (correlations + 5-6 years of raw quarterly data) are saved to
     fred_macro_indicators.json for further analysis.
 
-    Requires a free FRED API key from https://fred.stlouisfed.org/docs/api/api_key.html
-    Pass via fred_api_key parameter or set the FRED_API_KEY environment variable.
+    Requires FRED_API_KEY to be set in .env (free key at
+    https://fred.stlouisfed.org/docs/api/api_key.html).
 
     Args:
         ticker:           NYSE/NASDAQ ticker symbol (e.g. AAPL, MSFT, NVDA)
         min_correlation:  Minimum absolute Pearson r to include (default 0.85)
         lags:             Comma-separated leading lags in quarters to test (default "1,2,3")
         output_file:      Path for the output JSON file (default "fred_macro_indicators.json")
-        fred_api_key:     FRED API key (falls back to FRED_API_KEY env var)
     """
-    api_key = fred_api_key.strip() or os.environ.get("FRED_API_KEY", "").strip()
+    try:
+        check_rate_limit("fred_macro_correlations", max_per_minute=10)
+        check_read_only("FRED analysis file save")
+        ticker = validate_ticker(ticker)
+        safe_out = confine_path(output_file)
+        audit_log("fred_macro_correlations", ticker=ticker, output_file=safe_out.name)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    api_key = os.environ.get("FRED_API_KEY", "").strip()
     if not api_key:
         return (
             "Error: FRED API key is required.\n\n"
@@ -119,7 +130,7 @@ def fred_macro_correlations(
             api_key=api_key,
             min_r=min_correlation,
             lags=lag_list,
-            output_path=Path(output_file),
+            output_path=safe_out,
         )
     except ValueError as e:
         return f"Error: {e}"
@@ -193,6 +204,11 @@ def fred_list_series() -> str:
     Use series IDs directly at https://fred.stlouisfed.org/series/{ID} to view
     interactive charts and download data.
     """
+    try:
+        check_rate_limit("fred_list_series")
+        audit_log("fred_list_series")
+    except ValueError as e:
+        return f"Error: {e}"
     by_cat: dict[str, list] = {}
     for sid, info in FRED_SERIES.items():
         by_cat.setdefault(info["category"], []).append((sid, info))
@@ -227,7 +243,12 @@ def fred_load_analysis(file_path: str = "fred_macro_indicators.json") -> str:
     Args:
         file_path: Path to the saved JSON file (default "fred_macro_indicators.json")
     """
-    p = Path(file_path)
+    try:
+        check_rate_limit("fred_load_analysis")
+        p = confine_path(file_path)
+        audit_log("fred_load_analysis", file=p.name)
+    except ValueError as e:
+        return f"Error: {e}"
     if not p.exists():
         return (
             f"File not found: {file_path}\n\n"

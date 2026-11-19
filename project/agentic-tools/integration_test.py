@@ -18,6 +18,7 @@ import os
 import sys
 
 import db
+import mcp_governance
 
 TICKER = "ZZIT"
 PASS, FAIL = "\033[92mPASS\033[0m", "\033[91mFAIL\033[0m"
@@ -35,6 +36,7 @@ def cleanup(run_id, company_id):
     from db import _conn
     with _conn() as conn:
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM observability.adjudicated_tool_calls WHERE uro_id = %s", ("ZZIT-URO-1",))
             if run_id:
                 cur.execute("SELECT id FROM hitl_sessions WHERE run_id=%s", (run_id,))
                 sess = [r[0] for r in cur.fetchall()]
@@ -178,6 +180,38 @@ def main():
         check("READ get_ai_analyses round-trips JSON content",
               len(ai_rows) == 1 and ai_rows[0]["content"]["recommendations"][0]["risk_ref"] == "R2",
               f"{len(ai_rows)} analysis row(s)")
+
+        # ── 10. Evidence Pack building blocks (new getters + adjudication join) ──
+        meta = db.get_run_meta_for_evidence_pack(run_id)
+        check("READ get_run_meta_for_evidence_pack", meta is not None and meta["ticker"] == TICKER,
+              f"meta={meta}")
+        check("READ get_audit_objectives_for_run (empty, none saved)",
+              db.get_audit_objectives_for_run(run_id) == [], "expected []")
+        check("READ get_loop_log_for_run (empty, none saved)",
+              db.get_loop_log_for_run(run_id) == [], "expected []")
+
+        # Insert one adjudicated_tool_calls row directly (no db.py helper exists —
+        # writes normally go through mcp_governance's adjudication pipeline, out
+        # of scope here) with run_id left NULL but adjudicated_at inside the
+        # run's window, to exercise the best-effort time-window fallback join.
+        import uuid
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO observability.adjudicated_tool_calls
+                        (session_id, target_tool, uro_id, final_verdict, risk_tier, adjudicated_at)
+                    VALUES (%s, 'test_tool', 'ZZIT-URO-1', 'ALLOW', 'LOW', NOW())
+                    """,
+                    (str(uuid.uuid4()),),
+                )
+        adjudications = mcp_governance.fetch_adjudications_for_run(
+            run_id, meta["run_at"], meta.get("completed_at"),
+        )
+        check("READ fetch_adjudications_for_run finds the time-window match",
+              any(a["target_tool"] == "test_tool" and a["linked_via"] == "time_window_estimate"
+                  for a in adjudications),
+              f"{len(adjudications)} row(s)")
 
     finally:
         print("\n  cleaning up test rows…")

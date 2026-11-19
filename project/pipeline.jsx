@@ -6,11 +6,12 @@
 
 import { RiskApprovalReview } from "./risk-approval.jsx";
 import { ScopeApprovalReview } from "./audit-scope-review.jsx";
+import { RunHistoryPanel } from "./run-history.jsx";
 
 const STAGES = [
-  { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · internal KRIs" },
+  { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · SEC 8-K · internal KRIs" },
   { id: "s2", name: "Risk Assessment + Velocity",          desc: "Continuous scoring · velocity delta · RAG matrix" },
-  { id: "s3", name: "Audit Scope Generator",               desc: "Risk-linked audit plan · sprint-ready workplan" },
+  { id: "s3", name: "Audit Scope Generator",               desc: "Risk-linked audit plan · fiscal-quarter-ready workplan" },
   { id: "s4", name: "Findings → Management Action Plans",  desc: "Root cause · owner · due date · success criteria" },
   { id: "s5", name: "Closure Evidence + Risk Reduction",   desc: "Quantified risk reduction · MAP completion" },
   { id: "s6", name: "Loop Calibration + Re-feed",          desc: "Updated register · velocity recalibration · lessons" },
@@ -18,19 +19,200 @@ const STAGES = [
 
 const APPETITE_THRESHOLDS = { GREEN: 5.0, AMBER: 7.5, RED: 9.5 };
 
+// Gates as addressable nodes alongside STAGES — afterStage says where each
+// one sits in sequence, hitlKey says which cfg.hitl flag can skip it.
+const GATES = [
+  { id: "g1", num: 1, afterStage: "s2", hitlKey: "risk",
+    title: "Human Review · Risk Assessment", desc: "Validate AI risk scores before scoping audit." },
+  { id: "g2", num: 2, afterStage: "s3", hitlKey: "scope",
+    title: "Human Review · Audit Scope", desc: "Confirm scope and resource allocation before fieldwork." },
+];
+
+// Compact KPIs for a stage's hub card / canvas header — mirrors the exact
+// fields each *Body component already computes for its own .stage-stat-row,
+// just without rendering the full body. Kept in sync with S1Body–S6Body by
+// hand since they're the source of truth for these field shapes.
+function stageKpis(id, output) {
+  if (!output) return [];
+  switch (id) {
+    case "s1": {
+      const signals = output.signals || [];
+      const high = signals.filter(s => s.velocity >= 3).length;
+      const med = signals.filter(s => s.velocity === 2).length;
+      return [
+        { l: "Signals", v: signals.length },
+        { l: "High velocity", v: high, mono: true, color: high > 0 ? "var(--red-ink)" : undefined },
+        { l: "Medium velocity", v: med, mono: true, color: med > 0 ? "var(--amber-ink)" : undefined },
+        { l: "Sources", v: output.sourceCount || 4 },
+      ];
+    }
+    case "s2": {
+      const risks = output.risks || [];
+      const counts = risks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
+      const breach = output.riskAppetite?.breaching?.length || 0;
+      return [
+        { l: "Risks", v: risks.length },
+        { l: "Red", v: counts.R || 0, mono: true, color: "var(--red-ink)" },
+        { l: "Amber", v: counts.A || 0, mono: true, color: "var(--amber-ink)" },
+        { l: "Breaching", v: breach, mono: true, color: breach > 0 ? "var(--red-ink)" : "var(--green-ink)" },
+      ];
+    }
+    case "s3": {
+      const objs = output.objectives || [];
+      const totalHrs = objs.reduce((a, o) => a + (o.hours || 0), 0);
+      return [
+        { l: "Objectives", v: objs.length },
+        { l: "P1 priority", v: objs.filter(o => o.priority === "P1").length, mono: true, color: "var(--red-ink)" },
+        { l: "P2 priority", v: objs.filter(o => o.priority === "P2").length, mono: true, color: "var(--amber-ink)" },
+        { l: "Effort (hrs)", v: totalHrs, mono: true },
+      ];
+    }
+    case "s4": {
+      const maps = output.maps || [];
+      const avgRed = maps.reduce((a, m) => a + (m.reduction_pct || 0), 0);
+      return [
+        { l: "MAPs", v: maps.length },
+        { l: "High-impact", v: maps.filter(m => m.risk_impact === "R").length, mono: true, color: "var(--red-ink)" },
+        { l: "Total reduction", v: `${avgRed}%`, mono: true },
+        { l: "Avg completion", v: `${Math.round(maps.reduce((a, m) => a + (m.completion_pct || 0), 0) / Math.max(1, maps.length))}%`, mono: true },
+      ];
+    }
+    case "s5": {
+      const c = output.closure || {};
+      return [
+        { l: "Closed", v: c.risks_closed || 0, mono: true, color: "var(--green-ink)" },
+        { l: "Reduced", v: c.risks_reduced || 0, mono: true, color: "var(--acc-ink)" },
+        { l: "Unchanged", v: c.risks_unchanged || 0, mono: true, color: "var(--ink-3)" },
+        { l: "Projected ↓", v: `${c.projected_total_risk_reduction_pct || 0}%`, mono: true },
+      ];
+    }
+    case "s6": {
+      const lp = output.loop || {};
+      return [
+        { l: "Loop health", v: lp.loop_health || "—", mono: true, color: "var(--amber-ink)" },
+        { l: "Audit impact", v: `${lp.audit_impact_score ?? "—"}/25`, mono: true },
+        { l: "MAPs open", v: lp.maps_open || 0, mono: true },
+        { l: "Next cycle", v: `${lp.next_trigger_days || 0}d`, mono: true },
+      ];
+    }
+    default: return [];
+  }
+}
+
+// One-line "what should I know without opening this" summary per stage.
+function stageTopFinding(id, output) {
+  if (!output) return null;
+  switch (id) {
+    case "s1": {
+      const signals = output.signals || [];
+      if (!signals.length) return null;
+      const top = [...signals].sort((a, b) => b.velocity - a.velocity)[0];
+      return top ? `${top.src} — ${top.label}` : null;
+    }
+    case "s2": {
+      const risks = output.risks || [];
+      if (!risks.length) return null;
+      const top = [...risks].sort((a, b) => b.score - a.score)[0];
+      const breach = output.riskAppetite?.breaching?.length || 0;
+      return `${top.name} — score ${fmt2(top.score)}${breach > 0 ? ` · ${breach} risk${breach !== 1 ? "s" : ""} breaching appetite` : ""}`;
+    }
+    case "s3": {
+      const objs = output.objectives || [];
+      if (!objs.length) return null;
+      const totalHrs = objs.reduce((a, o) => a + (o.hours || 0), 0);
+      return `${objs.length} objectives mapped — ${totalHrs} planned hours`;
+    }
+    case "s4": {
+      const maps = output.maps || [];
+      if (!maps.length) return null;
+      const top = [...maps].sort((a, b) => (b.reduction_pct || 0) - (a.reduction_pct || 0))[0];
+      return `${top.finding} — projected −${top.reduction_pct || 0}% risk`;
+    }
+    case "s5": {
+      const c = output.closure || {};
+      if (!c.risks_closed && !c.risks_reduced && !c.risks_unchanged) return null;
+      return `${c.risks_closed || 0} closed, ${c.risks_reduced || 0} reduced — ${c.projected_total_risk_reduction_pct || 0}% projected reduction`;
+    }
+    case "s6": {
+      const lp = output.loop || {};
+      if (!lp.loop_health) return null;
+      return `Loop health ${lp.loop_health} — next cycle in ${lp.next_trigger_days || 0} days`;
+    }
+    default: return null;
+  }
+}
+
+function stagePill(status) {
+  return status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span>
+    : status === "done"    ? <span className="stage-pill done"><span className="dot"/>COMPLETE</span>
+    : status === "waiting" ? <span className="stage-pill wait"><span className="dot"/>AWAITING GATE</span>
+    :                        <span className="stage-pill"><span className="dot"/>IDLE</span>;
+}
+
+// Sub-section switcher used inside a stage's own body — reuses the
+// .pipe-sub-tab classes verbatim (no new CSS) so it reads as the same tab
+// language as the rest of the app, just one level deeper than the canvas.
+function CanvasTabs({ tabs, active, onChange }) {
+  return (
+    <div className="pipe-sub-tabs" style={{padding: 0, marginBottom: 2}}>
+      {tabs.map(t => (
+        <button key={t.id} type="button" className={"pipe-sub-tab" + (active === t.id ? " active" : "")} onClick={() => onChange(t.id)}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Trailing-gate summary shown at the bottom of the stage canvas right before
+// the gate it guards — pending renders a call-to-action into the gate's own
+// canvas, resolved renders HITLGate's compact banner unchanged.
+function gateBelowCanvas(stageId, { hitl, gateState, onFocusGate, onApprove, onOverride }) {
+  const gate = GATES.find(g => g.afterStage === stageId);
+  if (!gate || !hitl[gate.hitlKey]) return null;
+  const state = gateState[gate.id];
+  if (!state) return null;
+  if (state === "pending") {
+    return (
+      <div className="hgate" style={{marginTop: 10}}>
+        <div className="icon"><Icon name="alert" size={15}/></div>
+        <div className="meta">
+          <div className="t">{gate.title}</div>
+          <div className="d">{gate.desc}</div>
+        </div>
+        <div className="actions">
+          <button type="button" className="btn btn-sm btn-acc" onClick={() => onFocusGate(gate.id)}>
+            Review <Icon name="arrow-r" size={11}/>
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{marginTop: 10}}>
+      <HITLGate num={gate.num} state={state} onApprove={() => onApprove(gate.num)} onOverride={() => onOverride(gate.num)}/>
+    </div>
+  );
+}
+
 // Insert HITL gates after stages 2 and 3
-function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateState, onApprove, onOverride, signals, livefacts,
+function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
+                    stageState, output, hitl, gateState, onApprove, onOverride, signals, livefacts,
                     liveRssSignals, rssLastUpdated, rssRefreshing, rssRunProgress, rssFeeds,
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
-                    riskApprovals, onApproveRisk, onApproveAllRisks, onSignoffRisk,
-                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onSignoffObjective, onAddObjective,
+                    riskApprovals, onApproveRisk, onApproveAllRisks, onAddRisk,
+                    scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit,
                     narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "",
                     liveMode = false, fredSeries = null, industry = "",
                     enabledFeedIds = [], onRssSignalsReady = null,
                     flowMeta = null, onOpenMainFlow = null,
-                    risks = [], companyName = "" }) {
+                    risks = [], companyName = "", peerData = null,
+                    peerCompareList = [],
+                    peerCompareLoading = false, peerCompareError = null,
+                    onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null,
+                    ratios = {}, events = [] }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s1Extra = {
     rssRunProgress,
@@ -41,6 +223,14 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     forecasts,
     enabledFeedIds,
     onRssSignalsReady,
+    onAddObjective,
+    peerData,
+    peerCompareList,
+    peerCompareLoading,
+    peerCompareError,
+    onAddPeerCompare,
+    onRemovePeerCompare,
+    onClearPeerCompare,
   };
   const s2Extra = {
     liveRssSignals, rssLastUpdated, rssRefreshing,
@@ -58,181 +248,407 @@ function Pipeline({ stageState, output, openStages, setOpenStages, hitl, gateSta
     onAddAudit,
     onRemoveAudit,
     risks: output.s2?.risks || [],
-  };1
+  };
   const s5Extra = {
     flowMeta,
     risks: output.s2?.risks || [],
     maps: output.s4?.maps || [],
     onOpenMain: onOpenMainFlow,
   };
+  // Coordinates zoom across every KPI time-series chart rendered anywhere in
+  // this tree — S1Body's Forecasts tab and its detailed per-metric charts
+  // all live under this same Pipeline root regardless of which node is
+  // focused, so one provider here covers all of them.
+  // Falls back to a plain Fragment (each chart keeps its own independent
+  // zoom) if charts.jsx hasn't loaded for some reason.
+  const ZoomProvider = window.ChartZoomProvider || React.Fragment;
+
+  const focusedGate = GATES.find(g => g.id === hubFocus) || null;
+  const stageIdx = STAGES.findIndex(s => s.id === hubFocus);
+  const focusedStage = stageIdx >= 0 ? STAGES[stageIdx] : null;
+
   return (
-    <div className="pipeline">
-      {STAGES.map((s, i) => {
-        const status = stageState[s.id] || "idle";
-        const isDone = status === "done";
-        const isOpen = openStages.has(s.id);
-        const showGate = (i === 1 && hitl.risk && gateState.g1) || (i === 2 && hitl.scope && gateState.g2);
-        const gateNum = i === 1 ? 1 : 2;
-        return (
-          <React.Fragment key={s.id}>
-            <Stage
-              stage={s}
-              status={status}
-              isOpen={isOpen}
-              onToggle={() => {
-                const next = new Set(openStages);
-                next.has(s.id) ? next.delete(s.id) : next.add(s.id);
-                setOpenStages(next);
-              }}
-              output={output[s.id]}
-              signals={signals}
-              livefacts={livefacts}
-              forecasts={forecasts}
-              s1Extra={s.id === "s1" ? s1Extra : null}
-              s2Extra={s.id === "s2" ? s2Extra : null}
-              s3Extra={s.id === "s3" ? s3Extra : null}
-              s5Extra={s.id === "s5" ? s5Extra : null}
+    <ZoomProvider>
+    <div className="pipeline pipeline-hub" data-screen-label="Audit Closed Loop">
+      {!focusedGate && !focusedStage && (
+        <LoopHub
+          stageState={stageState} output={output} hitl={hitl} gateState={gateState}
+          onFocusStage={onFocusStage} onFocusGate={onFocusGate}
+        />
+      )}
+      {focusedGate && (
+        <GateCanvas
+          gate={focusedGate} state={gateState[focusedGate.id]} output={output}
+          appetiteLevel={appetiteLevel} appetiteThreshold={threshold}
+          perRiskAppetite={perRiskAppetite} setPerRiskAppetite={setPerRiskAppetite}
+          riskApprovals={riskApprovals} onApproveRisk={onApproveRisk} onOpenAdjustRisk={onOpenAdjustRisk}
+          onApproveAllRisks={onApproveAllRisks} onAddRisk={onAddRisk}
+          scopeApprovals={scopeApprovals} onApproveObjective={onApproveObjective} onOpenAdjustObjective={onOpenAdjustObjective}
+          onApproveAllObjectives={onApproveAllObjectives} onAddObjective={onAddObjective}
+          onSubmit={() => onApprove(focusedGate.num)} onOverride={() => onOverride(focusedGate.num)}
+          onBack={onGoHub}
+          liveRssSignals={liveRssSignals} events={events} ratios={ratios} industry={industry}
+          pipelineTicker={pipelineTicker} onRerunFromS3={onRerunFromS3}
+          forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList}
+          peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
+          onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
+          onClearPeerCompare={onClearPeerCompare}
+        />
+      )}
+      {focusedStage && (
+        <StageCanvas
+          stage={focusedStage}
+          status={stageState[focusedStage.id] || "idle"}
+          output={output[focusedStage.id]}
+          fullOutput={output}
+          signals={signals} livefacts={livefacts} forecasts={forecasts}
+          s1Extra={focusedStage.id === "s1" ? s1Extra : null}
+          s2Extra={focusedStage.id === "s2" ? s2Extra : null}
+          s3Extra={focusedStage.id === "s3" ? s3Extra : null}
+          s5Extra={focusedStage.id === "s5" ? s5Extra : null}
+          risks={risks} companyName={companyName} pipelineTicker={pipelineTicker}
+          peerData={peerData} peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+          peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+          onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
+          flowMeta={flowMeta} onOpenMainFlow={onOpenMainFlow}
+          enabledFeedIds={enabledFeedIds} onRssSignalsReady={onRssSignalsReady}
+          onBack={onGoHub}
+          onPrev={stageIdx > 0 ? () => onFocusStage(STAGES[stageIdx - 1].id) : null}
+          onNext={stageIdx < STAGES.length - 1 ? () => onFocusStage(STAGES[stageIdx + 1].id) : null}
+          prevLabel={stageIdx > 0 ? STAGES[stageIdx - 1].name : ""}
+          nextLabel={stageIdx < STAGES.length - 1 ? STAGES[stageIdx + 1].name : ""}
+          gateBelow={gateBelowCanvas(focusedStage.id, { hitl, gateState, onFocusGate, onApprove, onOverride })}
+        />
+      )}
+    </div>
+    </ZoomProvider>
+  );
+}
+
+// ── Loop overview — the hub every run lands on ─────────────────────────────
+function LoopHub({ stageState, output, hitl, gateState, onFocusStage, onFocusGate }) {
+  const pendingGate = GATES.find(g => hitl[g.hitlKey] && gateState[g.id] === "pending");
+  return (
+    <>
+      {pendingGate && (
+        <div className="hgate hub-gate-banner">
+          <div className="icon"><Icon name="alert" size={15}/></div>
+          <div className="meta">
+            <div className="t">{pendingGate.title} awaiting your review</div>
+            <div className="d">{pendingGate.desc}</div>
+          </div>
+          <div className="actions">
+            <button type="button" className="btn btn-sm btn-acc" onClick={() => onFocusGate(pendingGate.id)}>
+              Review <Icon name="arrow-r" size={11}/>
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="hub-grid">
+        {STAGES.map(s => {
+          const status = stageState[s.id] || "idle";
+          const stageOutput = output[s.id];
+          const kpis = status === "done" ? stageKpis(s.id, stageOutput) : [];
+          const finding = status === "done" ? stageTopFinding(s.id, stageOutput) : null;
+          return (
+            <button key={s.id} type="button" className={`hub-card ${status}`} onClick={() => onFocusStage(s.id)}
+              data-screen-label={`Stage ${s.id.replace("s", "")} card`}>
+              <div className="hub-card-head">
+                <div className="stage-num">{s.id.replace("s", "")}</div>
+                {stagePill(status)}
+              </div>
+              <div className="hub-card-name">{s.name}</div>
+              {kpis.length > 0
+                ? <div className="stage-stat-row">{kpis.map((k, i) => <Stat key={i} {...k}/>)}</div>
+                : <div className="hub-card-find muted">{status === "waiting" ? "Awaiting gate approval" : s.desc}</div>}
+              {finding && <div className="hub-card-find">{finding}</div>}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ── Gate canvas — pending review table, or the resolved banner ────────────
+function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, perRiskAppetite, setPerRiskAppetite,
+                       riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onAddRisk,
+                       scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onAddObjective,
+                       onSubmit, onOverride, onBack,
+                       liveRssSignals, events, ratios, industry, pipelineTicker, onRerunFromS3,
+                       forecasts, peerData, peerCompareList, peerCompareLoading, peerCompareError,
+                       onAddPeerCompare, onRemovePeerCompare, onClearPeerCompare }) {
+  return (
+    <div className="loop-canvas">
+      <div className="canvas-nav">
+        <button type="button" className="btn btn-sm btn-ghost canvas-back" onClick={onBack}>
+          <Icon name="chev-u" size={11} style={{transform: "rotate(-90deg)"}}/> Loop overview
+        </button>
+      </div>
+      {state === "pending" ? (
+        gate.num === 1 ? (
+          <>
+            {/* Same Fraud & Distress Signals / Forecasts content as Stage 1's
+                tabs, surfaced right here, expanded by default — reaching
+                them used to mean clicking back to Loop overview, into the
+                Stage 1 card, then into a tab, which made them easy to miss
+                entirely while a gate banner has the reviewer's attention.
+                Still collapsible for anyone who wants less scroll. */}
+            <PipelinePanel label="Fraud & Distress Signals" defaultOpen={true}>
+              <FraudDistressPanel forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList} onAddObjective={onAddObjective}/>
+            </PipelinePanel>
+            <PipelinePanel label="Forecasts" defaultOpen={true}>
+              <ForecastsPanel
+                forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList}
+                peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
+                onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
+                onClearPeerCompare={onClearPeerCompare} onAddObjective={onAddObjective}
+              />
+            </PipelinePanel>
+            <RiskApprovalReview
+              risks={output.s2?.risks || []}
+              approvals={riskApprovals}
+              appetiteLevel={appetiteLevel}
+              appetiteThreshold={appetiteThreshold}
+              perRiskAppetite={perRiskAppetite || {}}
+              onSetPerRiskAppetite={setPerRiskAppetite}
+              onApproveRisk={onApproveRisk}
+              onOpenAdjust={onOpenAdjustRisk}
+              onApproveAll={onApproveAllRisks}
+              onSubmit={onSubmit}
+              onOverrideGate={onOverride}
+              onAddRisk={onAddRisk}
             />
-
-            {/* ── Stage-linked panels (always visible when stage is done) ── */}
-            {isDone && s.id === "s1" && window.RSSPanel && (
-              <PipelinePanel label="RSS Signals">
-                <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
-              </PipelinePanel>
-            )}
-            {isDone && s.id === "s2" && forecasts && (() => {
-              const GeoSegKPI = window.GeoSegmentKPISection;
-              return (
-                <PipelinePanel label="Forecasts">
-                  <ForecastChartsInline forecasts={forecasts} livefacts={livefacts}/>
-                  {GeoSegKPI && (
-                    <GeoSegKPI
-                      data={forecasts}
-                      industry={industry}
-                      ticker={pipelineTicker || ""}
-                      livefacts={livefacts}
-                    />
-                  )}
-                </PipelinePanel>
-              );
-            })()}
-            {isDone && s.id === "s4" && window.MapsTab && (output.s4?.maps?.length > 0) && (
-              <PipelinePanel label="Management Action Plans">
-                <MapsTab maps={output.s4.maps}/>
-              </PipelinePanel>
-            )}
-            {isDone && s.id === "s2" && flowMeta && (output.s2?.risks?.length > 0) && (
-              <PipelinePanel label="Risk Flow">
-                <SankeyInline
-                  risks={output.s2.risks}
-                  maps={output.s4?.maps || []}
-                  flowMeta={flowMeta}
-                  objectives={output.s3?.objectives || []}
-                  onOpenMain={onOpenMainFlow}
-                />
-              </PipelinePanel>
-            )}
-
-            {i < STAGES.length - 1 && (
-              <Connector active={status === "done" || status === "running"}/>
-            )}
-            {showGate && (
-              <>
-                {gateNum === 1 && gateState.g1 === "pending" ? (
-                  <RiskApprovalReview
-                    risks={output.s2?.risks || []}
-                    approvals={riskApprovals}
-                    appetiteLevel={appetiteLevel}
-                    appetiteThreshold={threshold}
-                    perRiskAppetite={perRiskAppetite || {}}
-                    onSetPerRiskAppetite={setPerRiskAppetite}
-                    onApproveRisk={onApproveRisk}
-                    onOpenAdjust={onOpenAdjustRisk}
-                    onApproveAll={onApproveAllRisks}
-                    onSignoff={onSignoffRisk}
-                    onSubmit={() => onApprove(1)}
-                    onOverrideGate={() => onOverride(1)}
-                  />
-                ) : gateNum === 2 && gateState.g2 === "pending" ? (
-                  <ScopeApprovalReview
-                    objectives={output.s3?.objectives || []}
-                    approvals={scopeApprovals}
-                    risks={output.s2?.risks || []}
-                    onApproveObjective={onApproveObjective}
-                    onOpenAdjust={onOpenAdjustObjective}
-                    onApproveAll={onApproveAllObjectives}
-                    onSignoff={onSignoffObjective}
-                    onSubmit={() => onApprove(2)}
-                    onOverrideGate={() => onOverride(2)}
-                    onAddObjective={onAddObjective}
-                  />
-                ) : (
-                  <HITLGate
-                    num={gateNum}
-                    state={gateState[`g${gateNum}`]}
-                    onApprove={() => onApprove(gateNum)}
-                    onOverride={() => onOverride(gateNum)}
-                  />
+          </>
+        ) : (
+          <ScopeApprovalReview
+            objectives={output.s3?.objectives || []}
+            approvals={scopeApprovals}
+            risks={output.s2?.risks || []}
+            onApproveObjective={onApproveObjective}
+            onOpenAdjust={onOpenAdjustObjective}
+            onApproveAll={onApproveAllObjectives}
+            onSubmit={onSubmit}
+            onOverrideGate={onOverride}
+            onAddObjective={onAddObjective}
+          />
+        )
+      ) : (
+        <div style={{padding: "0 22px 20px", display: "flex", flexDirection: "column", gap: 12}}>
+          <HITLGate num={gate.num} state={state} onApprove={onSubmit} onOverride={onOverride}/>
+          {gate.num === 2 && window.CoverageGapPanel && (
+            <PipelinePanel label="Coverage Gap Analysis">
+              <div style={{display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12}}>
+                <span style={{fontSize: 11, color: "var(--ink-3)"}}>
+                  Cross-check scope against risk register — address gaps before Stage 4 or revise the audit scope.
+                </span>
+                {onRerunFromS3 && (
+                  <button type="button" className="btn btn-sm" style={{fontSize: 10, padding: "3px 10px", flexShrink: 0}} onClick={onRerunFromS3}>
+                    <Icon name="reset" size={10}/> Revise Stage 3 — Audit Scope
+                  </button>
                 )}
-                {i < STAGES.length - 1 && (
-                  <Connector active={gateState[`g${gateNum}`] === "approved"}/>
-                )}
-              </>
-            )}
-          </React.Fragment>
-        );
-      })}
+              </div>
+              <CoverageGapPanel
+                risks={output.s2?.risks || []}
+                objectives={output.s3?.objectives || []}
+                rssSignals={liveRssSignals}
+                events={events}
+                ratios={ratios}
+                industry={industry}
+                ticker={pipelineTicker}
+              />
+            </PipelinePanel>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function Stage({ stage, status, isOpen, onToggle, output, signals, livefacts, s1Extra, s2Extra, s3Extra, s5Extra, forecasts }) {
-  const statusCls = status === "running" ? "running" : status === "done" ? "done" : "";
-  const pill =
-    status === "running" ? <span className="stage-pill run"><span className="dot"/>RUNNING</span> :
-    status === "done"    ? <span className="stage-pill done"><span className="dot"/>COMPLETE</span> :
-    status === "waiting" ? <span className="stage-pill wait"><span className="dot"/>AWAITING GATE</span> :
-                           <span className="stage-pill"><span className="dot"/>IDLE</span>;
-  const num = stage.id.replace("s", "");
-  const subSteps = status === "done"
-    ? buildSubSteps(stage.id, output, signals, livefacts, s1Extra, s2Extra, s3Extra)
-    : [];
+// ── Stage canvas — full detail for one stage, with prev/next + trailing gate ──
+function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, forecasts, s1Extra, s2Extra, s3Extra, s5Extra,
+                        risks, companyName, pipelineTicker,
+                        peerData, peerCompareList, peerCompareLoading, peerCompareError, onAddPeerCompare, onRemovePeerCompare, onClearPeerCompare,
+                        flowMeta, onOpenMainFlow,
+                        enabledFeedIds, onRssSignalsReady,
+                        onBack, onPrev, onNext, prevLabel, nextLabel, gateBelow }) {
+  const subSteps = status === "done" ? buildSubSteps(stage.id, output, signals, livefacts, s1Extra, s2Extra, s3Extra) : [];
   return (
-    <div className={`stage ${statusCls}`} data-screen-label={`Stage ${num}`}>
-      <div className="stage-head" onClick={onToggle}>
-        <div className="stage-num">{num}</div>
+    <div className={`loop-canvas stage ${status}`} data-screen-label={`Stage ${stage.id.replace("s", "")}`}>
+      <div className="canvas-nav">
+        <button type="button" className="btn btn-sm btn-ghost canvas-back" onClick={onBack}>
+          <Icon name="chev-u" size={11} style={{transform: "rotate(-90deg)"}}/> Loop overview
+        </button>
+      </div>
+      <div className="canvas-head">
+        <div className="stage-num">{stage.id.replace("s", "")}</div>
         <div className="stage-meta">
           <div className="stage-name">{stage.name}</div>
           <div className="stage-desc">{stage.desc}</div>
         </div>
-        {pill}
-        <Icon name={isOpen ? "chev-u" : "chev-d"} size={14} className="muted"/>
+        {stagePill(status)}
       </div>
-      {subSteps.length > 0 && (
-        <div style={{padding: "8px 16px 10px 16px", borderTop: "1px solid var(--line)"}}>
-          <div className="mono" style={{fontSize: 9, color: "var(--ink-4)", letterSpacing: "0.07em", marginBottom: 6}}>COMPLETED STEPS</div>
-          <ExpandableSubSteps steps={subSteps}/>
+      <div className="canvas-body">
+        {/* Each *Body component already renders its own .stage-stat-row —
+            stageKpis() here exists only for the hub card, not duplicated. */}
+        <div className="stage-body-grid">
+          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts}
+                     s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
         </div>
-      )}
-      {isOpen && (
-        <div className="stage-body open">
-          <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts} s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
-        </div>
-      )}
+
+        {stage.id === "s1" && status === "done" && window.RSSPanel && (
+          <PipelinePanel label="RSS Signals">
+            <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
+          </PipelinePanel>
+        )}
+        {/* Revenue/margin mini-charts used to duplicate here what Stage 1's own
+            "Forecasts" tab already shows in full (with Monte Carlo commentary,
+            peer overlays, and the rest of the P&L/CF set) — dropped in favor
+            of that one home. Geography/segment data has no other home on this
+            screen, so it stays here. */}
+        {stage.id === "s2" && status === "done" && forecasts && (
+          <PipelinePanel label="Geography & Segment Data">
+            <GeoSegmentKPISection ticker={pipelineTicker || ""}/>
+          </PipelinePanel>
+        )}
+        {stage.id === "s2" && status === "done" && flowMeta && (output?.risks?.length > 0) && (
+          <PipelinePanel label="Risk Flow">
+            <SankeyInline
+              risks={output.risks}
+              maps={fullOutput.s4?.maps || []}
+              flowMeta={flowMeta}
+              objectives={fullOutput.s3?.objectives || []}
+              onOpenMain={onOpenMainFlow}
+            />
+          </PipelinePanel>
+        )}
+        {stage.id === "s4" && window.MapsTab && (output?.maps?.length > 0) && (
+          <PipelinePanel label="Management Action Plans">
+            <MapsTab maps={output.maps}/>
+          </PipelinePanel>
+        )}
+        {subSteps.length > 0 && (
+          <PipelinePanel label="Completed steps" defaultOpen={false}>
+            <ExpandableSubSteps steps={subSteps}/>
+          </PipelinePanel>
+        )}
+        {gateBelow}
+      </div>
+      <div className="canvas-foot">
+        {onPrev ? (
+          <button type="button" className="btn btn-sm" onClick={onPrev}>
+            <Icon name="chev-u" size={10} style={{transform: "rotate(-90deg)"}}/> {prevLabel}
+          </button>
+        ) : <span/>}
+        {onNext ? (
+          <button type="button" className="btn btn-sm" onClick={onNext}>
+            {nextLabel} <Icon name="chev-d" size={10} style={{transform: "rotate(-90deg)"}}/>
+          </button>
+        ) : <span/>}
+      </div>
     </div>
   );
 }
 
-function Connector({ active }) {
+// Stable per-peer color, by order-added — kept distinct from the vivid accent
+// colors the subject's own line already uses per chart (--acc/--amber/--violet/
+// etc.), so a peer reads as "peer" on every chart even though the subject's
+// own color changes chart to chart. Cycled if MAX_PEER_COMPARE ever grows
+// past 4 (must stay in sync with app.jsx's MAX_PEER_COMPARE).
+const MAX_PEER_COMPARE = 4;
+const _PEER_PALETTE = ["#8a8fa3", "#c98a4b", "#5b9bd5", "#9b6fd1"];
+
+// Renders a single-entity ForecastChart, or a multi-entity MultiSeriesForecastChart
+// when one or more peers are selected and have data for this metric. Used by
+// every KPI chart on this screen so "compare against peers" behaves identically
+// everywhere — peers: [{ ticker, history, forecast }] from _peerSeriesListFor.
+function ComparableChart({ history, forecast, unit, color, decimals, chartMetrics, peers, seriesName = "This company" }) {
+  const activePeers = (peers || []).filter(p => p?.history?.length && p?.forecast?.length);
+  if (activePeers.length > 0) {
+    const MSC = window.MultiSeriesForecastChart;
+    if (!MSC) return null;
+    return React.createElement(MSC, {
+      unit, decimals,
+      series: [
+        { name: seriesName, color, history, forecast },
+        ...activePeers.map((p, i) => ({ name: p.ticker, color: _PEER_PALETTE[i % _PEER_PALETTE.length], history: p.history, forecast: p.forecast })),
+      ],
+    });
+  }
+  const FC = window.ForecastChart;
+  if (!FC) return null;
+  return React.createElement(FC, { history, forecast, unit, color, decimals, chartMetrics });
+}
+
+// [{ticker, history, forecast}] for a given chart metric key, one entry per
+// selected peer that has data for that metric — used by S1Body's Forecasts
+// tab so "compare against peers" is available on every KPI chart there.
+function _peerSeriesListFor(peerCompareList, key) {
+  return (peerCompareList || [])
+    .filter(p => p.forecasts?.[key])
+    .map(p => ({ ticker: p.ticker, ...p.forecasts[key] }));
+}
+
+// One control, reused everywhere peers can be picked — see the Pipeline-level
+// comment above s1Extra for why this is a single shared piece of state rather
+// than a picker per chart. Sourced from peerData.peers — the same 10-K named-
+// competitor / SIC-fallback list (/edgar/peers) already used for the M-Score/
+// Z-Score gauge peer-rank — rather than free-text ticker entry, so every
+// comparison is a company the filer itself names as a competitor (or, failing
+// that, a same-SIC peer), not an arbitrary unrelated ticker. Selected peers
+// render as removable chips; up to MAX_PEER_COMPARE at once keeps the charts
+// legible.
+function PeerComparePicker({ peerData = null, peerCompareList = [],
+                              peerCompareLoading = false, peerCompareError = null,
+                              onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null }) {
+  if (!onAddPeerCompare) return null;
+  const selected = new Set(peerCompareList.map(p => p.ticker));
+  const available = (peerData?.peers || []).filter(p => p.ticker && !selected.has(p.ticker));
+  const atMax = peerCompareList.length >= MAX_PEER_COMPARE;
   return (
-    <div className={"conn" + (active ? " on" : "")}>
-      <div className="line"/>
+    <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6}}>
+      <Icon name="user" size={13}/>
+      <span style={{fontSize:11.5, fontWeight:600, color:"var(--ink-2)"}}>Compare against peers</span>
+      {peerCompareList.map((p, i) => (
+        <span key={p.ticker} className="tag mono" style={{display:"flex", alignItems:"center", gap:6, borderLeft:`3px solid ${_PEER_PALETTE[i % _PEER_PALETTE.length]}`, paddingLeft:6}}>
+          {p.ticker}
+          <button type="button" onClick={() => onRemovePeerCompare && onRemovePeerCompare(p.ticker)} title="Remove peer"
+            style={{background:"none", border:"none", cursor:"pointer", padding:0, display:"flex", color:"inherit"}}>
+            <Icon name="x" size={10}/>
+          </button>
+        </span>
+      ))}
+      {atMax ? (
+        <span style={{fontSize:10, color:"var(--ink-3)"}}>Up to {MAX_PEER_COMPARE} peers — remove one to add another.</span>
+      ) : available.length > 0 ? (
+        <select
+          value=""
+          disabled={peerCompareLoading}
+          onChange={e => { if (e.target.value) onAddPeerCompare(e.target.value); }}
+          style={{fontSize:11, padding:"4px 8px", border:"1px solid var(--line)", borderRadius:6, fontFamily:"Geist Mono, monospace", background:"var(--surface)", color:"var(--ink)", maxWidth:280}}
+        >
+          <option value="">{peerCompareLoading ? "Loading…" : `+ Add a 10-K peer (${available.length})…`}</option>
+          {available.map(p => (
+            <option key={p.ticker} value={p.ticker}>{p.ticker} — {p.company_name}</option>
+          ))}
+        </select>
+      ) : peerCompareList.length === 0 ? (
+        <span style={{fontSize:10.5, color:"var(--ink-3)"}}>
+          {peerData ? "No 10-K competitors identified for this company." : "Loading 10-K peer list…"}
+        </span>
+      ) : null}
+      {peerCompareList.length > 1 && (
+        <button type="button" className="btn btn-sm" onClick={onClearPeerCompare} style={{fontSize:10}}>Clear all</button>
+      )}
+      {peerCompareError && <span style={{fontSize:10.5, color:"var(--red-ink)"}}>{peerCompareError}</span>}
+      {peerCompareList.length === 0 && available.length > 0 && !peerCompareError && (
+        <span style={{fontSize:10, color:"var(--ink-3)"}}>{peerData?.peer_source === "10-K named competitors" ? "From the company's own 10-K" : "Same-SIC peers"} — overlays on every chart and gauge below.</span>
+      )}
     </div>
   );
 }
 
-// Runs backtest on history, passes metrics to ForecastChart so caption always appears
-function FCWithMetrics({ history, forecast, unit, color, decimals }) {
+function FCWithMetrics({ history, forecast, unit, color, decimals, peers }) {
   const [metrics, setMetrics] = React.useState(null);
   React.useEffect(() => {
     if (!history?.length || !window.BACKTESTING || !window.FORECASTING) return;
@@ -241,64 +657,75 @@ function FCWithMetrics({ history, forecast, unit, color, decimals }) {
       setMetrics(bt?.results?.ensemble ?? null);
     } catch (e) {}
   }, [history]);
-  const FC = window.ForecastChart;
-  if (!FC) return null;
-  return React.createElement(FC, { history, forecast, unit, color, decimals, chartMetrics: metrics });
+  return <ComparableChart history={history} forecast={forecast} unit={unit} color={color} decimals={decimals} chartMetrics={metrics} peers={peers}/>;
 }
 
-function ForecastChartsInline({ forecasts, livefacts }) {
-  const [tick, setTick] = React.useState(0);
-  React.useEffect(() => {
-    if (!window.ForecastChart) {
-      const id = setTimeout(() => setTick(t => t + 1), 300);
-      return () => clearTimeout(id);
-    }
-  }, [tick]);
+// Disaggregated geography / business-segment revenue for the current entity
+// — filed (EDGAR XBRL, edgar_segments.py) or user-uploaded (Mission Control
+// financials upload) breakdowns, both persisted to sox_financial_segments.
+// Fetches independently of `forecasts` (nothing populates a `.segments` key
+// on that object) so this renders real filed/uploaded data or an honest
+// empty state, never a silent gap.
+function GeoSegmentKPISection({ ticker }) {
+  const [state, setState] = React.useState({ loading: false, segments: null });
 
-  const FC = window.ForecastChart;
-  if (!forecasts) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>No forecast data — run the loop first.</div>;
-  if (!FC) return <div style={{fontSize:11, color:"var(--ink-4)", padding:"12px 0"}}>Loading chart engine…</div>;
-  const rev = forecasts.revenue;
-  const mg  = forecasts.margin;
-  const lastRev  = rev?.history?.slice(-1)[0]?.v;
-  const fcRev    = rev?.forecast?.slice(-1)[0]?.base;
-  const lastMg   = mg?.history?.slice(-1)[0]?.v;
-  const fcMg     = mg?.forecast?.slice(-1)[0]?.base;
-  const revDelta = lastRev && fcRev ? ((fcRev - lastRev) / lastRev * 100) : null;
-  const mgDelta  = lastMg != null && fcMg != null ? (fcMg - lastMg) * 100 : null;
+  React.useEffect(() => {
+    if (!ticker) return;
+    let cancelled = false;
+    setState({ loading: true, segments: null });
+    fetch(`/api/mcp/sox/segments/${encodeURIComponent(ticker)}/latest`, { credentials: "include" })
+      .then(r => (r.ok ? r.json() : { segments: [] }))
+      .then(d => { if (!cancelled) setState({ loading: false, segments: d.segments || [] }); })
+      .catch(() => { if (!cancelled) setState({ loading: false, segments: [] }); });
+    return () => { cancelled = true; };
+  }, [ticker]);
+
+  if (state.loading) return null;
+  const segments = state.segments || [];
+  if (segments.length === 0) {
+    return (
+      <div className="stage-detail">
+        <h5>Geography &amp; business-segment revenue</h5>
+        <div style={{fontSize:11, color:"var(--ink-3)"}}>
+          No disaggregated segment data on file for {ticker}. Import it from the latest 10-K/10-Q XBRL
+          (Mission Control · Upload Financials) or upload a spreadsheet with segment/geography columns.
+        </div>
+      </div>
+    );
+  }
+
+  const byType = { geography: [], business_segment: [] };
+  segments.forEach(s => (byType[s.segment_type] || (byType[s.segment_type] = [])).push(s));
+  const maxPct = Math.max(1, ...segments.map(s => s.revenue_pct || 0));
+
   return (
-    <div style={{display:"flex", flexDirection:"column", gap:18}}>
-      {rev?.history?.length > 0 && (
-        <div>
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Revenue · TTM ($M)</div>
-            {revDelta != null && (
-              <div style={{fontSize:10, fontFamily:"var(--mono)", color: revDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {revDelta >= 0 ? "▲" : "▼"}{Math.abs(revDelta).toFixed(1)}% · 4Q forecast ${fcRev?.toFixed(0)}M
-              </div>
-            )}
+    <div className="stage-detail">
+      <h5>Geography &amp; business-segment revenue</h5>
+      <div style={{display:"flex", flexDirection:"column", gap:14, marginTop:4}}>
+        {Object.entries(byType).filter(([, rows]) => rows.length > 0).map(([type, rows]) => (
+          <div key={type}>
+            <div className="mono" style={{fontSize:10, color:"var(--ink-3)", marginBottom:6}}>
+              {type === "geography" ? "By geography" : "By business segment"} · source: {rows[0]?.source || "filed"}
+            </div>
+            <div style={{display:"flex", flexDirection:"column", gap:5}}>
+              {[...rows].sort((a,b) => (b.revenue_pct||0) - (a.revenue_pct||0)).map(r => (
+                <div key={r.segment_name} style={{display:"flex", alignItems:"center", gap:8}}>
+                  <span style={{width:130, fontSize:11, color:"var(--ink-2)", flexShrink:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{r.segment_name}</span>
+                  <div style={{flex:1, height:8, background:"var(--surface-2,var(--surface))", borderRadius:4, overflow:"hidden"}}>
+                    <div style={{width:`${((r.revenue_pct||0)/maxPct)*100}%`, height:"100%", background:"var(--acc)", borderRadius:4}}/>
+                  </div>
+                  <span className="mono" style={{fontSize:10.5, color:"var(--ink-2)", width:70, textAlign:"right", flexShrink:0}}>
+                    {r.revenue != null ? fmt$M(r.revenue) : "—"}
+                  </span>
+                  <span className="mono" style={{fontSize:10.5, color:"var(--ink-4)", width:44, textAlign:"right", flexShrink:0}}>
+                    {r.revenue_pct != null ? `${r.revenue_pct}%` : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-          <FCWithMetrics history={rev.history.slice(-8)} forecast={rev.forecast} unit="$M" color="var(--acc)" decimals={2}/>
-        </div>
-      )}
-      {mg?.history?.length > 0 && (
-        <div>
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
-            <div style={{fontSize:11, fontWeight:600, color:"var(--ink-2)"}}>Gross Margin (%)</div>
-            {mgDelta != null && (
-              <div style={{fontSize:10, fontFamily:"var(--mono)", color: mgDelta >= 0 ? "var(--green-ink)" : "var(--red-ink)"}}>
-                {mgDelta >= 0 ? "▲" : "▼"}{Math.abs(mgDelta).toFixed(0)}bps · 4Q forecast {fcMg?.toFixed(1)}%
-              </div>
-            )}
-          </div>
-          <FCWithMetrics history={mg.history.slice(-8)} forecast={mg.forecast} unit="%" color="var(--violet)"/>
-        </div>
-      )}
-      {livefacts && (
-        <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)"}}>
-          Source: EDGAR XBRL — {livefacts.entity} · {livefacts.cik}
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }
@@ -340,11 +767,11 @@ function SankeyInline({ risks, maps, flowMeta, objectives, onOpenMain }) {
   );
 }
 
-function PipelinePanel({ label, children }) {
-  const [open, setOpen] = React.useState(true);
+function PipelinePanel({ label, defaultOpen = true, children }) {
+  const [open, setOpen] = React.useState(defaultOpen);
   return (
     <div className="stage" style={{marginTop: 0, borderStyle: "dashed", opacity: 0.97}}>
-      <div className="stage-head" onClick={() => setOpen(o => !o)} style={{cursor: "pointer"}}>
+      <Clickable className="stage-head" onClick={() => setOpen(o => !o)} style={{cursor: "pointer"}}>
         <div className="stage-num" style={{background: "var(--acc-soft)", color: "var(--acc-ink)", border: "1px solid var(--acc-ink, var(--line))", fontSize: 9, letterSpacing: "0.04em", fontFamily: "var(--mono)", minWidth: 32, padding: "0 6px", display: "flex", alignItems: "center", justifyContent: "center"}}>
           {label.toUpperCase().slice(0, 4)}
         </div>
@@ -352,9 +779,436 @@ function PipelinePanel({ label, children }) {
           <div className="stage-name">{label}</div>
         </div>
         <Icon name={open ? "chev-u" : "chev-d"} size={14} className="muted"/>
-      </div>
+      </Clickable>
       {open && <div className="stage-body open">{children}</div>}
     </div>
+  );
+}
+
+// Beneish M-Score / Altman Z''-Score gauges + Financial Risk Pipeline cards —
+// extracted out of S1Body's "Fraud & Distress Signals" tab so Gate 1's review
+// screen can show the same content inline instead of forcing the reviewer
+// back to Loop overview -> Stage 1 -> this tab to see it (see GateCanvas).
+function FraudDistressPanel({ forecasts, peerData = null, peerCompareList = [], onAddObjective }) {
+  const gaugePeers = [
+    ...(peerData?.peers || []),
+    ...peerCompareList.map(p => ({ ticker: p.ticker, z_score: p.zscore, m_score: p.mscore })),
+  ];
+  return (
+    <>
+      {/* Beneish M-Score gauge */}
+      {forecasts?.mscore != null && (() => {
+        const MSG = window.MScoreGauge;
+        const ms = forecasts.mscore;
+        if (!MSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Earnings Manipulation Risk — is revenue recognition or accruals quality deteriorating? (pairs with Z''-Score below)</h5>
+            <MSG m={ms.m} peers={gaugePeers}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>M = {ms.m?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: ms.m > -1.78 ? "var(--red-soft)" : ms.m > -2.22 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      ms.m > -1.78 ? "var(--red-ink)"  : ms.m > -2.22 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{ms.band || (ms.m > -1.78 ? "ELEVATED" : ms.m > -2.22 ? "GRAY ZONE" : "NORMAL")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≥ −1.78 · ELEVATED</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>−2.22 to −1.78 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>≤ −2.22 · NORMAL</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
+              </div>
+              {(() => {
+                const IDX = [
+                  { k:"DSRI", name:"Days Sales in Receivables", coef:0.920,  flag:"revenue inflation",          red:1 },
+                  { k:"GMI",  name:"Gross Margin",              coef:0.528,  flag:"margin deterioration",       red:1 },
+                  { k:"AQI",  name:"Asset Quality",             coef:0.404,  flag:"expense capitalisation",     red:1 },
+                  { k:"SGI",  name:"Sales Growth",              coef:0.892,  flag:"growth pressure",            red:1 },
+                  { k:"DEPI", name:"Depreciation",              coef:0.115,  flag:"slower depreciation",        red:1 },
+                  { k:"SGAI", name:"SG&A Expense",              coef:-0.172, flag:"SG&A inefficiency",          red:1 },
+                  { k:"TATA", name:"Total Accruals to Total Assets", coef:4.679, flag:"earnings exceed cash flow", red:0 },
+                  { k:"LVGI", name:"Leverage",                  coef:-0.327, flag:"rising leverage",            red:1 },
+                ];
+                const vars = ms.vars || {};
+                const defaulted = new Set(ms.defaulted || []);
+                const term = (x, i) => `${x.coef < 0 ? "−" : (i === 0 ? "" : "+")} ${Math.abs(x.coef).toFixed(3)}·${x.k}`;
+                return (
+                  <>
+                    <div className="mono" style={{fontSize:10.5, color:"var(--ink-2)", marginTop:6, lineHeight:1.7}}>
+                      M = −4.84 {IDX.map((x, i) => term(x, i + 1)).join(" ")}
+                    </div>
+                    <table style={{width:"100%", borderCollapse:"collapse", marginTop:6, fontSize:10.5}}>
+                      <thead>
+                        <tr style={{textAlign:"left", color:"var(--ink-3)", borderBottom:"1px solid var(--line)"}}>
+                          <th style={{padding:"3px 6px", fontWeight:600}}>Index</th>
+                          <th style={{padding:"3px 6px", fontWeight:600, textAlign:"right"}}>Value</th>
+                          <th style={{padding:"3px 6px", fontWeight:600}}>Red flag when</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {IDX.map(x => {
+                          const v = vars[x.k];
+                          const has = typeof v === "number";
+                          const isRed = has && !defaulted.has(x.k) && v > x.red;
+                          return (
+                            <tr key={x.k} style={{borderBottom:"1px solid var(--line)"}}>
+                              <td style={{padding:"3px 6px"}}>{x.k} <span style={{color:"var(--ink-3)"}}>({x.name})</span></td>
+                              <td className="mono" style={{padding:"3px 6px", textAlign:"right", color: isRed ? "var(--red-ink)" : "var(--ink-2)", fontWeight: isRed ? 700 : 400}}
+                                  title={defaulted.has(x.k) ? "Not computed from filings — neutral default used in the simplified model" : undefined}>
+                                {has ? v.toFixed(x.k === "TATA" ? 3 : 2) : "—"}{defaulted.has(x.k) ? "*" : ""}
+                              </td>
+                              <td className="mono" style={{padding:"3px 6px", color:"var(--ink-3)"}}>&gt; {x.red} ({x.flag})</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {defaulted.size > 0 && (
+                      <div style={{fontSize:9.5, color:"var(--ink-3)", marginTop:3}}>
+                        * Not yet computed from filings; neutral default (1.0) shown, so it doesn't signal a red flag.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+            {(() => {
+              const tone = ms.m > -1.78 ? "red" : ms.m > -2.22 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Review revenue recognition and accruals quality — Beneish M-Score (${ms.m.toFixed(2)}) is ${tone === "red" ? "above the likely-manipulator threshold (-1.78)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {ms.m > -1.78 ? "Score exceeds the likely-manipulator threshold — accruals and revenue recognition warrant IA review this cycle."
+                    : ms.m > -2.22 ? "Gray zone — worth a lighter-touch accruals monitoring pass, not necessarily a full scope item."
+                    : "Within normal range — no elevated financial-reporting risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Altman Z''-Score gauge */}
+      {forecasts?.zscore != null && (() => {
+        const ZSG = window.ZScoreGauge;
+        const zs = forecasts.zscore;
+        if (!ZSG) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Solvency Risk — is the balance sheet strong enough to avoid distress? (pairs with M-Score above)</h5>
+            <ZSG z={zs.z} peers={gaugePeers}/>
+            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
+              <div style={{display:"flex", gap:10}}>
+                <span className="mono" style={{color:"var(--ink-4)"}}>Z'' = {zs.z?.toFixed(2)}</span>
+                <span className="mono" style={{
+                  padding:"1px 7px", borderRadius:4, fontSize:10,
+                  background: zs.z <= 1.1 ? "var(--red-soft)" : zs.z <= 2.6 ? "var(--amber-soft)" : "var(--green-soft)",
+                  color:      zs.z <= 1.1 ? "var(--red-ink)"  : zs.z <= 2.6 ? "var(--amber-ink)"  : "var(--green-ink)",
+                }}>{zs.band || (zs.z <= 1.1 ? "DISTRESS" : zs.z <= 2.6 ? "GRAY ZONE" : "SAFE")}</span>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≤ 1.10 · DISTRESS</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>1.10 to 2.60 · GRAY ZONE</span>
+                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>&gt; 2.60 · SAFE</span>
+              </div>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
+                General/non-manufacturer variant (book equity, no market-cap dependency): working capital, retained earnings, and EBIT relative to total assets, plus book equity to total liabilities — computed from EDGAR 10-K.
+              </div>
+            </div>
+            {(() => {
+              const tone = zs.z <= 1.1 ? "red" : zs.z <= 2.6 ? "amber" : "green";
+              const material = tone !== "green";
+              return (
+                <AuditorTakeaway
+                  tone={tone}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Assess going-concern risk and covenant headroom — Altman Z''-Score (${zs.z.toFixed(2)}) is ${tone === "red" ? "in the distress zone (≤1.10)" : "in the gray zone"}.`
+                  ) : undefined}
+                >
+                  {zs.z <= 1.1 ? "Distress zone — going-concern assessment and covenant headroom warrant IA review this cycle."
+                    : zs.z <= 2.6 ? "Gray zone — worth a liquidity/solvency monitoring pass, not necessarily a full scope item."
+                    : "Within safe range — no elevated solvency risk detected from this model."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Financial Risk Pipeline — JE velocity / liquidity shift / inventory divergence */}
+      {forecasts?.financialRiskPipeline && (() => {
+        const frp = forecasts.financialRiskPipeline;
+        const cards = [
+          { key: "je_velocity", label: "Manual JE Velocity", data: frp.je_velocity, flag: "anomaly",
+            detail: d => `z = ${d.z_score}σ (${d.recent_daily_rate}/day vs. baseline ${d.baseline_daily_mean}/day)` },
+          { key: "liquidity_shift", label: "Liquidity Shift", data: frp.liquidity_shift, flag: "shift_detected",
+            detail: d => `worst QoQ z = ${d.worst_z_score}σ` },
+          { key: "inventory_divergence", label: "Inventory/Sales Divergence", data: frp.inventory_divergence, flag: "divergence_detected",
+            detail: d => `QoQ ratio z = ${d.z_score}σ` },
+        ].filter(c => c.data && c.data.interpretation !== "insufficient_data" && c.data.interpretation !== "insufficient_baseline");
+
+        if (!cards.length) return null;
+
+        return (
+          <div className="stage-detail">
+            <h5>Financial Risk Pipeline — journal-entry velocity, liquidity, and inventory signals beyond the point-in-time Z/M-Score snapshot above</h5>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, marginTop: 8 }}>
+              {cards.map(c => {
+                const flagged = !!c.data[c.flag];
+                const tone = flagged ? (c.data.rag_status === "Red" ? "red" : "amber") : "green";
+                return (
+                  <div key={c.key} style={{
+                    padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line)",
+                    background: tone === "red" ? "var(--red-soft)" : tone === "amber" ? "var(--amber-soft)" : "var(--surface-2,var(--surface))",
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: tone === "red" ? "var(--red-ink)" : tone === "amber" ? "var(--amber-ink)" : "var(--ink-2)" }}>
+                      {c.label}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 2 }}>
+                      {flagged ? "Flagged — " : "Normal — "}{c.detail(c.data)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {cards.some(c => c.data[c.flag]) && onAddObjective && (
+              <AuditorTakeaway
+                tone="amber"
+                actionLabel="Add to scope"
+                onAction={() => onAddObjective(
+                  `Review ${cards.filter(c => c.data[c.flag]).map(c => c.label.toLowerCase()).join(", ")} — Financial Risk Pipeline flagged a statistically significant deviation from historical baseline.`
+                )}
+              >
+                One or more Financial Risk Pipeline checks flagged a deviation beyond the company's own historical noise — worth a targeted review this cycle.
+              </AuditorTakeaway>
+            )}
+          </div>
+        );
+      })()}
+    </>
+  );
+}
+
+// KPI forecast charts (revenue, margin, EPS, EBITDA, FCF, material accounts) —
+// extracted out of S1Body's "Forecasts" tab for the same reason as
+// FraudDistressPanel above: Gate 1's review screen renders this inline too.
+function ForecastsPanel({ forecasts, peerData = null, peerCompareList = [], peerCompareLoading = false,
+                           peerCompareError = null, onAddPeerCompare = null, onRemovePeerCompare = null,
+                           onClearPeerCompare = null, onAddObjective }) {
+  const peerSeries = (key) => _peerSeriesListFor(peerCompareList, key);
+  return (
+    <>
+      {/* Peer selector for every KPI chart below — the selection is shared
+          app-wide state, so picking a peer here also overlays it on every
+          chart in this tab (and on the M-Score/Z-Score gauges above). */}
+      <PeerComparePicker
+        peerData={peerData}
+        peerCompareList={peerCompareList} peerCompareLoading={peerCompareLoading}
+        peerCompareError={peerCompareError} onAddPeerCompare={onAddPeerCompare}
+        onRemovePeerCompare={onRemovePeerCompare} onClearPeerCompare={onClearPeerCompare}
+      />
+      {/* Revenue forecast chart */}
+      {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Revenue Growth Risk — is growth decelerating, reversing, or masking concentration?</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
+            </div>
+            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2} peers={peerSeries('revenue')}/>
+            {forecasts.revenue.monteCarlo && (
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:6, display:"flex", gap:14, flexWrap:"wrap"}}>
+                <span>Monte Carlo · {forecasts.revenue.monteCarlo.nSims} sims</span>
+                <span>QoQ volatility <span style={{color:"var(--ink-2)"}}>{forecasts.revenue.monteCarlo.volatilityPct}%</span></span>
+                <span>P(revenue decline by Q4) <span style={{color: forecasts.revenue.monteCarlo.probDecline > 0.4 ? "var(--red-ink)" : "var(--ink-2)"}}>{(forecasts.revenue.monteCarlo.probDecline * 100).toFixed(0)}%</span></span>
+                <span>Bands = 10th/90th percentile of simulated paths, not a fixed ±%</span>
+              </div>
+            )}
+            {forecasts.revenue.monteCarlo && (() => {
+              const pd = forecasts.revenue.monteCarlo.probDecline;
+              const material = pd > 0.4; // same threshold already used to color the span above red
+              return (
+                <AuditorTakeaway
+                  tone={material ? "red" : "green"}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Assess revenue concentration and growth durability — Monte Carlo model shows a ${(pd * 100).toFixed(0)}% probability of Q4 revenue decline.`
+                  ) : undefined}
+                >
+                  {material
+                    ? `Elevated downside risk — ${(pd * 100).toFixed(0)}% simulated probability of a Q4 revenue decline warrants a concentration/durability review this cycle.`
+                    : "Downside probability within normal range — no elevated revenue risk from this forecast."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Gross margin forecast chart */}
+      {forecasts?.margin?.history?.length > 0 && forecasts?.margin?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        return (
+          <div className="stage-detail">
+            <h5>Margin Compression Risk — cost pressure and earnings-quality flag (pairs with M-Score above)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
+            </div>
+            <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)" peers={peerSeries('margin')}/>
+            {(() => {
+              const lastF = forecasts.margin.forecast.slice(-1)[0]?.base;
+              if (lastF == null) return null;
+              const material = lastF < 10; // same 10% GMI-risk threshold stated above
+              return (
+                <AuditorTakeaway
+                  tone={material ? "amber" : "green"}
+                  actionLabel={material ? "Add to scope" : undefined}
+                  onAction={material && onAddObjective ? () => onAddObjective(
+                    `Review cost structure and margin trend — gross margin is forecast to compress to ${lastF.toFixed(1)}%, below the 10% Beneish GMI-risk threshold.`
+                  ) : undefined}
+                >
+                  {material
+                    ? `Forecast margin (${lastF.toFixed(1)}%) is below the 10% threshold that flags Beneish GMI risk — worth a cost-structure review this cycle.`
+                    : "Forecast margin stays above the GMI-risk threshold — no elevated financial-reporting risk from this signal."}
+                </AuditorTakeaway>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* EPS forecast chart */}
+      {forecasts?.eps?.history?.length > 0 && forecasts?.eps?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        const lastH = forecasts.eps.history.slice(-1)[0]?.v;
+        const lastF = forecasts.eps.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Earnings Trend Risk — compression signals reporting and liquidity stress</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
+              Persistent EPS compression raises financial-reporting and liquidity risk scores.
+            </div>
+            <FCWithMetrics history={forecasts.eps.history} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)" peers={peerSeries('eps')}/>
+          </div>
+        );
+      })()}
+
+      {/* Operating Margin forecast */}
+      {forecasts?.opMargin?.history?.length > 0 && forecasts?.opMargin?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        const lastF = forecasts.opMargin.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Operating Efficiency Risk — contraction signals cost or competitive pressure</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              EBIT ÷ Revenue. Forecast: {lastF?.toFixed(2)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
+            </div>
+            <FCWithMetrics history={forecasts.opMargin.history} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838" peers={peerSeries('opMargin')}/>
+          </div>
+        );
+      })()}
+
+      {/* EBITDA forecast */}
+      {forecasts?.ebitda?.history?.length > 0 && forecasts?.ebitda?.forecast?.length > 0 && (() => {
+        const FC = window.ForecastChart;
+        if (!FC) return null;
+        const lastF = forecasts.ebitda.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Debt-Covenant Risk — leverage service capacity (pairs with Free Cash Flow below)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
+            </div>
+            <FCWithMetrics history={forecasts.ebitda.history} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)" peers={peerSeries('ebitda')}/>
+          </div>
+        );
+      })()}
+
+      {/* Net Income forecast */}
+      {forecasts?.netIncome?.history?.length > 0 && forecasts?.netIncome?.forecast?.length > 0 && (() => {
+        const lastF = forecasts.netIncome.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Profitability Risk — net-loss quarters signal liquidity stress (compare with FCF below)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
+            </div>
+            <ComparableChart history={forecasts.netIncome.history} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)" peers={peerSeries('netIncome')}/>
+          </div>
+        );
+      })()}
+
+      {/* Free Cash Flow forecast */}
+      {forecasts?.fcf?.history?.length > 0 && forecasts?.fcf?.forecast?.length > 0 && (() => {
+        const lastF = forecasts.fcf.forecast.slice(-1)[0]?.base;
+        return (
+          <div className="stage-detail">
+            <h5>Liquidity Risk — negative cash-flow streaks signal cash-runway stress (compare with Net Income above)</h5>
+            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+              CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
+            </div>
+            <ComparableChart history={forecasts.fcf.history} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52" peers={peerSeries('fcf')}/>
+          </div>
+        );
+      })()}
+
+      {/* Dynamically-detected material accounts — industry-template
+          (manufacturing/financial_services/saas) + materiality-ratio based
+          (material_accounts_tool.py), beyond the fixed P&L/CF set above.
+          Sub-accounts (e.g. a manufacturer's inventory components) render
+          grouped under their parent's header instead of as flat,
+          unrelated-looking siblings. */}
+      {(forecasts?.materialAccounts || []).length > 0 && (() => {
+        const accounts = forecasts.materialAccounts;
+        const byParent = {};
+        const standalone = [];
+        accounts.forEach(a => (a.parent ? (byParent[a.parent] || (byParent[a.parent] = [])).push(a) : standalone.push(a)));
+        const baseLabel = (a) => a.baseMetric === "TotalAssets" ? "total assets" : "revenue";
+        const renderChart = (a) => {
+          const lastF = a.forecast?.slice(-1)[0]?.base;
+          return (
+            <div className="stage-detail" key={a.metric}>
+              <h5>{a.label || a.metric}</h5>
+              <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
+                {a.ratio != null && `${(a.ratio * 100).toFixed(1)}% of ${baseLabel(a)}`}
+                {lastF != null && ` · 4Q forecast $${lastF.toFixed(2)}M`}
+                {a.source === "uploaded" && " · from an uploaded financial statement"}
+              </div>
+              <FCWithMetrics history={a.history} forecast={a.forecast} unit={a.unit || "$M"} decimals={2} color="var(--violet)" peers={[]}/>
+            </div>
+          );
+        };
+        return (
+          <>
+            {standalone.map(renderChart)}
+            {Object.entries(byParent).map(([parentMetric, kids]) => (
+              <div key={parentMetric} style={{border:"1px solid var(--line)", borderRadius:8, padding:"4px 8px 0", marginBottom:10}}>
+                <div className="mono" style={{fontSize:10, color:"var(--ink-4)", padding:"4px 4px 0"}}>
+                  {parentMetric} breakdown
+                </div>
+                {kids.map(renderChart)}
+              </div>
+            ))}
+          </>
+        );
+      })()}
+    </>
   );
 }
 
@@ -386,7 +1240,7 @@ function HITLGate({ num, state, onApprove, onOverride }) {
         <div className="d">{desc}</div>
       </div>
       <div className="actions">
-        <button className="btn btn-sm approve" onClick={onApprove}><Icon name="check" size={11}/> Approve</button>
+        <button className="btn btn-sm btn-approve" onClick={onApprove}><Icon name="check" size={11}/> Approve</button>
         <button className="btn btn-sm" onClick={onOverride}>Override</button>
       </div>
     </div>
@@ -448,6 +1302,11 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
         label: `Incident log reviewed`,
         detail: `${bySrc["Incident"]} recent incident${bySrc["Incident"] !== 1 ? "s" : ""} evaluated for risk linkage`,
       } : null,
+      bySrc["SEC 8-K"] > 0 ? {
+        label: `SEC 8-K material events ingested`,
+        detail: `${bySrc["SEC 8-K"]} filing${bySrc["SEC 8-K"] !== 1 ? "s" : ""} mapped to risk pipeline — severity amplifiers: P1 +0.5 · P2 +0.25 · P3 +0.10 per category match`,
+        children: signals.filter(s => s.src === "SEC 8-K").slice(0, 6).map(s => `${s.severity || "—"} · ${s.label}`),
+      } : null,
       total > 0 ? {
         label: `${total} signals velocity-graded`,
         detail: `Scored on 1–3 scale: ${high} high · ${med} medium · ${total - high - med} standard`,
@@ -490,6 +1349,14 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
         detail: `${rssLinked.length} linked signal${rssLinked.length !== 1 ? "s" : ""} — velocity × 0.08 added to directly affected risks`,
         children: rssLinked.slice(0, 4).map(s => `${s.feedName || "RSS"} · ${(s.title || "").slice(0, 60)} → +${((s.velocity || 0) * 0.08).toFixed(2)}`),
       } : null,
+      (() => {
+        const eightK = allSigs.filter(s => s.src === "SEC 8-K");
+        return eightK.length > 0 ? {
+          label: `SEC 8-K adjustments applied`,
+          detail: `${eightK.length} material filing${eightK.length !== 1 ? "s" : ""} — P1 +0.5 · P2 +0.25 · P3 +0.10 per category-matched risk (capped +1.5)`,
+          children: eightK.slice(0, 5).map(s => `${s.severity} · ${s.label}`),
+        } : null;
+      })(),
       {
         label: "Control effectiveness (CE) scored per risk",
         detail: "STRONG / ADEQUATE / WEAK / NONE ratings applied — residual score adjusted per control environment",
@@ -514,7 +1381,7 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
           ? `Risk appetite breached — ${appetite.breaching.length} risk${appetite.breaching.length !== 1 ? "s" : ""} exceed ${appetite.level} threshold`
           : `All risks within ${appetite.level} appetite tolerance`,
         detail: appetite.breaching?.length > 0
-          ? `HITL Gate 1 triggered — auditor review required before Stage 3 scoping`
+          ? `Gate 1 human review triggered — required before Stage 3 scoping`
           : `No appetite breaches detected at ${s2Extra?.appetiteLevel || appetite.level} threshold`,
         children: (appetite.breaching || []).slice(0, 5).map(id => {
           const r = risks.find(x => x.id === id);
@@ -558,8 +1425,8 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
         detail: "Allocated proportionally to risk score and velocity",
       } : null,
       {
-        label: "Sprint-ready workplan built",
-        detail: "Objectives structured for sprint execution with defined scope, linked risks, and control coverage",
+        label: "Fiscal-quarter-ready workplan built",
+        detail: "Objectives structured for fiscal-quarter execution with defined scope, linked risks, and control coverage",
       },
       manual.length > 0 ? {
         label: `${manual.length} manual audit${manual.length !== 1 ? "s" : ""} incorporated`,
@@ -749,7 +1616,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onAddPeerCompare={s1Extra?.onAddPeerCompare} onRemovePeerCompare={s1Extra?.onRemovePeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -859,7 +1726,12 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
   );
 }
 
-function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null }) {
+function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null,
+                  peerCompareList = [], peerCompareLoading = false, peerCompareError = null,
+                  onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null }) {
+  // Peer selection / gauge-peer derivation now lives inside FraudDistressPanel
+  // and ForecastsPanel (below) — both tabs are rendered through those shared
+  // components so Gate 1's review screen can show the same content inline.
   const total = signals.length;
   const high = signals.filter(s => s.velocity >= 3).length;
   const med = signals.filter(s => s.velocity === 2).length;
@@ -872,6 +1744,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
   rssSigs.forEach(s => { const k = s.feedName || "RSS"; rssByFeed[k] = (rssByFeed[k] || 0) + 1; });
   const fredTotal = bySrc["FRED Macro"] || 0;
   const fredContrS1 = signals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
+  const eightKSigsS1 = signals.filter(s => s.src === "SEC 8-K");
   const [narrLoading, setNarrLoading] = React.useState(false);
   const [narrError, setNarrError] = React.useState(null);
   const aiAvailable = typeof window !== "undefined" && window.MCP?.aiNarrative;
@@ -894,6 +1767,15 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
   const narrRisks = narrativeResult?.emerging_risks || [];
   const narrChanges = narrativeResult?.yoy_changes || [];
 
+  const S1_TABS = [
+    { id: "overview", label: "Overview" },
+    { id: "signals", label: "Fraud & Distress Signals" },
+    { id: "forecasts", label: "Forecasts" },
+    ...(aiAvailable ? [{ id: "narrative", label: "AI Narrative" }] : []),
+    { id: "history", label: "Run History" },
+  ];
+  const [activeTab, setActiveTab] = React.useState("overview");
+
   return (
     <div className="stage-body-grid">
       <div className="stage-stat-row">
@@ -903,6 +1785,8 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
         <Stat l="Sources" v={output?.sourceCount || 4}/>
         {narrRisks.length > 0 && <Stat l="Narrative risks" v={narrRisks.length} mono color="var(--acc-ink)"/>}
       </div>
+      <CanvasTabs tabs={S1_TABS} active={activeTab} onChange={setActiveTab}/>
+      {activeTab === "overview" && <>
       {livefacts && (
         <div className="stage-detail">
           <h5>EDGAR · live extract</h5>
@@ -960,160 +1844,43 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
                 </span>
               </div>
             )}
+            {eightKSigsS1.length > 0 && (
+              <div style={{display:"flex", alignItems:"baseline", gap:8, fontSize:11}}>
+                <span className="tag mono" style={{background:"var(--orange-soft,var(--red-soft))", color:"var(--orange-ink,var(--red-ink))", flexShrink:0}}>8-K</span>
+                <span style={{color:"var(--ink-2)", flex:1}}>
+                  {eightKSigsS1.length} SEC 8-K filing{eightKSigsS1.length !== 1 ? "s" : ""}
+                  {" "}→ <span className="mono">+0.5 P1 · +0.25 P2 · +0.10 P3</span> per category-matched risk (cap +1.5)
+                  {" · "}{eightKSigsS1.filter(s => s.severity === "P1").length > 0 && <span style={{color:"var(--red-ink)"}}>{eightKSigsS1.filter(s => s.severity === "P1").length} P1</span>}
+                  {eightKSigsS1.filter(s => s.severity === "P2").length > 0 && <span style={{color:"var(--amber-ink)", marginLeft:4}}>{eightKSigsS1.filter(s => s.severity === "P2").length} P2</span>}
+                  {eightKSigsS1.filter(s => s.severity === "P3").length > 0 && <span style={{color:"var(--ink-3)", marginLeft:4}}>{eightKSigsS1.filter(s => s.severity === "P3").length} P3</span>}
+                </span>
+              </div>
+            )}
             <div style={{marginTop:2, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
               <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Stage 2 residual formula: </span>
-              <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>score = inherent + FRED_adj + RSS_adj + industry_adj − CE_discount</span>
+              <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>score = inherent + macro adj. + industry-signal adj. + 8-K adj. + industry adj. − control-effectiveness discount</span>
             </div>
           </div>
         </div>
       )}
+      </>}
 
-      {/* Beneish M-Score gauge */}
-      {forecasts?.mscore != null && (() => {
-        const MSG = window.MScoreGauge;
-        const ms = forecasts.mscore;
-        if (!MSG) return null;
-        return (
-          <div className="stage-detail">
-            <h5>Beneish M-Score · financial reporting risk</h5>
-            <MSG m={ms.m}/>
-            <div style={{display:"flex", flexDirection:"column", gap:4, marginTop:8, fontSize:11, color:"var(--ink-2)"}}>
-              <div style={{display:"flex", gap:10}}>
-                <span className="mono" style={{color:"var(--ink-4)"}}>M = {ms.m?.toFixed(2)}</span>
-                <span className="mono" style={{
-                  padding:"1px 7px", borderRadius:4, fontSize:10,
-                  background: ms.m > -1.78 ? "var(--red-soft)" : ms.m > -2.22 ? "var(--amber-soft)" : "var(--green-soft)",
-                  color:      ms.m > -1.78 ? "var(--red-ink)"  : ms.m > -2.22 ? "var(--amber-ink)"  : "var(--green-ink)",
-                }}>{ms.band || (ms.m > -1.78 ? "ELEVATED" : ms.m > -2.22 ? "GRAY ZONE" : "NORMAL")}</span>
-              </div>
-              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"4px 10px", marginTop:4, padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
-                <span className="mono" style={{fontSize:9.5, color:"var(--red-ink)"}}>≥ −1.78 · ELEVATED</span>
-                <span className="mono" style={{fontSize:9.5, color:"var(--amber-ink)", textAlign:"center"}}>−2.22 to −1.78 · GRAY ZONE</span>
-                <span className="mono" style={{fontSize:9.5, color:"var(--green-ink)", textAlign:"right"}}>≤ −2.22 · NORMAL</span>
-              </div>
-              <div style={{fontSize:10.5, color:"var(--ink-3)", marginTop:2}}>
-                8-variable model: DSRI · GMI · AQI · SGI · DEPI · SGAI · TATA · LVGI · computed from EDGAR 10-K.
-                {ms.m > -1.78 ? " Score exceeds likely-manipulator threshold — accruals and revenue recognition warrant IA review." : ms.m > -2.22 ? " Gray zone — accruals monitoring recommended." : " Score within normal range — no elevated financial reporting risk detected."}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {activeTab === "signals" && (
+        <FraudDistressPanel forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList} onAddObjective={onAddObjective}/>
+      )}
 
-      {/* Revenue forecast chart */}
-      {forecasts?.revenue?.history?.length > 0 && forecasts?.revenue?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        return (
-          <div className="stage-detail">
-            <h5>Revenue forecast · quarterly · used in Stage 2 risk scoring</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Quarterly revenue trend (EDGAR 10-K + 10-Q) with 4-quarter AI forecast. Positive/negative revenue momentum feeds velocity adjustments in Stage 2 risk scores.
-            </div>
-            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
-          </div>
-        );
-      })()}
+      {activeTab === "history" && <RunHistoryPanel ticker={ticker} />}
+      {activeTab === "forecasts" && (
+        <ForecastsPanel
+          forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList}
+          peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
+          onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
+          onClearPeerCompare={onClearPeerCompare} onAddObjective={onAddObjective}
+        />
+      )}
 
-      {/* Gross margin forecast chart */}
-      {forecasts?.margin?.history?.length > 0 && forecasts?.margin?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        return (
-          <div className="stage-detail">
-            <h5>Gross margin forecast · quarterly</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Margin trend from EDGAR COGS data. Compression below 10% flags Beneish GMI risk and raises the inherent score on financial-reporting risks.
-            </div>
-            <FCWithMetrics history={forecasts.margin.history} forecast={forecasts.margin.forecast} unit="%" color="var(--amber)"/>
-          </div>
-        );
-      })()}
 
-      {/* EPS forecast chart */}
-      {forecasts?.eps?.history?.length > 0 && forecasts?.eps?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastH = forecasts.eps.history.slice(-1)[0]?.v;
-        const lastF = forecasts.eps.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>EPS · Diluted · quarterly $/share</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Earnings per share trend. Forecast: ${lastF?.toFixed(2)} · 4Q out.
-              Persistent EPS compression raises financial-reporting and liquidity risk scores.
-            </div>
-            <FCWithMetrics history={forecasts.eps.history.slice(-8)} forecast={forecasts.eps.forecast} unit="$" color="var(--acc)"/>
-          </div>
-        );
-      })()}
-
-      {/* Operating Margin forecast */}
-      {forecasts?.opMargin?.history?.length > 0 && forecasts?.opMargin?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastF = forecasts.opMargin.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Operating margin forecast · quarterly %</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              EBIT ÷ Revenue. Forecast: {lastF?.toFixed(1)}%. Margin contraction feeds Stage 2 operational-risk velocity adjustments.
-            </div>
-            <FCWithMetrics history={forecasts.opMargin.history.slice(-8)} forecast={forecasts.opMargin.forecast} unit="%" color="#e8a838"/>
-          </div>
-        );
-      })()}
-
-      {/* EBITDA forecast */}
-      {forecasts?.ebitda?.history?.length > 0 && forecasts?.ebitda?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastF = forecasts.ebitda.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>EBITDA · quarterly $M</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Operating Income + D&A. Forecast: ${lastF?.toFixed(0)}M. Used as a proxy for operating cash generation in debt-covenant risk scoring.
-            </div>
-            <FCWithMetrics history={forecasts.ebitda.history.slice(-8)} forecast={forecasts.ebitda.forecast} unit="$M" color="var(--violet)"/>
-          </div>
-        );
-      })()}
-
-      {/* Net Income forecast */}
-      {forecasts?.netIncome?.history?.length > 0 && forecasts?.netIncome?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastF = forecasts.netIncome.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Net Income · quarterly $M</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              GAAP bottom line. Forecast: ${lastF?.toFixed(0)}M. Net loss quarters trigger inherent score uplift on liquidity and financial-reporting risks.
-            </div>
-            <FC history={forecasts.netIncome.history.slice(-8)} forecast={forecasts.netIncome.forecast} unit="$M" color="var(--acc)"/>
-          </div>
-        );
-      })()}
-
-      {/* Free Cash Flow forecast */}
-      {forecasts?.fcf?.history?.length > 0 && forecasts?.fcf?.forecast?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
-        const lastF = forecasts.fcf.forecast.slice(-1)[0]?.base;
-        return (
-          <div className="stage-detail">
-            <h5>Free Cash Flow · quarterly $M</h5>
-            <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              CFO − CapEx. Forecast: ${lastF?.toFixed(0)}M. Negative FCF for two or more consecutive quarters escalates liquidity risk to HIGH.
-            </div>
-            <FC history={forecasts.fcf.history.slice(-8)} forecast={forecasts.fcf.forecast} unit="$M" color="#4aad52"/>
-          </div>
-        );
-      })()}
-
-      {/* AI Narrative Analysis */}
-      {aiAvailable && (
+      {activeTab === "narrative" && aiAvailable && (
         <div className="stage-detail">
           <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: narrRisks.length ? 10 : 0}}>
             <h5 style={{margin:0}}>Item 1A · AI narrative signals</h5>
@@ -1201,12 +1968,24 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
   const fredContr = allSignals.filter(s => s.src === "FRED Macro" && s.delta === "contractionary");
   const highVelIndustry = liveRssSignals.filter(s => s.velocity >= 3).length;
   const industryAdj = Math.min(0.2, highVelIndustry * 0.05);
+  const eightKSigsS2 = allSignals.filter(s => s.src === "SEC 8-K");
 
   const toggleSig = (id) => setExpandedSigs(prev => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
+
+  const S2_TABS = [
+    { id: "risks", label: "Risk Register" },
+    { id: "methodology", label: "Scoring & Methodology" },
+    // Labeled distinctly from Stage 1's "Forecasts" tab — this one projects
+    // the residual RISK SCORE forward (velocity-dampened), not a financial
+    // line item. Sharing the word "Forecast" with Stage 1 is what made this
+    // read as a duplicate.
+    { id: "forecast", label: "Risk Score Forecast" },
+  ];
+  const [activeTab, setActiveTab] = React.useState("risks");
 
   return (
     <div className="stage-body-grid">
@@ -1218,7 +1997,9 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
         <Stat l="Appetite breach" v={appetite?.breaching?.length || 0} mono
               color={(appetite?.breaching?.length || 0) > 0 ? "var(--red-ink)" : "var(--green-ink)"}/>
       </div>
+      <CanvasTabs tabs={S2_TABS} active={activeTab} onChange={setActiveTab}/>
 
+      {activeTab === "risks" && <>
       {/* Live RSS status bar */}
       <div className="s2-rss-bar">
         <span className="s2-rss-label">
@@ -1265,8 +2046,16 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             const isMacro = (r.category || "").toLowerCase().includes("macro");
             const fredAdj = isMacro ? fredContr.length * 0.08 : 0;
             const rssAdj = rssLinked.reduce((sum,s) => sum + (s.velocity||0)*0.08, 0);
-            const totalAdj = rssAdj + fredAdj + (industryAdj > 0 && rssLinked.length === 0 ? industryAdj : 0);
-            const hasSigs = rssLinked.length > 0 || fredAdj > 0 || (highVelIndustry > 0 && industryAdj > 0);
+            const eightKLinked = eightKSigsS2.filter(s => {
+              const rCat = (r.category || "").toLowerCase();
+              const sCat = (s.category || "").toLowerCase();
+              return sCat && (rCat.includes(sCat) || sCat.includes(rCat));
+            });
+            const eightKAdj = Math.min(1.5, eightKLinked.reduce(
+              (sum, s) => sum + (s.severity === "P1" ? 0.5 : s.severity === "P2" ? 0.25 : 0.1), 0
+            ));
+            const totalAdj = rssAdj + fredAdj + eightKAdj + (industryAdj > 0 && rssLinked.length === 0 ? industryAdj : 0);
+            const hasSigs = rssLinked.length > 0 || fredAdj > 0 || eightKAdj > 0 || (highVelIndustry > 0 && industryAdj > 0);
             const sigOpen = expandedSigs.has(r.id);
 
             const controls = (MOCK.riskFlow?.[r.id]?.controls) || [];
@@ -1304,11 +2093,20 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
                   </div>
                 </div>
 
+                {/* Row 3: specific data behind the score — the model's own
+                    computed rationale (ratios, filing figures), not just the
+                    name/number above it */}
+                {r.narrative && (
+                  <div className="s2-ctrl-narrative" style={{fontSize:10.5, color:"var(--ink-3)", lineHeight:1.45, margin:"4px 0 2px"}}>
+                    {r.narrative}
+                  </div>
+                )}
+
                 {/* Signal evidence */}
                 {hasSigs && (
                   <div className="s2-sig-ev">
                     <button className="s2-sig-ev-toggle" onClick={() => toggleSig(r.id)}>
-                      {sigOpen ? "▲" : "▼"} {rssLinked.length + (fredAdj > 0 ? 1 : 0) + (industryAdj > 0 && rssLinked.length === 0 ? 1 : 0)} signal{(rssLinked.length + (fredAdj > 0 ? 1 : 0)) !== 1 ? "s" : ""} driving score
+                      {sigOpen ? "▲" : "▼"} {rssLinked.length + (fredAdj > 0 ? 1 : 0) + eightKLinked.length + (industryAdj > 0 && rssLinked.length === 0 ? 1 : 0)} signal{(rssLinked.length + (fredAdj > 0 ? 1 : 0) + eightKLinked.length) !== 1 ? "s" : ""} driving score
                       {totalAdj > 0.01 && (
                         <span className="s2-sig-ev-delta">+{totalAdj.toFixed(2)} adjustment</span>
                       )}
@@ -1321,6 +2119,17 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
                             <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{(s.title||"").slice(0,72)}{s.title?.length > 72 ? "…" : ""}</span>
                             <VelocityPill v={s.velocity}/>
                             <span className="s2-sig-ev-adj">+{(s.velocity*0.08).toFixed(2)}</span>
+                          </div>
+                        ))}
+                        {eightKLinked.map((s,i) => (
+                          <div key={`8k-${i}`} className="s2-sig-ev-item">
+                            <span className="s2-sig-ev-src" style={{color:"var(--orange-ink,var(--red-ink))"}}>SEC 8-K</span>
+                            <span style={{flex:1, fontSize:10.5, color:"var(--ink-2)"}}>{s.label}</span>
+                            <span className="mono" style={{fontSize:9, padding:"1px 5px", borderRadius:3,
+                              background: s.severity === "P1" ? "var(--red-soft)" : s.severity === "P2" ? "var(--amber-soft)" : "var(--surface-2,var(--surface))",
+                              color:      s.severity === "P1" ? "var(--red-ink)"  : s.severity === "P2" ? "var(--amber-ink)"  : "var(--ink-3)",
+                              marginRight: 4}}>{s.severity}</span>
+                            <span className="s2-sig-ev-adj">+{(s.severity === "P1" ? 0.5 : s.severity === "P2" ? 0.25 : 0.1).toFixed(2)}</span>
                           </div>
                         ))}
                         {fredAdj > 0 && (
@@ -1369,15 +2178,20 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           })}
         </div>
       </div>
+      </>}
 
-      {/* Scoring methodology */}
+      {activeTab === "methodology" && (
       <div className="stage-detail">
         <h5>Scoring methodology</h5>
         <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11, color:"var(--ink-2)"}}>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Residual score: </span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + signal_adjustments + CE_adj</span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:12}}>CE adj: STRONG −0.7 · ADEQUATE −0.3 · WEAK +0.1 · NONE +0.4</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + macro adj. + industry-signal adj. + 8-K adj. + industry adj. − control-effectiveness discount</span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:12}}>8K_adj: P1 +0.5 · P2 +0.25 · P3 +0.10 per category match (cap +1.5)</span>
+          </div>
+          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>CE discount: </span>
+            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>STRONG −0.7 · ADEQUATE −0.3 · WEAK +0.1 · NONE +0.4</span>
           </div>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>RAG thresholds: </span>
@@ -1387,7 +2201,9 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
           </div>
         </div>
       </div>
+      )}
 
+      {activeTab === "forecast" && <>
       {/* Quarterly forecast for top risks */}
       {risks.length > 0 && (
         <div className="stage-detail">
@@ -1400,7 +2216,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
               <thead>
                 <tr style={{borderBottom:"1px solid var(--line)"}}>
                   <th style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>RISK</th>
-                  <th style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>CE</th>
+                  <th title="Control Effectiveness" style={{textAlign:"left", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>CE</th>
                   <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>NOW</th>
                   <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+1</th>
                   <th style={{textAlign:"right", padding:"4px 6px", color:"var(--ink-4)", fontSize:9.5, fontWeight:500, letterSpacing:"0.05em", fontFamily:"var(--mono)"}}>Q+2</th>
@@ -1447,58 +2263,117 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
             </table>
           </div>
           <div className="mono" style={{fontSize:9.5, color:"var(--ink-4)", marginTop:6}}>
-            Forecast used by Stage 3 to prioritize sprint allocation · high-trajectory risks earn P1 objectives regardless of current RAG
+            Forecast used by Stage 3 to prioritize fiscal-quarter allocation · high-trajectory risks earn P1 objectives regardless of current RAG
           </div>
         </div>
       )}
 
-      {/* Top-risk trajectory chart — shows score over time for the highest-scoring risk */}
+      {/* Top-risk 4-quarter projection — anchored at current score, no synthetic history */}
       {risks.length > 0 && (() => {
         const FC = window.ForecastChart;
         if (!FC) return null;
         const topRisk = [...risks].sort((a, b) => b.score - a.score)[0];
         if (!topRisk) return null;
         const qs = forecastRisk(topRisk, 4);
-        const synthLabels = ["Q1-25","Q2-25","Q3-25","Q4-25"];
-        const hist = synthLabels.map((q, i) => ({
-          q,
-          v: +Math.max(0, topRisk.score - (3 - i) * topRisk.velocity * 0.3).toFixed(1),
-        }));
-        const fcast = ["Q1-26","Q2-26","Q3-26","Q4-26"].map((q, i) => ({
-          q, base: qs[i],
-          lo: +Math.max(0, qs[i] - 1.5).toFixed(1),
-          hi: +Math.min(25, qs[i] + 1.5).toFixed(1),
+        // Same per-risk-override-over-overall-appetite precedence used by the
+        // control list above (line ~1317) — the tolerance line should match
+        // whichever threshold this specific risk is actually held to.
+        const topLevel = perRiskAppetite[topRisk.id] || appetiteLevel;
+        const topThreshold = APPETITE_THRESHOLDS[topLevel] ?? overallThreshold;
+        // Dynamic quarter labels from today's date — avoids hardcoded year drift
+        const now = new Date();
+        const curQ = Math.ceil((now.getMonth() + 1) / 3);
+        const curY = now.getFullYear();
+        const qLabel = offset => {
+          const q = ((curQ - 1 + offset) % 4) + 1;
+          const y = curY + Math.floor((curQ - 1 + offset) / 4);
+          return `Q${q}-${String(y).slice(2)}`;
+        };
+        const hist  = [{ q: "Now", v: topRisk.score }];
+        const fcast = [1, 2, 3, 4].map((o, i) => ({
+          q:    qLabel(o),
+          base: qs[i],
+          lo:   +Math.max(0, qs[i] - 1.5).toFixed(1),
+          hi:   +Math.min(25, qs[i] + 1.5).toFixed(1),
         }));
         return (
           <div className="stage-detail">
-            <h5>Top-risk trajectory · {topRisk.name}</h5>
+            <h5>{topRisk.name} — on track to breach risk tolerance?</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Velocity-dampened score trajectory for the highest-scoring risk. Dashed line = 4-quarter AI forecast used by Stage 3 to set audit priority. Confidence band ±1.5 pts.
+              Current score {topRisk.score.toFixed(1)} ({topRisk.rag}) with 4-quarter velocity-dampened projection. Dashed line = forecast used by Stage 3 to prioritise audit objectives. Confidence band ±1.5 pts. Red threshold = risk tolerance ({topLevel}, {topThreshold.toFixed(1)}).
             </div>
             <FC
               history={hist}
               forecast={fcast}
               unit="score"
               color={topRisk.rag === "R" ? "var(--red)" : topRisk.rag === "A" ? "var(--amber)" : "var(--green)"}
+              referenceValue={topThreshold}
+              referenceLabel="Risk tolerance"
             />
           </div>
         );
       })()}
 
-      {/* Revenue context from Stage 1 — shows how macro/revenue trend feeds risk */}
-      {forecasts?.revenue?.history?.length > 0 && (() => {
-        const FC = window.ForecastChart;
-        if (!FC) return null;
+      {/* Revenue momentum table — how QoQ revenue change feeds risk velocity */}
+      {forecasts?.revenue?.history?.length > 1 && (() => {
+        const recent = forecasts.revenue.history.slice(-5);
+        const rows = recent.slice(1).map((d, i) => {
+          const prev = recent[i];
+          const qoq = prev.v ? ((d.v - prev.v) / Math.abs(prev.v)) * 100 : null;
+          return { q: d.q, v: d.v, qoq };
+        }).filter(r => r.qoq != null);
+        if (!rows.length) return null;
+        const avgQoQ = rows.reduce((s, r) => s + r.qoq, 0) / rows.length;
+        const trend  = avgQoQ > 1 ? "positive" : avgQoQ < -1 ? "negative" : "flat";
+        const trendColor = trend === "positive" ? "var(--green-ink)" : trend === "negative" ? "var(--red-ink)" : "var(--ink-3)";
         return (
           <div className="stage-detail">
-            <h5>Revenue context · how it feeds risk scores</h5>
+            <h5>Revenue momentum · velocity feed</h5>
             <div style={{fontSize:10.5, color:"var(--ink-3)", marginBottom:8}}>
-              Revenue trajectory from Stage 1 (EDGAR). Declining QoQ momentum or trend reversal raises the velocity delta on financial-reporting and supply-chain risks in this stage.
+              QoQ revenue change from Stage 1 EDGAR data. Contraction amplifies velocity on financial-reporting and supply-chain risks; growth suppresses it.
             </div>
-            <FCWithMetrics history={forecasts.revenue.history} forecast={forecasts.revenue.forecast} unit="$M" decimals={2}/>
+            <table style={{width:"100%", fontSize:10.5, borderCollapse:"collapse"}}>
+              <thead>
+                <tr>
+                  {["QUARTER","REVENUE","QoQ %","VELOCITY FEED"].map((h, hi) => (
+                    <th key={h} className="mono" style={{
+                      textAlign: hi === 0 ? "left" : "right",
+                      color:"var(--ink-3)", fontWeight:500, padding:"2px 4px",
+                      fontSize:9, letterSpacing:"0.05em", whiteSpace:"nowrap",
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => {
+                  const rising = r.qoq > 1, falling = r.qoq < -1;
+                  const c = rising ? "var(--green-ink)" : falling ? "var(--red-ink)" : "var(--ink-3)";
+                  return (
+                    <tr key={r.q} style={{borderTop:"1px solid var(--line)"}}>
+                      <td className="mono" style={{padding:"4px 4px", color:"var(--ink-3)", fontSize:10}}>{r.q}</td>
+                      <td className="mono" style={{textAlign:"right", padding:"4px 4px", color:"var(--ink)", fontSize:10}}>
+                        {r.v >= 1000 ? `$${(r.v / 1000).toFixed(1)}B` : `$${r.v.toFixed(0)}M`}
+                      </td>
+                      <td className="mono" style={{textAlign:"right", padding:"4px 4px", color:c, fontSize:10}}>
+                        {rising ? "▲" : falling ? "▼" : "→"} {Math.abs(r.qoq).toFixed(1)}%
+                      </td>
+                      <td className="mono" style={{textAlign:"right", padding:"4px 4px", fontSize:10, color:c, whiteSpace:"nowrap"}}>
+                        {rising ? "↓ suppresses" : falling ? "↑ amplifies" : "→ neutral"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div style={{marginTop:8, fontSize:10, color:"var(--ink-3)"}}>
+              Avg QoQ <span style={{color:trendColor, fontWeight:500}}>
+                {avgQoQ >= 0 ? "+" : ""}{avgQoQ.toFixed(1)}%
+              </span> — {trend === "positive" ? "velocity suppressed" : trend === "negative" ? "velocity amplified" : "neutral impact"}
+            </div>
           </div>
         );
       })()}
+      </>}
 
     </div>
   );
@@ -1558,7 +2433,7 @@ function S3Body({ output, manualAudits = [], onAddAudit, onRemoveAudit, risks = 
       </div>
 
       <div className="stage-detail">
-        <h5>Sprint-ready objectives</h5>
+        <h5>Fiscal-quarter-ready objectives</h5>
         <ul>
           {objs.map(o => (
             <li key={o.id}>
@@ -1770,7 +2645,7 @@ function S6Body({ output }) {
           </div>
           <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
             <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Signal weights recalibrated: </span>
-            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>velocity decay factors and CE multipliers updated from observed outcomes — fed back to Stage 1 on next run</span>
+            <span style={{fontSize:10.5, color:"var(--ink-2)"}}>velocity decay factors and control-effectiveness multipliers updated from observed outcomes — fed back to Stage 1 on next run</span>
           </div>
           {l.next_trigger_days > 0 && (
             <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
@@ -1822,19 +2697,29 @@ function AddAuditModal({ risks, onClose, onSubmit }) {
   const valid = riskId && title.trim().length >= 5;
 
   return (
-    <div className="modal open" onClick={(e) => { if (e.target.classList.contains("modal")) onClose(); }}>
-      <div className="modal-box" style={{width: 580}}>
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Add Individual Audit</div>
-            <div className="mono" style={{fontSize: 10.5, color: "var(--ink-3)", marginTop: 3}}>
-              Schedule a targeted audit linked to a specific risk with anticipated reduction
-            </div>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={onClose}><Icon name="x" size={12}/></button>
+    <Modal open={true} onClose={onClose} title="Add Individual Audit" width={580}
+      titleSub="Schedule a targeted audit linked to a specific risk with anticipated reduction"
+      foot={<>
+        <span className="muted mono" style={{fontSize: 11}}>
+          {!riskId ? "Select a risk to continue" : !valid ? "Audit objective must be at least 5 characters" : "Ready to add to plan"}
+        </span>
+        <div style={{display: "flex", gap: 6}}>
+          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!valid}
+            onClick={() => onSubmit({
+              id: `MA-${Date.now().toString(36).toUpperCase()}`,
+              riskId,
+              riskName: selectedRisk?.name || riskId,
+              when,
+              title: title.trim(),
+              reduction,
+              baseScore,
+              residualScore,
+            })}>
+            <Icon name="plus" size={10}/> Add to Plan
+          </button>
         </div>
-
-        <div className="modal-body">
+      </>}>
           <div className="ar-grid" style={{gridTemplateColumns: "1fr 1fr"}}>
             <div className="ar-field" style={{gridColumn: "1 / -1"}}>
               <label className="ar-label">Linked Risk</label>
@@ -1899,31 +2784,7 @@ function AddAuditModal({ risks, onClose, onSubmit }) {
               </div>
             </div>
           )}
-        </div>
-
-        <div className="modal-foot">
-          <span className="muted mono" style={{fontSize: 11}}>
-            {!riskId ? "Select a risk to continue" : !valid ? "Audit objective must be at least 5 characters" : "Ready to add to plan"}
-          </span>
-          <div style={{display: "flex", gap: 6}}>
-            <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!valid}
-              onClick={() => onSubmit({
-                id: `MA-${Date.now().toString(36).toUpperCase()}`,
-                riskId,
-                riskName: selectedRisk?.name || riskId,
-                when,
-                title: title.trim(),
-                reduction,
-                baseScore,
-                residualScore,
-              })}>
-              <Icon name="plus" size={10}/> Add to Plan
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
