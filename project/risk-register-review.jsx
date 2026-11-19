@@ -57,6 +57,11 @@ let MATRIX_FRAMEWORKS  = _DEFAULT_MATRIX_FRAMEWORKS;
 // matrix but need to know its exact column set — filter to precisely what a
 // user sees if they switch to the Framework Matrix tab, not a
 // separately-drifting notion of "the matrix frameworks."
+// segment_risk_tool.py tags its risks source_framework="segment_risk". That is a
+// kind of risk (a row, grouped under its own domain), not a control framework.
+const SEGMENT_RISK_SOURCE = "segment_risk";
+const SEGMENT_RISK_DOMAIN = "Segment & Geography Risk";
+
 function computeMatrixFrameworks(activeMxFws, hiddenFws, ctrlStates, risks) {
   const internalFws = new Set(["Internal", "Internal Risk Register"]);
   const hidden = new Set(hiddenFws || []);
@@ -70,7 +75,8 @@ function computeMatrixFrameworks(activeMxFws, hiddenFws, ctrlStates, risks) {
   }
   for (const r of (risks || [])) {
     const fw = r.source_framework;
-    if (fw && !internalFws.has(fw) && !activeMxFws.includes(fw) && !hidden.has(fw)) extraFws.add(fw);
+    // Segment/geography risks are rows, never a framework column.
+    if (fw && fw !== SEGMENT_RISK_SOURCE && !internalFws.has(fw) && !activeMxFws.includes(fw) && !hidden.has(fw)) extraFws.add(fw);
   }
   // "Internal" is deliberately never an auto-detected extra COLUMN on the
   // Framework Matrix itself (it's the base/native case, not a real external
@@ -1002,6 +1008,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
     // conflated with enterprise risk domains (e.g. CIS "Asset Management" should not
     // land in "Cyber Security & Data Protection").
     const fw = risk.source_framework || "";
+    if (fw === SEGMENT_RISK_SOURCE) return SEGMENT_RISK_DOMAIN;
     if (fw && !_INTERNAL_FWS.has(fw)) {
       return risk.category || fw;
     }
@@ -1090,7 +1097,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
   }
   for (const r of (risks || [])) {
     const fw = r.source_framework;
-    if (fw && !_internalFws.has(fw) && !_activeMxFws.includes(fw) && !_hiddenFws.has(fw)) extraFws.add(fw);
+    if (fw && fw !== SEGMENT_RISK_SOURCE && !_internalFws.has(fw) && !_activeMxFws.includes(fw) && !_hiddenFws.has(fw)) extraFws.add(fw);
   }
   const fwCols = [..._activeMxFws, ...[...extraFws].sort()];
 
@@ -1705,7 +1712,16 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                                     onClick={() => {
                                       const isAuto = cs.autoMapped.includes(ref);
                                       const doRemove = () => {
-                                        onRemoveControl(key, ref, isAuto);
+                                        // Reset from the lists actually displayed (cs) rather than
+                                        // onRemoveControl: that handler is a no-op when the risk has
+                                        // no stored control-state entry yet (this row rendered from
+                                        // the keyword-autoMap fallback), so Remove did nothing.
+                                        // onResetCtrl creates the entry if it's missing.
+                                        onResetCtrl(
+                                          key,
+                                          (cs.autoMapped || []).filter(r => r !== ref),
+                                          (cs.manual || []).filter(r => r !== ref),
+                                        );
                                         // onRemoveControl only updates local state — without an explicit
                                         // save it silently reverts on the next refresh/reload, which is
                                         // exactly the "deleted framework comes back" bug this fixes.
