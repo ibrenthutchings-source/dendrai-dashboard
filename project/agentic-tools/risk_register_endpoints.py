@@ -905,9 +905,11 @@ async def score_framework_risks(req: ScoreFrameworkRisksRequest):
 
 
 @router.get("/reviews")
-async def list_reviews(run_id: Optional[int] = None):
+async def list_reviews(run_id: Optional[int] = None, review_type: Optional[str] = None, limit: int = 20):
     """List recent review sessions."""
-    return {"reviews": await asyncio.to_thread(db.list_risk_register_reviews, run_id=run_id)}
+    limit = max(1, min(limit, 500))
+    return {"reviews": await asyncio.to_thread(
+        db.list_risk_register_reviews, run_id=run_id, limit=limit, review_type=review_type)}
 
 
 @router.post("/reviews")

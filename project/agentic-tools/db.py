@@ -8200,32 +8200,27 @@ def complete_risk_register_review(review_id: int) -> None:
     _run(_do)
 
 
-def list_risk_register_reviews(run_id: Optional[int] = None, limit: int = 20) -> list:
-    """List recent review sessions, optionally filtered by run_id."""
+def list_risk_register_reviews(run_id: Optional[int] = None, limit: int = 20,
+                               review_type: Optional[str] = None) -> list:
+    """List recent review sessions, optionally filtered by run_id / review_type."""
     def _do():
         with _conn() as conn:
             with conn.cursor() as cur:
+                where, params = [], []
                 if run_id:
-                    cur.execute(
-                        """
-                        SELECT id, run_id, review_type, framework, status, created_at, completed_at
-                        FROM risk_register_reviews
-                        WHERE run_id = %s
-                        ORDER BY created_at DESC
-                        LIMIT %s
-                        """,
-                        (run_id, limit),
-                    )
-                else:
-                    cur.execute(
-                        """
-                        SELECT id, run_id, review_type, framework, status, created_at, completed_at
-                        FROM risk_register_reviews
-                        ORDER BY created_at DESC
-                        LIMIT %s
-                        """,
-                        (limit,),
-                    )
+                    where.append("run_id = %s"); params.append(run_id)
+                if review_type:
+                    where.append("review_type = %s"); params.append(review_type)
+                cur.execute(
+                    f"""
+                    SELECT id, run_id, review_type, framework, status, created_at, completed_at
+                    FROM risk_register_reviews
+                    {'WHERE ' + ' AND '.join(where) if where else ''}
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (*params, limit),
+                )
                 rows = cur.fetchall()
                 return [
                     {

@@ -2326,6 +2326,99 @@ async function fetchSavedControls(runId, baseCtrlStates) {
   }
 }
 
+// ── Matrix control-edit persistence ─────────────────────────────────────────
+// Every Framework Matrix add/remove of a control is stored in ONE long-lived
+// "matrix_edit" review per scope (a pipeline run, or the discovered/external
+// risks), upserted per risk. Previously each removal POSTed a brand-new review
+// holding just that one risk, and the loader only read the single latest
+// review — so removals on any other risk were lost, removing a risk's LAST
+// control (empty list) was skipped as "nothing saved", and discovered/external
+// rows (where framework controls like AC-01 live) were never persisted at all.
+const MATRIX_EDIT_TYPE = "matrix_edit";
+const DISC_SCOPE_FW = "Discovered Risks";
+const _matrixEditReviewIds = new Map(); // scopeKey -> Promise<review id | null>
+
+function _matrixScope(runId) {
+  return runId
+    ? { key: `run:${runId}`, runId, framework: "Internal Risk Register" }
+    : { key: "disc", runId: null, framework: DISC_SCOPE_FW };
+}
+
+async function _findMatrixEditReview(scope) {
+  const qs = new URLSearchParams({ review_type: MATRIX_EDIT_TYPE, limit: "200" });
+  if (scope.runId) qs.set("run_id", String(scope.runId));
+  const res = await fetch(`/api/risk-register/reviews?${qs}`);
+  if (!res.ok) return null;
+  const reviews = (await res.json()).reviews || [];
+  return reviews.find(r => r.framework === scope.framework && (scope.runId ? r.run_id === scope.runId : !r.run_id)) || null;
+}
+
+function _getMatrixEditReviewId(scope) {
+  if (!_matrixEditReviewIds.has(scope.key)) {
+    const p = (async () => {
+      try {
+        const existing = await _findMatrixEditReview(scope);
+        if (existing) return existing.id;
+        const res = await fetch("/api/risk-register/reviews", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: scope.runId, review_type: MATRIX_EDIT_TYPE, framework: scope.framework, risk_states: [] }),
+        });
+        if (!res.ok) return null;
+        return (await res.json()).review_id || null;
+      } catch (_) { return null; }
+    })().then(id => { if (!id) _matrixEditReviewIds.delete(scope.key); return id; });
+    _matrixEditReviewIds.set(scope.key, p);
+  }
+  return _matrixEditReviewIds.get(scope.key);
+}
+
+async function saveMatrixControls(runId, riskKey, state, ctrlRefs, isDisc) {
+  const scope = _matrixScope(isDisc ? null : runId);
+  const reviewId = await _getMatrixEditReviewId(scope);
+  if (!reviewId) return false;
+  try {
+    const res = await fetch(`/api/risk-register/reviews/${reviewId}/risks`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([{
+        risk_ref: riskKey,
+        original_wording: state?.originalWording || state?.wording || null,
+        current_wording: state?.wording || null,
+        included: state?.included !== false,
+        reason_for_change: state?.reason || null,
+        controls_assigned: ctrlRefs.map(ref => ({ ref, generate_code: false })),
+      }]),
+    });
+    return res.ok;
+  } catch (_) { return false; }
+}
+
+// Overlay matrix_edit assignments (including explicit empty lists) onto base.
+async function overlayMatrixControls(runId, isDisc, baseCtrlStates) {
+  try {
+    const scope = _matrixScope(isDisc ? null : runId);
+    const review = await _findMatrixEditReview(scope);
+    if (!review) return baseCtrlStates;
+    _matrixEditReviewIds.set(scope.key, Promise.resolve(review.id));
+    const res = await fetch(`/api/risk-register/reviews/${review.id}`);
+    if (!res.ok) return baseCtrlStates;
+    const saved = (await res.json()).risk_states || [];
+    if (!saved.length) return baseCtrlStates;
+    const merged = { ...baseCtrlStates };
+    for (const rs of saved) {
+      if (!(rs.risk_ref in merged)) continue;
+      const refs = (rs.controls_assigned || [])
+        .map(c => (typeof c === "string" ? c : c.ref))
+        .filter(ref => ref && CTRL_BY_REF[ref]);
+      merged[rs.risk_ref] = { autoMapped: refs, manual: [], generateCode: new Set() };
+    }
+    return merged;
+  } catch (_) {
+    return baseCtrlStates;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2430,6 +2523,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setRefreshedRisks(null);
     setRiskStates(initRiskStates(risks));
     setCtrlStates(initControlStates(risks));
+    if (runId) overlayMatrixControls(runId, false, initControlStates(risks)).then(setCtrlStates);
     setSavedAt(null);
     setEffectiveRunId(runId);
   }, [risks?.length]);
@@ -2464,6 +2558,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           setDiscovered(allRisks);
           setDiscStates(initRiskStates(allRisks));
           setDiscCtrlStates(initControlStates(allRisks));
+          overlayMatrixControls(null, true, initControlStates(allRisks)).then(setDiscCtrlStates);
         } else {
           seedFromPresets();
         }
@@ -2487,6 +2582,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         if (data.run_id) {
           const saved = await fetchSavedControls(data.run_id, cs);
           if (saved) cs = saved;
+          cs = await overlayMatrixControls(data.run_id, false, cs);
           setEffectiveRunId(data.run_id);
         }
         setCtrlStates(cs);
@@ -2810,6 +2906,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
               setDiscovered(dbRisks);
               setDiscStates(initRiskStates(dbRisks));
               setDiscCtrlStates(initControlStates(dbRisks));
+              overlayMatrixControls(null, true, initControlStates(dbRisks)).then(setDiscCtrlStates);
             }
           }
         } catch (_) {}
@@ -2902,9 +2999,12 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
   // included, has run) answers for the control-mutation dispatchers. One
   // check, reused, rather than two independent definitions that could drift.
   function matrixSaveRow(riskKey, state, ctrlRefs) {
-    return isDiscKey(riskKey)
+    const disc = isDiscKey(riskKey);
+    const persist = saveMatrixControls(effectiveRunId, riskKey, state, ctrlRefs || [], disc);
+    const rest = disc
       ? handleSaveDiscoveryRow(riskKey, state)
       : handleSaveRowWording(riskKey, state, ctrlRefs);
+    return Promise.all([persist, rest]);
   }
 
   // ── Save All — upsert every risk/control/framework to DB + generate Risk-as-Code ──
@@ -3555,11 +3655,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
       const removeSet = new Set(refsToRemove);
       const newRefs = [...(cs.autoMapped || []), ...(cs.manual || [])].filter(r => !removeSet.has(r));
       for (const ref of refsToRemove) matrixRemove(key, ref, (cs.autoMapped || []).includes(ref));
-      if (isDiscKey(key)) {
-        await handleSaveDiscoveryRow(key, discRiskStates[key] || {});
-      } else {
-        await handleSaveRowWording(key, riskStates[key] || {}, newRefs);
-      }
+      await matrixSaveRow(key, isDiscKey(key) ? (discRiskStates[key] || {}) : (riskStates[key] || {}), newRefs);
     }
   }
 
