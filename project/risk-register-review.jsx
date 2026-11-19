@@ -6,6 +6,7 @@
 import { RiskGraphViz } from "./risk-graph-viz.jsx";
 import { RiskSankey }   from "./risk-sankey.jsx";
 import { DEFAULT_CONTROLS, fetchControlsFromApi } from "./controls-reference.jsx";
+import { Fragment } from "react";
 import { downloadXlsx } from "./xlsx-export.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1404,7 +1405,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
         <table style={{ width: "100%", minWidth: matrixMinWidth, borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
             <tr>
-              <th style={{ ...thStyle, width: 160, minWidth: 140, cursor: "pointer" }} onClick={() => toggleSort("domain")}>
+              <th style={{ ...thStyle, width: "26%", minWidth: 240, cursor: "pointer" }} onClick={() => toggleSort("domain")}>
                 <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
                   <span>Core Domains &amp; Risks</span>
                   <SortIndicator col="domain" />
@@ -1412,12 +1413,6 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                 {domainsLoading && (
                   <span style={{ fontSize: 8, fontWeight: 400, color: "var(--ink-3,#aaa)", marginLeft: 5 }}>generating…</span>
                 )}
-              </th>
-              <th style={{ ...thStyle, minWidth: 200, width: "26%", cursor: "pointer" }} onClick={() => toggleSort("risk")}>
-                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span>Enterprise Risks</span>
-                  <SortIndicator col="risk" />
-                </span>
               </th>
               {orderedFwCols.map(fw => (
                 <th
@@ -1486,10 +1481,8 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                   placeholder="Filter domain…"
                   value={colFilters.domain || ""}
                   onChange={e => setColFilters(prev => ({ ...prev, domain: e.target.value }))}
-                  style={{ fontSize: 9, padding: "2px 5px", width: "100%", boxSizing: "border-box" }}
+                  style={{ fontSize: 9, padding: "2px 5px", width: "100%", boxSizing: "border-box", marginBottom: 3 }}
                 />
-              </th>
-              <th style={{ ...thStyle, padding: "4px 6px", fontWeight: 400, textTransform: "none" }}>
                 <input
                   className="dendrai-input"
                   placeholder="Filter risks…"
@@ -1514,7 +1507,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
           <tbody>
             {anyFilterActive && (
               <tr>
-                <td colSpan={2 + fwCols.length} style={{ padding: "4px 10px", fontSize: 9, color: "var(--ink-3,#888)", background: "var(--surface-2,#f8f9fa)", borderBottom: "1px solid var(--line,#eee)" }}>
+                <td colSpan={1 + fwCols.length} style={{ padding: "4px 10px", fontSize: 9, color: "var(--ink-3,#888)", background: "var(--surface-2,#f8f9fa)", borderBottom: "1px solid var(--line,#eee)" }}>
                   Filtered — <button onClick={() => setColFilters({})} style={{ fontSize:9, padding:0, border:"none", background:"transparent", color:"var(--acc,#2563eb)", cursor:"pointer", textDecoration:"underline" }}>clear all filters</button>
                 </td>
               </tr>
@@ -1539,6 +1532,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
               const isGroupedMode = !sortCol || sortCol === "domain";
               const domainCollapsed = isGroupedMode && collapsedDomains.has(domain);
               if (isGroupedMode && domainCollapsed && !isGroupStart) return null;
+              const showDomainHeader = isGroupedMode && isGroupStart;
 
               let groupCount = 1;
               if (isGroupStart && isGroupedMode) {
@@ -1550,43 +1544,35 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                 }
               }
 
-              return (
-                <tr key={key} style={{ opacity: state.included ? 1 : 0.45, background: isEditing ? "rgba(37,99,235,0.025)" : "transparent" }}>
-
-                  {/* Column 0 — Core domain */}
-                  <td style={{
-                    ...tdStyle,
-                    borderTop: isGroupStart && idx > 0 ? "2px solid var(--line,#d8d8d8)" : undefined,
-                    paddingTop: isGroupStart && idx > 0 ? 14 : undefined,
-                    verticalAlign: "top",
-                    minWidth: 140,
-                    maxWidth: 160,
-                  }}>
-                    {isGroupStart ? (
-                      <div
-                        onClick={isGroupedMode ? () => toggleDomainCollapse(domain) : undefined}
-                        style={{ display: "flex", alignItems: "center", gap: 4, fontWeight: 700, fontSize: 10, color: "var(--acc,#2563eb)", lineHeight: 1.4, cursor: isGroupedMode ? "pointer" : "default" }}
-                      >
-                        {isGroupedMode && (
-                          <span style={{ fontSize: 8, display: "inline-block", transform: domainCollapsed ? "rotate(-90deg)" : "none", transition: "transform .1s" }}>▾</span>
-                        )}
-                        <span>{domain}</span>
-                        {domainCollapsed && (
-                          <span style={{ fontSize: 9, fontWeight: 400, color: "var(--ink-3,#888)" }}>({groupCount})</span>
-                        )}
-                      </div>
-                    ) : (
-                      <div style={{
-                        fontSize: 10, color: "var(--ink-3,#bbb)", lineHeight: 1.4,
-                        paddingLeft: 8, borderLeft: "2px solid var(--line,#eee)",
-                      }}>
-                        {domain}
-                      </div>
-                    )}
+              const domainHeaderRow = showDomainHeader && (
+                <tr key={`dom:${domain}:${idx}`}>
+                  <td colSpan={1 + orderedFwCols.length}
+                    onClick={() => toggleDomainCollapse(domain)}
+                    style={{
+                      ...tdStyle, cursor: "pointer", background: "var(--surface-2,#f4f6fa)",
+                      borderTop: idx > 0 ? "2px solid var(--line,#d8d8d8)" : undefined,
+                      padding: "7px 10px", fontWeight: 700, fontSize: 11, color: "var(--acc,#2563eb)",
+                    }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 8, display: "inline-block", transform: domainCollapsed ? "rotate(-90deg)" : "none", transition: "transform .1s" }}>▾</span>
+                      <span>{domain}</span>
+                      <span style={{ fontSize: 9, fontWeight: 400, color: "var(--ink-3,#888)" }}>({groupCount} risk{groupCount === 1 ? "" : "s"})</span>
+                    </span>
                   </td>
+                </tr>
+              );
+              if (domainCollapsed) return domainHeaderRow;
 
-                  {/* Column 1 — Risk domain + wording */}
-                  <td style={tdStyle}>
+              return (
+                <Fragment key={key}>
+                {domainHeaderRow}
+                <tr style={{ opacity: state.included ? 1 : 0.45, background: isEditing ? "rgba(37,99,235,0.025)" : "transparent" }}>
+
+                  {/* Column 0 — one risk per row, nested under its domain header */}
+                  <td style={{ ...tdStyle, paddingLeft: isGroupedMode ? 22 : 10 }}>
+                    {!isGroupedMode && (
+                      <div style={{ fontSize: 9, color: "var(--acc,#2563eb)", fontWeight: 700, marginBottom: 3 }}>{domain}</div>
+                    )}
                     <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 5 }}>
                       <span style={{ fontWeight: 700, fontSize: 11, color: "var(--ink,#111)" }}>
                         {r.category || "Risk"}
@@ -1667,11 +1653,6 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
 
                     return (
                       <td key={fw} style={tdStyle}>
-                        {/* Risk wording — mirrors Enterprise Risks column */}
-                        <div style={{ fontSize: 10, color: "var(--ink-2,#555)", lineHeight: 1.5, fontStyle: "italic", marginBottom: 8, paddingBottom: 6, borderBottom: "1px solid var(--line,#eee)" }}>
-                          {state.wording || <span style={{ color: "var(--ink-3,#aaa)" }}>No wording</span>}
-                        </div>
-
                         {/* Control list */}
                         {fwRefs.length > 0 ? (
                           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 6 }}>
@@ -1920,6 +1901,7 @@ function RiskFrameworkMatrix({ risks, riskStates, ctrlStates, matrixFrameworks, 
                   })}
 
                 </tr>
+                </Fragment>
               );
             })}
           </tbody>
