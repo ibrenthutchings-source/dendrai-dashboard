@@ -2350,7 +2350,7 @@ async function _findMatrixEditReview(scope) {
   const res = await fetch(`/api/risk-register/reviews?${qs}`);
   if (!res.ok) return null;
   const reviews = (await res.json()).reviews || [];
-  return reviews.find(r => r.framework === scope.framework && (scope.runId ? r.run_id === scope.runId : !r.run_id)) || null;
+  return reviews.find(r => r.framework === scope.framework && (scope.runId ? String(r.run_id) === String(scope.runId) : !r.run_id)) || null;
 }
 
 function _getMatrixEditReviewId(scope) {
@@ -2523,7 +2523,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setRefreshedRisks(null);
     setRiskStates(initRiskStates(risks));
     setCtrlStates(initControlStates(risks));
-    if (runId) overlayMatrixControls(runId, false, initControlStates(risks)).then(setCtrlStates);
+    overlayMatrixControls(runId || null, false, initControlStates(risks)).then(setCtrlStates);
     setSavedAt(null);
     setEffectiveRunId(runId);
   }, [risks?.length]);
