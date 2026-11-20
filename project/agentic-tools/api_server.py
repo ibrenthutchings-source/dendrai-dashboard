@@ -308,7 +308,7 @@ async def _run_cycle_for_all_tenants(cycle_fn, label: str) -> None:
             logger.warning("%s: tenant %s has no secrets provisioned — skipping", label, tenant.slug)
             continue
         db.bind_tenant_pool(tenant.id, tenant.db_dsn)
-        db.bind_tenant_connector_key(secrets.connector_encryption_key)
+        db.bind_tenant_connector_key(secrets.connector_encryption_key, secrets.evidence_signing_key)
         auth_endpoints.bind_tenant_secret(tenant.id, secrets.auth_jwt_secret)
         try:
             await cycle_fn()
@@ -840,7 +840,7 @@ class _TenantResolutionMiddleware:
             return
 
         db.bind_tenant_pool(tenant.id, tenant.db_dsn)
-        db.bind_tenant_connector_key(secrets.connector_encryption_key)
+        db.bind_tenant_connector_key(secrets.connector_encryption_key, secrets.evidence_signing_key)
         auth_endpoints.bind_tenant_secret(tenant.id, secrets.auth_jwt_secret)
         _tenant_api_key.set(secrets.api_key)
         scope.setdefault("state", {})["tenant"] = tenant

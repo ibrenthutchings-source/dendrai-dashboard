@@ -528,22 +528,31 @@ def _parse_date(entry) -> str:
 # Keyed by feed_id. Persists for the lifetime of the api_server.py process.
 # DB persistence for cross-restart history is a future enhancement.
 
-_cache: dict[str, dict] = {}  # feed_id → {"result": dict, "fetched_at": float}
+_cache: dict[tuple, dict] = {}  # (tenant, feed_id) → {"result": dict, "fetched_at": float}
+
+
+def _ck(feed_id) -> tuple:
+    """Cache key scoped to the current tenant. Feed ids are a static registry
+    shared by everyone, but results are graded against the requesting
+    tenant's company, so one tenant's cached result must never be served to
+    another."""
+    import db as _db
+    return (_db._current_tenant.get(), feed_id)
 
 
 def _get_cached(feed_id: str, ttl_seconds: int) -> Optional[dict]:
-    entry = _cache.get(feed_id)
+    entry = _cache.get(_ck(feed_id))
     if entry and (time.monotonic() - entry["fetched_at"]) < ttl_seconds:
         return entry["result"]
     return None
 
 
 def _set_cached(feed_id: str, result: dict) -> None:
-    _cache[feed_id] = {"result": result, "fetched_at": time.monotonic()}
+    _cache[_ck(feed_id)] = {"result": result, "fetched_at": time.monotonic()}
 
 
 def _cache_age_seconds(feed_id: str) -> Optional[float]:
-    entry = _cache.get(feed_id)
+    entry = _cache.get(_ck(feed_id))
     return time.monotonic() - entry["fetched_at"] if entry else None
 
 
@@ -626,7 +635,7 @@ def get_feed_status() -> list[dict]:
     status = []
     for feed in FEEDS:
         age = _cache_age_seconds(feed["id"])
-        cached_entry = _cache.get(feed["id"])
+        cached_entry = _cache.get(_ck(feed["id"]))
         cached_result = cached_entry["result"] if cached_entry else None
         status.append({
             "id": feed["id"],

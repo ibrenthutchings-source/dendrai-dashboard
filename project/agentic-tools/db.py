@@ -12930,12 +12930,22 @@ _tenant_connector_key: "contextvars.ContextVar[Optional[str]]" = contextvars.Con
 )
 
 
-def bind_tenant_connector_key(key: str) -> None:
+# Per-tenant evidence signing key (also the root the per-tenant audit-log key
+# is derived from). Bound/unbound together with the connector key so every
+# call site that already scopes a tenant's secrets picks it up.
+_tenant_evidence_key: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "db_tenant_evidence_key", default=None
+)
+
+
+def bind_tenant_connector_key(key: str, evidence_key: Optional[str] = None) -> None:
     _tenant_connector_key.set(key)
+    _tenant_evidence_key.set(evidence_key)
 
 
 def unbind_tenant_connector_key() -> None:
     _tenant_connector_key.set(None)
+    _tenant_evidence_key.set(None)
 
 
 def _fernet() -> "Fernet":
@@ -13522,7 +13532,12 @@ class EvidenceSigningKeyMissing(RuntimeError):
 
 
 def _evidence_signing_key() -> str:
-    key = os.environ.get("EVIDENCE_SIGNING_KEY", "").strip()
+    # A bound tenant's own key wins; the global env key is the single-tenant
+    # path. In multi mode a tenant must never sign with a shared/global key.
+    key = _tenant_evidence_key.get() or (
+        "" if _current_tenant.get() is not None
+        else os.environ.get("EVIDENCE_SIGNING_KEY", "").strip()
+    )
     if not key:
         raise EvidenceSigningKeyMissing(
             "EVIDENCE_SIGNING_KEY is not set — generate one with "
@@ -13748,6 +13763,14 @@ def _audit_signing_key() -> str:
     re-verification of old signatures is lost across a restart without an
     explicit key, which is a documented degradation, not a silent one."""
     global _audit_signing_key_cache
+    if _current_tenant.get() is not None:
+        # Multi-tenant: a per-tenant key, domain-separated from the evidence
+        # key it is derived from, so tenants never share audit signatures and
+        # the key survives restarts without any extra stored secret.
+        root = _tenant_evidence_key.get()
+        if root:
+            import hashlib as _hl, hmac as _hm
+            return _hm.new(root.encode("utf-8"), b"dendrai-audit-log-v1", _hl.sha256).hexdigest()
     key = os.environ.get("AUDIT_SIGNING_KEY", "").strip()
     if key:
         return key

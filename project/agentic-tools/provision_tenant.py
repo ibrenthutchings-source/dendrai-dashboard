@@ -129,7 +129,7 @@ def provision(slug: str, display_name: str, admin_dsn: str, db_name: str | None 
 
     logger.info("Seeding auth schema + default accounts for %s", slug)
     db.bind_tenant_pool(tenant.id, tenant_dsn)
-    db.bind_tenant_connector_key(tenant_secrets.connector_encryption_key)
+    db.bind_tenant_connector_key(tenant_secrets.connector_encryption_key, tenant_secrets.evidence_signing_key)
     try:
         if not auth_db.init_auth_db():
             raise RuntimeError(f"auth_db.init_auth_db() failed for tenant {slug!r}")
