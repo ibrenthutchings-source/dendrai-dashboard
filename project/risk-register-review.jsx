@@ -2338,10 +2338,10 @@ const MATRIX_EDIT_TYPE = "matrix_edit";
 const DISC_SCOPE_FW = "Discovered Risks";
 const _matrixEditReviewIds = new Map(); // scopeKey -> Promise<review id | null>
 
-function _matrixScope(runId) {
-  return runId
-    ? { key: `run:${runId}`, runId, framework: "Internal Risk Register" }
-    : { key: "disc", runId: null, framework: DISC_SCOPE_FW };
+function _matrixScope(runId, isDisc) {
+  if (isDisc) return { key: "disc", runId: null, framework: DISC_SCOPE_FW };
+  // Internal risks: scoped to their run, or (no run yet) a run-less internal bucket.
+  return { key: `run:${runId || "none"}`, runId: runId || null, framework: "Internal Risk Register" };
 }
 
 async function _findMatrixEditReview(scope) {
@@ -2374,7 +2374,7 @@ function _getMatrixEditReviewId(scope) {
 }
 
 async function saveMatrixControls(runId, riskKey, state, ctrlRefs, isDisc) {
-  const scope = _matrixScope(isDisc ? null : runId);
+  const scope = _matrixScope(runId, isDisc);
   const reviewId = await _getMatrixEditReviewId(scope);
   if (!reviewId) return false;
   try {
@@ -2397,7 +2397,7 @@ async function saveMatrixControls(runId, riskKey, state, ctrlRefs, isDisc) {
 // Overlay matrix_edit assignments (including explicit empty lists) onto base.
 async function overlayMatrixControls(runId, isDisc, baseCtrlStates) {
   try {
-    const scope = _matrixScope(isDisc ? null : runId);
+    const scope = _matrixScope(runId, isDisc);
     const review = await _findMatrixEditReview(scope);
     if (!review) return baseCtrlStates;
     _matrixEditReviewIds.set(scope.key, Promise.resolve(review.id));
@@ -2539,6 +2539,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         setDiscovered(localRisks);
         setDiscStates(initRiskStates(localRisks));
         setDiscCtrlStates(initControlStates(localRisks));
+        overlayMatrixControls(null, true, initControlStates(localRisks)).then(setDiscCtrlStates);
       }
     }
     (async () => {
@@ -2582,9 +2583,9 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
         if (data.run_id) {
           const saved = await fetchSavedControls(data.run_id, cs);
           if (saved) cs = saved;
-          cs = await overlayMatrixControls(data.run_id, false, cs);
           setEffectiveRunId(data.run_id);
         }
+        cs = await overlayMatrixControls(data.run_id || null, false, cs);
         setCtrlStates(cs);
       } catch (_) {}
     })();
@@ -2802,6 +2803,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
     setDiscovered(found);
     setDiscStates(initRiskStates(found));
     setDiscCtrlStates(initControlStates(found));
+    overlayMatrixControls(null, true, initControlStates(found)).then(setDiscCtrlStates);
     setDiscCollapsed({});
     setSearching(false);
   }
@@ -2844,6 +2846,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
           if (runId) {
             const saved = await fetchSavedControls(runId, cs);
             if (saved) cs = saved;
+            cs = await overlayMatrixControls(runId, false, cs);
           }
           setCtrlStates(cs);
           if (data.run_id) setEffectiveRunId(data.run_id);
@@ -3268,6 +3271,7 @@ function RiskRegisterReviewScreen({ risks, runId, ticker, onConverted }) {
               setDiscovered(allRisks);
               setDiscStates(initRiskStates(allRisks));
               setDiscCtrlStates(initControlStates(allRisks));
+              overlayMatrixControls(null, true, initControlStates(allRisks)).then(setDiscCtrlStates);
             }
           }
         } else {
