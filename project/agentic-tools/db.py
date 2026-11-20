@@ -39,6 +39,11 @@ try:
     from psycopg2.extras import Json, execute_values  # noqa: F811
     _HAS_PSYCOPG2 = True
 except ImportError:
+    psycopg2 = None          # type: ignore[assignment]
+    pg_pool = None           # type: ignore[assignment]
+    Json = None              # type: ignore[assignment]
+    execute_values = None    # type: ignore[assignment]
+    _HAS_PSYCOPG2 = False
     pass
 
 _HAS_PGVECTOR = False
@@ -65,6 +70,13 @@ try:
     _HAS_CRYPTOGRAPHY = True
 except ImportError:
     pass
+
+try:
+    from pgvector.psycopg2 import register_vector as _pg_register_vector  # type: ignore[import]
+    _HAS_PGVECTOR = True
+except ImportError:
+    _pg_register_vector = None  # type: ignore[assignment]
+    _HAS_PGVECTOR = False
 
 logger = logging.getLogger(__name__)
 _pool: Optional["pg_pool.ThreadedConnectionPool"] = None
@@ -2951,6 +2963,30 @@ ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS text_search tsvector
 CREATE INDEX IF NOT EXISTS idx_embeddings_text_search ON embeddings USING GIN (text_search);
 """
 
+# pgvector DDL — kept separate so a missing extension never breaks the core schema.
+# Formatted at init time with the module-level EMBEDDING_DIM.
+_PGVECTOR_DDL_TEMPLATE = """
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Central embedding store: one row per (source row × content type × model).
+-- source_table / source_id form a logical FK to any table in this schema.
+CREATE TABLE IF NOT EXISTS embeddings (
+    id           BIGSERIAL    PRIMARY KEY,
+    source_table VARCHAR(64)  NOT NULL,
+    source_id    BIGINT       NOT NULL,
+    content_type VARCHAR(64)  NOT NULL,
+    model        VARCHAR(64)  NOT NULL DEFAULT 'unknown',
+    embedding    vector({dim}),
+    text_snippet TEXT,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (source_table, source_id, content_type, model)
+);
+CREATE INDEX IF NOT EXISTS idx_embeddings_source
+    ON embeddings (source_table, source_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
+    ON embeddings USING hnsw (embedding vector_cosine_ops);
+"""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pool management
@@ -3041,6 +3077,16 @@ def init_db() -> bool:
         logger.info("DATABASE_URL not set — database persistence disabled")
         return False
     try:
+        _pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=url)
+        conn = _pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_DDL)
+                cur.execute(_MIGRATIONS)  # reconcile column drift on existing tables
+            conn.commit()
+        finally:
+            _pool.putconn(conn)
+        logger.info("PostgreSQL database initialized (tables + migrations applied)")
         _pool = pg_pool.ThreadedConnectionPool(1, 10, dsn=_build_dsn(url))
         _apply_schema(_pool)
     except Exception as exc:
@@ -3121,6 +3167,21 @@ def _active_pool() -> Optional["pg_pool.ThreadedConnectionPool"]:
         return pool
     return _pool
 
+    # pgvector extension + embeddings table — optional; logged as warning if absent.
+    vec_conn = _pool.getconn()
+    try:
+        with vec_conn.cursor() as cur:
+            cur.execute(_PGVECTOR_DDL_TEMPLATE.format(dim=EMBEDDING_DIM))
+        vec_conn.commit()
+        logger.info("pgvector extension ready (EMBEDDING_DIM=%d)", EMBEDDING_DIM)
+    except Exception as exc:
+        vec_conn.rollback()
+        logger.warning("pgvector not available — embedding features disabled: %s", exc)
+    finally:
+        _pool.putconn(vec_conn)
+
+    return True
+
 
 def is_available() -> bool:
     """Return True when a connection pool is available for the current
@@ -3153,6 +3214,7 @@ def _conn():
     conn = pool.getconn()
     broken = False
     try:
+        if _HAS_PGVECTOR and _pg_register_vector is not None:
         if _HAS_PGVECTOR and _PGVECTOR_READY:
             _pg_register_vector(conn)
         yield conn
@@ -15818,6 +15880,107 @@ def get_observability_hourly_series() -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pgvector — embeddings
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_embedding(
+    source_table: str,
+    source_id: int,
+    content_type: str,
+    embedding: list,
+    *,
+    model: Optional[str] = None,
+    text_snippet: Optional[str] = None,
+) -> Optional[int]:
+    """Store a vector embedding for any source row. Returns embedding id (or None).
+
+    source_table : originating table name  (e.g. 'rss_articles', 'ai_analyses')
+    source_id    : PK of the row in that table
+    content_type : semantic label  (e.g. 'risk_factor_text', 'article_summary')
+    embedding    : list[float] from your embedding model — len must equal EMBEDDING_DIM
+    """
+    if not embedding or not _HAS_PGVECTOR:
+        return None
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO embeddings
+                        (source_table, source_id, content_type, model, embedding, text_snippet)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source_table, source_id, content_type, model) DO UPDATE
+                        SET embedding    = EXCLUDED.embedding,
+                            text_snippet = EXCLUDED.text_snippet,
+                            created_at   = NOW()
+                    RETURNING id
+                    """,
+                    (source_table, source_id, content_type, model or "unknown",
+                     embedding, text_snippet),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    return _run(_do)
+
+
+_DISTANCE_OPS = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
+
+
+def search_similar_embeddings(
+    embedding: list,
+    *,
+    source_table: Optional[str] = None,
+    content_type: Optional[str] = None,
+    limit: int = 10,
+    metric: str = "cosine",
+) -> list:
+    """Return the top-k nearest embeddings via ANN (HNSW index).
+
+    metric: 'cosine' (default) | 'l2' | 'ip'
+    Returns list of dicts: id, source_table, source_id, content_type, model,
+    text_snippet, distance, created_at.
+    """
+    if not embedding or not _HAS_PGVECTOR:
+        return []
+    op = _DISTANCE_OPS.get(metric, "<=>")
+    def _do():
+        clauses: list = []
+        params: list = []
+        if source_table:
+            clauses.append("source_table = %s")
+            params.append(source_table)
+        if content_type:
+            clauses.append("content_type = %s")
+            params.append(content_type)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, source_table, source_id, content_type, model,
+                           text_snippet, embedding {op} %s AS distance, created_at
+                    FROM embeddings
+                    {where}
+                    ORDER BY embedding {op} %s
+                    LIMIT %s
+                    """,
+                    params + [embedding, embedding, limit],
+                )
+                return [
+                    {
+                        "id": r[0], "source_table": r[1], "source_id": r[2],
+                        "content_type": r[3], "model": r[4],
+                        "text_snippet": r[5],
+                        "distance": float(r[6]) if r[6] is not None else None,
+                        "created_at": r[7].isoformat() if r[7] else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+    return _run(_do) or []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backward-compat stubs (deprecated)
 # Policy-as-Code external hooks
 # ─────────────────────────────────────────────────────────────────────────────
 
