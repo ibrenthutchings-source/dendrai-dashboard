@@ -189,6 +189,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/history/, '/history'),
       },
+      // reporting_endpoints.router declares prefix="/reporting" — same gap.
+      '/api/reporting': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/reporting/, '/reporting'),
+      },
       // evidence_pack_endpoints.router declares prefix="/evidence-pack" —
       // same gap, different router.
       '/api/evidence-pack': {
@@ -272,6 +278,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/report-delivery/, '/report-delivery'),
+      },
+      '/api/reporting': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/reporting/, '/reporting'),
       },
       '/auth/': {
         target: 'http://127.0.0.1:8001',

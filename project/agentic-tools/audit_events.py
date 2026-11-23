@@ -87,6 +87,17 @@ AUDIT_EVENT_CATALOG: list[dict] = [
     _e("mcp_tool", "<tool name>", [_S, _F],
        "One row per MCP tool call, named after the tool (success = call made; tools that log on completion "
        "record failure on error, e.g. github_write_tool.*.result). Detail holds a safe summary of the arguments."),
+    _e("reporting", "report_query", [_S, _F, _D],
+       "A governed report query was run (target = dataset). Success records row_count and the result's SHA-256 "
+       "(the reperformance check); failure reasons: invalid_query, execution_error; denied = restricted dataset."),
+    _e("pbc", "pbc_requirement_saved", [_S, _F], "A control's evidence requirement was declared or changed (target = control/key)."),
+    _e("pbc", "pbc_requests_generated", [_S, _F],
+       "An engagement's PBC request list was generated from requirements (target = engagement; detail has created/existing counts)."),
+    _e("pbc", "pbc_request_received", [_S, _F],
+       "Evidence was linked to a request and the automatic checks ran (detail.findings lists the check codes that fired). "
+       "Failure reasons: not_found, evidence_not_found, invalid_state, state_changed."),
+    _e("pbc", "pbc_request_reviewed", [_S, _F, _D],
+       "A request was accepted or rejected. denied = the reviewer submitted the evidence themselves (reviewer_not_independent)."),
     _e("retention", "exception_events_purged", [_S],
        "The PII retention sweep deleted expired exception events (detail.rows_deleted / retention_days)."),
 ]

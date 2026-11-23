@@ -646,6 +646,34 @@ Ticks every `CONNECTOR_POLLER_TICK_S` seconds (default `60`) and polls whichever
 
 ---
 
+### Reporting (`reporting_catalog.py` + `reporting_endpoints.py`) — phase 0
+
+Governed, read-only querying of curated datasets, so reports never involve raw SQL. A dataset is declared in code (columns, types, labels, admin-only flag); a JSON query spec picks columns, filters, grouping and ordering from it. Identifiers come only from the registry, values are always bound parameters, and runs are read-only with a 15 s timeout and a row cap. Every response carries a **manifest** (dataset and version, normalised spec, exact SQL and parameters, as-of time, row count, SHA-256 of the result) so a reviewer can re-run it; every run is written to the audit log with that hash. Design and roadmap: `project/docs/report-builder-and-audit-automation.md`. Add a dataset by calling `reporting_catalog.register(...)`.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/reporting/datasets` | Datasets the caller may read (admin-only ones hidden from others) |
+| `GET` | `/reporting/datasets/{key}` | One dataset's columns, types and labels |
+| `POST` | `/reporting/query` | `{"spec": {...}}` -> rows + manifest |
+
+Starter datasets: `controls`, `risk_scores`, `pbc_evidence`, `audit_log` (admin only). Result rows are not yet persisted, so a manifest proves how a result was produced but a later re-run can differ if the data changed; signed snapshots are the next increment.
+
+### PBC Requests — Request-as-Code (`pbc_request_tool.py` + `pbc_request_endpoints.py`)
+
+A control declares what evidence it needs; an engagement's request list is generated from those declarations instead of built by hand. Each request freezes a copy of its requirement, so later edits never change what was asked. Logged evidence (from the PBC Evidence Log) is linked to a request and checked automatically against that frozen requirement (wrong control, period not covered, signature, freshness); a person then accepts or rejects, and the reviewer must differ from whoever submitted or logged the evidence. A rejection needs a written note. Overdue is derived from the due date. All actions are audit-logged (`category="pbc"`). Not yet built: automatic collection from connected systems, reminders, a UI.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `PUT` | `/pbc-requests/requirements` | Declare or update a control's evidence requirement |
+| `GET` | `/pbc-requests/requirements` | List requirements |
+| `POST` | `/pbc-requests/generate` | `{engagement, period_start, period_end, due_date, control_ids?}` — idempotent |
+| `GET` | `/pbc-requests/` | Requests, with `display_status` (adds `overdue`) — `?engagement=&status=&control_id=` |
+| `GET` | `/pbc-requests/summary` | Status board counts and percent accepted |
+| `POST` | `/pbc-requests/{id}/receive` | Link a logged evidence item and run the checks |
+| `POST` | `/pbc-requests/{id}/review` | `{decision: accepted\|rejected, note}` |
+
+---
+
 ### Authentication (`auth_db.py` + `auth_endpoints.py`)
 
 JWT-based auth system integrated into `api_server.py`. Provides local login with bcrypt hashing, four SSO providers via PKCE OAuth 2.0, and JIT provisioning for new SSO users.

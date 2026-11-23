@@ -2710,6 +2710,63 @@ CREATE INDEX IF NOT EXISTS idx_pbc_evidence_control
 CREATE INDEX IF NOT EXISTS idx_pbc_evidence_flagged
     ON observability.pbc_evidence (created_at DESC) WHERE quality_flags != '[]'::jsonb;
 
+-- Request-as-Code for PBC (pbc_request_tool.py). A control declares what
+-- evidence it needs (evidence_requirements); generating an engagement's
+-- request list creates one pbc_requests row per requirement, each carrying a
+-- frozen copy of the requirement it was raised under so later edits never
+-- rewrite history. Evidence arrives through the existing pbc_evidence log and
+-- is linked to the request; the automatic check findings and the reviewer's
+-- decision are stored on the request, so a reviewer not involved in the audit
+-- can see what was asked, what came back, what was checked and who accepted it.
+CREATE TABLE IF NOT EXISTS observability.evidence_requirements (
+    id                 BIGSERIAL    PRIMARY KEY,
+    control_id         VARCHAR(128) NOT NULL,
+    requirement_key    VARCHAR(64)  NOT NULL,
+    title              TEXT         NOT NULL,
+    description        TEXT,
+    artifact_type      VARCHAR(64),
+    source_system      VARCHAR(64)  NOT NULL DEFAULT 'manual',
+    frequency          VARCHAR(16)  NOT NULL DEFAULT 'once',
+    requires_signature BOOLEAN      NOT NULL DEFAULT FALSE,
+    max_age_days       INTEGER      NOT NULL DEFAULT 90,
+    owner              VARCHAR(128),
+    acceptance_notes   TEXT,
+    active             BOOLEAN      NOT NULL DEFAULT TRUE,
+    updated_by         VARCHAR(128),
+    updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (control_id, requirement_key)
+);
+
+CREATE TABLE IF NOT EXISTS observability.pbc_requests (
+    id                   BIGSERIAL    PRIMARY KEY,
+    engagement           VARCHAR(128) NOT NULL,
+    control_id           VARCHAR(128) NOT NULL,
+    requirement_key      VARCHAR(64)  NOT NULL,
+    title                TEXT         NOT NULL,
+    period_start         DATE         NOT NULL,
+    period_end           DATE         NOT NULL,
+    due_date             DATE         NOT NULL,
+    owner                VARCHAR(128),
+    status               VARCHAR(16)  NOT NULL DEFAULT 'requested',
+    requirement_snapshot JSONB        NOT NULL,
+    requirement_hash     CHAR(64)     NOT NULL,
+    evidence_id          BIGINT       REFERENCES observability.pbc_evidence(id),
+    submitted_by         VARCHAR(128),
+    received_at          TIMESTAMPTZ,
+    checks               JSONB,
+    checks_version       VARCHAR(8),
+    reviewed_by          VARCHAR(128),
+    reviewed_at          TIMESTAMPTZ,
+    review_note          TEXT,
+    created_by           VARCHAR(128),
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (engagement, control_id, requirement_key, period_start, period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_pbc_requests_engagement
+    ON observability.pbc_requests (engagement, status);
+CREATE INDEX IF NOT EXISTS idx_pbc_requests_due
+    ON observability.pbc_requests (due_date) WHERE status IN ('requested', 'rejected');
+
 -- Infrastructure Vulnerability & Currency Posture (Phase 1): a unified
 -- asset inventory across DB/OS/container/network/credential/certificate —
 -- host/database/container config posture already lives in system_telemetry
@@ -14279,6 +14336,173 @@ def get_pbc_evidence(evidence_id: int) -> Optional[dict]:
                     return None
                 cols = [d[0] for d in cur.description]
                 return _pbc_evidence_row_to_dict(cols, row)
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Request-as-Code for PBC (observability.evidence_requirements / pbc_requests)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_REQUIREMENT_COLUMNS = (
+    "id, control_id, requirement_key, title, description, artifact_type, source_system, frequency, "
+    "requires_signature, max_age_days, owner, acceptance_notes, active, updated_by, updated_at"
+)
+_PBC_REQUEST_COLUMNS = (
+    "id, engagement, control_id, requirement_key, title, period_start, period_end, due_date, owner, status, "
+    "requirement_snapshot, requirement_hash, evidence_id, submitted_by, received_at, checks, checks_version, "
+    "reviewed_by, reviewed_at, review_note, created_by, created_at"
+)
+
+
+def _iso_row(cur, row) -> dict:
+    d = dict(zip([c[0] for c in cur.description], row))
+    for k, v in d.items():
+        if hasattr(v, "isoformat"):
+            d[k] = v.isoformat()
+    return d
+
+
+def upsert_evidence_requirement(req: dict, updated_by: Optional[str]) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.evidence_requirements (
+                        control_id, requirement_key, title, description, artifact_type, source_system,
+                        frequency, requires_signature, max_age_days, owner, acceptance_notes, active, updated_by
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (control_id, requirement_key) DO UPDATE SET
+                        title = EXCLUDED.title, description = EXCLUDED.description,
+                        artifact_type = EXCLUDED.artifact_type, source_system = EXCLUDED.source_system,
+                        frequency = EXCLUDED.frequency, requires_signature = EXCLUDED.requires_signature,
+                        max_age_days = EXCLUDED.max_age_days, owner = EXCLUDED.owner,
+                        acceptance_notes = EXCLUDED.acceptance_notes, active = EXCLUDED.active,
+                        updated_by = EXCLUDED.updated_by, updated_at = NOW()
+                    RETURNING {_REQUIREMENT_COLUMNS}
+                    """,
+                    (req["control_id"], req["requirement_key"], req["title"], req.get("description"),
+                     req.get("artifact_type"), req.get("source_system", "manual"), req.get("frequency", "once"),
+                     bool(req.get("requires_signature")), req.get("max_age_days", 90), req.get("owner"),
+                     req.get("acceptance_notes"), req.get("active", True), updated_by),
+                )
+                return _iso_row(cur, cur.fetchone())
+    return _run(_do)
+
+
+def list_evidence_requirements(control_id: Optional[str] = None, active_only: bool = True) -> list:
+    def _do():
+        filters, params = [], []
+        if control_id:
+            filters.append("control_id = %s"); params.append(control_id)
+        if active_only:
+            filters.append("active")
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_REQUIREMENT_COLUMNS} FROM observability.evidence_requirements {where} "
+                    "ORDER BY control_id, requirement_key", params)
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def create_pbc_requests(rows: list, created_by: Optional[str]) -> Optional[dict]:
+    """Insert generated requests, skipping any that already exist for the same
+    engagement/control/requirement/period (so generating twice is harmless).
+    Returns {"created": n, "existing": m}, or None on failure."""
+    def _do():
+        created = 0
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                for r in rows:
+                    cur.execute(
+                        """
+                        INSERT INTO observability.pbc_requests (
+                            engagement, control_id, requirement_key, title, period_start, period_end,
+                            due_date, owner, requirement_snapshot, requirement_hash, created_by
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
+                        ON CONFLICT (engagement, control_id, requirement_key, period_start, period_end)
+                        DO NOTHING
+                        """,
+                        (r["engagement"], r["control_id"], r["requirement_key"], r["title"], r["period_start"],
+                         r["period_end"], r["due_date"], r.get("owner"), Json(r["requirement_snapshot"]),
+                         r["requirement_hash"], created_by),
+                    )
+                    created += cur.rowcount
+        return {"created": created, "existing": len(rows) - created}
+    return _run(_do)
+
+
+def list_pbc_requests(engagement: Optional[str] = None, status: Optional[str] = None,
+                      control_id: Optional[str] = None, limit: int = 500) -> list:
+    def _do():
+        filters, params = [], []
+        for col, val in (("engagement", engagement), ("status", status), ("control_id", control_id)):
+            if val:
+                filters.append(f"{col} = %s"); params.append(val)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 2000))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_PBC_REQUEST_COLUMNS} FROM observability.pbc_requests {where} "
+                    "ORDER BY due_date, control_id, requirement_key LIMIT %s", params)
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_pbc_request(request_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_PBC_REQUEST_COLUMNS} FROM observability.pbc_requests WHERE id = %s",
+                            (request_id,))
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
+    return _run(_do)
+
+
+def receive_pbc_request(request_id: int, evidence_id: int, submitted_by: Optional[str],
+                        checks: list, checks_version: str) -> Optional[dict]:
+    """requested/rejected -> received. The status guard is in the UPDATE, so two
+    concurrent submissions cannot both win. None if the request was not in a
+    state that allows it (or does not exist)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE observability.pbc_requests
+                       SET status = 'received', evidence_id = %s, submitted_by = %s, received_at = NOW(),
+                           checks = %s::jsonb, checks_version = %s,
+                           reviewed_by = NULL, reviewed_at = NULL, review_note = NULL
+                     WHERE id = %s AND status IN ('requested', 'rejected')
+                 RETURNING {_PBC_REQUEST_COLUMNS}
+                    """,
+                    (evidence_id, submitted_by, Json(checks), checks_version, request_id),
+                )
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
+    return _run(_do)
+
+
+def review_pbc_request(request_id: int, decision: str, reviewer: str, note: Optional[str]) -> Optional[dict]:
+    """received -> accepted | rejected, guarded in the UPDATE like receive."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE observability.pbc_requests
+                       SET status = %s, reviewed_by = %s, reviewed_at = NOW(), review_note = %s
+                     WHERE id = %s AND status = 'received'
+                 RETURNING {_PBC_REQUEST_COLUMNS}
+                    """,
+                    (decision, reviewer, note, request_id),
+                )
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
     return _run(_do)
 
 

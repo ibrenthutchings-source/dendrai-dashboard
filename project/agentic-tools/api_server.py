@@ -144,6 +144,8 @@ import itsm_endpoints
 import map_endpoints
 import sample_selection_endpoints
 import evidence_quality_endpoints
+import reporting_endpoints
+import pbc_request_endpoints
 import vendor_risk_endpoints
 import ai_governance_endpoints
 import infrastructure_monitoring_endpoints
@@ -1070,6 +1072,8 @@ app.include_router(sample_selection_endpoints.router)
 
 # PBC/workpaper evidence quality: stale/unsigned/period-mismatch flags + content check.
 app.include_router(evidence_quality_endpoints.router)
+app.include_router(reporting_endpoints.router)
+app.include_router(pbc_request_endpoints.router)
 
 # GitHub Webhook: receive repo events and run them through the UBO pipeline.
 app.include_router(github_endpoints.router)
