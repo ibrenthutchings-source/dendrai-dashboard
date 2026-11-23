@@ -47,6 +47,7 @@ import os
 import re
 import secrets
 import string
+import threading
 import time
 import uuid
 from base64 import urlsafe_b64encode
@@ -87,15 +88,29 @@ def _client_ip(request: Optional[Request]) -> Optional[str]:
 
 
 def _audit(action: str, actor: Optional[str], target: Optional[str] = None,
-           detail: Optional[dict] = None, request: Optional[Request] = None) -> None:
+           detail: Optional[dict] = None, request: Optional[Request] = None,
+           outcome: str = "success") -> None:
     """Record an identity/access event to the tamper-evident audit trail
     (observability.audit_log — see db.py). Never raises: an audit-logging
     failure must not block the login/admin action it's recording."""
     ip = _client_ip(request)
     try:
-        db.insert_audit_log_entry("auth", action, actor=actor, target=target, detail=detail, ip_address=ip)
+        db.insert_audit_log_entry("auth", action, actor=actor, target=target, detail=detail,
+                                  ip_address=ip, outcome=outcome)
     except Exception as exc:
         logger.warning("audit log write failed for action=%s: %s", action, exc)
+
+
+def _reject(status: int, message: str, action: str, actor: Optional[str], *,
+            target: Optional[str] = None, reason: Optional[str] = None,
+            extra: Optional[dict] = None, request: Optional[Request] = None,
+            outcome: str = "failure"):
+    """Record a failed/denied attempt to the audit trail, then raise the HTTP
+    error. `reason` is a short machine-readable code; never pass passwords or
+    other secrets in `extra`."""
+    detail = {"reason": reason or message, "http_status": status, **(extra or {})}
+    _audit(action, actor, target=target, detail=detail, request=request, outcome=outcome)
+    raise HTTPException(status_code=status, detail=message)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -147,6 +162,65 @@ def _rate_check(ip: str) -> bool:
 
 def _rate_clear(ip: str) -> None:
     _rl_store.pop(ip, None)
+
+
+# ── Per-account throttling ────────────────────────────────────────────────────
+# The per-IP limiter above does nothing against a distributed attack: many IPs
+# guessing at ONE account each stay under their own limit. This counts failed
+# sign-ins per username instead, regardless of source IP, and backs off
+# progressively once AUTH_LOCKOUT_THRESHOLD failures land inside the window:
+# lock for BASE seconds, then double on each further failure, capped at
+# AUTH_LOCKOUT_MAX_S. It is a delay, not a permanent lock, so an attacker can
+# slow a real user down but never lock them out for good; an admin password
+# reset clears it immediately. Unknown usernames are tracked identically so a
+# lock (or its absence) can't be used to find out which accounts exist.
+# In-memory like the IP limiter: per process, reset on restart.
+
+_LOCK_THRESHOLD = int(os.environ.get("AUTH_LOCKOUT_THRESHOLD", "5"))
+_LOCK_BASE_S    = 60
+_LOCK_MAX_S     = int(os.environ.get("AUTH_LOCKOUT_MAX_S", "900"))
+_LOCK_MAX_KEYS  = 10_000          # bound memory against random-username floods
+_acct_fail: dict[str, list] = {}  # key -> [failure_count, last_failure_monotonic]
+_acct_lock = threading.Lock()
+
+
+def _acct_key(username: str) -> str:
+    return f"{_tenant_id_ctx.get() or '-'}:{(username or '').strip().lower()}"
+
+
+def _acct_retry_after(username: str) -> int:
+    """Seconds the account stays locked (0 = not locked)."""
+    key, now = _acct_key(username), time.monotonic()
+    with _acct_lock:
+        rec = _acct_fail.get(key)
+        if not rec:
+            return 0
+        count, last = rec
+        if now - last > _RL_WINDOW_S:
+            _acct_fail.pop(key, None)
+            return 0
+        if count < _LOCK_THRESHOLD:
+            return 0
+        duration = min(_LOCK_MAX_S, _LOCK_BASE_S * 2 ** (count - _LOCK_THRESHOLD))
+        return max(0, int(duration - (now - last)) + 1)
+
+
+def _acct_record_failure(username: str) -> None:
+    key, now = _acct_key(username), time.monotonic()
+    with _acct_lock:
+        rec = _acct_fail.get(key)
+        if rec and now - rec[1] <= _RL_WINDOW_S:
+            rec[0] += 1
+            rec[1] = now
+        else:
+            _acct_fail[key] = [1, now]
+        while len(_acct_fail) > _LOCK_MAX_KEYS:
+            _acct_fail.pop(next(iter(_acct_fail)))
+
+
+def _acct_clear(username: str) -> None:
+    with _acct_lock:
+        _acct_fail.pop(_acct_key(username), None)
 
 
 # ── Password complexity ───────────────────────────────────────────────────────
@@ -275,6 +349,8 @@ def _resolve_session(dendrai_session: Optional[str]) -> tuple[Optional[int], Opt
     user_id, reason = auth_db.validate_session_reason(jti)
     if reason == "idle":
         auth_db.revoke_session(jti)
+        _audit("session_expired", payload.get("username"),
+               detail={"reason": "idle_timeout"}, outcome="denied")
     return user_id, jti, reason
 
 
@@ -480,9 +556,11 @@ class SetScreenPermissionsRequest(BaseModel):
     permissions: list[ScreenPermissionEntry]
 
 
-def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+def require_admin(request: Request, current_user: dict = Depends(get_current_user)) -> dict:
     if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
+        _reject(403, "Admin role required", "admin_access_denied", current_user.get("username"),
+                reason="not_admin", extra={"method": request.method, "path": request.url.path},
+                request=request, outcome="denied")
     return current_user
 
 
@@ -504,7 +582,7 @@ def require_screen_permission(screen_id: str, edit: bool = False):
     screen nobody has configured permissions for yet stays reachable rather
     than silently 403ing every caller.
     """
-    def _check(current_user: dict = Depends(get_current_user)) -> dict:
+    def _check(request: Request, current_user: dict = Depends(get_current_user)) -> dict:
         if current_user.get("role") == "admin":
             return current_user
         perms = auth_db.get_effective_screen_permissions(current_user["id"], current_user.get("role", "user"))
@@ -512,7 +590,10 @@ def require_screen_permission(screen_id: str, edit: bool = False):
         if entry is not None:
             key = "can_edit" if edit else "can_read"
             if not entry.get(key, True):
-                raise HTTPException(status_code=403, detail=f"You do not have access to '{screen_id}'")
+                _reject(403, f"You do not have access to '{screen_id}'", "screen_access_denied",
+                        current_user.get("username"), target=screen_id, reason="missing_permission",
+                        extra={"permission": key, "method": request.method, "path": request.url.path},
+                        request=request, outcome="denied")
         return current_user
     return _check
 
@@ -534,31 +615,44 @@ async def local_login(req: LoginRequest, request: Request, response: Response):
     ip = _client_ip(request) or "unknown"
 
     if not _rate_check(ip):
-        raise HTTPException(status_code=429, detail="Too many login attempts. Try again in 15 minutes.")
+        _reject(429, "Too many login attempts. Try again in 15 minutes.", "login_rate_limited",
+                req.username, reason="rate_limited", request=request, outcome="denied")
 
     if not _HAS_PASSLIB:
         raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed on server")
+
+    # Per-account backoff, checked BEFORE any password verification so a locked
+    # account can't be probed (even a correct password is refused while locked).
+    retry = _acct_retry_after(req.username)
+    if retry:
+        _reject(429, f"Too many failed attempts for this account. Try again in {retry} seconds.",
+                "login_rate_limited", req.username, reason="account_locked",
+                extra={"retry_after_s": retry}, request=request, outcome="denied")
 
     user = auth_db.get_user_by_username(req.username)
 
     # Constant-time path — always verify something to prevent timing attacks
     if not user or not user.get("password_hash"):
         _pwd_ctx.dummy_verify()
-        _audit("login_failed", req.username, detail={"reason": "invalid_credentials"}, request=request)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        _acct_record_failure(req.username)
+        _reject(401, "Invalid credentials", "login_failed", req.username,
+                reason="invalid_credentials", request=request)
 
     if not user.get("is_active"):
         _pwd_ctx.dummy_verify()
-        _audit("login_failed", req.username, detail={"reason": "account_inactive"}, request=request)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        _acct_record_failure(req.username)
+        _reject(401, "Invalid credentials", "login_failed", req.username,
+                reason="account_inactive", request=request)
 
     if not _pwd_ctx.verify(req.password, user["password_hash"]):
-        _audit("login_failed", req.username, detail={"reason": "invalid_credentials"}, request=request)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        _acct_record_failure(req.username)
+        _reject(401, "Invalid credentials", "login_failed", req.username,
+                reason="invalid_credentials", request=request)
 
     _rate_clear(ip)
+    _acct_clear(req.username)
     _finish_login(user, request, response)
-    _audit("login", user["username"], request=request)
+    _audit("login", user["username"], detail={"provider": "local"}, request=request)
 
     return {
         "ok":   True,
@@ -665,13 +759,30 @@ def set_my_preferences(prefs: Dict[str, Any] = Body(...), current_user: dict = D
 @router.get("/admin/audit-log", summary="Tamper-evident identity/access audit trail (admin)")
 def admin_audit_log(
     category: Optional[str] = None, actor: Optional[str] = None, limit: int = 200,
+    outcome: Optional[str] = None, action: Optional[str] = None,
+    target: Optional[str] = None, since: Optional[str] = None,
     current_user: dict = Depends(require_admin),
 ):
     """Queryable answer to 'who changed what, and when' — observability.audit_log
     (see db.py) records every login/logout, role change, user create/delete,
     password reset, and screen-permission edit, chain-hashed so a deleted or
-    reordered row is detectable (see GET .../audit-log/verify)."""
-    return {"entries": db.list_audit_log(category=category, actor=actor, limit=limit)}
+    reordered row is detectable (see GET .../audit-log/verify).
+
+    Filters: category, actor, action, target, outcome (success | failure |
+    denied) and since (ISO-8601). e.g. failed logins since a given time:
+    ?action=login_failed&since=2026-11-23T00:00:00Z"""
+    if outcome and outcome not in db.AUDIT_OUTCOMES:
+        raise HTTPException(status_code=422, detail=f"outcome must be one of {list(db.AUDIT_OUTCOMES)}")
+    return {"entries": db.list_audit_log(category=category, actor=actor, limit=limit, outcome=outcome,
+                                         action=action, target=target, since=since)}
+
+
+@router.get("/admin/audit-log/events", summary="Catalog of audited event types (admin)")
+def admin_audit_log_events(current_user: dict = Depends(require_admin)):
+    """What the audit trail records, per event: category, action, the outcomes
+    that are logged, and a description. Source of truth is audit_events.py."""
+    import audit_events
+    return {"events": audit_events.AUDIT_EVENT_CATALOG}
 
 
 @router.get("/admin/audit-log/verify", summary="Verify the audit trail's tamper-evidence chain (admin)")
@@ -697,46 +808,59 @@ def admin_list_users(current_user: dict = Depends(require_admin)):
 
 
 @router.put("/admin/users/{user_id}/manager", summary="Set any user's manager (admin)")
-def admin_set_manager(user_id: int, req: SetManagerRequest, current_user: dict = Depends(require_admin)):
+def admin_set_manager(user_id: int, req: SetManagerRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
+    tgt = f"user_id:{user_id}"
     if req.manager_id is not None:
         manager = auth_db.get_user_by_id(req.manager_id)
         if not manager or not manager.get("is_active"):
-            raise HTTPException(status_code=404, detail="Manager account not found or inactive")
+            _reject(404, "Manager account not found or inactive", "manager_changed", me, target=tgt,
+                    reason="manager_not_found", extra={"manager_id": req.manager_id}, request=request)
     ok = auth_db.set_manager(user_id, req.manager_id)
     if not ok:
-        raise HTTPException(status_code=400, detail="Could not set manager (cannot be their own manager)")
+        _reject(400, "Could not set manager (cannot be their own manager)", "manager_changed", me,
+                target=tgt, reason="set_manager_rejected", extra={"manager_id": req.manager_id}, request=request)
+    _audit("manager_changed", me, target=tgt, detail={"manager_id": req.manager_id}, request=request)
     return {"ok": True, "manager_id": req.manager_id}
 
 
 @router.put("/admin/users/{user_id}/role", summary="Set a user's role (admin)")
-def admin_set_role(user_id: int, req: AdminSetRoleRequest, current_user: dict = Depends(require_admin)):
+def admin_set_role(user_id: int, req: AdminSetRoleRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
+    tgt = f"user_id:{user_id}"
     if not auth_db.role_exists(req.role):
-        raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'")
+        _reject(400, f"Unknown role '{req.role}'", "role_changed", me, target=tgt,
+                reason="unknown_role", extra={"requested_role": req.role}, request=request)
     if user_id == current_user["id"] and req.role != "admin":
-        raise HTTPException(status_code=400, detail="You cannot remove your own admin role")
+        _reject(400, "You cannot remove your own admin role", "role_changed", me, target=me,
+                reason="self_demotion_blocked", request=request)
     target = auth_db.get_user_by_id(user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        _reject(404, "User not found", "role_changed", me, target=tgt, reason="user_not_found", request=request)
     if not auth_db.set_role(user_id, req.role):
-        raise HTTPException(status_code=500, detail="Failed to update role")
+        _reject(500, "Failed to update role", "role_changed", me, target=target["username"],
+                reason="db_error", request=request)
     _audit("role_changed", current_user["username"], target=target["username"],
-           detail={"old_role": target.get("role"), "new_role": req.role})
+           detail={"old_role": target.get("role"), "new_role": req.role}, request=request)
     return {"ok": True, "role": req.role}
 
 
 @router.put("/admin/users/{user_id}/active", summary="Activate or deactivate a user (admin)")
-def admin_set_active(user_id: int, req: AdminSetActiveRequest, current_user: dict = Depends(require_admin)):
+def admin_set_active(user_id: int, req: AdminSetActiveRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
+    act = "user_activated" if req.is_active else "user_deactivated"
     if user_id == current_user["id"] and not req.is_active:
-        raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+        _reject(400, "You cannot deactivate your own account", act, me, target=me,
+                reason="self_deactivation_blocked", request=request)
     target = auth_db.get_user_by_id(user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        _reject(404, "User not found", act, me, target=f"user_id:{user_id}", reason="user_not_found", request=request)
     if not auth_db.set_active(user_id, req.is_active):
-        raise HTTPException(status_code=500, detail="Failed to update active status")
+        _reject(500, "Failed to update active status", act, me, target=target["username"],
+                reason="db_error", request=request)
     if not req.is_active:
         auth_db.revoke_all_user_sessions(user_id)
-    _audit("user_activated" if req.is_active else "user_deactivated",
-           current_user["username"], target=target["username"])
+    _audit(act, me, target=target["username"], request=request)
     return {"ok": True, "is_active": req.is_active}
 
 
@@ -744,21 +868,26 @@ _USERNAME_RE = re.compile(r"^[a-z0-9._-]{3,64}$")
 
 
 @router.post("/admin/users", summary="Create a new user (admin)")
-def admin_create_user(req: AdminCreateUserRequest, current_user: dict = Depends(require_admin)):
+def admin_create_user(req: AdminCreateUserRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     if not _HAS_PASSLIB:
         raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
 
     username = req.username.strip().lower()
     if not _USERNAME_RE.match(username):
-        raise HTTPException(status_code=422, detail="Username must be 3-64 characters: lowercase letters, numbers, dot, underscore, hyphen.")
+        _reject(422, "Username must be 3-64 characters: lowercase letters, numbers, dot, underscore, hyphen.",
+                "user_created", me, target=username[:64], reason="invalid_username", request=request)
     if not auth_db.role_exists(req.role):
-        raise HTTPException(status_code=400, detail=f"Unknown role '{req.role}'")
+        _reject(400, f"Unknown role '{req.role}'", "user_created", me, target=username,
+                reason="unknown_role", extra={"requested_role": req.role}, request=request)
     if auth_db.get_user_by_username(username):
-        raise HTTPException(status_code=409, detail="Username already exists")
+        _reject(409, "Username already exists", "user_created", me, target=username,
+                reason="username_exists", request=request)
 
     email = req.email.strip().lower() if req.email else None
     if email and auth_db.get_user_by_email(email):
-        raise HTTPException(status_code=409, detail="Email already in use")
+        _reject(409, "Email already in use", "user_created", me, target=username,
+                reason="email_in_use", request=request)
 
     generated = False
     if req.generate_password or not req.password:
@@ -767,7 +896,8 @@ def admin_create_user(req: AdminCreateUserRequest, current_user: dict = Depends(
     else:
         err = _validate_password(req.password)
         if err:
-            raise HTTPException(status_code=422, detail=err)
+            _reject(422, err, "user_created", me, target=username,
+                    reason="password_policy", request=request)
         password = req.password
 
     pw_hash = _pwd_ctx.hash(password)
@@ -777,38 +907,48 @@ def admin_create_user(req: AdminCreateUserRequest, current_user: dict = Depends(
         role=req.role, password_hash=pw_hash, must_change_pw=True,
     )
     if not uid:
-        raise HTTPException(status_code=400, detail="Could not create user (username or email may already be in use)")
+        _reject(400, "Could not create user (username or email may already be in use)", "user_created",
+                me, target=username, reason="create_failed", request=request)
     auth_db.add_password_history(uid, pw_hash)
     _audit("user_created", current_user["username"], target=username,
-           detail={"role": req.role, "generated_password": generated})
+           detail={"role": req.role, "generated_password": generated}, request=request)
 
     return {"ok": True, "user": auth_db.get_user_by_id(uid), "generated_password": password if generated else None}
 
 
 @router.put("/admin/users/{user_id}", summary="Update a user's profile (admin)")
-def admin_update_user(user_id: int, req: AdminUpdateUserRequest, current_user: dict = Depends(require_admin)):
+def admin_update_user(user_id: int, req: AdminUpdateUserRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     target = auth_db.get_user_by_id(user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        _reject(404, "User not found", "user_updated", me, target=f"user_id:{user_id}",
+                reason="user_not_found", request=request)
 
     email = req.email.strip().lower() if req.email else None
     if email:
         existing = auth_db.get_user_by_email(email)
         if existing and existing["id"] != user_id:
-            raise HTTPException(status_code=409, detail="Email already in use")
+            _reject(409, "Email already in use", "user_updated", me, target=target["username"],
+                    reason="email_in_use", request=request)
 
     if not auth_db.update_profile(user_id, email=email, display_name=req.display_name):
-        raise HTTPException(status_code=500, detail="Failed to update profile")
+        _reject(500, "Failed to update profile", "user_updated", me, target=target["username"],
+                reason="db_error", request=request)
+    _audit("user_updated", me, target=target["username"], request=request,
+           detail={"email_changed": bool(email) and email != (target.get("email") or ""),
+                   "display_name_changed": req.display_name is not None and req.display_name != target.get("display_name")})
     return {"ok": True, "user": auth_db.get_user_by_id(user_id)}
 
 
 @router.put("/admin/users/{user_id}/password", summary="Set or reset a user's password (admin)")
-def admin_set_password(user_id: int, req: AdminSetPasswordRequest, current_user: dict = Depends(require_admin)):
+def admin_set_password(user_id: int, req: AdminSetPasswordRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     if not _HAS_PASSLIB:
         raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
     target = auth_db.get_user_by_id(user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        _reject(404, "User not found", "password_reset_by_admin", me, target=f"user_id:{user_id}",
+                reason="user_not_found", request=request)
 
     generated = False
     if req.generate or not req.password:
@@ -817,31 +957,38 @@ def admin_set_password(user_id: int, req: AdminSetPasswordRequest, current_user:
     else:
         err = _validate_password(req.password)
         if err:
-            raise HTTPException(status_code=422, detail=err)
+            _reject(422, err, "password_reset_by_admin", me, target=target["username"],
+                    reason="password_policy", request=request)
         password = req.password
 
     pw_hash = _pwd_ctx.hash(password)
     if not auth_db.update_password(user_id, pw_hash):
-        raise HTTPException(status_code=500, detail="Failed to update password")
+        _reject(500, "Failed to update password", "password_reset_by_admin", me,
+                target=target["username"], reason="db_error", request=request)
     # update_password() clears must_change_pw for the self-service change-password
     # flow it was built for — an admin-issued password should still force a change.
     auth_db.set_must_change_pw(user_id, True)
     auth_db.revoke_all_user_sessions(user_id)
+    _acct_clear(target["username"])
     _audit("password_reset_by_admin", current_user["username"], target=target["username"],
-           detail={"generated": generated})
+           detail={"generated": generated}, request=request)
     return {"ok": True, "generated_password": password if generated else None}
 
 
 @router.delete("/admin/users/{user_id}", summary="Permanently remove a user (admin)")
-def admin_delete_user(user_id: int, current_user: dict = Depends(require_admin)):
+def admin_delete_user(user_id: int, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     if user_id == current_user["id"]:
-        raise HTTPException(status_code=400, detail="You cannot remove your own account")
+        _reject(400, "You cannot remove your own account", "user_deleted", me, target=me,
+                reason="self_delete_blocked", request=request)
     target = auth_db.get_user_by_id(user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        _reject(404, "User not found", "user_deleted", me, target=f"user_id:{user_id}",
+                reason="user_not_found", request=request)
     if not auth_db.delete_user(user_id):
-        raise HTTPException(status_code=500, detail="Failed to remove user")
-    _audit("user_deleted", current_user["username"], target=target["username"])
+        _reject(500, "Failed to remove user", "user_deleted", me, target=target["username"],
+                reason="db_error", request=request)
+    _audit("user_deleted", me, target=target["username"], request=request)
     return {"ok": True}
 
 
@@ -860,17 +1007,24 @@ def admin_get_screen_permissions(user_id: int, current_user: dict = Depends(requ
 
 
 @router.put("/admin/screen-permissions/{user_id}", summary="Replace a user's screen permissions (admin)")
-def admin_set_screen_permissions(user_id: int, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
+def admin_set_screen_permissions(user_id: int, req: SetScreenPermissionsRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     target = auth_db.get_user_by_id(user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        _reject(404, "User not found", "screen_permissions_changed", me, target=f"user_id:{user_id}",
+                reason="user_not_found", request=request)
     if target.get("role") == "admin":
-        raise HTTPException(status_code=400, detail="Admin accounts always have full access and have no configurable permissions")
+        _reject(400, "Admin accounts always have full access and have no configurable permissions",
+                "screen_permissions_changed", me, target=target["username"],
+                reason="admin_not_configurable", request=request)
+    old = auth_db.get_screen_permissions(user_id)
     ok = auth_db.set_screen_permissions(user_id, [p.model_dump() for p in req.permissions])
     if not ok:
-        raise HTTPException(status_code=500, detail="Failed to save screen permissions")
-    _audit("screen_permissions_changed", current_user["username"], target=target["username"],
-           detail={"permissions": [p.model_dump() for p in req.permissions]})
+        _reject(500, "Failed to save screen permissions", "screen_permissions_changed", me,
+                target=target["username"], reason="db_error", request=request)
+    _audit("screen_permissions_changed", me, target=target["username"],
+           detail={"old_permissions": old, "permissions": [p.model_dump() for p in req.permissions]},
+           request=request)
     return {"ok": True, "user_id": user_id, "permissions": auth_db.get_screen_permissions(user_id)}
 
 
@@ -886,32 +1040,39 @@ def admin_list_roles(current_user: dict = Depends(require_admin)):
 
 
 @router.post("/admin/roles", summary="Create a role (admin)")
-def admin_create_role(req: CreateRoleRequest, current_user: dict = Depends(require_admin)):
+def admin_create_role(req: CreateRoleRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     name = req.name.strip().lower()
     if not re.match(r"^[a-z0-9_-]{2,32}$", name):
-        raise HTTPException(status_code=422, detail="Role name must be 2-32 characters: lowercase letters, numbers, underscore, hyphen.")
+        _reject(422, "Role name must be 2-32 characters: lowercase letters, numbers, underscore, hyphen.",
+                "role_created", me, target=name[:32], reason="invalid_role_name", request=request)
     if auth_db.role_exists(name):
-        raise HTTPException(status_code=409, detail="A role with this name already exists")
+        _reject(409, "A role with this name already exists", "role_created", me, target=name,
+                reason="role_exists", request=request)
     role_id = auth_db.create_role(name, req.description)
     if not role_id:
-        raise HTTPException(status_code=500, detail="Failed to create role")
-    _audit("role_created", current_user["username"], target=name, detail={"description": req.description})
+        _reject(500, "Failed to create role", "role_created", me, target=name, reason="db_error", request=request)
+    _audit("role_created", me, target=name, detail={"description": req.description}, request=request)
     return {"ok": True, "role_id": role_id}
 
 
 @router.put("/admin/roles/{role_id}", summary="Update a role's description (admin)")
-def admin_update_role(role_id: int, req: UpdateRoleRequest, current_user: dict = Depends(require_admin)):
+def admin_update_role(role_id: int, req: UpdateRoleRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     if not auth_db.update_role(role_id, req.description):
-        raise HTTPException(status_code=500, detail="Failed to update role")
+        _reject(500, "Failed to update role", "role_updated", me, target=str(role_id),
+                reason="db_error", request=request)
+    _audit("role_updated", me, target=str(role_id), detail={"description": req.description}, request=request)
     return {"ok": True}
 
 
 @router.delete("/admin/roles/{role_id}", summary="Delete a role (admin)")
-def admin_delete_role(role_id: int, current_user: dict = Depends(require_admin)):
+def admin_delete_role(role_id: int, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
     err = auth_db.delete_role(role_id)
     if err:
-        raise HTTPException(status_code=409, detail=err)
-    _audit("role_deleted", current_user["username"], target=str(role_id))
+        _reject(409, err, "role_deleted", me, target=str(role_id), reason="delete_rejected", request=request)
+    _audit("role_deleted", me, target=str(role_id), request=request)
     return {"ok": True}
 
 
@@ -921,47 +1082,54 @@ def admin_get_role_permissions(role_id: int, current_user: dict = Depends(requir
 
 
 @router.put("/admin/roles/{role_id}/permissions", summary="Replace a role's default screen permissions (admin)")
-def admin_set_role_permissions(role_id: int, req: SetScreenPermissionsRequest, current_user: dict = Depends(require_admin)):
+def admin_set_role_permissions(role_id: int, req: SetScreenPermissionsRequest, request: Request, current_user: dict = Depends(require_admin)):
+    me = current_user["username"]
+    old = auth_db.get_role_screen_permissions(role_id)
     ok = auth_db.set_role_screen_permissions(role_id, [p.model_dump() for p in req.permissions])
     if not ok:
-        raise HTTPException(status_code=500, detail="Failed to save role permissions")
-    _audit("role_permissions_changed", current_user["username"], target=str(role_id),
-           detail={"permissions": [p.model_dump() for p in req.permissions]})
+        _reject(500, "Failed to save role permissions", "role_permissions_changed", me,
+                target=str(role_id), reason="db_error", request=request)
+    _audit("role_permissions_changed", me, target=str(role_id),
+           detail={"old_permissions": old, "permissions": [p.model_dump() for p in req.permissions]},
+           request=request)
     return {"ok": True, "role_id": role_id, "permissions": auth_db.get_role_screen_permissions(role_id)}
 
 
 @router.post("/change-password", summary="Change own password")
 def change_password(
     req: ChangePasswordRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
+    me = current_user["username"]
     if not _HAS_PASSLIB:
         raise HTTPException(status_code=503, detail="passlib[bcrypt] not installed")
 
-    full = auth_db.get_user_by_username(current_user["username"])
+    full = auth_db.get_user_by_username(me)
     if not full or not full.get("password_hash"):
-        raise HTTPException(status_code=400, detail="No local password configured on this account.")
+        _reject(400, "No local password configured on this account.", "password_changed", me,
+                target=me, reason="no_local_password", request=request)
 
     if not _pwd_ctx.verify(req.current_password, full["password_hash"]):
-        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+        _reject(401, "Current password is incorrect.", "password_changed", me, target=me,
+                reason="wrong_current_password", request=request)
 
     err = _validate_password(req.new_password)
     if err:
-        raise HTTPException(status_code=422, detail=err)
+        _reject(422, err, "password_changed", me, target=me, reason="password_policy", request=request)
 
     for old in auth_db.get_password_history(current_user["id"]):
         if _pwd_ctx.verify(req.new_password, old):
-            raise HTTPException(
-                status_code=422,
-                detail="New password matches one of your last 3 passwords. Choose a different one.",
-            )
+            _reject(422, "New password matches one of your last 3 passwords. Choose a different one.",
+                    "password_changed", me, target=me, reason="password_reuse", request=request)
 
     new_hash = _pwd_ctx.hash(req.new_password)
     if not auth_db.update_password(current_user["id"], new_hash):
-        raise HTTPException(status_code=500, detail="Password update failed.")
+        _reject(500, "Password update failed.", "password_changed", me, target=me,
+                reason="db_error", request=request)
 
     auth_db.revoke_all_user_sessions(current_user["id"])
-    _audit("password_changed", current_user["username"], target=current_user["username"])
+    _audit("password_changed", me, target=me, request=request)
     return {"ok": True, "message": "Password updated. Please log in again."}
 
 
@@ -1013,18 +1181,28 @@ async def sso_callback(
     provider: str, request: Request, response: Response,
     code: str = "", state: str = "", error: str = "",
 ):
+    def _sso_fail(reason: str, actor: Optional[str] = None, shown: Optional[str] = None):
+        _audit("login_failed", actor or f"sso:{provider}",
+               detail={"provider": provider, "reason": reason}, request=request, outcome="failure")
+        return RedirectResponse(f"/?auth_error={shown or reason}", status_code=302)
+
     if error:
+        # `error` is attacker-influenced query text — keep the redirect value as
+        # before but log a fixed reason code, with the raw value truncated.
+        _audit("login_failed", f"sso:{provider}",
+               detail={"provider": provider, "reason": "provider_error", "provider_error": error[:80]},
+               request=request, outcome="failure")
         return RedirectResponse(f"/?auth_error={error}", status_code=302)
 
     state_data = _sso_state.pop(state, None)
     if not state_data or state_data["provider"] != provider:
-        return RedirectResponse("/?auth_error=invalid_state", status_code=302)
+        return _sso_fail("invalid_state")
     if time.monotonic() - state_data["created_at"] > 600:
-        return RedirectResponse("/?auth_error=state_expired", status_code=302)
+        return _sso_fail("state_expired")
 
     providers = _sso_providers()
     if provider not in providers:
-        return RedirectResponse("/?auth_error=unknown_provider", status_code=302)
+        return _sso_fail("unknown_provider")
 
     cfg      = providers[provider]
     redir    = _redirect_uri(request, provider)
@@ -1058,10 +1236,10 @@ async def sso_callback(
 
     except Exception as exc:
         logger.warning("SSO token exchange failed (%s): %s", provider, exc)
-        return RedirectResponse("/?auth_error=sso_failed", status_code=302)
+        return _sso_fail("sso_failed")
 
     if not provider_id:
-        return RedirectResponse("/?auth_error=no_subject", status_code=302)
+        return _sso_fail("no_subject")
 
     # 1. Look up by SSO identity
     user = auth_db.get_user_by_sso(provider, provider_id)
@@ -1083,9 +1261,9 @@ async def sso_callback(
                 _audit("user_created", f"sso:{provider}", target=base, detail={"jit_provisioned": True})
 
     if not user:
-        return RedirectResponse("/?auth_error=provisioning_failed", status_code=302)
+        return _sso_fail("provisioning_failed", email or None)
     if not user.get("is_active"):
-        return RedirectResponse("/?auth_error=account_inactive", status_code=302)
+        return _sso_fail("account_inactive", user.get("username"))
 
     _finish_login(user, request, response)
     _audit("login", user["username"], detail={"provider": provider}, request=request)

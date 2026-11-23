@@ -46,6 +46,13 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `ORACLE_FUSION_API_VERSION` | Oracle Fusion | REST API version (default `11.13.18.05`). |
 | `DENDRAI_CLAUDE_MODEL` | AI features | Override the Claude model (default `claude-opus-4-8`). |
 | `DENDRAI_MCP_URL` | Managed agents | Hosted MCP server URL for the cloud agent deployment. |
+| `TENANT_MODE` | Multi-tenancy | `single` (default) or `multi` (database-per-tenant, resolved from the request subdomain). See "Multi-Tenancy" in `project/README.md`. |
+| `CONTROL_DATABASE_URL` | `TENANT_MODE=multi` | Postgres URL of the small control-plane database (tenant registry only). |
+| `CONTROL_PLANE_ROOT_KEY` | `TENANT_MODE=multi` | Fernet key that encrypts every tenant's DSN and secrets. Must stay stable — rotating it makes tenants unreachable. |
+| `TENANT_DB_ADMIN_DSN` | `provision_tenant.py` | Postgres DSN with `CREATEDB` privilege; used only when provisioning a tenant. |
+| `TENANT_ROOT_DOMAIN` | `TENANT_MODE=multi` | Wildcard domain tenants are served under (default `dendrai.ai`); drives the CORS allow-list. |
+| `TENANT_CACHE_TTL_S` | `TENANT_MODE=multi` | Seconds a resolved tenant is cached (default `30`); bounds how fast a suspension applies. |
+| `TENANT_POOL_CACHE_SIZE` | `TENANT_MODE=multi` | Max open tenant connection pools per instance (default `50`). |
 | `AUTH_JWT_SECRET` | Authentication | JWT signing key. Auto-generates a random key each restart if not set — set explicitly for stable sessions. |
 | `AUDIT_SIGNING_KEY` | Platform audit trail | HMAC-SHA256 key signing `observability.audit_log` rows (identity/access changes + MCP tool calls) so `GET /auth/admin/audit-log/verify` can prove they haven't been tampered with. Optional — falls back to a random per-process key if unset (chain-hash tamper-evidence still catches row deletion/reordering either way; a missing explicit key only means HMAC signatures won't re-verify across a restart). Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
 | `PUBLIC_URL` | Authentication (SSO) | Base URL of your deployment, e.g. `https://app.railway.app`. Required for OAuth redirect URIs. |
@@ -53,6 +60,8 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Google SSO | Both required to enable Google Workspace login. |
 | `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` | GitHub SSO | Both required to enable GitHub login. |
 | `OKTA_CLIENT_ID` + `OKTA_CLIENT_SECRET` + `OKTA_DOMAIN` | Okta SSO | All three required to enable Okta login. |
+| `AUTH_LOCKOUT_THRESHOLD` | Authentication | Failed sign-ins per username (any source IP) within 15 minutes before that account is temporarily refused (default `5`). Backoff starts at 60s and doubles per further failure. Stops distributed guessing against one account, which the per-IP limit alone cannot. |
+| `AUTH_LOCKOUT_MAX_S` | Authentication | Longest backoff in seconds (default `900`). A delay, not a permanent lock; an admin password reset clears it immediately. In-memory, so it resets on restart and is per backend instance. |
 | `AUTH_SESSION_TTL_HOURS` | Authentication | JWT session lifetime (default `24`). |
 | `AUTH_COOKIE_SECURE` | Authentication | Set to `false` only for HTTP-only local dev (default `true`). |
 | `MCP_READ_ONLY` | PaC / CaC / DevOps Monitoring / Infrastructure Monitoring MCP servers | Set to `true` to block all write operations from these MCP servers. |
@@ -73,6 +82,16 @@ Copy `.env.example` to `.env` and fill in the values you need. All are optional 
 | `PROXY_FREQ_THRESHOLD` | Telemetry Proxy | Call-count threshold within window before `high_frequency` fires (default `10`). |
 | `PROXY_WRITE_TIMEOUT_S` | Telemetry Proxy | Seconds before a DB write is silently cancelled (default `2.0`). |
 | `PROXY_LOG_LEVEL` | Telemetry Proxy | Log verbosity: `DEBUG`, `INFO`, `WARNING` (default `WARNING`). |
+
+### Tenant CLI tools (`TENANT_MODE=multi`)
+
+```bash
+python provision_tenant.py --slug companyx --display-name "Company X Inc."   # create a tenant
+python tenant_admin.py list | suspend --slug X | activate --slug X           # inspect / suspend / reactivate
+python tenant_admin.py migrate [--slug X]                                    # re-apply schema after a release
+```
+
+Full procedure, prerequisites and operational checklist: "Multi-Tenancy" and "Operations & Maintenance" in `project/README.md`.
 
 ---
 
@@ -633,30 +652,33 @@ JWT-based auth system integrated into `api_server.py`. Provides local login with
 
 **Default accounts (both require password change on first login):**
 
-| Username | Password | Role |
+| Username | Initial password | Role |
 |---|---|---|
-| `admin` | `Admin@Dendrai1!` | admin |
-| `dendrai` | `Dendrai@Pass1!` | user |
+| `admin` | `AUTH_SEED_ADMIN_PASSWORD`, or a random one-time password printed once in the startup log | admin |
+| `dendrai` | `AUTH_SEED_USER_PASSWORD`, or a random one-time password printed once in the startup log | user |
+
+> Older versions of this project seeded fixed, publicly documented passwords. If a deployment was created back then and those accounts were never changed, change them now (Configuration > User Configuration, or `PUT /auth/admin/users/{id}/password`).
 
 **Auth endpoints (prefix `/auth`):**
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/auth/login` | Local username + password login (rate-limited) |
+| `POST` | `/auth/login` | Local username + password login (rate-limited per IP, and throttled per account after repeated failures) |
 | `POST` | `/auth/logout` | Revoke session cookie |
 | `GET` | `/auth/me` | Current user info |
 | `POST` | `/auth/change-password` | Change password (history-checked, revokes all sessions) |
 | `GET` | `/auth/sso/providers` | List enabled SSO providers |
 | `GET` | `/auth/sso/{provider}/start` | Begin PKCE OAuth flow |
 | `GET` | `/auth/sso/{provider}/callback` | Token exchange + JIT provisioning |
-| `GET` | `/auth/admin/audit-log` | Tamper-evident identity/access audit trail (admin) — `?category=&actor=&limit=` |
+| `GET` | `/auth/admin/audit-log` | Tamper-evident audit trail (admin) — `?category=&actor=&action=&target=&outcome=success\|failure\|denied&since=&limit=` |
+| `GET` | `/auth/admin/audit-log/events` | Catalog of every audited event type, its outcomes and meaning (admin) |
 | `GET` | `/auth/admin/audit-log/verify` | Verify the audit trail's hash chain (admin) |
 
 **Middleware:** `_DendraiAuthMiddleware` (Starlette `BaseHTTPMiddleware`) validates JWT on all routes except `/auth/`, `/health`, `/db/status`, `/docs`, `/redoc`, `/openapi.json`, `/mcp/`, `/github/`.
 
 **Database schema:** `auth` PostgreSQL schema with 4 tables — `auth.users`, `auth.password_history`, `auth.sso_identities`, `auth.sessions`.
 
-**Platform audit trail (`observability.audit_log`, `db.py`):** a hash-chained, HMAC-signed, append-only log — same tamper-evidence construction as `evidence_records` (see DevOps Monitoring above), but generic (`category`/`action`/`actor`/`target`/`detail`) rather than SARIF-shaped, and never deduplicated (every call is its own row). A small `_audit()` helper in `auth_endpoints.py` records every login success/failure, logout, SSO JIT-provisioning, role change, user create/delete/activate, password reset, screen-permission edit, and role CRUD (`category="auth"`). `mcp_guards.audit_log()` now writes here too (`category="mcp_tool"`), replacing what used to be a local flat file (`mcp_audit.log`) that was silently wiped on every redeploy since no volume was mounted for it — the flat file is kept only as a last-resort fallback when the database itself is unreachable. Each row's `signature` is `HMAC-SHA256(record_json, AUDIT_SIGNING_KEY)` and `chain_hash = sha256(prev.chain_hash + this.signature)`, inserted under an advisory lock; `db.verify_audit_chain()` walks the table and reports the first broken link, if any. `AUDIT_SIGNING_KEY` is optional — a missing key falls back to a random per-process key (chain-hash tamper-evidence still works; only HMAC re-verification of old signatures is lost across a restart, a documented degradation, not a silent one). Insertion never raises — an audit-logging failure must never block the action it's recording.
+**Platform audit trail (`observability.audit_log`, `db.py`):** a hash-chained, HMAC-signed, append-only log — same tamper-evidence construction as `evidence_records` (see DevOps Monitoring above), but generic (`category`/`action`/`actor`/`target`/`detail`) rather than SARIF-shaped, and never deduplicated (every call is its own row). Every row has an `outcome` — `success`, `failure` (attempted but not completed: bad password, validation error, blocked by a safety rule, internal error; `detail.reason` is a short code) or `denied` (a permission or session check refused it) — and the outcome is part of the signed payload. `_audit()` / `_reject()` in `auth_endpoints.py` record sign-ins and failures, rate-limit hits, idle-session expiry, logout, SSO provisioning, password changes and resets, user and role CRUD, role and screen-permission changes (with old and new values), and refused access to admin or screen-restricted endpoints (`category="auth"`). The audit log holds events that have no domain table of their own; it is not a copy of approvals, findings or risk decisions. The full list of event types is in `audit_events.py` (served at `GET /auth/admin/audit-log/events`); add a catalog entry whenever you add an audited event, and `test_audit_outcomes.py` fails if you forget. Never put passwords or tokens in `detail`. `mcp_guards.audit_log()` now writes here too (`category="mcp_tool"`), replacing what used to be a local flat file (`mcp_audit.log`) that was silently wiped on every redeploy since no volume was mounted for it — the flat file is kept only as a last-resort fallback when the database itself is unreachable. Each row's `signature` is `HMAC-SHA256(record_json, AUDIT_SIGNING_KEY)` and `chain_hash = sha256(prev.chain_hash + this.signature)`, inserted under an advisory lock; `db.verify_audit_chain()` walks the table and reports the first broken link, if any. `AUDIT_SIGNING_KEY` is optional — a missing key falls back to a random per-process key (chain-hash tamper-evidence still works; only HMAC re-verification of old signatures is lost across a restart, a documented degradation, not a silent one). Insertion never raises — an audit-logging failure must never block the action it's recording.
 
 ---
 

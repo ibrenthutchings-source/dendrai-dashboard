@@ -254,6 +254,7 @@ def _execute_remediation(task: dict) -> None:
     except Exception as exc:
         result = {"error": str(exc)}
     mcp_guards.audit_log(f"{tool_name}.result", task_id=task.get("id"),
+                          _outcome="failure" if result.get("error") else "success",
                           ok=not result.get("error"), url=result.get("url") or result.get("error"))
 
     db.set_approval_task_execution_result(task["id"], result)

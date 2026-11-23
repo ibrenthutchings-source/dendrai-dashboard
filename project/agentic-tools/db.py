@@ -2623,6 +2623,15 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_category
     ON observability.audit_log (category, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor
     ON observability.audit_log (actor, occurred_at DESC);
+-- outcome: success | failure | denied. Added after the table first shipped, so
+-- it is an idempotent ALTER (existing rows default to 'success' — every event
+-- before this column existed was either a success or a *_failed action).
+ALTER TABLE observability.audit_log
+    ADD COLUMN IF NOT EXISTS outcome VARCHAR(16) NOT NULL DEFAULT 'success';
+CREATE INDEX IF NOT EXISTS idx_audit_log_outcome
+    ON observability.audit_log (outcome, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action
+    ON observability.audit_log (action, occurred_at DESC);
 
 CREATE SEQUENCE IF NOT EXISTS observability.map_ref_seq;
 
@@ -13791,21 +13800,34 @@ def _audit_chain_hash(prev_hash: Optional[str], signature: str) -> str:
     return hashlib.sha256(((prev_hash or AUDIT_CHAIN_GENESIS_HASH) + signature).encode("utf-8")).hexdigest()
 
 
+AUDIT_OUTCOMES = ("success", "failure", "denied")
+
+
 def insert_audit_log_entry(
     category: str, action: str, actor: Optional[str] = None, target: Optional[str] = None,
     detail: Optional[dict] = None, ip_address: Optional[str] = None,
+    outcome: str = "success",
 ) -> Optional[int]:
     """Insert one immutable, chain-hashed audit row. Never raises — audit
     logging must not block the action it's auditing (same discipline
     mcp_guards.audit_log already followed for its flat-file log); callers
-    that care can check the None return."""
+    that care can check the None return.
+
+    outcome is one of AUDIT_OUTCOMES: "success", "failure" (the action was
+    attempted and did not complete — bad password, validation error, internal
+    error) or "denied" (a permission check refused it). An unknown value is
+    recorded as "failure" rather than dropped. outcome is part of the signed
+    payload, so it can't be flipped after the fact without breaking the HMAC."""
     import hashlib
     import hmac as _hmac
     import json as _json
 
+    if outcome not in AUDIT_OUTCOMES:
+        outcome = "failure"
     record_json = _json.dumps(
         {"category": category, "action": action, "actor": actor,
-         "target": target, "ip_address": ip_address, "detail": detail},
+         "target": target, "ip_address": ip_address, "detail": detail,
+         "outcome": outcome},
         sort_keys=True, default=str,
     )
     signature = _hmac.new(
@@ -13823,12 +13845,14 @@ def insert_audit_log_entry(
                 cur.execute(
                     """
                     INSERT INTO observability.audit_log (
-                        category, action, actor, target, ip_address, detail, record_json, signature, chain_hash
-                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                        category, action, actor, target, ip_address, detail, record_json, signature, chain_hash,
+                        outcome
+                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)
                     RETURNING id
                     """,
                     (category, action, actor, target, ip_address,
-                     Json(detail) if detail is not None else None, record_json, signature, chain_hash),
+                     Json(detail) if detail is not None else None, record_json, signature, chain_hash,
+                     outcome),
                 )
                 row = cur.fetchone()
             return row[0] if row else None
@@ -13839,24 +13863,35 @@ def insert_audit_log_entry(
         return None
 
 
-def list_audit_log(category: Optional[str] = None, actor: Optional[str] = None, limit: int = 200) -> list:
-    """Newest-first, optionally filtered — feeds an admin-facing audit viewer."""
+def list_audit_log(category: Optional[str] = None, actor: Optional[str] = None, limit: int = 200,
+                   outcome: Optional[str] = None, action: Optional[str] = None,
+                   target: Optional[str] = None, since: Optional[str] = None) -> list:
+    """Newest-first, optionally filtered — feeds an admin-facing audit viewer.
+    outcome: success | failure | denied. since: ISO-8601 timestamp lower bound."""
     def _do():
         filters, params = [], []
         if category:
             filters.append("category = %s"); params.append(category)
         if actor:
             filters.append("actor = %s"); params.append(actor)
+        if outcome:
+            filters.append("outcome = %s"); params.append(outcome)
+        if action:
+            filters.append("action = %s"); params.append(action)
+        if target:
+            filters.append("target = %s"); params.append(target)
+        if since:
+            filters.append("occurred_at >= %s::timestamptz"); params.append(since)
         where = ("WHERE " + " AND ".join(filters)) if filters else ""
         params.append(min(limit, 1000))
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT id, occurred_at, category, action, actor, target, ip_address, detail
+                    SELECT id, occurred_at, category, action, actor, target, ip_address, detail, outcome
                     FROM observability.audit_log
                     {where}
-                    ORDER BY occurred_at DESC
+                    ORDER BY occurred_at DESC, id DESC
                     LIMIT %s
                     """,
                     params,

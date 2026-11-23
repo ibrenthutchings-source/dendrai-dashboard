@@ -21,6 +21,8 @@ The platform pairs a **deterministic analytics core** (statistical models — AR
 - [File Structure](#file-structure)
 - [Development Setup](#development-setup)
 - [Environment Variables](#environment-variables)
+- [Multi-Tenancy](#multi-tenancy)
+- [Operations & Maintenance](#operations--maintenance)
 - [Supported Tickers](#supported-tickers)
 
 ---
@@ -512,6 +514,136 @@ DATABASE_URL=postgresql://… python -m pytest tests -v         # full suite, in
 ```
 
 `.github/workflows/ci.yml` runs the full suite (with a throwaway `postgres:16` service container) on every push and pull request to `main`.
+
+---
+
+## Multi-Tenancy
+
+The backend runs in one of two modes, chosen by the `TENANT_MODE` environment variable (set it in `project/agentic-tools/.env` locally, or in the backend service's variables on your host; restart after changing it).
+
+| Mode | Behavior |
+|------|----------|
+| `single` (default) | One database (`DATABASE_URL`), one set of secrets. No subdomain resolution. Local dev and any deployment that hasn't opted in. |
+| `multi` | **Database-per-tenant.** Each customer gets a physically separate Postgres database and its own secrets, resolved per request from the `Host` header (`companyx.dendrai.ai` → tenant `companyx`). No `tenant_id` columns — database separation is the isolation boundary. |
+
+### How it works
+
+- **Control plane** (`control_plane.py`) — a small separate database (`CONTROL_DATABASE_URL`) holding only the tenant registry and each tenant's encrypted DSN + secret bundle. Encrypted with `CONTROL_PLANE_ROOT_KEY`.
+- **Resolution** — `_TenantResolutionMiddleware` (`api_server.py`) is the outermost middleware. It resolves the subdomain, binds that tenant's connection pool and secrets for the request, and rejects unknown or suspended tenants (`404 Unknown tenant`) before any route runs. There is no fallback to a default tenant.
+- **Per-tenant secrets** — JWT signing key, evidence signing key, connector encryption key and the write-guard API key are generated per tenant at provisioning. The audit-log signing key is derived from the tenant's evidence key.
+- **Background jobs** — sweeps and pollers iterate every active tenant; one tenant's failure does not stop the others.
+- **Caches** — in-process caches that hold tenant-derived data (e.g. RSS grading) are keyed by tenant.
+
+### Required environment variables (`TENANT_MODE=multi`)
+
+| Variable | Description |
+|----------|-------------|
+| `CONTROL_DATABASE_URL` | Postgres URL of the control-plane database (registry only — no customer data). Every app instance needs it. |
+| `CONTROL_PLANE_ROOT_KEY` | Fernet key encrypting tenant DSNs and secrets. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. **Must stay stable** — rotating it makes every tenant unreachable until re-provisioned. Back it up outside the database it protects. |
+| `TENANT_DB_ADMIN_DSN` | Postgres DSN with `CREATEDB` privilege. Used **only** by `provision_tenant.py`, not at request time. |
+| `TENANT_ROOT_DOMAIN` | Wildcard domain tenants are served under (default `dendrai.ai`). Drives the CORS allow-list. |
+| `TENANT_CACHE_TTL_S` | How long a resolved tenant is cached (default `30`). Bounds how fast a suspension takes effect. |
+| `TENANT_POOL_CACHE_SIZE` | Max open tenant connection pools per app instance (default `50`, least-recently-used evicted). |
+
+In multi mode the global `DATABASE_URL`, `AUTH_JWT_SECRET`, `EVIDENCE_SIGNING_KEY` and `CONNECTOR_ENCRYPTION_KEY` are not used for tenant traffic.
+
+### Adding a tenant
+
+Prerequisites: `TENANT_MODE=multi`, `CONTROL_DATABASE_URL`, `CONTROL_PLANE_ROOT_KEY` and `TENANT_DB_ADMIN_DSN` set, and a wildcard DNS record (`*.dendrai.ai`) plus wildcard TLS certificate pointing at the app.
+
+```bash
+cd project/agentic-tools
+python provision_tenant.py --slug companyx --display-name "Company X Inc."
+```
+
+The slug must be 3–63 lowercase letters, digits or hyphens, start with a letter and not end in a hyphen. It becomes both the subdomain and the database name (`tenant_<slug>`, hyphens folded to underscores). Optional flags: `--db-name` to override the database name, `--admin-dsn` to override `TENANT_DB_ADMIN_DSN`.
+
+The script, in order: creates the database, applies the full schema, generates the tenant's four secrets, seeds the auth schema and the two default accounts, then registers the tenant in the control plane (visible to every instance immediately, no restart). Initial passwords come from `AUTH_SEED_ADMIN_PASSWORD` / `AUTH_SEED_USER_PASSWORD`, or a random one-time password printed in the script output — **capture it from the output**. An existing database with the same name is reused.
+
+Verify: open `https://companyx.<TENANT_ROOT_DOMAIN>`, sign in with the seeded admin, and change the password.
+
+### Managing tenants
+
+`tenant_admin.py` covers day-2 operations (needs the same control-plane env vars):
+
+```bash
+python tenant_admin.py list                       # every tenant and its status
+python tenant_admin.py suspend  --slug companyx   # requests get 404 within TENANT_CACHE_TTL_S
+python tenant_admin.py activate --slug companyx
+python tenant_admin.py migrate                    # re-apply schema to ALL active tenants
+python tenant_admin.py migrate  --slug companyx   # ...or just one
+```
+
+Suspension blocks access but keeps the database. There is no automated tenant deletion; removing a tenant's data means dropping its `tenant_<slug>` database and its control-plane rows by hand, which is irreversible — take a backup first.
+
+### Local development in multi mode
+
+Requests must carry a tenant subdomain, including on localhost. Browsers resolve `companyx.localhost` to `127.0.0.1`, so open `http://companyx.localhost:5173`. The Vite dev proxy must forward the original `Host` header to the API for tenant resolution to work.
+
+### Known limitations
+
+- Schema changes reach existing tenants only when you run `tenant_admin.py migrate`; app startup does not migrate tenant databases.
+- The frontend has no tenant concept; it relies on being served from the tenant's subdomain.
+- The standalone `risk-control-register/` app (on the `Prova` branch) runs single-tenant only.
+
+---
+
+## Operations & Maintenance
+
+A checklist for the team running a deployment. Items marked *(multi)* apply only with `TENANT_MODE=multi`.
+
+### Every release
+
+1. CI (`.github/workflows/ci.yml`) must be green — it runs the full pytest suite against a throwaway Postgres on every push and PR to `main`. Locally: `cd project/agentic-tools && python -m pytest tests -v`.
+2. Build the frontend (`cd project && npm run build`) — `project/dist/` is committed, so rebuild and commit it with frontend changes.
+3. Deploy the backend. In single mode the schema self-heals on startup (`db.init_db()` runs DDL and idempotent migrations).
+4. *(multi)* Run `python tenant_admin.py migrate` after any release that changes the schema, then spot-check one tenant, before users hit the new code paths.
+5. If releasing a version: `npm version patch|minor|major && git push --follow-tags` (see `RELEASING.md`).
+6. Smoke test: `GET /health` on the backend, sign in, open the Framework Matrix, remove a control, reload and confirm it stays removed.
+
+### Secrets and keys
+
+| Secret | Rotation guidance |
+|--------|-------------------|
+| `CONTROL_PLANE_ROOT_KEY` *(multi)* | **Do not rotate casually** — it makes every tenant unreachable. Back it up in a secrets manager separate from the control database. |
+| `AUTH_JWT_SECRET` | If unset it is random per restart, which logs everyone out on every deploy — set it explicitly. Rotating it signs all users out (plan for it). *(multi: generated per tenant.)* |
+| `CONNECTOR_ENCRYPTION_KEY` | Encrypts stored connector credentials and ingest keys. Changing it makes existing encrypted values undecryptable — re-enter connector credentials afterwards. |
+| `EVIDENCE_SIGNING_KEY` / `AUDIT_SIGNING_KEY` | Changing them stops old HMAC signatures re-verifying (chain hashes still work). Keep stable; set `AUDIT_SIGNING_KEY` explicitly in production. |
+| Connector credentials | The daily `connector_hygiene_sweep` flags credentials older than 90 days — rotate when flagged. `POST /observability/systems/{id}/rotate-key` rotates a monitored system's ingest key. |
+| SSO / webhook / write tokens (`GITHUB_WEBHOOK_SECRET`, `GITHUB_WRITE_TOKEN`, OAuth client secrets) | Rotate on staff changes and per your policy; always set `GITHUB_WEBHOOK_SECRET` in production. |
+
+Never commit `.env`; `.env.example` is the template. Review who can read host-level variables when staff with access leave.
+
+### Database
+
+- **Backups:** enable automated Postgres backups and test a restore at least quarterly. *(multi)* Back up the control-plane database **and** every tenant database — each is useless without the other.
+- **Connections:** *(multi)* each instance holds up to `TENANT_POOL_CACHE_SIZE` pools of up to 3 connections each; size Postgres `max_connections` for instances × pools × 3.
+- **Retention:** `pii_retention_sweep` purges exception events older than `EXCEPTION_EVENT_RETENTION_DAYS` (default 400) daily. Align this with your data-retention policy and document any change.
+- **Growth:** watch the size of `observability.*` tables (telemetry, audit log, evidence records) and plan archiving or partitioning before they become slow.
+
+### Monitoring and routine checks
+
+| Cadence | Check |
+|---------|-------|
+| Continuous | Uptime on `GET /health`; alerts on 5xx rate and database connection errors. Set `MCP_ALERT_WEBHOOK_URL` so ESCALATE verdicts and model-drift incidents reach Slack. |
+| Daily | Skim backend logs for sweep failures (each sweep logs and continues on error — failures are quiet, not fatal). *(multi)* Look for `failed for tenant` lines. |
+| Weekly | Review open Model Health drift incidents, the Approval Inbox backlog, and connector status (stale or failing pollers). |
+| Monthly | Run `GET /auth/admin/audit-log/verify` to confirm the audit chain is intact; review user accounts and role assignments; review SSO provider config. |
+| Quarterly | Test a backup restore; rotate stale credentials; review `EXCEPTION_EVENT_RETENTION_DAYS`; check `pip list --outdated` / `npm audit` and patch dependencies; review `DENDRAI_CLAUDE_MODEL` against current models. |
+
+### Dependencies and runtime
+
+- Python 3.11+ and Node 18+. Keep `requirements.txt` and `package-lock.json` committed; update through a PR with CI.
+- The Docker image installs a real OPA binary for Policy-as-Code; local dev without OPA falls back to a labelled heuristic — don't treat heuristic results as authoritative.
+- AI features need `ANTHROPIC_API_KEY`; without it AI routes return 503 and the deterministic pipeline keeps working. Watch token spend on the Token Usage screen.
+
+### Incident basics
+
+- **Users logged out after a deploy:** check `AUTH_JWT_SECRET` is set and unchanged.
+- **Connector or ingest calls returning 503:** `CONNECTOR_ENCRYPTION_KEY` is missing or changed.
+- **`404 Unknown tenant`** *(multi)*: wrong subdomain or tenant suspended (an unreachable control plane returns 503 instead). Check `tenant_admin.py list`.
+- **A tenant is missing new features or tables after a release** *(multi)*: run `tenant_admin.py migrate`.
+- **Suspected tampering:** run the audit-log verify endpoint and `/evidence/records/{id}/verify`; preserve logs before changing anything.
 
 ---
 

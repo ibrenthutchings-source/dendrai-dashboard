@@ -212,19 +212,23 @@ _audit_log_path = _TOOLS_DIR / "mcp_audit.log"
 _audit_lock     = threading.Lock()
 
 
-def audit_log(tool_name: str, **kwargs: object) -> None:
+def audit_log(tool_name: str, *, _outcome: str = "success", **kwargs: object) -> None:
     """
     Record one structured tool-call audit entry.
     Pass safe key-value summaries as kwargs (NOT raw secrets/credentials).
 
     Example:
         audit_log("edgar_risk_factors", ticker="AAPL", max_filings=2)
+
+    _outcome ("success" | "failure" | "denied") records how the call ended for
+    call sites that log after the work finishes; the default suits the existing
+    log-on-invocation sites, which record that the call was made.
     """
     detail = {k: str(v)[:120] for k, v in kwargs.items()}
     try:
         import db
         if db.is_available():
-            db.insert_audit_log_entry("mcp_tool", tool_name, detail=detail)
+            db.insert_audit_log_entry("mcp_tool", tool_name, detail=detail, outcome=_outcome)
             return
     except Exception:
         pass  # fall through to the flat-file fallback below
@@ -232,6 +236,7 @@ def audit_log(tool_name: str, **kwargs: object) -> None:
     entry = {
         "ts":   datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "tool": tool_name,
+        "outcome": _outcome,
         **detail,
     }
     line = json.dumps(entry, separators=(",", ":"))
