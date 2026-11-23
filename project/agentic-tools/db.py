@@ -2790,12 +2790,71 @@ CREATE INDEX IF NOT EXISTS idx_report_snapshots_engagement
     ON observability.report_snapshots (engagement, created_at DESC);
 CREATE OR REPLACE FUNCTION observability.report_snapshots_immutable() RETURNS trigger AS $$
 BEGIN
-    RAISE EXCEPTION 'report_snapshots is append-only (% not allowed)', TG_OP;
+    RAISE EXCEPTION '% is append-only (% not allowed)', TG_TABLE_NAME, TG_OP;
 END;
 $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_report_snapshots_immutable ON observability.report_snapshots;
 CREATE TRIGGER trg_report_snapshots_immutable
     BEFORE UPDATE OR DELETE ON observability.report_snapshots
+    FOR EACH ROW EXECUTE FUNCTION observability.report_snapshots_immutable();
+
+-- Report-as-Code (reporting_definitions.py). A definition is edited only by adding
+-- a new version; a version's content never changes, only its approval status.
+CREATE TABLE IF NOT EXISTS observability.report_definition_versions (
+    id              BIGSERIAL    PRIMARY KEY,
+    definition_key  VARCHAR(64)  NOT NULL,
+    version         INTEGER      NOT NULL,
+    title           VARCHAR(200) NOT NULL,
+    definition_json TEXT         NOT NULL,
+    definition_sha256 CHAR(64)   NOT NULL,
+    status          VARCHAR(12)  NOT NULL DEFAULT 'draft',
+    restricted      BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_by      VARCHAR(128) NOT NULL,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    approved_by     VARCHAR(128),
+    approved_at     TIMESTAMPTZ,
+    UNIQUE (definition_key, version)
+);
+CREATE OR REPLACE FUNCTION observability.report_definition_versions_guard() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'report_definition_versions rows cannot be deleted';
+    END IF;
+    IF NEW.definition_key <> OLD.definition_key OR NEW.version <> OLD.version
+       OR NEW.definition_json <> OLD.definition_json OR NEW.definition_sha256 <> OLD.definition_sha256
+       OR NEW.restricted <> OLD.restricted
+       OR NEW.created_by <> OLD.created_by OR NEW.created_at <> OLD.created_at THEN
+        RAISE EXCEPTION 'a report definition version is immutable; create a new version';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_report_definition_versions_guard ON observability.report_definition_versions;
+CREATE TRIGGER trg_report_definition_versions_guard
+    BEFORE UPDATE OR DELETE ON observability.report_definition_versions
+    FOR EACH ROW EXECUTE FUNCTION observability.report_definition_versions_guard();
+
+CREATE TABLE IF NOT EXISTS observability.report_runs (
+    id                 BIGSERIAL    PRIMARY KEY,
+    definition_key     VARCHAR(64)  NOT NULL,
+    definition_version INTEGER      NOT NULL,
+    engagement         VARCHAR(128),
+    note               TEXT,
+    restricted         BOOLEAN      NOT NULL DEFAULT FALSE,
+    payload_json       TEXT         NOT NULL,
+    rows_json          TEXT         NOT NULL,
+    result_sha256      CHAR(64)     NOT NULL,
+    signature          CHAR(64)     NOT NULL,
+    created_by         VARCHAR(128) NOT NULL,
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_runs_definition
+    ON observability.report_runs (definition_key, definition_version, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_runs_engagement
+    ON observability.report_runs (engagement, created_at DESC);
+DROP TRIGGER IF EXISTS trg_report_runs_immutable ON observability.report_runs;
+CREATE TRIGGER trg_report_runs_immutable
+    BEFORE UPDATE OR DELETE ON observability.report_runs
     FOR EACH ROW EXECUTE FUNCTION observability.report_snapshots_immutable();
 
 -- Infrastructure Vulnerability & Currency Posture (Phase 1): a unified
@@ -14588,6 +14647,154 @@ def get_report_snapshot(snapshot_id: int) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT {_SNAPSHOT_META}, payload_json, rows_json "
                             "FROM observability.report_snapshots WHERE id = %s", (snapshot_id,))
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Report-as-Code (observability.report_definition_versions / report_runs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DEFVER_META = ("id, definition_key, version, title, definition_sha256, status, restricted, created_by, "
+                "created_at, approved_by, approved_at")
+_RUN_META = ("id, definition_key, definition_version, engagement, note, restricted, result_sha256, "
+             "signature, created_by, created_at")
+
+
+def insert_report_definition_version(key: str, title: str, definition_json: str, sha256: str,
+                                     created_by: str, restricted: bool = False) -> Optional[dict]:
+    """Append the next version for `key`. Two concurrent saves can collide on the
+    (key, version) unique constraint; the loser gets None and should retry."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.report_definition_versions
+                        (definition_key, version, title, definition_json, definition_sha256, created_by, restricted)
+                    SELECT %s, COALESCE(MAX(version), 0) + 1, %s, %s, %s, %s, %s
+                      FROM observability.report_definition_versions WHERE definition_key = %s
+                    RETURNING {_DEFVER_META}
+                    """,
+                    (key, title, definition_json, sha256, created_by, restricted, key),
+                )
+                return _iso_row(cur, cur.fetchone())
+    return _run(_do)
+
+
+def list_report_definitions() -> list:
+    """The latest version of each definition, plus its latest approved version number."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_DEFVER_META},
+                           (SELECT MAX(version) FROM observability.report_definition_versions a
+                             WHERE a.definition_key = v.definition_key AND a.status = 'approved') AS approved_version
+                      FROM observability.report_definition_versions v
+                     WHERE version = (SELECT MAX(version) FROM observability.report_definition_versions m
+                                       WHERE m.definition_key = v.definition_key)
+                     ORDER BY definition_key
+                    """)
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_report_definition_version(key: str, version: Optional[int] = None,
+                                  approved_only: bool = False) -> Optional[dict]:
+    """A specific version, else the latest (or latest approved). Includes definition_json."""
+    def _do():
+        filters, params = ["definition_key = %s"], [key]
+        if version is not None:
+            filters.append("version = %s"); params.append(version)
+        if approved_only:
+            filters.append("status = 'approved'")
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_DEFVER_META}, definition_json FROM observability.report_definition_versions "
+                            f"WHERE {' AND '.join(filters)} ORDER BY version DESC LIMIT 1", params)
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
+    return _run(_do)
+
+
+def list_report_definition_versions(key: str) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_DEFVER_META} FROM observability.report_definition_versions "
+                            "WHERE definition_key = %s ORDER BY version DESC", (key,))
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def set_report_definition_status(key: str, version: int, new_status: str, actor: str) -> Optional[dict]:
+    """draft -> approved (approver must differ from the author, enforced here too) or
+    approved/draft -> retired. The WHERE clause is the guard, so races cannot skip it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if new_status == "approved":
+                    cur.execute(
+                        f"""UPDATE observability.report_definition_versions
+                               SET status = 'approved', approved_by = %s, approved_at = NOW()
+                             WHERE definition_key = %s AND version = %s AND status = 'draft'
+                               AND created_by <> %s
+                         RETURNING {_DEFVER_META}""", (actor, key, version, actor))
+                else:
+                    cur.execute(
+                        f"""UPDATE observability.report_definition_versions SET status = 'retired'
+                             WHERE definition_key = %s AND version = %s AND status IN ('draft', 'approved')
+                         RETURNING {_DEFVER_META}""", (key, version))
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
+    return _run(_do)
+
+
+def insert_report_run(r: dict) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.report_runs
+                        (definition_key, definition_version, engagement, note, restricted, payload_json,
+                         rows_json, result_sha256, signature, created_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING {_RUN_META}
+                    """,
+                    (r["definition_key"], r["definition_version"], r.get("engagement"), r.get("note"),
+                     bool(r.get("restricted")), r["payload_json"], r["rows_json"], r["result_sha256"], r["signature"], r["created_by"]),
+                )
+                return _iso_row(cur, cur.fetchone())
+    return _run(_do)
+
+
+def list_report_runs(definition_key: Optional[str] = None, engagement: Optional[str] = None,
+                     limit: int = 100) -> list:
+    def _do():
+        filters, params = [], []
+        for col, val in (("definition_key", definition_key), ("engagement", engagement)):
+            if val:
+                filters.append(f"{col} = %s"); params.append(val)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_RUN_META} FROM observability.report_runs {where} ORDER BY id DESC LIMIT %s",
+                            params)
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_report_run(run_id: int) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_RUN_META}, payload_json, rows_json FROM observability.report_runs "
+                            "WHERE id = %s", (run_id,))
                 row = cur.fetchone()
                 return _iso_row(cur, row) if row else None
     return _run(_do)

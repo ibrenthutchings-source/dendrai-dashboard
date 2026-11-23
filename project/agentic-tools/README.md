@@ -663,6 +663,28 @@ Governed, read-only querying of curated datasets, so reports never involve raw S
 
 Starter datasets: `controls`, `risk_scores`, `pbc_evidence`, `audit_log` (admin only).
 
+#### Report-as-Code (`reporting_definitions.py` + `reporting_definition_endpoints.py`)
+
+A report is a versioned JSON definition: parameters plus blocks (`text`, `kpi`, `table`, `chart` with `bar` or `line`). Every data block carries a governed query spec, and values can be `{"$param": "name"}` placeholders that are bound like any other value. Definitions are validated when saved (unknown columns, bad chart columns, undeclared parameters and restricted datasets are rejected with a reason). Saving never edits: it appends a new **draft** version, and a version's content is immutable (database trigger). Lifecycle: draft -> **approved** (an admin who is not the author, and only if the report states its `objective`, `procedure` and `conclusion`) -> retired. Only an approved version can be **run**; any version can be **previewed** without a record.
+
+A run executes every block (one failure fails the whole run) and stores a **signed, immutable run record** with the definition itself (not a reference), its hash, the resolved parameters, every block's manifest and every block's rows. `verify` checks the signature, the overall row hash, each block's row hash and the embedded definition's hash. `html` renders from the stored rows without querying; `rerun` re-executes and says per block whether it reproduces, the data moved, or the dataset definition changed. Reports that read an admin-only dataset, and their versions and runs, are visible to admins only.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/reporting/definitions/` | Latest version of each report |
+| `PUT` | `/reporting/definitions/{key}` | `{"definition": {...}}` -> saves a new draft version |
+| `GET` | `/reporting/definitions/{key}` | Version history |
+| `GET` | `/reporting/definitions/{key}/versions/{v}` | One version with its definition |
+| `POST` | `/reporting/definitions/{key}/versions/{v}/approve` | Admin, not the author, narrative required |
+| `POST` | `/reporting/definitions/{key}/versions/{v}/retire` | Admin |
+| `POST` | `/reporting/definitions/{key}/preview` | `{version?, parameters?}` -> data + HTML, no record |
+| `POST` | `/reporting/definitions/{key}/run` | `{version?, parameters?, note?, engagement?}` -> signed run record + HTML |
+| `GET` | `/reporting/definitions/runs`, `/runs/{id}` | Run records / one run with manifests and rows |
+| `GET` | `/reporting/definitions/runs/{id}/verify`, `/runs/{id}/html` | Integrity check / stored rendering |
+| `POST` | `/reporting/definitions/runs/{id}/rerun` | Fresh run compared block by block |
+
+Not yet: PDF, XLSX and PPTX export, a builder UI, scheduled runs, and AI-drafted definitions. The HTML renderer is the reference; its charts are simple inline SVG.
+
 **Snapshots** (`reporting_snapshot.py`) are what make a report reperformable after the source data moves, and they are required before a report goes to an auditor. The payload (manifest, who, why, engagement) and the rows are stored as exact text and signed with HMAC-SHA256 using the tenant's evidence signing key (`EVIDENCE_SIGNING_KEY`; a snapshot cannot be created without one). A database trigger rejects UPDATE and DELETE on `observability.report_snapshots`; the signature is the second line of defence if database access cannot be trusted. Snapshots of admin-only datasets are visible only to admins. Rotating the signing key makes older snapshots fail `verify` with "signature invalid"; keep old keys if you rotate. Creation and verification are audit-logged (`report_snapshot_created`, `report_snapshot_verified`; a failed verification is logged as a failure and should be treated as a security event).
 
 ### PBC Requests — Request-as-Code (`pbc_request_tool.py` + `pbc_request_endpoints.py`)
