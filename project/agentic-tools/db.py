@@ -2767,6 +2767,37 @@ CREATE INDEX IF NOT EXISTS idx_pbc_requests_engagement
 CREATE INDEX IF NOT EXISTS idx_pbc_requests_due
     ON observability.pbc_requests (due_date) WHERE status IN ('requested', 'rejected');
 
+-- Signed, immutable report snapshots (reporting_snapshot.py). payload_json and
+-- rows_json are exact TEXT (never jsonb) so the hash and signature verify
+-- byte for byte. The trigger makes rows append-only; the HMAC signature is the
+-- second line of defence for anyone who cannot trust database access.
+CREATE TABLE IF NOT EXISTS observability.report_snapshots (
+    id            BIGSERIAL    PRIMARY KEY,
+    dataset_key   VARCHAR(64)  NOT NULL,
+    engagement    VARCHAR(128),
+    note          TEXT,
+    payload_json  TEXT         NOT NULL,
+    rows_json     TEXT         NOT NULL,
+    result_sha256 CHAR(64)     NOT NULL,
+    row_count     INTEGER      NOT NULL,
+    signature     CHAR(64)     NOT NULL,
+    created_by    VARCHAR(128) NOT NULL,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_snapshots_dataset
+    ON observability.report_snapshots (dataset_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_snapshots_engagement
+    ON observability.report_snapshots (engagement, created_at DESC);
+CREATE OR REPLACE FUNCTION observability.report_snapshots_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'report_snapshots is append-only (% not allowed)', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_report_snapshots_immutable ON observability.report_snapshots;
+CREATE TRIGGER trg_report_snapshots_immutable
+    BEFORE UPDATE OR DELETE ON observability.report_snapshots
+    FOR EACH ROW EXECUTE FUNCTION observability.report_snapshots_immutable();
+
 -- Infrastructure Vulnerability & Currency Posture (Phase 1): a unified
 -- asset inventory across DB/OS/container/network/credential/certificate —
 -- host/database/container config posture already lives in system_telemetry
@@ -14501,6 +14532,62 @@ def review_pbc_request(request_id: int, decision: str, reviewer: str, note: Opti
                     """,
                     (decision, reviewer, note, request_id),
                 )
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Signed report snapshots (observability.report_snapshots; append-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SNAPSHOT_META = "id, dataset_key, engagement, note, result_sha256, row_count, signature, created_by, created_at"
+
+
+def insert_report_snapshot(s: dict) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.report_snapshots
+                        (dataset_key, engagement, note, payload_json, rows_json, result_sha256,
+                         row_count, signature, created_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING {_SNAPSHOT_META}
+                    """,
+                    (s["dataset_key"], s.get("engagement"), s.get("note"), s["payload_json"], s["rows_json"],
+                     s["result_sha256"], s["row_count"], s["signature"], s["created_by"]),
+                )
+                return _iso_row(cur, cur.fetchone())
+    return _run(_do)
+
+
+def list_report_snapshots(dataset_key: Optional[str] = None, engagement: Optional[str] = None,
+                          limit: int = 100) -> list:
+    """Metadata only (no rows). The caller filters out restricted datasets."""
+    def _do():
+        filters, params = [], []
+        for col, val in (("dataset_key", dataset_key), ("engagement", engagement)):
+            if val:
+                filters.append(f"{col} = %s"); params.append(val)
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_SNAPSHOT_META} FROM observability.report_snapshots {where} "
+                            "ORDER BY id DESC LIMIT %s", params)
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_report_snapshot(snapshot_id: int) -> Optional[dict]:
+    """Full record including payload_json and rows_json (exact stored text)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_SNAPSHOT_META}, payload_json, rows_json "
+                            "FROM observability.report_snapshots WHERE id = %s", (snapshot_id,))
                 row = cur.fetchone()
                 return _iso_row(cur, row) if row else None
     return _run(_do)

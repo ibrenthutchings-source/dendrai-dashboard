@@ -13,16 +13,19 @@ connection. Every run is written to the audit log, success or failure.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import db
 import reporting_catalog as rc
+import reporting_snapshot as rs
 from auth_endpoints import get_current_user, require_screen_permission
 
 logger = logging.getLogger("ubo.reporting")
@@ -103,3 +106,126 @@ def run_query(req: QueryRequest, user: dict = Depends(get_current_user)):
            {"row_count": len(rows), "result_sha256": manifest["result_sha256"],
             "duration_ms": int((time.monotonic() - started) * 1000)})
     return {"columns": cq.output_columns, "rows": rows, "manifest": manifest}
+
+
+# ── signed snapshots ────────────────────────────────────────────────────────
+
+class SnapshotRequest(BaseModel):
+    spec: Dict[str, Any]
+    note: Optional[str] = None
+    engagement: Optional[str] = None
+
+
+def _snapshot_audit(user: dict, action: str, target: str, outcome: str, detail: dict) -> None:
+    try:
+        db.insert_audit_log_entry("reporting", action, actor=user.get("username"), target=target,
+                                  detail=detail, outcome=outcome)
+    except Exception as exc:
+        logger.warning("reporting audit write failed: %s", exc)
+
+
+def _snapshot_visible(snap: dict, user: dict) -> bool:
+    """Snapshots of restricted datasets are readable only by admins; others see 404."""
+    try:
+        return _is_admin(user) or not rc.get_dataset(snap["dataset_key"]).admin_only
+    except rc.QueryError:
+        return _is_admin(user)
+
+
+def _load_snapshot(snapshot_id: int, user: dict) -> dict:
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+    snap = db.get_report_snapshot(snapshot_id)
+    if not snap or not _snapshot_visible(snap, user):
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return snap
+
+
+@router.post("/snapshots", summary="Run a query and keep a signed, immutable copy of the result")
+def create_snapshot(req: SnapshotRequest, user: dict = Depends(get_current_user)):
+    dataset_key = str(req.spec.get("dataset", ""))[:64] if isinstance(req.spec, dict) else ""
+    try:
+        cq = rc.compile_query(req.spec, is_admin=_is_admin(user))
+    except rc.QueryError as exc:
+        _snapshot_audit(user, "report_snapshot_created", dataset_key, "failure" if "restricted" not in str(exc) else "denied",
+                        {"reason": "invalid_query", "message": str(exc)[:200]})
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        rows = execute(cq)
+    except Exception as exc:
+        logger.warning("snapshot query failed for %s: %s", cq.dataset.key, exc)
+        _snapshot_audit(user, "report_snapshot_created", cq.dataset.key, "failure",
+                        {"reason": "execution_error", "error": type(exc).__name__})
+        raise HTTPException(status_code=500, detail="Query failed")
+
+    rows_json = rc.canonical_rows_json(rows)
+    manifest = rc.build_manifest(cq, rows, as_of=datetime.now(timezone.utc),
+                                 truncated=len(rows) >= cq.spec["limit"])
+    try:
+        record = rs.build_snapshot(manifest, rows_json, user.get("username", ""), req.note, req.engagement,
+                                   sign=db.sign_evidence_record)
+    except rs.SnapshotError as exc:
+        _snapshot_audit(user, "report_snapshot_created", cq.dataset.key, "failure",
+                        {"reason": "invalid_snapshot", "message": str(exc)})
+        raise HTTPException(status_code=422, detail=str(exc))
+    except db.EvidenceSigningKeyMissing as exc:
+        _snapshot_audit(user, "report_snapshot_created", cq.dataset.key, "failure", {"reason": "signing_key_missing"})
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    saved = db.insert_report_snapshot(record)
+    if not saved:
+        _snapshot_audit(user, "report_snapshot_created", cq.dataset.key, "failure", {"reason": "db_error"})
+        raise HTTPException(status_code=500, detail="Failed to store snapshot")
+    _snapshot_audit(user, "report_snapshot_created", str(saved["id"]), "success",
+                    {"dataset": cq.dataset.key, "row_count": saved["row_count"],
+                     "result_sha256": saved["result_sha256"], "engagement": record["engagement"]})
+    return {**saved, "columns": cq.output_columns, "rows": rows, "manifest": manifest}
+
+
+@router.get("/snapshots", summary="List snapshots (metadata only)")
+def list_snapshots(dataset: Optional[str] = None, engagement: Optional[str] = None,
+                   user: dict = Depends(get_current_user)):
+    if not db.is_available():
+        return {"snapshots": []}
+    rows = [s for s in db.list_report_snapshots(dataset_key=dataset, engagement=engagement)
+            if _snapshot_visible(s, user)]
+    return {"snapshots": rows}
+
+
+@router.get("/snapshots/{snapshot_id}", summary="One snapshot: manifest, rows and signature")
+def get_snapshot(snapshot_id: int, user: dict = Depends(get_current_user)):
+    snap = _load_snapshot(snapshot_id, user)
+    payload = json.loads(snap.pop("payload_json"))
+    rows = json.loads(snap.pop("rows_json"))
+    return {**snap, "payload": payload, "rows": rows}
+
+
+@router.get("/snapshots/{snapshot_id}/verify", summary="Check a snapshot's rows and signature")
+def verify_snapshot(snapshot_id: int, user: dict = Depends(get_current_user)):
+    snap = _load_snapshot(snapshot_id, user)
+    try:
+        result = rs.verify(snap, sign=db.sign_evidence_record)
+    except db.EvidenceSigningKeyMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    _snapshot_audit(user, "report_snapshot_verified", str(snapshot_id),
+                    "success" if result["intact"] else "failure",
+                    {"rows_match_hash": result["rows_match_hash"], "signature_valid": result["signature_valid"]})
+    return {"id": snapshot_id, **result}
+
+
+@router.post("/snapshots/{snapshot_id}/rerun", summary="Re-run a snapshot's query and compare with the snapshot")
+def rerun_snapshot(snapshot_id: int, user: dict = Depends(get_current_user)):
+    snap = _load_snapshot(snapshot_id, user)
+    try:
+        payload = json.loads(snap["payload_json"])
+        cq = rc.compile_query(payload["manifest"]["spec"], is_admin=_is_admin(user))
+        rows = execute(cq)
+    except (rc.QueryError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=f"Cannot re-run this snapshot: {exc}")
+    except Exception as exc:
+        logger.warning("snapshot rerun failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Query failed")
+    fresh_hash = hashlib.sha256(rc.canonical_rows_json(rows).encode("utf-8")).hexdigest()
+    return {"id": snapshot_id, **rs.rerun_matches(payload, cq.sql, fresh_hash)}

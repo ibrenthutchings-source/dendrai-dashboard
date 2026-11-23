@@ -90,6 +90,12 @@ AUDIT_EVENT_CATALOG: list[dict] = [
     _e("reporting", "report_query", [_S, _F, _D],
        "A governed report query was run (target = dataset). Success records row_count and the result's SHA-256 "
        "(the reperformance check); failure reasons: invalid_query, execution_error; denied = restricted dataset."),
+    _e("reporting", "report_snapshot_created", [_S, _F, _D],
+       "A signed, immutable copy of a report result was stored (target = snapshot id; success records the dataset, "
+       "row_count and result SHA-256; failure reasons: invalid_query, execution_error, signing_key_missing, db_error)."),
+    _e("reporting", "report_snapshot_verified", [_S, _F],
+       "A snapshot's rows and signature were checked (target = snapshot id). Failure means the snapshot does not "
+       "verify: the detail says whether the rows or the signature failed. Treat a failure as a security event."),
     _e("pbc", "pbc_requirement_saved", [_S, _F], "A control's evidence requirement was declared or changed (target = control/key)."),
     _e("pbc", "pbc_requests_generated", [_S, _F],
        "An engagement's PBC request list was generated from requirements (target = engagement; detail has created/existing counts)."),

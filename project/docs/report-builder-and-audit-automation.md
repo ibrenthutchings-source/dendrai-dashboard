@@ -34,7 +34,7 @@ Everything here is held to one test: could a stranger who knows the craft redo t
 | **How a sample was chosen** | `sample_selection_tool.py` already records method, seed, interval and start point. |
 
 **Known gaps against the standard (not yet met):**
-1. **Result rows are not persisted.** A manifest proves *how* a report was produced. Source data can change afterwards, so redoing the query later may not reproduce the numbers. Persisting the result rows with the manifest (immutable, signed snapshot) is the next reporting increment, and it is **required before any report is issued to an auditor**.
+1. ~~**Result rows are not persisted.**~~ **Closed (code complete, SQL untested on real Postgres).** `POST /reporting/snapshots` stores the manifest, who, why, engagement and the result rows as exact text, signed with the tenant's HMAC key; a trigger makes the table append-only; `/verify` reports row-hash and signature failures separately; `/rerun` shows whether a fresh run reproduces the snapshot or the data or dataset definition has moved. Remaining limits: a key rotation invalidates old signatures unless old keys are kept, and results are capped at the dataset's row limit (a truncated snapshot says so in its manifest).
 2. **Completeness and accuracy of source data (IPE)** is not yet captured: nothing records control totals or row counts reconciled to the source system. Needed for any dataset pulled from Oracle, NetSuite or SAP.
 3. **No procedure narrative.** Reperformance also needs a plain-language statement of the objective, procedure and conclusion per test. The report and tie-out templates should require one.
 4. **Tickmark legend and tolerance** belong in every tie-out and need a defined place in the reconciliation engine's output.
@@ -51,7 +51,9 @@ Everything here is held to one test: could a stranger who knows the craft redo t
 - Declare what evidence a control needs; generate an engagement's request list (idempotent); link logged evidence, which runs deterministic checks (wrong control, period not covered, signature, freshness) against the **frozen** requirement; accept or reject with enforced reviewer independence; status board with derived "overdue". All audit-logged. Tests: `test_pbc_requests.py`.
 - **Not built yet:** automatic collection from Oracle/NetSuite/SAP (a requirement's `source_system` is recorded, not acted on), automatic reminders and escalation, a screen for any of this, and the external-auditor role.
 
-**Next increments, in order:** (1) signed result snapshots for reports (closes gap 1); (2) report definitions and the renderer; (3) reminders and the status screen for requests; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals; (5) external-auditor role and engagement scoping.
+**Also built:** signed immutable report snapshots (`reporting_snapshot.py`, table `observability.report_snapshots`, tests `test_report_snapshots.py`).
+
+**Next increments, in order:** (2) report definitions and the renderer; (3) reminders and the status screen for requests; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals; (5) external-auditor role and engagement scoping.
 
 ---
 

@@ -655,8 +655,15 @@ Governed, read-only querying of curated datasets, so reports never involve raw S
 | `GET` | `/reporting/datasets` | Datasets the caller may read (admin-only ones hidden from others) |
 | `GET` | `/reporting/datasets/{key}` | One dataset's columns, types and labels |
 | `POST` | `/reporting/query` | `{"spec": {...}}` -> rows + manifest |
+| `POST` | `/reporting/snapshots` | `{"spec", "note", "engagement"}` -> runs the query and stores a **signed, immutable** copy of the rows and manifest |
+| `GET` | `/reporting/snapshots` | Snapshot metadata (filter by `dataset`, `engagement`) |
+| `GET` | `/reporting/snapshots/{id}` | The stored manifest, rows and signature |
+| `GET` | `/reporting/snapshots/{id}/verify` | Do the stored rows still match their hash, and is the payload what was signed? Reported separately |
+| `POST` | `/reporting/snapshots/{id}/rerun` | Re-run the snapshot's query and say whether it reproduces, or whether the data or the dataset definition has changed |
 
-Starter datasets: `controls`, `risk_scores`, `pbc_evidence`, `audit_log` (admin only). Result rows are not yet persisted, so a manifest proves how a result was produced but a later re-run can differ if the data changed; signed snapshots are the next increment.
+Starter datasets: `controls`, `risk_scores`, `pbc_evidence`, `audit_log` (admin only).
+
+**Snapshots** (`reporting_snapshot.py`) are what make a report reperformable after the source data moves, and they are required before a report goes to an auditor. The payload (manifest, who, why, engagement) and the rows are stored as exact text and signed with HMAC-SHA256 using the tenant's evidence signing key (`EVIDENCE_SIGNING_KEY`; a snapshot cannot be created without one). A database trigger rejects UPDATE and DELETE on `observability.report_snapshots`; the signature is the second line of defence if database access cannot be trusted. Snapshots of admin-only datasets are visible only to admins. Rotating the signing key makes older snapshots fail `verify` with "signature invalid"; keep old keys if you rotate. Creation and verification are audit-logged (`report_snapshot_created`, `report_snapshot_verified`; a failed verification is logged as a failure and should be treated as a security event).
 
 ### PBC Requests — Request-as-Code (`pbc_request_tool.py` + `pbc_request_endpoints.py`)
 
