@@ -444,3 +444,68 @@ def test_missing_signing_key_is_503_and_stores_nothing(api, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         ep.run("ctl", ep.RunIn(), AUTHOR)
     assert ei.value.status_code == 503 and not api.runs
+
+
+# ── XLSX export ─────────────────────────────────────────────────────────────
+
+def _book(run_id=1, defn=None):
+    import io
+    from openpyxl import load_workbook
+    v, p, ran, run = make_run(defn)
+    import reporting_export as rx
+    data = rx.build_xlsx(run_id, json.loads(run["payload_json"]), json.loads(run["rows_json"]))
+    return load_workbook(io.BytesIO(data)), run
+
+
+def test_workbook_has_summary_block_and_reperformance_sheets():
+    wb, run = _book()
+    assert wb.sheetnames == ["Summary", "Total", "By category", "Controls", "Reperformance"]   # definition order
+    assert [r[0].value for r in wb["Reperformance"].iter_rows(min_row=2)] == ["total", "bycat", "list"]
+    summary = {r[0].value: r[1].value for r in wb["Summary"].iter_rows() if r[0].value}
+    assert summary["Report"] == "ctl v2" and summary["Result SHA-256"] == json.loads(run["payload_json"])["result_sha256"]
+    assert summary["Objective"] == "Count controls." and summary["fw"] == "SOX"
+    assert [c.value for c in wb["By category"][1]] == ["Category", "n"]
+    assert [c.value for c in wb["By category"][3]] == ["Change", 7]
+    rep = {r[0].value: r for r in wb["Reperformance"].iter_rows(min_row=2)}
+    assert set(rep) == {"total", "bycat", "list"} and rep["total"][4].value.startswith("SELECT")
+    assert rep["list"][8].value == json.loads(run["payload_json"])["manifests"]["list"]["result_sha256"]
+
+
+def test_formula_like_text_is_stored_as_text_not_a_formula():
+    def execute(cq):
+        if [c["name"] for c in cq.output_columns] == ["control_ref", "name"]:
+            return [{"control_ref": "=HYPERLINK(\"http://evil\")", "name": "+cmd|' /C calc'!A0"}]
+        return fake_execute(cq)
+    v = rd.validate_definition(BASE)
+    p = rd.resolve_params(v, None)
+    ran = rd.run_blocks(v, p, False, execute, NOW)
+    run = rd.build_run("ctl", 1, v, p, ran, NOW, "=1+1", "@note", None, sign)
+    import io, reporting_export as rx
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(rx.build_xlsx(1, json.loads(run["payload_json"]), json.loads(run["rows_json"]))))
+    cell = wb["Controls"]["A2"]
+    assert cell.data_type == "s" and cell.value.startswith("=")
+    assert wb["Controls"]["B2"].data_type == "s"
+    assert all(c.data_type != "f" for ws in wb for row in ws.iter_rows() for c in row)
+
+
+def test_sheet_names_are_sanitised_and_unique():
+    x = d(blocks=[{"id": "a", "type": "table", "title": "Q3/Q4: [all]?", "query": BASE["blocks"][3]["query"]},
+                  {"id": "b", "type": "table", "title": "Q3/Q4: [all]?", "query": BASE["blocks"][3]["query"]},
+                  {"id": "c", "type": "table", "title": "x" * 80, "query": BASE["blocks"][3]["query"]}])
+    wb, _ = _book(defn=x)
+    assert len(set(n.lower() for n in wb.sheetnames)) == len(wb.sheetnames)
+    assert all(len(n) <= 31 and not any(ch in n for ch in "[]:*?/\\") for n in wb.sheetnames)
+
+
+def test_xlsx_endpoint_exports_stored_rows_audits_and_respects_restriction(api, monkeypatch):
+    approved(api)
+    ep.run("ctl", ep.RunIn(), AUTHOR)
+    monkeypatch.setattr(ep.re_, "execute", lambda cq: (_ for _ in ()).throw(AssertionError("must not query")))
+    resp = ep.run_xlsx(1, AUTHOR)
+    assert resp.body[:2] == b"PK" and "spreadsheetml" in resp.media_type
+    assert "ctl-run1.xlsx" in resp.headers["content-disposition"]
+    assert api.audits[-1]["args"][1] == "report_run_exported" and api.audits[-1]["outcome"] == "success"
+    with pytest.raises(HTTPException) as ei:
+        ep.run_xlsx(99, AUTHOR)
+    assert ei.value.status_code == 404

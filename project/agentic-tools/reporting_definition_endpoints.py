@@ -15,6 +15,7 @@ Router prefix: /reporting/definitions   (same "reporting" screen permission as /
     GET  /runs/{id}                      stored definition, parameters, manifests and rows
     GET  /runs/{id}/verify               signature, row hashes and embedded definition
     GET  /runs/{id}/html                 the report rendered from the stored rows (not re-queried)
+    GET  /runs/{id}/xlsx                 workbook: summary, one sheet per block, reperformance sheet
     POST /runs/{id}/rerun                fresh run of the stored definition, compared block by block
 
 Definitions or runs that read an admin-only dataset (such as the audit log) are
@@ -29,11 +30,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 import db
 import reporting_definitions as rd
+import reporting_export as rx
 import reporting_endpoints as re_
 from auth_endpoints import get_current_user, require_screen_permission
 
@@ -140,6 +142,17 @@ def run_html(run_id: int, user: dict = Depends(get_current_user)):
         "Report": f"{d['key']} v{d['version']}", "Run": run_id, "As of": payload["as_of"],
         "Run by": payload["created_by"], "Engagement": payload.get("engagement"), "Note": payload.get("note"),
         "Result SHA-256": payload["result_sha256"], "Definition SHA-256": d["sha256"]}))
+
+
+@router.get("/runs/{run_id}/xlsx", summary="Export a stored run as a workbook")
+def run_xlsx(run_id: int, user: dict = Depends(get_current_user)):
+    run = _get_run(run_id, user)
+    payload, rows = json.loads(run["payload_json"]), json.loads(run["rows_json"])
+    data = rx.build_xlsx(run_id, payload, rows)
+    _audit(user, "report_run_exported", str(run_id), "success", {"format": "xlsx", "bytes": len(data)})
+    key = payload["definition"]["key"]
+    return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{key}-run{run_id}.xlsx"'})
 
 
 @router.post("/runs/{run_id}/rerun", summary="Re-run a stored run's definition and compare")

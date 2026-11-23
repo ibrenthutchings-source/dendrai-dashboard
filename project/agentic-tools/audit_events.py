@@ -106,6 +106,7 @@ AUDIT_EVENT_CATALOG: list[dict] = [
     _e("reporting", "report_run", [_S, _F],
        "An approved report was run and a signed record stored (target = run id; success records report, version "
        "and result SHA-256). Failure reasons: no_approved_version, invalid_parameters, execution_error, db_error."),
+    _e("reporting", "report_run_exported", [_S], "A stored report run was downloaded as a workbook (target = run id; detail.format)."),
     _e("reporting", "report_run_verified", [_S, _F],
        "A stored run's signature, row hashes and embedded definition were checked (target = run id). Failure means "
        "the record does not verify; treat as a security event."),
