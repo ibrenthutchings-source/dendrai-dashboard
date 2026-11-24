@@ -97,10 +97,10 @@ function ApRuns({ engagement }) {
     catch (e) { setChecks(c => ({ ...c, [id]: { error: e.message } })); }
   };
   const view = async (id) => { try { setHtml(await (await _apFetch(`/runs/${id}/html`)).text()); } catch (e) { setErr(e.message); } };
-  const download = async (id, key) => {
+  const download = async (id, key, ext = "xlsx") => {
     try {
-      const url = URL.createObjectURL(await (await _apFetch(`/runs/${id}/xlsx`)).blob());
-      const a = document.createElement("a"); a.href = url; a.download = `${key || "report"}-run${id}.xlsx`; a.click(); URL.revokeObjectURL(url);
+      const url = URL.createObjectURL(await (await _apFetch(`/runs/${id}/${ext}`)).blob());
+      const a = document.createElement("a"); a.href = url; a.download = `${key || "report"}-run${id}.${ext}`; a.click(); URL.revokeObjectURL(url);
     } catch (e) { setErr(e.message); }
   };
   return (
@@ -120,7 +120,9 @@ function ApRuns({ engagement }) {
               <span style={{ color: "#666", flex: 1 }}>{new Date(r.created_at).toLocaleString()} · by {r.created_by}{r.note ? ` · ${r.note}` : ""}</span>
               <button style={_apBtn(false)} onClick={() => verify(r.id)}>Verify</button>
               <button style={_apBtn(false)} onClick={() => view(r.id)}>View</button>
-              <button style={_apBtn(false)} onClick={() => download(r.id, r.definition_key)}>Excel</button>
+              <button style={_apBtn(false)} onClick={() => download(r.id, r.definition_key, "xlsx")}>Excel</button>
+              <button style={_apBtn(false)} onClick={() => download(r.id, r.definition_key, "pdf")}>PDF</button>
+              <button style={_apBtn(false)} onClick={() => download(r.id, r.definition_key, "pptx")}>PowerPoint</button>
             </div>
             {v && <div style={{ fontSize: 11.5, marginTop: 4, color: v.error || !v.intact ? "#b00020" : "#1b7a3a" }}>
               {v.error ? v.error : v.intact ? "Verified: signature, row hashes and report definition all match." : `Does NOT verify: ${v.detail}`}</div>}

@@ -16,6 +16,7 @@ Router prefix: /reporting/definitions   (same "reporting" screen permission as /
     GET  /runs/{id}/verify               signature, row hashes and embedded definition
     GET  /runs/{id}/html                 the report rendered from the stored rows (not re-queried)
     GET  /runs/{id}/xlsx                 workbook: summary, one sheet per block, reperformance sheet
+    GET  /runs/{id}/pdf | pptx           document / slide deck (reperformance appendix, hashes)
     POST /runs/{id}/rerun                fresh run of the stored definition, compared block by block
 
 Definitions or runs that read an admin-only dataset (such as the audit log) are
@@ -36,6 +37,7 @@ from pydantic import BaseModel
 import db
 import reporting_definitions as rd
 import reporting_export as rx
+import reporting_export_docs as rxd
 import reporting_endpoints as re_
 from auth_endpoints import get_current_user, require_screen_permission
 
@@ -153,6 +155,38 @@ def run_xlsx(run_id: int, user: dict = Depends(get_current_user)):
     key = payload["definition"]["key"]
     return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{key}-run{run_id}.xlsx"'})
+
+
+_DOC_FORMATS = {
+    "pdf": ("application/pdf", rxd.build_pdf),
+    "pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", rxd.build_pptx),
+}
+
+
+def _export_doc(run_id: int, user: dict, fmt: str) -> Response:
+    run = _get_run(run_id, user)
+    payload, rows = json.loads(run["payload_json"]), json.loads(run["rows_json"])
+    media, build = _DOC_FORMATS[fmt]
+    try:
+        data = build(run_id, payload, rows)
+    except Exception as exc:                       # a layout failure must not leak internals
+        logger.warning("%s export failed for run %s: %s", fmt, run_id, exc)
+        _audit(user, "report_run_exported", str(run_id), "failure", {"format": fmt, "error": type(exc).__name__})
+        raise HTTPException(status_code=500, detail=f"Could not build the {fmt.upper()}")
+    _audit(user, "report_run_exported", str(run_id), "success", {"format": fmt, "bytes": len(data)})
+    key = payload["definition"]["key"]
+    return Response(content=data, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="{key}-run{run_id}.{fmt}"'})
+
+
+@router.get("/runs/{run_id}/pdf", summary="Export a stored run as a PDF")
+def run_pdf(run_id: int, user: dict = Depends(get_current_user)):
+    return _export_doc(run_id, user, "pdf")
+
+
+@router.get("/runs/{run_id}/pptx", summary="Export a stored run as a PowerPoint deck")
+def run_pptx(run_id: int, user: dict = Depends(get_current_user)):
+    return _export_doc(run_id, user, "pptx")
 
 
 @router.post("/runs/{run_id}/rerun", summary="Re-run a stored run's definition and compare")

@@ -13,6 +13,7 @@ assigned to the caller, and every call is audit-logged):
     GET /external/runs/{id}/verify               signature / row hashes / definition check
     GET /external/runs/{id}/html                 the run rendered from its stored rows
     GET /external/runs/{id}/xlsx                 workbook with the reperformance sheet
+    GET /external/runs/{id}/pdf | pptx           document / deck
 
 Admin side (require_admin):
     GET    /external/admin/access?engagement=X
@@ -46,6 +47,7 @@ import external_auditor
 import pbc_request_tool as prt
 import reporting_definitions as rd
 import reporting_export as rx
+import reporting_export_docs as rxd
 from auth_endpoints import get_current_user, require_admin
 
 logger = logging.getLogger("ubo.external")
@@ -183,6 +185,34 @@ def run_xlsx(run_id: int, user: dict = Depends(_auditor)):
     key = payload["definition"]["key"]
     return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{key}-run{run_id}.xlsx"'})
+
+
+def _doc(run_id: int, user: dict, fmt: str) -> Response:
+    run = _load_run(user, run_id, fmt)
+    payload, rows = json.loads(run["payload_json"]), json.loads(run["rows_json"])
+    media, build = {"pdf": ("application/pdf", rxd.build_pdf),
+                    "pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                             rxd.build_pptx)}[fmt]
+    try:
+        data = build(run_id, payload, rows)
+    except Exception as exc:
+        logger.warning("external %s export failed for run %s: %s", fmt, run_id, exc)
+        _log(user, "external_download", str(run_id), "failure", {"format": fmt, "error": type(exc).__name__})
+        raise HTTPException(status_code=500, detail=f"Could not build the {fmt.upper()}")
+    _log(user, "external_download", str(run_id), "success", {"format": fmt, "bytes": len(data)})
+    key = payload["definition"]["key"]
+    return Response(content=data, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="{key}-run{run_id}.{fmt}"'})
+
+
+@router.get("/runs/{run_id}/pdf", summary="Run as a PDF with the reperformance appendix")
+def run_pdf(run_id: int, user: dict = Depends(_auditor)):
+    return _doc(run_id, user, "pdf")
+
+
+@router.get("/runs/{run_id}/pptx", summary="Run as a PowerPoint deck")
+def run_pptx(run_id: int, user: dict = Depends(_auditor)):
+    return _doc(run_id, user, "pptx")
 
 
 # ── admin side ──────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ sign = lambda t: hmac.new(b"k", t.encode(), hashlib.sha256).hexdigest()  # noqa:
 # ── policy ──────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("path", ["/auth/me", "/auth/logout", "/auth/change-password", "/auth/touch",
-                                  "/external/engagements", "/external/runs/5/xlsx", "/external/admin/access"])
+                                  "/external/engagements", "/external/runs/5/xlsx", "/external/runs/5/pdf", "/external/runs/5/pptx", "/external/admin/access"])
 def test_portal_and_session_paths_are_reachable(path):
     assert ea.path_allowed(path)
 
@@ -263,7 +263,7 @@ def test_runs_are_listed_only_for_assigned_engagements_and_never_restricted(api)
 
 @pytest.mark.parametrize("run_id", [2, 3, 4, 99])
 def test_runs_outside_scope_are_404_for_every_action(api, run_id):
-    for call in (ep.get_run, ep.verify_run, ep.run_html, ep.run_xlsx):
+    for call in (ep.get_run, ep.verify_run, ep.run_html, ep.run_xlsx, ep.run_pdf, ep.run_pptx):
         with pytest.raises(HTTPException) as ei:
             call(run_id, AUD)
         assert ei.value.status_code == 404
@@ -278,6 +278,8 @@ def test_assigned_run_can_be_read_verified_rendered_and_downloaded(api):
     x = ep.run_xlsx(1, AUD)
     assert x.body[:2] == b"PK" and "ctl-run1.xlsx" in x.headers["content-disposition"]
     assert [a["args"][1] for a in api.audits][-1] == "external_download"
+    assert ep.run_pdf(1, AUD).body[:5] == b"%PDF-" and api.audits[-1]["detail"]["format"] == "pdf"
+    assert ep.run_pptx(1, AUD).body[:2] == b"PK" and api.audits[-1]["detail"]["format"] == "pptx"
 
 
 def test_tampered_run_fails_verification_and_is_logged_as_failure(api):

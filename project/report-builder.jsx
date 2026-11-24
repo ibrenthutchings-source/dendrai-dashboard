@@ -8,7 +8,7 @@
      GET  /reporting/definitions/{key}[/versions/{v}] history / one version
      POST /reporting/definitions/{key}/versions/{v}/approve | retire
      POST /reporting/definitions/{key}/preview | run
-     GET  /reporting/definitions/runs[/{id}[/verify|/html|/xlsx]]
+     GET  /reporting/definitions/runs[/{id}[/verify|/html|/xlsx|/pdf|/pptx]]
      POST /reporting/definitions/runs/{id}/rerun
 
    Nothing here writes SQL: a block picks columns, filters and aggregates from a
@@ -543,11 +543,11 @@ function RbRuns({ reportKey, refreshKey }) {
     } catch (e) { setChecks(c => ({ ...c, [`${id}:${kind}`]: { error: e.message } })); }
   };
   const openHtml = async (id) => { const r = await _rbFetch(`/definitions/runs/${id}/html`); setHtml(await r.text()); };
-  const download = async (id) => {
+  const download = async (id, ext = "xlsx") => {
     try {
-      const r = await _rbFetch(`/definitions/runs/${id}/xlsx`);
+      const r = await _rbFetch(`/definitions/runs/${id}/${ext}`);
       const url = URL.createObjectURL(await r.blob());
-      const a = document.createElement("a"); a.href = url; a.download = `${reportKey}-run${id}.xlsx`; a.click(); URL.revokeObjectURL(url);
+      const a = document.createElement("a"); a.href = url; a.download = `${reportKey}-run${id}.${ext}`; a.click(); URL.revokeObjectURL(url);
     } catch (e) { setErr(e.message); }
   };
 
@@ -565,7 +565,9 @@ function RbRuns({ reportKey, refreshKey }) {
               <button style={_rbBtn(false)} onClick={() => check(r.id, "verify")}>Verify</button>
               <button style={_rbBtn(false)} onClick={() => check(r.id, "rerun")}>Re-run &amp; compare</button>
               <button style={_rbBtn(false)} onClick={() => openHtml(r.id)}>View</button>
-              <button style={_rbBtn(false)} onClick={() => download(r.id)}>Excel</button>
+              <button style={_rbBtn(false)} onClick={() => download(r.id, "xlsx")}>Excel</button>
+              <button style={_rbBtn(false)} onClick={() => download(r.id, "pdf")}>PDF</button>
+              <button style={_rbBtn(false)} onClick={() => download(r.id, "pptx")}>PowerPoint</button>
             </div>
             {v && <div style={{ fontSize: 11.5, marginTop: 4, color: v.error || !v.intact ? "var(--red-ink)" : "var(--green-ink)" }}>
               {v.error ? v.error : v.intact ? "Verified: signature, row hashes and definition all match." : `Does not verify: ${v.detail}`}</div>}

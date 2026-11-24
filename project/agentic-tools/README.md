@@ -682,9 +682,11 @@ A run executes every block (one failure fails the whole run) and stores a **sign
 | `GET` | `/reporting/definitions/runs`, `/runs/{id}` | Run records / one run with manifests and rows |
 | `GET` | `/reporting/definitions/runs/{id}/verify`, `/runs/{id}/html` | Integrity check / stored rendering |
 | `GET` | `/reporting/definitions/runs/{id}/xlsx` | Workbook from the stored rows: Summary (parameters, narrative, hashes), one sheet per block, and a Reperformance sheet (exact SQL, bound parameters, row count, hash per block). Text is written as text, never as a formula |
+| `GET` | `/reporting/definitions/runs/{id}/pdf` | PDF from the stored rows: narrative, parameters, every block with all rows (cells over 1,500 characters are clipped; Excel is untruncated), the conclusion, and a Reperformance appendix (exact SQL, parameters, row count, hash per block). Footer carries run id and result hash. Built with `reportlab` |
+| `GET` | `/reporting/definitions/runs/{id}/pptx` | PowerPoint deck: title, narrative, one slide per block with native editable charts, hashes slide. Tables show the first 15 rows and 8 columns and say so; each data slide's speaker notes hold that block's full SQL, parameters and hash. Built with `python-pptx` |
 | `POST` | `/reporting/definitions/runs/{id}/rerun` | Fresh run compared block by block |
 
-**Builder UI:** the *Report Builder* screen (`report-builder.jsx`, nav entry under Audit & Compliance, gated by the `reporting` screen permission) lists reports, edits them visually (dataset, columns, filters with parameter bindings, aggregates, ordering, KPI and chart blocks) or as raw JSON, saves new draft versions, previews in a sandboxed frame, approves/retires (admins), runs and records, and per run offers Verify, Re-run & compare, View and Excel download. Its pure conversion logic is checked by `node report-builder.helpers.test.mjs`.
+**Builder UI:** the *Report Builder* screen (`report-builder.jsx`, nav entry under Audit & Compliance, gated by the `reporting` screen permission) lists reports, edits them visually (dataset, columns, filters with parameter bindings, aggregates, ordering, KPI and chart blocks) or as raw JSON, saves new draft versions, previews in a sandboxed frame, approves/retires (admins), runs and records, and per run offers Verify, Re-run & compare, View, and Excel, PDF and PowerPoint downloads. Its pure conversion logic is checked by `node report-builder.helpers.test.mjs`.
 
 Not yet: PDF and PPTX export, scheduled runs, and AI-drafted definitions. The HTML renderer is the reference; its charts are simple inline SVG.
 
@@ -713,7 +715,7 @@ Compares two sources key by key and records a **tickmark** for every item, signe
 
 ### External Auditors — audit portal (`external_auditor.py` + `external_endpoints.py`)
 
-A third-party auditor gets an account with the `external_auditor` role (a protected system role, seeded at startup). Admins create the account in User Management like any other, then assign it to engagements on **PBC Requests > Auditor access**. The auditor signs in with the normal login and sees only the **Audit Portal** (`auditor-portal.jsx`) instead of the application: the engagements assigned to them, each engagement's PBC requests (with the requirement as it was raised, automatic check findings, who submitted and who reviewed) and the linked evidence item, and the signed report runs recorded for the engagement (view, **Verify**, and Excel download with the reperformance sheet). It is read-only.
+A third-party auditor gets an account with the `external_auditor` role (a protected system role, seeded at startup). Admins create the account in User Management like any other, then assign it to engagements on **PBC Requests > Auditor access**. The auditor signs in with the normal login and sees only the **Audit Portal** (`auditor-portal.jsx`) instead of the application: the engagements assigned to them, each engagement's PBC requests (with the requirement as it was raised, automatic check findings, who submitted and who reviewed) and the linked evidence item, and the signed report runs recorded for the engagement (view, **Verify**, and Excel, PDF and PowerPoint downloads carrying the reperformance detail). It is read-only.
 
 How it is kept safe (the rest of the platform authorises by blocklist, which would let a new role do everything, so this role is handled the opposite way):
 - **Deny by default, enforced twice.** `external_auditor.path_allowed` lists the only reachable paths: `/auth/me`, `/auth/logout`, `/auth/change-password`, `/auth/touch` and `/external/`. The check runs in the global auth middleware (using the role in the session token) and again in `get_current_user` (using the role read from the database), so every other endpoint is refused regardless of how it authorises, and a stale session cannot outlive a role change. Refusals are audit-logged (`external_access_denied`, with which layer refused).
@@ -722,7 +724,7 @@ How it is kept safe (the rest of the platform authorises by blocklist, which wou
 - **Role changes** into or out of `external_auditor` sign the account out everywhere.
 - **Everything is logged** (`external_view`, `external_download`, `external_engagement_granted/revoked`); a failed Verify is logged as a failure.
 
-Endpoints: `GET /external/engagements`, `/external/requests?engagement=`, `/external/requests/{id}/evidence`, `/external/runs?engagement=`, `/external/runs/{id}[/verify|/html|/xlsx]` (auditor); `GET|PUT|DELETE /external/admin/access` (admin).
+Endpoints: `GET /external/engagements`, `/external/requests?engagement=`, `/external/requests/{id}/evidence`, `/external/runs?engagement=`, `/external/runs/{id}[/verify|/html|/xlsx|/pdf|/pptx]` (auditor); `GET|PUT|DELETE /external/admin/access` (admin).
 
 Limits: access is by engagement label (free text, as used on requests and runs), so a typo on one side hides material until corrected; auditors cannot comment or ask questions in the portal yet; accounts are created by admins, with no invite links; the same password login as employees applies.
 

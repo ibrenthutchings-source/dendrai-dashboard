@@ -55,9 +55,9 @@ Everything here is held to one test: could a stranger who knows the craft redo t
 
 **Also built:** signed immutable report snapshots (`reporting_snapshot.py`, table `observability.report_snapshots`, tests `test_report_snapshots.py`).
 
-**Also built:** Report-as-Code (`reporting_definitions.py`, `reporting_definition_endpoints.py`, tables `report_definition_versions` and `report_runs`, tests `test_report_definitions.py`): versioned definitions, draft/approve/retire with author != approver and a required objective/procedure/conclusion (closes gap 3 for reports), signed run records embedding the definition, per-block verification and rerun, HTML renderer. XLSX export of stored runs (`reporting_export.py`, with a Reperformance sheet). Builder UI (`report-builder.jsx`; not yet exercised in a browser against a live backend). Not yet: PDF/PPTX export.
+**Also built:** Report-as-Code (`reporting_definitions.py`, `reporting_definition_endpoints.py`, tables `report_definition_versions` and `report_runs`, tests `test_report_definitions.py`): versioned definitions, draft/approve/retire with author != approver and a required objective/procedure/conclusion (closes gap 3 for reports), signed run records embedding the definition, per-block verification and rerun, HTML renderer. XLSX export of stored runs (`reporting_export.py`, with a Reperformance sheet). Builder UI (`report-builder.jsx`; not yet exercised in a browser against a live backend). PDF and PPTX export of stored runs (`reporting_export_docs.py`, `reportlab` and `python-pptx`; PDF has a Reperformance appendix, PPTX carries the SQL and hash in speaker notes), also available to external auditors.
 
-**Next increments, in order:** (2b) PDF/PPTX export; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals.
+**Next increments, in order:** (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals.
 
 ---
 
