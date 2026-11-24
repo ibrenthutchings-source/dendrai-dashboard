@@ -690,6 +690,26 @@ Not yet: PDF and PPTX export, scheduled runs, and AI-drafted definitions. The HT
 
 **Snapshots** (`reporting_snapshot.py`) are what make a report reperformable after the source data moves, and they are required before a report goes to an auditor. The payload (manifest, who, why, engagement) and the rows are stored as exact text and signed with HMAC-SHA256 using the tenant's evidence signing key (`EVIDENCE_SIGNING_KEY`; a snapshot cannot be created without one). A database trigger rejects UPDATE and DELETE on `observability.report_snapshots`; the signature is the second line of defence if database access cannot be trusted. Snapshots of admin-only datasets are visible only to admins. Rotating the signing key makes older snapshots fail `verify` with "signature invalid"; keep old keys if you rotate. Creation and verification are audit-logged (`report_snapshot_created`, `report_snapshot_verified`; a failed verification is logged as a failure and should be treated as a security event).
 
+#### Tick-and-tie (`tieout.py` + `tieout_endpoints.py`)
+
+Compares two sources key by key and records a **tickmark** for every item, signed and append-only like snapshots.
+
+| Mark | Meaning |
+|---|---|
+| T | Tied: amounts agree exactly |
+| R | Within the stated tolerance |
+| D | Difference beyond tolerance (exception) |
+| L | In the left source only (exception) |
+| X | In the right source only (exception) |
+
+- **Tolerance:** `abs` and/or `pct` (percent of the left amount); a difference is within tolerance if it meets either. Default is none (exact only). The tolerance is also stored as a plain-language sentence.
+- **Matching:** exact key. A repeated key is summed and its line count recorded. Amounts are decimals; a non-numeric amount is an error, never a zero.
+- **Required text:** `objective` and `procedure` in the spec, and a `conclusion` with the request.
+- **Sources:** a stored signed snapshot (checked first; one that fails verification is refused) or `inline` rows with a label saying where they came from. Inline rows are kept inside the signed record. A tie-out built on a restricted dataset is admin-only.
+- **Verify:** `GET /reporting/tieouts/{id}/verify` checks the signature, the item hash, that each source snapshot still hashes to what was used, and that the marks follow from the sources.
+- **Endpoints:** `POST /reporting/tieouts`, `GET /reporting/tieouts`, `GET /reporting/tieouts/legend`, `GET /reporting/tieouts/{id}`, `GET /reporting/tieouts/{id}/verify`.
+- **Not yet:** no screen, no export, no fuzzy or many-to-many matching, and external auditors cannot see tie-outs.
+
 ### External Auditors — audit portal (`external_auditor.py` + `external_endpoints.py`)
 
 A third-party auditor gets an account with the `external_auditor` role (a protected system role, seeded at startup). Admins create the account in User Management like any other, then assign it to engagements on **PBC Requests > Auditor access**. The auditor signs in with the normal login and sees only the **Audit Portal** (`auditor-portal.jsx`) instead of the application: the engagements assigned to them, each engagement's PBC requests (with the requirement as it was raised, automatic check findings, who submitted and who reviewed) and the linked evidence item, and the signed report runs recorded for the engagement (view, **Verify**, and Excel download with the reperformance sheet). It is read-only.

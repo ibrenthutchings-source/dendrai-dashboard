@@ -96,6 +96,13 @@ AUDIT_EVENT_CATALOG: list[dict] = [
     _e("reporting", "report_snapshot_verified", [_S, _F],
        "A snapshot's rows and signature were checked (target = snapshot id). Failure means the snapshot does not "
        "verify: the detail says whether the rows or the signature failed. Treat a failure as a security event."),
+    _e("reporting", "tieout_created", [_S, _F],
+       "A tick-and-tie of two sources was stored, signed (target = tie-out id; success records outcome tied/"
+       "exceptions, item and exception counts, result SHA-256; failure reasons: invalid_tieout, "
+       "signing_key_missing, db_error)."),
+    _e("reporting", "tieout_verified", [_S, _F],
+       "A tie-out's signature, item hash, source snapshots and arithmetic were checked (target = tie-out id). "
+       "Failure means the record does not verify; the detail says which check failed. Treat as a security event."),
     _e("reporting", "report_definition_saved", [_S, _F, _D],
        "A new draft version of a report definition was saved (target = key@version; success records the definition "
        "SHA-256). Failure reason: invalid_definition (denied = it reads a restricted dataset)."),

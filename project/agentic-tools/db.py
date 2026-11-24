@@ -2879,6 +2879,28 @@ CREATE TRIGGER trg_report_runs_immutable
     BEFORE UPDATE OR DELETE ON observability.report_runs
     FOR EACH ROW EXECUTE FUNCTION observability.report_snapshots_immutable();
 
+-- Signed tick-and-tie results (tieout.py). Append-only like snapshots; the
+-- payload carries the legend, tolerance, sources, narrative and conclusion.
+CREATE TABLE IF NOT EXISTS observability.report_tieouts (
+    id            BIGSERIAL    PRIMARY KEY,
+    engagement    VARCHAR(128),
+    note          TEXT,
+    outcome       VARCHAR(12)  NOT NULL,
+    restricted    BOOLEAN      NOT NULL DEFAULT FALSE,
+    payload_json  TEXT         NOT NULL,
+    items_json    TEXT         NOT NULL,
+    result_sha256 CHAR(64)     NOT NULL,
+    signature     CHAR(64)     NOT NULL,
+    created_by    VARCHAR(128) NOT NULL,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_tieouts_engagement
+    ON observability.report_tieouts (engagement, created_at DESC);
+DROP TRIGGER IF EXISTS trg_report_tieouts_immutable ON observability.report_tieouts;
+CREATE TRIGGER trg_report_tieouts_immutable
+    BEFORE UPDATE OR DELETE ON observability.report_tieouts
+    FOR EACH ROW EXECUTE FUNCTION observability.report_snapshots_immutable();
+
 -- Infrastructure Vulnerability & Currency Posture (Phase 1): a unified
 -- asset inventory across DB/OS/container/network/credential/certificate —
 -- host/database/container config posture already lives in system_telemetry
@@ -14763,6 +14785,59 @@ def get_report_snapshot(snapshot_id: int) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT {_SNAPSHOT_META}, payload_json, rows_json "
                             "FROM observability.report_snapshots WHERE id = %s", (snapshot_id,))
+                row = cur.fetchone()
+                return _iso_row(cur, row) if row else None
+    return _run(_do)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Signed tick-and-tie results (observability.report_tieouts; append-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TIEOUT_META = "id, engagement, note, outcome, restricted, result_sha256, signature, created_by, created_at"
+
+
+def insert_report_tieout(t: dict) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO observability.report_tieouts
+                        (engagement, note, outcome, restricted, payload_json, items_json,
+                         result_sha256, signature, created_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING {_TIEOUT_META}
+                    """,
+                    (t.get("engagement"), t.get("note"), t["outcome"], bool(t.get("restricted")),
+                     t["payload_json"], t["items_json"], t["result_sha256"], t["signature"], t["created_by"]),
+                )
+                return _iso_row(cur, cur.fetchone())
+    return _run(_do)
+
+
+def list_report_tieouts(engagement: Optional[str] = None, limit: int = 100) -> list:
+    """Metadata only (no items). The caller filters out restricted rows."""
+    def _do():
+        where, params = "", []
+        if engagement:
+            where, params = "WHERE engagement = %s", [engagement]
+        params.append(min(limit, 500))
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_TIEOUT_META} FROM observability.report_tieouts {where} "
+                            "ORDER BY id DESC LIMIT %s", params)
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def get_report_tieout(tieout_id: int) -> Optional[dict]:
+    """Full record including payload_json and items_json (exact stored text)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_TIEOUT_META}, payload_json, items_json "
+                            "FROM observability.report_tieouts WHERE id = %s", (tieout_id,))
                 row = cur.fetchone()
                 return _iso_row(cur, row) if row else None
     return _run(_do)
