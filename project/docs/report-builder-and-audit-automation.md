@@ -49,13 +49,14 @@ Everything here is held to one test: could a stranger who knows the craft redo t
 **Request-as-Code, first increment**
 - `pbc_request_tool.py` (pure rules), `pbc_request_endpoints.py`, tables `observability.evidence_requirements` and `observability.pbc_requests`.
 - Declare what evidence a control needs; generate an engagement's request list (idempotent); link logged evidence, which runs deterministic checks (wrong control, period not covered, signature, freshness) against the **frozen** requirement; accept or reject with enforced reviewer independence; status board with derived "overdue". All audit-logged. Tests: `test_pbc_requests.py`.
-- **Not built yet:** automatic collection from Oracle/NetSuite/SAP (a requirement's `source_system` is recorded, not acted on), automatic reminders and escalation, a screen for any of this, and the external-auditor role.
+- **Also built:** the PBC Requests screen (`pbc-requests.jsx`) and reminders/escalation (`pbc_reminder_sweep.py`, webhook, single-tenant only for now).
+- **Not built yet:** automatic collection from Oracle/NetSuite/SAP (a requirement's `source_system` is recorded, not acted on), per-tenant webhooks and per-owner notification, and the external-auditor role.
 
 **Also built:** signed immutable report snapshots (`reporting_snapshot.py`, table `observability.report_snapshots`, tests `test_report_snapshots.py`).
 
 **Also built:** Report-as-Code (`reporting_definitions.py`, `reporting_definition_endpoints.py`, tables `report_definition_versions` and `report_runs`, tests `test_report_definitions.py`): versioned definitions, draft/approve/retire with author != approver and a required objective/procedure/conclusion (closes gap 3 for reports), signed run records embedding the definition, per-block verification and rerun, HTML renderer. XLSX export of stored runs (`reporting_export.py`, with a Reperformance sheet). Builder UI (`report-builder.jsx`; not yet exercised in a browser against a live backend). Not yet: PDF/PPTX export.
 
-**Next increments, in order:** (2b) PDF/PPTX export; (3) reminders and the status screen for requests; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals; (5) external-auditor role and engagement scoping.
+**Next increments, in order:** (2b) PDF/PPTX export; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals; (5) external-auditor role and engagement scoping.
 
 ---
 

@@ -165,6 +165,7 @@ import je_testing_endpoints
 import regulatory_change_endpoints
 import pii_retention_sweep
 import risk_waiver_sweep
+import pbc_reminder_sweep
 import pac_auto_sync_sweep
 import itsm_sla_sweep
 import map_detection_sweep
@@ -420,6 +421,7 @@ async def lifespan(application: FastAPI):
         _je_testing_sweep_task = None
         _pii_retention_sweep_task = None
         _risk_waiver_sweep_task = None
+        _pbc_reminder_sweep_task = None
         _pac_auto_sync_sweep_task = None
         _itsm_sla_sweep_task = None
         _map_detection_sweep_task = None
@@ -456,6 +458,7 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(je_testing_sweep.sweep_once, je_testing_sweep._TICK_S, "JE Testing sweep")),
                 asyncio.create_task(_multi_tenant_loop(pii_retention_sweep.sweep_once, pii_retention_sweep._TICK_S, "PII retention sweep")),
                 asyncio.create_task(_multi_tenant_loop(risk_waiver_sweep.sweep_once, risk_waiver_sweep._TICK_S, "Risk waiver expiry sweep")),
+                asyncio.create_task(_multi_tenant_loop(pbc_reminder_sweep.sweep_once, pbc_reminder_sweep._TICK_S, "PBC request reminder sweep")),
                 asyncio.create_task(_multi_tenant_loop(pac_auto_sync_sweep.sweep_once, pac_auto_sync_sweep._TICK_S, "PaC auto-sync sweep")),
                 asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
                 asyncio.create_task(_multi_tenant_loop(map_detection_sweep.sweep_once, map_detection_sweep._TICK_S, "MAP detection sweep")),
@@ -548,6 +551,12 @@ async def lifespan(application: FastAPI):
                 _risk_waiver_sweep_task = asyncio.create_task(risk_waiver_sweep.start_sweep())
                 logger.info("Risk waiver expiry sweep task started")
 
+            # PBC Request-as-Code: reminders and escalation for unanswered
+            # document requests, via the alert webhook — see pbc_reminder_sweep.py.
+            if db.is_available():
+                _pbc_reminder_sweep_task = asyncio.create_task(pbc_reminder_sweep.start_sweep())
+                logger.info("PBC reminder sweep task started")
+
             # Policy-as-Code: polls every auto_sync_enabled repo and syncs it
             # when the branch's HEAD commit has moved — see pac_auto_sync_sweep.py.
             if db.is_available():
@@ -631,6 +640,9 @@ async def lifespan(application: FastAPI):
                         if _risk_waiver_sweep_task is None:
                             asyncio.create_task(risk_waiver_sweep.start_sweep())
                             logger.info("Risk waiver expiry sweep started after DB reconnect")
+                        if _pbc_reminder_sweep_task is None:
+                            asyncio.create_task(pbc_reminder_sweep.start_sweep())
+                            logger.info("PBC reminder sweep started after DB reconnect")
                         if _pac_auto_sync_sweep_task is None:
                             asyncio.create_task(pac_auto_sync_sweep.start_sweep())
                             logger.info("PaC auto-sync sweep started after DB reconnect")
@@ -661,7 +673,7 @@ async def lifespan(application: FastAPI):
                              _pac_negative_sweep_task, _connector_hygiene_sweep_task,
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
-                             _risk_waiver_sweep_task, _pac_auto_sync_sweep_task,
+                             _risk_waiver_sweep_task, _pbc_reminder_sweep_task, _pac_auto_sync_sweep_task,
                              _itsm_sla_sweep_task, _map_detection_sweep_task,
                              _infra_asset_sweep_task, _vulnerability_sweep_task, _exception_staleness_sweep_task,
                              *_multi_tenant_bg_tasks):

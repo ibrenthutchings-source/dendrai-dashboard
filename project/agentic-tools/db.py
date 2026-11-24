@@ -2767,6 +2767,15 @@ CREATE INDEX IF NOT EXISTS idx_pbc_requests_engagement
 CREATE INDEX IF NOT EXISTS idx_pbc_requests_due
     ON observability.pbc_requests (due_date) WHERE status IN ('requested', 'rejected');
 
+-- One row per (request, reminder kind) actually claimed by the reminder sweep, so a
+-- restart or a second instance never sends the same reminder twice.
+CREATE TABLE IF NOT EXISTS observability.pbc_request_reminders (
+    request_id BIGINT      NOT NULL REFERENCES observability.pbc_requests(id),
+    kind       VARCHAR(16) NOT NULL,
+    sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (request_id, kind)
+);
+
 -- Signed, immutable report snapshots (reporting_snapshot.py). payload_json and
 -- rows_json are exact TEXT (never jsonb) so the hash and signature verify
 -- byte for byte. The trigger makes rows append-only; the HMAC signature is the
@@ -14594,6 +14603,36 @@ def review_pbc_request(request_id: int, decision: str, reviewer: str, note: Opti
                 row = cur.fetchone()
                 return _iso_row(cur, row) if row else None
     return _run(_do)
+
+
+def list_unanswered_pbc_requests() -> list:
+    """Requests still waiting on evidence, each with the reminder kinds already sent."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT r.id, r.engagement, r.control_id, r.requirement_key, r.title, r.due_date, r.owner,
+                           r.status,
+                           COALESCE((SELECT array_agg(m.kind) FROM observability.pbc_request_reminders m
+                                      WHERE m.request_id = r.id), ARRAY[]::varchar[]) AS reminders_sent
+                      FROM observability.pbc_requests r
+                     WHERE r.status IN ('requested', 'rejected')
+                     ORDER BY r.due_date, r.id
+                    """)
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def claim_pbc_reminder(request_id: int, kind: str) -> bool:
+    """True only for the one caller that records this (request, kind); everyone else gets False."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO observability.pbc_request_reminders (request_id, kind) VALUES (%s, %s) "
+                            "ON CONFLICT DO NOTHING", (request_id, kind))
+                return cur.rowcount == 1
+    return bool(_run(_do))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

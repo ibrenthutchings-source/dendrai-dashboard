@@ -40,6 +40,8 @@ const NAV_SECTIONS = [
       // Backend router is gated by the "reporting" screen permission
       // (reporting_endpoints.py) — permissionScreenId keeps the admin permission
       // matrix writing the id the API and ScreenAccessGate actually read.
+      // pbc_request_endpoints.py reuses the PBC evidence log's screen permission.
+      { id: "pbcrequests", icon: "list", l: "PBC Requests", permissionScreenId: "evidencequality" },
       { id: "reportbuilder", icon: "doc", l: "Report Builder", permissionScreenId: "reporting" },
       // id deliberately matches evidence_quality_endpoints.py's _SCREEN_ID —
       // see evidence_quality_tool.py's module docstring for the deterministic

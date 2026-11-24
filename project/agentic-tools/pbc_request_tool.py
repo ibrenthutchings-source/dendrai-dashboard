@@ -202,6 +202,37 @@ def check_evidence(request: dict, evidence: dict, today: Optional[date] = None) 
     return findings
 
 
+# Reminder schedule, in days relative to the due date. A request gets at most one
+# reminder of each kind, and only the CURRENT kind is sent: if the sweep was down
+# and a request is already 10 days overdue, it gets "escalation", not a backlog of
+# the earlier kinds.
+REMIND_BEFORE_DAYS = 3
+ESCALATE_AFTER_DAYS = 7
+REMINDER_KINDS = ("due_soon", "due_today", "overdue", "escalation")
+
+
+def reminder_kind(status: str, due_date: Any, already_sent: set, today: Optional[date] = None) -> Optional[str]:
+    """Which reminder (if any) an unanswered request should get today."""
+    if status not in ("requested", "rejected"):
+        return None
+    today = today or date.today()
+    due = _as_date(due_date)
+    if due is None:
+        return None
+    delta = (due - today).days
+    if delta > REMIND_BEFORE_DAYS:
+        return None
+    if delta > 0:
+        kind = "due_soon"
+    elif delta == 0:
+        kind = "due_today"
+    elif -delta < ESCALATE_AFTER_DAYS:
+        kind = "overdue"
+    else:
+        kind = "escalation"
+    return None if kind in already_sent else kind
+
+
 def summarise(requests: list[dict], today: Optional[date] = None) -> dict:
     """Status board counts, with overdue broken out."""
     counts = {s: 0 for s in (*STATUSES, "overdue")}

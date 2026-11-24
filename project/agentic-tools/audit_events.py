@@ -110,6 +110,7 @@ AUDIT_EVENT_CATALOG: list[dict] = [
     _e("reporting", "report_run_verified", [_S, _F],
        "A stored run's signature, row hashes and embedded definition were checked (target = run id). Failure means "
        "the record does not verify; treat as a security event."),
+    _e("pbc", "pbc_reminders_sent", [_S], "The reminder sweep sent reminders (actor pbc-reminder-sweep; detail = counts per kind: due_soon, due_today, overdue, escalation)."),
     _e("pbc", "pbc_requirement_saved", [_S, _F], "A control's evidence requirement was declared or changed (target = control/key)."),
     _e("pbc", "pbc_requests_generated", [_S, _F],
        "An engagement's PBC request list was generated from requirements (target = engagement; detail has created/existing counts)."),

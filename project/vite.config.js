@@ -195,6 +195,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/reporting/, '/reporting'),
       },
+      // pbc_request_endpoints.router declares prefix="/pbc-requests" — same gap.
+      '/api/pbc-requests': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/pbc-requests/, '/pbc-requests'),
+      },
       // evidence_pack_endpoints.router declares prefix="/evidence-pack" —
       // same gap, different router.
       '/api/evidence-pack': {
@@ -283,6 +289,12 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/reporting/, '/reporting'),
+      },
+      // pbc_request_endpoints.router declares prefix="/pbc-requests" — same gap.
+      '/api/pbc-requests': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/pbc-requests/, '/pbc-requests'),
       },
       '/auth/': {
         target: 'http://127.0.0.1:8001',
