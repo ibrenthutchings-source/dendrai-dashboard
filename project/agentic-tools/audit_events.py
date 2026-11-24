@@ -111,6 +111,16 @@ AUDIT_EVENT_CATALOG: list[dict] = [
        "A stored run's signature, row hashes and embedded definition were checked (target = run id). Failure means "
        "the record does not verify; treat as a security event."),
     _e("pbc", "pbc_reminders_sent", [_S], "The reminder sweep sent reminders (actor pbc-reminder-sweep; detail = counts per kind: due_soon, due_today, overdue, escalation)."),
+    _e("auth", "external_access_denied", [_D],
+       "An external-auditor account tried to reach something outside the audit portal, or an engagement/run not "
+       "assigned to it (detail.reason: path_not_allowed, engagement_not_assigned, run_not_available, request_not_found; "
+       "detail.gate says which layer refused). Repeated entries from one account are worth a look."),
+    _e("external", "external_view", [_S, _F], "An external auditor looked at engagement material (target = engagement, request or run; detail.resource says what). A failed verify is logged as a failure."),
+    _e("external", "external_download", [_S], "An external auditor downloaded a workbook (target = run id)."),
+    _e("external", "external_engagement_granted", [_S, _F],
+       "An admin assigned an external auditor to an engagement (target = engagement:user_id). Failure reasons: "
+       "not_external_role, inactive_user, user_not_found, unknown_engagement, invalid_input."),
+    _e("external", "external_engagement_revoked", [_S, _F], "An admin removed an external auditor from an engagement."),
     _e("pbc", "pbc_requirement_saved", [_S, _F], "A control's evidence requirement was declared or changed (target = control/key)."),
     _e("pbc", "pbc_requests_generated", [_S, _F],
        "An engagement's PBC request list was generated from requirements (target = engagement; detail has created/existing counts)."),

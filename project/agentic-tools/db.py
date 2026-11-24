@@ -2767,6 +2767,19 @@ CREATE INDEX IF NOT EXISTS idx_pbc_requests_engagement
 CREATE INDEX IF NOT EXISTS idx_pbc_requests_due
     ON observability.pbc_requests (due_date) WHERE status IN ('requested', 'rejected');
 
+-- Which external auditors may see which engagement (external_endpoints.py). An
+-- engagement is the free-text label used on pbc_requests and report runs. Revoking
+-- deletes the row; the audit log keeps the history of grants and revocations.
+CREATE TABLE IF NOT EXISTS observability.engagement_access (
+    engagement VARCHAR(128) NOT NULL,
+    user_id    BIGINT       NOT NULL,
+    username   VARCHAR(128) NOT NULL,
+    granted_by VARCHAR(128) NOT NULL,
+    granted_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (engagement, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_engagement_access_user ON observability.engagement_access (user_id);
+
 -- One row per (request, reminder kind) actually claimed by the reminder sweep, so a
 -- restart or a second instance never sends the same reminder twice.
 CREATE TABLE IF NOT EXISTS observability.pbc_request_reminders (
@@ -14603,6 +14616,70 @@ def review_pbc_request(request_id: int, decision: str, reviewer: str, note: Opti
                 row = cur.fetchone()
                 return _iso_row(cur, row) if row else None
     return _run(_do)
+
+
+def grant_engagement_access(engagement: str, user_id: int, username: str, granted_by: str) -> Optional[bool]:
+    """True if newly granted, False if already granted, None on failure."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO observability.engagement_access (engagement, user_id, username, granted_by) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING", (engagement, user_id, username, granted_by))
+                return cur.rowcount == 1
+    return _run(_do)
+
+
+def revoke_engagement_access(engagement: str, user_id: int) -> Optional[bool]:
+    """True if a grant was removed, False if there was none, None on failure."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM observability.engagement_access WHERE engagement = %s AND user_id = %s",
+                            (engagement, user_id))
+                return cur.rowcount == 1
+    return _run(_do)
+
+
+def list_engagement_auditors(engagement: str) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT engagement, user_id, username, granted_by, granted_at "
+                            "FROM observability.engagement_access WHERE engagement = %s ORDER BY username",
+                            (engagement,))
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def list_engagements_for_user(user_id: int) -> list:
+    """Engagement labels assigned to this user, with request counts for the portal landing page."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT a.engagement, a.granted_at,
+                           COUNT(r.id) AS requests_total,
+                           COUNT(r.id) FILTER (WHERE r.status = 'accepted') AS requests_accepted
+                      FROM observability.engagement_access a
+                      LEFT JOIN observability.pbc_requests r ON r.engagement = a.engagement
+                     WHERE a.user_id = %s
+                     GROUP BY a.engagement, a.granted_at
+                     ORDER BY a.engagement
+                    """, (user_id,))
+                return [_iso_row(cur, r) for r in cur.fetchall()]
+    return _run(_do) or []
+
+
+def user_has_engagement_access(user_id: int, engagement: str) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM observability.engagement_access WHERE engagement = %s AND user_id = %s",
+                            (engagement, user_id))
+                return cur.fetchone() is not None
+    return bool(_run(_do))
 
 
 def list_unanswered_pbc_requests() -> list:

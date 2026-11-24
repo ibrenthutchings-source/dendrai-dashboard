@@ -64,6 +64,7 @@ from pydantic import BaseModel
 
 import auth_db
 import db
+import external_auditor
 
 logger = logging.getLogger("auth.endpoints")
 
@@ -366,6 +367,13 @@ def get_current_user(
     user = auth_db.get_user_by_id(user_id)
     if not user or not user.get("is_active"):
         raise HTTPException(status_code=401, detail="Account inactive")
+    # External auditors are deny-by-default (external_auditor.py). The role is read
+    # from the database here, not from the token, so a role change takes effect on
+    # the next request even for a session issued before it.
+    if external_auditor.is_external(user.get("role")) and not external_auditor.path_allowed(request.url.path):
+        _reject(403, "This account can only use the audit portal", "external_access_denied", user.get("username"),
+                reason="path_not_allowed", extra={"method": request.method, "path": request.url.path[:200]},
+                request=request, outcome="denied")
     return user
 
 
@@ -837,11 +845,17 @@ def admin_set_role(user_id: int, req: AdminSetRoleRequest, request: Request, cur
     target = auth_db.get_user_by_id(user_id)
     if not target:
         _reject(404, "User not found", "role_changed", me, target=tgt, reason="user_not_found", request=request)
+    changes_external = external_auditor.is_external(target.get("role")) or external_auditor.is_external(req.role)
     if not auth_db.set_role(user_id, req.role):
         _reject(500, "Failed to update role", "role_changed", me, target=target["username"],
                 reason="db_error", request=request)
+    if changes_external:
+        # Moving an account into or out of the external-auditor role must not leave
+        # a session issued under the old role alive: sign it out now.
+        auth_db.revoke_all_user_sessions(user_id)
     _audit("role_changed", current_user["username"], target=target["username"],
-           detail={"old_role": target.get("role"), "new_role": req.role}, request=request)
+           detail={"old_role": target.get("role"), "new_role": req.role,
+                   **({"sessions_revoked": True} if changes_external else {})}, request=request)
     return {"ok": True, "role": req.role}
 
 

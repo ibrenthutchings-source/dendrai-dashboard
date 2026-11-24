@@ -12,7 +12,7 @@ Analysis and recommendations. Nothing here is built yet. Written 2026-11-23.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| Users | All, especially risks and controls that support external auditors (financial, SOX, ITGC). Technical frameworks (ISO, SOC 2) are audited by third parties. | External auditors need restricted, read-mostly accounts. Evidence and reports must stand on their own for someone outside the company. **Not built yet** (needs an external-auditor role and per-engagement scoping). |
+| Users | All, especially risks and controls that support external auditors (financial, SOX, ITGC). Technical frameworks (ISO, SOC 2) are audited by third parties. | External auditors need restricted, read-mostly accounts. Evidence and reports must stand on their own for someone outside the company. **Built:** the `external_auditor` role (deny-by-default) and per-engagement scoping; admins create the accounts, same login. |
 | "Operating systems" | Other products and platforms. | Part 1 stays a reusable package (API, MCP tools, embeddable viewer). |
 | Systems | Oracle Fusion, NetSuite, SAP S/4 and HANA. | Connectors exist for Oracle Fusion, NetSuite and SAP HANA (`connector_poller._ADAPTERS`). **S/4-specific coverage is not verified**; check it before promising automatic collection for S/4. |
 | Standard | Documentation must let a knowledgeable, trained auditor with no involvement in the audit **reperform the work from the documentation alone**. | See "The reperformance standard" below. It is a design requirement for everything built here. |
@@ -50,13 +50,14 @@ Everything here is held to one test: could a stranger who knows the craft redo t
 - `pbc_request_tool.py` (pure rules), `pbc_request_endpoints.py`, tables `observability.evidence_requirements` and `observability.pbc_requests`.
 - Declare what evidence a control needs; generate an engagement's request list (idempotent); link logged evidence, which runs deterministic checks (wrong control, period not covered, signature, freshness) against the **frozen** requirement; accept or reject with enforced reviewer independence; status board with derived "overdue". All audit-logged. Tests: `test_pbc_requests.py`.
 - **Also built:** the PBC Requests screen (`pbc-requests.jsx`) and reminders/escalation (`pbc_reminder_sweep.py`, webhook, single-tenant only for now).
-- **Not built yet:** automatic collection from Oracle/NetSuite/SAP (a requirement's `source_system` is recorded, not acted on), per-tenant webhooks and per-owner notification, and the external-auditor role.
+- **Not built yet:** automatic collection from Oracle/NetSuite/SAP (a requirement's `source_system` is recorded, not acted on), and per-tenant webhooks and per-owner notification.
+- **Also built:** external-auditor role, audit portal and engagement assignment (`external_auditor.py`, `external_endpoints.py`, `auditor-portal.jsx`).
 
 **Also built:** signed immutable report snapshots (`reporting_snapshot.py`, table `observability.report_snapshots`, tests `test_report_snapshots.py`).
 
 **Also built:** Report-as-Code (`reporting_definitions.py`, `reporting_definition_endpoints.py`, tables `report_definition_versions` and `report_runs`, tests `test_report_definitions.py`): versioned definitions, draft/approve/retire with author != approver and a required objective/procedure/conclusion (closes gap 3 for reports), signed run records embedding the definition, per-block verification and rerun, HTML renderer. XLSX export of stored runs (`reporting_export.py`, with a Reperformance sheet). Builder UI (`report-builder.jsx`; not yet exercised in a browser against a live backend). Not yet: PDF/PPTX export.
 
-**Next increments, in order:** (2b) PDF/PPTX export; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals; (5) external-auditor role and engagement scoping.
+**Next increments, in order:** (2b) PDF/PPTX export; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals.
 
 ---
 

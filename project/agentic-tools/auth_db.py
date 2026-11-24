@@ -176,7 +176,8 @@ def init_auth_db() -> bool:
                     """
                     INSERT INTO auth.roles (name, description, is_system) VALUES
                         ('admin', 'Full access — bypasses the screen permission matrix entirely.', TRUE),
-                        ('user',  'Default role for new accounts.', TRUE)
+                        ('user',  'Default role for new accounts.', TRUE),
+                        ('external_auditor', 'Third-party auditor: deny-by-default. Can only open the audit portal for engagements an admin has assigned to them.', TRUE)
                     ON CONFLICT (name) DO NOTHING
                     """
                 )

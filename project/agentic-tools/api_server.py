@@ -144,6 +144,8 @@ import itsm_endpoints
 import map_endpoints
 import sample_selection_endpoints
 import evidence_quality_endpoints
+import external_auditor
+import external_endpoints
 import reporting_endpoints
 import reporting_definition_endpoints
 import pbc_request_endpoints
@@ -982,6 +984,16 @@ class _DendraiAuthMiddleware(_BaseHTTPMiddleware):
         payload = auth_endpoints.decode_jwt(cookie)
         if not payload:
             return JSONResponse({"detail": "Invalid session token"}, status_code=401)
+        # External auditors are deny-by-default: refuse before any route runs, using the
+        # role in the token. get_current_user repeats the check with the role read from
+        # the database (so a stale token cannot outlive a role change). One rule, in
+        # external_auditor.path_allowed, serves both.
+        if external_auditor.is_external(payload.get("role")) and not external_auditor.path_allowed(path):
+            auth_endpoints._audit("external_access_denied", payload.get("username"),
+                                  detail={"reason": "path_not_allowed", "gate": "middleware",
+                                          "method": request.method, "path": path[:200], "http_status": 403},
+                                  request=request, outcome="denied")
+            return JSONResponse({"detail": "This account can only use the audit portal"}, status_code=403)
         jti = payload.get("jti", "")
         user_id, reason = auth_db.validate_session_reason(jti)
         if not user_id:
@@ -1087,6 +1099,7 @@ app.include_router(sample_selection_endpoints.router)
 app.include_router(evidence_quality_endpoints.router)
 app.include_router(reporting_endpoints.router)
 app.include_router(reporting_definition_endpoints.router)
+app.include_router(external_endpoints.router)
 app.include_router(pbc_request_endpoints.router)
 
 # GitHub Webhook: receive repo events and run them through the UBO pipeline.

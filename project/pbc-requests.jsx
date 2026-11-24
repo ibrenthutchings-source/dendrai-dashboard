@@ -280,6 +280,84 @@ function PrRequirements() {
   );
 }
 
+// Admin: which external auditors may see which engagement. Accounts themselves are
+// created in User Management with the "external_auditor" role; this only assigns scope.
+function PrAuditorAccess({ engagements }) {
+  const [engagement, setEngagement] = React.useState("");
+  const [auditors, setAuditors] = React.useState([]);
+  const [users, setUsers] = React.useState([]);
+  const [userId, setUserId] = React.useState("");
+  const [err, setErr] = React.useState(null);
+  const [msg, setMsg] = React.useState(null);
+
+  const ext = async (path, opts = {}) => {
+    const res = await fetch("/api/external" + path, { credentials: "include", ...opts, headers: opts.body ? { "Content-Type": "application/json" } : {} });
+    if (!res.ok) { let d = res.statusText; try { const j = await res.json(); d = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch {} throw new Error(d); }
+    return res.json();
+  };
+  const loadAuditors = React.useCallback(async (eng) => {
+    if (!eng) { setAuditors([]); return; }
+    try { setAuditors((await ext(`/admin/access?engagement=${encodeURIComponent(eng)}`)).auditors || []); setErr(null); }
+    catch (e) { setErr(e.message); }
+  }, []);
+  React.useEffect(() => {
+    fetch("/auth/admin/users", { credentials: "include" }).then(r => r.ok ? r.json() : { users: [] })
+      .then(d => setUsers((d.users || []).filter(u => u.role === "external_auditor" && u.is_active))).catch(() => {});
+  }, []);
+  React.useEffect(() => { loadAuditors(engagement); }, [engagement, loadAuditors]);
+
+  const grant = async () => {
+    setErr(null); setMsg(null);
+    try {
+      const r = await ext("/admin/access", _prSend("PUT", { engagement, user_id: Number(userId) }));
+      setMsg(r.newly_granted ? `${r.username} can now see ${engagement}.` : `${r.username} already had access.`);
+      setUserId(""); loadAuditors(engagement);
+    } catch (e) { setErr(e.message); }
+  };
+  const revoke = async (uid) => {
+    setErr(null); setMsg(null);
+    try { await ext(`/admin/access?engagement=${encodeURIComponent(engagement)}&user_id=${uid}`, { method: "DELETE" }); loadAuditors(engagement); }
+    catch (e) { setErr(e.message); }
+  };
+  const assignedIds = new Set(auditors.map(a => a.user_id));
+  return (
+    <div style={_prCard}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>External auditor access</div>
+      <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 10 }}>
+        External auditors see only the engagements assigned here, read-only, in a separate audit portal. Create their account in User
+        Management with the <b>external_auditor</b> role, then assign it. Removing access takes effect on their next request.
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
+        <_PrField label="Engagement" style={{ width: 240 }}>
+          <select style={_prInput} value={engagement} onChange={e => setEngagement(e.target.value)}>
+            <option value="">choose…</option>{engagements.map(e => <option key={e}>{e}</option>)}
+          </select>
+        </_PrField>
+        <_PrField label="Auditor account" style={{ width: 260 }}>
+          <select style={_prInput} value={userId} onChange={e => setUserId(e.target.value)} disabled={!engagement}>
+            <option value="">{users.length ? "choose…" : "no active external_auditor accounts"}</option>
+            {users.filter(u => !assignedIds.has(u.id)).map(u => <option key={u.id} value={u.id}>{u.display_name || u.username} ({u.username})</option>)}
+          </select>
+        </_PrField>
+        <button style={_prBtn(true)} disabled={!engagement || !userId} onClick={grant}>Assign</button>
+      </div>
+      {msg && <div style={{ fontSize: 11.5, color: "var(--green-ink)", marginTop: 8 }}>{msg}</div>}
+      {err && <div className="mono" style={{ fontSize: 11.5, color: "var(--red-ink)", marginTop: 8 }}>{err}</div>}
+      {engagement && (
+        <div style={{ marginTop: 12 }}>
+          {!auditors.length ? <div style={{ fontSize: 12, color: "var(--ink-3)" }}>No external auditors assigned to {engagement}.</div> : auditors.map(a => (
+            <div key={a.user_id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--line)", fontSize: 12 }}>
+              <b style={{ flex: 1 }}>{a.username}</b>
+              <span style={{ color: "var(--ink-4)" }}>assigned by {a.granted_by}</span>
+              <button style={_prBtn(false)} onClick={() => revoke(a.user_id)}>Remove access</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PbcRequestsScreen() {
   const auth = window.useAuth ? window.useAuth() : null;
   const username = auth?.user?.username;
@@ -322,13 +400,15 @@ function PbcRequestsScreen() {
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {[["requests", "Requests"], ["generate", "Generate"], ["requirements", "Requirements"]].map(([k, l]) => (
+        {[["requests", "Requests"], ["generate", "Generate"], ["requirements", "Requirements"],
+          ...(auth?.user?.role === "admin" ? [["auditors", "Auditor access"]] : [])].map(([k, l]) => (
           <button key={k} style={_prBtn(tab === k)} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
       {error && <div className="mono" style={{ fontSize: 11.5, color: "var(--red-ink)", marginBottom: 12 }}>{error}</div>}
 
       {tab === "requirements" && <PrRequirements />}
+      {tab === "auditors" && <PrAuditorAccess engagements={engagements} />}
       {tab === "generate" && <PrGenerateForm onDone={(eng) => { setEngagement(eng); setTab("requests"); load(eng); }} />}
       {tab === "requests" && (
         <>

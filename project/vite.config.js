@@ -195,6 +195,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/reporting/, '/reporting'),
       },
+      // external_endpoints.router declares prefix="/external" — same gap.
+      '/api/external': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/external/, '/external'),
+      },
       // pbc_request_endpoints.router declares prefix="/pbc-requests" — same gap.
       '/api/pbc-requests': {
         target: 'http://127.0.0.1:8001',
@@ -289,6 +295,12 @@ export default defineConfig({
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/reporting/, '/reporting'),
+      },
+      // external_endpoints.router declares prefix="/external" — same gap.
+      '/api/external': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/external/, '/external'),
       },
       // pbc_request_endpoints.router declares prefix="/pbc-requests" — same gap.
       '/api/pbc-requests': {

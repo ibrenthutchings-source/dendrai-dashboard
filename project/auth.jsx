@@ -9,6 +9,12 @@ const { useState, useEffect, useContext, createContext, useCallback } = React;
 
 const AuthContext = createContext(null);
 
+// External auditors get the read-only audit portal INSTEAD of the application: the main
+// app is never mounted for them, so it makes none of its own API calls (which the server
+// would refuse anyway: the role is deny-by-default, see external_auditor.py).
+const AuditorPortalLazy = React.lazy(() =>
+  import('./auditor-portal.jsx').then(() => ({ default: window.AuditorPortal })));
+
 function useAuth() {
   return useContext(AuthContext);
 }
@@ -112,7 +118,9 @@ function AuthProvider({ children }) {
       {user
         ? (user.must_change_pw
             ? <ChangePasswordScreen onDone={() => setUser({ ...user, must_change_pw: false })} />
-            : children)
+            : user.role === "external_auditor"
+              ? <React.Suspense fallback={<div style={{ padding: 24, fontSize: 12, color: "#888" }}>Loading…</div>}><AuditorPortalLazy /></React.Suspense>
+              : children)
         : <LoginScreen />}
     </AuthContext.Provider>
   );
