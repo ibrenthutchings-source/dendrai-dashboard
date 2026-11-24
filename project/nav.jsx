@@ -43,6 +43,8 @@ const NAV_SECTIONS = [
       // pbc_request_endpoints.py reuses the PBC evidence log's screen permission.
       { id: "pbcrequests", icon: "list", l: "PBC Requests", permissionScreenId: "evidencequality" },
       { id: "reportbuilder", icon: "doc", l: "Report Builder", permissionScreenId: "reporting" },
+      // tieout_endpoints.py is gated by the same "reporting" screen permission.
+      { id: "tieout", icon: "list", l: "Tick & Tie", permissionScreenId: "reporting" },
       // id deliberately matches evidence_quality_endpoints.py's _SCREEN_ID —
       // see evidence_quality_tool.py's module docstring for the deterministic
       // stale/unsigned/period-mismatch checks this screen surfaces.

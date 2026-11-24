@@ -708,7 +708,8 @@ Compares two sources key by key and records a **tickmark** for every item, signe
 - **Sources:** a stored signed snapshot (checked first; one that fails verification is refused) or `inline` rows with a label saying where they came from. Inline rows are kept inside the signed record. A tie-out built on a restricted dataset is admin-only.
 - **Verify:** `GET /reporting/tieouts/{id}/verify` checks the signature, the item hash, that each source snapshot still hashes to what was used, and that the marks follow from the sources.
 - **Endpoints:** `POST /reporting/tieouts`, `GET /reporting/tieouts`, `GET /reporting/tieouts/legend`, `GET /reporting/tieouts/{id}`, `GET /reporting/tieouts/{id}/verify`.
-- **Not yet:** no screen, no export, no fuzzy or many-to-many matching, and external auditors cannot see tie-outs.
+- **Screen:** Tick & Tie in the Audit nav ([tie-out.jsx](../tie-out.jsx), shares the `reporting` permission): paste figures or pick a signed snapshot for each side, set tolerance, write the objective, procedure and conclusion, then view the stored record with legend, counts, an exceptions-only filter and Verify.
+- **Not yet:** no export, no fuzzy or many-to-many matching, and external auditors cannot see tie-outs.
 
 ### External Auditors — audit portal (`external_auditor.py` + `external_endpoints.py`)
 
