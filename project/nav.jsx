@@ -37,6 +37,10 @@ const NAV_SECTIONS = [
       { id: "rrreview",   icon: "list",     l: "Risk & Control Ledger" },
       { id: "sox",        icon: "grid",    l: "SOX Scoping", divider: "Scoping" },
       { id: "scope",    icon: "grid",      l: "Audit Plan" },
+      // Backend router is gated by the "reporting" screen permission
+      // (reporting_endpoints.py) — permissionScreenId keeps the admin permission
+      // matrix writing the id the API and ScreenAccessGate actually read.
+      { id: "reportbuilder", icon: "doc", l: "Report Builder", permissionScreenId: "reporting" },
       // id deliberately matches evidence_quality_endpoints.py's _SCREEN_ID —
       // see evidence_quality_tool.py's module docstring for the deterministic
       // stale/unsigned/period-mismatch checks this screen surfaces.

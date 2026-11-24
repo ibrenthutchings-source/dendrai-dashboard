@@ -25,6 +25,7 @@ const InfrastructureMonitoringScreenLazy = lazyGlobal(() => import('./infrastruc
 const AiInventoryScreenLazy = lazyGlobal(() => import('./ai-inventory.jsx'), 'AiInventoryScreen');
 const AiGovernanceScreenLazy = lazyGlobal(() => import('./ai-governance.jsx'), 'AiGovernanceScreen');
 const EvidenceQualityScreenLazy = lazyGlobal(() => import('./evidence-quality.jsx'), 'EvidenceQualityScreen');
+const ReportBuilderScreenLazy = lazyGlobal(() => import('./report-builder.jsx'), 'ReportBuilderScreen');
 const FlowPanelLazy = lazyGlobal(() => import('./flow.jsx'), 'FlowPanel');
 const AuditScopeScreenLazy = lazyGlobal(() => import('./audit-scope.jsx'), 'AuditScopeScreen');
 const ApprovalInboxScreenLazy = lazyGlobal(() => import('./approval-inbox.jsx'), 'ApprovalInboxScreen');
@@ -183,6 +184,7 @@ function App() {
       () => import('./ai-inventory.jsx'),
       () => import('./ai-governance.jsx'),
       () => import('./evidence-quality.jsx'),
+      () => import('./report-builder.jsx'),
       () => import('./flow.jsx'),
       () => import('./audit-scope.jsx'),
       () => import('./approval-inbox.jsx'),
@@ -2765,6 +2767,15 @@ function App() {
           <ScreenAccessGate screenId="evidencequality">
             <div className="panel active">
               <EvidenceQualityScreenLazy />
+            </div>
+          </ScreenAccessGate>
+          )}
+
+          {/* ---- Report Builder ---- */}
+          {activeScreen === "reportbuilder" && (
+          <ScreenAccessGate screenId="reporting">
+            <div className="panel active">
+              <ReportBuilderScreenLazy />
             </div>
           </ScreenAccessGate>
           )}

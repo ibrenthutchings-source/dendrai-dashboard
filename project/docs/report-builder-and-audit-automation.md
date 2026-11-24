@@ -53,9 +53,9 @@ Everything here is held to one test: could a stranger who knows the craft redo t
 
 **Also built:** signed immutable report snapshots (`reporting_snapshot.py`, table `observability.report_snapshots`, tests `test_report_snapshots.py`).
 
-**Also built:** Report-as-Code (`reporting_definitions.py`, `reporting_definition_endpoints.py`, tables `report_definition_versions` and `report_runs`, tests `test_report_definitions.py`): versioned definitions, draft/approve/retire with author != approver and a required objective/procedure/conclusion (closes gap 3 for reports), signed run records embedding the definition, per-block verification and rerun, HTML renderer. XLSX export of stored runs (`reporting_export.py`, with a Reperformance sheet). Not yet: PDF/PPTX export, builder UI.
+**Also built:** Report-as-Code (`reporting_definitions.py`, `reporting_definition_endpoints.py`, tables `report_definition_versions` and `report_runs`, tests `test_report_definitions.py`): versioned definitions, draft/approve/retire with author != approver and a required objective/procedure/conclusion (closes gap 3 for reports), signed run records embedding the definition, per-block verification and rerun, HTML renderer. XLSX export of stored runs (`reporting_export.py`, with a Reperformance sheet). Builder UI (`report-builder.jsx`; not yet exercised in a browser against a live backend). Not yet: PDF/PPTX export.
 
-**Next increments, in order:** (2b) PDF/PPTX export and the builder UI; (3) reminders and the status screen for requests; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals; (5) external-auditor role and engagement scoping.
+**Next increments, in order:** (2b) PDF/PPTX export; (3) reminders and the status screen for requests; (4) connector-backed automatic collection starting with Oracle Fusion, with IPE totals; (5) external-auditor role and engagement scoping.
 
 ---
 
