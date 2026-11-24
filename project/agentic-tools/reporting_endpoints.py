@@ -79,6 +79,37 @@ def get_dataset(key: str, user: dict = Depends(get_current_user)):
     return ds.describe()
 
 
+_MAX_VALUES = 50
+
+
+@router.get("/datasets/{key}/columns/{column}/values", summary="Distinct values of a column, for filter pickers")
+def column_values(key: str, column: str, user: dict = Depends(get_current_user)):
+    """Up to 50 distinct values (sorted), built through the same compiler as every query, so
+    identifiers come from the registry and restricted datasets stay admin-only."""
+    not_found = HTTPException(status_code=404, detail="Dataset or column not found")
+    try:
+        ds = rc.get_dataset(key)
+        col = ds.column(column)
+    except rc.QueryError:
+        raise not_found
+    if ds.admin_only and not _is_admin(user):
+        raise not_found                      # do not reveal restricted datasets
+    if col.type not in ("string", "bool"):
+        raise HTTPException(status_code=422, detail="Values are offered for text and yes/no columns only")
+    cq = rc.compile_query({"dataset": key, "columns": [col.name], "group_by": [col.name],
+                           "order_by": [{"column": col.name, "dir": "asc"}], "limit": _MAX_VALUES + 1},
+                          is_admin=_is_admin(user))
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        rows = execute(cq)
+    except Exception as exc:
+        logger.warning("column values failed for %s.%s: %s", key, column, exc)
+        raise HTTPException(status_code=500, detail="Query failed")
+    values = [r[col.name] for r in rows if r[col.name] is not None]
+    return {"column": col.name, "values": values[:_MAX_VALUES], "truncated": len(rows) > _MAX_VALUES}
+
+
 @router.post("/query", summary="Run a governed query")
 def run_query(req: QueryRequest, user: dict = Depends(get_current_user)):
     dataset_key = str(req.spec.get("dataset", "")) if isinstance(req.spec, dict) else ""

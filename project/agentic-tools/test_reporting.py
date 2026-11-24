@@ -243,3 +243,64 @@ def test_truncation_is_flagged_when_the_limit_is_reached(api, monkeypatch):
     monkeypatch.setattr(re_, "execute", lambda cq: [{"control_ref": f"C-{i}"} for i in range(3)])
     out = re_.run_query(re_.QueryRequest(spec={"dataset": "controls", "columns": ["control_ref"], "limit": 3}), USER)
     assert out["manifest"]["truncated"] is True
+
+
+# ── aggregate labels and column values (report builder field picker) ─────────
+
+def test_aggregate_label_becomes_the_output_label_and_is_optional():
+    cq = rc.compile_query({"dataset": "controls", "columns": ["category"], "group_by": ["category"],
+                           "aggregates": [{"fn": "count", "column": "*", "as": "n", "label": "  Number of controls "},
+                                          {"fn": "count", "column": "*", "as": "m"}]})
+    assert [c["label"] for c in cq.output_columns] == ["Category", "Number of controls", "m"]
+    assert cq.spec["aggregates"][0]["label"] == "Number of controls"
+    assert "label" not in cq.spec["aggregates"][1]          # unlabelled specs hash exactly as before
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "x" * 81, 5])
+def test_bad_aggregate_label_is_rejected(bad):
+    with pytest.raises(rc.QueryError, match="label"):
+        rc.compile_query({"dataset": "controls", "aggregates": [{"fn": "count", "column": "*", "as": "n", "label": bad}]})
+
+
+def test_label_does_not_change_the_sql():
+    a = rc.compile_query({"dataset": "controls", "aggregates": [{"fn": "count", "column": "*", "as": "n"}]})
+    b = rc.compile_query({"dataset": "controls", "aggregates": [{"fn": "count", "column": "*", "as": "n", "label": "X"}]})
+    assert a.sql == b.sql and a.params == b.params
+
+
+class _Env:
+    pass
+
+
+def _values_env(monkeypatch, rows):
+    import reporting_endpoints as ep
+    seen = {}
+    monkeypatch.setattr(ep.db, "is_available", lambda: True)
+    monkeypatch.setattr(ep, "execute", lambda cq: seen.setdefault("cq", cq) and rows)
+    return ep, seen
+
+
+def test_column_values_are_distinct_sorted_through_the_compiler(monkeypatch):
+    ep, seen = _values_env(monkeypatch, [{"framework": "ISO"}, {"framework": None}, {"framework": "SOX"}])
+    out = ep.column_values("controls", "framework", {"username": "a", "role": "user"})
+    assert out == {"column": "framework", "values": ["ISO", "SOX"], "truncated": False}
+    sql = seen["cq"].sql
+    assert 'GROUP BY "framework"' in sql and 'ORDER BY "framework" ASC' in sql
+
+
+def test_column_values_truncate_at_fifty(monkeypatch):
+    ep, _ = _values_env(monkeypatch, [{"framework": f"F{i:03d}"} for i in range(51)])
+    out = ep.column_values("controls", "framework", {"username": "a", "role": "user"})
+    assert len(out["values"]) == 50 and out["truncated"] is True
+
+
+def test_column_values_refuse_numbers_unknowns_and_restricted(monkeypatch):
+    from fastapi import HTTPException
+    ep, _ = _values_env(monkeypatch, [])
+    user, admin = {"username": "a", "role": "user"}, {"username": "r", "role": "admin"}
+    for args, status in ((("risk_scores", "score"), 422), (("controls", "nope"), 404), (("nope", "x"), 404),
+                         (("audit_log", "action"), 404)):
+        with pytest.raises(HTTPException) as ei:
+            ep.column_values(*args, user)
+        assert ei.value.status_code == status, args
+    assert ep.column_values("audit_log", "action", admin)["column"] == "action"

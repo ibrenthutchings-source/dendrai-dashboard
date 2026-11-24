@@ -267,10 +267,16 @@ def compile_query(spec: dict, is_admin: bool = False) -> CompiledQuery:
                 raise QueryError(f"{fn} is not valid on a bool column")
             expr = f'{fn.upper()}("{c.name}")'
             typ = "number" if fn in ("count", "sum", "avg") else c.type
+        label = a.get("label")
+        if label is not None:
+            if not isinstance(label, str) or not label.strip() or len(label) > 80:
+                raise QueryError("aggregate label must be 1 to 80 characters")
+            label = label.strip()
         select_parts.append(f'{expr} AS "{alias}"')
-        out_cols.append({"name": alias, "label": alias, "type": typ})
+        out_cols.append({"name": alias, "label": label or alias, "type": typ})
         aliases[alias] = typ
-        norm_aggs.append({"fn": fn, "column": col, "as": alias})
+        # label only appears in the normalised spec when given, so existing specs hash as before
+        norm_aggs.append({"fn": fn, "column": col, "as": alias, **({"label": label} if label else {})})
 
     where_parts: list[str] = []
     params: list = []
