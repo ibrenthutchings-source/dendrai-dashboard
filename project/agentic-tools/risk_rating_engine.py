@@ -112,6 +112,11 @@ CATEGORY_IMPACT = {
     "Compliance":          3,
     "Legal":               3,
     "Strategic":           3,
+    # Added with the evidence-scored taxonomy (risk_taxonomy.py). Mirrored in
+    # risk-engine.js's CATEGORY_IMPACT — keep the two in step.
+    "Liquidity":           5,   # going-concern / solvency: existential
+    "Governance":          3,
+    "Audit Oversight":     4,   # auditor integrity / ICFR: feeds every reported number
 }
 DEFAULT_IMPACT = 3  # matches risk-engine.js's `CATEGORY_IMPACT[t.category] || 3`
 

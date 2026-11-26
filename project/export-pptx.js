@@ -218,6 +218,34 @@ function buildEvidencePackSlide(pptx, { ticker, hasRun, risks, objectives, maps 
   return slide;
 }
 
+// Evidence & routing: where each 8-K landed, flagged events, and coverage gaps.
+// Reads the Stage 2 payload (output.s2.routing / notAssessed) the Gate 1
+// reviewer saw, so the board pack and the review screen cannot disagree.
+function buildEvidenceRoutingSlide(pptx, { hasRun, routing, notAssessed }) {
+  const slide = newSlide(pptx);
+  addHeader(slide, 'Assess Risk', 'Evidence & Routing', 'How SEC events map to risk categories, and where evidence is missing.');
+  if (!hasRun) {
+    slide.addText('No completed run.', { x: 0.5, y: 1.6, w: 9, h: 0.5, fontFace: FONT, fontSize: 12, color: COLOR.ink3, italic: true });
+    return slide;
+  }
+  const events = (routing?.events || []).filter(e => e.mappingStatus !== 'ignored');
+  const flags = routing?.gateFlags || [];
+  const lines = [];
+  const FLAG_TEXT = { bankruptcy: 'Bankruptcy / receivership (Item 1.03) — Liquidity floored at Red; reviewer sign-off required',
+    auditor_change_p1: 'Auditor change with adverse indicator(s) (Item 4.01)', disagreement_departure: 'Departure attributed to a disagreement (Item 5.02)' };
+  flags.filter(f => FLAG_TEXT[f.flag]).forEach(f => lines.push({ text: `⚑ ${FLAG_TEXT[f.flag]} — filed ${f.date}`, options: { bullet: { code: '2022' }, breakLine: true, bold: true } }));
+  events.slice(0, 8).forEach(e => {
+    const dest = (e.routing || []).map(r => `${r.name} +${r.points}`).join(', ') || 'needs review';
+    lines.push({ text: `${e.filingDate} · Item ${(e.items || []).join(', ')} → ${dest}`, options: { bullet: { code: '2022' }, breakLine: true } });
+  });
+  if (!lines.length) lines.push({ text: 'No scored 8-K events in the review window.', options: { breakLine: true } });
+  slide.addText(lines, { x: 0.5, y: 1.5, w: 9, h: 2.6, fontFace: FONT, fontSize: 10.5, color: COLOR.ink2, valign: 'top', lineSpacingMultiple: 1.15 });
+  const na = (notAssessed || []).map(n => n.name);
+  slide.addText(na.length ? `Not assessed (no evidence): ${na.join(' · ')}` : 'Every taxonomy category was assessed.', {
+    x: 0.5, y: 4.3, w: 9, h: 0.9, fontFace: FONT, fontSize: 10, color: COLOR.ink3, italic: true, valign: 'top' });
+  return slide;
+}
+
 function buildAuditPlanSlide(pptx, { objectives, maps }) {
   const slide = newSlide(pptx);
   addHeader(slide, 'Execution', 'Audit Plan', 'Risk-linked audit objectives, by fiscal quarter.');
@@ -563,6 +591,7 @@ export async function exportConsolidatedReportPptx(data) {
   addTitleSlide(pptx, { ticker: data.ticker, hasRun: data.hasRun, generatedAt });
 
   buildEvidencePackSlide(pptx, data);
+  buildEvidenceRoutingSlide(pptx, data);
   buildAuditPlanSlide(pptx, data);
 
   const { slides: riskSlides } = buildRiskProfileSlides(pptx, data);

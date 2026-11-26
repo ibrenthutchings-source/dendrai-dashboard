@@ -17,6 +17,7 @@ Usage:
 """
 
 import contextvars
+import json
 import logging
 import os
 import time
@@ -203,6 +204,11 @@ CREATE TABLE IF NOT EXISTS edgar_8k_events (
 ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS accession_number VARCHAR(20);
 ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS is_material       BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS classification    JSONB;
+-- Where each filing landed in the risk taxonomy (event_risk_map.route_filing) and
+-- the parsed content it was routed on (bankruptcy chapter, auditor-change reasons,
+-- officer roles) — so the Evidence Pack can show the mapping a reviewer saw.
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS risk_routing      JSONB;
+ALTER TABLE edgar_8k_events ADD COLUMN IF NOT EXISTS item_details      JSONB;
 -- Turns a detected material event into a governed, trackable record instead
 -- of a row that just sits there — same "detect -> tracked incident, not just
 -- an alert" shape already used for Model Health drift (see
@@ -1670,6 +1676,12 @@ ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS assigned_domain   VARCHAR(128);
 -- of always reading as "Consolidated".
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS segment_type      VARCHAR(16);
 ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS segment_name      VARCHAR(128);
+-- Evidence trail for the evidence-scored taxonomy (risk_taxonomy.py): the
+-- list of {source,label,points,...} items a score was derived from, so HITL
+-- and reporting can show WHY a category scored what it did.
+ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS evidence          JSONB;
+-- Auditor-ratification proposal text (audit-firm tenure, fees) for governance_intel.
+ALTER TABLE edgar_proxy_filings ADD COLUMN IF NOT EXISTS audit_matters TEXT;
 
 -- risk_scores was write-once (save_risk_scores only ever INSERTed, never
 -- updated) — Stage 2's signal-driven score adjustments and Gate 1's
@@ -3829,11 +3841,13 @@ def save_edgar_8k_events(company_id: int, events: list) -> list[str]:
                             """
                             INSERT INTO edgar_8k_events
                                 (company_id, event_date, items, item_descriptions,
-                                 accession_number, is_material, classification, status)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                 accession_number, is_material, classification, status,
+                                 risk_routing, item_details)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (company_id, accession_number) WHERE accession_number IS NOT NULL
-                            DO NOTHING
-                            RETURNING id
+                            DO UPDATE SET risk_routing = EXCLUDED.risk_routing,
+                                          item_details = EXCLUDED.item_details
+                            RETURNING (xmax = 0)
                             """,
                             (company_id, filing_date,
                              ev.get("items") or ev.get("form"),
@@ -3841,9 +3855,15 @@ def save_edgar_8k_events(company_id: int, events: list) -> list[str]:
                              accession,
                              is_material,
                              Json(ev.get("classification")) if ev.get("classification") else None,
-                             "new" if is_material else None),
+                             "new" if is_material else None,
+                             Json(ev.get("risk_routing")) if ev.get("risk_routing") else None,
+                             Json(ev.get("item_details")) if ev.get("item_details") else None),
                         )
-                        if cur.fetchone() is not None:
+                        # xmax = 0 only for a freshly INSERTed row; a conflict that
+                        # merely refreshed routing is an UPDATE and must not count
+                        # as a new event (that drives "new material event" alerts).
+                        row = cur.fetchone()
+                        if row is not None and row[0]:
                             new_accessions.append(accession)
                     else:
                         cur.execute(
@@ -3992,14 +4012,15 @@ def save_edgar_proxy(
                     INSERT INTO edgar_proxy_filings
                         (company_id, filing_date, accession_number,
                          executive_compensation, board_of_directors,
-                         say_on_pay, shareholder_proposals)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                         say_on_pay, shareholder_proposals, audit_matters)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (company_id, accession_number) DO UPDATE SET
                         filing_date            = EXCLUDED.filing_date,
                         executive_compensation = EXCLUDED.executive_compensation,
                         board_of_directors     = EXCLUDED.board_of_directors,
                         say_on_pay              = EXCLUDED.say_on_pay,
-                        shareholder_proposals   = EXCLUDED.shareholder_proposals
+                        shareholder_proposals   = EXCLUDED.shareholder_proposals,
+                        audit_matters           = COALESCE(EXCLUDED.audit_matters, edgar_proxy_filings.audit_matters)
                     RETURNING id
                     """,
                     (
@@ -4008,11 +4029,39 @@ def save_edgar_proxy(
                         sections.get("board_of_directors") or sections.get("Board of Directors"),
                         sections.get("say_on_pay") or sections.get("Say on Pay"),
                         sections.get("shareholder_proposals") or sections.get("Shareholder Proposals"),
+                        sections.get("audit_matters"),
                     ),
                 )
                 row = cur.fetchone()
                 return row[0] if row else None
     return _run(_do)
+
+
+def get_latest_proxy_kris(company_id: int) -> Optional[dict]:
+    """Governance KRIs (board tenure / refreshment policy / auditor tenure)
+    computed from the most recently saved DEF 14A for a company, or None when
+    no proxy has been saved. Reads stored full-text sections — no live fetch."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT executive_compensation, board_of_directors, say_on_pay,
+                           shareholder_proposals, audit_matters
+                    FROM edgar_proxy_filings WHERE company_id = %s
+                    ORDER BY filing_date DESC LIMIT 1
+                    """, (company_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                names = ("executive_compensation", "board_of_directors", "say_on_pay",
+                         "shareholder_proposals", "audit_matters")
+                return {k: v for k, v in zip(names, row) if v}
+    sections = _run(_do)
+    if not sections:
+        return None
+    import governance_intel
+    return governance_intel.compute_kris(sections)
 
 
 def get_edgar_proxy(ticker: str) -> Optional[dict]:
@@ -4026,7 +4075,7 @@ def get_edgar_proxy(ticker: str) -> Optional[dict]:
                     """
                     SELECT c.company_name, p.filing_date, p.accession_number,
                            p.executive_compensation, p.board_of_directors,
-                           p.say_on_pay, p.shareholder_proposals
+                           p.say_on_pay, p.shareholder_proposals, p.audit_matters
                     FROM edgar_proxy_filings p
                     JOIN companies c ON c.id = p.company_id
                     WHERE c.ticker = %s
@@ -4049,6 +4098,7 @@ def get_edgar_proxy(ticker: str) -> Optional[dict]:
                                 "board_of_directors":     r[4],
                                 "say_on_pay":              r[5],
                                 "shareholder_proposals":   r[6],
+                                "audit_matters":           r[7],
                             }.items() if v
                         },
                     }
@@ -4437,9 +4487,15 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                 r.get("source_framework"),
                 r.get("segment_type"),
                 r.get("segment_name"),
+                json.dumps(r["evidence"]) if r.get("evidence") else None,
             )
             for r in risks
             if (r.get("risk_ref") or r.get("id"))
+            # A "Not assessed" taxonomy category has no score — it is a coverage
+            # gap, not a register row. Persisting it would put NULL scores in
+            # front of every reader (posture trend, approvals) that assumes one.
+            and r.get("assessed", True) is not False
+            and r.get("score") is not None
         ]
         if not rows:
             return
@@ -4451,7 +4507,7 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                     INSERT INTO risk_scores
                         (run_id, risk_ref, risk_name, category, base_score, delta, score,
                          rag_status, velocity, control_env, peer_benchmark,
-                         narrative, source_framework, segment_type, segment_name)
+                         narrative, source_framework, segment_type, segment_name, evidence)
                     VALUES %s
                     ON CONFLICT (run_id, risk_ref) WHERE risk_ref IS NOT NULL DO UPDATE SET
                         risk_name        = EXCLUDED.risk_name,
@@ -4466,7 +4522,8 @@ def save_risk_scores(run_id: int, risks: list) -> None:
                         narrative        = COALESCE(EXCLUDED.narrative, risk_scores.narrative),
                         source_framework = COALESCE(EXCLUDED.source_framework, risk_scores.source_framework),
                         segment_type     = COALESCE(EXCLUDED.segment_type, risk_scores.segment_type),
-                        segment_name     = COALESCE(EXCLUDED.segment_name, risk_scores.segment_name)
+                        segment_name     = COALESCE(EXCLUDED.segment_name, risk_scores.segment_name),
+                        evidence         = COALESCE(EXCLUDED.evidence, risk_scores.evidence)
                     """,
                     rows,
                 )
@@ -8651,7 +8708,7 @@ def get_risk_scores_for_run(run_id: int) -> list:
                     SELECT risk_ref, risk_name, narrative, category,
                            score, rag_status, source_framework,
                            base_score, delta, velocity, control_env, peer_benchmark,
-                           assigned_domain, segment_type, segment_name
+                           assigned_domain, segment_type, segment_name, evidence
                       FROM risk_scores
                      WHERE run_id = %s
                      ORDER BY score DESC NULLS LAST
@@ -8680,8 +8737,35 @@ def get_risk_scores_for_run(run_id: int) -> list:
                         "assigned_domain": r[12],
                         "segment_type":   r[13],
                         "segment_name":   r[14],
+                        "evidence":       r[15],          # list of {source,label,points,...} or None
                     }
                     for r in rows
+                ]
+    return _run(_do) or []
+
+
+def get_8k_event_routing(ticker: str, limit: int = 40) -> list:
+    """Stored 8-K events for a ticker with the risk routing recorded when they
+    were fetched (newest first). Rows saved before routing existed have
+    risk_routing = None and are returned as such rather than re-guessed."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT e.event_date, e.items, e.accession_number, e.risk_routing, e.item_details
+                      FROM edgar_8k_events e JOIN companies c ON c.id = e.company_id
+                     WHERE c.ticker = %s
+                     ORDER BY e.event_date DESC
+                     LIMIT %s
+                    """,
+                    (ticker.upper(), limit),
+                )
+                return [
+                    {"date": r[0].isoformat() if hasattr(r[0], "isoformat") else r[0],
+                     "items": r[1], "accession_number": r[2],
+                     "risk_routing": r[3], "item_details": r[4]}
+                    for r in cur.fetchall()
                 ]
     return _run(_do) or []
 

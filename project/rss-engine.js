@@ -29,7 +29,6 @@ window.RSS_ENGINE = (function () {
       name: "CISA ICS Advisories",
       url: "https://www.cisa.gov/cybersecurity-advisories/ics-advisories.xml",
       domains: ["Cybersecurity"],
-      risks: ["R-04"],
       weight: 1.3,
       icon: "wifi",
       companyGated: true,  // Only surface advisories that mention the company or its products
@@ -42,7 +41,6 @@ window.RSS_ENGINE = (function () {
       url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&dateb=&owner=include&count=8&output=atom",
       type: "edgar-peers",
       domains: ["Financial Reporting"],
-      risks: ["R-01", "R-05"],
       weight: 1.0,
       icon: "doc",
     },
@@ -51,7 +49,6 @@ window.RSS_ENGINE = (function () {
       name: "Federal Reserve Press",
       url: "https://www.federalreserve.gov/feeds/press_all.xml",
       domains: ["Macro"],
-      risks: ["R-09"],
       weight: 0.9,
       icon: "trend",
     },
@@ -148,7 +145,7 @@ window.RSS_ENGINE = (function () {
   // per-feed risk IDs so assignment reflects the actual company's risk template.
   const DOMAIN_RISK_CATS = {
     'Financial Reporting': ['financial', 'revenue', 'reporting', 'accounting'],
-    'Cybersecurity':       ['cybersecurity', 'it ', 'technology', 'digital', 'information'],
+    'Cybersecurity':       ['cybersecurity', 'data protection', 'technology', 'digital', 'information'],
     'Trade Compliance':    ['compliance', 'trade', 'legal', 'regulatory'],
     'Supply Chain':        ['supply', 'operations', 'procurement', 'sourcing'],
     'Macro':               ['macro', 'economic', 'market', 'operational'],
@@ -242,7 +239,10 @@ window.RSS_ENGINE = (function () {
 
     // Prefer dynamic domain→risk matching when the live register is available.
     // Fall back to the hardcoded per-feed risk IDs so older call sites still work.
-    const dynamicRisks = risks.length ? resolveDomainRisks(feed.domains, risks) : null;
+    // With no live register passed (Live-JS ingest), match against the universal
+    // taxonomy itself rather than per-feed template ids that no longer exist.
+    const riskPool = risks.length ? risks : (window.RISK_ENGINE?.CATALOG || []);
+    const dynamicRisks = riskPool.length ? resolveDomainRisks(feed.domains, riskPool) : null;
 
     return {
       id:            `${feed.id}-${Math.random().toString(36).slice(2,8)}`,
@@ -255,7 +255,7 @@ window.RSS_ENGINE = (function () {
       severity:      parseFloat(severity.toFixed(2)),
       velocity,
       rag,
-      affectedRisks: dynamicRisks?.length ? dynamicRisks : (article.risks || feed.risks),
+      affectedRisks: dynamicRisks?.length ? dynamicRisks : [],
       domains:       feed.domains,
       src:           "Industry RSS",
       delta:         `v=${velocity >= 0 ? "+" : ""}${velocity}`,

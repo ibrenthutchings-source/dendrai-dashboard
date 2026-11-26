@@ -41,9 +41,17 @@ def test_risk_score_register_returns_the_canonical_scale(monkeypatch):
         json.dumps({"revenue_growth": -0.12}), "Semiconductors"))
     assert result["industry"] == "Semiconductors"
     assert set(result["rag_summary"].keys()) == {"R", "A", "G"}
+    # Evidence-scored taxonomy: only revenue evidence was supplied, so exactly
+    # the categories with an input are assessed; the rest are "not assessed"
+    # (score None), never given a default number.
+    assessed = [r for r in result["risks"] if r["assessed"]]
+    assert [r["id"] for r in assessed] == ["TX-REV"]
     for r in result["risks"]:
-        assert r["rag_status"] in ("R", "A", "G")
-        assert 0 <= r["score"] <= 25
+        if r["assessed"]:
+            assert r["rag_status"] in ("R", "A", "G")
+            assert 0 <= r["score"] <= 25
+        else:
+            assert r["score"] is None and r["rag_status"] is None
 
 
 def test_risk_score_register_accepts_a_dict_not_just_a_json_string():

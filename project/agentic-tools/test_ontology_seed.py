@@ -28,6 +28,8 @@ _STRM_TYPES = {"subset_of", "superset_of", "equal", "intersects_with", "no_relat
 _EXPECTED_RISK_CATEGORIES = {
     "Revenue", "Operational", "Financial Reporting", "Supply", "Cybersecurity",
     "Trade Compliance", "ESG", "Compliance", "Legal", "Strategic",
+    # Added with the evidence-scored taxonomy (risk_taxonomy.py / CATEGORY_IMPACT).
+    "Liquidity", "Governance", "Audit Oversight",
 }
 
 # Verbatim labels from risk_register_endpoints.py's _keyword_domain().
@@ -153,9 +155,9 @@ class TestFrameworkCrosswalk:
 
 
 class TestSoxReconciliation:
-    def test_macro_has_no_relationship_to_all_ten_risk_categories(self):
+    def test_macro_has_no_relationship_to_every_risk_category(self):
         macro_rels = [r for r in seed.SEED_RELATIONS if r["from_pref_label"] == "Macro" and r["from_scheme"] == "sox_risk_category"]
-        assert len(macro_rels) == 10
+        assert len(macro_rels) == len(_EXPECTED_RISK_CATEGORIES)
         assert all(r["strm_type"] == "no_relationship" for r in macro_rels)
         assert {r["to_pref_label"] for r in macro_rels} == _EXPECTED_RISK_CATEGORIES
 

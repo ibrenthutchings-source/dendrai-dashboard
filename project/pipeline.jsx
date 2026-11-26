@@ -5,6 +5,7 @@
    ============================================================ */
 
 import { RiskApprovalReview } from "./risk-approval.jsx";
+import { EvidenceRoutingReview } from "./evidence-routing.jsx";
 import { ScopeApprovalReview } from "./audit-scope-review.jsx";
 import { RunHistoryPanel } from "./run-history.jsx";
 
@@ -201,7 +202,7 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
                     liveRssSignals, rssLastUpdated, rssRefreshing, rssRunProgress, rssFeeds,
                     appetiteLevel = "AMBER", appetiteThreshold,
                     perRiskAppetite, setPerRiskAppetite, allSignals, onRerunFromS3, onOpenAdjustRisk,
-                    riskApprovals, onApproveRisk, onApproveAllRisks, onAddRisk,
+                    riskApprovals, onApproveRisk, onApproveAllRisks, onAddRisk, onAckGateFlag,
                     scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onAddObjective,
                     manualAudits = [], onAddAudit, onRemoveAudit,
                     narrativeResult, onNarrativeResult, forecasts, ticker: pipelineTicker = "",
@@ -282,7 +283,7 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
           appetiteLevel={appetiteLevel} appetiteThreshold={threshold}
           perRiskAppetite={perRiskAppetite} setPerRiskAppetite={setPerRiskAppetite}
           riskApprovals={riskApprovals} onApproveRisk={onApproveRisk} onOpenAdjustRisk={onOpenAdjustRisk}
-          onApproveAllRisks={onApproveAllRisks} onAddRisk={onAddRisk}
+          onApproveAllRisks={onApproveAllRisks} onAddRisk={onAddRisk} onAckGateFlag={onAckGateFlag}
           scopeApprovals={scopeApprovals} onApproveObjective={onApproveObjective} onOpenAdjustObjective={onOpenAdjustObjective}
           onApproveAllObjectives={onApproveAllObjectives} onAddObjective={onAddObjective}
           onSubmit={() => onApprove(focusedGate.num)} onOverride={() => onOverride(focusedGate.num)}
@@ -372,7 +373,7 @@ function LoopHub({ stageState, output, hitl, gateState, onFocusStage, onFocusGat
 
 // ── Gate canvas — pending review table, or the resolved banner ────────────
 function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, perRiskAppetite, setPerRiskAppetite,
-                       riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onAddRisk,
+                       riskApprovals, onApproveRisk, onOpenAdjustRisk, onApproveAllRisks, onAddRisk, onAckGateFlag,
                        scopeApprovals, onApproveObjective, onOpenAdjustObjective, onApproveAllObjectives, onAddObjective,
                        onSubmit, onOverride, onBack,
                        liveRssSignals, events, ratios, industry, pipelineTicker, onRerunFromS3,
@@ -403,6 +404,14 @@ function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, per
                 peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
                 onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
                 onClearPeerCompare={onClearPeerCompare} onAddObjective={onAddObjective}
+              />
+            </PipelinePanel>
+            <PipelinePanel label="Evidence & Routing" defaultOpen={true}>
+              <EvidenceRoutingReview
+                routing={output.s2?.routing}
+                notAssessed={output.s2?.notAssessed || []}
+                risks={output.s2?.risks || []}
+                onAckGateFlag={onAckGateFlag}
               />
             </PipelinePanel>
             <RiskApprovalReview

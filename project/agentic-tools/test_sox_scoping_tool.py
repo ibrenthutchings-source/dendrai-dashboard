@@ -229,3 +229,35 @@ class TestScopeSegmentsOverrides:
         us = next(s for s in out["segments_coverage"] if s["segment_name"] == "US")
         assert us["in_scope"] is False
         assert us["manual_override"] is True
+
+
+# ── Register shape adapter (letters + "not assessed" rows) ──────────────────
+
+def test_normalize_risks_converts_letters_drops_not_assessed_and_maps_categories():
+    import sox_scoping_tool as st
+    out = st._normalize_risks([
+        {"id": "TX-LIQ", "category": "Liquidity", "rag_status": "R", "score": 20.0, "name": "Liquidity"},
+        {"id": "TX-GOV", "category": "Governance", "rag_status": None, "score": None, "assessed": False, "name": "Gov"},
+        {"id": "X", "category": "Financial", "rag_status": "Amber", "score": 10.0, "name": "legacy word"},
+    ])
+    assert [r["id"] for r in out] == ["TX-LIQ", "X"]
+    assert out[0]["rag_status"] == "Red" and out[0]["category"] == "Financial"
+    assert out[1]["rag_status"] == "Amber"          # already a word: left alone
+
+
+def test_input_hash_tolerates_not_assessed_rows():
+    import sox_scoping_tool as st
+    risks = {"risks": [{"name": "a", "score": 12.0, "rag_status": "A", "category": "Revenue"},
+                       {"name": "b", "score": None, "rag_status": None, "assessed": False, "category": "Governance"}]}
+    assert st.compute_input_hash({"forecasts": []}, risks, {}) == st.compute_input_hash({"forecasts": []}, {"risks": risks["risks"][:1]}, {})
+
+
+def test_a_red_letter_risk_now_reaches_sox_process_scoping():
+    import sox_scoping_tool as st
+    red = {"risks": [{"name": "Financial Reporting Quality", "category": "Financial Reporting",
+                      "rag_status": "R", "score": 19.0}]}
+    amber_free = {"risks": []}
+    base = {p["process_id"]: p["coverage_level"] for p in st.scope_processes(amber_free, [], {}, [])}
+    with_red = {p["process_id"]: p["coverage_level"] for p in st.scope_processes(red, [], {}, [])}
+    # before the adapter, "R" never matched "Red" and the two results were identical
+    assert with_red != base and "P1" in with_red.values()

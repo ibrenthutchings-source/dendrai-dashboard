@@ -190,6 +190,47 @@ function EvidencePackModal({ open, onClose, runId, ticker }) {
                 )}
               </div>
 
+              {/* ── Score evidence + 8-K routing (why each score is what it is) ── */}
+              <div className="rep-section">
+                <h3>Evidence Behind Scores <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)", fontWeight: 400 }}>· {(d.risk_scores || []).filter(r => r.evidence?.length).length}</span></h3>
+                {!(d.risk_scores || []).some(r => r.evidence?.length) ? <EmptyNote text="No evidence trail recorded for this run (run predates the evidence-scored model)."/> : (
+                  d.risk_scores.filter(r => r.evidence?.length).map(r => (
+                    <details key={r.risk_ref} style={{ marginBottom: 4 }}>
+                      <summary style={{ cursor: "pointer", fontSize: 12 }}><b style={{ fontWeight: 500 }}>{r.name}</b> — {r.score != null ? r.score.toFixed(1) : "—"} ({r.rag}) · {r.evidence.length} item(s)</summary>
+                      <ul style={{ fontSize: 11, margin: "4px 0 6px 16px" }}>
+                        {r.evidence.map((e, i) => <li key={i}><span className="mono" style={{ color: "var(--ink-3)" }}>{e.source}</span> · {e.label} · <b>{e.points > 0 ? `+${e.points}` : e.points}</b></li>)}
+                      </ul>
+                    </details>
+                  ))
+                )}
+              </div>
+
+              <div className="rep-section">
+                <h3>8-K → Risk Category Routing <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)", fontWeight: 400 }}>· {d.event_routing?.length || 0}</span></h3>
+                {!d.event_routing?.length ? <EmptyNote text="No 8-K events on file for this ticker."/> : (
+                  <table className="rep-table">
+                    <thead><tr><th>Filed</th><th>Item(s)</th><th>Status</th><th>Routed to</th></tr></thead>
+                    <tbody>
+                      {d.event_routing.map(e => {
+                        const rr = e.risk_routing;
+                        return (
+                          <tr key={e.accession_number || e.date + e.items}>
+                            <td className="mono">{e.date}</td>
+                            <td>{e.items}</td>
+                            <td>{rr ? rr.status : "not recorded"}</td>
+                            <td style={{ fontSize: 11 }}>
+                              {(rr?.routes || []).map((x, i) => <div key={i}>{x.tx} +{x.points} — {x.rationale}</div>)}
+                              {[...(rr?.ignored || []), ...(rr?.review || [])].map((u, i) => <div key={`u${i}`} className="muted">Item {u.item} not scored — {u.reason}</div>)}
+                              {!rr && <span className="muted">stored before routing existed</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
               {/* ── Audit Objectives ─────────────────────────────── */}
               <div className="rep-section">
                 <h3>Audit Objectives <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)", fontWeight: 400 }}>· {d.audit_objectives?.length || 0}</span></h3>

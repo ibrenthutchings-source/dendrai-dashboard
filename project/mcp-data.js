@@ -8,7 +8,7 @@
    Exposes window.MCP with:
      checkHealth()              — confirm bridge is reachable
      fetchFullAnalysis()        — all 10 analytics models in one call
-     mergeRiskScores()          — overlay MCP scores onto template risks
+     taxonomyEvidenceFromMcp()  — backend evidence-scored taxonomy -> evidence maps
      mapRssSignals()            — convert MCP RSS feed results → Loop signals
      mapFredSignals()           — convert FRED correlations → Loop signals
    ============================================================ */
@@ -157,9 +157,9 @@ window.MCP = (function () {
    * Cube Phase 3) — real Concentration/Decline/Divergence risk scored from
    * a segment's own filed revenue, distinct from every templateRisk
    * (there's no per-segment template — see that module's docstring for
-   * why). mergeRiskScores() above only overlays data onto EXISTING
-   * template risks by index/category match, so it silently drops these;
-   * this instead ADAPTS them into the same risk-object shape the rest of
+   * why). The taxonomy scorer only knows the fixed categories, so it never
+   * produces these;
+   * this ADAPTS them into the same risk-object shape the rest of
    * the app expects (id/name/category/score/rag/velocity/narrative/hist)
    * so they can be concatenated onto the merged array as real additional
    * risks, not merged into an existing one.
@@ -194,51 +194,32 @@ window.MCP = (function () {
   }
 
   /**
-   * Merge MCP-computed risk scores onto template risks from RISK_ENGINE.
-   * Template risks supply narrative fields (obj, controls, mapFinding, …);
-   * MCP supplies data-driven scores, RAG, velocity, and control environment.
+   * Backend evidence-scored taxonomy (predictive_analytics_tool.compute_risk_scores
+   * -> risk_taxonomy.py) -> evidence maps for RISK_ENGINE.scoreTaxonomy().
    *
-   * Matching is done by index first, then by category similarity as fallback.
+   * The backend ships, per category, the evidence list its score rests on. The
+   * front end re-derives the score from that SAME evidence with the SAME
+   * formula (RISK_ENGINE.scoreRow), so MCP mode and Live-JS mode are
+   * guaranteed to agree and later stages can append evidence (8-K events,
+   * proxy KRIs, comment letters, RSS / FRED) and re-score — rather than
+   * overlaying numbers onto a template by array index, which silently paired
+   * the wrong score with the wrong risk whenever the two lists differed.
    *
-   * @param {object[]} templateRisks   Risks from RISK_ENGINE.buildProfile()
-   * @param {object}   mcpRiskScores   risk_scores section of full analysis result
-   * @returns {object[]} Merged risk array
+   * Matching is by taxonomy id only. A category the backend returns as
+   * assessed:false contributes nothing here.
+   *
+   * @param {object} mcpRiskScores  risk_scores section of the full analysis
+   * @returns {{[txId:string]: object[]}} evidence map
    */
-  function mergeRiskScores(templateRisks, mcpRiskScores) {
-    const mcpList = mcpRiskScores?.risks || [];
-    if (!mcpList.length) return templateRisks;
-
-    return templateRisks.map((tr, i) => {
-      const byIndex = mcpList[i];
-      const byCategory = mcpList.find(mr =>
-        mr.category && tr.category &&
-        mr.category.toLowerCase() === tr.category.toLowerCase()
-      );
-      const mr = byIndex || byCategory;
-      if (!mr) return tr;
-
-      // predictive_analytics_tool.compute_risk_scores now emits the same
-      // canonical 0-25 scale / R-A-G letters risk-engine.js itself uses
-      // (risk_rating_engine.py) — no rescale, no letter conversion needed.
-      // This used to scale mr.score *2.5 while taking mr.rag_status through
-      // _ragChar's OWN 0-10-native word check ("Red"/"Amber"/"Green"), so a
-      // predictive score of 6.0 rendered as "15.0" wearing an Amber badge —
-      // risk-engine.js's own ragOf(15.0) calls that Red. Score and rating on
-      // the same row disagreed. Backend now emits both pre-converted, so
-      // this is a straight passthrough.
-      const score = mr.score      != null ? mr.score      : tr.score;
-      const base  = mr.base_score != null ? mr.base_score : tr.base;
-      return {
-        ...tr,
-        score,
-        base,
-        rag:           mr.rag_status || tr.rag,
-        velocity:      mr.velocity  ?? tr.velocity,
-        ce:            mr.control_env || tr.ce,
-        peerBenchmark: mr.peer_benchmark ?? tr.peerBenchmark,
-        hist:          _mkHist(base, score),
-      };
-    });
+  function taxonomyEvidenceFromMcp(mcpRiskScores) {
+    const known = new Set((window.RISK_ENGINE?.CATALOG || []).map(c => c.id));
+    const out = {};
+    for (const r of (mcpRiskScores?.risks || [])) {
+      const id = r.taxonomy_id || r.id;
+      if (!known.has(id) || !r.assessed || !Array.isArray(r.evidence)) continue;
+      out[id] = r.evidence;
+    }
+    return out;
   }
 
   // ── Signal mapping ──────────────────────────────────────────────────────────
@@ -339,6 +320,11 @@ window.MCP = (function () {
 
   async function fetchProxyData(ticker) {
     return _post('/edgar/proxy', { ticker, max_filings: 2 });
+  }
+
+  /** SEC staff comment letters (UPLOAD) / company responses (CORRESP) + taxonomy evidence. */
+  async function fetchCommentLetters(ticker) {
+    return _post('/edgar/comment-letters', { ticker });
   }
 
   async function fetchPeerBenchmarks(ticker) {
@@ -530,76 +516,86 @@ window.MCP = (function () {
   }
 
   // ── 8-K → CEM event mapping ─────────────────────────────────────────────────
+  // Routing (which risk categories an 8-K item moves, by how much, and why) is
+  // decided once, server-side, in event_risk_map.py and arrives on every event
+  // as `risk_routing`. This file only presents it — there is deliberately no
+  // second item→category table here to drift out of step with the scorer.
+  //
+  // Each filing is one of: mapped (scored) · review (applicability unclear —
+  // shown, NOT scored) · ignored (routine / not applicable — recorded with its
+  // reason in the run's routing summary, kept out of CEM).
 
-  const _8K_ITEM_MAP = {
-    '1.05': { sev: 'P1', cat: 'Cybersecurity',       area: 'IT / Security',        risk: 'Unauthorized access / data breach',       ctrl: 'Material Cybersecurity Incident (8-K 1.05)' },
-    '4.02': { sev: 'P1', cat: 'Financial Reporting', area: 'Financial Reporting',  risk: 'Material misstatement / restatement',     ctrl: 'Non-Reliance on Financial Statements (8-K 4.02)' },
-    '2.06': { sev: 'P1', cat: 'Financial Reporting', area: 'Accounting',           risk: 'Asset impairment / write-down',           ctrl: 'Material Impairment (8-K 2.06)' },
-    '3.01': { sev: 'P1', cat: 'Financial Reporting', area: 'Capital Markets',      risk: 'Delisting / listing failure',             ctrl: 'Notice of Delisting (8-K 3.01)' },
-    '2.05': { sev: 'P2', cat: 'Operations',          area: 'Operations',           risk: 'Restructuring / cost escalation',         ctrl: 'Exit or Disposal Activity (8-K 2.05)' },
-    '5.02': { sev: 'P2', cat: 'Operations',          area: 'Executive Management', risk: 'Key personnel / succession risk',         ctrl: 'Director / Officer Departure (8-K 5.02)' },
-    '2.01': { sev: 'P2', cat: 'Operations',          area: 'Strategy',             risk: 'M&A integration / concentration risk',    ctrl: 'Acquisition or Disposition (8-K 2.01)' },
-    '2.03': { sev: 'P2', cat: 'Financial Reporting', area: 'Treasury',             risk: 'Liquidity / covenant risk',               ctrl: 'New Financial Obligation (8-K 2.03)' },
-    '1.01': { sev: 'P3', cat: 'Regulatory',          area: 'Legal',                risk: 'Contractual / commitment risk',           ctrl: 'Material Agreement (8-K 1.01)' },
-    '7.01': { sev: 'P3', cat: 'Regulatory',          area: 'Regulatory',           risk: 'Reg FD / disclosure risk',                ctrl: 'Regulation FD Disclosure (8-K 7.01)' },
-  };
-
-  const _8K_RC = {
-    '1.05': 'SEC-mandated disclosure of material cybersecurity incident. Immediate containment, forensic investigation, and regulatory notification required.',
-    '4.02': 'Non-reliance determination requires restatement process, audit committee oversight, and SEC disclosure. Review ICFR and management override controls.',
-    '2.06': 'Material impairment signals asset quality deterioration. Validate valuation assumptions and reassess carrying values for remaining assets.',
-    '2.05': 'Restructuring cost recognition. Validate restructuring estimates, liabilities, and disclosure adequacy. Monitor for GAAP adherence.',
-    '5.02': 'Key executive departure. Assess succession planning adequacy, knowledge transfer risk, and impact on control environment.',
-    '2.01': 'Material acquisition or disposal. Assess integration risk, purchase price allocation, and valuation methodology.',
-    '2.03': 'New material financial obligation. Assess covenant compliance, liquidity impact, and disclosure completeness.',
-    '3.01': 'Listing deficiency notice. Assess going-concern implications and capital structure alternatives.',
-    '1.01': 'Material agreement executed. Review contractual obligations, commitments, and off-balance-sheet exposures.',
-    '7.01': 'Regulation FD disclosure. Validate selective disclosure controls and investor relations procedures.',
-  };
+  function _catalogName(tx) {
+    return window.RISK_ENGINE?.CATALOG_BY_ID?.[tx]?.name || tx;
+  }
+  function _catalogCategory(tx) {
+    return window.RISK_ENGINE?.CATALOG_BY_ID?.[tx]?.category || '';
+  }
 
   /**
    * Convert an `/edgar/8k-events` result into CEM event objects ready for setEvents().
+   * Mapped filings and filings needing review are included; ignored filings are not.
    */
   function map8kToCemEvents(eightKResult) {
     const events = eightKResult?.events || [];
     const cemEvents = [];
 
     for (const ev of events) {
+      const rr = ev.risk_routing;
+      if (!rr || rr.status === 'ignored') continue;
       const items = Object.keys(ev.item_descriptions || {});
-      if (!items.length) continue;
-
-      // Prioritise the highest-severity item on the filing
-      let best = null;
-      for (const item of items) {
-        const map = _8K_ITEM_MAP[item];
-        if (!map) continue;
-        if (!best || map.sev < best.sev) best = { item, ...map };
-      }
-      if (!best) continue;
-
-      const desc = ev.item_descriptions?.[best.item] || best.ctrl;
-      const exposure = best.sev === 'P1' ? 'Material — disclose to board' : 'Significant — management action required';
+      const routes = (rr.routes || []).map(r => ({
+        tx: r.tx, name: _catalogName(r.tx), item: r.item,
+        points: +(r.points * (rr.weight ?? 1)).toFixed(2), rationale: r.rationale,
+      }));
+      const top = [...routes].sort((a, b) => b.points - a.points)[0];
+      const topItem = top?.item || rr.review?.[0]?.item || items[0];
+      const itemDesc = ev.item_descriptions?.[topItem] || '';
+      const sev = rr.status === 'review' ? 'P3' : (rr.severity || 'P3');
+      const exposure = sev === 'P1' ? 'Material — disclose to board' : 'Significant — management action required';
+      const cats = [...new Set(routes.map(r => r.tx))];
 
       cemEvents.push({
         id:       `8K-${ev.accession_number?.replace(/[^A-Z0-9]/gi, '') || Date.now().toString(36).toUpperCase()}`,
         ts:       new Date(ev.date + 'T12:00:00Z').getTime(),
         source:   '8-K Filing',
-        control:  best.ctrl,
-        area:     best.area,
-        category: best.cat,
-        risk:     best.risk,
-        severity: best.sev,
+        control:  `${itemDesc || 'Form 8-K'} (8-K ${topItem})`,
+        area:     cats.length ? cats.map(_catalogName).join(' · ') : 'Needs review',
+        category: top ? _catalogCategory(top.tx) : '',
+        risk:     top ? top.rationale : (rr.review?.[0]?.reason || ''),
+        severity: sev,
         exposure,
-        rc:       `${_8K_RC[best.item] || desc} Filing date: ${ev.date}.`,
+        rc:       `${top ? top.rationale + '. ' : ''}${rr.status === 'review' ? 'Applicability not determined — reviewer to confirm. ' : ''}Filing date: ${ev.date}.`,
         rcLoading: false,
         notifs:   [],
         filingDate: ev.date,
-        items:    items,
+        items,
+        // Transparency for HITL / reporting: exactly where this event landed.
+        mappingStatus: rr.status,
+        routing: routes,
+        routingFlags: rr.flags || [],
+        itemDetails: ev.item_details || {},
+        unscoredItems: [...(rr.ignored || []), ...(rr.review || [])],
+        needsReview: rr.status === 'review' || (rr.flags || []).includes('needs_review'),
       });
     }
 
-    // Newest events first, cap at 20 to avoid flooding CEM
-    return cemEvents.sort((a, b) => b.ts - a.ts).slice(0, 20);
+    // Newest first; never let the 20-event display cap push out a P1.
+    const sorted = cemEvents.sort((a, b) => b.ts - a.ts);
+    const p1 = sorted.filter(e => e.severity === 'P1');
+    const rest = sorted.filter(e => e.severity !== 'P1').slice(0, Math.max(0, 20 - p1.length));
+    return [...p1, ...rest].sort((a, b) => b.ts - a.ts);
+  }
+
+  /**
+   * Evidence + audit trail from an `/edgar/8k-events` result:
+   *   evidence   {txId: [evidence items]}       -> RISK_ENGINE.scoreTaxonomy
+   *   gateFlags  [{flag, accession, date, ...}] -> Gate 1 forced sign-off / banners
+   *   unrouted   [{accession, date, status, reasons}] -> filings NOT scored, with why
+   */
+  function eightKRoutingSummary(eightKResult) {
+    const rr = eightKResult?.risk_routing || {};
+    return { evidence: rr.evidence || {}, gateFlags: rr.gate_flags || [], unrouted: rr.unrouted || [] };
   }
 
   // ── AI-augmented endpoints (recommendations #1–#4) ───────────────────────────
@@ -1232,7 +1228,7 @@ window.MCP = (function () {
   return {
     checkHealth,
     fetchFullAnalysis,
-    mergeRiskScores,
+    taxonomyEvidenceFromMcp,
     mapSegmentRisks,
     mapRssSignals,
     mapFredSignals,
@@ -1252,6 +1248,8 @@ window.MCP = (function () {
     prepareApprovalTask,
     enrichRisksFromFactors,
     map8kToCemEvents,
+    eightKRoutingSummary,
+    fetchCommentLetters,
     // AI-augmented (#1–#4b)
     aiEnabled,
     aiGate1Recommend,

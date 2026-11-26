@@ -39,6 +39,9 @@ async def get_evidence_pack(run_id: int, current_user: dict = Depends(require_sc
     ticker = run["ticker"]
 
     risk_scores = db.get_risk_scores_for_run(run_id)
+    # Where each recent 8-K landed in the risk taxonomy (and which filings were
+    # deliberately not scored) — same mapping the Gate 1 reviewer saw.
+    event_routing = db.get_8k_event_routing(ticker)
     objectives = db.get_audit_objectives_for_run(run_id)
     approval_tasks = db.get_approval_tasks_for_run(run_id)
     loop_log = db.get_loop_log_for_run(run_id)
@@ -82,6 +85,14 @@ async def get_evidence_pack(run_id: int, current_user: dict = Depends(require_sc
 
     caveats = [
         {
+            "section": "event_routing",
+            "note": (
+                "8-K routing is the latest recorded for this ticker (events are keyed by "
+                "filing, not by pipeline run). Filings stored before routing existed show "
+                "no routing. Items marked ignored / needs review were NOT used in scoring."
+            ),
+        },
+        {
             "section": "adjudications",
             "note": (
                 "MCP/tool adjudications are correlated to this run by a best-effort "
@@ -112,6 +123,7 @@ async def get_evidence_pack(run_id: int, current_user: dict = Depends(require_sc
         "generated_by": current_user.get("username"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "risk_scores": risk_scores,
+        "event_routing": event_routing,
         "audit_objectives": objectives,
         "approval_tasks": approval_tasks,
         "risks_as_code_artifacts": rac_artifacts,

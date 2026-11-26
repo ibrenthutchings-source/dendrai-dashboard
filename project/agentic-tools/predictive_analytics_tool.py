@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 import risk_rating_engine
+import risk_taxonomy
 
 import requests
 
@@ -1013,382 +1014,8 @@ def check_financial_risk_pipeline(ticker: str, xbrl: dict, je_entry_dates: Optio
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — INDUSTRY-TEMPLATED RISK SCORING
+# SECTION 3 — EVIDENCE-SCORED RISK TAXONOMY (industry templates removed; see risk_taxonomy.py)
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _tier(value: float, thresholds: list) -> float:
-    """
-    Step-function mapping ordered highest→lowest with None catch-all last.
-    Returns the delta for the first threshold where value >= threshold.
-    """
-    for thresh, delta in thresholds:
-        if thresh is None or value >= thresh:
-            return delta
-    return 0.0
-
-
-def _risk_delta(ratios: dict, delta_rules: list) -> float:
-    """
-    Sum deltas from a list of (ratio_key, thresholds) pairs.
-    Missing ratios contribute 0.
-    """
-    total = 0.0
-    for key, thresholds in delta_rules:
-        val = ratios.get(key)
-        if val is not None:
-            total += _tier(val, thresholds)
-    return total
-
-
-# Each risk template: name, category, base_score, delta_rules, control_env, peer_benchmark
-# delta_rules: list of (ratio_key, [(thresh_hi_to_lo, delta), ..., (None, delta)])
-
-INDUSTRY_TEMPLATES: dict[str, list[dict]] = {
-
-    "Semiconductors": [
-        {"name": "Supply Chain Concentration", "category": "Operational", "base": 5.5,
-         "rules": [
-             ("revenue_growth", [(0.15, -0.5), (0.05, -0.2), (0.0, 0.0), (-0.05, +0.5), (None, +1.2)]),
-             ("asset_growth",   [(0.20, +0.3), (0.10, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Export Control Compliance", "category": "Regulatory", "base": 5.0,
-         "rules": [
-             ("rd_intensity", [(0.20, +0.5), (0.12, +0.2), (0.05, 0.0), (None, -0.3)]),
-             ("revenue_growth", [(0.20, +0.3), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Capex Overrun", "category": "Financial", "base": 5.5,
-         "rules": [
-             ("fcf_margin", [(0.15, -0.6), (0.05, -0.2), (0.0, 0.0), (None, +0.8)]),
-             ("asset_growth", [(0.20, +0.5), (0.10, +0.2), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Technology Obsolescence", "category": "Strategic", "base": 5.0,
-         "rules": [
-             ("rd_intensity", [(0.20, -0.6), (0.12, -0.2), (0.07, 0.0), (None, +0.8)]),
-             ("gross_margin", [(0.60, -0.3), (0.40, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Customer Concentration", "category": "Strategic", "base": 5.5,
-         "rules": [
-             ("revenue_growth", [(0.20, -0.4), (0.05, 0.0), (None, +0.6)]),
-             ("net_margin",     [(0.20, -0.3), (0.10, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "IP / Patent Risk", "category": "Legal", "base": 4.5,
-         "rules": [
-             ("rd_intensity", [(0.20, +0.3), (0.10, 0.0), (None, -0.3)]),
-             ("sga_intensity", [(0.25, +0.2), (0.15, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 4.5,
-         "rules": [
-             ("tata",          [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri",          [(1.20, +0.8), (1.05, +0.3), (0.95, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Macro Demand Cyclicality", "category": "Macro", "base": 5.5,
-         "rules": [
-             ("revenue_growth", [(0.15, -0.5), (0.0, 0.0), (-0.10, +0.7), (None, +1.5)]),
-             ("cash_ratio",     [(0.30, -0.3), (0.10, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-
-    "Automotive OEM": [
-        {"name": "EV Transition Risk", "category": "Strategic", "base": 5.5,
-         "rules": [
-             ("rd_intensity",  [(0.08, -0.5), (0.04, 0.0), (None, +0.8)]),
-             ("fcf_margin",    [(0.08, -0.3), (0.02, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Supply Chain Disruption", "category": "Operational", "base": 5.5,
-         "rules": [
-             ("gross_margin",  [(0.20, -0.4), (0.10, 0.0), (None, +0.7)]),
-             ("asset_growth",  [(0.15, +0.3), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Regulatory / Emissions Compliance", "category": "Regulatory", "base": 5.0,
-         "rules": [
-             ("sga_intensity", [(0.15, +0.3), (0.08, 0.0), (None, -0.2)]),
-             ("rd_intensity",  [(0.05, -0.3), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Raw Material Cost", "category": "Operational", "base": 5.5,
-         "rules": [
-             ("gross_margin",  [(0.15, -0.5), (0.08, 0.0), (None, +0.8)]),
-             ("net_margin",    [(0.05, -0.3), (0.0, 0.0), (None, +0.6)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Union Labour Risk", "category": "Operational", "base": 5.0,
-         "rules": [
-             ("sga_intensity", [(0.20, +0.5), (0.12, +0.2), (None, -0.2)]),
-             ("net_margin",    [(0.10, -0.3), (0.0, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Warranty / Recall Risk", "category": "Legal", "base": 5.0,
-         "rules": [
-             ("revenue_growth",[(0.05, -0.3), (0.0, 0.0), (None, +0.5)]),
-             ("net_margin",    [(0.08, -0.3), (0.0, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 4.5,
-         "rules": [
-             ("tata", [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri", [(1.20, +0.8), (1.05, +0.3), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Macro Demand Sensitivity", "category": "Macro", "base": 5.5,
-         "rules": [
-             ("revenue_growth", [(0.10, -0.5), (0.0, 0.0), (-0.08, +0.8), (None, +1.5)]),
-             ("cash_ratio",     [(0.20, -0.3), (0.08, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-
-    "Software & Cloud": [
-        {"name": "Cybersecurity / Data Breach", "category": "Operational", "base": 5.5,
-         "rules": [
-             ("rd_intensity",  [(0.20, -0.4), (0.12, 0.0), (None, +0.6)]),
-             ("net_margin",    [(0.15, -0.3), (0.0, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Customer Churn / NRR Erosion", "category": "Strategic", "base": 5.0,
-         "rules": [
-             ("revenue_growth", [(0.20, -0.6), (0.10, -0.2), (0.0, 0.0), (None, +0.9)]),
-             ("gross_margin",   [(0.70, -0.3), (0.55, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "AI Disruption / Substitution", "category": "Strategic", "base": 5.5,
-         "rules": [
-             ("rd_intensity",  [(0.25, -0.6), (0.15, -0.2), (0.08, 0.0), (None, +0.8)]),
-             ("revenue_growth", [(0.20, -0.3), (0.05, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Regulatory / GDPR Compliance", "category": "Regulatory", "base": 4.5,
-         "rules": [
-             ("sga_intensity", [(0.25, +0.3), (0.15, 0.0), (None, -0.2)]),
-             ("net_margin",    [(0.20, -0.2), (0.0, 0.0), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Talent Retention", "category": "Operational", "base": 4.5,
-         "rules": [
-             ("sga_intensity", [(0.35, +0.4), (0.20, +0.1), (None, -0.2)]),
-             ("rd_intensity",  [(0.25, +0.2), (0.10, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Cloud Infrastructure Dependency", "category": "Operational", "base": 4.5,
-         "rules": [
-             ("gross_margin", [(0.70, -0.4), (0.55, 0.0), (None, +0.6)]),
-             ("fcf_margin",   [(0.15, -0.3), (0.0, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 4.5,
-         "rules": [
-             ("tata", [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri", [(1.20, +0.8), (1.05, +0.3), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Revenue Concentration", "category": "Strategic", "base": 5.0,
-         "rules": [
-             ("revenue_growth", [(0.25, -0.5), (0.10, 0.0), (None, +0.6)]),
-             ("net_margin",     [(0.20, -0.3), (0.05, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-
-    "Financial Services": [
-        {"name": "Credit Quality / NPL", "category": "Financial", "base": 5.5,
-         "rules": [
-             ("net_margin",    [(0.20, -0.5), (0.10, 0.0), (None, +0.8)]),
-             ("asset_growth",  [(0.15, +0.3), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Regulatory Capital", "category": "Regulatory", "base": 5.5,
-         "rules": [
-             ("cash_ratio",    [(0.20, -0.5), (0.10, 0.0), (None, +0.8)]),
-             ("asset_growth",  [(0.20, +0.4), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Interest Rate Sensitivity", "category": "Macro", "base": 5.5,
-         "rules": [
-             ("net_margin",    [(0.15, -0.4), (0.05, 0.0), (None, +0.7)]),
-             ("revenue_growth",[(0.10, -0.3), (0.0, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Cybersecurity", "category": "Operational", "base": 5.5,
-         "rules": [
-             ("sga_intensity", [(0.30, -0.3), (0.20, 0.0), (None, +0.5)]),
-             ("net_margin",    [(0.15, -0.2), (0.0, 0.0), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "AML / Compliance Risk", "category": "Regulatory", "base": 5.0,
-         "rules": [
-             ("sga_intensity", [(0.25, +0.3), (0.15, 0.0), (None, -0.2)]),
-             ("revenue_growth",[(0.15, -0.2), (0.0, 0.0), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Liquidity Risk", "category": "Financial", "base": 5.5,
-         "rules": [
-             ("cash_ratio",    [(0.25, -0.6), (0.10, -0.2), (0.05, 0.0), (None, +0.9)]),
-             ("fcf_margin",    [(0.10, -0.3), (0.0, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 5.0,
-         "rules": [
-             ("tata", [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri", [(1.20, +0.8), (1.05, +0.3), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Macro / Systemic Risk", "category": "Macro", "base": 5.5,
-         "rules": [
-             ("revenue_growth", [(0.15, -0.5), (0.0, 0.0), (-0.05, +0.7), (None, +1.3)]),
-             ("cash_ratio",     [(0.20, -0.3), (0.08, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-
-    "Healthcare & Pharma": [
-        {"name": "Clinical Trial Failure", "category": "Strategic", "base": 5.5,
-         "rules": [
-             ("rd_intensity", [(0.20, -0.5), (0.12, 0.0), (None, +0.8)]),
-             ("net_margin",   [(0.15, -0.3), (0.0, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Regulatory Approval Risk", "category": "Regulatory", "base": 5.5,
-         "rules": [
-             ("rd_intensity", [(0.25, +0.3), (0.12, 0.0), (None, -0.3)]),
-             ("sga_intensity",[(0.30, +0.2), (0.15, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Pricing / Reimbursement Risk", "category": "Regulatory", "base": 5.5,
-         "rules": [
-             ("gross_margin",  [(0.70, -0.4), (0.50, 0.0), (None, +0.7)]),
-             ("revenue_growth",[(0.10, -0.3), (0.0, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Patent Cliff", "category": "Strategic", "base": 5.5,
-         "rules": [
-             ("revenue_growth", [(0.10, -0.5), (0.0, 0.0), (-0.05, +0.7), (None, +1.3)]),
-             ("rd_intensity",   [(0.20, -0.3), (0.10, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Supply Chain / Manufacturing", "category": "Operational", "base": 5.0,
-         "rules": [
-             ("gross_margin",  [(0.60, -0.3), (0.40, 0.0), (None, +0.6)]),
-             ("asset_growth",  [(0.15, +0.3), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Litigation / Liability", "category": "Legal", "base": 5.0,
-         "rules": [
-             ("sga_intensity", [(0.30, +0.4), (0.20, +0.1), (None, -0.2)]),
-             ("net_margin",    [(0.15, -0.3), (0.0, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 4.5,
-         "rules": [
-             ("tata", [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri", [(1.20, +0.8), (1.05, +0.3), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "ESG / Pricing Scrutiny", "category": "Regulatory", "base": 5.0,
-         "rules": [
-             ("gross_margin",  [(0.70, +0.4), (0.50, +0.1), (None, -0.2)]),
-             ("net_margin",    [(0.20, +0.3), (0.10, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-
-    "Energy & Utilities": [
-        {"name": "Commodity Price Risk", "category": "Market", "base": 5.5,
-         "rules": [
-             ("gross_margin",  [(0.40, -0.5), (0.25, 0.0), (None, +0.8)]),
-             ("revenue_growth",[(0.10, -0.3), (0.0, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Regulatory / Environmental", "category": "Regulatory", "base": 5.5,
-         "rules": [
-             ("sga_intensity", [(0.15, +0.3), (0.08, 0.0), (None, -0.2)]),
-             ("net_margin",    [(0.10, -0.3), (0.0, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Energy Transition Risk", "category": "Strategic", "base": 5.5,
-         "rules": [
-             ("rd_intensity",  [(0.05, -0.4), (0.02, 0.0), (None, +0.7)]),
-             ("asset_growth",  [(0.10, +0.3), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Capex / Project Execution", "category": "Financial", "base": 5.0,
-         "rules": [
-             ("fcf_margin",   [(0.10, -0.5), (0.02, 0.0), (None, +0.8)]),
-             ("asset_growth", [(0.20, +0.4), (0.05, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Geopolitical Risk", "category": "Strategic", "base": 5.0,
-         "rules": [
-             ("revenue_growth",[(0.10, -0.3), (0.0, 0.0), (None, +0.5)]),
-             ("cash_ratio",    [(0.20, -0.3), (0.08, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Supply Chain", "category": "Operational", "base": 4.5,
-         "rules": [
-             ("gross_margin",  [(0.35, -0.3), (0.20, 0.0), (None, +0.5)]),
-             ("asset_growth",  [(0.10, +0.2), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 4.5,
-         "rules": [
-             ("tata", [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri", [(1.20, +0.8), (1.05, +0.3), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Climate / Physical Risk", "category": "Operational", "base": 5.0,
-         "rules": [
-             ("asset_growth",  [(0.15, +0.3), (0.0, 0.0), (None, -0.2)]),
-             ("sga_intensity", [(0.10, +0.2), (0.05, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-
-    "Retail & Consumer": [
-        {"name": "Margin Compression", "category": "Financial", "base": 5.5,
-         "rules": [
-             ("gross_margin",  [(0.40, -0.5), (0.25, 0.0), (None, +0.8)]),
-             ("net_margin",    [(0.08, -0.3), (0.0, 0.0), (None, +0.6)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Consumer Demand / Discretionary", "category": "Macro", "base": 5.5,
-         "rules": [
-             ("revenue_growth",[(0.10, -0.5), (0.0, 0.0), (-0.05, +0.6), (None, +1.3)]),
-             ("fcf_margin",    [(0.08, -0.3), (0.0, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "E-commerce Disruption", "category": "Strategic", "base": 5.0,
-         "rules": [
-             ("revenue_growth",[(0.15, -0.4), (0.05, 0.0), (None, +0.6)]),
-             ("sga_intensity", [(0.30, +0.3), (0.20, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Supply Chain / Inventory", "category": "Operational", "base": 5.0,
-         "rules": [
-             ("asset_growth",  [(0.20, +0.4), (0.05, 0.0), (None, -0.2)]),
-             ("gross_margin",  [(0.35, -0.3), (0.20, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Brand / Reputational Risk", "category": "Strategic", "base": 5.0,
-         "rules": [
-             ("revenue_growth",[(0.10, -0.3), (0.0, 0.0), (None, +0.5)]),
-             ("sga_intensity", [(0.25, -0.2), (0.15, 0.0), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Labour Cost Inflation", "category": "Operational", "base": 4.5,
-         "rules": [
-             ("sga_intensity", [(0.35, +0.5), (0.22, +0.2), (None, -0.2)]),
-             ("net_margin",    [(0.08, -0.3), (0.0, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 4.5,
-         "rules": [
-             ("tata", [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri", [(1.20, +0.8), (1.05, +0.3), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Geographic Concentration", "category": "Strategic", "base": 4.5,
-         "rules": [
-             ("revenue_growth",[(0.10, -0.3), (0.0, 0.0), (None, +0.4)]),
-             ("asset_growth",  [(0.15, +0.2), (0.0, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-
-    "Generic": [
-        {"name": "Competitive Pressure", "category": "Strategic", "base": 5.0,
-         "rules": [
-             ("revenue_growth",[(0.15, -0.5), (0.05, 0.0), (None, +0.7)]),
-             ("gross_margin",  [(0.40, -0.3), (0.20, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Supply Chain Risk", "category": "Operational", "base": 5.0,
-         "rules": [
-             ("asset_growth",  [(0.15, +0.3), (0.0, 0.0), (None, -0.2)]),
-             ("gross_margin",  [(0.35, -0.3), (0.15, 0.0), (None, +0.5)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Regulatory Compliance", "category": "Regulatory", "base": 5.0,
-         "rules": [
-             ("sga_intensity", [(0.20, +0.3), (0.12, 0.0), (None, -0.2)]),
-             ("net_margin",    [(0.10, -0.2), (0.0, 0.0), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Cybersecurity", "category": "Operational", "base": 5.0,
-         "rules": [
-             ("rd_intensity",  [(0.10, -0.3), (0.05, 0.0), (None, +0.4)]),
-             ("sga_intensity", [(0.25, -0.2), (0.10, 0.0), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Talent Risk", "category": "Operational", "base": 4.5,
-         "rules": [
-             ("sga_intensity", [(0.30, +0.4), (0.15, 0.0), (None, -0.2)]),
-             ("revenue_growth",[(0.10, -0.2), (0.0, 0.0), (None, +0.3)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Financial Reporting Quality", "category": "Financial", "base": 4.5,
-         "rules": [
-             ("tata", [(0.10, +1.5), (0.05, +0.8), (0.0, 0.0), (None, -0.3)]),
-             ("dsri", [(1.20, +0.8), (1.05, +0.3), (None, 0.0)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "Macro Sensitivity", "category": "Macro", "base": 5.0,
-         "rules": [
-             ("revenue_growth",[(0.10, -0.4), (0.0, 0.0), (-0.05, +0.6), (None, +1.2)]),
-             ("cash_ratio",    [(0.20, -0.3), (0.08, 0.0), (None, +0.4)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-        {"name": "ESG / Sustainability", "category": "Regulatory", "base": 4.5,
-         "rules": [
-             ("rd_intensity",  [(0.08, -0.3), (0.03, 0.0), (None, +0.3)]),
-             ("sga_intensity", [(0.20, +0.2), (0.10, 0.0), (None, -0.2)]),
-         ], "ce": "ADEQUATE", "peer": "in-line"},
-    ],
-}
 
 # SIC code prefix → industry template
 SIC_TO_INDUSTRY: list[tuple[str, str]] = [
@@ -1428,6 +1055,11 @@ SIC_TO_INDUSTRY: list[tuple[str, str]] = [
 ]
 
 
+# Industry labels the platform recognises (FRED series selection, peer labels).
+# Industry no longer drives risk scores — see risk_taxonomy.py.
+KNOWN_INDUSTRIES = sorted({i for _, i in SIC_TO_INDUSTRY} | {"Generic"})
+
+
 def detect_industry(sic: str) -> str:
     """Map a SIC code string to an industry template name."""
     for prefix, industry in SIC_TO_INDUSTRY:
@@ -1436,85 +1068,23 @@ def detect_industry(sic: str) -> str:
     return "Generic"
 
 
-# Non-canonical industry labels — e.g. EDGAR SIC sub-classifications like
-# "Analog Semiconductors", or a caller-supplied free-text override — that
-# should route to an existing template instead of silently degrading to the
-# generic 8-risk fallback. Targets must be real INDUSTRY_TEMPLATES keys.
-# risk-engine.js has its own client-side INDUSTRY_ALIASES for a *different*
-# canonical industry-name set (its own risk-narrative templates); this is
-# NOT a shared source of truth with that one and the two lists have already
-# diverged (e.g. "Retail" targets "Retail & Consumer" in both, but "Energy /
-# Utilities" targets "Energy & Utilities" here vs "Energy & Resources"
-# there — only the target that actually exists in INDUSTRY_TEMPLATES below
-# was ported).
-_INDUSTRY_ALIASES: dict[str, str] = {
-    "Analog Semiconductors":   "Semiconductors",
-    "Digital Semiconductors":  "Semiconductors",
-    "Semiconductor Equipment": "Semiconductors",
-    "Memory Semiconductors":   "Semiconductors",
-    "Energy / Utilities":      "Energy & Utilities",
-    "Retail":                  "Retail & Consumer",
-}
-
-
-def compute_risk_scores(ratios: dict, industry: str = "Generic") -> dict:
+def compute_risk_scores(ratios: dict, industry: str = "", *, mscore: Optional[dict] = None,
+                        zscore: Optional[dict] = None,
+                        extra_evidence: Optional[dict] = None) -> dict:
     """
-    Compute industry-templated risk scores on the platform's canonical 0-25
-    scale (impact 0-5 x likelihood 0-5), banded R>=15/A>=9/G below — the same
-    methodology risk-engine.js's buildRisks() uses for the Enterprise Risk
-    Loop's own register (see risk_rating_engine.py). This function's own
-    industry templates and _risk_delta ratio rules are unchanged; only the
-    final scale/banding/vocabulary is now shared instead of this function's
-    previous independent 0-10 / Red-Amber-Green scheme (>=7.0/>=5.0), whose
-    disagreement with the rest of the platform was a real, visible bug — see
-    risk_rating_engine.py's module docstring for the concrete symptom.
+    Score the universal risk taxonomy from this entity's own evidence — no
+    industry baseline (see risk_taxonomy.py for the model and the
+    "Not assessed" rule). `industry` is accepted for call-site compatibility
+    and echoed back as a label only; it does not change any score.
 
-    Returns dict with overall summary and per-risk details including score,
-    rag_status (letter — R/A/G, not a full word), velocity, and control env.
+    Scores sit on the platform's canonical 0-25 scale (risk_rating_engine).
+    Categories with no evidence come back assessed=False with score=None.
     """
-    industry = _INDUSTRY_ALIASES.get(industry, industry)
-    template = INDUSTRY_TEMPLATES.get(industry, INDUSTRY_TEMPLATES["Generic"])
-    risks = []
+    result = risk_taxonomy.score_taxonomy(
+        ratios, mscore=mscore, zscore=zscore, extra_evidence=extra_evidence)
+    result["industry"] = industry or None
+    return result
 
-    for i, t in enumerate(template):
-        base  = t["base"]
-        delta = _risk_delta(ratios, t["rules"])
-        raw_score = max(1.0, min(10.0, base + delta))  # 0-10 intermediate, unchanged
-
-        canonical = risk_rating_engine.score_from_raw10(raw_score, category=t["category"])
-        # Exact port of risk-engine.js buildRisks()'s `base25 = impact * (t.base / 2)`
-        # — the baseline is a plain multiply, NOT run through the likelihood
-        # clamp the live score gets, matching that asymmetry precisely so
-        # velocity_of() below means the same thing here as it does there.
-        base_score_25 = round(canonical["impact"] * (base / 2.0), 1)
-        velocity = risk_rating_engine.velocity_of(score=canonical["score"], base=base_score_25)
-
-        # Stable per-industry ref — without this, save_risk_scores() writes
-        # risk_ref=NULL for every row, and every risk collapses onto the same
-        # React key downstream (RiskFrameworkMatrix keys rows by id/risk_ref).
-        risks.append({
-            "id":            f"R-{i+1:02d}",
-            "risk_ref":      f"R-{i+1:02d}",
-            "name":          t["name"],
-            "category":      t["category"],
-            "base_score":    base_score_25,
-            "delta":         round(delta, 2),
-            "score":         canonical["score"],
-            "rag_status":    canonical["rag_status"],
-            "velocity":      velocity,
-            "control_env":   t["ce"],
-            "peer_benchmark": t["peer"],
-        })
-
-    rag_counts = {"R": 0, "A": 0, "G": 0}
-    for r in risks:
-        rag_counts[r["rag_status"]] += 1
-
-    return {
-        "industry":   industry,
-        "rag_summary": rag_counts,
-        "risks":      risks,
-    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1594,7 +1164,8 @@ def compute_grey_swan(risk_result: dict, quarterly_revenue: Optional[float] = No
     than an arbitrary tuned constant. Impact ladder scales off quarterly
     revenue (or $500M proxy).
     """
-    risks = risk_result.get("risks", [])
+    # Not-assessed taxonomy categories carry no score — they can't trigger a cascade.
+    risks = [r for r in risk_result.get("risks", []) if r.get("assessed", True) and r.get("score") is not None]
     amber_risks = [r for r in risks if r["rag_status"] == "A"]
 
     trigger = None
@@ -2819,6 +2390,18 @@ def run_forecast_backtest(xbrl: dict, macro_info: Optional[dict], forecast_metri
     return out
 
 
+def _collect_extra_evidence(ticker: str, company_meta: dict) -> dict:
+    """Best-effort regulatory / governance evidence for risk_taxonomy
+    (SEC staff comment letters, DEF 14A board tenure, auditor tenure).
+    Never raises — each source is optional and a failure just means that
+    category stays on its other evidence (or "Not assessed")."""
+    try:
+        import governance_intel
+        return governance_intel.collect_extra_evidence(ticker, company_meta)
+    except Exception:
+        return {}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FULL ANALYSIS ORCHESTRATOR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2882,7 +2465,11 @@ def run_full_analysis(
         pass
 
     # ── 3. Risk Scores ────────────────────────────────────────────────────────
-    risk_result = compute_risk_scores(ratios, industry)
+    risk_result = compute_risk_scores(
+        ratios, industry,
+        mscore=result.get("beneish_mscore"), zscore=result.get("altman_zscore"),
+        extra_evidence=_collect_extra_evidence(ticker, company_meta),
+    )
     result["risk_scores"] = risk_result
 
     # ── 4. Scenario Analysis ──────────────────────────────────────────────────

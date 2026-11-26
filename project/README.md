@@ -39,7 +39,7 @@ The platform pairs a **deterministic analytics core** (statistical models — AR
 │          (Risk Review) (Scope Review)                       │
 │                                                             │
 │  Data sources:                                              │
-│    Mock     — static industry template                      │
+│    Mock     — no network; categories stay Not assessed      │
 │    Live JS  — EDGAR direct fetch via Vite proxy             │
 │    MCP      — Python FastAPI bridge → 10 analytics models   │
 └───────────────────────┬─────────────────────────────────────┘
@@ -98,8 +98,7 @@ Each stage runs sequentially. HITL gates pause execution and surface per-risk or
 Select in the sidebar. Each mode changes what gets fetched during a run.
 
 ### Mock Mode (default)
-- No network calls. Industry templates in `risk-engine.js` generate synthetic risk profiles.
-- Ratios default to `null`; all delta functions return 0. Scores equal the template base.
+- No network calls and no financial data, so every taxonomy category is **Not assessed** (there is no template baseline to show).
 - Useful for demos and offline development.
 
 ### Live JS Mode
@@ -113,7 +112,7 @@ Select in the sidebar. Each mode changes what gets fetched during a run.
 - Delegates all ingestion to the Python FastAPI bridge (`api_server.py`).
 - Runs all 10 predictive analytics models server-side (see [Predictive Analytics](#predictive-analytics-10-models)).
 - Returns financial ratios, scored risks, FRED correlations, RSS signals, ensemble forecast, backtesting metrics, and QoQ momentum in a single `/predictive/full-analysis` response.
-- Falls back to the industry template if the bridge is unreachable.
+- If the bridge is unreachable there is nothing to fall back to: every category is Not assessed, Gate 1 shows a data-unavailable banner and Approve is disabled (Override with a reason only).
 
 ---
 
@@ -148,41 +147,44 @@ After a run completes, the **Loop → Recurring Schedule** panel generates a pre
 
 `risk-engine.js` — pure JavaScript, runs entirely in the browser.
 
-### Industry Templates
-Eight industries, eight risks each, all parameterised by EDGAR financial ratios:
-
-| Industry | Key Risks |
-|----------|-----------|
-| **Semiconductors** | Revenue Concentration, R&D Execution, Financial Reporting (Accruals), Supply Chain, Gross Margin Compression, Cybersecurity (IP), Export Controls, CapEx & Capacity |
-| **Automotive OEM** | EV Transition, Captive Finance, Supply Chain (Semiconductors), Labor/CBA, Product Recall, Gross Margin/Incentives, Connected Vehicle Cyber, ESG/ICE Phase-out |
-| **Software & Cloud** | Revenue Recognition (ASC 606), Customer Churn/NRR, Cybersecurity, AI/Regulatory Bias, Competitive Disruption, Gross Margin/Operating Leverage, M&A Integration, Talent |
-| **Financial Services** | Credit Quality/CECL, NIM Sensitivity, Liquidity, CET1/DFAST, AML/Fraud, Cybersecurity, Model Risk, Market Risk/Derivatives |
-| **Healthcare & Pharma** | Pipeline/FDA, Pricing/IRA, Patent Cliff, GMP/Regulatory, R&D Productivity, Litigation/FCA, Cybersecurity (PHI), ESG |
-| **Generic** | Financial Reporting, Revenue Concentration, Margin Compression, Liquidity/FCF, Cybersecurity, Regulatory Compliance, Operational Execution, Strategic Concentration |
-
-Industrial & Manufacturing, Retail & Consumer, Energy & Resources, and Utilities alias to Generic.
+### Universal Risk Taxonomy
+The same 14 categories for every entity (no per-industry templates): Financial Reporting Quality, Liquidity & Going Concern, Profitability & Margin Pressure, Revenue Growth & Demand, Capital Structure & Financial Obligations, Cybersecurity & Data Protection, Board & Executive Governance, Audit Oversight & Internal Control, Regulatory / Legal & Enforcement, Operations & Supply Chain, Strategic Transactions & Concentration, Macro & Market Conditions, ESG & Climate Disclosure, Trade & Sanctions Compliance. Company-specific segment / geography risks are added on top. The industry label still drives FRED series selection and peer sets, but never a score.
 
 ### Score Computation
+
+There are no industry templates and no baseline scores. Every entity is scored against one
+universal taxonomy (14 categories, see `agentic-tools/risk_taxonomy.py` and `CATALOG` in
+`risk-engine.js`) using only that entity's own evidence:
+
 ```
-score = clamp(base + delta(ratios), 1.5, 9.5)
-velocity = velOf(score, base)   // -1 to +3 from ratio delta
-ce = ceOf(score, base)          // STRONG / ADEQUATE / WEAK based on delta
-hist = histOf(score, base)      // 6-point linear history base→score
+likelihood = clamp(1.0 + Σ evidence points, 0.5, 5.0)
+score      = impact(category) × likelihood            // 0–25
+base       = same formula with "recent change" (trend) evidence removed
+velocity   = velOf(score, base)                        // -1 to +3
 ```
 
-After Stage 1, `adjustRiskScores()` overlays signal adjustments:
-- **FRED contractionary signals** → +0.08 per signal to macro-category risks
-- **RSS signals linked to a risk** → +(velocity × 0.08) and velocity = max(base, RSS max)
-- **High-velocity industry signals** (velocity ≥ 3) → +0.05 each, capped at +0.20, applied to all risks
+Evidence sources: XBRL ratios, Beneish / Altman, SEC 8-Ks (routed by `event_risk_map.py`),
+DEF 14A board KRIs and SEC comment letters (`governance_intel.py`), industry RSS, FRED, and
+segment data. A category with **no** evidence is **Not assessed**: it carries no score and is
+excluded from RAG counts, appetite and audit scope, and is listed for the reviewer at Gate 1.
+Companies with no data at all produce an empty register — there is no placeholder fallback.
 
-The `hist` array and `ce` are regenerated after adjustment so the sparkline direction and likelihood position on the heatmap always agree with the adjusted velocity.
+Stage 2 re-scores every category from all evidence together:
+- **RSS signals** → +(velocity × 0.15) likelihood points to each linked category (cap 1.0)
+- **FRED contractionary indicators** → +0.2 each to Macro & Market Conditions (cap 0.8)
+- **8-Ks** → routed server-side with recency weighting (≤90d ×1.0, ≤180d ×0.75, ≤1y ×0.5, ≤2y ×0.2)
+
+Special handling: 8-K Item 1.03 (bankruptcy) floors Liquidity & Going Concern at Red and forces
+an explicit Gate 1 sign-off; Item 4.01 (auditor change) is P1 when it discloses a resignation,
+disagreement, reportable event, adverse / going-concern report, or a dismissal not approved by the
+audit committee, otherwise P3.
 
 ### RAG Thresholds
-| Score | RAG |
+| Score (0–25) | RAG |
 |-------|-----|
-| ≥ 7.5 | RED |
-| 5.0 – 7.4 | AMBER |
-| < 5.0 | GREEN |
+| ≥ 15 | RED |
+| 9 – 14.9 | AMBER |
+| < 9 | GREEN |
 
 ### Quarterly Projections
 ```
@@ -210,7 +212,7 @@ Implemented in `project/agentic-tools/predictive_analytics_tool.py`. Activated v
 |---|-------|-------------|
 | 1 | **Financial Ratio Analysis** | Revenue growth, gross margin, R&D intensity, FCF margin, DSRI, TATA, SGI from EDGAR XBRL |
 | 2 | **Beneish M-Score** | 5-variable earnings manipulation detection (M > −1.78 = elevated, M > −2.22 = gray zone) |
-| 3 | **Industry-Templated Risk Scoring** | Delta-adjusted scores across 8 verticals × 8 risks using live ratios |
+| 3 | **Evidence-Scored Risk Taxonomy** | 14 universal categories scored only from the entity's own evidence (ratios, 8-Ks, proxy / comment-letter intelligence, signals) — no industry baseline |
 | 4 | **Scenario Analysis** | Bear / Base / Bull with revenue impact %, gross margin delta, liquidity rating, recovery horizon |
 | 5 | **Grey Swan Model** | 4-stage escalation cascade (T+0/+30/+60/+90) with probability, impact $M, catalysts, mitigations |
 | 6 | **FRED Macro Leading Indicators** | Pearson cross-correlation at lags 1–4 between FRED series and company revenue; selects top correlators |
@@ -367,7 +369,7 @@ dendrai-dashboard/
 │   ├── rail.jsx                    # Right rail — Risks/Heatmap/MAPs/Loop/Notifs/Flow/Persona tabs
 │   ├── charts.jsx                  # SVG charts — Heatmap, ForecastChart, MScoreGauge, RiskFlowSankey
 │   ├── components.jsx              # Shared primitives — Icon, Sparkline, VelocityPill, projectQuarters
-│   ├── risk-engine.js              # Risk profile builder — templates, scoring, objectives, MAPs
+│   ├── risk-engine.js              # Risk profile builder — evidence-scored taxonomy, objectives, MAPs
 │   ├── live-data.js                # EDGAR direct fetch + financial ratio extraction
 │   ├── mcp-data.js                 # Python MCP API client (window.MCP)
 │   ├── mock-data.js                # CEM event templates

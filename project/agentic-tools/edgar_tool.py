@@ -560,6 +560,22 @@ def extract_proxy_sections(text: str) -> dict:
         max_chars=20_000,
     )
 
+    # Auditor ratification proposal — the only place a proxy states audit-firm
+    # tenure ("has served as our auditor since YYYY") and audit/non-audit fees.
+    sections["audit_matters"] = _extract_section(
+        text,
+        start_patterns=[
+            r"ratification\s+of\s+(the\s+)?(appointment|selection)\s+of\s+(the\s+)?(independent|our)",
+            r"independent\s+registered\s+public\s+accounting\s+firm",
+        ],
+        stop_patterns=[
+            r"proposal\s+no\.\s*[4-9]",
+            r"shareholder\s+proposals?",
+            r"other\s+matters",
+        ],
+        max_chars=12_000,
+    )
+
     return {k: v for k, v in sections.items() if v.strip()}
 
 

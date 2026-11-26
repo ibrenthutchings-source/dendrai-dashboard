@@ -122,17 +122,16 @@ def risk_score_exception(severity: str, process: str = None, connector_risk_tier
 @mcp.tool()
 def risk_score_register(ratios: str, industry: str = "Generic") -> str:
     """
-    Score a full industry-templated risk register from live financial ratios
+    Score the universal evidence-based risk taxonomy from financial ratios
     — predictive_analytics_tool.compute_risk_scores, now emitting the same
     canonical 0-25 / R-A-G scale as everything else (previously 0-10 /
     Red-Amber-Green — see this server's module docstring).
 
     Args:
         ratios: JSON object of financial ratios (revenue_growth, gross_margin,
-                fcf_margin, rd_intensity, etc. — whatever the industry's
-                template rules reference; missing keys default to neutral).
-        industry: one of predictive_analytics_tool.INDUSTRY_TEMPLATES' keys
-                  (falls back to "Generic" if unrecognized).
+                fcf_margin, tata, dsri, etc.). A category whose inputs are all
+                missing is returned as assessed=false, not given a default.
+        industry: informational label only — it no longer changes scores.
     """
     try:
         check_rate_limit("risk_score_register")

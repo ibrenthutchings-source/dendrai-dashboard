@@ -42,7 +42,6 @@ FEEDS: list[dict] = [
         "name": "CISA ICS Advisories",
         "url": "https://www.cisa.gov/cybersecurity-advisories/ics-advisories.xml",
         "domains": ["Cybersecurity"],
-        "risks": ["R-04"],
         "weight": 1.3,
         "companyGated": True,  # Only surface advisories mentioning the company/its products
     },
@@ -53,7 +52,6 @@ FEEDS: list[dict] = [
         "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&dateb=&owner=include&count=8&output=atom",
         "type": "edgar-peers",
         "domains": ["Financial Reporting"],
-        "risks": ["R-01", "R-05"],
         "weight": 1.0,
     },
     {
@@ -61,7 +59,6 @@ FEEDS: list[dict] = [
         "name": "Federal Reserve Press",
         "url": "https://www.federalreserve.gov/feeds/press_all.xml",
         "domains": ["Macro"],
-        "risks": ["R-09"],
         "weight": 0.9,
     },
     # Three feeds for regulatory_change_tool.py's horizon-scanning path
@@ -73,7 +70,6 @@ FEEDS: list[dict] = [
         "name": "EU AI Act",
         "url": "https://digital-strategy.ec.europa.eu/en/rss.xml",
         "domains": ["Regulatory"],
-        "risks": ["R-05"],
         "weight": 1.3,
     },
     {
@@ -81,7 +77,6 @@ FEEDS: list[dict] = [
         "name": "EU DORA (Digital Operational Resilience Act)",
         "url": "https://www.esma.europa.eu/rss.xml",
         "domains": ["Regulatory", "Cybersecurity"],
-        "risks": ["R-04", "R-05"],
         "weight": 1.2,
     },
     {
@@ -91,7 +86,6 @@ FEEDS: list[dict] = [
         # working 2026-09-19: /news/feed (application/rss+xml, real entries).
         "url": "https://oag.ca.gov/news/feed",
         "domains": ["Regulatory", "Privacy"],
-        "risks": ["R-05"],
         "weight": 1.0,
     },
     # Regulator feeds added 2026-09-24 so the Disclosure Risk layer
@@ -109,7 +103,6 @@ FEEDS: list[dict] = [
         "name": "SEC Press Releases",
         "url": "https://www.sec.gov/news/pressreleases.rss",
         "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
-        "risks": ["R-01", "R-05"],
         "weight": 1.2,
     },
     {
@@ -117,7 +110,6 @@ FEEDS: list[dict] = [
         "name": "SEC Statements",
         "url": "https://www.sec.gov/news/statements.rss",
         "domains": ["Regulatory", "AI", "ESG", "Cybersecurity", "Financial Reporting"],
-        "risks": ["R-01", "R-05"],
         "weight": 1.1,
     },
     {
@@ -128,7 +120,6 @@ FEEDS: list[dict] = [
         # made every consumer-fraud release score Red. Only AI/privacy items
         # are disclosure signals here.
         "domains": ["AI", "Privacy"],
-        "risks": ["R-05"],
         "weight": 1.0,
     },
     {
@@ -136,7 +127,6 @@ FEEDS: list[dict] = [
         "name": "EDPB / EU Data Protection Authorities",
         "url": "https://www.edpb.europa.eu/feed/news_en",
         "domains": ["Privacy"],
-        "risks": ["R-05"],
         "weight": 1.1,
     },
     {
@@ -147,7 +137,6 @@ FEEDS: list[dict] = [
         # above is a general site feed dominated by non-AI-Act items.
         "url": "https://artificialintelligenceact.eu/feed/",
         "domains": ["AI", "Regulatory"],
-        "risks": ["R-05"],
         "weight": 1.1,
     },
     # Federal Register API feeds (api/v1/documents.rss — NOT the site's feed
@@ -163,7 +152,6 @@ FEEDS: list[dict] = [
         "name": "SEC Rulemaking (Federal Register)",
         "url": _FR_API + "conditions%5Bagencies%5D%5B%5D=securities-and-exchange-commission&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
         "domains": ["Regulatory", "Financial Reporting", "ESG", "Cybersecurity", "AI"],
-        "risks": ["R-01", "R-05"],
         "weight": 1.2,
     },
     {
@@ -171,7 +159,6 @@ FEEDS: list[dict] = [
         "name": "AI Rulemaking (Federal Register)",
         "url": _FR_API + "conditions%5Bterm%5D=%22artificial+intelligence%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
         "domains": ["AI"],
-        "risks": ["R-05"],
         "weight": 1.1,
     },
     {
@@ -179,7 +166,6 @@ FEEDS: list[dict] = [
         "name": "Greenhouse-Gas Rulemaking (Federal Register)",
         "url": _FR_API + "conditions%5Bterm%5D=%22greenhouse+gas%22&conditions%5Btype%5D%5B%5D=RULE&conditions%5Btype%5D%5B%5D=PRORULE&order=newest&per_page=20",
         "domains": ["ESG"],
-        "risks": ["R-05"],
         # Below 1.0: EPA state air-plan approvals match "greenhouse gas" too.
         "weight": 0.8,
     },
@@ -188,7 +174,6 @@ FEEDS: list[dict] = [
         "name": "California Air Resources Board (SB 253/261 climate disclosure)",
         "url": "https://ww2.arb.ca.gov/rss.xml",
         "domains": ["ESG"],
-        "risks": ["R-05"],
         # Low weight: CARB's feed is mostly air-quality/programme news; only
         # climate-disclosure items (SB 253/261) are signals.
         "weight": 0.5,
@@ -281,7 +266,7 @@ SEVERITY_WORDS: dict[str, float] = {
 # Authoritative source — mirrors DOMAIN_RISK_CATS in rss-engine.js (JS loads from /scoring/config).
 DOMAIN_RISK_CATS: dict[str, list[str]] = {
     "Financial Reporting": ["financial", "revenue", "reporting", "accounting"],
-    "Cybersecurity":       ["cybersecurity", "it ", "technology", "digital", "information"],
+    "Cybersecurity":       ["cybersecurity", "data protection", "technology", "digital", "information"],
     "Trade Compliance":    ["compliance", "trade", "legal", "regulatory"],
     "Supply Chain":        ["supply", "operations", "procurement", "sourcing"],
     "Macro":               ["macro", "economic", "market", "operational"],
@@ -293,6 +278,25 @@ DOMAIN_RISK_CATS: dict[str, list[str]] = {
     "Competitive":         ["competitive", "market", "commercial", "operational"],
     "Operational":         ["operational", "operations"],
 }
+
+def domain_taxonomy_ids(domains: list[str], limit: int = 3) -> list[str]:
+    """Risk-taxonomy ids (risk_taxonomy.TAXONOMY) a feed's domains bear on.
+
+    Replaces the old hard-coded per-feed template ids ("R-04", "R-05" ...),
+    which meant a different risk in every industry template and dangle once
+    the templates are gone. Same fragment matching the front end uses
+    (rss-engine.js resolveDomainRisks) so server- and client-side RSS signals
+    attach to the same categories."""
+    import risk_taxonomy
+    matched: list[str] = []
+    for domain in domains or []:
+        fragments = DOMAIN_RISK_CATS.get(domain, [])
+        for t in risk_taxonomy.TAXONOMY:
+            hay = (t["category"] + " " + t["name"]).lower()
+            if any(f in hay for f in fragments) and t["id"] not in matched:
+                matched.append(t["id"])
+    return matched[:limit]
+
 
 # ── Item 1A risk factor keyword matching ──────────────────────────────────────
 # Maps risk categories to filing keywords; used for enrichRisksFromFactors().
@@ -394,7 +398,7 @@ def grade_article(entry: dict, feed: dict, company_name: str = "") -> Optional[d
         "severity": round(severity, 2),
         "velocity": velocity,
         "rag": rag,
-        "affectedRisks": list(feed["risks"]),
+        "affectedRisks": domain_taxonomy_ids(feed["domains"]),
         "domains": list(feed["domains"]),
         "src": "Industry RSS",
         "delta": f"v={'+' if velocity >= 0 else ''}{velocity}",

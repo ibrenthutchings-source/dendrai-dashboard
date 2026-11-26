@@ -643,7 +643,7 @@ function ExceptionBoardSection({ dateFrom, dateTo, report, state }) {
 // second AI spend) whenever a brief has already rendered on screen, and a
 // real (correct) generation on the rare case someone exports before either
 // section's autoGenerate has resolved.
-function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo, coverage }) {
+function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo, coverage, routing, notAssessed }) {
   const [state, setState] = React.useState({ busy: false, error: null });
 
   const run = React.useCallback(async () => {
@@ -661,13 +661,13 @@ function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, run
       await exportConsolidatedReportPptx({
         ticker, hasRun, risks, objectives, maps, riskAppetite, appetiteThreshold,
         exceptionReport: excReport, exceptionDateFrom: dateFrom, exceptionDateTo: dateTo,
-        boardPersonaBrief, boardExceptionBrief, coverage,
+        boardPersonaBrief, boardExceptionBrief, coverage, routing, notAssessed,
       });
       setState({ busy: false, error: null });
     } catch (e) {
       setState({ busy: false, error: e.message || "PowerPoint export failed" });
     }
-  }, [ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo, coverage]);
+  }, [ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold, excReport, dateFrom, dateTo, coverage, routing, notAssessed]);
 
   return { ...state, run };
 }
@@ -675,7 +675,7 @@ function usePptxExport({ ticker, hasRun, risks, objectives, maps, loopStats, run
 function BoardConsolidatedReportScreen({
   ticker, runId, hasRun, objectives, maps, personas, risks, loopStats,
   riskAppetite, appetiteThreshold, rssSignals, events, ratios, industry,
-  onOpenEvidencePack,
+  onOpenEvidencePack, routing = null, notAssessed = [],
 }) {
   const [dateFrom] = React.useState(_daysAgoISO(30));
   const [dateTo] = React.useState(_todayISO());
@@ -700,7 +700,7 @@ function BoardConsolidatedReportScreen({
 
   const pptxExport = usePptxExport({
     ticker, hasRun, risks, objectives, maps, loopStats, runId, riskAppetite, appetiteThreshold,
-    excReport, dateFrom, dateTo, coverage,
+    excReport, dateFrom, dateTo, coverage, routing, notAssessed,
   });
 
   return (

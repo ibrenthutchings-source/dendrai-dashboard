@@ -58,6 +58,7 @@ from mcp_guards import audit_log, cap_output, check_rate_limit, validate_enum, v
 from predictive_analytics_tool import (
     compute_financial_ratios,
     compute_beneish_mscore,
+    compute_altman_zscore,
     compute_risk_scores,
     compute_scenario_analysis,
     compute_grey_swan,
@@ -69,7 +70,7 @@ from predictive_analytics_tool import (
     extract_quarterly_series,
     detect_industry,
     run_full_analysis,
-    INDUSTRY_TEMPLATES,
+    KNOWN_INDUSTRIES,
 )
 
 try:
@@ -167,11 +168,13 @@ def predictive_industry_risks(
     industry: str = "",
 ) -> str:
     """
-    Score 8 industry-specific risks using financial ratios from EDGAR.
+    Score the universal risk taxonomy from this entity's own evidence (XBRL
+    ratios, Beneish, Altman). No industry template; categories with no
+    evidence are returned as assessed=false / score=null.
 
-    Each risk returns: base score, live score (after ratio-driven deltas),
-    RAG status (Red ≥7.0 / Amber ≥5.0 / Green <5.0), velocity (−1 to +3),
-    category, control environment, and peer benchmark.
+    Each risk returns: structural base score, live score (0-25), RAG letter
+    (R ≥15 / A ≥9 / G), velocity (−1 to +3), category, control environment,
+    and the evidence list the score was derived from.
 
     Supported industries (auto-detected from SIC if not specified):
       Semiconductors, Automotive OEM, Software & Cloud, Financial Services,
@@ -187,10 +190,12 @@ def predictive_industry_risks(
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
-        if ind not in INDUSTRY_TEMPLATES:
+        if ind not in KNOWN_INDUSTRIES:
             ind = "Generic"
         ratios = compute_financial_ratios(xbrl)
-        result = compute_risk_scores(ratios, ind)
+        result = compute_risk_scores(
+            ratios, ind,
+            mscore=compute_beneish_mscore(ratios), zscore=compute_altman_zscore(ratios))
         return json.dumps({
             "ticker":       meta["ticker"],
             "company_name": meta["company_name"],
@@ -227,7 +232,7 @@ def predictive_scenario_analysis(
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
-        if ind not in INDUSTRY_TEMPLATES:
+        if ind not in KNOWN_INDUSTRIES:
             ind = "Generic"
         ratios = compute_financial_ratios(xbrl)
         risks  = compute_risk_scores(ratios, ind)
@@ -266,7 +271,7 @@ def predictive_grey_swan(
         meta, xbrl = _get_xbrl(ticker)
         sic = meta.get("sic", "")
         ind = industry.strip() if industry.strip() else detect_industry(sic)
-        if ind not in INDUSTRY_TEMPLATES:
+        if ind not in KNOWN_INDUSTRIES:
             ind = "Generic"
         ratios = compute_financial_ratios(xbrl)
         risks  = compute_risk_scores(ratios, ind)
@@ -313,7 +318,7 @@ def predictive_macro_indicators(
         meta, _ = _get_xbrl(ticker) if _HAS_EDGAR else ({}, {})
         sic = meta.get("sic", "") if meta else ""
         ind = industry.strip() if industry.strip() else detect_industry(sic)
-        if ind not in INDUSTRY_TEMPLATES:
+        if ind not in KNOWN_INDUSTRIES:
             ind = "Generic"
         fred_api_key = os.environ.get("FRED_API_KEY", "").strip()
         result = get_macro_leading_indicators(
@@ -569,26 +574,21 @@ def predictive_full_analysis(
 @mcp.tool()
 def predictive_list_industries() -> str:
     """
-    List all supported industry templates and the risks scored within each.
-
-    Returns industry names, risk names, categories, and base scores.
-    Use these names as the `industry` parameter in other predictive_ tools.
+    List the universal risk taxonomy every entity is scored against, and the
+    industry labels the platform recognises (used for FRED series selection
+    only — industry no longer changes any risk score).
     """
     try:
         check_rate_limit("predictive_list_industries")
         audit_log("predictive_list_industries")
     except ValueError as e:
         return f"Error: {e}"
-    out = {}
-    for ind, risks in INDUSTRY_TEMPLATES.items():
-        out[ind] = [
-            {"name": r["name"], "category": r["category"], "base_score": r["base"]}
-            for r in risks
-        ]
+    import risk_taxonomy
     return json.dumps({
-        "industries": list(INDUSTRY_TEMPLATES.keys()),
-        "risk_templates": out,
-        "rag_thresholds": {"Red": "score ≥ 7.0", "Amber": "score ≥ 5.0", "Green": "score < 5.0"},
+        "industries": KNOWN_INDUSTRIES,
+        "risk_taxonomy": risk_taxonomy.TAXONOMY,
+        "model": "universal-taxonomy/evidence-scored",
+        "rag_thresholds": {"R": "score ≥ 15", "A": "score ≥ 9", "G": "score < 9", "scale": "0-25"},
     }, indent=2)
 
 

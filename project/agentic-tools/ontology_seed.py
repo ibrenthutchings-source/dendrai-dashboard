@@ -39,7 +39,8 @@ SEED_ORDER: List[str] = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# risk_category — the 10 categories the risk loop actually emits.
+# risk_category — the categories the risk loop actually emits (10 original + the 3
+# added with the evidence-scored taxonomy: Liquidity, Governance, Audit Oversight).
 # Verbatim from project/risk-engine.js:46 CATEGORY_IMPACT's keys. Definitions
 # are new (that file has no descriptive text, only an impact-weight int per
 # category) — written to describe what each category is actually used for.
@@ -72,6 +73,16 @@ _RISK_CATEGORY_CONCEPTS: List[Dict[str, Any]] = [
      "definition": "Risk of litigation, legal liability, or contractual exposure."},
     {"pref_label": "Strategic", "alt_labels": ["Strategic Risk"],
      "definition": "Risk to the achievement of the entity's business objectives or strategy."},
+    # Added with the evidence-scored taxonomy (risk_taxonomy.py).
+    {"pref_label": "Liquidity", "alt_labels": ["Going Concern Risk", "Solvency Risk", "Funding Risk"],
+     "definition": "Risk that the entity cannot meet obligations as they fall due, or that the "
+                    "going-concern basis of preparation is no longer appropriate."},
+    {"pref_label": "Governance", "alt_labels": ["Board Risk", "Executive Succession Risk", "Corporate Governance Risk"],
+     "definition": "Risk from board and executive composition, turnover, tenure and oversight "
+                    "failing to meet an expected standard."},
+    {"pref_label": "Audit Oversight", "alt_labels": ["Auditor Risk", "ICFR Oversight Risk"],
+     "definition": "Risk to the integrity of the external audit and internal control over financial "
+                    "reporting — auditor change, independence, tenure and rotation, ICFR conclusions."},
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -557,10 +568,11 @@ SOX_RECONCILIATION_RELATIONS += [
      "rationale": "SOX 'Macro' is a scoping factor for macroeconomic conditions; "
                   "risk-engine.js/risks_as_code.py deliberately treat 'Macro' as a score "
                   "MODIFIER applied across categories, never a risk category in its own right — "
-                  "checked and confirmed no direct correspondence to any of the 10 categories."}
+                  "checked and confirmed no direct correspondence to any risk category."}
     for category in (
         "Revenue", "Operational", "Financial Reporting", "Supply", "Cybersecurity",
         "Trade Compliance", "ESG", "Compliance", "Legal", "Strategic",
+        "Liquidity", "Governance", "Audit Oversight",
     )
 ]
 

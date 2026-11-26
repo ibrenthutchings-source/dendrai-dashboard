@@ -35,6 +35,7 @@ window.DISCLOSURE_RISK = (function () {
       duties: "8-K Item 1.05 within 4 business days of materiality determination; 10-K Item 1C (risk management & governance); state breach-notification laws",
       categories: ["cyber", "information security", "data protection"],
       signalDomains: ["Cybersecurity"],
+      txIds: ["TX-CYB"],
       filingKeywords: ["cyber", "data breach", "ransomware", "unauthorized access"],
     },
     financial: {
@@ -44,6 +45,7 @@ window.DISCLOSURE_RISK = (function () {
       duties: "10-K/10-Q accuracy, SOX 302/404 certification, 8-K Item 4.02 non-reliance within 4 business days",
       categories: ["financial", "revenue", "reporting", "accounting"],
       signalDomains: ["Financial Reporting"],
+      txIds: ["TX-FRQ", "TX-PRF", "TX-REV", "TX-LIQ", "TX-CAP"],
       filingKeywords: ["material weakness", "restatement", "icfr", "revenue recognition"],
     },
     esg: {
@@ -53,6 +55,7 @@ window.DISCLOSURE_RISK = (function () {
       duties: "Climate-related disclosure (SEC rules and guidance, ISSB, EU ESRS, California SB 253/261), GHG emissions reporting, and avoiding misleading sustainability claims (greenwashing)",
       categories: ["esg", "environmental", "climate", "sustainability"],
       signalDomains: ["ESG", "Environmental"],
+      txIds: ["TX-ESG"],
       filingKeywords: ["climate", "emission", "sustainability", "environmental"],
     },
     ai: {
@@ -62,6 +65,7 @@ window.DISCLOSURE_RISK = (function () {
       duties: "Accurate AI capability claims (AI-washing), EU AI Act high-risk obligations, Item 1A AI risk factors, bias/consumer-protection exposure",
       categories: ["ai ", "artificial", "algorithm", "machine learning", "bias"],
       signalDomains: ["AI"],
+      txIds: [],
       filingKeywords: ["artificial intelligence", "machine learning", "algorithm", "generative"],
     },
     privacy: {
@@ -71,6 +75,7 @@ window.DISCLOSURE_RISK = (function () {
       duties: "GDPR 72-hour breach notification, state privacy enforcement, HIPAA breach notification",
       categories: ["privacy", "data protection", "phi"],
       signalDomains: ["Privacy"],
+      txIds: [],
       filingKeywords: ["privacy", "gdpr", "ccpa", "personal data"],
     },
     trade: {
@@ -80,7 +85,28 @@ window.DISCLOSURE_RISK = (function () {
       duties: "Export-control voluntary self-disclosure, sanctions reporting",
       categories: ["trade", "export"],
       signalDomains: ["Trade Compliance"],
+      txIds: ["TX-TRD"],
       filingKeywords: ["export control", "sanction", "tariff", "embargo"],
+    },
+    governance: {
+      label: "Governance & Board",
+      consequence: 2,
+      regulators: ["SEC", "NYSE / Nasdaq"],
+      duties: "Reg S-K Items 401 / 407 (director experience, term, independence, committees), Item 402 and Rule 10D-1 (compensation, clawback), 8-K Item 5.02 within 4 business days, Item 408 insider-trading policy disclosure. No SEC rule mandates director term limits or rotation — tenure is a disclosure and investor-policy matter.",
+      categories: ["governance", "board", "executive"],
+      signalDomains: [],
+      txIds: ["TX-GOV"],
+      filingKeywords: ["director", "succession", "clawback", "related party"],
+    },
+    audit: {
+      label: "Auditor & Internal Control",
+      consequence: 3,
+      regulators: ["SEC", "PCAOB"],
+      duties: "8-K Item 4.01 auditor change (with Reg S-K Item 304 disclosure) within 4 business days; audit-partner rotation (SOX §203 / Reg S-X Rule 2-01(c)(6): lead and concurring partner after 5 years, other significant partners after 7); ICFR conclusions (SOX 404); 8-K Item 4.02 non-reliance.",
+      categories: ["audit oversight", "internal control", "auditor"],
+      signalDomains: [],
+      txIds: ["TX-AUD"],
+      filingKeywords: ["auditor", "internal control", "material weakness", "item 304"],
     },
   };
 
@@ -127,6 +153,12 @@ window.DISCLOSURE_RISK = (function () {
       const rssHits = rssSignals.filter(s =>
         _signalDomains(s).some(d => ob.signalDomains.includes(d)));
       const eightKHits = events.filter(e => {
+        // Routed events name the exact taxonomy categories they moved — prefer
+        // that over free-text category matching (which never matched the new
+        // governance / audit categories at all).
+        if (Array.isArray(e.routing) && e.routing.length) {
+          return e.routing.some(r => (ob.txIds || []).includes(r.tx));
+        }
         const c = String(e.cat || e.category || "").toLowerCase();
         return ob.categories.some(cat => c.includes(cat.trim()));
       });

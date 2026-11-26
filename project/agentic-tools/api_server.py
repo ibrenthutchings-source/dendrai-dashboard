@@ -117,6 +117,8 @@ from rss_ingest_service import (
 )
 from edgar_tool import _8K_ITEMS as EDGAR_8K_ITEMS
 import db
+import event_risk_map
+import governance_intel
 import embedding_util
 import control_plane
 import manual_financials_tool
@@ -1406,7 +1408,9 @@ def _persist_full_analysis(req: FullAnalysisRequest, result: dict) -> Optional[i
     db.save_altman_zscore(run_id, result.get("altman_zscore", {}))
 
     risk_data = result.get("risk_scores", {})
-    risks_list = risk_data.get("risks", [])
+    # "Not assessed" taxonomy rows (score=None) are coverage gaps, not register
+    # rows — graph relationships / scenario impacts below need real scores.
+    risks_list = [r for r in risk_data.get("risks", []) if r.get("assessed", True) and r.get("score") is not None]
     db.save_risk_scores(run_id, risks_list)
 
     scenario_dict = result.get("scenario_analysis", {})
@@ -2096,6 +2100,7 @@ def rss_feeds_status():
     }
 
 
+_8K_DETAIL_MAX_PER_CALL = 12    # filing-body fetches for 1.03 / 4.01 / 5.02 content parsing
 _8K_CLASSIFY_MAX_PER_CALL = 10  # bounds per-request latency/LLM cost — see comment below
 
 
@@ -2124,22 +2129,52 @@ def edgar_8k_events(req: TickerRequest):
         events = [annotate_8k(dict(f)) for f in filings]
 
         classified_count = 0
+        detail_fetches = 0
         new_material_events = []
         for ev in events:
             ev["is_material"] = has_material_item(ev)
             ev["classification"] = None
-            if ev["is_material"] and classified_count < _8K_CLASSIFY_MAX_PER_CALL:
+            item_set = {i.strip() for i in re.split(r"[,\s]+", ev.get("items", "") or "") if i.strip()}
+            wants_classify = ev["is_material"] and classified_count < _8K_CLASSIFY_MAX_PER_CALL
+            wants_details = (bool(item_set & event_risk_map.DETAIL_ITEMS)
+                             and detail_fetches < _8K_DETAIL_MAX_PER_CALL
+                             and event_risk_map.recency_weight(ev.get("date", "")) > 0)
+            text = ""
+            if wants_classify or wants_details:
+                try:
+                    text = fetch_filing_text(cik, ev) or ""
+                except Exception:
+                    text = ""
+                if wants_details:
+                    detail_fetches += 1
+            if wants_classify:
                 classified_count += 1
                 try:
-                    text = fetch_filing_text(cik, ev)
                     ev["classification"] = classify_8k_event(ev.get("item_descriptions"), text) if text else None
                 except Exception:
                     ev["classification"] = None
+            # Deterministic content parse for the items whose routing depends on
+            # WHAT the filing says (bankruptcy chapter, auditor-change reasons,
+            # officer roles). No LLM - regex only, so each decision is auditable.
+            details = {}
+            if text:
+                if "1.03" in item_set:
+                    details["1.03"] = event_risk_map.extract_1_03_details(text)
+                if "4.01" in item_set:
+                    details["4.01"] = event_risk_map.extract_4_01_details(text)
+                if "5.02" in item_set:
+                    details["5.02"] = event_risk_map.extract_5_02_details(text)
+            ev["item_details"] = details
+            ev["risk_routing"] = event_risk_map.route_filing(ev, details)
+            del text
 
         result = {
             "ticker": req.ticker.upper(),
             "company_name": meta["company_name"],
             "events": events,
+            # Taxonomy evidence derived from the routed events, plus every
+            # filing that was NOT scored (ignored / needs review) with its reason.
+            "risk_routing": event_risk_map.aggregate_evidence(events),
         }
 
         if db.is_available():
@@ -2701,6 +2736,7 @@ def edgar_proxy(req: RiskFactorsRequest):
                         len(filings), _rss_mb())
         results = []
         company_id = None
+        governance_full: dict = {}
 
         if db.is_available():
             company_id = db.upsert_company({
@@ -2716,6 +2752,8 @@ def edgar_proxy(req: RiskFactorsRequest):
                             f.get("accession_number"), len(text) if text else 0, _rss_mb())
             sections = extract_proxy_sections(text) if text else {}
             del text
+            if not governance_full and sections:
+                governance_full = dict(sections)   # newest proxy only, full text, for KRI parsing
             truncated = {k: v[:8_000] for k, v in sections.items()}
             results.append({
                 "filing_date": f["date"],
@@ -2753,7 +2791,55 @@ def edgar_proxy(req: RiskFactorsRequest):
             "company_name": meta["company_name"],
             "proxy_filings": results,
         }
+        if governance_full:
+            kris = governance_intel.compute_kris(governance_full)
+            result["governance"] = {
+                "kris": kris,
+                "evidence": governance_intel.kris_to_evidence(kris),
+                "filing_date": results[0]["filing_date"] if results else None,
+            }
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+_COMMENT_LETTER_BODY_MAX = 3
+
+
+@app.post("/edgar/comment-letters")
+@_heavy_endpoint
+def edgar_comment_letters(req: TickerRequest):
+    """SEC staff comment letters (UPLOAD) and company responses (CORRESP) from
+    the EDGAR submissions index, with taxonomy evidence. Letter activity comes
+    from the index alone (no download); the most recent staff letters'
+    bodies are fetched best-effort only to classify WHAT the staff asked about.
+    """
+    try:
+        meta, sub = get_company_info(req.ticker)
+        letters = governance_intel.list_comment_letters(sub)
+        topics_by_acc: dict = {}
+        fetched = 0
+        for l in letters:
+            if l["form"] != "UPLOAD" or fetched >= _COMMENT_LETTER_BODY_MAX:
+                continue
+            fetched += 1
+            try:
+                body = fetch_filing_text(meta["cik"], l) or ""
+            except Exception:
+                body = ""
+            topics = governance_intel.classify_comment_text(body[:60_000]) if body else []
+            l["topics"] = topics
+            if topics:
+                topics_by_acc[l["accession_number"]] = topics
+            del body
+        return {
+            "ticker": req.ticker.upper(),
+            "company_name": meta["company_name"],
+            "letters": letters,
+            "evidence": governance_intel.comment_letters_to_evidence(letters, topics_by_acc),
+        }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

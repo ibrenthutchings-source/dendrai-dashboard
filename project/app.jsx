@@ -82,6 +82,76 @@ const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
 
 const APPETITE_THRESHOLDS = { GREEN: 12.0, AMBER: 18.0, RED: 23.0 };
 
+// Likelihood points a live signal contributes to a category (see
+// RISK_ENGINE: likelihood = 1.0 + sum of evidence points). Constants, so the
+// Stage 2 trace text is generated from the same numbers the scorer uses.
+const SIGNAL_EVIDENCE = {
+  RSS_PER_VELOCITY: 0.15,   // per RSS signal, x its velocity
+  RSS_CAP_PER_RISK: 1.0,    // total RSS points one category can receive
+  FRED_PER_CONTRACTIONARY: 0.2,
+  FRED_CAP: 0.8,
+};
+
+// Signals -> {taxonomyId: [evidence]}. 8-K events are NOT handled here: they
+// are routed server-side (event_risk_map.py) and arrive already as evidence.
+function buildSignalEvidence(allSigs, rssSigs) {
+  const evidence = {};
+  const push = (id, item) => { (evidence[id] = evidence[id] || []).push(item); };
+  const used = {};
+  let rssLinked = 0;
+  for (const s of rssSigs || []) {
+    if (s.src === "FRED Macro") continue;
+    const ids = s.affectedRisks || [];
+    if (!ids.length) continue;
+    rssLinked++;
+    const want = (s.velocity || 0) * SIGNAL_EVIDENCE.RSS_PER_VELOCITY;
+    if (want <= 0) continue;
+    for (const id of ids) {
+      const room = SIGNAL_EVIDENCE.RSS_CAP_PER_RISK - (used[id] || 0);
+      if (room <= 0) continue;
+      const pts = Math.min(want, room);
+      used[id] = (used[id] || 0) + pts;
+      push(id, RISK_ENGINE.ev("Industry RSS",
+        `${s.feedName || "RSS"}: ${String(s.label || s.title || "").slice(0, 90)} (velocity ${s.velocity})`,
+        pts, { trend: true, observed: { velocity: s.velocity } }));
+    }
+  }
+  const fred = (allSigs || []).filter(s => s.src === "FRED Macro");
+  let fredContr = 0;
+  if (fred.length) {
+    fredContr = fred.filter(s => s.delta === "contractionary").length;
+    const pts = Math.min(SIGNAL_EVIDENCE.FRED_CAP, fredContr * SIGNAL_EVIDENCE.FRED_PER_CONTRACTIONARY);
+    push("TX-MAC", RISK_ENGINE.ev("FRED",
+      `${fredContr} of ${fred.length} macro leading indicators contractionary`, pts, { trend: true, observed: { contractionary: fredContr, total: fred.length } }));
+  }
+  return { evidence, rssLinked, fredContr, fredTotal: fred.length };
+}
+
+// Wait (bounded) for the DEF 14A and SEC comment-letter fetches and fold their
+// evidence in. A timeout or failure is recorded as an evidence gap — the
+// affected categories then stay "Not assessed" rather than getting a default.
+async function awaitGovernanceEvidence(proxyP, commentP, gaps, timeoutMs = 60000) {
+  const waits = [proxyP, commentP].map(p => p || Promise.reject(new Error("not requested")));
+  const timeout = new Promise(r => setTimeout(() => r("timeout"), timeoutMs));
+  const settled = await Promise.race([Promise.allSettled(waits), timeout]);
+  if (settled === "timeout") {
+    gaps.push(`DEF 14A / SEC comment-letter fetch did not finish within ${timeoutMs / 1000}s — Board & Executive Governance and Regulatory categories rest on other evidence only`);
+    return [];
+  }
+  const maps = [];
+  const [pr, cr] = settled;
+  if (pr.status === "fulfilled") {
+    const ev = pr.value?.governance?.evidence;
+    if (ev && Object.keys(ev).length) maps.push(ev);
+    else gaps.push("DEF 14A retrieved but too few directors could be parsed to score board tenure (needs ≥3) — governance rests on other evidence only");
+  } else if (pr.reason?.message !== "not requested") gaps.push(`DEF 14A unavailable: ${pr.reason?.message || "error"}`);
+  if (cr.status === "fulfilled") {
+    if (cr.value?.evidence && Object.keys(cr.value.evidence).length) maps.push(cr.value.evidence);
+    else gaps.push("No SEC comment-letter activity on file for this filer in the last 36 months — no regulatory-comment evidence either way");
+  } else if (cr.reason?.message !== "not requested") gaps.push(`SEC comment letters unavailable: ${cr.reason?.message || "error"}`);
+  return maps;
+}
+
 // API key sent on all mutating requests. Set VITE_API_KEY at build time (same
 // value as DENDRAI_API_KEY on the server) to authenticate write endpoints.
 const _API_KEY = import.meta.env.VITE_API_KEY || "";
@@ -1164,7 +1234,33 @@ function App() {
   // and folds any adjustments into output.sN so downstream stages see them.
   // Manager review happens asynchronously afterward via the Approval Inbox and
   // does not block pipeline progression.
+  // Reviewer acknowledgement of a flagged 8-K at Gate 1 (stored on the Stage 2
+  // payload so it travels with the run into reports and saved sessions).
+  const ackGateFlag = useCallback((accession) => {
+    setOutput(prev => {
+      const r = prev.s2?.routing;
+      if (!r) return prev;
+      const acks = { ...(r.acks || {}), [accession]: { by: auditorName, at: Date.now() } };
+      return { ...prev, s2: { ...prev.s2, routing: { ...r, acks, blockMsg: null } } };
+    });
+    log(`Gate 1: 8-K ${accession} acknowledged by ${auditorName}`);
+  }, [auditorName, log]);
+
   const approveGate = (n) => {
+    if (n === 1) {
+      const routing = output.s2?.routing;
+      const unacked = (routing?.gateFlags || []).filter(f => f.flag === "forces_gate_signoff" && !(routing.acks || {})[f.accession]);
+      const noData = routing?.dataQuality?.status === "unavailable";
+      const msg = unacked.length
+        ? `Approval blocked: acknowledge ${unacked.length} flagged 8-K event(s) (bankruptcy / receivership) first.`
+        : noData ? "Approval blocked: no usable data was retrieved, so nothing was assessed. Use Override and record a reason."
+        : null;
+      if (msg) {
+        setOutput(prev => prev.s2?.routing ? { ...prev, s2: { ...prev.s2, routing: { ...prev.s2.routing, blockMsg: msg } } } : prev);
+        log(msg);
+        return;
+      }
+    }
     const isResolved = (a) => a?.status === "approved" || a?.status === "submitted" || a?.status === "manager_approved";
     if (n === 1) {
       setOutput(prev => {
@@ -1213,55 +1309,6 @@ function App() {
     const res = gateResRef.current[n];
     if (res) {res({ ok: false, reason });delete gateResRef.current[n];}
   };
-
-  // ---- Signal-adjusted risk scoring (Stage 2) ----
-  function adjustRiskScores(baseRisks, allSigs, rssSigs) {
-    return baseRisks.map(r => {
-      // FRED contractionary signals lift macro-category risks
-      const fredContr = allSigs.filter(s => s.src === "FRED Macro" && s.delta === "contractionary").length;
-      const macroAdj = r.category.toLowerCase().includes("macro") ? fredContr * 0.20 : 0;
-
-      // RSS signals directly linked to this risk
-      const rssLinked = rssSigs.filter(s => (s.affectedRisks || []).includes(r.id));
-      const rssAdj = rssLinked.reduce((sum, s) => sum + (s.velocity || 0) * 0.20, 0);
-
-      // High-velocity industry signals add minor pressure to all risks
-      const highVelIndustry = allSigs.filter(s => s.src === "Industry RSS" && s.velocity >= 3).length;
-      const industryAdj = Math.min(0.5, highVelIndustry * 0.125);
-
-      // SEC 8-K material events amplify risks in matching categories
-      const eightKLinked = allSigs.filter(s => {
-        if (s.src !== "SEC 8-K") return false;
-        const rCat = (r.category || "").toLowerCase();
-        const sCat = (s.category || "").toLowerCase();
-        return sCat && (rCat.includes(sCat) || sCat.includes(rCat));
-      });
-      const eightKAdj = Math.min(1.5, eightKLinked.reduce(
-        (sum, s) => sum + (s.severity === "P1" ? 0.5 : s.severity === "P2" ? 0.25 : 0.1), 0
-      ));
-
-      const adjScore = Math.min(25, parseFloat((r.score + macroAdj + rssAdj + industryAdj + eightKAdj).toFixed(1)));
-      const adjVelocity = rssLinked.length > 0
-        ? Math.max(r.velocity, Math.max(...rssLinked.map(s => s.velocity || 0)))
-        : r.velocity;
-      const adjRag = adjScore >= 15 ? "R" : adjScore >= 9 ? "A" : "G";
-
-      // Regenerate hist so the sparkline direction matches the adjusted score trend.
-      // r.hist[0] is the original base; the line must end at adjScore.
-      const histBase = r.hist?.[0] ?? r.score;
-      const histLen  = r.hist?.length ?? 6;
-      const histStep = (adjScore - histBase) / Math.max(1, histLen - 1);
-      const adjHist  = Array.from({ length: histLen }, (_, i) =>
-        +Math.max(1.0, Math.min(25.0, histBase + histStep * i)).toFixed(1)
-      );
-
-      // Update CE to reflect the adjusted score's distance from the original base.
-      const deltaFromBase = adjScore - histBase;
-      const adjCe = deltaFromBase > 5.0 ? "WEAK" : deltaFromBase > 1.25 ? "ADEQUATE" : "STRONG";
-
-      return { ...r, score: adjScore, velocity: adjVelocity, rag: adjRag, hist: adjHist, ce: adjCe };
-    });
-  }
 
   // ---- Run loop ----
   const speed = tweaks.runSpeed || 1;
@@ -1328,6 +1375,13 @@ function App() {
     // --- Data ingestion: MCP (Python servers) OR Live JS OR Mock ---
     let currentRssSignals = [...rssSignals];
     let _capturedCemEvents = [];
+    // Evidence trail for the taxonomy scorer + HITL transparency. Every source
+    // contributes {taxonomyId: [evidence]}; scoring happens once, in
+    // RISK_ENGINE.scoreTaxonomy, so no source can double-count another.
+    let _eventRouting = { gateFlags: [], unrouted: [] };
+    let _factorsResult = null;
+    let _proxyPromise = null, _commentPromise = null;
+    const _evidenceGaps = [];
 
     // Private companies (synthetic PVT-<SLUG> ticker, see PrivateCompanyForm /
     // POST /company/private) have no SEC filings — every EDGAR-only call below
@@ -1560,12 +1614,15 @@ function App() {
           };
         }
 
-        // Overlay MCP-computed scores onto template risks
-        const mergedRisks = MCP.mergeRiskScores(templateProfile.risks, mcpResult.risk_scores);
+        // Evidence-scored taxonomy: the backend ships per-category evidence; the
+        // score is derived below from ALL sources together. `catalogRows` lets
+        // RSS signals attach to a category even before it has any score.
+        const evidenceMaps = [MCP.taxonomyEvidenceFromMcp(mcpResult.risk_scores)];
+        const catalogRows = RISK_ENGINE.CATALOG.map(c => ({ id: c.id, name: c.name, category: c.category }));
 
         // MCP RSS signals → Loop signal format (industry feeds from predictive analytics)
         if (mcpResult.rss_signals && signalSet.has("industry")) {
-          const rssSigs = MCP.mapRssSignals(mcpResult, mergedRisks);
+          const rssSigs = MCP.mapRssSignals(mcpResult, catalogRows);
           currentRssSignals = rssSigs;
           log(`MCP RSS industry: ${rssSigs.length} signals`);
         }
@@ -1612,11 +1669,10 @@ function App() {
         });
 
         // Item 1A risk factors → enrich risk narratives with filing snippets
-        let enrichedRisks = mergedRisks;
         if (signalSet.has("edgar") && !isPrivateTicker) {
           try {
             const factors = await MCP.fetchRiskFactors(cfg.ticker);
-            enrichedRisks = MCP.enrichRisksFromFactors(mergedRisks, factors);
+            _factorsResult = factors;   // snippets are attached after scoring
             log(`MCP Risk Factors: ${factors.filings?.length || 0} filings parsed, snippets matched`);
           } catch(e) { log(`MCP Risk Factors unavailable: ${e.message}`); }
         }
@@ -1625,6 +1681,15 @@ function App() {
         if (!isPrivateTicker) try {
           const eightK = await MCP.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);
+          {
+            const rs = MCP.eightKRoutingSummary(eightK);
+            evidenceMaps.push(rs.evidence);
+            _eventRouting = { gateFlags: rs.gateFlags, unrouted: rs.unrouted };
+            const nMapped = cemEvs.filter(e => e.mappingStatus === "mapped").length;
+            const nReview = cemEvs.filter(e => e.mappingStatus === "review").length;
+            log(`MCP 8-K routing: ${nMapped} mapped to risk categories, ${nReview} need review, ${rs.unrouted.length} not scored (ignored / stale)`);
+            rs.gateFlags.forEach(f => log(`⚠ 8-K flag ${f.flag} — filing ${f.accession} (${f.date}) needs reviewer attention at Gate 1`));
+          }
           if (cemEvs.length) {
             _capturedCemEvents = cemEvs;
             setEvents(cemEvs);
@@ -1653,10 +1718,10 @@ function App() {
         setGovLoading(true);
         setGovFetchError(null);
         setGovPeerError(null);
-        Promise.allSettled([
-          MCP.fetchProxyData(cfg.ticker),
-          MCP.fetchPeerBenchmarks(cfg.ticker),
-        ]).then(([proxyRes, peerRes]) => {
+        const _peerPromise = MCP.fetchPeerBenchmarks(cfg.ticker);
+        _proxyPromise = MCP.fetchProxyData(cfg.ticker);
+        _commentPromise = MCP.fetchCommentLetters(cfg.ticker);
+        Promise.allSettled([_proxyPromise, _peerPromise]).then(([proxyRes, peerRes]) => {
           if (proxyRes.status === "fulfilled") { setGovData(proxyRes.value); setGovFetchError(null); }
           if (peerRes.status  === "fulfilled") { setGovPeerData(peerRes.value); setGovPeerError(null); }
           setGovLastRefresh(new Date());
@@ -1680,31 +1745,41 @@ function App() {
         });
         }
 
-        // Segment/geography-specific risks (segment_risk_tool.py, Coverage
-        // Cube Phase 3) — real Concentration/Decline/Divergence risk from
-        // the entity's own filed segment data. Concatenated, not merged:
-        // mergeRiskScores() above only overlays data onto EXISTING template
-        // risks, and there's no per-segment template to overlay onto (see
-        // mapSegmentRisks' own docstring) — these are additional risks, so
-        // Stage 3's buildObjectives can compete them for a slot alongside
-        // consolidated risks, not a replacement for any of enrichedRisks.
+        // DEF 14A board KRIs + SEC comment letters. Awaited (bounded) so governance
+        // and regulatory evidence can move scores in Stage 2 — previously these
+        // were fire-and-forget and never reached the register at all.
+        if (!isPrivateTicker) {
+          setLiveStatus("Waiting for DEF 14A / SEC comment letters…");
+          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _evidenceGaps));
+        } else {
+          _evidenceGaps.push("Private company: no SEC filings, proxy or comment letters — filing-based categories are Not assessed");
+        }
+        _evidenceGaps.forEach(g => log(`Evidence gap: ${g}`));
+
+        // Segment/geography-specific risks (segment_risk_tool.py, Coverage Cube
+        // Phase 3) — real Concentration/Decline/Divergence risk from the
+        // entity's own filed segment data. Concatenated onto the taxonomy:
+        // they are additional, company-specific risks (the "hybrid" half of the
+        // model), competing for audit-scope slots on their real scores.
+        const scored = RISK_ENGINE.scoreTaxonomy(evidenceMaps);
+        let enrichedRisks = scored.risks;
+        if (_factorsResult) enrichedRisks = MCP.enrichRisksFromFactors(enrichedRisks, _factorsResult);
         const segmentRisks = MCP.mapSegmentRisks(mcpResult);
         if (segmentRisks.length) log(`MCP Segment Risks: ${segmentRisks.length} segment-tagged risk(s)`);
         const allRisks = [...enrichedRisks, ...segmentRisks];
 
-        // templateProfile.objectives/maps were computed inside buildProfile()
-        // from the pre-MCP TEMPLATE risk scores, before mergeRiskScores/
-        // enrichRisksFromFactors/segment risks ever touched the risk set —
-        // stale even before segment risks existed (MCP-adjusted scores can
-        // reorder which risks rank in the top 6), and segment risks would
-        // never be considered for an objective slot at all otherwise.
-        // Recompute both from the FINAL risk set so Stage 3 competes every
-        // real risk — consolidated and segment-tagged alike — on its actual
-        // score, not the template placeholder's.
-        const finalObjectives = RISK_ENGINE.buildObjectives(allRisks, industry);
-        const finalMaps = RISK_ENGINE.buildMAPs(allRisks, finalObjectives);
-
-        profileRef.current = { ...templateProfile, risks: allRisks, objectives: finalObjectives, maps: finalMaps };
+        // Everything derived from the risk set (objectives, MAPs, scenarios,
+        // grey swan, risk flow, personas, loop view) is rebuilt from the FINAL
+        // register — buildProfile() ran before any evidence existed.
+        const dataQuality = {
+          status: scored.risks.length === 0 ? "unavailable" : _evidenceGaps.length ? "partial" : "complete",
+          assessed: scored.risks.length, notAssessed: scored.notAssessed.length, gaps: _evidenceGaps,
+        };
+        profileRef.current = {
+          ...RISK_ENGINE.refreshForRisks(templateProfile, allRisks, cfg.ticker, industry),
+          notAssessed: scored.notAssessed, evidenceMaps, factorsResult: _factorsResult,
+          eventRouting: _eventRouting, dataQuality,
+        };
         setProfile(profileRef.current);
         // Forecasts/ratios/riskFlow are already fully computed at this point —
         // flip hasRun here (not at loop end) so Stage 1 charts and HITL 1
@@ -1716,7 +1791,15 @@ function App() {
       } catch (e) {
         log(`MCP error: ${e.message} · falling back to industry template`);
         setLiveStatus(`MCP unavailable: ${e.message} · industry template`);
+        // There is no industry template to fall back to any more: with no data
+        // every category is "Not assessed". Say so loudly (Gate 1 banner,
+        // Approve disabled — Override with a reason is the only way through)
+        // instead of letting an empty or placeholder register look like a result.
         const fallback = RISK_ENGINE.buildProfile(cfg.ticker, null, null, cfg.industry);
+        fallback.evidenceMaps = [];
+        fallback.eventRouting = _eventRouting;
+        fallback.dataQuality = { status: "unavailable", assessed: 0, notAssessed: fallback.notAssessed.length,
+          gaps: [`Analysis service unavailable: ${e.message}`] };
         profileRef.current = fallback;
         setProfile(fallback);
         setHasRun(true);
@@ -1796,6 +1879,11 @@ function App() {
       {
         const industry = cfg.industry || RISK_ENGINE.sic2industry(edgarSic);
         const builtProfile = RISK_ENGINE.buildProfile(cfg.ticker, edgarFin, edgarSic, industry);
+        builtProfile.evidenceMaps = [RISK_ENGINE.ratioEvidence(builtProfile.ratios)];
+        builtProfile.eventRouting = _eventRouting;
+        builtProfile.dataQuality = { status: builtProfile.risks.length ? "partial" : "unavailable",
+          assessed: builtProfile.risks.length, notAssessed: builtProfile.notAssessed.length,
+          gaps: builtProfile.risks.length ? [] : ["No financial data retrieved — every category is Not assessed"] };
         profileRef.current = builtProfile;
         setProfile(builtProfile);
         setHasRun(true); // see MCP-mode comment above — data's ready well before loop end
@@ -1804,9 +1892,20 @@ function App() {
 
       // 8-K material events via MCP bridge (Live mode — opportunistic)
       if (liveMode && !isPrivateTicker) {
+        // Same evidence sources as MCP mode, best-effort (they need the bridge).
+        const _liveProxyP = MCP.fetchProxyData(cfg.ticker);
+        const _liveCommentP = MCP.fetchCommentLetters(cfg.ticker);
+        _liveProxyP.catch(() => {}); _liveCommentP.catch(() => {});
+        const _liveMaps = [...(profileRef.current.evidenceMaps || [])];
         try {
           const eightK = await MCP.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);
+          {
+            const rs = MCP.eightKRoutingSummary(eightK);
+            _liveMaps.push(rs.evidence);
+            _eventRouting = { gateFlags: rs.gateFlags, unrouted: rs.unrouted };
+            rs.gateFlags.forEach(f => log(`⚠ 8-K flag ${f.flag} — filing ${f.accession} (${f.date}) needs reviewer attention at Gate 1`));
+          }
           if (cemEvs.length) {
             _capturedCemEvents = cemEvs;
             setEvents(cemEvs);
@@ -1824,6 +1923,19 @@ function App() {
             setUnreadCEM(u => u + cemEvs.length);
           }
         } catch(e) { /* 8-K fetch optional in Live mode — requires MCP bridge */ }
+
+        _liveMaps.push(...await awaitGovernanceEvidence(_liveProxyP, _liveCommentP, _evidenceGaps));
+        {
+          const sc = RISK_ENGINE.scoreTaxonomy(_liveMaps);
+          const segKeep = (profileRef.current.risks || []).filter(r => r.segment_name);
+          profileRef.current = {
+            ...RISK_ENGINE.refreshForRisks(profileRef.current, [...sc.risks, ...segKeep], cfg.ticker, cfg.industry || RISK_ENGINE.sic2industry(edgarSic)),
+            notAssessed: sc.notAssessed, evidenceMaps: _liveMaps, eventRouting: _eventRouting,
+            dataQuality: { status: sc.risks.length ? (_evidenceGaps.length ? "partial" : "complete") : "unavailable",
+              assessed: sc.risks.length, notAssessed: sc.notAssessed.length, gaps: _evidenceGaps },
+          };
+          setProfile(profileRef.current);
+        }
 
         // Peer benchmarks via MCP bridge (Live mode — opportunistic). This is
         // the only source of the peer comparison shown on the M-Score/Z-Score
@@ -1876,8 +1988,18 @@ function App() {
     });
     await runStage("s1", { signals: sigsList, sourceCount: signalSet.size, trace: stage1Trace }, 1200);
 
-    // STAGE 2 — Risk assessment with signal-adjusted scoring
-    const adjustedRisks = adjustRiskScores(profileRef.current.risks, sigsList, currentRssSignals);
+    // STAGE 2 — Risk assessment: every taxonomy category re-scored from ALL of
+    // its evidence (ratios, 8-K routing, DEF 14A / comment letters, RSS, FRED).
+    // There is no baseline score to adjust — a category with no evidence stays
+    // "Not assessed" and is withheld from the register.
+    const _p2 = profileRef.current;
+    const _sig = buildSignalEvidence(sigsList, currentRssSignals);
+    const _sc = RISK_ENGINE.scoreTaxonomy([...(_p2.evidenceMaps || []), _sig.evidence]);
+    let adjustedRisks = _sc.risks;
+    if (_p2.factorsResult) adjustedRisks = MCP.enrichRisksFromFactors(adjustedRisks, _p2.factorsResult);
+    // Segment-tagged risks are company-specific additions, scored by their own tool.
+    adjustedRisks = [...adjustedRisks, ...(_p2.risks || []).filter(r => r.segment_name)];
+    const notAssessed = _sc.notAssessed;
     const threshold = APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5;
     const breachingIds = adjustedRisks.filter(r => r.score >= threshold).map(r => r.id);
     const riskAppetiteResult = {
@@ -1887,65 +2009,69 @@ function App() {
       status: breachingIds.length > 0 ? "BREACHED" : "WITHIN APPETITE",
     };
     const counts = adjustedRisks.reduce((acc, r) => { acc[r.rag] = (acc[r.rag] || 0) + 1; return acc; }, {});
+    const _routing = _p2.eventRouting || { gateFlags: [], unrouted: [] };
+    const _dq = _p2.dataQuality || { status: "complete", gaps: [] };
+    // What reviewers and reports see: exactly where each 8-K landed, and every
+    // filing that was NOT scored with the reason.
+    const routingPayload = {
+      events: (_capturedCemEvents || []).map(e => ({
+        id: e.id, filingDate: e.filingDate, items: e.items, control: e.control, severity: e.severity,
+        mappingStatus: e.mappingStatus, routing: e.routing, flags: e.routingFlags,
+        details: e.itemDetails, unscoredItems: e.unscoredItems, needsReview: e.needsReview,
+      })),
+      unrouted: _routing.unrouted || [],
+      gateFlags: _routing.gateFlags || [],
+      acks: {},
+      blockMsg: null,
+      dataQuality: _dq,
+    };
+    const forcedFlags = routingPayload.gateFlags.filter(f => f.flag === "forces_gate_signoff");
     const stage2Trace = buildTrace({
       assumptions: [
-        "FRED contractionary indicators increase macro-category risk scores by +0.08 each.",
-        "RSS-linked signals add risk pressure at velocity × 0.08 to directly affected risks.",
-        "High-velocity industry RSS adds systemic pressure, capped at +0.20 to all risks.",
-        eightKSigs.length > 0
-          ? `${eightKSigs.length} SEC 8-K filing${eightKSigs.length !== 1 ? "s" : ""} amplify risk scores in matching categories (+0.5 P1 / +0.25 P2 / +0.10 P3, capped +1.5 per risk).`
-          : "SEC 8-K material events amplify risk scores in matching categories when present.",
-        "RAG thresholds are RED ≥ 7.5, AMBER ≥ 5.0, GREEN < 5.0.",
+        `Each category is scored only from this entity's own evidence: likelihood = ${RISK_ENGINE.BASE_LIKELIHOOD} + Σ evidence points (clamped 0.5–5.0); score = category impact × likelihood (0–25).`,
+        `RAG thresholds are RED ≥ ${RISK_ENGINE.RAG_RED}, AMBER ≥ ${RISK_ENGINE.RAG_AMBER}, GREEN below. There are no industry baselines.`,
+        `Industry RSS signals add ${SIGNAL_EVIDENCE.RSS_PER_VELOCITY} likelihood points × velocity to each linked category (cap ${SIGNAL_EVIDENCE.RSS_CAP_PER_RISK} per category).`,
+        `FRED: each contractionary indicator adds ${SIGNAL_EVIDENCE.FRED_PER_CONTRACTIONARY} to Macro & Market Conditions (cap ${SIGNAL_EVIDENCE.FRED_CAP}).`,
+        "SEC 8-Ks are routed to categories server-side (event_risk_map.py) with recency weighting (≤90d ×1.0, ≤180d ×0.75, ≤1y ×0.5, ≤2y ×0.2); routine / non-applicable items are recorded as not scored.",
+        "A category with no evidence is Not assessed — withheld from RAG counts, appetite and audit scope, and listed for the reviewer as a coverage gap.",
       ],
       decisions: [
-        `Applied signal-driven adjustments to ${adjustedRisks.length} risks.`,
+        `Scored ${adjustedRisks.length} categor${adjustedRisks.length === 1 ? "y" : "ies"} from evidence; ${notAssessed.length} Not assessed.`,
+        `${_sig.rssLinked} RSS signal(s) linked to categories; ${_sig.fredTotal} FRED indicator(s) reviewed (${_sig.fredContr} contractionary).`,
+        `8-K: ${routingPayload.events.filter(e => e.mappingStatus === "mapped").length} filing(s) mapped, ${routingPayload.events.filter(e => e.needsReview).length} need review, ${routingPayload.unrouted.length} not scored.`,
         `Risk appetite threshold set to ${threshold} (${cfg.appetiteLevel}).`,
       ],
       obstacles: [
         breachingIds.length > 0 ? `Risk appetite breached by ${breachingIds.length} risk(s).` : null,
-        sigsList.length === 0 ? "No signals were available; using base risk profile only." : null,
+        _dq.status === "unavailable" ? "No usable data was retrieved — nothing could be assessed. Approve is disabled at Gate 1; Override with a reason is required." : null,
+        ...(_dq.gaps || []).map(g => `Evidence gap: ${g}`),
+        ...forcedFlags.map(f => `8-K ${f.items} (${f.date}) requires explicit reviewer sign-off at Gate 1.`),
+        sigsList.length === 0 && adjustedRisks.length === 0 ? "No signals or financial data were available." : null,
       ].filter(Boolean),
-      conclusion: `${counts.R || 0} RED, ${counts.A || 0} AMBER, ${counts.G || 0} GREEN after adjustment.`,
+      conclusion: `${counts.R || 0} RED, ${counts.A || 0} AMBER, ${counts.G || 0} GREEN; ${notAssessed.length} Not assessed.`,
     });
-    await runStage("s2", { risks: adjustedRisks, riskAppetite: riskAppetiteResult, trace: stage2Trace }, 1500);
+    await runStage("s2", { risks: adjustedRisks, notAssessed, routing: routingPayload, riskAppetite: riskAppetiteResult, trace: stage2Trace }, 1500);
     setActiveRailTab("rr");
 
-    // Rebuild Scenario Analysis + Grey Swan from the live signal-adjusted risk
-    // register. buildProfile() computes both once, early, from the baseline
-    // risk register — before RSS/8-K/FRED Stage 2 adjustments are applied —
-    // and nothing ever recomputed them afterward, so they silently went stale
-    // relative to what the risk register actually shows by the end of a run
-    // (in MCP mode the backend computes a fresh scenario_analysis/grey_swan
-    // per call too, but the frontend never even read those fields).
+    // Rebuild everything derived from the final register (objectives, MAPs,
+    // scenarios, grey swan, risk flow, personas, loop) so Stage 3 onward
+    // describes the register on screen, not the pre-evidence one.
     {
-      const _gsIndustry = RISK_ENGINE.normalizeIndustry(profileRef.current.entity?.focus || cfg.industry);
-      const _liveRatios = profileRef.current.ratios || {};
-      const _freshScenarios = RISK_ENGINE.buildScenarios(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry);
       // Mutates adjustedRisks in place with dollarExposureM — same array
-      // reference used for output.s2.risks (Stage 2's payload below) and
-      // thus what the Persona brief's req.risks and the Live Register rail
-      // both actually read, so this keeps the per-risk $ figure in sync with
-      // post-signal-adjustment scores/velocities, not just the run's baseline.
-      RISK_ENGINE.allocateRiskDollarExposure(adjustedRisks, _freshScenarios);
+      // reference used for output.s2.risks (Stage 2's payload above), so the
+      // per-risk $ figure the Persona brief and Live Register rail read stays
+      // in sync with the scores shown.
       profileRef.current = {
-        ...profileRef.current,
-        scenarios: _freshScenarios,
-        greySwan:  RISK_ENGINE.buildGreySwan(adjustedRisks, _liveRatios, cfg.ticker, _gsIndustry),
+        ...RISK_ENGINE.refreshForRisks(profileRef.current, adjustedRisks, cfg.ticker, cfg.industry),
+        notAssessed,
       };
       setProfile(profileRef.current);
 
-      // Re-sync risk_scores with these signal-adjusted values — without this,
-      // risk_scores stays frozen at the initial pre-adjustment snapshot from
-      // the MCP call above, and anything reading it directly (Posture Trend's
-      // RAG counts) shows the wrong distribution once Stage 2 has actually
-      // moved scores. Non-blocking (fire-and-forget from the caller's
-      // perspective), but retried once and logged on final failure — a
-      // silently-swallowed failure here used to leave a run's persisted
-      // risk_scores stuck at the initial industry-template placeholder
-      // forever, with nothing to show it happened: two runs seconds apart
-      // could end up on opposite sides of that coin flip, showing wildly
-      // different avg score/RAG/risk counts in Posture Trend for no visible
-      // reason.
+      // Re-sync risk_scores with these evidence-derived values — without this,
+      // risk_scores stays frozen at the initial backend snapshot (ratio
+      // evidence only) and anything reading it directly (Posture Trend's RAG
+      // counts) shows the wrong distribution once 8-K / proxy / signal
+      // evidence has moved scores. Retried once and logged on final failure.
       if (runIdRef.current) {
         const _syncRunId = runIdRef.current;
         const _postSync = () => fetch(`/api/mcp/risk-scores/${_syncRunId}/sync`, {
@@ -1959,15 +2085,16 @@ function App() {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
           }))
           .catch(err => console.warn(
-            `[risk-scores/sync] Failed to sync signal-adjusted risk scores for run ${_syncRunId} — ` +
+            `[risk-scores/sync] Failed to sync evidence-scored risks for run ${_syncRunId} — ` +
             `Posture Trend and any other direct reader of risk_scores will show this run's ` +
-            `pre-adjustment (initial industry-template) snapshot instead:`, err
+            `initial (ratio-only) snapshot instead:`, err
           ));
       }
     }
 
     // GATE 1 — Risk assessment
-    if (hitl.risk) {
+    if (hitl.risk || forcedFlags.length) {
+      if (!hitl.risk) log("Gate 1 forced: an 8-K event (bankruptcy / receivership) requires explicit reviewer sign-off regardless of the HITL setting");
       setStageState((prev) => ({ ...prev, s3: "waiting", s4: "waiting", s5: "waiting", s6: "waiting" }));
       const gres = await showGate(1);
       log(gres.ok ? "Gate 1 passed" : `Gate 1 overridden: ${gres.reason}`);
@@ -2634,6 +2761,7 @@ function App() {
                 onApproveRisk={approveRisk}
                 onApproveAllRisks={approveAllRemainingRisks}
                 onAddRisk={addRisk}
+                onAckGateFlag={ackGateFlag}
                 scopeApprovals={scopeApprovals}
                 onApproveObjective={approveObjective}
                 onOpenAdjustObjective={openAdjustObjective}
@@ -3048,6 +3176,8 @@ function App() {
               risks={output.s2?.risks || (hasRun ? profile.risks : []) || []}
               loopStats={output.s6 || output.s6?.loop || {}}
               riskAppetite={output.s2?.riskAppetite || null}
+              routing={output.s2?.routing || null}
+              notAssessed={output.s2?.notAssessed || []}
               appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
               rssSignals={rssSignals}
               events={events}

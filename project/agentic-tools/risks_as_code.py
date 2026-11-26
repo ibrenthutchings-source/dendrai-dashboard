@@ -100,7 +100,7 @@ _VELOCITY_LABEL = {
 # "Macro" was removed: it's not a risk category the engine or any manual-entry
 # path ever produces — it's macro-economic context (FRED indicators) that
 # adjusts OTHER risks' scores, not a risk in its own right (see
-# adjustRiskScores in app.jsx). "Regulatory" and "Supply Chain" were removed
+# the evidence scoring in risk-engine.js / app.jsx Stage 2). "Regulatory" and "Supply Chain" were removed
 # as genuinely unreachable dead keys: not in risk-engine.js's CATEGORY_IMPACT
 # (the 10 categories the loop actually emits) and not in FW_MOCK_RISKS (the
 # only other source AdjustRiskModal's category dropdown draws from) —
@@ -118,6 +118,9 @@ _COSO_PRINCIPLES: Dict[str, Dict] = {
     "Legal":               {"principle": 14, "label": "Develops Portfolio View",             "component": "Performance"},
     "Strategic":           {"principle": 9,  "label": "Formulates Business Objectives",      "component": "Strategy & Objective-Setting"},
     "Governance":          {"principle": 3,  "label": "Defines Desired Culture",             "component": "Governance & Culture"},
+    # Added with the evidence-scored taxonomy (risk_taxonomy.py).
+    "Liquidity":           {"principle": 12, "label": "Prioritizes Risks",                  "component": "Performance"},
+    "Audit Oversight":     {"principle": 2,  "label": "Establishes Governance and Operating Structures", "component": "Governance & Culture"},
 }
 # Explicit, visible fallback — replaces the old silent default (which quietly
 # stamped every unrecognised category as principle 9 "Identifies Risk",
@@ -152,6 +155,8 @@ _OBJECTIVE_CATEGORY: Dict[str, str] = {
     "Legal":               "Compliance",
     "ESG":                 "Compliance",
     "Governance":          "Compliance",
+    "Liquidity":           "Reporting",   # going-concern basis of preparation
+    "Audit Oversight":     "Reporting",   # auditor / ICFR integrity
 }
 _OBJECTIVE_UNMAPPED = "Unmapped"
 
@@ -203,6 +208,8 @@ _OBJECTIVE_CATEGORY_ICIF: Dict[str, Optional[str]] = {
     "Legal":               "Compliance",
     "ESG":                 "Compliance",
     "Governance":          "Compliance",
+    "Liquidity":           "Reporting",
+    "Audit Oversight":     "Reporting",
 }
 
 # Deliberately no risk-category -> IC-IF-component dict here. The IC-IF cube's

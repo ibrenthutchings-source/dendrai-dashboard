@@ -153,11 +153,12 @@ function useCoverageAnalysis({ risks = [], objectives = [], rssSignals = [], eve
   const uncoveredSignals = eightKFindings.filter(f => !f.covered);
 
   // ── 4. Quant-only risks (quant model shows risk but register may miss) ──
-  // R-09 is the primary one — macro demand cyclicality is now in the template
-  // so after a run it appears. Show coverage status.
-  const macroRisk = risks.find(r => r.id === 'R-09');
+  // The quant model can show a revenue decline that the register does not
+  // carry as an assessed category. Revenue Growth & Demand (TX-REV) is part of
+  // the universal taxonomy, so this only fires when it has no score.
+  const macroRisk = risks.find(r => r.id === 'TX-REV');
   const quantOnly = !macroRisk && ratios.revGrowth != null && ratios.revGrowth < -0.10
-    ? [{ id:'R-09', name:'Macro Demand Cyclicality', rag:'R', note:`Revenue ${(ratios.revGrowth*100).toFixed(1)}% YoY. Re-run loop to add this risk.` }]
+    ? [{ id:'TX-REV', name:'Revenue Growth & Demand', rag:'R', note:`Revenue ${(ratios.revGrowth*100).toFixed(1)}% YoY. Re-run loop to score this category.` }]
     : [];
 
   // ── 4b. Disclosure risk — the risk a risk is missed or misreported ──

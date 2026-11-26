@@ -1,8 +1,10 @@
 /* ============================================================
    Dendrai Risk Engine — dynamic profile builder
-   Derives risk profiles from EDGAR financials + FRED + RSS
-   for any publicly traded company. Falls back to industry
-   template when EDGAR data is unavailable.
+   Derives risk profiles from EDGAR financials + 8-K / proxy /
+   comment-letter evidence + FRED + RSS. Every entity is scored
+   against one universal taxonomy from its OWN evidence — there
+   are no industry templates or baseline scores. A category with
+   no evidence is "not assessed", never given a default.
    ============================================================ */
 
 window.RISK_ENGINE = (function () {
@@ -13,7 +15,8 @@ window.RISK_ENGINE = (function () {
   const pct   = (v, d=1) => v != null ? (v * 100).toFixed(d) + '%' : 'n/a';
   const fmt   = (v, d=0) => v != null ? v.toFixed(d) : 'n/a';
   // Thresholds on 0-25 scale (impact × likelihood)
-  const ragOf = s => s >= 15 ? 'R' : s >= 9 ? 'A' : 'G';
+  const RAG_RED = 15, RAG_AMBER = 9;   // single definition; Stage 2's trace text reads these
+  const ragOf = s => s >= RAG_RED ? 'R' : s >= RAG_AMBER ? 'A' : 'G';
   const ceOf  = (s, base) => {
     const d = s - base;
     if (d > 5.0)  return 'WEAK';
@@ -54,6 +57,10 @@ window.RISK_ENGINE = (function () {
     'Compliance':          3,
     'Legal':               3,
     'Strategic':           3,
+    // Added with the evidence-scored taxonomy; mirrors risk_rating_engine.py.
+    'Liquidity':           5,
+    'Governance':          3,
+    'Audit Oversight':     4,
   };
 
   // ── SIC → Industry ─────────────────────────────────────────
@@ -142,6 +149,8 @@ window.RISK_ENGINE = (function () {
     const tata         = (ni != null && cfo != null && assets) ? (ni - cfo) / assets : null;
     const dsri         = (ar && rev && arP && revP) ? (ar / rev) / (arP / revP) : null;
     const sgi          = (rev && revP) ? rev / revP : null;
+    const cogsP        = getP(fin.cogs);
+    const grossMarginPrev = (revP && cogsP) ? (revP - cogsP) / revP : null;
 
     // Simplified Beneish M-score (5 of 8 variables; missing require prior-yr COGS)
     const mscore = (() => {
@@ -163,533 +172,227 @@ window.RISK_ENGINE = (function () {
       return 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4;
     })();
 
-    return { rev, revP, revGrowth, grossMargin, rdIntensity, sgaIntensity,
+    const wcToAssets = div(workingCapital, assets);
+    const equityToLiabilities = div(stockholdersEquity, liabilities);
+    return { rev, revP, revGrowth, grossMargin, grossMarginPrev, rdIntensity, sgaIntensity,
+             wcToAssets, equityToLiabilities, mscoreVal: mscore, zscoreVal: zscore,
              niMargin, assetGrowth, cashRatio, fcf, fcfMargin, tata, dsri, sgi,
              mscore, zscore, workingCapital, liabilities, stockholdersEquity,
              cash, assets, ar, ni, cfo, capex };
   }
 
-  // ── Industry Risk Templates ─────────────────────────────────
-  // Each template: { id, name, category, base, delta(r), ceBase,
-  //   narrative(r,ticker), obj, controls[], mapFinding, mapAction,
-  //   mapOwner, mapSuccessCriteria, reductionPct }
-  const TEMPLATES = {
+  // ── Universal risk taxonomy (replaces the per-industry templates) ──────
+  // Every entity is assessed against the SAME categories; a category's score
+  // is derived only from evidence about THAT entity. No industry baseline,
+  // no hand-set base score. Mirrors agentic-tools/risk_taxonomy.py (the
+  // authoritative scorer when the MCP server is reachable) so Live-JS and
+  // Mock mode score identically.
+  //
+  //   likelihood = clamp(1.0 + Σ evidence points, 0.5, 5.0)
+  //   score      = impact(category) × likelihood           (0-25; R≥15, A≥9)
+  //
+  // A category with NO evidence input is "not assessed": it is withheld from
+  // profile.risks (so RAG counts, appetite, audit scope and every score-
+  // reading screen only ever see real scores) and listed in
+  // profile.notAssessed so Gate 1 / reports can show the coverage gap.
+  const BASE_LIKELIHOOD = 1.0;
+  const ev = (source, label, points, o = {}) =>
+    ({ source, label, points: +(+points).toFixed(2), trend: !!o.trend, observed: o.observed ?? null });
+  const _gt = (v, tiers, label, o = {}) => {
+    if (v == null || Number.isNaN(v)) return null;
+    const d = o.digits ?? 3;
+    for (const [thr, pts] of [...tiers].sort((a, b) => b[0] - a[0]))
+      if (v > thr) return ev(o.source || 'XBRL', `${label} ${v.toFixed(d)} > ${thr}`, pts, { trend: o.trend, observed: v });
+    return ev(o.source || 'XBRL', `${label} ${v.toFixed(d)} within normal range`, 0, { trend: o.trend, observed: v });
+  };
+  const _lt = (v, tiers, label, o = {}) => {
+    if (v == null || Number.isNaN(v)) return null;
+    const d = o.digits ?? 3;
+    for (const [thr, pts] of [...tiers].sort((a, b) => a[0] - b[0]))
+      if (v < thr) return ev(o.source || 'XBRL', `${label} ${v.toFixed(d)} < ${thr}`, pts, { trend: o.trend, observed: v });
+    return ev(o.source || 'XBRL', `${label} ${v.toFixed(d)} within normal range`, 0, { trend: o.trend, observed: v });
+  };
+  const _ok = a => a.filter(Boolean);
 
-    'Semiconductors': [
-      { id:'R-01', name:'Revenue Concentration — Customer & End-Market', category:'Revenue', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.revGrowth, 0, [v=>v<-0.20,2.5],[v=>v<-0.05,1.0],[v=>v>0.20,-0.8]) + tier(r.dsri,0,[v=>v>1.20,0.5]),
-        narrative: (r,t) => `Revenue ${pct(r.revGrowth)} YoY (${fmt(r.rev?r.rev/1e6:null,0)}M). ${r.revGrowth<0?'Declining top line signals end-market softening or customer concentration risk.':'Revenue growing; concentration disclosure warranted.'} DSRI ${fmt(r.dsri,2)} (>1.20 signals AR growing faster than revenue).`,
-        obj:'Audit customer concentration disclosures and top-account contract terms for revenue recognition risk',
-        controls:['CUS-101 Top-10 customer concentration KRI','CUS-102 Contract term review','CUS-105 Distributor inventory attestation'],
-        mapFinding:'Customer concentration disclosures lack quantitative thresholds vs. peer set',
-        mapAction:'Implement >50% top-3 concentration trigger in GRC; quarterly AC reporting',
-        mapOwner:'Chief Revenue Officer', mapSuccessCriteria:'Concentration KRI live in GRC; threshold breach auto-escalated to AC', reductionPct:18 },
-
-      { id:'R-02', name:'R&D Execution & Technology Leadership', category:'Operational', base:5.0, ceBase:'ADEQUATE',
-        delta: r => (r.rdIntensity == null ? 2.5 : tier(r.rdIntensity,0,[v=>v<0.05,2.5],[v=>v<0.10,1.2],[v=>v>0.22,-0.5])) + tier(r.revGrowth,0,[v=>v<-0.10,0.7]),
-        narrative: (r,t) => `R&D intensity ${r.rdIntensity != null ? pct(r.rdIntensity) + ' of revenue' : 'not observable (XBRL untagged — monitoring blind spot)'}. ${r.rdIntensity==null?'Unable to verify R&D investment adequacy from EDGAR; untagged spend creates a monitoring gap against ADI, TXN, STMicro peer set.':r.rdIntensity<0.10?'Below-peer investment level creates technology leadership risk versus ADI, TXN peer set.':'R&D intensity at or above peer range.'} Revenue trend ${pct(r.revGrowth)}. SiC competition from STMicro, Wolfspeed, Infineon intensifying.`,
-        obj:'Evaluate R&D milestone tracking, competitive benchmarking, and NPI schedule vs. approved roadmap',
-        controls:['RD-201 Product roadmap milestone tracking','RD-205 Competitive benchmark analysis','RD-210 Patent filing KPI'],
-        mapFinding:'R&D milestone system not linked to GRC risk register; benchmarking vs. peers ad hoc',
-        mapAction:'Link R&D program gates to risk register; quarterly innovation KRI including NPI schedule and patent output',
-        mapOwner:'Chief Technology Officer', mapSuccessCriteria:'Quarterly R&D KRI dashboard live; milestone slippages auto-escalated', reductionPct:15 },
-
-      { id:'R-03', name:'Financial Reporting — Accruals & Revenue Recognition', category:'Financial Reporting', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.mscore,0,[v=>v>-1.78,3.5],[v=>v>-2.22,1.5]) + tier(r.tata,0,[v=>v>0.06,1.0],[v=>v>0.03,0.5]) + tier(r.dsri,0,[v=>v>1.20,0.7]),
-        narrative: (r,t) => `M-score ${fmt(r.mscore,2)} (likely-manipulator threshold -1.78, gray zone -2.22). Accruals ratio ${fmt(r.tata,3)}. DSRI ${fmt(r.dsri,2)}. ${r.mscore>-1.78?'M-score in elevated range — revenue recognition and accruals warrant detailed IA review.':r.mscore>-2.22?'Gray zone — accruals monitoring recommended.':'Financial reporting indicators within normal range.'}`,
-        obj:'Review accruals quality, revenue recognition cutoff controls, and AR ageing analysis',
-        controls:['FRP-301 Revenue recognition policy review','FRP-305 AR ageing quarterly review','FRP-310 Accruals ratio monitoring'],
-        mapFinding:'AR ageing not reviewed by IA on quarterly cadence; M-score not in GRC financial risk dashboard',
-        mapAction:'Add quarterly IA AR ageing review (flag >90d); include M-score and accruals ratio in GRC dashboard',
-        mapOwner:'Chief Accounting Officer', mapSuccessCriteria:'Quarterly AR review completed; M-score dashboarded and threshold-triggered', reductionPct:22 },
-
-      { id:'R-04', name:'Supply Chain — Single-Source & Geopolitical', category:'Supply', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0.5 + tier(r.revGrowth,0,[v=>v<-0.15,0.8]),
-        narrative: (r,t) => `Single-source supplier concentration is not directly observable from EDGAR financials — requires IA supply chain registry review. Revenue trend ${pct(r.revGrowth)} ${r.revGrowth!=null&&r.revGrowth<-0.10?'may reflect supply disruption impact.':'provides no direct supply chain signal.'}`,
-        obj:'Map single-source critical components and validate buffer stock and escalation protocols',
-        controls:['SC-401 Single-source component registry','SC-405 Buffer stock protocol','SC-410 Geopolitical risk rating'],
-        mapFinding:'Single-source registry not maintained in GRC; escalation trigger thresholds undocumented',
-        mapAction:'Migrate single-source register to GRC; define escalation triggers (lead-time >10w); assign risk owners',
-        mapOwner:'Chief Procurement Officer', mapSuccessCriteria:'All single-source components in GRC register; triggers tested via tabletop', reductionPct:14 },
-
-      { id:'R-05', name:'Gross Margin Compression', category:'Financial Reporting', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.grossMargin,0,[v=>v<0.30,3.0],[v=>v<0.45,1.5],[v=>v>0.65,-0.8]) + tier(r.niMargin,0,[v=>v<0,1.0]),
-        narrative: (r,t) => `Gross margin ${pct(r.grossMargin)}. ${r.grossMargin!=null&&r.grossMargin<0.45?'Below sector average for analog/mixed-signal — pricing pressure or unfavourable end-market mix.':'Gross margin within sector norms.'} Net income margin ${pct(r.niMargin)}.`,
-        obj:'Analyse gross margin variance bridge and pricing power by end-market segment',
-        controls:['GM-501 Margin variance bridge','GM-505 Pricing approval governance','GM-510 Segment margin reporting'],
-        mapFinding:'Margin variance bridge not produced for IA; segment pricing approval governance not documented',
-        mapAction:'Require quarterly margin bridge by segment to IA; document pricing approval process for OEM vs. distribution channels',
-        mapOwner:'CFO', mapSuccessCriteria:'Quarterly margin bridge produced; pricing approval policy published and IA-reviewed', reductionPct:17 },
-
-      { id:'R-06', name:'Cybersecurity — IP & Fab Process Protection', category:'Cybersecurity', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0,
-        narrative: (r,t) => `IP and fabrication process protection are critical for semiconductor companies. IP theft, insider threats, and nation-state espionage are primary threat vectors. Annual IA assessment of insider threat detection and fab access management is required.`,
-        obj:'Review IP classification controls, insider threat detection program, and fab/design centre access management',
-        controls:['ITGC-601 IP classification and DLP','ITGC-605 Insider threat detection','ITGC-610 Fab physical and logical access'],
-        mapFinding:'Insider threat detection program scope not formally reviewed by IA; IP classification coverage undocumented',
-        mapAction:'Annual IA review of insider threat detection scope; fab access management testing; IP classification inventory',
-        mapOwner:'CISO', mapSuccessCriteria:'Annual IA review completed; insider threat gaps remediated; IP classification >95% coverage', reductionPct:12 },
-
-      { id:'R-07', name:'Export Controls & Trade Compliance', category:'Trade Compliance', base:6.0, ceBase:'ADEQUATE',
-        calibrationFlag: 'Register vs. quant divergence — widest gap of any item. Verify specific entity-level enforcement action or BIS finding before retaining elevated register score.',
-        delta: r => 0.5,
-        narrative: (r,t) => `Export control compliance (EAR/ITAR/CCL) is a material risk in the current regulatory environment. U.S. entity list additions and China-related export restrictions create ongoing compliance obligations requiring annual IA testing. ⚠ Calibration: quant model scores this Green (sector median) — register elevation requires verification of entity-specific enforcement exposure.`,
-        obj:'Test export license procedures, restricted-party screening, and BIS Entity List compliance controls',
-        controls:['EXP-701 Export license review','EXP-705 Restricted-party screening','EXP-710 ECCN self-classification review'],
-        mapFinding:'Export license procedures not independently tested by IA in current period; ECCN classification review scope unclear',
-        mapAction:'Annual IA walkthrough of export licensing; test ECCN classification for top-20 SKUs; validate restricted-party screening coverage',
-        mapOwner:'Chief Compliance Officer', mapSuccessCriteria:'Annual IA export controls test completed; ECCN classification reviewed; no uncleared exceptions', reductionPct:15 },
-
-      { id:'R-08', name:'Capital Expenditure & Capacity Utilisation', category:'Operational', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.fcfMargin,0,[v=>v<-0.10,2.5],[v=>v<0,1.0],[v=>v>0.15,-0.5]) + tier(r.cashRatio,0,[v=>v<0.10,1.0]),
-        narrative: (r,t) => `FCF margin ${pct(r.fcfMargin)} (CFO minus CapEx / Revenue). ${r.fcfMargin!=null&&r.fcfMargin<0?'Negative FCF indicates capital-intensive expansion — CapEx governance and capacity utilisation monitoring critical.':'Positive FCF; CapEx governance review remains standard.'} Cash/assets ${pct(r.cashRatio)}.`,
-        obj:'Evaluate CapEx approval governance and capacity utilisation reporting vs. approved investment plan',
-        controls:['CAPEX-801 CapEx approval gate','CAPEX-805 Capacity utilisation dashboard','CAPEX-810 ROI tracking on completed projects'],
-        mapFinding:'CapEx variance vs. approved plan not formally reported to IA; capacity utilisation KPI absent from GRC',
-        mapAction:'Add CapEx variance and utilisation to quarterly IA reporting; validate ROI tracking for projects completed >12 months ago',
-        mapOwner:'COO / Chief Manufacturing Officer', mapSuccessCriteria:'Quarterly CapEx KRI live in GRC; ROI tracking covers 100% of completed projects', reductionPct:10 },
-
-      { id:'R-09', name:'Macro Demand Cyclicality', category:'Revenue', base:6.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.revGrowth,0,[v=>v<-0.20,3.0],[v=>v<-0.10,2.0],[v=>v<0,0.8],[v=>v>0.10,-0.5]) + tier(r.sgi,0,[v=>v!=null&&v<0.80,0.5]),
-        narrative: (r,t) => `Revenue growth ${pct(r.revGrowth)} YoY — ${r.revGrowth!=null&&r.revGrowth<-0.15?`severe cyclical contraction (>${Math.abs(r.revGrowth*100).toFixed(0)}% decline). Bear scenario projects further -18% revenue shock with gross margin compression.`:r.revGrowth!=null&&r.revGrowth<0?'Negative YoY — cyclical softening in progress; monitor end-market demand indicators.':'Revenue trend positive; standard cyclicality monitoring applies.'} SiC/power semiconductor sector is highly cyclical (lead times, inventory digestion). SGI ${fmt(r.sgi,2)}.`,
-        obj:'Evaluate revenue scenario modelling, cycle-adjusted forecasting, and contingency planning for >15% demand shocks',
-        controls:['MAC-901 Revenue scenario analysis','MAC-905 Demand cyclicality KRI','MAC-910 Bear-case contingency trigger'],
-        mapFinding:'No formal demand-cycle contingency plan documented; bear scenario (−18% revenue) not modelled in approved operating plan',
-        mapAction:'Develop cycle-adjusted revenue forecast model; define bear-case trigger thresholds and contingency responses (CapEx flex, opex reductions)',
-        mapOwner:'CFO / Chief Revenue Officer', mapSuccessCriteria:'Cycle-adjusted scenario model approved by AC; bear-case contingency plan tested via tabletop', reductionPct:14 },
-
-      { id:'R-10', name:'New Financial Obligations & Off-Balance-Sheet Exposure', category:'Financial Reporting', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.fcfMargin,0,[v=>v<0,1.5],[v=>v<0.05,0.8],[v=>v>0.12,-0.3]) + tier(r.cashRatio,0,[v=>v<0.10,0.8],[v=>v<0.15,0.4]),
-        narrative: (r,t) => `8-K Items 1.01, 2.03, and 3.02 filings indicate material new agreements, direct financial obligations, and unregistered equity transactions requiring GRC coverage. FCF margin ${pct(r.fcfMargin)}, cash/assets ${pct(r.cashRatio)}. ${r.cashRatio!=null&&r.cashRatio<0.12?'Thin cash buffer amplifies risk of new leverage obligations.':'Liquidity adequate but new obligation monitoring is essential.'}`,
-        obj:'Review material agreements (Item 1.01/2.03 8-Ks), direct financial obligations, and unregistered equity issuances for off-balance-sheet exposure',
-        controls:['OBS-1001 Material agreement 8-K review','OBS-1005 Off-balance-sheet obligation register','OBS-1010 Unregistered equity issuance log'],
-        mapFinding:'Three material agreement 8-Ks in 6 weeks not assessed for risk register impact; Item 3.02 unregistered equity issuance not tracked in GRC',
-        mapAction:'Implement automated 8-K Item 1.01/2.03/3.02 trigger in GRC; quarterly IA review of new financial obligations vs. covenant headroom',
-        mapOwner:'Chief Legal Officer / CFO', mapSuccessCriteria:'8-K trigger automation live in GRC; quarterly obligation review on IA schedule; no unreviewed material agreements >30d', reductionPct:12 },
-
-      { id:'R-11', name:'Executive & Board Governance Stability', category:'Compliance', base:6.5, ceBase:'ADEQUATE',
-        delta: r => 0,
-        narrative: (r,t) => `Three 8-K Item 5.02 director/officer departure or election events filed within 7 months — a compressed pattern that is a recognised audit signal for governance instability. Item 5.07 (shareholder vote) co-filed in one instance, indicating concurrent board-level structural changes. EDGAR filings do not provide direct financial ratios for governance risk; monitor through 8-K event frequency and succession plan documentation.`,
-        obj:'Review director and officer change patterns, C-suite succession plan coverage, and board committee continuity following recent 5.02 event cluster',
-        controls:['GOV-1101 Director/officer change log','GOV-1105 Succession plan coverage','GOV-1110 Board committee continuity'],
-        mapFinding:'Three Item 5.02 8-K filings in 7 months not tracked as governance risk; no GRC event linking board changes to the risk register',
-        mapAction:'Add 8-K Item 5.02 trigger to GRC event monitor; document succession plan for C-suite and board committee chairs; quarterly governance stability KRI',
-        mapOwner:'General Counsel / Board Chair', mapSuccessCriteria:'5.02 trigger live in GRC; succession plan documented for all C-suite roles; governance KRI reviewed at each AC meeting', reductionPct:8 },
-    ],
-
-    'Automotive OEM': [
-      { id:'R-01', name:'EV Transition — Cost, Execution & Demand', category:'Operational', base:6.0, ceBase:'WEAK',
-        delta: r => tier(r.grossMargin,0,[v=>v<0.08,2.5],[v=>v<0.12,1.5],[v=>v>0.18,-0.5]) + tier(r.fcfMargin,0,[v=>v<-0.05,1.0]),
-        narrative: (r,t) => `Gross margin ${pct(r.grossMargin)} (sector range 8–18%). ${r.grossMargin!=null&&r.grossMargin<0.12?'Thin margin consistent with EV program losses compressing blended margins.':'Gross margin within sector range.'} FCF ${pct(r.fcfMargin)}.`,
-        obj:'Audit EV program cost-per-vehicle tracking and milestone governance vs. approved business case',
-        controls:['EV-101 Program cost gate','EV-102 Production attainment KPI','EV-105 Battery JV milestone review'],
-        mapFinding:'EV program cost-per-vehicle variance not captured in IA GRC dashboard; EV and ICE cost reporting use separate data feeds',
-        mapAction:'Integrate EV cost tracker into GRC; flag cost-per-vehicle variance >10%; quarterly AC reporting',
-        mapOwner:'VP EV Program / VP Internal Audit', mapSuccessCriteria:'EV cost KRI in GRC; auto-flag on >10% variance; AC receives monthly bridge', reductionPct:22 },
-
-      { id:'R-02', name:'Captive Finance — Reserve Adequacy & Credit Quality', category:'Financial Reporting', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.mscore,0,[v=>v>-1.78,2.0],[v=>v>-2.22,1.0]) + tier(r.dsri,0,[v=>v>1.15,1.0]),
-        narrative: (r,t) => `M-score ${fmt(r.mscore,2)}, DSRI ${fmt(r.dsri,2)}. Captive finance reserve adequacy requires direct review of loss reserve vintage calibration against current rate environment — EDGAR ratios provide subsidiary-level early warnings only.`,
-        obj:'Review captive finance loss reserve model, delinquency trend, and macro overlay adequacy',
-        controls:['FC-201 Reserve methodology review','FC-205 Delinquency vintage analysis','FC-210 NCO trend monitoring'],
-        mapFinding:'Reserve model uses pre-rate-hike vintage data; macro overlay procedure not formally documented',
-        mapAction:'Recalibrate model with current vintages; implement annual macro-overlay review; stress-test at +150bps',
-        mapOwner:'CFO — Financial Services Subsidiary', mapSuccessCriteria:'Updated model approved by AC; reserve recalculated; stress scenario disclosed in 10-Q', reductionPct:20 },
-
-      { id:'R-03', name:'Supply Chain — Semiconductor & Critical Component', category:'Supply', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `Semiconductor and critical component supply chain concentration is a material operational risk. Single-source components, geographic concentration, and JIT inventory practices create vulnerability to disruptions.`,
-        obj:'Map semiconductor single-source concentration and validate escalation protocols and buffer stock levels',
-        controls:['SC-301 Single-source semiconductor registry','SC-305 Buffer stock protocol','SC-310 Supplier financial health monitoring'],
-        mapFinding:'Single-source escalation protocol not formalized; procurement register not linked to IA risk register',
-        mapAction:'Formalize escalation triggers (supply warning, lead-time >12w); link procurement register to IA; tabletop exercise',
-        mapOwner:'Chief Procurement Officer', mapSuccessCriteria:'All single-source components registered; triggers tested; IA register linked to procurement', reductionPct:16 },
-
-      { id:'R-04', name:'Labor Cost — CBA Absorption & Productivity', category:'Operational', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.sgaIntensity,0,[v=>v>0.15,1.0],[v=>v>0.12,0.5]),
-        narrative: (r,t) => `SGA intensity ${pct(r.sgaIntensity)} of revenue. ${r.sgaIntensity!=null&&r.sgaIntensity>0.12?'Elevated overhead suggests labor cost management and CBA absorption warrants review.':'Overhead within sector range.'} CBA cost absorption and productivity offsets are the key audit focus.`,
-        obj:'Audit CBA cost absorption model and productivity offset milestone tracking',
-        controls:['HR-401 CBA cost absorption model','HR-405 Productivity offset KPI','HR-410 Headcount vs. plan tracking'],
-        mapFinding:'Productivity offset tracking not reported to IA on quarterly cadence; CBA assumptions not independently reviewed',
-        mapAction:'Add productivity KRI to quarterly IA report; independently review CBA cost model assumptions annually',
-        mapOwner:'Chief HR Officer', mapSuccessCriteria:'Quarterly productivity KRI in IA dashboard; annual CBA model review completed', reductionPct:12 },
-
-      { id:'R-05', name:'Product Recall & Safety Liability', category:'Legal', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `Product recall liability is a material risk driven by NHTSA investigations, defect discovery cycles, and supplier component failures. Average OEM recall cost has increased with connected vehicle complexity.`,
-        obj:'Review recall accrual methodology, NHTSA investigation monitoring, and legal-letter procedures',
-        controls:['RECALL-501 NHTSA investigation tracker','RECALL-505 Recall accrual methodology','RECALL-510 Legal letter procedure'],
-        mapFinding:'NHTSA tracker not linked to IA register; recall accrual relies on pre-investigation estimates',
-        mapAction:'Link NHTSA tracker to IA register; validate recall accrual at investigation opening vs. industry loss factors',
-        mapOwner:'General Counsel', mapSuccessCriteria:'NHTSA tracker integrated with IA GRC; accrual validated at each investigation opening', reductionPct:14 },
-
-      { id:'R-06', name:'Gross Margin — Revenue Mix & Incentive Spend', category:'Financial Reporting', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.grossMargin,0,[v=>v<0.08,2.5],[v=>v<0.12,1.2]) + tier(r.revGrowth,0,[v=>v<-0.05,0.8]),
-        narrative: (r,t) => `Gross margin ${pct(r.grossMargin)}, revenue ${pct(r.revGrowth)} YoY. ${r.grossMargin!=null&&r.grossMargin<0.10?'<10% gross margin signals EV/mix headwinds or aggressive incentive spend.':'Gross margin within sector range.'} Incentive spend management is the key near-term margin risk.`,
-        obj:'Analyse revenue mix, vehicle incentive spend, and gross margin variance bridge by segment',
-        controls:['GM-601 Incentive spend approval','GM-605 Segment margin reporting','GM-610 Mix-adjusted margin bridge'],
-        mapFinding:'Incentive spend not broken out in IA margin analysis; mix-adjusted margin bridge not produced for IA',
-        mapAction:'Include incentive and mix bridge in quarterly margin reporting; require ICE vs. EV segment margin split',
-        mapOwner:'CFO', mapSuccessCriteria:'Quarterly margin bridge with incentive and mix split delivered to IA; AC pack updated', reductionPct:15 },
-
-      { id:'R-07', name:'Connected Vehicle Cybersecurity', category:'Cybersecurity', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `Connected vehicle attack surface expands with each model year. OTA firmware signing, V2X protocol security, and telematics platform access controls are highest-priority IA areas.`,
-        obj:'Audit OTA firmware signing controls, telematics API security, and connected vehicle penetration test findings',
-        controls:['ITGC-701 OTA key management','ITGC-705 Telematics API security','ITGC-710 V2X threat model'],
-        mapFinding:'OTA key rotation schedule undocumented; penetration test against connected vehicle stack overdue',
-        mapAction:'Document OTA key rotation policy (90-day max); complete annual penetration test; NIST AISIC adoption',
-        mapOwner:'CISO — Connected Vehicle', mapSuccessCriteria:'OTA policy documented; annual pentest completed; NIST AISIC framework adopted', reductionPct:13 },
-
-      { id:'R-08', name:'ESG — Regulatory & ICE Phase-Out', category:'ESG', base:4.5, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `ICE phase-out mandates (EU 2035, CA ZEV) create stranded asset risk in ICE manufacturing and R&D. Transition plan milestone tracking and stranded asset quantification require IA oversight.`,
-        obj:'Validate ICE transition plan milestones, stranded asset estimates, and Scope 1/2 emissions methodology',
-        controls:['ESG-801 ICE transition milestones','ESG-805 Stranded asset model','ESG-810 Scope 1/2 verification'],
-        mapFinding:'ICE stranded asset estimates not independently validated; transition milestones not in GRC',
-        mapAction:'IA validation of stranded asset model; add transition milestones to GRC; Scope 1/2 methodology review',
-        mapOwner:'Chief Sustainability Officer', mapSuccessCriteria:'Stranded asset model validated; milestones in GRC; Scope 1/2 third-party verified', reductionPct:10 },
-    ],
-
-    'Software & Cloud': [
-      { id:'R-01', name:'Revenue Recognition — ASC 606 / IFRS 15', category:'Financial Reporting', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.mscore,0,[v=>v>-1.78,3.0],[v=>v>-2.22,1.5]) + tier(r.dsri,0,[v=>v>1.20,1.0]) + tier(r.assetGrowth,0,[v=>v!=null&&r.revGrowth!=null&&v>r.revGrowth+0.15,0.8]),
-        narrative: (r,t) => `M-score ${fmt(r.mscore,2)}, DSRI ${fmt(r.dsri,2)}. ${r.mscore>-1.78?'Elevated M-score — multi-element arrangement revenue recognition and SSP allocation warrant detailed review.':r.mscore>-2.22?'Gray zone — revenue cutoff monitoring recommended.':'Revenue recognition indicators within normal range.'} Asset growth ${pct(r.assetGrowth)} vs. revenue growth ${pct(r.revGrowth)}.`,
-        obj:'Audit revenue recognition policy for multi-element arrangements, SSP allocation, and contract modifications',
-        controls:['REV-101 SSP allocation methodology','REV-105 Contract modification controls','REV-110 Revenue cutoff testing'],
-        mapFinding:'Multi-element SSP allocation not reviewed by IA in current cycle; contract modification controls not documented',
-        mapAction:'Annual IA walkthrough of SSP methodology; test high-value contract recognition; document modification controls',
-        mapOwner:'Chief Accounting Officer', mapSuccessCriteria:'SSP methodology reviewed; top-20 contracts tested; modification policy published', reductionPct:20 },
-
-      { id:'R-02', name:'Customer Retention — Churn & Net Revenue Retention', category:'Revenue', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.revGrowth,0,[v=>v<-0.10,2.5],[v=>v<0,1.5],[v=>v>0.20,-0.8]),
-        narrative: (r,t) => `Revenue growth ${pct(r.revGrowth)} YoY. ${r.revGrowth!=null&&r.revGrowth<0?'Declining revenue suggests churn exceeds new bookings — NRR likely below 100%.':r.revGrowth<0.10?'Modest growth may mask elevated churn offset by new logos.':'Revenue growth consistent with healthy NRR.'} NRR should be tracked in GRC as a primary KRI.`,
-        obj:'Evaluate NRR and churn KPIs against board-approved thresholds and early-warning triggers',
-        controls:['CX-201 NRR / churn dashboard','CX-205 Customer health scoring','CX-210 Renewal pipeline tracking'],
-        mapFinding:'NRR tracking not integrated with GRC risk register; no IA-defined churn breach threshold',
-        mapAction:'Define churn threshold trigger in GRC; add NRR to quarterly IA KRI dashboard; alert on >3pp QoQ deterioration',
-        mapOwner:'Chief Customer Officer', mapSuccessCriteria:'NRR in GRC KRI dashboard; threshold trigger defined; quarterly review completed', reductionPct:18 },
-
-      { id:'R-03', name:'Cybersecurity — Data Protection & Cloud Infrastructure', category:'Cybersecurity', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0,
-        narrative: (r,t) => `Data protection and cloud infrastructure security are existential risks for SaaS/cloud companies. SOC 2 Type II scope, sub-processor security, and incident response plan effectiveness are the primary IA focus areas.`,
-        obj:'Review SOC 2 Type II coverage gaps, sub-processor security, and incident response plan effectiveness',
-        controls:['ITGC-301 SOC 2 scope review','ITGC-305 Sub-processor security','ITGC-310 Incident response plan'],
-        mapFinding:'SOC 2 Type II scope excludes critical sub-processors; incident response not tested by IA in current year',
-        mapAction:'Extend SOC 2 scope to cover all in-scope sub-processors; annual IA tabletop incident response exercise',
-        mapOwner:'CISO', mapSuccessCriteria:'SOC 2 scope extended; sub-processors covered; tabletop exercise completed and findings remediated', reductionPct:16 },
-
-      { id:'R-04', name:'AI / Regulatory & Bias Risk', category:'Compliance', base:5.0, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `Regulatory risk from AI governance (EU AI Act, FTC, state laws) and algorithmic bias in product decisions is an emerging but material risk for technology companies. Governance frameworks and bias testing documentation are the key IA requirements.`,
-        obj:'Assess AI governance framework maturity and bias testing protocols for in-product and internal AI models',
-        controls:['AI-401 AI governance policy','AI-405 Bias testing documentation','AI-410 AI model inventory'],
-        mapFinding:'AI governance policy not published; bias testing undocumented for in-product models',
-        mapAction:'Implement AI governance policy; document bias testing methodology and cadence; maintain AI model inventory',
-        mapOwner:'Chief AI Officer / Chief Privacy Officer', mapSuccessCriteria:'Policy published; bias testing documented for all Tier-1 models; model inventory maintained', reductionPct:14 },
-
-      { id:'R-05', name:'Competitive Disruption & Technology Obsolescence', category:'Operational', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.rdIntensity,0,[v=>v<0.10,1.5],[v=>v<0.15,0.5]) + tier(r.revGrowth,0,[v=>v<0,1.0]),
-        narrative: (r,t) => `R&D intensity ${pct(r.rdIntensity)}. ${r.rdIntensity!=null&&r.rdIntensity<0.15?'Below-peer R&D investment in a high-velocity technology sector increases disruption risk.':'R&D investment at or above peer range.'} Revenue trend ${pct(r.revGrowth)}.`,
-        obj:'Benchmark R&D investment intensity and product release cadence vs. sector peers',
-        controls:['STRAT-501 Competitive landscape assessment','STRAT-505 Product release cadence KPI','STRAT-510 R&D ROI tracking'],
-        mapFinding:'Competitive landscape not formally incorporated into risk register; product roadmap benchmarking ad hoc',
-        mapAction:'Annual competitive disruption assessment incorporated into risk register update; R&D intensity benchmarking vs. 5 peers',
-        mapOwner:'Chief Product Officer', mapSuccessCriteria:'Annual competitive assessment completed; R&D intensity benchmark in GRC; AC review completed', reductionPct:12 },
-
-      { id:'R-06', name:'Gross Margin & Operating Leverage', category:'Financial Reporting', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.grossMargin,0,[v=>v<0.55,2.0],[v=>v<0.65,0.8],[v=>v>0.80,-0.5]) + tier(r.niMargin,0,[v=>v<0,1.0]),
-        narrative: (r,t) => `Gross margin ${pct(r.grossMargin)} (software sector typically >60%). ${r.grossMargin!=null&&r.grossMargin<0.65?'Below-sector gross margin may indicate infrastructure cost inefficiency or services mix dilution.':'Gross margin consistent with software sector norms.'} Net income margin ${pct(r.niMargin)}.`,
-        obj:'Analyse cloud infrastructure cost efficiency, G&A operating leverage, and gross margin bridge by segment',
-        controls:['GM-601 Cloud cost optimisation review','GM-605 G&A operating leverage','GM-610 Segment margin reporting'],
-        mapFinding:'Cloud cost optimisation savings not independently validated by IA; G&A leverage not tracked in GRC',
-        mapAction:'Add cloud cost efficiency KPI to quarterly IA dashboard; validate optimisation savings with engineering finance',
-        mapOwner:'CFO / CTO', mapSuccessCriteria:'Cloud cost KPI in GRC; savings validated; G&A leverage tracked quarterly', reductionPct:14 },
-
-      { id:'R-07', name:'M&A Integration Risk', category:'Operational', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.assetGrowth,0,[v=>v>0.30,1.5],[v=>v>0.15,0.8]) + tier(r.dsri,0,[v=>v>1.20,0.7]),
-        narrative: (r,t) => `Asset growth ${pct(r.assetGrowth)} YoY. ${r.assetGrowth!=null&&r.assetGrowth>0.15?'Elevated asset growth vs. revenue growth may indicate acquisition activity — integration controls and goodwill impairment testing warrant IA review.':'Asset growth within organic range.'}`,
-        obj:'Assess M&A integration control framework, purchase price allocation, and synergy realisation tracking',
-        controls:['MA-701 Integration milestone tracking','MA-705 PPA methodology review','MA-710 Synergy KPI tracking'],
-        mapFinding:'Integration milestones not tracked in IA register; synergy estimates not independently validated',
-        mapAction:'Add M&A integration KRIs to risk register; IA review of synergy model assumptions; PPA methodology walkthrough',
-        mapOwner:'Chief Strategy Officer / Chief Accounting Officer', mapSuccessCriteria:'Integration KRIs in GRC; synergy model reviewed; PPA walkthrough completed', reductionPct:15 },
-
-      { id:'R-08', name:'Talent — Engineering & Technical Retention', category:'Operational', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.sgaIntensity,0,[v=>v>0.40,1.0],[v=>v>0.30,0.4]),
-        narrative: (r,t) => `SGA intensity ${pct(r.sgaIntensity)}. ${r.sgaIntensity!=null&&r.sgaIntensity>0.35?'High SGA relative to revenue may reflect elevated talent acquisition and retention costs.':'SGA within expected range for growth-stage software.'} Engineering attrition tracking is a required IA KRI.`,
-        obj:'Review engineering attrition KPIs, compensation benchmarking, and succession plan coverage',
-        controls:['TALENT-801 Engineering attrition KPI','TALENT-805 Compensation benchmarking','TALENT-810 Succession coverage'],
-        mapFinding:'Engineering attrition not reported to IA; succession plan coverage for senior technical roles undocumented',
-        mapAction:'Add attrition KRI to quarterly IA report; assess succession coverage for Tier-1 technical roles',
-        mapOwner:'Chief People Officer', mapSuccessCriteria:'Attrition KRI in IA dashboard; succession coverage documented for top-20 technical roles', reductionPct:10 },
-    ],
-
-    'Financial Services': [
-      { id:'R-01', name:'Credit Quality — Delinquency & Reserve Adequacy', category:'Financial Reporting', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.mscore,0,[v=>v>-1.78,2.5],[v=>v>-2.22,1.2]) + tier(r.dsri,0,[v=>v>1.15,1.0]) + tier(r.tata,0,[v=>v>0.05,0.8]),
-        narrative: (r,t) => `M-score ${fmt(r.mscore,2)}, DSRI ${fmt(r.dsri,2)}, TATA ${fmt(r.tata,3)}. ${r.mscore>-1.78?'Elevated financial reporting signals — reserve adequacy and CECL model calibration warrant priority review.':r.mscore>-2.22?'Gray zone — reserve model vintage and macro overlay require validation.':'Reporting signals within normal range.'}`,
-        obj:'Audit loan loss reserve CECL model — vintage calibration, delinquency trend, and macro overlay adequacy',
-        controls:['FCQ-101 CECL model methodology review','FCQ-105 Delinquency vintage analysis','FCQ-110 NCO trend monitoring'],
-        mapFinding:'CECL model uses pre-rate-environment vintage data; macro overlay procedure not formally documented',
-        mapAction:'Recalibrate model to include current vintages; implement annual macro overlay; stress-test at +150bps',
-        mapOwner:'Chief Risk Officer', mapSuccessCriteria:'Updated CECL model approved by AC; reserve recalculated; stress scenario disclosed', reductionPct:22 },
-
-      { id:'R-02', name:'Interest Rate Risk — NIM Sensitivity', category:'Financial Reporting', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.niMargin,0,[v=>v<0.05,2.0],[v=>v<0.10,1.0]),
-        narrative: (r,t) => `Net income margin ${pct(r.niMargin)}. NIM sensitivity to rate changes is a primary financial risk. Stress testing NIM at ±200bps scenarios and disclosing asset/liability repricing gaps are key audit requirements.`,
-        obj:'Stress-test NIM sensitivity to ±200bps rate scenarios and review asset/liability repricing gap disclosure',
-        controls:['IR-201 NIM stress model','IR-205 A/L repricing gap report','IR-210 ALCO governance'],
-        mapFinding:'NIM stress scenario at +200bps not stress-tested; repricing gap disclosure limited',
-        mapAction:'Produce formal NIM stress test at +200bps and -100bps; include in quarterly IA reporting and board disclosure',
-        mapOwner:'Chief Treasury Officer', mapSuccessCriteria:'NIM stress model documented; ±200bps scenario in quarterly IA pack; disclosure updated', reductionPct:18 },
-
-      { id:'R-03', name:'Liquidity — Funding Concentration', category:'Financial Reporting', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.cashRatio,0,[v=>v<0.05,2.5],[v=>v<0.10,1.0],[v=>v>0.20,-0.5]),
-        narrative: (r,t) => `Cash/assets ratio ${pct(r.cashRatio)}. ${r.cashRatio!=null&&r.cashRatio<0.10?'Low cash ratio warrants liquidity stress testing and deposit concentration review.':'Liquidity position within normal range.'} 30-day outflow stress scenario and contingency funding plan are primary IA requirements.`,
-        obj:'Review deposit concentration, contingent liquidity sources, and 30-day stress outflow adequacy',
-        controls:['LIQ-301 Deposit concentration mapping','LIQ-305 30-day stress outflow test','LIQ-310 Contingency funding plan'],
-        mapFinding:'Top-20 deposit concentration not mapped in IA register; 30-day outflow stress not IA-reviewed',
-        mapAction:'Map top-20 deposit concentration; stress-test 30-day outflow vs. liquidity buffer; validate contingency plan',
-        mapOwner:'Chief Treasury Officer', mapSuccessCriteria:'Concentration mapped; stress test completed; contingency plan validated by IA', reductionPct:16 },
-
-      { id:'R-04', name:'Regulatory Capital — CET1 & Stress Test', category:'Compliance', base:5.0, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `Regulatory capital adequacy (CET1 ratio, stress capital buffer, DFAST/CCAR compliance) is a core IA responsibility for banks and financial institutions. Annual IA attestation of DFAST submission is required.`,
-        obj:'Test CET1 ratio adequacy, stress capital buffer vs. DFAST, and review regulatory capital disclosure controls',
-        controls:['CAP-401 CET1 ratio monitoring','CAP-405 DFAST submission review','CAP-410 Stress capital buffer adequacy'],
-        mapFinding:'DFAST submission not IA-attested; CET1 stress scenario below DFAST requirements not tested',
-        mapAction:'Annual IA attestation of DFAST submission; CET1 threshold review vs. regulatory minimum + buffer',
-        mapOwner:'Chief Compliance Officer', mapSuccessCriteria:'IA attestation completed; CET1 threshold review documented; AC review of results', reductionPct:14 },
-
-      { id:'R-05', name:'Operational Risk — Fraud & AML', category:'Operational', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `AML transaction monitoring effectiveness and alert disposition quality are key operational risks. Regulatory enforcement environment (BSA, FATF) has heightened expectations for real-time monitoring and escalation.`,
-        obj:'Evaluate AML transaction monitoring effectiveness, alert disposition SLAs, and SAR filing completeness',
-        controls:['AML-501 TM tuning review','AML-505 Alert disposition SLA','AML-510 SAR filing completeness'],
-        mapFinding:'AML alert disposition SLA breaches not escalated to IA in real time; TM tuning documented but not IA-tested',
-        mapAction:'Integrate AML SLA breach alerts into IA dashboard; quarterly IA review of TM model tuning decisions',
-        mapOwner:'Chief AML Officer', mapSuccessCriteria:'AML breaches in IA dashboard; quarterly TM tuning review completed; SLA compliance >98%', reductionPct:20 },
-
-      { id:'R-06', name:'Cybersecurity — Core Systems & Customer Data', category:'Cybersecurity', base:6.0, ceBase:'ADEQUATE',
-        delta: r => 0,
-        narrative: (r,t) => `Core banking system access controls, privileged user management, and customer data protection are critical cybersecurity IA priorities. Privileged access reviews overdue >90 days create regulatory and reputational exposure.`,
-        obj:'Test core banking access controls, privileged user management, and customer data security controls',
-        controls:['ITGC-601 Privileged access review','ITGC-605 Core banking access controls','ITGC-610 Customer data encryption'],
-        mapFinding:'Privileged user access reviews overdue by >90 days across core banking; customer data encryption policy not IA-reviewed',
-        mapAction:'Implement quarterly privileged access reviews; add to IA annual plan; validate customer data encryption coverage',
-        mapOwner:'CISO', mapSuccessCriteria:'Quarterly access reviews on schedule; no reviews overdue >30d; encryption coverage 100%', reductionPct:15 },
-
-      { id:'R-07', name:'Model Risk — CECL & Pricing Model Validation', category:'Financial Reporting', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.mscore,0,[v=>v>-1.78,1.5],[v=>v>-2.22,0.8]),
-        narrative: (r,t) => `Model risk encompasses CECL reserve models, fair-value pricing models, and risk models. Independent model validation cadence and model risk governance framework are core IA requirements.`,
-        obj:'Review model validation independence, CECL model risk governance, and fair-value methodology documentation',
-        controls:['MR-701 Independent model validation','MR-705 Model inventory completeness','MR-710 Fair-value methodology review'],
-        mapFinding:'CECL model not independently validated in >12 months; model inventory completeness unverified',
-        mapAction:'Commission independent CECL model validation; verify model inventory covers all material models',
-        mapOwner:'Chief Risk Officer / Chief Model Risk Officer', mapSuccessCriteria:'CECL validation completed; model inventory verified; validation cadence documented', reductionPct:16 },
-
-      { id:'R-08', name:'Market Risk — Trading & Derivatives Valuation', category:'Financial Reporting', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.niMargin,0,[v=>v<0,1.5]),
-        narrative: (r,t) => `Derivatives fair-value methodology and VaR backtesting results are market risk IA requirements. VaR model exceedances and Level 3 fair value transfers are early warning signals for measurement risk.`,
-        obj:'Review derivatives fair-value methodology, VaR model backtesting, and Level 3 fair value transfer disclosures',
-        controls:['MKT-801 VaR backtesting review','MKT-805 Fair-value methodology','MKT-810 Level 3 transfer disclosure'],
-        mapFinding:'VaR backtesting results not presented to IA in current year; Level 3 transfer disclosures not IA-reviewed',
-        mapAction:'Include VaR backtesting in quarterly IA reporting; validate fair-value methodology for top-20 derivative positions',
-        mapOwner:'Chief Market Risk Officer', mapSuccessCriteria:'VaR results in quarterly IA pack; fair-value methodology documented; Level 3 disclosures reviewed', reductionPct:12 },
-    ],
-
-    'Healthcare & Pharma': [
-      { id:'R-01', name:'Pipeline — Clinical Trial & FDA Approval Risk', category:'Operational', base:6.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.rdIntensity,0,[v=>v<0.10,2.0],[v=>v<0.18,0.8],[v=>v>0.25,-0.5]),
-        narrative: (r,t) => `R&D intensity ${pct(r.rdIntensity)} (pharma sector typically 15–25%). ${r.rdIntensity!=null&&r.rdIntensity<0.18?'Below-average R&D investment relative to revenue creates pipeline adequacy risk.':'R&D investment within sector range.'} Clinical milestone tracking integration with GRC is the key IA requirement.`,
-        obj:'Audit clinical trial milestone tracking, approval probability assumptions, and portfolio NPV estimates',
-        controls:['RD-101 Clinical milestone tracking','RD-105 Approval probability methodology','RD-110 Portfolio NPV review'],
-        mapFinding:'Clinical trial milestone system not linked to GRC risk register; approval probability assumptions not IA-reviewed',
-        mapAction:'Link clinical milestone system to GRC; quarterly review of Phase 2/3 milestones; validate approval probability methodology',
-        mapOwner:'Chief Medical Officer', mapSuccessCriteria:'GRC integration live; quarterly milestone review completed; probability methodology documented', reductionPct:20 },
-
-      { id:'R-02', name:'Pricing Pressure — Gross-to-Net & IRA Impact', category:'Financial Reporting', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.grossMargin,0,[v=>v<0.50,2.0],[v=>v<0.65,1.0],[v=>v>0.80,-0.5]),
-        narrative: (r,t) => `Gross margin ${pct(r.grossMargin)} (pharma typically 65–85%). ${r.grossMargin!=null&&r.grossMargin<0.65?'Below-sector gross margin may reflect unfavourable gross-to-net adjustments or price negotiation impact.':'Gross margin within sector range.'} IRA price negotiation exposure requires scenario analysis.`,
-        obj:'Analyse gross-to-net adjustments, IRA price negotiation exposure, and rebate liability accrual adequacy',
-        controls:['PRICE-201 Gross-to-net methodology','PRICE-205 Rebate liability accrual','PRICE-210 IRA exposure scenario'],
-        mapFinding:'Gross-to-net methodology not reviewed by IA in current year; IRA price negotiation scenario analysis absent',
-        mapAction:'Annual IA review of gross-to-net model; IRA exposure scenario at -25% and -40% price; rebate accrual validation',
-        mapOwner:'CFO / Head of Managed Care', mapSuccessCriteria:'GTN model reviewed; IRA scenario in AC pack; rebate accrual validated', reductionPct:18 },
-
-      { id:'R-03', name:'IP Expiry — Patent Cliff & Generic Entry', category:'Revenue', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.revGrowth,0,[v=>v<-0.10,2.5],[v=>v<0,1.0]),
-        narrative: (r,t) => `Revenue ${pct(r.revGrowth)} YoY. ${r.revGrowth!=null&&r.revGrowth<0?'Declining revenue may reflect patent expiry and generic competition impact.':'Revenue trend suggests patent cliff not yet materializing.'} Patent expiry schedule and revenue-at-risk quantification are required GRC inputs.`,
-        obj:'Map patent expiry schedule, generic entry timeline, and revenue-at-risk estimates for top-5 products',
-        controls:['IP-301 Patent expiry register','IP-305 Generic entry monitoring','IP-310 Revenue-at-risk quantification'],
-        mapFinding:'Patent expiry schedule not maintained in GRC; revenue-at-risk from generic entry unquantified',
-        mapAction:'Maintain patent cliff register in GRC; quantify revenue-at-risk annually; monitor generic filing activity',
-        mapOwner:'Chief Strategy Officer / Head of IP', mapSuccessCriteria:'Patent register in GRC; revenue-at-risk quantified for all products with <5yr patent life', reductionPct:16 },
-
-      { id:'R-04', name:'Manufacturing Quality — GMP & Regulatory Compliance', category:'Compliance', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `GMP compliance and FDA/EMA regulatory quality are existential risks for pharmaceutical companies. Prior warning letters, consent decrees, and manufacturing site remediation are primary IA focus areas.`,
-        obj:'Evaluate GMP compliance status, FDA warning letter remediation, and quality system effectiveness',
-        controls:['QA-401 GMP compliance monitoring','QA-405 FDA remediation milestones','QA-410 Quality management system review'],
-        mapFinding:'FDA remediation milestones not tracked in IA risk register; quality system review not on IA annual plan',
-        mapAction:'Add FDA milestones to IA register; annual IA review of quality management system; GMP compliance KRI',
-        mapOwner:'Chief Quality Officer', mapSuccessCriteria:'FDA milestones in GRC; annual QMS review completed; no open Warning Letter items >180 days', reductionPct:20 },
-
-      { id:'R-05', name:'R&D Productivity — Investment vs. Pipeline Value', category:'Operational', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.rdIntensity,0,[v=>v<0.10,2.0],[v=>v<0.18,0.8]) + tier(r.fcfMargin,0,[v=>v<0,1.0]),
-        narrative: (r,t) => `R&D intensity ${pct(r.rdIntensity)}, FCF margin ${pct(r.fcfMargin)}. ${r.rdIntensity!=null&&r.rdIntensity<0.15?'Below-peer R&D investment combined with pipeline adequacy concern.':'R&D intensity within sector range.'} Pipeline NPV vs. R&D investment linkage is the primary IA requirement.`,
-        obj:'Benchmark R&D intensity vs. pipeline NPV and NME output rate relative to peer set',
-        controls:['RD-501 Pipeline NPV methodology','RD-505 NME output rate KPI','RD-510 R&D investment vs. return bridge'],
-        mapFinding:'R&D investment vs. pipeline NPV linkage not reviewed by IA; NME output rate not benchmarked vs. peers',
-        mapAction:'Commission annual R&D productivity review with pipeline NPV bridge; NME output benchmarking vs. 5 peers',
-        mapOwner:'Chief Scientific Officer', mapSuccessCriteria:'Annual R&D productivity review completed; NPV bridge in AC pack; NME benchmarking documented', reductionPct:14 },
-
-      { id:'R-06', name:'Litigation — Product Liability & False Claims Act', category:'Legal', base:5.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.mscore,0,[v=>v>-1.78,1.5],[v=>v>-2.22,0.8]),
-        narrative: (r,t) => `Product liability litigation and False Claims Act exposure are material contingent liabilities. Litigation reserve adequacy and completeness of legal-letter procedures are primary IA requirements.`,
-        obj:'Review litigation reserve adequacy, False Claims Act exposure assessment, and legal-letter procedure completeness',
-        controls:['LEGAL-601 Litigation reserve methodology','LEGAL-605 FCA exposure assessment','LEGAL-610 Legal letter procedure'],
-        mapFinding:'Litigation reserve methodology not validated by IA in current cycle; FCA exposure assessment not completed',
-        mapAction:'Annual IA review of litigation reserve; FCA exposure quantification; legal letter procedure completeness test',
-        mapOwner:'General Counsel', mapSuccessCriteria:'Reserve methodology reviewed; FCA exposure quantified; legal letter completeness >95%', reductionPct:16 },
-
-      { id:'R-07', name:'Cybersecurity — PHI & Medical Device Security', category:'Cybersecurity', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0,
-        narrative: (r,t) => `PHI data classification, HIPAA/GDPR compliance, and connected medical device vulnerability management are critical cybersecurity IA requirements. Medical device security has become a primary FDA concern.`,
-        obj:'Assess PHI data classification controls, HIPAA compliance effectiveness, and medical device vulnerability management',
-        controls:['ITGC-701 PHI classification and access','ITGC-705 HIPAA compliance program','ITGC-710 Medical device vulnerability management'],
-        mapFinding:'Medical device vulnerability management not formally IA-reviewed; PHI access controls not tested in current year',
-        mapAction:'Annual IA review of medical device security program; PHI access controls testing; HIPAA compliance assessment',
-        mapOwner:'CISO / Chief Privacy Officer', mapSuccessCriteria:'Medical device review completed; PHI access controls tested; HIPAA assessment documented', reductionPct:14 },
-
-      { id:'R-08', name:'ESG — Emissions & Access to Medicines', category:'ESG', base:4.5, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `Scope 1/2/3 emissions methodology and access-to-medicines program disclosures are material ESG IA requirements. Investor and regulatory scrutiny of sustainability disclosures continues to increase.`,
-        obj:'Validate Scope 1/2/3 emissions methodology and access-to-medicines program disclosure accuracy',
-        controls:['ESG-801 Scope 1/2 verification','ESG-805 Scope 3 methodology','ESG-810 Access program metrics'],
-        mapFinding:'Scope 3 methodology not independently verified; access program metrics not reviewed by IA',
-        mapAction:'Commission third-party Scope 3 verification; IA review of access program metrics and disclosure accuracy',
-        mapOwner:'Chief Sustainability Officer', mapSuccessCriteria:'Scope 3 verified by third party; access program metrics IA-reviewed; disclosures accurate', reductionPct:10 },
-    ],
-
-    'Generic': [
-      { id:'R-01', name:'Financial Reporting Quality', category:'Financial Reporting', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.mscore,0,[v=>v>-1.78,3.5],[v=>v>-2.22,1.5]) + tier(r.tata,0,[v=>v>0.06,1.0]) + tier(r.dsri,0,[v=>v>1.20,0.8]),
-        narrative: (r,t) => `M-score ${fmt(r.mscore,2)} (threshold -1.78 likely manipulator, -2.22 gray zone). Accruals ratio ${fmt(r.tata,3)}. DSRI ${fmt(r.dsri,2)}. ${r.mscore>-1.78?'Elevated M-score warrants detailed revenue recognition and accruals review.':r.mscore>-2.22?'Gray zone — accruals and AR ageing monitoring recommended.':'Financial reporting indicators within normal range.'}`,
-        obj:'Review financial reporting controls, accruals quality, and key accounting estimate methodology',
-        controls:['FRP-101 Accruals quality monitoring','FRP-105 Revenue recognition policy','FRP-110 Key estimate methodology'],
-        mapFinding:'Accruals quality indicators not in GRC financial risk dashboard; key estimate methodology review not on IA plan',
-        mapAction:'Add M-score and TATA to quarterly GRC dashboard; key estimate methodology review on IA annual plan',
-        mapOwner:'Chief Accounting Officer', mapSuccessCriteria:'M-score dashboarded; key estimate review completed; threshold alerts configured', reductionPct:18 },
-
-      { id:'R-02', name:'Revenue Growth & Concentration Risk', category:'Revenue', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.revGrowth,0,[v=>v<-0.15,2.5],[v=>v<0,1.0],[v=>v>0.20,-0.8]),
-        narrative: (r,t) => `Revenue growth ${pct(r.revGrowth)} YoY (${fmt(r.rev?r.rev/1e6:null,0)}M latest). ${r.revGrowth!=null&&r.revGrowth<0?'Declining revenue warrants concentration analysis — customer, product, and geographic diversification review required.':r.revGrowth>0.15?'Strong growth; revenue recognition controls should match pace of growth.':'Revenue growth moderate; standard concentration review applies.'}`,
-        obj:'Analyse revenue segment mix, customer concentration, and geographic diversification',
-        controls:['REV-201 Revenue concentration KRI','REV-205 Segment reporting review','REV-210 Customer diversification analysis'],
-        mapFinding:'Revenue concentration by customer not systematically tracked in GRC; segment reporting not IA-reviewed annually',
-        mapAction:'Implement concentration KRI in GRC; annual IA review of top-10 customer and segment revenue composition',
-        mapOwner:'Chief Revenue Officer', mapSuccessCriteria:'Concentration KRI live in GRC; top-10 customer analysis in annual IA report', reductionPct:15 },
-
-      { id:'R-03', name:'Profitability — Margin Compression', category:'Financial Reporting', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.grossMargin,0,[v=>v<0.20,2.5],[v=>v<0.35,1.2],[v=>v>0.60,-0.5]) + tier(r.niMargin,0,[v=>v<-0.05,1.5],[v=>v<0,0.8]),
-        narrative: (r,t) => `Gross margin ${pct(r.grossMargin)}, net income margin ${pct(r.niMargin)}. ${r.grossMargin!=null&&r.grossMargin<0.30?'Thin margins leave limited buffer for cost absorption — operating leverage and cost management controls are a priority.':'Margin profile adequate at current levels.'} FCF margin ${pct(r.fcfMargin)}.`,
-        obj:'Audit gross margin variance bridge, operating cost efficiency, and pricing governance',
-        controls:['MARGIN-301 Gross margin bridge','MARGIN-305 Operating cost efficiency KPI','MARGIN-310 Pricing governance'],
-        mapFinding:'Gross margin variance bridge not produced for IA; pricing governance policy not documented',
-        mapAction:'Require quarterly margin bridge to IA; document pricing approval governance; add operating leverage to GRC',
-        mapOwner:'CFO', mapSuccessCriteria:'Quarterly margin bridge delivered; pricing policy published; operating leverage KPI in GRC', reductionPct:14 },
-
-      { id:'R-04', name:'Liquidity & Cash Flow Adequacy', category:'Financial Reporting', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.fcfMargin,0,[v=>v<-0.10,3.0],[v=>v<0,1.5],[v=>v>0.15,-0.5]) + tier(r.cashRatio,0,[v=>v<0.05,2.0],[v=>v<0.10,1.0]) + tier(r.zscore,0,[v=>v<=1.1,2.5],[v=>v<=2.6,1.0]),
-        narrative: (r,t) => `FCF margin ${pct(r.fcfMargin)}, cash/assets ${pct(r.cashRatio)}, Altman Z''-score ${fmt(r.zscore,2)} (distress ≤1.1, grey ≤2.6). ${r.zscore!=null&&r.zscore<=1.1?'Z\'\'-score in distress zone — going-concern assessment and covenant headroom require immediate IA review.':r.fcfMargin!=null&&r.fcfMargin<0?'Negative FCF — liquidity runway and covenant headroom require immediate IA review.':r.cashRatio!=null&&r.cashRatio<0.08?'Low cash ratio warrants liquidity stress testing.':'Liquidity and cash generation within acceptable range.'}`,
-        obj:'Stress-test FCF adequacy at -20% and -40% revenue scenarios and review covenant compliance headroom',
-        controls:['LIQ-401 FCF stress model','LIQ-405 Covenant headroom monitoring','LIQ-410 Liquidity buffer adequacy'],
-        mapFinding:'FCF stress test not reviewed by IA; covenant headroom not formally reported to IA on quarterly cadence',
-        mapAction:'Annual IA FCF stress test at -20% and -40% scenarios; covenant headroom in quarterly IA dashboard',
-        mapOwner:'CFO / Treasurer', mapSuccessCriteria:'FCF stress test completed; covenant headroom tracked quarterly; IA notified at <20% headroom', reductionPct:16 },
-
-      { id:'R-05', name:'Cybersecurity & Data Protection', category:'Cybersecurity', base:5.5, ceBase:'ADEQUATE',
-        delta: r => 0,
-        narrative: (r,t) => `Cybersecurity framework maturity and key control effectiveness (access management, network segmentation, incident response) are standard IA requirements. Annual maturity assessment against NIST CSF or ISO 27001 is the minimum standard.`,
-        obj:'Assess cybersecurity framework maturity, key control effectiveness, and incident response preparedness',
-        controls:['CYBER-501 NIST CSF / ISO 27001 assessment','CYBER-505 Privileged access review','CYBER-510 Incident response plan test'],
-        mapFinding:'Cybersecurity maturity assessment not conducted by IA in current year; incident response not tabletop-tested',
-        mapAction:'Annual IA cybersecurity maturity assessment; prioritise top-3 control gaps; tabletop incident response exercise',
-        mapOwner:'CISO', mapSuccessCriteria:'Maturity assessment completed; top-3 gaps remediated; tabletop exercise annual cadence established', reductionPct:15 },
-
-      { id:'R-06', name:'Regulatory & Compliance Risk', category:'Compliance', base:5.0, ceBase:'ADEQUATE',
-        delta: r => 0.5,
-        narrative: (r,t) => `Regulatory compliance risk encompasses industry-specific requirements (SEC, CFPB, EPA, OSHA) and cross-cutting obligations (GDPR, CCPA, AML). A regulatory change monitoring register in GRC is the foundational control.`,
-        obj:'Review compliance program effectiveness and regulatory change monitoring process',
-        controls:['COMP-601 Regulatory change register','COMP-605 Compliance program effectiveness review','COMP-610 Consent order / settlement monitoring'],
-        mapFinding:'Regulatory change monitoring not formally tracked in GRC; compliance program effectiveness not IA-reviewed',
-        mapAction:'Implement regulatory change register in GRC; quarterly IA compliance review; consent order tracking',
-        mapOwner:'Chief Compliance Officer', mapSuccessCriteria:'Regulatory register live in GRC; quarterly compliance review on schedule; no untracked consent orders', reductionPct:13 },
-
-      { id:'R-07', name:'Operational Execution Risk', category:'Operational', base:4.5, ceBase:'ADEQUATE',
-        delta: r => tier(r.sgaIntensity,0,[v=>v>0.30,1.0]) + tier(r.assetGrowth,0,[v=>v>0.25,0.8]),
-        narrative: (r,t) => `SGA intensity ${pct(r.sgaIntensity)}, asset growth ${pct(r.assetGrowth)} YoY. ${r.sgaIntensity!=null&&r.sgaIntensity>0.25?'Elevated overhead vs. peers suggests operating inefficiency or rapid scaling ahead of revenue.':'Operating cost structure within sector range.'} Key operating KPIs should be linked to GRC risk triggers.`,
-        obj:'Evaluate key operating KPIs, process controls for critical operations, and operating leverage metrics',
-        controls:['OPS-701 Key KPI dashboard','OPS-705 Critical process controls review','OPS-710 Operating leverage monitoring'],
-        mapFinding:'Key operating KPIs not linked to GRC risk register triggers; critical process controls not on IA annual plan',
-        mapAction:'Define KPI-to-risk trigger linkage in GRC; add critical process review to IA annual plan',
-        mapOwner:'COO', mapSuccessCriteria:'KPIs linked to GRC triggers; critical process review completed; operating leverage tracked', reductionPct:12 },
-
-      { id:'R-08', name:'Strategic Risk — Concentration & Diversification', category:'Strategic', base:5.0, ceBase:'ADEQUATE',
-        delta: r => tier(r.revGrowth,0,[v=>v<-0.10,1.5]) + tier(r.assetGrowth,0,[v=>v!=null&&r.revGrowth!=null&&v>r.revGrowth+0.20,1.0]),
-        narrative: (r,t) => `Revenue growth ${pct(r.revGrowth)}, asset growth ${pct(r.assetGrowth)}. Strategic risk encompasses customer, product, geographic, and channel concentration. Annual IA review of strategic plan execution and concentration metrics is the baseline requirement.`,
-        obj:'Map revenue and asset concentration by customer, product, and geography; review strategic plan execution',
-        controls:['STRAT-801 Revenue concentration analysis','STRAT-805 Strategic plan execution KPI','STRAT-810 M&A integration monitoring'],
-        mapFinding:'Revenue concentration analysis not produced for IA in current year; strategic plan execution KPIs not in GRC',
-        mapAction:'Annual IA review of concentration; strategic execution KPIs in GRC with threshold alerts',
-        mapOwner:'Chief Strategy Officer', mapSuccessCriteria:'Concentration analysis in annual IA report; strategic KPIs in GRC; threshold alerts configured', reductionPct:14 },
-    ],
+  // Ratio → evidence rules (same thresholds as risk_taxonomy.py). `r` is the
+  // camelCase ratios object computeRatios() / the MCP mapper produce.
+  const RATIO_RULES = {
+    'TX-FRQ': r => _ok([
+      _gt(r.tata, [[0.10, 2.0], [0.05, 1.2], [0.02, 0.5]], 'Total accruals / assets'),
+      _gt(r.dsri, [[1.20, 1.0], [1.05, 0.4]], 'Receivables-to-sales index (DSRI)', { trend: true, digits: 2 }),
+      r.mscoreVal != null ? _gt(r.mscoreVal, [[-1.78, 1.5], [-2.22, 0.7]], 'Beneish M-Score', { source: 'Beneish', digits: 2 }) : null,
+    ]),
+    'TX-LIQ': r => _ok([
+      _lt(r.cashRatio, [[0.05, 1.5], [0.10, 0.8]], 'Cash / assets'),
+      _lt(r.fcfMargin, [[-0.10, 1.5], [0.0, 0.7]], 'FCF margin'),
+      r.zscoreVal != null ? _lt(r.zscoreVal, [[1.1, 2.0], [2.6, 0.8]], "Altman Z''-Score", { source: 'Altman', digits: 2 }) : null,
+      _lt(r.wcToAssets, [[0.0, 0.5]], 'Working capital / assets'),
+    ]),
+    'TX-PRF': r => _ok([
+      (r.grossMargin != null && r.grossMarginPrev != null)
+        ? _lt(r.grossMargin - r.grossMarginPrev, [[-0.03, 1.2], [-0.01, 0.5]], 'Gross-margin change YoY', { trend: true }) : null,
+      _lt(r.niMargin, [[0.0, 1.2], [0.03, 0.4]], 'Net margin'),
+    ]),
+    'TX-REV': r => _ok([
+      _lt(r.revGrowth, [[-0.10, 2.0], [-0.05, 1.2], [0.0, 0.6]], 'Revenue growth YoY', { trend: true }),
+      _gt(r.sgi, [[1.5, 0.6]], 'Sales growth index (SGI)', { trend: true, digits: 2 }),
+    ]),
+    'TX-CAP': r => _ok([
+      _lt(r.equityToLiabilities, [[0.1, 1.5], [0.3, 0.8]], 'Equity / liabilities'),
+      _gt(r.lvgi, [[1.2, 0.8]], 'Leverage index (LVGI)', { trend: true, digits: 2 }),
+    ]),
   };
 
-  // ── Fallback aliases for unlisted industries ────────────────
-  TEMPLATES['Industrial & Manufacturing'] = TEMPLATES['Generic'];
-  TEMPLATES['Retail & Consumer']           = TEMPLATES['Generic'];
-  TEMPLATES['Energy & Resources']          = TEMPLATES['Generic'];
-  TEMPLATES['Healthcare & Pharma']         = TEMPLATES['Healthcare & Pharma'] || TEMPLATES['Generic'];
-  TEMPLATES['Utilities']                   = TEMPLATES['Generic'];
+  // Presentation + audit-response text per category. Narrative text is built
+  // from the evidence, never from industry boilerplate.
+  const CATALOG = [
+    { id: 'TX-FRQ', name: 'Financial Reporting Quality', category: 'Financial Reporting',
+      obj: 'Test accrual quality, revenue-recognition cut-off and the drivers behind any restatement, impairment or non-reliance signal',
+      controls: ['FRQ-101 Period-end close and reconciliation review', 'FRQ-105 Revenue recognition cut-off testing', 'FRQ-110 Journal-entry authorization and override monitoring'],
+      mapFinding: 'Reporting-quality indicators (accruals, receivables, M-Score) or filings signal elevated misstatement risk',
+      mapAction: 'Targeted substantive testing of accruals and revenue; management-override review; remediation tracked to Audit Committee',
+      mapOwner: 'Chief Financial Officer / Controller', mapSuccessCriteria: 'Indicators back within normal range or each driver explained and evidenced; no unremediated deficiencies', reductionPct: 12 },
+    { id: 'TX-LIQ', name: 'Liquidity & Going Concern', category: 'Liquidity',
+      obj: 'Assess liquidity runway, covenant headroom and the going-concern basis of preparation',
+      controls: ['LIQ-201 13-week cash forecast review', 'LIQ-205 Covenant compliance monitoring', 'LIQ-210 Going-concern assessment memo'],
+      mapFinding: 'Liquidity / solvency indicators or events indicate elevated going-concern risk',
+      mapAction: 'Refresh cash-flow forecast and covenant model; document management going-concern assessment; agree contingency funding plan',
+      mapOwner: 'Chief Financial Officer / Treasurer', mapSuccessCriteria: 'Forecast shows adequate runway under downside case; covenant headroom documented; assessment reviewed by Audit Committee', reductionPct: 15 },
+    { id: 'TX-PRF', name: 'Profitability & Margin Pressure', category: 'Financial Reporting',
+      obj: 'Analyse margin drivers (price, mix, cost, inventory) and the reliability of cost allocations and reserves',
+      controls: ['PRF-301 Margin bridge review', 'PRF-305 Inventory and cost-allocation testing'],
+      mapFinding: 'Margin trend or profitability is below expectation without a documented driver analysis',
+      mapAction: 'Quarterly margin-bridge reviewed by IA; reserve and cost-allocation methodology validated',
+      mapOwner: 'Chief Financial Officer', mapSuccessCriteria: 'Margin drivers documented each quarter; reserve methodology validated', reductionPct: 10 },
+    { id: 'TX-REV', name: 'Revenue Growth & Demand', category: 'Revenue',
+      obj: 'Review revenue trend, concentration and the sustainability of reported growth or decline',
+      controls: ['REV-401 Revenue trend and concentration analysis', 'REV-405 Bookings / backlog reconciliation'],
+      mapFinding: 'Revenue trend deviates materially from prior year without a documented demand analysis',
+      mapAction: 'Quarterly demand and concentration review; reconcile bookings to recognised revenue',
+      mapOwner: 'Chief Revenue Officer / CFO', mapSuccessCriteria: 'Trend explained and reflected in forecast; concentration within policy', reductionPct: 10 },
+    { id: 'TX-CAP', name: 'Capital Structure & Financial Obligations', category: 'Financial Reporting',
+      obj: 'Review leverage, new obligations, off-balance-sheet arrangements and covenant exposure',
+      controls: ['CAP-501 Debt and covenant register', 'CAP-505 Off-balance-sheet obligation register', 'CAP-510 Equity issuance log'],
+      mapFinding: 'Leverage or obligation events are not tracked against covenant headroom in the risk register',
+      mapAction: 'Trigger GRC review on 8-K Items 1.01 / 2.03 / 2.04 / 3.02; quarterly obligation-vs-covenant review',
+      mapOwner: 'Treasurer / Chief Legal Officer', mapSuccessCriteria: 'Obligation register complete; covenant headroom reported quarterly', reductionPct: 12 },
+    { id: 'TX-CYB', name: 'Cybersecurity & Data Protection', category: 'Cybersecurity',
+      obj: 'Assess cyber incident response, materiality-determination process and Item 106 / 1C disclosure readiness',
+      controls: ['CYB-601 Incident response and escalation', 'CYB-605 Materiality determination procedure', 'CYB-610 Third-party access review'],
+      mapFinding: 'Cyber incident or threat signal not linked to a documented materiality and disclosure decision',
+      mapAction: 'Document 8-K Item 1.05 decision path; tabletop the incident-to-disclosure workflow; review board cyber oversight',
+      mapOwner: 'Chief Information Security Officer / General Counsel', mapSuccessCriteria: 'Materiality procedure tested; disclosure decision log maintained', reductionPct: 12 },
+    { id: 'TX-GOV', name: 'Board & Executive Governance', category: 'Governance',
+      obj: 'Review board and executive turnover, tenure / refreshment, succession coverage and committee continuity',
+      controls: ['GOV-701 Director and officer change log', 'GOV-705 Succession plan coverage', 'GOV-710 Board refreshment and evaluation'],
+      mapFinding: 'Leadership change or board tenure profile is not tracked as a governance risk with documented succession and refreshment',
+      mapAction: 'Link 8-K Item 5.02 events to the register; document C-suite and committee-chair succession; adopt / confirm a board refreshment policy',
+      mapOwner: 'General Counsel / Board Chair', mapSuccessCriteria: 'Succession documented for all C-suite roles; refreshment policy reviewed annually; KRI reported at each Audit Committee', reductionPct: 8 },
+    { id: 'TX-AUD', name: 'Audit Oversight & Internal Control', category: 'Audit Oversight',
+      obj: 'Assess auditor change circumstances, auditor tenure and partner rotation, ICFR conclusions and Audit Committee oversight',
+      controls: ['AUD-801 Auditor independence and tenure monitoring', 'AUD-805 ICFR deficiency evaluation', 'AUD-810 Audit Committee pre-approval of services'],
+      mapFinding: 'Auditor change, ICFR signal or auditor-tenure indicator needs documented Audit Committee evaluation',
+      mapAction: 'Audit Committee to document the auditor-change rationale, review any Item 304 matters, and confirm partner-rotation compliance (5-yr lead / 7-yr other)',
+      mapOwner: 'Audit Committee Chair / Chief Accounting Officer', mapSuccessCriteria: 'Rationale and rotation compliance minuted; no open ICFR deficiencies without remediation owner', reductionPct: 10 },
+    { id: 'TX-REG', name: 'Regulatory, Legal & Enforcement', category: 'Compliance',
+      obj: 'Review SEC comment-letter status, regulatory notices, listing compliance and legal contingencies',
+      controls: ['REG-901 SEC comment-letter tracker', 'REG-905 Regulatory notice triage', 'REG-910 Legal contingency review'],
+      mapFinding: 'Open or repeated regulator comments / notices are not tracked to resolution',
+      mapAction: 'Track each comment through closure; assess whether prior-period disclosure needs amendment; report status to Audit Committee',
+      mapOwner: 'General Counsel / Chief Compliance Officer', mapSuccessCriteria: 'All comment letters closed or on a documented plan; no unassessed regulatory notices', reductionPct: 10 },
+    { id: 'TX-OPS', name: 'Operations & Supply Chain', category: 'Operational',
+      obj: 'Review operational disruption, restructuring execution and supply-chain dependency',
+      controls: ['OPS-1001 Supplier dependency register', 'OPS-1005 Restructuring cost and liability review'],
+      mapFinding: 'Operational disruption or restructuring signal lacks a documented dependency and cost review',
+      mapAction: 'Map critical suppliers and single points of failure; validate restructuring estimates',
+      mapOwner: 'Chief Operating Officer', mapSuccessCriteria: 'Dependency register complete; restructuring liabilities validated', reductionPct: 10 },
+    { id: 'TX-STR', name: 'Strategic Transactions & Concentration', category: 'Strategic',
+      obj: 'Review acquisition / disposition accounting, integration risk and revenue or segment concentration',
+      controls: ['STR-1101 Transaction accounting review', 'STR-1105 Concentration analysis'],
+      mapFinding: 'Material transactions or concentration are not reflected in the risk register',
+      mapAction: 'Post-transaction accounting review; annual concentration analysis by customer, product and geography',
+      mapOwner: 'Chief Strategy Officer / CFO', mapSuccessCriteria: 'Purchase accounting validated; concentration analysis in annual IA report', reductionPct: 10 },
+    { id: 'TX-MAC', name: 'Macro & Market Conditions', category: 'Strategic',
+      obj: 'Assess exposure to the macro indicators currently moving against the entity and the adequacy of scenario planning',
+      controls: ['MAC-1201 Macro indicator monitoring', 'MAC-1205 Scenario and stress-test refresh'],
+      mapFinding: 'Adverse macro indicators are not reflected in scenario planning',
+      mapAction: 'Refresh scenarios with current leading indicators; set indicator-based triggers',
+      mapOwner: 'Chief Financial Officer', mapSuccessCriteria: 'Scenarios refreshed quarterly with indicator triggers', reductionPct: 8 },
+    { id: 'TX-ESG', name: 'ESG & Climate Disclosure', category: 'ESG',
+      obj: 'Review climate / sustainability disclosure accuracy and substantiation of public claims',
+      controls: ['ESG-1301 Disclosure controls for sustainability data', 'ESG-1305 Claim substantiation review'],
+      mapFinding: 'Sustainability disclosures lack documented data controls or substantiation',
+      mapAction: 'Establish disclosure controls over ESG metrics; review public claims for substantiation',
+      mapOwner: 'Chief Sustainability Officer / General Counsel', mapSuccessCriteria: 'Metrics under disclosure controls; claims substantiated', reductionPct: 8 },
+    { id: 'TX-TRD', name: 'Trade & Sanctions Compliance', category: 'Trade Compliance',
+      obj: 'Assess export-control, sanctions and restricted-party screening effectiveness',
+      controls: ['TRD-1401 Restricted-party screening', 'TRD-1405 Export classification review'],
+      mapFinding: 'Trade / sanctions signal is not matched to screening and classification controls',
+      mapAction: 'Validate screening coverage and export classification; consider voluntary self-disclosure where warranted',
+      mapOwner: 'Chief Compliance Officer', mapSuccessCriteria: 'Screening coverage validated; classification current', reductionPct: 10 },
+  ];
+  const CATALOG_BY_ID = Object.fromEntries(CATALOG.map(c => [c.id, c]));
 
-  // ── Build Risk Array from template + ratios ─────────────────
-  // score = impact (0-5) × likelihood (0-5) → 0-25 scale
-  function buildRisks(industry, ratios, ticker) {
-    const tmpl = TEMPLATES[industry] || TEMPLATES['Generic'];
-    return tmpl.map(t => {
-      const delta      = t.delta(ratios);
-      const rawScore   = clamp(t.base + delta, 1.5, 9.5);   // 0-10 intermediate
-      const likelihood = clamp(rawScore / 2, 0.5, 5.0);     // 0-5 scale
-      const impact     = CATEGORY_IMPACT[t.category] || 3;  // 0-5 scale
-      const score      = +(impact * likelihood).toFixed(1);  // 0-25 scale
-      const base25     = impact * (t.base / 2);              // base on 0-25 scale
-      const ce         = ceOf(score, base25);
-      const vel        = velOf(score, base25);
-      return {
-        id:       t.id,
-        name:     t.name,
-        category: t.category,
-        impact,
-        likelihood: +likelihood.toFixed(1),
-        score,
-        rag:      ragOf(score),
-        velocity: vel,
-        ce,
-        inherent: +clamp(score + 2.5, score, 25.0).toFixed(1),
-        residual: score,
-        peer:     score > base25 + 2.5 ? 'above' : score < base25 - 1.25 ? 'below' : 'in-line',
-        hist:     histOf(score, base25),
-        narrative: t.narrative(ratios, ticker),
-      };
-    });
+  // Narrative built from the evidence the score rests on.
+  function narrativeFromEvidence(name, items, score) {
+    const top = [...items].filter(i => i.points > 0).sort((a, b) => b.points - a.points).slice(0, 3);
+    if (!top.length) return `${name}: ${items.length} data point(s) reviewed, none adverse (score ${score}/25).`;
+    return `${name} — score ${score}/25 driven by: ${top.map(i => `${i.label} [${i.source}]`).join('; ')}.`;
+  }
+
+  // Score one catalog category from its evidence list. Returns a risk row,
+  // or null when there is no evidence at all ("not assessed").
+  function scoreRow(cat, evidence) {
+    if (!evidence || !evidence.length) return null;
+    const impact = CATEGORY_IMPACT[cat.category] || 3;
+    const total = evidence.reduce((s, e) => s + e.points, 0);
+    const structural = evidence.filter(e => !e.trend).reduce((s, e) => s + e.points, 0);
+    const lik = clamp(BASE_LIKELIHOOD + total, 0.5, 5.0);
+    let score = +clamp(impact * lik, 0, 25).toFixed(1);
+    // An evidence item may carry floor:'R' (8-K Item 1.03 bankruptcy).
+    if (evidence.some(e => e.floor === 'R') && score < RAG_RED) score = RAG_RED;
+    const base25 = +clamp(impact * clamp(BASE_LIKELIHOOD + structural, 0.5, 5.0), 0, 25).toFixed(1);
+    return {
+      id: cat.id, taxonomy_id: cat.id, name: cat.name, category: cat.category,
+      impact, likelihood: +lik.toFixed(1), score, rag: ragOf(score),
+      velocity: velOf(score, base25), ce: ceOf(score, base25), base: base25,
+      inherent: +clamp(score + 2.5, score, 25.0).toFixed(1), residual: score,
+      peer: score > base25 + 2.5 ? 'above' : score < base25 - 1.25 ? 'below' : 'in-line',
+      hist: histOf(score, base25),
+      assessed: true, evidence,
+      narrative: narrativeFromEvidence(cat.name, evidence, score),
+    };
+  }
+
+  // Ratio evidence for every category (JS mirror of risk_taxonomy._RATIO_RULES).
+  function ratioEvidence(ratios) {
+    const out = {};
+    for (const [id, rule] of Object.entries(RATIO_RULES)) out[id] = ratios && Object.keys(ratios).length ? rule(ratios) : [];
+    return out;
+  }
+
+  // Combine evidence maps ({txId: [items]}) and score the whole taxonomy.
+  // Returns { risks (assessed only), notAssessed: [{id,name,category,reason}] }.
+  function scoreTaxonomy(evidenceMaps) {
+    const merged = {};
+    for (const m of evidenceMaps) for (const [k, v] of Object.entries(m || {})) (merged[k] = merged[k] || []).push(...v);
+    const risks = [], notAssessed = [];
+    for (const cat of CATALOG) {
+      const row = scoreRow(cat, merged[cat.id]);
+      if (row) risks.push(row);
+      else notAssessed.push({ id: cat.id, name: cat.name, category: cat.category,
+        reason: 'No evidence available for this category in the current data sources' });
+    }
+    return { risks, notAssessed };
+  }
+
+  // ── Build Risk Array from ratios (Live-JS / Mock mode) ──────
+  function buildRisks(ratios, extraEvidenceMaps = []) {
+    return scoreTaxonomy([ratioEvidence(ratios), ...extraEvidenceMaps]);
   }
 
   // ── Build Objectives ────────────────────────────────────────
   function buildObjectives(risks, industry) {
-    const tmpl = TEMPLATES[industry] || TEMPLATES['Generic'];
     const sorted = [...risks].sort((a, b) => b.score - a.score).slice(0, 6);
     return sorted.map((r, i) => {
       // A segment/geography-specific risk (segment_risk_tool.py — id like
@@ -699,12 +402,13 @@ window.RISK_ENGINE = (function () {
       // tmpl[0] here used to silently borrow an unrelated template's
       // objective text and controls list — worse than building the
       // objective from the risk's own name/narrative directly.
-      const t = r.segment_name ? null : tmpl.find(x => x.id === r.id);
+      const t = r.segment_name ? null : CATALOG_BY_ID[r.id];
       const priority = r.score >= 17 ? 'P1' : r.score >= 11 ? 'P2' : 'P3';
       return {
         id: `O-${String(i + 1).padStart(2, '0')}`,
         priority,
         objective: t?.obj || `Audit ${r.name}`,
+        evidence_basis: (r.evidence || []).filter(e => e.points > 0).slice(0, 3).map(e => e.label),
         linked_risk: r.id,
         sprint: priority === 'P1' ? 1 : priority === 'P2' ? 2 : 3,
         hours: priority === 'P1' ? 120 : priority === 'P2' ? 80 : 40,
@@ -718,11 +422,10 @@ window.RISK_ENGINE = (function () {
 
   // ── Build MAPs ───────────────────────────────────────────────
   function buildMAPs(risks, objectives) {
-    const industry = null; // industry not needed — we use risk templates directly
     return objectives.map((o, i) => {
       const r = risks.find(x => x.id === o.linked_risk);
       if (!r) return null;
-      const tmpl = Object.values(TEMPLATES).flat().find(t => t.id === r.id);
+      const tmpl = CATALOG_BY_ID[r.id];
       return {
         id: `MAP-${String(i + 1).padStart(2, '0')}`,
         finding: tmpl?.mapFinding || `${r.name} — control gap identified`,
@@ -1071,7 +774,7 @@ window.RISK_ENGINE = (function () {
   // portfolio score moves — reuses the real scoring logic rather than an
   // approximation, so results stay consistent with the live risk register.
   function buildSensitivity(ratios, ticker, industry) {
-    const baseRisks = buildRisks(industry, ratios, ticker);
+    const baseRisks = buildRisks(ratios).risks;
     const baselineScore = +baseRisks.reduce((s, r) => s + r.score, 0).toFixed(1);
 
     const pct1 = v => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(0)}pt`;
@@ -1088,8 +791,8 @@ window.RISK_ENGINE = (function () {
       const base = ratios[f.key] ?? 0;
       const downRatios = { ...ratios, [f.key]: base + f.down };
       const upRatios   = { ...ratios, [f.key]: base + f.up };
-      const downScore = buildRisks(industry, downRatios, ticker).reduce((s, r) => s + r.score, 0);
-      const upScore   = buildRisks(industry, upRatios, ticker).reduce((s, r) => s + r.score, 0);
+      const downScore = buildRisks(downRatios).risks.reduce((s, r) => s + r.score, 0);
+      const upScore   = buildRisks(upRatios).risks.reduce((s, r) => s + r.score, 0);
       const downDelta = +(downScore - baselineScore).toFixed(1);
       const upDelta   = +(upScore - baselineScore).toFixed(1);
       return {
@@ -1869,6 +1572,9 @@ window.RISK_ENGINE = (function () {
     'ESG':                 ['Corporate Governance', 'Investor Relations', 'Operations', 'Legal & Compliance'],
     'Compliance':          ['Legal & Compliance', 'Government Relations', 'Finance', 'Operations'],
     'Legal':               ['Legal & Compliance', 'Finance', 'Operations', 'Customer Relationships'],
+    'Liquidity':           ['Finance', 'Treasury', 'Investor Relations', 'Operations'],
+    'Governance':          ['Corporate Governance', 'Investor Relations', 'Legal & Compliance', 'Operations'],
+    'Audit Oversight':     ['External Reporting', 'Corporate Governance', 'Finance', 'Investor Relations'],
   };
   const DEFAULT_IMPACTS = ['Operations', 'Finance', 'Legal & Compliance', 'Customer Relationships'];
 
@@ -1880,10 +1586,9 @@ window.RISK_ENGINE = (function () {
       if (vel < 0)  return ['T+60d', 'T+90d'];
       return ['T+45d', 'T+90d'];
     };
-    const tmpl = TEMPLATES[industry] || TEMPLATES['Generic'];
     const flow = {};
     risks.forEach(r => {
-      const t = tmpl.find(x => x.id === r.id);
+      const t = CATALOG_BY_ID[r.id];
       flow[r.id] = {
         impacts:  CATEGORY_IMPACTS[r.category] || DEFAULT_IMPACTS,
         controls: (t?.controls || []).map(name => ({ name, ce: r.ce })),
@@ -1892,6 +1597,33 @@ window.RISK_ENGINE = (function () {
       };
     });
     return flow;
+  }
+
+  // ── Recompute everything derived from the risk set ───────────
+  // buildProfile() derives these once, from whatever risks existed at that
+  // moment. Once evidence from 8-Ks / proxy / comment letters / signals has
+  // been scored, the final risk set differs, so each dependent artefact is
+  // rebuilt from it — otherwise objectives, MAPs, scenarios, the grey-swan
+  // cascade, risk flow, personas and the loop view silently describe an
+  // earlier register than the one on screen.
+  function refreshForRisks(profile, risks, ticker, industryLabel) {
+    const industry = normalizeIndustry(industryLabel || profile?.entity?.focus || 'Generic');
+    const ratios = profile.ratios || {};
+    const objectives = buildObjectives(risks, industry);
+    const maps = buildMAPs(risks, objectives);
+    const scenarios = buildScenarios(risks, ratios, ticker, industry);
+    allocateRiskDollarExposure(risks, scenarios);
+    return {
+      ...profile, risks, objectives, maps, scenarios,
+      closure: buildClosure(risks), loop: buildLoop(risks),
+      riskFlow: buildRiskFlow(risks, industry, maps),
+      personas: buildPersonas(risks, ticker),
+      greySwan: buildGreySwan(risks, ratios, ticker, industry),
+      reverseStress: buildReverseStressTest(risks, ratios, ticker, industry),
+      governanceScenario: buildGovernanceScenario(risks, ratios, ticker, industry),
+      multiFactorStress: buildMultiFactorStress(risks, ratios, ticker, industry),
+      earlyWarning: buildEarlyWarningIndicator(risks, ratios, profile.forecasts, industry),
+    };
   }
 
   // ── Main: buildProfile ───────────────────────────────────────
@@ -1959,7 +1691,7 @@ window.RISK_ENGINE = (function () {
     const industryLabel = industryHint || sic2industry(sic) || 'Generic';
     const industry = normalizeIndustry(industryLabel);
     const ratios   = computeRatios(fin);
-    const risks    = buildRisks(industry, ratios, ticker);
+    const { risks, notAssessed } = buildRisks(ratios);
     const objectives = buildObjectives(risks, industry);
     const maps     = buildMAPs(risks, objectives);
     const scenarios  = buildScenarios(risks, ratios, ticker, industry);
@@ -1980,7 +1712,7 @@ window.RISK_ENGINE = (function () {
     const multiFactorStress = buildMultiFactorStress(risks, ratios, ticker, industry);
     const liquidityRunway   = buildLiquidityRunway(ratios, ticker);
     const earlyWarning      = buildEarlyWarningIndicator(risks, ratios, forecasts, industry);
-    return { entity, signals, risks, objectives, maps, closure, loop,
+    return { entity, signals, risks, notAssessed, objectives, maps, closure, loop,
              eventTemplates, forecasts, scenarios, greySwan, ratios,
              reverseStress, historicalAnalogs, governanceScenario,
              riskFlow: buildRiskFlow(risks, industry, maps),
@@ -1991,6 +1723,9 @@ window.RISK_ENGINE = (function () {
   return { buildProfile, buildLoop, computeRatios, sic2industry, normalizeIndustry, quarterBoundaries: _quarterBoundaries,
            buildVarCvar, buildSensitivity, buildMultiFactorStress, buildLiquidityRunway, buildEarlyWarningIndicator,
            buildGreySwan, buildScenarios, allocateRiskDollarExposure, applyFairOverridesToMaps,
-           buildObjectives, buildMAPs };
+           buildObjectives, buildMAPs,
+           // evidence-scored taxonomy
+           CATALOG, CATALOG_BY_ID, scoreRow, scoreTaxonomy, ratioEvidence, buildRisks, ev, narrativeFromEvidence,
+           BASE_LIKELIHOOD, CATEGORY_IMPACT, ragOf, RAG_RED, RAG_AMBER, refreshForRisks };
 
 })();

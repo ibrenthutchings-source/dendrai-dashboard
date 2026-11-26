@@ -377,7 +377,7 @@ def scope_accounts(
     real_balances = real_balances or {}
     pm   = materiality.get("performance_materiality")
     trivial = materiality.get("trivial_threshold")
-    risks = risk_scores.get("risks", [])
+    risks = _normalize_risks(risk_scores.get("risks", []))
 
     # Default geography/segment tags for every significant account — there's
     # no per-account mapping data source (no filing ties "Revenue" to
@@ -554,7 +554,7 @@ def scope_processes(
     A manual estimated_exposure override always wins over the derived value.
     """
     process_overrides = process_overrides or {}
-    risks = risk_scores.get("risks", [])
+    risks = _normalize_risks(risk_scores.get("risks", []))
     in_scope_accs = {a["account_id"] for a in account_scope if a["in_scope"]}
 
     acc_balance = {a["account_id"]: a.get("balance_estimate") for a in account_scope}
@@ -750,7 +750,7 @@ def scope_segments(
     segment_overrides = segment_overrides or {}
 
     pm     = materiality.get("performance_materiality")
-    risks  = (risk_scores or {}).get("risks", [])
+    risks  = _normalize_risks((risk_scores or {}).get("risks", []))
 
     # Identify geographic/strategic risks
     geo_red = any(
@@ -811,6 +811,37 @@ def scope_segments(
 
 # ── Change-Detection Hash ──────────────────────────────────────────────────────
 
+# ── Risk-register shape adapter ─────────────────────────────────────────────
+# The register now emits (a) R/A/G LETTERS (risk_rating_engine — the platform
+# standard since the 0-25 migration) and (b) the evidence-scored taxonomy's
+# categories, including "not assessed" rows with score=None. This module's
+# logic was written against full-word Red/Amber/Green and the SOX category
+# vocabulary (Financial / Operational / Strategic / Regulatory / Macro), so
+# comparing "R" == "Red" silently never matched: SOX scoping never saw a Red
+# risk, and a not-assessed row crashed round(None). Normalise once, at the
+# boundary, instead of at each comparison.
+_RAG_WORD = {"R": "Red", "A": "Amber", "G": "Green"}
+_SOX_CATEGORY = {
+    "Financial Reporting": "Financial", "Revenue": "Financial",
+    "Liquidity": "Financial", "Audit Oversight": "Financial",
+    "Compliance": "Regulatory", "Legal": "Regulatory", "Trade Compliance": "Regulatory",
+    "ESG": "Regulatory", "Governance": "Regulatory",
+    "Supply": "Operational", "Cybersecurity": "Operational",
+}
+
+
+def _normalize_risks(risks: list) -> list:
+    out = []
+    for r in risks or []:
+        if r.get("assessed") is False or r.get("score") is None:
+            continue   # "Not assessed" — no score, nothing to scope against
+        c = dict(r)
+        c["rag_status"] = _RAG_WORD.get(c.get("rag_status"), c.get("rag_status") or "Green")
+        c["category"] = _SOX_CATEGORY.get(c.get("category", ""), c.get("category", ""))
+        out.append(c)
+    return out
+
+
 def compute_input_hash(forecast: dict, risk_scores: dict, ratios: dict, segments: Optional[list] = None) -> str:
     """
     SHA-256 fingerprint of key inputs so a changed hash triggers auto-rescoping.
@@ -819,7 +850,7 @@ def compute_input_hash(forecast: dict, risk_scores: dict, ratios: dict, segments
         "fc": [round(f.get("point", 0), 2) for f in forecast.get("forecasts", [])],
         "risks": sorted(
             [(r.get("name", ""), round(r.get("score", 0), 1), r.get("rag_status", ""))
-             for r in risk_scores.get("risks", [])],
+             for r in _normalize_risks(risk_scores.get("risks", []))],
             key=lambda x: x[0],
         ),
         "rev": round(ratios.get("revenue_now") or 0, 0),
