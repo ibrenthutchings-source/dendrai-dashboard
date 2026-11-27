@@ -23,6 +23,11 @@ FACTORS = [
 ]
 
 
+def T(out):
+    """Year-over-year (trend) evidence only — the standing baselines are tested separately."""
+    return {tx: [e for e in evs if e["trend"]] for tx, evs in out["evidence"].items() if any(e["trend"] for e in evs)}
+
+
 def _tenk(headings, bodies=None, toc=True):
     bodies = bodies or {}
     parts = ["Annual Report", "Table of Contents"]
@@ -63,7 +68,7 @@ def test_new_factor_is_scored_against_its_category_and_removed_is_not():
     assert set(new) == {"TX-TRD", "TX-CYB"} and all(c["points"] == r.PTS_NEW for c in new.values())
     assert out["removed"] == []
     out2 = r.analyze(_tenk(pri), _tenk(FACTORS), "2026-11-01", "2025-11-01", today=TODAY)
-    assert [x["tx"] for x in out2["removed"]] == ["TX-TRD"] and out2["evidence"] == {}
+    assert [x["tx"] for x in out2["removed"]] == ["TX-TRD"] and T(out2) == {}
 
 
 def test_hypothetical_to_realised_wording_is_escalated():
@@ -73,7 +78,7 @@ def test_hypothetical_to_realised_wording_is_escalated():
     out = r.analyze(cur, pri, "2026-11-01", "2025-11-01", today=TODAY)
     ch = [c for c in out["changes"] if c["change"] == "escalated"]
     assert len(ch) == 1 and ch[0]["tx"] == "TX-CYB" and ch[0]["points"] == r.PTS_ESCALATED
-    ev = out["evidence"]["TX-CYB"][0]
+    ev = T(out)["TX-CYB"][0]
     assert ev["points"] == 0.5 and ev["source"] == r.SOURCE and ev["trend"] is True
 
 
@@ -88,15 +93,15 @@ def test_expanded_disclosure_scores_small_and_unchanged_scores_nothing():
 def test_recency_weighting_and_category_cap():
     many = FACTORS + [f"A new ransomware campaign number {i} could disrupt our systems and expose data." for i in range(8)]
     fresh = r.analyze(_tenk(many), _tenk(FACTORS), "2026-11-01", "2025-11-01", today=TODAY)
-    assert round(sum(e["points"] for e in fresh["evidence"]["TX-CYB"]), 2) == r.MAX_POINTS_PER_CATEGORY
+    assert round(sum(e["points"] for e in T(fresh)["TX-CYB"]), 2) == r.MAX_POINTS_PER_CATEGORY
     old = r.analyze(_tenk(FACTORS + [many[-1]]), _tenk(FACTORS), "2025-02-01", "2024-02-01", today=TODAY)
-    assert old["evidence"]["TX-CYB"][0]["points"] == round(r.PTS_NEW * 0.2, 2)     # ~21 months old -> 0.2 band
+    assert T(old)["TX-CYB"][0]["points"] == round(r.PTS_NEW * 0.2, 2)     # ~21 months old -> 0.2 band
 
 
 def test_guards_prior_missing_low_parse_and_restructure():
     assert r.analyze(_tenk(FACTORS), "", "2026-11-01", today=TODAY)["status"] == "no_prior"
     few = r.analyze(_tenk(FACTORS[:3]), _tenk(FACTORS), "2026-11-01", "2025-11-01", today=TODAY)
-    assert few["status"] == "low_confidence" and few["evidence"] == {}
+    assert few["status"] == "low_confidence" and T(few) == {}
     rewritten = [
         "Quarterly dividend policy could be altered by directors at any time.",
         "Employee stock plans may produce unexpected accounting volatility for shareholders.",
@@ -110,13 +115,13 @@ def test_guards_prior_missing_low_parse_and_restructure():
         "Intercompany loans could create adverse withholding consequences.",
     ]
     out = r.analyze(_tenk(rewritten), _tenk(FACTORS), "2026-11-01", "2025-11-01", today=TODAY)
-    assert out["status"] == "structure_changed" and out["evidence"] == {}
+    assert out["status"] == "structure_changed" and T(out) == {}
 
 
 def test_unclassifiable_new_factor_is_listed_not_scored():
     cur = FACTORS + ["Zebra migration patterns could adversely affect the herd we may be unable to follow."]
     out = r.analyze(_tenk(cur), _tenk(FACTORS), "2026-11-01", "2025-11-01", today=TODAY)
-    assert out["evidence"] == {} and len(out["unclassified"]) == 1
+    assert T(out) == {} and len(out["unclassified"]) == 1
 
 
 def test_analysis_is_deterministic():
@@ -124,3 +129,56 @@ def test_analysis_is_deterministic():
     a = r.analyze(cur, pri, "2026-11-01", "2025-11-01", today=TODAY)
     b = r.analyze(cur, pri, "2026-11-01", "2025-11-01", today=TODAY)
     assert a == b
+
+
+# ── Standing baselines: Item 1A presence and Item 1C ─────────────────────────
+C1_FULL = ("Item 1C. Cybersecurity\n\nRisk management and strategy. We maintain an incident response plan and assess third-party "
+           "service provider risk. We engage a third-party assessor and run penetration testing.\n\n"
+           "Governance. The Audit Committee of our Board of Directors oversees cybersecurity risk. Our Chief Information "
+           "Security Officer reports quarterly. We have not identified any material cybersecurity incident.\n\n")
+
+
+def _with_1c(c1, headings=FACTORS):
+    return _tenk(headings).replace("Item 2. Properties", c1 + "Item 2. Properties")
+
+
+def test_single_10k_still_gets_standing_presence_evidence():
+    out = r.analyze(_tenk(FACTORS), "", "2026-11-01", today=TODAY)
+    assert out["status"] == "no_prior"
+    topics = {p["tx"] for p in out["presence"]}
+    assert {"TX-CYB", "TX-CAP", "TX-TRD", "TX-OPS", "TX-GOV"} <= topics
+    cyb = [e for e in out["evidence"]["TX-CYB"] if e["source"] == r.SOURCE]
+    assert len(cyb) == 1 and cyb[0]["points"] == r.PTS_PRESENCE and cyb[0]["trend"] is False
+
+
+def test_presence_scales_with_factor_count_and_needs_a_parsed_section():
+    many = FACTORS + [f"A ransomware attack number {i} could disrupt our systems and expose data." for i in range(3)]
+    out = r.analyze(_tenk(many), "", "2026-11-01", today=TODAY)
+    assert [p["points"] for p in out["presence"] if p["tx"] == "TX-CYB"] == [r.PTS_PRESENCE_MANY]
+    assert r.analyze("No risk factor section here at all. " * 40, "", "2026-11-01", today=TODAY)["presence"] == []
+
+
+def test_item_1c_fully_described_scores_zero_but_makes_cyber_assessed():
+    out = r.analyze(_with_1c(C1_FULL), "", "2026-11-01", today=TODAY)
+    c1 = [e for e in out["evidence"]["TX-CYB"] if e["source"] == "10-K Item 1C"]
+    assert out["item_1c"]["found"] and out["item_1c"]["checks"]["incident_disclosed"] is False
+    assert len(c1) >= 5 and sum(e["points"] for e in c1) == 0.0
+    assert out["item_1c"]["checks"]["independent_assessment"] is True
+
+
+def test_item_1c_gaps_and_disclosed_incident_add_points():
+    thin = "Item 1C. Cybersecurity\n\nWe take security seriously. We experienced a ransomware incident in the year.\n\n"
+    out = r.analyze(_with_1c(thin), "", "2026-11-01", today=TODAY)
+    c1 = {e["label"]: e["points"] for e in out["evidence"]["TX-CYB"] if e["source"] == "10-K Item 1C"}
+    assert out["item_1c"]["checks"]["incident_disclosed"] is True
+    assert c1["Board / committee oversight of cyber risk: not described"] == 0.4
+    assert c1["Named management role (CISO / security leader): not described"] == 0.3
+    assert c1["Item 1C states the company has experienced a cybersecurity incident"] == 0.8
+
+
+def test_missing_1c_only_flagged_when_required():
+    new = r.analyze(_tenk(FACTORS), "", "2026-11-01", today=TODAY)
+    assert new["item_1c"] == {"found": False, "checks": {}, "chars": 0}
+    assert any("No Item 1C" in e["label"] for e in new["evidence"]["TX-CYB"])
+    old = r.analyze(_tenk(FACTORS), "", "2022-11-01", today=TODAY)
+    assert old["item_1c"] is None and not any(e["source"] == "10-K Item 1C" for e in old["evidence"]["TX-CYB"])

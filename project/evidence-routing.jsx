@@ -74,9 +74,10 @@ function RiskFactorChanges({ data }) {
   return (
     <div>
       <div className="kicker" style={{ marginBottom: 6 }}>10-K Item 1A risk-factor changes (deterministic year-over-year diff)</div>
-      {data.status !== "ok" ? (
-        <ERBanner tone="grey">Not scored — {data.message || data.status}.</ERBanner>
-      ) : (
+      {data.status !== "ok" && (
+        <ERBanner tone="grey">Year-over-year changes not scored — {data.message || data.status}.</ERBanner>
+      )}
+      {data.status === "ok" && (
         <>
           <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 4 }}>
             {data.current?.date} 10-K ({data.current?.n_factors} factors) vs {data.prior?.date} ({data.prior?.n_factors}); {data.matched} matched.
@@ -108,6 +109,34 @@ function RiskFactorChanges({ data }) {
             </details>
           )}
         </>
+      )}
+
+      {(data.presence || []).length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 4 }}>
+            Standing disclosures (baseline — a disclosed risk factor makes the category assessable; it does not imply a change):
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {data.presence.map(p => <ERChip key={p.tx}>{p.topic} · {p.n} · +{p.points}</ERChip>)}
+          </div>
+        </div>
+      )}
+
+      {data.item_1c && (
+        <div style={{ marginTop: 8 }}>
+          <div className="kicker" style={{ marginBottom: 4 }}>10-K Item 1C — Cybersecurity risk management &amp; governance</div>
+          {!data.item_1c.found ? (
+            <ERBanner tone="amber">No Item 1C section was found by the parser (required for fiscal years ending on or after 2023-12-15). Verify manually — +0.4 on Cybersecurity.</ERBanner>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {[["oversight", "Board oversight"], ["exec_role", "CISO / security leader"], ["incident_process", "Incident response"],
+                ["third_party", "Third-party risk"], ["independent_assessment", "Independent testing"]].map(([k, label]) => (
+                <ERChip key={k} tone={data.item_1c.checks[k] ? "grey" : "amber"}>{data.item_1c.checks[k] ? "✓" : "✗"} {label}</ERChip>
+              ))}
+              {data.item_1c.checks.incident_disclosed && <ERChip tone="red">Discloses a cyber incident</ERChip>}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -21,6 +21,15 @@ presence says nothing. What carries information is what CHANGED since the prior
 Points are weighted by the age of the CURRENT 10-K (event_risk_map recency
 bands) and capped per category, like the 8-K items.
 
+Two STANDING (non-trend) evidence sources make categories that no event ever
+touches assessable instead of silently "Not assessed":
+
+    Item 1A presence   a category with classified risk factors in the current
+                       10-K carries a small baseline (+0.3, or +0.5 for 3+)
+    Item 1C            Cybersecurity risk management & governance (required for
+                       fiscal years ending on/after 2023-12-15) is checked
+                       against fixed criteria — see extract_1c_checks()
+
 Honest limits (all surfaced to the reviewer, never silently scored):
   * Headings are recovered from plain text (bold formatting is lost), so the
     splitter is heuristic. Fewer than MIN_FACTORS factors from either filing ->
@@ -45,6 +54,8 @@ STRUCTURE_MIN_MATCH = 0.4
 MATCH_JACCARD = 0.55
 EXPANDED_RATIO = 1.5
 PTS_NEW, PTS_ESCALATED, PTS_EXPANDED = 0.3, 0.5, 0.2
+PTS_PRESENCE, PTS_PRESENCE_MANY, PRESENCE_MANY = 0.3, 0.5, 3
+ITEM_1C_REQUIRED_FROM = "2024-01-01"   # 10-Ks for fiscal years ending on/after 2023-12-15
 MAX_POINTS_PER_CATEGORY = 1.5
 MAX_SECTION_CHARS = 600_000
 
@@ -102,6 +113,54 @@ def extract_item_1a(text: str) -> str:
         if len(sec) > len(best):
             best = sec
     return best[:MAX_SECTION_CHARS]
+
+
+def extract_item_1c(text: str) -> str:
+    """Item 1C (Cybersecurity). As with 1A, the first match is usually the table
+    of contents, so the longest candidate wins."""
+    if not text:
+        return ""
+    starts = [m.start() for m in re.finditer(r"item\s*1c[\.\s:—\-–]*cybersecurity", text, flags=re.I)]
+    stop = re.compile(r"item\s*2[\.\s:—\-–]*properties|item\s*3[\.\s:—\-–]*legal", re.I)
+    best = ""
+    for st in starts:
+        m = stop.search(text, st + 200)
+        sec = text[st: m.start() if m else min(len(text), st + 60_000)]
+        if len(sec) > len(best):
+            best = sec
+    return best[:80_000]
+
+
+_C1_NEG_INCIDENT = re.compile(
+    r"(?:have|has|had) not (?:identified|experienced|detected|encountered)|no (?:material )?(?:cybersecurity )?incidents?|"
+    r"not (?:currently )?aware of any|did not experience", re.I)
+_C1_POS_INCIDENT = re.compile(
+    r"(?:we|the company)\s+(?:have |has |had )?(?:experienced|suffered|identified|detected|were (?:the )?(?:subject|victim|target))"
+    r"[^.]{0,80}?(?:incident|attack|breach|intrusion|ransomware)", re.I)
+
+# (key, label, regex that must match for the control to count as disclosed, points when absent)
+C1_CHECKS: list[tuple[str, str, str, float]] = [
+    ("oversight", "Board / committee oversight of cyber risk",
+     r"(?:board of directors|audit committee|committee of the board|board)[^.]{0,200}(?:oversee|oversight|responsib|review)", 0.4),
+    ("exec_role", "Named management role (CISO / security leader)",
+     r"chief information security officer|\bciso\b|chief security officer|head of (?:information |cyber)?security|vice president[^.]{0,40}security", 0.3),
+    ("incident_process", "Incident-response process described",
+     r"incident[- ]response|incident management|response plan|cyber(?:security)? incident (?:plan|process)", 0.3),
+    ("third_party", "Third-party / vendor cyber risk process",
+     r"third[- ]party|service provider|vendor|supplier", 0.3),
+]
+
+
+def extract_1c_checks(section: str) -> dict:
+    t = re.sub(r"\s+", " ", section or "")
+    checks = {k: bool(re.search(pat, t, re.I)) for k, _, pat, _ in C1_CHECKS}
+    pos = bool(_C1_POS_INCIDENT.search(t))
+    # A sentence like "we have not experienced a material incident" also matches the
+    # positive pattern; only count an incident when no negation is present.
+    checks["incident_disclosed"] = pos and not _C1_NEG_INCIDENT.search(t)
+    checks["independent_assessment"] = bool(re.search(
+        r"third[- ]party (?:assessor|auditor|consultant|expert)|penetration test|independent (?:assessment|review|audit)|tabletop", t, re.I))
+    return checks
 
 
 def _paragraphs(section: str) -> list[str]:
@@ -188,7 +247,8 @@ def analyze(current_text: str, prior_text: str, current_date: str = "",
             current_acc: str = "", prior_acc: str = "") -> dict:
     """Diff two 10-Ks' Item 1A. `*_text` are the full plain-text filings (or
     already-extracted sections). Returns the full result incl. `evidence`."""
-    cur_sec = extract_item_1a(current_text) or current_text or ""
+    cur_ex = extract_item_1a(current_text)
+    cur_sec = cur_ex or current_text or ""
     pri_sec = extract_item_1a(prior_text) or prior_text or ""
     cur, pri = split_risk_factors(cur_sec), split_risk_factors(pri_sec)
     result = {
@@ -196,21 +256,57 @@ def analyze(current_text: str, prior_text: str, current_date: str = "",
         "current": {"date": current_date, "accession": current_acc, "n_factors": len(cur)},
         "prior": {"date": prior_date, "accession": prior_acc, "n_factors": len(pri)},
         "matched": 0, "changes": [], "removed": [], "unclassified": [], "by_topic": {}, "evidence": {},
+        "presence": [], "item_1c": None,
     }
+
+    # ── standing evidence: independent of any prior filing ───────────────
+    if cur_ex and len(cur) >= MIN_FACTORS:
+        topics: dict[str, dict] = {}
+        for c in cur:
+            k = classify(c["heading"], c["body"])
+            if k:
+                d = topics.setdefault(k["tx"], {"topic": k["topic"], "n": 0})
+                d["n"] += 1
+        for tx, d in topics.items():
+            result["by_topic"][tx] = d["n"]
+            pts = PTS_PRESENCE_MANY if d["n"] >= PRESENCE_MANY else PTS_PRESENCE
+            result["presence"].append({"tx": tx, "topic": d["topic"], "n": d["n"], "points": pts})
+            result["evidence"].setdefault(tx, []).append(rt.ev(
+                SOURCE, f"Item 1A discloses {d['n']} standing risk factor(s) on {d['topic'].lower()} (baseline; no change implied)",
+                pts, observed={"n": d["n"], "topic": d["topic"], "accession": current_acc}))
+    if current_text:
+        sec_1c = extract_item_1c(current_text)
+        required = bool(current_date) and current_date[:10] >= ITEM_1C_REQUIRED_FROM
+        if sec_1c:
+            checks = extract_1c_checks(sec_1c)
+            result["item_1c"] = {"found": True, "checks": checks, "chars": len(sec_1c)}
+            for key, label, _, pts in C1_CHECKS:
+                result["evidence"].setdefault("TX-CYB", []).append(rt.ev(
+                    "10-K Item 1C", f"{label}: {'described' if checks[key] else 'not described'}",
+                    0.0 if checks[key] else pts, observed=checks[key]))
+            if checks["incident_disclosed"]:
+                result["evidence"].setdefault("TX-CYB", []).append(rt.ev(
+                    "10-K Item 1C", "Item 1C states the company has experienced a cybersecurity incident",
+                    0.8, observed=True))
+            if checks["independent_assessment"]:
+                result["evidence"].setdefault("TX-CYB", []).append(rt.ev(
+                    "10-K Item 1C", "Independent assessment / testing of the cyber programme is described", 0.0, observed=True))
+        elif required:
+            result["item_1c"] = {"found": False, "checks": {}, "chars": 0}
+            result["evidence"].setdefault("TX-CYB", []).append(rt.ev(
+                "10-K Item 1C", "No Item 1C Cybersecurity section found by the parser (required for fiscal years ending on/after 2023-12-15) — verify manually",
+                0.4, observed=False))
+
     if not pri_sec:
         result.update(status="no_prior", message="Only one 10-K available — no year-over-year Item 1A comparison")
         return result
     if len(cur) < MIN_FACTORS or len(pri) < MIN_FACTORS:
         result.update(status="low_confidence",
-                      message=f"Only {len(cur)} / {len(pri)} risk factors could be separated (need ≥{MIN_FACTORS} in both) — nothing scored")
+                      message=f"Only {len(cur)} / {len(pri)} risk factors could be separated (need ≥{MIN_FACTORS} in both) — year-over-year changes not scored")
         return result
 
     pairs = match_factors(cur, pri)
     result["matched"] = len(pairs)
-    for c in cur:
-        k = classify(c["heading"], c["body"])
-        if k:
-            result["by_topic"][k["tx"]] = result["by_topic"].get(k["tx"], 0) + 1
     if len(pairs) / len(cur) < STRUCTURE_MIN_MATCH:
         result.update(status="structure_changed",
                       message=f"Only {len(pairs)} of {len(cur)} current factors match the prior 10-K — the section was restructured; diff not scored")
