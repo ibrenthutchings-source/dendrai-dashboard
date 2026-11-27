@@ -383,6 +383,20 @@ function GovernanceCard({ governance }) {
       </div>
 
       <div style={{ border: "1px solid var(--line, #e4e4e7)", borderRadius: 6, padding: "8px 10px" }}>
+        <div className="kicker" style={{ marginBottom: 4 }}>Industry comparison · SIC peers</div>
+        {g.peers && Object.keys(g.peers.comparison || {}).length ? (
+          <div style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+            {Object.entries(g.peers.comparison).map(([name, c]) => {
+              const isPct = name === "Gross margin" || name === "Revenue growth";
+              const f = (v) => isPct ? `${(v * 100).toFixed(1)}%` : v.toFixed(2);
+              return <div key={name}>{name}: <b>{f(c.subject)}</b> vs peer median <b>{f(c.median)}</b> <span style={{ color: "var(--ink-3)" }}>(n={c.n})</span></div>;
+            })}
+            <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 4 }}>{g.peers.source}. Medians need ≥3 peers per metric; a gap here means no comparison was scored.</div>
+          </div>
+        ) : <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>No SIC-peer comparison was available — fewer than 3 peers returned data, or the peer fetch failed.</div>}
+      </div>
+
+      <div style={{ border: "1px solid var(--line, #e4e4e7)", borderRadius: 6, padding: "8px 10px" }}>
         <div className="kicker" style={{ marginBottom: 4 }}>Say-on-pay · 8-K Item 5.07 / proxy</div>
         <div style={{ fontSize: 11.5, lineHeight: 1.5 }}>
           {sop ? <><b>{sop.rationale}</b> <span style={{ color: "var(--ink-3)" }}>(vote reported {sop.date})</span></>

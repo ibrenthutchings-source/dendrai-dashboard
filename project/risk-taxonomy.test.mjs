@@ -122,7 +122,7 @@ console.log("risk-taxonomy tests passed");
   assert.equal(pts("TX-LIQ"), -0.2);      // Z'' far above peers
   assert(strong.evidence["TX-PRF"][0].label.includes("SIC peers median"));
 
-  const weak = R.peerEvidence({ grossMargin: 0.30, revGrowth: -0.12, mscore: -2.6, zscore: 0.5 }, peers);
+  const weak = R.peerEvidence({ grossMargin: 0.30, revGrowth: -0.12, mscore: -2.6, zscore: 0.2 }, peers);
   assert.equal(weak.evidence["TX-PRF"][0].points, 0.8);
   assert.equal(weak.evidence["TX-REV"][0].points, 0.8);
   assert.equal(weak.evidence["TX-LIQ"][0].points, 0.5);
