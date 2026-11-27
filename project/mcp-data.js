@@ -327,6 +327,11 @@ window.MCP = (function () {
     return _post('/edgar/comment-letters', { ticker });
   }
 
+  /** Deterministic 10-K Item 1A year-over-year diff (risk_factor_intel.py). */
+  async function fetchRiskFactorChanges(ticker) {
+    return _post('/edgar/risk-factor-changes', { ticker });
+  }
+
   async function fetchPeerBenchmarks(ticker) {
     return _post('/edgar/peers', { ticker });
   }
@@ -1253,6 +1258,7 @@ window.MCP = (function () {
     map8kToCemEvents,
     eightKRoutingSummary,
     fetchCommentLetters,
+    fetchRiskFactorChanges,
     // AI-augmented (#1–#4b)
     aiEnabled,
     aiGate1Recommend,

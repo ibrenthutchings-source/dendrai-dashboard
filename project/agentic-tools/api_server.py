@@ -119,6 +119,7 @@ from edgar_tool import _8K_ITEMS as EDGAR_8K_ITEMS
 import db
 import event_risk_map
 import governance_intel
+import risk_factor_intel
 import embedding_util
 import control_plane
 import manual_financials_tool
@@ -2842,6 +2843,33 @@ def edgar_comment_letters(req: TickerRequest):
             "letters": letters,
             "evidence": governance_intel.comment_letters_to_evidence(letters, topics_by_acc),
         }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/edgar/risk-factor-changes")
+@_heavy_endpoint
+def edgar_risk_factor_changes(req: TickerRequest):
+    """Deterministic year-over-year diff of 10-K Item 1A (risk_factor_intel):
+    new / escalated-wording / expanded factors scored against taxonomy
+    categories; removed and unclassifiable factors are listed, not scored."""
+    try:
+        meta, sub = get_company_info(req.ticker)
+        filings = parse_filings(sub, {"10-K"})["10-K"][:2]
+        if not filings:
+            return {"ticker": req.ticker.upper(), "status": "no_10k", "message": "No 10-K on file for this filer",
+                    "changes": [], "removed": [], "unclassified": [], "by_topic": {}, "evidence": {}}
+        cur_text = fetch_filing_text(meta["cik"], filings[0]) or ""
+        pri_text = fetch_filing_text(meta["cik"], filings[1]) if len(filings) > 1 else ""
+        result = risk_factor_intel.analyze(
+            cur_text, pri_text or "", filings[0]["date"], filings[1]["date"] if len(filings) > 1 else "",
+            current_acc=filings[0]["accession_number"],
+            prior_acc=filings[1]["accession_number"] if len(filings) > 1 else "")
+        del cur_text, pri_text
+        result["ticker"] = req.ticker.upper()
+        return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

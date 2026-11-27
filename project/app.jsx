@@ -130,16 +130,16 @@ function buildSignalEvidence(allSigs, rssSigs) {
 // Wait (bounded) for the DEF 14A and SEC comment-letter fetches and fold their
 // evidence in. A timeout or failure is recorded as an evidence gap — the
 // affected categories then stay "Not assessed" rather than getting a default.
-async function awaitGovernanceEvidence(proxyP, commentP, gaps, sink = {}, timeoutMs = 60000) {
-  const waits = [proxyP, commentP].map(p => p || Promise.reject(new Error("not requested")));
+async function awaitGovernanceEvidence(proxyP, commentP, rfP, gaps, sink = {}, timeoutMs = 60000) {
+  const waits = [proxyP, commentP, rfP].map(p => p || Promise.reject(new Error("not requested")));
   const timeout = new Promise(r => setTimeout(() => r("timeout"), timeoutMs));
   const settled = await Promise.race([Promise.allSettled(waits), timeout]);
   if (settled === "timeout") {
-    gaps.push(`DEF 14A / SEC comment-letter fetch did not finish within ${timeoutMs / 1000}s — Board & Executive Governance and Regulatory categories rest on other evidence only`);
+    gaps.push(`DEF 14A / SEC comment-letter / 10-K Item 1A fetch did not finish within ${timeoutMs / 1000}s — Governance, Regulatory and risk-factor evidence rest on other sources only`);
     return [];
   }
   const maps = [];
-  const [pr, cr] = settled;
+  const [pr, cr, rr] = settled;
   if (pr.status === "fulfilled") {
     const ev = pr.value?.governance?.evidence;
     sink.governanceKris = pr.value?.governance?.kris || null;
@@ -150,6 +150,11 @@ async function awaitGovernanceEvidence(proxyP, commentP, gaps, sink = {}, timeou
     if (cr.value?.evidence && Object.keys(cr.value.evidence).length) maps.push(cr.value.evidence);
     else gaps.push("No SEC comment-letter activity on file for this filer in the last 36 months — no regulatory-comment evidence either way");
   } else if (cr.reason?.message !== "not requested") gaps.push(`SEC comment letters unavailable: ${cr.reason?.message || "error"}`);
+  if (rr.status === "fulfilled") {
+    sink.riskFactorChanges = rr.value || null;
+    if (rr.value?.evidence && Object.keys(rr.value.evidence).length) maps.push(rr.value.evidence);
+    if (rr.value && rr.value.status !== "ok") gaps.push(`10-K Item 1A: ${rr.value.message || rr.value.status}`);
+  } else if (rr.reason?.message !== "not requested") gaps.push(`10-K Item 1A comparison unavailable: ${rr.reason?.message || "error"}`);
   return maps;
 }
 
@@ -1381,7 +1386,7 @@ function App() {
     // RISK_ENGINE.scoreTaxonomy, so no source can double-count another.
     let _eventRouting = { gateFlags: [], unrouted: [] };
     let _factorsResult = null;
-    let _proxyPromise = null, _commentPromise = null;
+    let _proxyPromise = null, _commentPromise = null, _rfPromise = null;
     const _evidenceGaps = [];
 
     // Private companies (synthetic PVT-<SLUG> ticker, see PrivateCompanyForm /
@@ -1722,6 +1727,7 @@ function App() {
         const _peerPromise = MCP.fetchPeerBenchmarks(cfg.ticker);
         _proxyPromise = MCP.fetchProxyData(cfg.ticker);
         _commentPromise = MCP.fetchCommentLetters(cfg.ticker);
+        _rfPromise = MCP.fetchRiskFactorChanges(cfg.ticker);
         Promise.allSettled([_proxyPromise, _peerPromise]).then(([proxyRes, peerRes]) => {
           if (proxyRes.status === "fulfilled") { setGovData(proxyRes.value); setGovFetchError(null); }
           if (peerRes.status  === "fulfilled") { setGovPeerData(peerRes.value); setGovPeerError(null); }
@@ -1751,7 +1757,7 @@ function App() {
         // were fire-and-forget and never reached the register at all.
         if (!isPrivateTicker) {
           setLiveStatus("Waiting for DEF 14A / SEC comment letters…");
-          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _evidenceGaps, _eventRouting));
+          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _rfPromise, _evidenceGaps, _eventRouting));
         } else {
           _evidenceGaps.push("Private company: no SEC filings, proxy or comment letters — filing-based categories are Not assessed");
         }
@@ -1896,6 +1902,7 @@ function App() {
         // Same evidence sources as MCP mode, best-effort (they need the bridge).
         const _liveProxyP = MCP.fetchProxyData(cfg.ticker);
         const _liveCommentP = MCP.fetchCommentLetters(cfg.ticker);
+        const _liveRfP = MCP.fetchRiskFactorChanges(cfg.ticker);
         _liveProxyP.catch(() => {}); _liveCommentP.catch(() => {});
         const _liveMaps = [...(profileRef.current.evidenceMaps || [])];
         try {
@@ -1925,7 +1932,7 @@ function App() {
           }
         } catch(e) { /* 8-K fetch optional in Live mode — requires MCP bridge */ }
 
-        _liveMaps.push(...await awaitGovernanceEvidence(_liveProxyP, _liveCommentP, _evidenceGaps, _eventRouting));
+        _liveMaps.push(...await awaitGovernanceEvidence(_liveProxyP, _liveCommentP, _liveRfP, _evidenceGaps, _eventRouting));
         {
           const sc = RISK_ENGINE.scoreTaxonomy(_liveMaps);
           const segKeep = (profileRef.current.risks || []).filter(r => r.segment_name);
@@ -2026,7 +2033,7 @@ function App() {
       blockMsg: null,
       dataQuality: _dq,
       // Board rotation / say-on-pay context for the Gate 1 governance card.
-      governance: { kris: _routing.governanceKris || null, boardRotation: _routing.boardRotation || null, sayOnPay: _routing.sayOnPay || null },
+      governance: { kris: _routing.governanceKris || null, boardRotation: _routing.boardRotation || null, sayOnPay: _routing.sayOnPay || null, riskFactors: _routing.riskFactorChanges || null },
     };
     const forcedFlags = routingPayload.gateFlags.filter(f => f.flag === "forces_gate_signoff");
     const stage2Trace = buildTrace({

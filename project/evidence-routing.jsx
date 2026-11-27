@@ -66,6 +66,53 @@ function detailLine(item, d) {
   return null;
 }
 
+
+function RiskFactorChanges({ data }) {
+  if (!data) return null;
+  const changes = data.changes || [];
+  const tone = (c) => (c === "escalated" ? "red" : c === "new" ? "amber" : "grey");
+  return (
+    <div>
+      <div className="kicker" style={{ marginBottom: 6 }}>10-K Item 1A risk-factor changes (deterministic year-over-year diff)</div>
+      {data.status !== "ok" ? (
+        <ERBanner tone="grey">Not scored — {data.message || data.status}.</ERBanner>
+      ) : (
+        <>
+          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 4 }}>
+            {data.current?.date} 10-K ({data.current?.n_factors} factors) vs {data.prior?.date} ({data.prior?.n_factors}); {data.matched} matched.
+            New +0.3, escalated wording (hypothetical → realised) +0.5, expanded ≥1.5× +0.2, weighted by filing age, max 1.5 per category. Removed and unclassified factors are listed, not scored.
+          </div>
+          {changes.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--ink-3)" }}>No new, escalated or expanded risk factors versus the prior 10-K.</div>
+          ) : (
+            <table style={{ width: "100%", fontSize: 11.5, borderCollapse: "collapse" }}>
+              <thead><tr style={{ textAlign: "left", color: "var(--ink-3)" }}><th style={{ padding: "3px 6px" }}>Change</th><th>Risk factor</th><th>Category</th><th>Points</th></tr></thead>
+              <tbody>
+                {changes.map((c, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid var(--line, #e4e4e7)", verticalAlign: "top" }} title={c.rationale}>
+                    <td style={{ padding: "4px 6px" }}><ERChip tone={tone(c.change)}>{c.change}</ERChip></td>
+                    <td>{c.heading}</td>
+                    <td>{c.topic ? <>{c.topic} <span style={{ color: "var(--ink-3)" }}>({c.tx})</span></> : <span style={{ color: "var(--ink-3)" }}>no topic rule matched — not scored</span>}</td>
+                    <td>{c.tx ? `+${c.weighted_points ?? c.points}` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {(data.removed || []).length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ fontSize: 11.5, cursor: "pointer", color: "var(--ink-3)" }}>{data.removed.length} factor(s) removed since the prior 10-K (not scored)</summary>
+              <ul style={{ fontSize: 11.5, margin: "4px 0 0 16px", color: "var(--ink-3)" }}>
+                {data.removed.map((x, i) => <li key={i}>{x.heading}{x.topic ? ` — ${x.topic}` : ""}</li>)}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function EvidenceRoutingReview({ routing, notAssessed = [], risks = [], onAckGateFlag }) {
   const r = routing || {};
   const events = r.events || [];
@@ -167,6 +214,8 @@ function EvidenceRoutingReview({ routing, notAssessed = [], risks = [], onAckGat
           </details>
         )}
       </div>
+
+      <RiskFactorChanges data={r.governance?.riskFactors} />
 
       {notAssessed.length > 0 && (
         <div>
@@ -315,6 +364,7 @@ function DecisionBasis({ routing, notAssessed = [], risks = [], gateNum = 1, com
           <Stat label="Scored" value={risks.length} sub={`${counts.R || 0} R · ${counts.A || 0} A · ${counts.G || 0} G`} />
           <Stat label="Not assessed" value={notAssessed.length} tone={notAssessed.length ? "amber" : "grey"} sub="coverage gaps" />
           <Stat label="8-K routed" value={mapped} sub={`${review} review · ${(r.unrouted || []).length} not scored`} />
+          <Stat label="10-K 1A" value={r.governance?.riskFactors?.status === "ok" ? (r.governance.riskFactors.changes || []).length : "—"} sub={r.governance?.riskFactors?.status === "ok" ? "changed factors" : "not compared"} />
           <Stat label="Flags" value={flags.length + forced.length} tone={unacked ? "red" : (flags.length ? "amber" : "grey")} sub={unacked ? `${unacked} need sign-off` : "none open"} />
         </div>
       </div>
