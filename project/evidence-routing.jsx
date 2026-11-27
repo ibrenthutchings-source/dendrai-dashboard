@@ -245,8 +245,15 @@ function EvidenceRoutingReview({ routing, notAssessed = [], risks = [], onAckGat
                     <td><ERChip tone={e.mappingStatus === "mapped" ? "grey" : "amber"}>{e.mappingStatus === "review" ? "needs review" : e.mappingStatus}</ERChip>{" "}
                         {e.severity && <ERChip tone={e.severity === "P1" ? "red" : "grey"}>{e.severity}</ERChip>}</td>
                     <td>
-                      {(e.routing || []).length ? e.routing.map((x, i) => (
-                        <div key={i} title={x.rationale}><b>{x.name}</b> +{x.points} <span style={{ color: "var(--ink-3)" }}>— {x.rationale}</span></div>
+                      {(e.routing || []).length ? groupRouting(e.routing).map((g, i) => (
+                        <div key={i} style={{ marginBottom: 3 }}>
+                          <b>{g.name}</b> <b>{fmtPts(g.total)}</b>
+                          {g.rows.map((x, j) => (
+                            <div key={j} title={x.rationale} style={{ color: "var(--ink-3)", paddingLeft: 10 }}>
+                              {g.rows.length > 1 && <span>{fmtPts(x.points)} · </span>}{x.rationale}
+                            </div>
+                          ))}
+                        </div>
                       )) : <span style={{ color: "var(--ink-3)" }}>not scored</span>}
                       {(e.unscoredItems || []).map((u, i) => (
                         <div key={`u${i}`} style={{ color: "var(--ink-3)" }}>Item {u.item} not scored — {u.reason}</div>
@@ -319,6 +326,20 @@ function Stat({ label, value, tone = "grey", sub }) {
       {sub && <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{sub}</div>}
     </div>
   );
+}
+
+// One filing can route to the same category several times (CEO departure, senior-officer
+// departure, chair departure). Show each category once with its total and the reasons beneath.
+const fmtPts = (p) => `${p >= 0 ? "+" : ""}${Math.round(p * 100) / 100}`;
+function groupRouting(routing) {
+  const by = new Map();
+  for (const x of routing || []) {
+    if (!by.has(x.name)) by.set(x.name, { name: x.name, total: 0, rows: [] });
+    const g = by.get(x.name);
+    g.total += Number(x.points) || 0;
+    g.rows.push(x);
+  }
+  return [...by.values()];
 }
 
 function GovernanceCard({ governance }) {
