@@ -130,7 +130,7 @@ function buildSignalEvidence(allSigs, rssSigs) {
 // Wait (bounded) for the DEF 14A and SEC comment-letter fetches and fold their
 // evidence in. A timeout or failure is recorded as an evidence gap — the
 // affected categories then stay "Not assessed" rather than getting a default.
-async function awaitGovernanceEvidence(proxyP, commentP, rfP, gaps, sink = {}, timeoutMs = 60000) {
+async function awaitGovernanceEvidence(proxyP, commentP, rfP, gaps, sink = {}, timeoutMs = 90000) {
   const waits = [proxyP, commentP, rfP].map(p => p || Promise.reject(new Error("not requested")));
   const timeout = new Promise(r => setTimeout(() => r("timeout"), timeoutMs));
   const settled = await Promise.race([Promise.allSettled(waits), timeout]);
@@ -1727,7 +1727,9 @@ function App() {
         const _peerPromise = MCP.fetchPeerBenchmarks(cfg.ticker);
         _proxyPromise = MCP.fetchProxyData(cfg.ticker);
         _commentPromise = MCP.fetchCommentLetters(cfg.ticker);
-        _rfPromise = MCP.fetchRiskFactorChanges(cfg.ticker);
+        // Sequenced after the proxy fetch: both parse multi-MB filings server-side, and
+        // running them concurrently is what the heavy-endpoint limiter exists to prevent.
+        _rfPromise = Promise.allSettled([_proxyPromise]).then(() => MCP.fetchRiskFactorChanges(cfg.ticker));
         Promise.allSettled([_proxyPromise, _peerPromise]).then(([proxyRes, peerRes]) => {
           if (proxyRes.status === "fulfilled") { setGovData(proxyRes.value); setGovFetchError(null); }
           if (peerRes.status  === "fulfilled") { setGovPeerData(peerRes.value); setGovPeerError(null); }
@@ -1902,7 +1904,7 @@ function App() {
         // Same evidence sources as MCP mode, best-effort (they need the bridge).
         const _liveProxyP = MCP.fetchProxyData(cfg.ticker);
         const _liveCommentP = MCP.fetchCommentLetters(cfg.ticker);
-        const _liveRfP = MCP.fetchRiskFactorChanges(cfg.ticker);
+        const _liveRfP = Promise.allSettled([_liveProxyP]).then(() => MCP.fetchRiskFactorChanges(cfg.ticker));
         _liveProxyP.catch(() => {}); _liveCommentP.catch(() => {});
         const _liveMaps = [...(profileRef.current.evidenceMaps || [])];
         try {

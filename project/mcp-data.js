@@ -118,8 +118,21 @@ window.MCP = (function () {
    *   includeRss (bool), includeFred (bool)
    * @returns {Promise<object>} Full analysis result
    */
+  // A gateway error (502/503/504) usually means the service was restarting or
+  // briefly saturated, not that the analysis itself failed — retry a couple of
+  // times with backoff before giving up. Other errors are not retried.
+  async function _retryTransient(fn, delaysMs = [4000, 10000]) {
+    for (let i = 0; ; i++) {
+      try { return await fn(); }
+      catch (e) {
+        if (i >= delaysMs.length || !/: (502|503|504) /.test(String(e && e.message))) throw e;
+        await new Promise(r => setTimeout(r, delaysMs[i]));
+      }
+    }
+  }
+
   async function fetchFullAnalysis(ticker, opts = {}) {
-    return _post('/predictive/full-analysis', {
+    return _retryTransient(() => _post('/predictive/full-analysis', {
       ticker,
       industry:         opts.industry        || '',
       fred_api_key:     opts.fredApiKey      || '',
@@ -132,7 +145,7 @@ window.MCP = (function () {
       period_end:       opts.periodEnd       || '',
       persona:          opts.persona         || '',
       appetite_level:   opts.appetiteLevel   || '',
-    });
+    }));
   }
 
   // ── Risk score mapping ──────────────────────────────────────────────────────
