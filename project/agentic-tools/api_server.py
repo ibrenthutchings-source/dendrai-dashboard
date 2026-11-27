@@ -120,6 +120,7 @@ import db
 import event_risk_map
 import governance_intel
 import risk_factor_intel
+import icfr_intel
 import embedding_util
 import control_plane
 import manual_financials_tool
@@ -2867,6 +2868,12 @@ def edgar_risk_factor_changes(req: TickerRequest):
             cur_text, pri_text or "", filings[0]["date"], filings[1]["date"] if len(filings) > 1 else "",
             current_acc=filings[0]["accession_number"],
             prior_acc=filings[1]["accession_number"] if len(filings) > 1 else "")
+        # Same filing, second deterministic pass: Item 9A controls conclusion,
+        # auditor attestation and going-concern language (icfr_intel).
+        icfr = icfr_intel.analyze(cur_text, filings[0]["date"], filings[0]["accession_number"])
+        for tx, items in icfr.pop("evidence").items():
+            result["evidence"].setdefault(tx, []).extend(items)
+        result["icfr"] = icfr
         del cur_text, pri_text
         result["ticker"] = req.ticker.upper()
         return result

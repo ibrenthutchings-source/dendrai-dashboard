@@ -122,6 +122,33 @@ function RiskFactorChanges({ data }) {
         </div>
       )}
 
+      {data.icfr && (
+        <div style={{ marginTop: 8 }}>
+          <div className="kicker" style={{ marginBottom: 4 }}>10-K Item 9A — internal control &amp; going concern</div>
+          {!data.icfr.item_9a?.found ? (
+            <ERBanner tone="grey">No Item 9A section was found by the parser — internal-control status is not assessed from the 10-K.</ERBanner>
+          ) : (() => {
+            const a = data.icfr.item_9a;
+            const yn = (v, good, bad) => v === true ? good : v === false ? bad : null;
+            const chips = [
+              a.icfr_effective === false ? <ERChip key="i" tone="red">ICFR NOT effective</ERChip> : a.icfr_effective === true ? <ERChip key="i">✓ ICFR effective</ERChip> : <ERChip key="i" tone="amber">ICFR conclusion not found</ERChip>,
+              a.disclosure_controls_effective === false ? <ERChip key="d" tone="red">Disclosure controls NOT effective</ERChip> : a.disclosure_controls_effective === true ? <ERChip key="d">✓ Disclosure controls effective</ERChip> : null,
+              a.material_weakness ? <ERChip key="m" tone="red">Material weakness</ERChip> : null,
+              a.weakness_remediated ? <ERChip key="r" tone="amber">Prior weakness remediated</ERChip> : null,
+              a.icfr_changes ? <ERChip key="c" tone="amber">Change in ICFR</ERChip> : null,
+              <ERChip key="a" tone={a.attestation === "exempt" ? "amber" : "grey"}>{a.attestation === "attested" ? "✓ Auditor attestation" : a.attestation === "exempt" ? "No attestation (exempt)" : "Attestation not found"}</ERChip>,
+            ].filter(Boolean);
+            return <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{chips}</div>;
+          })()}
+          {data.icfr.going_concern?.status === "substantial_doubt" && (
+            <div style={{ marginTop: 6 }}><ERBanner tone="red"><b>Going concern:</b> the 10-K states substantial doubt about the entity's ability to continue — Liquidity +2.5.</ERBanner></div>
+          )}
+          {data.icfr.going_concern?.status === "alleviated" && (
+            <div style={{ marginTop: 6 }}><ERBanner tone="amber">Going-concern doubt was raised and alleviated by management's plans — Liquidity +0.8.</ERBanner></div>
+          )}
+        </div>
+      )}
+
       {data.item_1c && (
         <div style={{ marginTop: 8 }}>
           <div className="kicker" style={{ marginBottom: 4 }}>10-K Item 1C — Cybersecurity risk management &amp; governance</div>
