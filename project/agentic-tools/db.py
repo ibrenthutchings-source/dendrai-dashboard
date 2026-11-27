@@ -6571,6 +6571,39 @@ def get_run_history(ticker: str, limit: int = 20) -> list:
     return _run(_do) or []
 
 
+def get_risk_score_history(ticker: str, limit: int = 5) -> dict:
+    """{risk_ref: [{run_id, run_at, score}, ...]} oldest-first, from the last
+    `limit` COMPLETED runs of a ticker. This is the register's real trend data:
+    one point per prior run, no interpolation. A risk absent from a run (e.g. a
+    category that was Not assessed then) simply has no point for it."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH ticker_runs AS (
+                        SELECT id, run_at FROM risk_loop_runs
+                        WHERE ticker = %s AND completed = TRUE
+                        ORDER BY run_at DESC LIMIT %s
+                    )
+                    SELECT rs.risk_ref, rs.score, tr.run_at, tr.id
+                    FROM ticker_runs tr
+                    JOIN risk_scores rs ON rs.run_id = tr.id
+                    WHERE rs.risk_ref IS NOT NULL AND rs.score IS NOT NULL
+                    ORDER BY tr.run_at ASC
+                    """,
+                    (ticker.upper(), limit),
+                )
+                out: dict = {}
+                for ref, score, run_at, run_id in cur.fetchall():
+                    out.setdefault(ref, []).append({
+                        "run_id": run_id, "run_at": run_at.isoformat() if run_at else None,
+                        "score": float(score),
+                    })
+                return out
+    return _run(_do) or {}
+
+
 def get_posture_trend(ticker: str, limit: int = 20) -> list:
     """
     Completed runs for a ticker, oldest-first, each with an aggregate risk-score

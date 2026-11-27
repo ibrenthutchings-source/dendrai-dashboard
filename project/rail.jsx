@@ -87,7 +87,12 @@ function RiskTable({ risks, selectedId, onSelect }) {
                   </td>
                   <td><span className="mono" style={{color: scoreColorInk(r.score), fontWeight: 500}}>{fmt2(r.score)}</span></td>
                   <td><VelocityPill v={r.velocity}/></td>
-                  <td><Sparkline data={r.hist} w={62} h={16} color={scoreColor(r.score)} min={histMin} max={histMax}/></td>
+                  <td title={r.histSource === "runs"
+                    ? `Score over the last ${r.histRuns} run(s) plus this one`
+                    : "No prior run for this risk — line shows structural base to current score (recent-change evidence only)"}>
+                    <Sparkline data={r.hist} w={62} h={16} color={scoreColor(r.score)} min={histMin} max={histMax}/>
+                    {r.histSource !== "runs" && <span style={{fontSize: 9, color: "var(--ink-4)", marginLeft: 3}}>·</span>}
+                  </td>
                   <td><span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{r.ce}</span></td>
                 </tr>
                 {isSel && (

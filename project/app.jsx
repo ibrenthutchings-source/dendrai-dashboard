@@ -2007,6 +2007,11 @@ function App() {
     if (_p2.factorsResult) adjustedRisks = MCP.enrichRisksFromFactors(adjustedRisks, _p2.factorsResult);
     // Segment-tagged risks are company-specific additions, scored by their own tool.
     adjustedRisks = [...adjustedRisks, ...(_p2.risks || []).filter(r => r.segment_name)];
+    // Trend lines: real per-run history when prior runs exist for this ticker.
+    try {
+      const _h = await Promise.race([MCP.fetchRiskHistory(cfg.ticker), new Promise(r => setTimeout(() => r(null), 8000))]);
+      adjustedRisks = adjustedRisks.map(r => MCP.withRunHistory(r, _h?.risks?.[r.id]));
+    } catch { adjustedRisks = adjustedRisks.map(r => MCP.withRunHistory(r, null)); }
     const notAssessed = _sc.notAssessed;
     const threshold = APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5;
     const breachingIds = adjustedRisks.filter(r => r.score >= threshold).map(r => r.id);

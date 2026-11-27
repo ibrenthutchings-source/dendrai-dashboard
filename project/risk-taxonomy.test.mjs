@@ -90,4 +90,17 @@ for (const c of R.CATALOG) {
   assert.deepEqual(Object.keys(ev), ["TX-LIQ"]);
 }
 
+// ── trend lines: real run history when it exists, evidence line otherwise ───
+{
+  const risk = { id: "TX-LIQ", score: 20, hist: [10, 15, 20] };
+  const withRuns = M.withRunHistory(risk, [{ score: 8 }, { score: 12 }, { score: 16 }]);
+  assert.deepEqual(withRuns.hist, [8, 12, 16, 20]);
+  assert.equal(withRuns.histSource, "runs");
+  assert.equal(withRuns.histRuns, 3);
+  const none = M.withRunHistory(risk, undefined);
+  assert.deepEqual(none.hist, [10, 15, 20]);
+  assert.equal(none.histSource, "evidence");
+  assert.equal(M.withRunHistory(risk, Array.from({ length: 9 }, (_, i) => ({ score: i + 1 }))).hist.length, 6);
+}
+
 console.log("risk-taxonomy tests passed");

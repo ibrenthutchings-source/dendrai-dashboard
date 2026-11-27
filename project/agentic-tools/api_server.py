@@ -3042,6 +3042,15 @@ def history_posture_trend(
     return {"ticker": ticker.upper(), "count": len(rows), "runs": rows}
 
 
+@app.get("/history/runs/{ticker}/risk-trend")
+def history_risk_trend(ticker: str, limit: int = Query(default=5, ge=1, le=20)):
+    """Per-risk score history across a ticker's last completed runs (oldest
+    first) — the data behind the Risk Register trend lines."""
+    if not db.is_available():
+        raise HTTPException(status_code=503, detail="Database not configured (DATABASE_URL not set)")
+    return {"ticker": ticker.upper(), "risks": db.get_risk_score_history(ticker, limit=limit)}
+
+
 @app.get("/history/runs/{ticker}/{run_id}")
 def history_run_detail(ticker: str, run_id: int):
     """Full detail for a single run including risk scores and Beneish M-Score."""

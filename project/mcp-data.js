@@ -332,6 +332,24 @@ window.MCP = (function () {
     return _post('/edgar/risk-factor-changes', { ticker });
   }
 
+  /** Per-risk score history over prior completed runs: { risks: {risk_ref: [{score,run_at}]} }. */
+  async function fetchRiskHistory(ticker) {
+    return _get(`/history/runs/${encodeURIComponent(ticker)}/risk-trend?limit=5`);
+  }
+
+  /**
+   * Trend line for one risk. With >=1 prior run it is REAL history: the prior
+   * runs' scores for this risk followed by the current score. Without one
+   * (first run, risk newly assessed, DB off) it falls back to the evidence-
+   * derived line (structural base -> current score) and says so via histSource.
+   * Nothing is interpolated between runs.
+   */
+  function withRunHistory(risk, series) {
+    const prior = (series || []).map(p => p.score).filter(Number.isFinite).slice(-5);
+    if (!prior.length) return { ...risk, histSource: 'evidence', histRuns: 0 };
+    return { ...risk, hist: [...prior, risk.score], histSource: 'runs', histRuns: prior.length };
+  }
+
   async function fetchPeerBenchmarks(ticker) {
     return _post('/edgar/peers', { ticker });
   }
@@ -1258,6 +1276,8 @@ window.MCP = (function () {
     map8kToCemEvents,
     eightKRoutingSummary,
     fetchCommentLetters,
+    fetchRiskHistory,
+    withRunHistory,
     fetchRiskFactorChanges,
     // AI-augmented (#1–#4b)
     aiEnabled,
