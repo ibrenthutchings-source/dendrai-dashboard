@@ -37,6 +37,7 @@ from datetime import date
 from typing import Callable, Optional
 
 import risk_taxonomy as rt
+import event_risk_map as erm
 
 # ── thresholds (documented above; investor-policy, not legal) ──────────────
 TENURE_LONG_YEARS = 10
@@ -87,7 +88,9 @@ def parse_director_tenures(text: str, today: Optional[date] = None) -> list[int]
 def parse_director_ages(text: str) -> list[int]:
     t = re.sub(r"\s+", " ", text or "")
     ages = []
-    for m in re.finditer(r"(?:\bage\b\s*[:\-–]?\s*|,\s*age\s+)(\d{2})\b", t, flags=re.I):
+    # A policy's age ("retirement age 72", "after reaching age 75") is not a director's age.
+    _policy_ctx = r"(?<!retirement\s)(?<!mandatory\s)(?<!reaching\s)(?<!attaining\s)(?<!after\s)(?<!beyond\s)(?<!past\s)(?<!over\s)(?<!of\s)"
+    for m in re.finditer(_policy_ctx + r"(?:\bage\b\s*[:\-–]?\s*|,\s*age\s+)(\d{2})\b", t, flags=re.I):
         a = int(m.group(1))
         if 30 <= a <= 95:
             ages.append(a)
@@ -102,6 +105,41 @@ def detect_refreshment_policy(text: str) -> dict:
         "board_refreshment": bool(re.search(r"board (refreshment|renewal|succession)|refresh(ing)? the board", t)),
         "annual_board_evaluation": bool(re.search(r"(annual|yearly) (board|self|performance)[ -]?(evaluation|assessment)", t)),
     }
+
+
+def parse_policy_values(text: str) -> dict:
+    """The NUMBERS behind refreshment policies (not just their existence)."""
+    t = re.sub(r"\s+", " ", (text or "").lower())
+    ret = re.search(
+        r"(?:mandatory )?retirement age (?:of|is|at)?\s*(\d{2})|"
+        r"(?:not|no director (?:may|shall)) (?:be )?(?:nominated|stand|stands|serve)[^.]{0,80}?(?:after|beyond|over|past|reaching|attaining) (?:the )?age (?:of )?(\d{2})|"
+        r"retire[^.]{0,40}?(?:at|upon reaching) (?:the )?age (?:of )?(\d{2})", t)
+    term = re.search(
+        r"term limits? of (\d{1,2}) years|(\d{1,2})[- ]year term limit|"
+        r"maximum (?:tenure|term|service)[^.]{0,40}?(\d{1,2}) years|"
+        r"(?:may|shall) not serve (?:for )?(?:more than|longer than|beyond) (\d{1,2}) years", t)
+    indep = re.search(r"(\d{1,2}) of (?:our |the )?(\d{1,2}) (?:directors|director nominees|nominees|board members)[^.]{0,80}?independent", t)
+    first = lambda m: next((int(g) for g in m.groups() if g), None) if m else None
+    out = {
+        "retirement_age": first(ret),
+        "term_limit_years": first(term),
+        "classified_board": bool(re.search(r"classified board|staggered (?:board|terms?)|divided into three classes|class (?:i|ii|iii) directors", t)),
+        "independence": None,
+    }
+    if indep and 0 < int(indep.group(2)) <= 25 and int(indep.group(1)) <= int(indep.group(2)):
+        i, n = int(indep.group(1)), int(indep.group(2))
+        out["independence"] = {"independent": i, "total": n, "share": round(i / n, 2)}
+    return out
+
+
+def parse_say_on_pay_proxy(text: str) -> Optional[float]:
+    """Prior-year say-on-pay support stated in the proxy ("received ~94% support")."""
+    t = re.sub(r"\s+", " ", (text or "").lower())
+    m = re.search(r"(?:say[- ]on[- ]pay|advisory vote[^.]{0,80}?compensation)[^.]{0,250}?(\d{2,3}(?:\.\d+)?)\s*%", t)
+    if not m:
+        return None
+    v = float(m.group(1))
+    return round(v / 100, 3) if 0 < v <= 100 else None
 
 
 def parse_auditor_tenure(text: str, today: Optional[date] = None) -> Optional[dict]:
@@ -133,6 +171,8 @@ def compute_kris(sections: dict, today: Optional[date] = None) -> dict:
         "confidence": "none" if n == 0 else "low" if n < 5 else "medium" if n < 8 else "high",
         "policies": detect_refreshment_policy(blob),
         "auditor": parse_auditor_tenure(blob, today),
+        "policy_values": parse_policy_values(blob),
+        "say_on_pay_prior": parse_say_on_pay_proxy(blob),
     }
     if n:
         kris.update({
@@ -140,10 +180,24 @@ def compute_kris(sections: dict, today: Optional[date] = None) -> dict:
             "max_tenure_years": max(tenures),
             "share_over_10y": round(sum(1 for y in tenures if y >= TENURE_LONG_YEARS) / n, 2),
             "share_over_15y": round(sum(1 for y in tenures if y >= TENURE_VERY_LONG_YEARS) / n, 2),
+            # Board ROTATION: how recently the board has been refreshed.
+            "share_joined_3y": round(sum(1 for y in tenures if y <= 3) / n, 2),
+            "share_joined_5y": round(sum(1 for y in tenures if y <= 5) / n, 2),
+            "years_since_last_addition": min(tenures),
+            "tenure_buckets": {
+                "0-3": sum(1 for y in tenures if y <= 3),
+                "4-6": sum(1 for y in tenures if 4 <= y <= 6),
+                "7-9": sum(1 for y in tenures if 7 <= y <= 9),
+                "10-14": sum(1 for y in tenures if 10 <= y <= 14),
+                "15+": sum(1 for y in tenures if y >= 15),
+            },
         })
     if ages:
         kris["avg_age"] = round(sum(ages) / len(ages), 1)
         kris["max_age"] = max(ages)
+        ra = kris["policy_values"].get("retirement_age")
+        if ra:
+            kris["over_retirement_age"] = sum(1 for a in ages if a >= ra)
     return kris
 
 
@@ -176,7 +230,36 @@ def kris_to_evidence(kris: Optional[dict]) -> dict:
                            else ("No board-refreshment, retirement-age or term-limit policy found alongside an aged tenure profile" if stale
                                  else "No refreshment policy found (tenure profile not stale)"),
                            0.0 if has_policy else (0.4 if stale else 0.0), observed=bool(has_policy)))
+        pv = kris.get("policy_values") or {}
+        ysla = kris.get("years_since_last_addition")
+        if n >= 5 and ysla is not None:
+            items.append(rt.ev(
+                "DEF 14A",
+                f"Board rotation: newest director has served {ysla} yr(s); {round(kris['share_joined_5y']*100)}% joined in the last 5 yrs ({conf})",
+                0.6 if ysla >= 5 else 0.3 if ysla >= 3 else 0.0, observed=ysla))
+        if pv.get("term_limit_years"):
+            items.append(rt.ev("DEF 14A", f"Term limit disclosed: {pv['term_limit_years']} years", 0.0, observed=pv["term_limit_years"]))
+        if pv.get("retirement_age") and kris.get("over_retirement_age"):
+            items.append(rt.ev(
+                "DEF 14A",
+                f"{kris['over_retirement_age']} director(s) at/above the stated retirement age ({pv['retirement_age']}) — waiver or policy not applied?",
+                0.4, observed=kris["over_retirement_age"]))
+        if pv.get("classified_board"):
+            items.append(rt.ev("DEF 14A", "Classified (staggered) board — slower rotation by design", 0.2, observed=True))
+        ind = pv.get("independence")
+        if ind:
+            items.append(rt.ev(
+                "DEF 14A", f"Board independence {ind['independent']}/{ind['total']} ({round(ind['share']*100)}%)",
+                1.0 if ind["share"] < 0.5 else 0.3 if ind["share"] < 0.75 else 0.0, observed=ind["share"]))
         out["TX-GOV"] = items
+    sop = kris.get("say_on_pay_prior")
+    if sop is not None:
+        # Half weight: this is the PRIOR annual meeting, and the newer 8-K Item
+        # 5.07 result (when one exists) is the better evidence of the same vote.
+        out.setdefault("TX-GOV", []).append(rt.ev(
+            "DEF 14A",
+            f"Say-on-pay support {sop:.0%} at the last annual meeting, per proxy (fail <50%; ISS <70%; Glass Lewis <80%)",
+            round(erm.say_on_pay_points(sop) * 0.5, 2), observed={"say_on_pay_prior": sop}))
     aud = kris.get("auditor")
     if aud and aud.get("years") is not None:
         yrs = aud["years"]

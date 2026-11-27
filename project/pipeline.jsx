@@ -5,7 +5,7 @@
    ============================================================ */
 
 import { RiskApprovalReview } from "./risk-approval.jsx";
-import { EvidenceRoutingReview } from "./evidence-routing.jsx";
+import { EvidenceRoutingReview, DecisionBasis } from "./evidence-routing.jsx";
 import { ScopeApprovalReview } from "./audit-scope-review.jsx";
 import { RunHistoryPanel } from "./run-history.jsx";
 
@@ -395,6 +395,20 @@ function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, per
                 Stage 1 card, then into a tab, which made them easy to miss
                 entirely while a gate banner has the reviewer's attention.
                 Still collapsible for anyone who wants less scroll. */}
+            <DecisionBasis
+              routing={output.s2?.routing}
+              notAssessed={output.s2?.notAssessed || []}
+              risks={output.s2?.risks || []}
+              gateNum={1}
+            />
+            <PipelinePanel label="Evidence & Routing" defaultOpen={true}>
+              <EvidenceRoutingReview
+                routing={output.s2?.routing}
+                notAssessed={output.s2?.notAssessed || []}
+                risks={output.s2?.risks || []}
+                onAckGateFlag={onAckGateFlag}
+              />
+            </PipelinePanel>
             <PipelinePanel label="Fraud & Distress Signals" defaultOpen={true}>
               <FraudDistressPanel forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList} onAddObjective={onAddObjective}/>
             </PipelinePanel>
@@ -404,14 +418,6 @@ function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, per
                 peerCompareLoading={peerCompareLoading} peerCompareError={peerCompareError}
                 onAddPeerCompare={onAddPeerCompare} onRemovePeerCompare={onRemovePeerCompare}
                 onClearPeerCompare={onClearPeerCompare} onAddObjective={onAddObjective}
-              />
-            </PipelinePanel>
-            <PipelinePanel label="Evidence & Routing" defaultOpen={true}>
-              <EvidenceRoutingReview
-                routing={output.s2?.routing}
-                notAssessed={output.s2?.notAssessed || []}
-                risks={output.s2?.risks || []}
-                onAckGateFlag={onAckGateFlag}
               />
             </PipelinePanel>
             <RiskApprovalReview
@@ -430,6 +436,14 @@ function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, per
             />
           </>
         ) : (
+          <>
+          <DecisionBasis
+            routing={output.s2?.routing}
+            notAssessed={output.s2?.notAssessed || []}
+            risks={output.s2?.risks || []}
+            gateNum={2}
+            compact
+          />
           <ScopeApprovalReview
             objectives={output.s3?.objectives || []}
             approvals={scopeApprovals}
@@ -441,6 +455,7 @@ function GateCanvas({ gate, state, output, appetiteLevel, appetiteThreshold, per
             onOverrideGate={onOverride}
             onAddObjective={onAddObjective}
           />
+          </>
         )
       ) : (
         <div style={{padding: "0 22px 20px", display: "flex", flexDirection: "column", gap: 12}}>

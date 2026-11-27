@@ -595,7 +595,10 @@ window.MCP = (function () {
    */
   function eightKRoutingSummary(eightKResult) {
     const rr = eightKResult?.risk_routing || {};
-    return { evidence: rr.evidence || {}, gateFlags: rr.gate_flags || [], unrouted: rr.unrouted || [] };
+    return {
+      evidence: rr.evidence || {}, gateFlags: rr.gate_flags || [], unrouted: rr.unrouted || [],
+      boardRotation: rr.board_rotation || null, sayOnPay: rr.say_on_pay || null,
+    };
   }
 
   // ── AI-augmented endpoints (recommendations #1–#4) ───────────────────────────

@@ -166,6 +166,7 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
             <span style={{color: "var(--ink-3)", fontSize: 10}}>{controls.length} controls</span>
           )}
         </div>
+        {!expanded && <RiskDrivers risk={risk} />}
       </div>
 
       <div className="rar-td rar-td-score">
@@ -267,6 +268,9 @@ function RiskRow({ risk, approval, appetiteLevel = "AMBER", perRiskLevel = "AMBE
 
       {expanded && (
         <>
+          {risk.evidence?.length > 0 && (
+            <div className="rar-ctrl-detail-row"><RiskWhy risk={risk} /></div>
+          )}
           {controls.length > 0 && (
             <div className="rar-ctrl-detail-row">
               <div className="rar-ctrl-detail-head mono">

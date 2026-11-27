@@ -130,3 +130,66 @@ def test_per_category_event_points_are_capped():
     agg = m.aggregate_evidence([{"risk_routing": r, "date": "2026-11-20", "accession_number": "Z", "items": "x"}] * 3, TODAY)
     for tx, items in agg["evidence"].items():
         assert sum(i["points"] for i in items if i["source"] == "SEC 8-K" and "compressed" not in i["label"]) <= m.MAX_EVENT_POINTS_PER_CATEGORY + 1e-6
+
+
+# ── Item 5.07: say-on-pay ────────────────────────────────────────────────
+SOP_TABLE = ("Proposal 3. Advisory vote to approve the compensation of our named executive officers. "
+             "For Against Abstain Broker Non-Votes {f} {a} 1,200,000 9,000,000. "
+             "Proposal 4. Advisory vote on the frequency of say-on-pay votes. One Year 80,000,000 Two Years 1,000,000")
+
+
+def test_say_on_pay_support_is_for_over_for_plus_against():
+    d = m.extract_5_07_details(SOP_TABLE.format(f="60,000,000", a="40,000,000"))
+    assert d["say_on_pay_support"] == 0.6 and d["say_on_pay_for"] == 60000000
+
+
+def test_say_on_pay_tiers_and_flags():
+    for f, a, pts, flag in [("95,000,000", "5,000,000", 0.0, None), ("75,000,000", "25,000,000", 0.5, None),
+                            ("65,000,000", "35,000,000", 1.0, "say_on_pay_low"), ("40,000,000", "60,000,000", 1.5, "say_on_pay_failed")]:
+        r = _route("5.07", {"5.07": m.extract_5_07_details(SOP_TABLE.format(f=f, a=a))})
+        assert r["status"] == "mapped" and r["routes"][0]["tx"] == "TX-GOV" and r["routes"][0]["points"] == pts
+        assert (flag in r["flags"]) if flag else not r["flags"]
+
+
+def test_5_07_without_text_is_review_and_routine_vote_is_ignored():
+    assert _route("5.07", None)["status"] == "review"
+    routine = m.extract_5_07_details("Election of directors. Each nominee was elected. Ratification of auditor was approved.")
+    r = _route("5.07", {"5.07": routine})
+    assert r["status"] == "ignored" and "routine" in r["ignored"][0]["reason"]
+
+
+def test_failed_proposal_is_scored():
+    d = m.extract_5_07_details("The proposal to amend the equity plan was not approved by stockholders.")
+    r = _route("5.07", {"5.07": d})
+    assert r["status"] == "mapped" and "vote_failed" in r["flags"]
+
+
+def test_say_on_pay_flag_reaches_gate_flags_and_summary():
+    f = _filing("5.07")
+    f["risk_routing"] = _route("5.07", {"5.07": m.extract_5_07_details(SOP_TABLE.format(f="40,000,000", a="60,000,000"))})
+    agg = m.aggregate_evidence([f], today=TODAY)
+    assert [g["flag"] for g in agg["gate_flags"]] == ["say_on_pay_failed"]
+    assert agg["say_on_pay"]["rationale"].startswith("Say-on-pay support 40%")
+
+
+# ── Board rotation from 5.02 ─────────────────────────────────────────────
+def test_director_only_changes_feed_board_rotation_summary():
+    out = []
+    for i, (txt, d) in enumerate([("An independent director resigned from the Board of Directors.", "2026-10-01"),
+                                  ("A director resigned from the board of directors.", "2026-09-01"),
+                                  ("A director stepped down from the board of directors.", "2026-08-01"),
+                                  ("The Board of Directors appointed a new director.", "2026-07-01")]):
+        f = _filing("5.02", d, f"A{i}")
+        f["risk_routing"] = _route("5.02", {"5.02": m.extract_5_02_details(txt)}, d=d)
+        out.append(f)
+    agg = m.aggregate_evidence(out, today=TODAY)
+    assert agg["board_rotation"]["departures_12m"] == 3 and agg["board_rotation"]["appointments_12m"] == 1
+    assert any("director departures" in e["label"] for e in agg["evidence"]["TX-GOV"])
+    appt = out[3]["risk_routing"]["routes"][0]
+    assert appt["points"] == 0.0 and "refreshment" in appt["rationale"]
+
+
+def test_ceo_departure_is_not_counted_as_board_rotation():
+    f = _filing("5.02")
+    f["risk_routing"] = _route("5.02", {"5.02": m.extract_5_02_details("The Chief Executive Officer and director resigned.")})
+    assert f["risk_routing"]["board_change"] is None

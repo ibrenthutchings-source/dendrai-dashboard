@@ -130,7 +130,7 @@ function buildSignalEvidence(allSigs, rssSigs) {
 // Wait (bounded) for the DEF 14A and SEC comment-letter fetches and fold their
 // evidence in. A timeout or failure is recorded as an evidence gap — the
 // affected categories then stay "Not assessed" rather than getting a default.
-async function awaitGovernanceEvidence(proxyP, commentP, gaps, timeoutMs = 60000) {
+async function awaitGovernanceEvidence(proxyP, commentP, gaps, sink = {}, timeoutMs = 60000) {
   const waits = [proxyP, commentP].map(p => p || Promise.reject(new Error("not requested")));
   const timeout = new Promise(r => setTimeout(() => r("timeout"), timeoutMs));
   const settled = await Promise.race([Promise.allSettled(waits), timeout]);
@@ -142,6 +142,7 @@ async function awaitGovernanceEvidence(proxyP, commentP, gaps, timeoutMs = 60000
   const [pr, cr] = settled;
   if (pr.status === "fulfilled") {
     const ev = pr.value?.governance?.evidence;
+    sink.governanceKris = pr.value?.governance?.kris || null;
     if (ev && Object.keys(ev).length) maps.push(ev);
     else gaps.push("DEF 14A retrieved but too few directors could be parsed to score board tenure (needs ≥3) — governance rests on other evidence only");
   } else if (pr.reason?.message !== "not requested") gaps.push(`DEF 14A unavailable: ${pr.reason?.message || "error"}`);
@@ -1684,7 +1685,7 @@ function App() {
           {
             const rs = MCP.eightKRoutingSummary(eightK);
             evidenceMaps.push(rs.evidence);
-            _eventRouting = { gateFlags: rs.gateFlags, unrouted: rs.unrouted };
+            _eventRouting = { gateFlags: rs.gateFlags, unrouted: rs.unrouted, boardRotation: rs.boardRotation, sayOnPay: rs.sayOnPay };
             const nMapped = cemEvs.filter(e => e.mappingStatus === "mapped").length;
             const nReview = cemEvs.filter(e => e.mappingStatus === "review").length;
             log(`MCP 8-K routing: ${nMapped} mapped to risk categories, ${nReview} need review, ${rs.unrouted.length} not scored (ignored / stale)`);
@@ -1750,7 +1751,7 @@ function App() {
         // were fire-and-forget and never reached the register at all.
         if (!isPrivateTicker) {
           setLiveStatus("Waiting for DEF 14A / SEC comment letters…");
-          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _evidenceGaps));
+          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _evidenceGaps, _eventRouting));
         } else {
           _evidenceGaps.push("Private company: no SEC filings, proxy or comment letters — filing-based categories are Not assessed");
         }
@@ -1903,7 +1904,7 @@ function App() {
           {
             const rs = MCP.eightKRoutingSummary(eightK);
             _liveMaps.push(rs.evidence);
-            _eventRouting = { gateFlags: rs.gateFlags, unrouted: rs.unrouted };
+            _eventRouting = { gateFlags: rs.gateFlags, unrouted: rs.unrouted, boardRotation: rs.boardRotation, sayOnPay: rs.sayOnPay };
             rs.gateFlags.forEach(f => log(`⚠ 8-K flag ${f.flag} — filing ${f.accession} (${f.date}) needs reviewer attention at Gate 1`));
           }
           if (cemEvs.length) {
@@ -1924,7 +1925,7 @@ function App() {
           }
         } catch(e) { /* 8-K fetch optional in Live mode — requires MCP bridge */ }
 
-        _liveMaps.push(...await awaitGovernanceEvidence(_liveProxyP, _liveCommentP, _evidenceGaps));
+        _liveMaps.push(...await awaitGovernanceEvidence(_liveProxyP, _liveCommentP, _evidenceGaps, _eventRouting));
         {
           const sc = RISK_ENGINE.scoreTaxonomy(_liveMaps);
           const segKeep = (profileRef.current.risks || []).filter(r => r.segment_name);
@@ -2024,6 +2025,8 @@ function App() {
       acks: {},
       blockMsg: null,
       dataQuality: _dq,
+      // Board rotation / say-on-pay context for the Gate 1 governance card.
+      governance: { kris: _routing.governanceKris || null, boardRotation: _routing.boardRotation || null, sayOnPay: _routing.sayOnPay || null },
     };
     const forcedFlags = routingPayload.gateFlags.filter(f => f.flag === "forces_gate_signoff");
     const stage2Trace = buildTrace({

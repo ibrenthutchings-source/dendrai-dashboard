@@ -73,3 +73,34 @@ def test_collect_extra_evidence_survives_every_failure():
     def boom(_):
         raise RuntimeError("edgar down")
     assert g.collect_extra_evidence("X", {}, get_submissions=boom, get_cached_kris=boom) == {}
+
+
+# ── Board rotation KRIs, policy values, say-on-pay (proxy) ─────────────────
+def test_policy_age_is_not_read_as_a_director_age():
+    assert g.parse_director_ages("Mandatory retirement age 72. No director may stand after reaching age 75.") == []
+    assert g.parse_director_ages("Jane Roe, age 61, Director since 2015") == [61]
+
+
+def test_rotation_kris_flag_a_board_with_no_new_director():
+    stale = "\n".join(f"Dir{i}, age 66, Director since {2008 + i}." for i in range(6))   # newest = 2013 -> 13 yrs
+    k = g.compute_kris({"board_of_directors": stale}, TODAY)
+    assert k["years_since_last_addition"] == 13 and k["share_joined_5y"] == 0.0
+    labels = [(e["label"], e["points"]) for e in g.kris_to_evidence(k)["TX-GOV"]]
+    assert any("Board rotation" in l and p == 0.6 for l, p in labels)
+
+
+def test_policy_values_and_independence_and_say_on_pay():
+    txt = ("Our mandatory retirement age is 72. Directors are subject to a term limit of 15 years. "
+           "We have a classified board. 6 of our 11 directors are independent. "
+           "At the 2026 annual meeting our say-on-pay proposal received approximately 62% support.")
+    pv = g.parse_policy_values(txt)
+    assert pv["retirement_age"] == 72 and pv["term_limit_years"] == 15 and pv["classified_board"]
+    assert pv["independence"] == {"independent": 6, "total": 11, "share": 0.55}
+    assert g.parse_say_on_pay_proxy(txt) == 0.62
+    ev = g.kris_to_evidence({"n_tenure_parsed": 0, "say_on_pay_prior": 0.62})["TX-GOV"]
+    assert ev[0]["points"] == 0.5 and "62%" in ev[0]["label"]    # 1.0 pts tier, halved (prior-year, proxy)
+
+
+def test_over_retirement_age_directors_are_counted():
+    txt = "\n".join(f"Dir{i}, age {70 + i}, Director since {2010 + i}. Mandatory retirement age 72." for i in range(5))
+    assert g.compute_kris({"board_of_directors": txt}, TODAY)["over_retirement_age"] == 3

@@ -108,7 +108,6 @@ IGNORED_ITEMS: dict[str, str] = {
     "1.04": "Mine-safety reporting applies only to mine operators; no category impact otherwise",
     "2.02": "Earnings release — results already captured from XBRL; the release itself is not a risk event",
     "5.04": "Employee-benefit-plan blackout notice — routine",
-    "5.07": "Shareholder-vote results — routine; say-on-pay support is read from the DEF 14A KRIs instead",
     "6.01": "ABS-issuer informational item — not applicable to operating companies",
     "6.02": "ABS-issuer servicer change — not applicable to operating companies",
     "6.03": "ABS-issuer credit enhancement — not applicable to operating companies",
@@ -124,7 +123,16 @@ REVIEW_ITEMS: dict[str, str] = {
 }
 
 # Items with a dedicated content parser below.
-DETAIL_ITEMS = {"1.03", "4.01", "5.02"}
+DETAIL_ITEMS = {"1.03", "4.01", "5.02", "5.07"}
+
+# Say-on-pay support -> TX-GOV likelihood points. Thresholds are investor-policy
+# signals, not legal limits: the advisory vote is non-binding, ISS expects board
+# responsiveness below 70% support, Glass Lewis below 80%, and <50% is a failed vote.
+SAY_ON_PAY_FAIL, SAY_ON_PAY_LOW, SAY_ON_PAY_WATCH = 0.50, 0.70, 0.80
+
+
+def say_on_pay_points(support: float) -> float:
+    return 1.5 if support < SAY_ON_PAY_FAIL else 1.0 if support < SAY_ON_PAY_LOW else 0.5 if support < SAY_ON_PAY_WATCH else 0.0
 
 
 # ── Deterministic content parsers ──────────────────────────────────────
@@ -183,6 +191,7 @@ _ROLE_PATTERNS = {
     "cao": r"chief accounting officer|principal accounting officer|\bcontroller\b",
     "audit_committee": r"audit committee",
     "chair": r"chair(man|woman|person)? of the board|board chair|lead independent director",
+    "director": r"\bdirector\b|board of directors",
 }
 _DEPART = r"resign|retire|terminat|departure|step(s|ping)? down|stepped down|removed|not stand for re-?election|decline[sd]? to stand|leave the company|will leave"
 _APPOINT = r"appointed|elected|named|will serve as|has been selected|promoted"
@@ -203,7 +212,71 @@ def extract_5_02_details(text: str) -> dict:
     }
 
 
+_NUM = r"\b\d{1,3}(?:,\d{3})+\b|\b\d{4,}\b"
+
+
+def extract_5_07_details(text: str) -> dict:
+    """Item 5.07 vote results -> say-on-pay support and failed-proposal signals.
+
+    Support = For / (For + Against), the figure proxy advisers use (abstentions
+    and broker non-votes excluded). Falls back to a stated percentage."""
+    t = _norm(text)
+    sop_pat = (r"say[- ]on[- ]pay|advisory (?:vote|resolution|basis)[^.]{0,120}?(?:compensation|named executive officers)"
+               r"|compensation of (?:the |our )?named executive officers")
+    support = for_v = against_v = None
+    has_sop = False
+    for m in re.finditer(sop_pat, t):
+        before = t[max(0, m.start() - 90):m.start()]
+        window = t[m.end(): m.end() + 500]
+        if re.search(r"frequency|every (one|two|three) years?|one year|three years", before + window[:120]):
+            continue  # the frequency vote, not the approval vote
+        has_sop = True
+        nums = [int(x.replace(",", "")) for x in re.findall(_NUM, window)]
+        if len(nums) >= 2 and nums[0] + nums[1] > 0:
+            for_v, against_v = nums[0], nums[1]
+            support = for_v / (for_v + against_v)
+            break
+        pct = re.search(r"(\d{2,3}(?:\.\d+)?)\s*%", window[:300])
+        if pct and 0 < float(pct.group(1)) <= 100:
+            support = float(pct.group(1)) / 100
+            break
+    failed = bool(re.search(
+        r"(?:was|were) not (?:approved|adopted|ratified)|failed to (?:receive|obtain|pass)|"
+        r"did not receive (?:the required|a majority|sufficient)|was (?:rejected|defeated)", t))
+    return {
+        "has_say_on_pay": has_sop,
+        "say_on_pay_support": None if support is None else round(support, 3),
+        "say_on_pay_for": for_v, "say_on_pay_against": against_v,
+        "proposal_failed": failed,
+    }
+
+
 # ── Routing ────────────────────────────────────────────────────────────
+
+def _routes_5_07(details: Optional[dict]) -> tuple[str, list, list[str], str]:
+    """-> (state, routes, flags, reason); state in mapped | review | ignored."""
+    if not details:
+        return "review", [], [], "Shareholder-vote results — filing text unavailable; say-on-pay support not evaluated"
+    routes: list[tuple[str, float, str]] = []
+    flags: list[str] = []
+    sup = details.get("say_on_pay_support")
+    if sup is not None:
+        pts = say_on_pay_points(sup)
+        routes.append(("TX-GOV", pts,
+                       f"Say-on-pay support {sup:.0%} (fail <50%; ISS responsiveness <70%; Glass Lewis <80%)"))
+        if sup < SAY_ON_PAY_FAIL:
+            flags.append("say_on_pay_failed")
+        elif sup < SAY_ON_PAY_LOW:
+            flags.append("say_on_pay_low")
+    if details.get("proposal_failed"):
+        routes.append(("TX-GOV", 1.0, "A proposal or director election failed / did not receive the required vote"))
+        flags.append("vote_failed")
+    if routes:
+        return "mapped", routes, flags, ""
+    if details.get("has_say_on_pay"):
+        return "review", [], [], "Say-on-pay vote present but the tallies could not be parsed — reviewer to read the filing"
+    return "ignored", [], [], "Shareholder-vote results with no say-on-pay vote and no failed proposal — routine"
+
 
 def _routes_for_item(item: str, details: Optional[dict]) -> tuple[list[tuple[str, float, str]], list[str]]:
     """Return (routes, flags) for one item, honouring parsed details."""
@@ -242,8 +315,12 @@ def _routes_for_item(item: str, details: Optional[dict]) -> tuple[list[tuple[str
                 routes.append(("TX-GOV", 2.0, "Departure attributed to a disagreement with the company"))
                 routes.append(("TX-REG", 0.5, "Item 5.02(a) disagreement letter may be filed with the SEC"))
                 flags.append("disagreement_departure")
+            if r.get("chair"):
+                routes.append(("TX-GOV", 1.0, "Board chair / lead independent director departure"))
             if not routes:
-                routes.append(("TX-GOV", 0.6, "Director / officer departure"))
+                routes.append(("TX-GOV", 0.6, "Director departure (board rotation)" if r.get("director") else "Director / officer departure"))
+        elif details["appointment"] and not details["compensation_only"] and r.get("director") and not (r["ceo"] or r["cfo"] or r["cao"]):
+            routes.append(("TX-GOV", 0.0, "Board refreshment — new director appointed"))
         elif details["appointment"] and not details["compensation_only"]:
             routes.append(("TX-GOV", 0.3, "Leadership transition (new appointment)"))
             if r["cfo"] or r["cao"]:
@@ -290,7 +367,16 @@ def route_filing(filing: dict, texts_details: Optional[dict] = None,
         if item in REVIEW_ITEMS:
             review.append({"item": item, "reason": REVIEW_ITEMS[item]})
             continue
-        item_routes, item_flags = _routes_for_item(item, texts_details.get(item))
+        if item == "5.07":
+            state, item_routes, item_flags, why = _routes_5_07(texts_details.get(item))
+            if state == "ignored":
+                ignored.append({"item": item, "reason": why})
+                continue
+            if state == "review":
+                review.append({"item": item, "reason": why})
+                continue
+        else:
+            item_routes, item_flags = _routes_for_item(item, texts_details.get(item))
         if not item_routes:
             review.append({"item": item, "reason": "Item code has no routing rule — reviewer to confirm applicability"})
             continue
@@ -305,9 +391,14 @@ def route_filing(filing: dict, texts_details: Optional[dict] = None,
     else:
         status = "ignored"
     sev = severity_of(max((r["points"] for r in routes), default=0.0)) if routes else None
+    board_change = None
+    d502 = texts_details.get("5.02")
+    if d502 and "5.02" in items and d502["roles"].get("director") and not any(d502["roles"].get(k) for k in ("ceo", "cfo", "cao")):
+        board_change = "departure" if d502["departure"] else "appointment" if d502["appointment"] else None
     return {
         "status": status, "routes": routes, "ignored": ignored, "review": review,
         "flags": sorted(set(flags)), "severity": sev, "weight": weight,
+        "board_change": board_change,
     }
 
 
@@ -327,6 +418,8 @@ def aggregate_evidence(events: list[dict], today: Optional[date] = None) -> dict
     unrouted: list[dict] = []
     per_cat_total: dict[str, float] = {}
     gov_5_02_dates: list[str] = []
+    rotation = {"departures_12m": 0, "departures_24m": 0, "appointments_12m": 0, "appointments_24m": 0}
+    say_on_pay: Optional[dict] = None
 
     for e in events:
         rr = e.get("risk_routing") or {}
@@ -341,12 +434,21 @@ def aggregate_evidence(events: list[dict], today: Optional[date] = None) -> dict
             unrouted.append({"accession": acc, "date": d, "status": "stale",
                              "items": e.get("items", ""), "reasons": ["Older than 24 months — no longer counted"]})
             continue
+        bc = rr.get("board_change")
+        if bc:
+            kind = "departures" if bc == "departure" else "appointments"
+            rotation[f"{kind}_24m"] += 1
+            if w >= 0.5:
+                rotation[f"{kind}_12m"] += 1
         for f in rr.get("flags", []):
-            if f in ("forces_gate_signoff", "auditor_change_p1", "disagreement_departure", "bankruptcy"):
+            if f in ("forces_gate_signoff", "auditor_change_p1", "disagreement_departure", "bankruptcy",
+                     "say_on_pay_failed", "say_on_pay_low", "vote_failed"):
                 gate_flags.append({"flag": f, "accession": acc, "date": d, "items": e.get("items", "")})
         for r in rr["routes"]:
             if r["item"] == "5.02":
                 gov_5_02_dates.append(d)
+            if r["item"] == "5.07" and r["rationale"].startswith("Say-on-pay") and say_on_pay is None:
+                say_on_pay = {"date": d, "accession": acc, "rationale": r["rationale"]}
             pts = round(r["points"] * w, 2)
             cap_left = MAX_EVENT_POINTS_PER_CATEGORY - per_cat_total.get(r["tx"], 0.0)
             pts = max(0.0, min(pts, cap_left))
@@ -363,4 +465,9 @@ def aggregate_evidence(events: list[dict], today: Optional[date] = None) -> dict
         evidence.setdefault("TX-GOV", []).append(rt.ev(
             "SEC 8-K", f"{len(recent)} Item 5.02 filings within 12 months — compressed turnover pattern",
             0.8, trend=True, observed={"count": len(recent)}))
-    return {"evidence": evidence, "gate_flags": gate_flags, "unrouted": unrouted}
+    if rotation["departures_12m"] >= 3:
+        evidence.setdefault("TX-GOV", []).append(rt.ev(
+            "SEC 8-K", f"{rotation['departures_12m']} director departures within 12 months — board instability",
+            0.6, trend=True, observed=dict(rotation)))
+    return {"evidence": evidence, "gate_flags": gate_flags, "unrouted": unrouted,
+            "board_rotation": rotation, "say_on_pay": say_on_pay}

@@ -2164,6 +2164,8 @@ def edgar_8k_events(req: TickerRequest):
                     details["4.01"] = event_risk_map.extract_4_01_details(text)
                 if "5.02" in item_set:
                     details["5.02"] = event_risk_map.extract_5_02_details(text)
+                if "5.07" in item_set:
+                    details["5.07"] = event_risk_map.extract_5_07_details(text)
             ev["item_details"] = details
             ev["risk_routing"] = event_risk_map.route_filing(ev, details)
             del text
